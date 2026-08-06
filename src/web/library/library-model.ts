@@ -3,11 +3,13 @@ import { ENSEMBLE_STRATEGY_IDS, type EnsembleStrategyId } from "@shared/ensemble
 import { creatableStrategies } from "@shared/ensemble-strategies.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import {
+  personaUpstreamLabel,
   sessionActionCompletionLabel,
   sessionActionSkillLabel,
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
 import type {
+  PersonaUpstreamState,
   PersonaView,
   SessionAction,
   WorkflowRunSummary,
@@ -154,20 +156,39 @@ export function workflowCards(summaries: readonly WorkflowSummary[]): LibraryCar
     });
 }
 
-export function personaCards(personas: readonly PersonaView[]): LibraryCard[] {
+/**
+ * The reviewer shelf, with an upstream badge on any imported Persona whose source has moved on.
+ *
+ * `upstream` is a parameter rather than something read here for the reason at the top of this
+ * file - no shelf fetches - and it is the one card fact on this page that is not derived purely
+ * from the SSE stores: it is what the last drift check found. That is still a DURABLE fact about
+ * the asset rather than a live one, which is why it belongs on a tag: a changed source file
+ * stays changed until a human adopts it.
+ */
+export function personaCards(
+  personas: readonly PersonaView[],
+  upstream?: ReadonlyMap<string, PersonaUpstreamState>,
+): LibraryCard[] {
   return personas
     .filter((persona) => persona.archivedAt === null)
     .slice()
     .sort((a, b) => a.normalizedName.localeCompare(b.normalizedName, "en-US"))
-    .map((persona) => ({
-      id: persona.id,
-      name: persona.name,
-      description: persona.description,
-      tags: persona.builtin ? [{ label: "built-in", tone: "builtin" as const }] : [],
-      // The two facts that decide whether this reviewer can run at all, and they are the
-      // Persona's own configuration rather than anything a run is doing with it.
-      fact: `${persona.execution.runner.id} · ${persona.execution.model.id}`,
-    }));
+    .map((persona) => {
+      const tags: LibraryCardTag[] = [];
+      if (persona.builtin) tags.push({ label: "built-in", tone: "builtin" });
+      const drifted = upstream?.get(persona.id);
+      const label = drifted === undefined ? null : personaUpstreamLabel(drifted);
+      if (label) tags.push({ label, tone: "attention" });
+      return {
+        id: persona.id,
+        name: persona.name,
+        description: persona.description,
+        tags,
+        // The two facts that decide whether this reviewer can run at all, and they are the
+        // Persona's own configuration rather than anything a run is doing with it.
+        fact: `${persona.execution.runner.id} · ${persona.execution.model.id}`,
+      };
+    });
 }
 
 export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {

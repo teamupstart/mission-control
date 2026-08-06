@@ -1,0 +1,143 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { expect, test } from "../fixtures/test.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+
+/**
+ * Importing an externally-authored Markdown role by path, and adopting it again after the file
+ * upstream changes.
+ *
+ * This is the layer the other three cannot reach. `test/persona-import.test.ts` proves the route
+ * reads the exact bytes and reports drift, and `persona-editor-render.test.ts` proves the badge's
+ * markup - but neither can tell you whether typing a path into the sidebar reaches that route,
+ * whether the tag an operator is supposed to notice actually appears on the row they are looking
+ * at, or whether clicking **Re-import** puts the new text in the editor they are reading. Every
+ * assertion below is a click, a file on disk, and what came back.
+ *
+ * The role file is written into the daemon's own isolated `MISSION_HOME`, which is what makes
+ * "a path on the daemon's machine" true in a test: the fixture daemon's machine IS this one, and
+ * that directory is deleted with the rest of the temp tree when the daemon stops.
+ *
+ * No agent is launched and none needs to be. Importing a reviewer authors it; running one is the
+ * workflow specs' business.
+ */
+
+/** A role file shaped like the ones this feature was built for: heading, summary, DO/DON'T. */
+const ROLE_V1 = [
+  "# Claw Reviewer",
+  "",
+  "Reads the diff and reports the risk it introduces.",
+  "",
+  "## DO",
+  "",
+  "- Name the specific line a risk lives on.",
+  "",
+].join("\n");
+
+const ROLE_V2 = `${ROLE_V1}\n## DON'T\n\n- Comment on formatting.\n`;
+
+function writeRole(daemon: DaemonHandle, text: string): string {
+  const dir = join(daemon.home, "claw", "plugins", "agent-team", "references", "roles");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "reviewer.md");
+  writeFileSync(path, text, "utf8");
+  return path;
+}
+
+test("a Markdown role imported by path records where it came from, badges upstream changes, and re-imports", async ({
+  dashboard,
+  daemon,
+}) => {
+  const path = writeRole(daemon, ROLE_V1);
+  await dashboard.goto(`${daemon.baseURL}/#/library/personas`);
+
+  const sidebar = dashboard.getByRole("complementary", { name: "Persona library" });
+  await expect(sidebar).toBeVisible();
+
+  // Import by path: the daemon reads the file, which is the whole difference from the browser's
+  // Import .md button beside this field.
+  await sidebar.getByLabel("Absolute path of a Markdown file on this machine").fill(path);
+  await sidebar.getByRole("button", { name: "Import from path" }).click();
+
+  // The editor opens on what was imported: the name from the first heading, the description from
+  // the paragraph under it, and the exact document in the guidance preview.
+  const fields = dashboard.locator("section.persona-fields");
+  await expect(fields.getByLabel("Name")).toHaveValue("Claw Reviewer");
+  await expect(fields.getByLabel("Description"))
+    .toHaveValue("Reads the diff and reports the risk it introduces.");
+  // Provenance, in the header, naming the file a re-import will re-read.
+  await expect(dashboard.locator("p.persona-source")).toContainText(path);
+
+  await dashboard.getByRole("button", { name: "Preview" }).click();
+  const preview = dashboard.locator("article.persona-markdown");
+  await expect(preview).toContainText("Name the specific line a risk lives on.");
+  await expect(preview).not.toContainText("Comment on formatting.");
+
+  // Nothing has changed on disk, so nothing claims otherwise.
+  const row = sidebar.getByRole("button", { name: /Claw Reviewer/ });
+  await expect(row).not.toContainText("upstream changed");
+
+  // Now the upstream moves on, exactly as a plugin upgrade or a `git pull` would move it.
+  writeRole(daemon, ROLE_V2);
+  await sidebar.getByRole("button", { name: "Check upstream" }).click();
+  await expect(row).toContainText("upstream changed");
+  // The stored guidance is untouched by the drift - the badge is a report, not a write.
+  await expect(preview).not.toContainText("Comment on formatting.");
+  // And the editor says so, in the terms that make adopting it safe.
+  await expect(dashboard.locator("p.persona-source")).toContainText(path);
+  await expect(dashboard.getByText("The source file has changed since this Persona was imported"))
+    .toBeVisible();
+
+  // Adopting it is a deliberate act with a confirmation that states the invariant. One button,
+  // in the header beside Save and Archive - the status line above names it rather than
+  // duplicating it.
+  await expect(dashboard.getByRole("button", { name: "Re-import from source" })).toHaveCount(1);
+  await dashboard.getByRole("button", { name: "Re-import from source" }).click();
+  const confirm = dashboard.getByRole("dialog", { name: "Re-import Claw Reviewer" });
+  await expect(confirm).toContainText("keeps the guidance it was published with");
+  await confirm.getByRole("button", { name: "Re-import guidance" }).click();
+
+  // The revision advanced, so what the editor holds is a new revision rather than an edit to the
+  // one that was published-safe a moment ago.
+  await expect(dashboard.locator("article.persona-editor p.workflow-eyebrow"))
+    .toHaveText("Revision 2");
+  // And the new text is what it holds. Re-read through Preview because adopting a revision
+  // remounts the editor on its default mode, which is the source editor.
+  await dashboard.getByRole("button", { name: "Preview" }).click();
+  await expect(dashboard.locator("article.persona-markdown"))
+    .toContainText("Comment on formatting.");
+  // The badge is gone: this Persona and its source file agree again.
+  await expect(row).not.toContainText("upstream changed");
+  await expect(dashboard.getByText("The source file has changed since this Persona was imported"))
+    .toHaveCount(0);
+
+  // The reviewer shelf tells the same story about the same Persona, one level up.
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  const card = dashboard.getByRole("button", { name: /Claw Reviewer/ });
+  await expect(card).toBeVisible();
+  await expect(card).not.toContainText("upstream changed");
+});
+
+test("a path the daemon cannot read is refused by name, and authors nothing", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/library/personas`);
+  const sidebar = dashboard.getByRole("complementary", { name: "Persona library" });
+
+  // A relative path is the mistake this affordance invites: the operator is naming a file on the
+  // daemon's machine, and "the directory my browser is in" is not a thing the daemon can know.
+  await sidebar.getByLabel("Absolute path of a Markdown file on this machine").fill("roles/reviewer.md");
+  await sidebar.getByRole("button", { name: "Import from path" }).click();
+  await expect(dashboard.getByRole("alert")).toContainText("absolute");
+
+  await sidebar.getByLabel("Absolute path of a Markdown file on this machine")
+    .fill(join(daemon.home, "claw", "not-here.md"));
+  await sidebar.getByRole("button", { name: "Import from path" }).click();
+  // The reason names the path, so the operator can see the typo rather than guess at it.
+  await expect(dashboard.getByRole("alert")).toContainText("no file at");
+
+  // No half-made Persona was left behind by either refusal.
+  await expect(sidebar.getByRole("button", { name: /reviewer/ })).toHaveCount(0);
+});

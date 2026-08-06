@@ -81,6 +81,7 @@ import type { LibrarySurface } from "./workflows/useWorkflowRoute.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { PersonaLibrary } from "./workflows/PersonaLibrary.tsx";
+import { usePersonaDrift } from "./workflows/usePersonaDrift.ts";
 import { SessionActionLibrary } from "./workflows/SessionActionLibrary.tsx";
 import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
@@ -213,6 +214,10 @@ export function App(): React.JSX.Element {
   // would leave the popover showing the old choice until the next reload - and double-poll.
   const cost = useCost();
   const llm = useLlm();
+  // Owned here for the same reason as `cost` above: two surfaces read one answer. The Library
+  // shelf badges reviewer cards with it and the Persona editor badges the open row, and a copy
+  // per surface would mean two requests and two chances to disagree about the same file.
+  const personaDrift = usePersonaDrift();
   // The worst subsystem status, inherited by the topbar gear from the settings rail dots.
   // Null status ("unknown", pre-snapshot) and an all-clear both render no dot.
   const gearDot = settingsGearDot(settingsStatus);
@@ -1904,6 +1909,8 @@ export function App(): React.JSX.Element {
             personas={personas}
             providers={llm.status?.runners ?? []}
             defaults={llm.personaDefaults}
+            upstream={personaDrift.upstream}
+            onCheckUpstream={personaDrift.refresh}
             initialPersonaId={libraryAssetId}
             startNew={libraryCreating}
             isOverlayOpen={isOverlayOpen}
@@ -1930,6 +1937,7 @@ export function App(): React.JSX.Element {
           <LibraryPage
             workflowSummaries={workflowSummaries}
             personas={personas}
+            personaUpstream={personaDrift.upstream}
             sessionActions={sessionActions}
             workflowRuns={workflowRuns}
             ensembleSummaries={ensembleSummaries}

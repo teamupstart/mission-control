@@ -14,6 +14,7 @@ import { ExecutionPage } from "../src/web/workflows/ExecutionPage.tsx";
 import { WorkflowRuns } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   PersonaLibrary,
+  driftTag,
   importMayReplaceEditor,
   readPersonaImport,
 } from "../src/web/workflows/PersonaLibrary.tsx";
@@ -22,6 +23,7 @@ import {
   PersonaEditorStatus,
   isPersonaSaveShortcut,
   personaLineSeparator,
+  personaSourceLine,
   projectPersonaDraftExecution,
   personaUpdatePatch,
   reconcilePersonaSave,
@@ -48,6 +50,7 @@ const PERSONA: PersonaView = {
   archivedAt: null,
   createdAt: 1,
   updatedAt: 2,
+  provenance: null,
   builtin: false,
   execution: {
     runner: { id: "claude", source: "default", unknown: null },
@@ -273,6 +276,135 @@ test("the library flags built-ins in the list so their read-only editor is not a
   }));
   assert.match(html, /class="persona-list-tag">Built-in</);
   assert.equal(html.match(/persona-list-tag/g)?.length, 1, "only the built-in carries the tag");
+});
+
+const IMPORTED: PersonaView = {
+  ...PERSONA,
+  id: "imported",
+  name: "Reviewer",
+  normalizedName: "reviewer",
+  provenance: {
+    sourcePath: "/plugins/agent-team/references/roles/reviewer.md",
+    sourceRepo: "/plugins",
+    pluginVersion: "0.2.0",
+    contentSha256: "c".repeat(64),
+    importedAt: Date.UTC(2026, 7, 5, 12, 0, 0),
+  },
+};
+
+test("an imported Persona names its source file, its plugin version, and when it was read", () => {
+  const line = personaSourceLine(IMPORTED.provenance!);
+  assert.match(line, /Imported from \/plugins\/agent-team\/references\/roles\/reviewer\.md/);
+  assert.match(line, /\(plugin 0\.2\.0\)/);
+  const html = text(renderToStaticMarkup(createElement(PersonaEditor, { persona: IMPORTED, ...callbacks })));
+  // The full path, not a basename: two `reviewer.md` files under two plugins are the case this
+  // has to tell apart, and it is what a re-import will read.
+  assert.match(html, /Imported from \/plugins\/agent-team\/references\/roles\/reviewer\.md/);
+  assert.match(html, />Re-import from source</);
+  // A Persona with no source file offers neither.
+  const authored = text(renderToStaticMarkup(createElement(PersonaEditor, { persona: PERSONA, ...callbacks })));
+  assert.doesNotMatch(authored, /Imported from/);
+  assert.doesNotMatch(authored, /Re-import from source/);
+  // Nor does a source-bearing Persona that is read-only: re-import is a write.
+  for (const readOnly of [{ ...IMPORTED, archivedAt: 100 }, { ...IMPORTED, builtin: true }]) {
+    assert.doesNotMatch(
+      text(renderToStaticMarkup(createElement(PersonaEditor, { persona: readOnly, ...callbacks }))),
+      /Re-import from source/,
+    );
+  }
+});
+
+// The status line is a precedence, not a set: exactly one sentence renders, and drift is last
+// because it is the only one of the five that is not about what this editor can do right now -
+// the stored guidance is intact and still what runs.
+test("drift joins the status line after builtin, archived, conflict and dirty", () => {
+  const base = { conflict: null, archived: false, onReload: () => {}, onDuplicate: () => {} };
+  const changed = text(renderToStaticMarkup(createElement(PersonaEditorStatus, {
+    ...base,
+    dirty: false,
+    upstream: "changed" as const,
+    canReimport: true,
+  })));
+  assert.match(changed, /The source file has changed since this Persona was imported/);
+  // States the invariant that makes adopting it safe, in the place an operator decides.
+  assert.match(changed, /every published workflow version keeps what it was published with/);
+  // It NAMES the header action rather than carrying a second copy of it: two identical buttons
+  // on one screen make the more prominent one the one nobody can find again later.
+  assert.match(changed, /Re-import from source adopts the file's current text/);
+  assert.doesNotMatch(changed, /<button/);
+  assert.doesNotMatch(
+    renderToStaticMarkup(createElement(PersonaEditorStatus, {
+      ...base,
+      dirty: false,
+      upstream: "changed" as const,
+      canReimport: false,
+    })),
+    /Re-import from source/,
+    "an archived or built-in row is not pointed at an action it cannot take",
+  );
+
+  // Unsaved text wins: it is about to be lost, and drift is not.
+  assert.match(
+    renderToStaticMarkup(createElement(PersonaEditorStatus, {
+      ...base,
+      dirty: true,
+      upstream: "changed" as const,
+      canReimport: true,
+    })),
+    /Unsaved changes/,
+  );
+  assert.doesNotMatch(
+    renderToStaticMarkup(createElement(PersonaEditorStatus, {
+      ...base,
+      archived: true,
+      dirty: false,
+      upstream: "changed" as const,
+    })),
+    /source file has changed/,
+  );
+
+  // A missing source is worded for what it is and offers no re-import to click.
+  const missing = renderToStaticMarkup(createElement(PersonaEditorStatus, {
+    ...base,
+    dirty: false,
+    upstream: "missing" as const,
+    canReimport: true,
+  }));
+  assert.match(missing, /cannot be read right now/);
+  assert.doesNotMatch(missing, /<button/);
+
+  // `current` says nothing at all: a badge on most of the library teaches the eye to skip it.
+  assert.equal(
+    renderToStaticMarkup(createElement(PersonaEditorStatus, {
+      ...base,
+      dirty: false,
+      upstream: "current" as const,
+    })),
+    "",
+  );
+});
+
+test("the sidebar tags a drifted Persona beside the built-in tag, and only when it drifted", () => {
+  assert.equal(driftTag(undefined), null);
+  assert.equal(driftTag("current"), null);
+  assert.equal(driftTag("changed"), "upstream changed");
+  assert.equal(driftTag("missing"), "source missing");
+
+  const html = renderToStaticMarkup(createElement(PersonaLibrary, {
+    personas: [PERSONA, IMPORTED],
+    providers: PROVIDERS,
+    defaults: null,
+    upstream: new Map([[IMPORTED.id, "changed" as const]]),
+    isOverlayOpen: () => false,
+    onDirtyChange: () => {},
+  }));
+  assert.match(html, /class="persona-list-tag is-attention">upstream changed</);
+  assert.equal(html.match(/persona-list-tag/g)?.length, 1, "only the drifted row carries a tag");
+  // The import-by-path controls are present and distinct from the file picker beside them.
+  assert.match(html, /placeholder="\/path\/to\/role\.md"/);
+  assert.match(html, />Import from path</);
+  assert.match(html, />Check upstream</);
+  assert.match(html, />Import \.md</);
 });
 
 test("an unknown stored provider is reported and survives an unrelated edit", () => {

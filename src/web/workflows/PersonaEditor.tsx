@@ -8,7 +8,12 @@ import {
   WORKFLOW_PERSONA_MODEL_SPEC,
   normalizePersonaName,
 } from "@shared/workflow.ts";
-import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
+import type {
+  PersonaDefaultsView,
+  PersonaProvenance,
+  PersonaUpstreamState,
+  PersonaView,
+} from "@shared/workflow.ts";
 import { FileEditor } from "../components/FileEditor.tsx";
 import { Markdown } from "../components/Markdown.tsx";
 import { ModelField, ModelSuggestions } from "../components/ModelField.tsx";
@@ -126,11 +131,27 @@ export function projectPersonaDraftExecution(
   return { runner, model };
 }
 
+/**
+ * When this Persona was imported and from where, as one readable line.
+ *
+ * The absolute path in full rather than a basename: it is the whole point of provenance, it is
+ * what a re-import will read, and two `reviewer.md` files under two plugins are the case this
+ * has to tell apart. The plugin version rides along when the source sat under one, because
+ * "agent-team 0.2.0" is how an operator recognises what changed upstream.
+ */
+export function personaSourceLine(provenance: PersonaProvenance): string {
+  const version = provenance.pluginVersion === null ? "" : ` (plugin ${provenance.pluginVersion})`;
+  const when = new Date(provenance.importedAt).toLocaleString();
+  return `Imported from ${provenance.sourcePath}${version} on ${when}`;
+}
+
 export function PersonaEditorStatus({
   dirty,
   conflict,
   archived,
   builtin = false,
+  upstream,
+  canReimport = false,
   onReload,
   onDuplicate,
   onDownload = () => {},
@@ -139,6 +160,18 @@ export function PersonaEditorStatus({
   conflict: PersonaView | null;
   archived: boolean;
   builtin?: boolean;
+  /** What the last upstream check found for this Persona, if it has a source file. */
+  upstream?: PersonaUpstreamState;
+  /**
+   * False for a built-in, an archived row, or a Persona that was never imported.
+   *
+   * Decides only whether this sentence NAMES the header's action. The drift line deliberately
+   * carries no button of its own: the conflict banner above owns controls that exist nowhere
+   * else, while re-import is a header action beside Save and Archive - rendering it twice put
+   * two identical buttons on screen at once and made the more prominent one the one that is
+   * harder to find again later.
+   */
+  canReimport?: boolean;
   onReload: () => void;
   onDuplicate: () => void;
   onDownload?: () => void;
@@ -170,7 +203,28 @@ export function PersonaEditorStatus({
       </div>
     );
   }
-  return dirty ? <p className="persona-state dirty">Unsaved changes</p> : null;
+  if (dirty) return <p className="persona-state dirty">Unsaved changes</p>;
+  // Last in the precedence line on purpose. Built-in, archived and conflict all describe what
+  // this editor can do right now; drift describes a file somewhere else, and it is the only one
+  // of the five that is not urgent - the stored guidance is intact and still what runs.
+  if (upstream === "changed") {
+    return (
+      <p className="persona-state drift">
+        The source file has changed since this Persona was imported. Its stored guidance is
+        unchanged, and every published workflow version keeps what it was published with.
+        {canReimport && " Re-import from source adopts the file's current text as a new revision."}
+      </p>
+    );
+  }
+  if (upstream === "missing") {
+    return (
+      <p className="persona-state drift">
+        The source file this Persona was imported from cannot be read right now. Its stored
+        guidance is unchanged; re-import once the file is back.
+      </p>
+    );
+  }
+  return null;
 }
 
 export function PersonaEditor({
@@ -178,22 +232,28 @@ export function PersonaEditor({
   seed,
   providers,
   defaults,
+  upstream,
   isOverlayOpen,
   onDirtyChange,
   onDraftEdit,
   onSaved,
   onDuplicate,
+  onReimport = () => {},
   onArchive,
 }: {
   persona: PersonaView | null;
   seed?: PersonaDraftSeed;
   providers: readonly LlmProviderView[];
   defaults: PersonaDefaultsView | null;
+  /** What the last upstream check found for this Persona's source file, if it has one. */
+  upstream?: PersonaUpstreamState;
   isOverlayOpen: () => boolean;
   onDirtyChange: (dirty: boolean) => void;
   onDraftEdit: () => void;
   onSaved: (persona: PersonaView) => void;
   onDuplicate: (seed: PersonaDraftSeed) => void;
+  /** Raised for the library to confirm and perform: it owns the request and the error line. */
+  onReimport?: (persona: PersonaView) => void;
   onArchive: (persona: PersonaView) => void | Promise<void>;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<PersonaDraftSeed>(() => persona ? fromPersona(persona) : seed ?? {
@@ -214,6 +274,9 @@ export function PersonaEditor({
   const [guidanceMode, setGuidanceMode] = useState<"editor" | "preview">("editor");
   const archived = persona?.archivedAt != null;
   const builtin = persona?.builtin === true;
+  const provenance = persona?.provenance ?? null;
+  // A built-in has no source path, and an archived Persona is read-only - re-import is a write.
+  const canReimport = persona !== null && provenance !== null && !archived && !builtin;
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
@@ -376,6 +439,7 @@ export function PersonaEditor({
             {persona ? (builtin ? "Built-in Persona" : `Revision ${loadedRevision}`) : "New Persona"}
           </p>
           <h3>{draft.name || "Untitled Persona"}</h3>
+          {provenance && <p className="persona-source mono">{personaSourceLine(provenance)}</p>}
         </div>
         <div className="persona-actions">
           <Tooltip label={saveHint}>
@@ -392,6 +456,13 @@ export function PersonaEditor({
               <button className="btn btn-ghost" onClick={() => onDuplicate({ ...draft, name: `${draft.name} copy` })}>Duplicate</button>
             </Tooltip>
           )}
+          {canReimport && persona && provenance && (
+            <Tooltip label={`Re-read ${provenance.sourcePath} and save it as a new revision`}>
+              <button className="btn btn-ghost" onClick={() => onReimport(persona)}>
+                Re-import from source
+              </button>
+            </Tooltip>
+          )}
           {persona && !archived && !builtin && (
             <Tooltip label="Archive this Persona - workflows already published keep their copy">
               <button className="btn btn-danger" onClick={() => void onArchive(persona)}>Archive</button>
@@ -405,6 +476,8 @@ export function PersonaEditor({
         conflict={conflict}
         archived={archived}
         builtin={builtin}
+        upstream={upstream}
+        canReimport={canReimport}
         onReload={reload}
         onDuplicate={() => void save(true)}
         onDownload={downloadMarkdown}

@@ -2014,9 +2014,16 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | `this filter is larger than one sweep can read` | more than 1000 issues (or 50 requests) match, so the tail is unreachable - narrow the JQL |
 
 A sweep reports the same sentences on the source itself, so a failure that happens at 3am
-is still legible at 9am. The one non-zero exit that is *not* a failure: `jira-cli` exits
-non-zero to say "no result found for given query", which is a filter that is simply up to
-date and stays **healthy**.
+is still legible at 9am - plus two that only a sweep can reach, since they are about paging
+and a preflight reads a single page:
+
+| What the source says | What to do |
+|---|---|
+| `the jira CLI returned the same page again instead of the next one` | it accepted `--paginate` and ignored it, so the filter cannot be read past its first page. `brew upgrade jira-cli`, or set the two variables so the REST rung pages instead. (From Jira itself, suspect a caching proxy) |
+| a transient failure quoted at the end of a large sweep | the check that establishes where a filter ends failed on its own request - the sweep files nothing that tick and the next one re-reads it. The sentence is the CLI's or Jira's own, never "narrow the JQL" |
+
+The one non-zero exit that is *not* a failure: `jira-cli` exits non-zero to say "no result
+found for given query", which is a filter that is simply up to date and stays **healthy**.
 
 ### A task you delete stays deleted
 

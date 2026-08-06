@@ -381,7 +381,7 @@ Update README in the same change:
 - New shortcut: Keyboard table
 
 Built-in personas are generated from `personas/*.md`, and built-in session actions from
-`docs/session-actions/*.md`. Edit the Markdown and run the generator (`npm run personas`,
+`actions/*.md`. Edit the Markdown and run the generator (`npm run personas`,
 `npm run session-actions`) instead of editing the `.generated.ts` module. Both share the
 reader and renderer in `scripts/builtin-markdown.ts`, and both have a drift test that
 imports the generator rather than re-implementing it.
@@ -393,5 +393,12 @@ those three are excluded by name in `NON_PERSONA_DOCUMENTS`; anything else added
 a built-in Persona. A persona filename is the durable `builtin:<slug>` id that published
 workflow versions reference, so adding and removing documents is safe and renaming one is a
 migration.
+
+`actions/` is the same shape with one exclusion, `README.md`, named in
+`NON_SESSION_ACTION_DOCUMENTS` - it states that the directory holds Mission Control session
+actions and not GitHub Actions, which is prose worth keeping and therefore prose worth
+excluding. Action filenames are durable ids on the same terms; `pull-request` additionally
+keys the enforced contract table in `src/server/workflows/builtin-session-actions.ts`, which
+is where a built-in's required skill and completion live rather than in its Markdown.
 
 Plans live at `docs/plans/<name>/plan.md` with a self-contained HTML companion when the planning workflow requires it.

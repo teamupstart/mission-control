@@ -91,6 +91,21 @@ export function useTaskSources(): TaskSourcesState {
   }, [refresh]);
 
   /**
+   * The write already in flight, so the next one can wait for it.
+   *
+   * Every save PUTs the WHOLE source list, so two of them in flight together are decided by
+   * arrival rather than by intent: if the first is delayed past the second, it lands last and
+   * puts its older blob back, dropping the newer field. `editSeq` does not help - it guards
+   * reads and local reverts, and a request already on the wire is neither.
+   *
+   * Serialized rather than fixed with a server-side revision, which would be a new wire
+   * contract and a persisted field for one panel's benefit. The client is the only writer of
+   * this config in practice, and it can simply take its turn. Two tabs writing at once remain
+   * last-write-wins, as they are for every config in the app.
+   */
+  const writing = useRef<Promise<unknown>>(Promise.resolve());
+
+  /**
    * Apply a change optimistically, and TAKE IT BACK if the server refuses - so a switch
    * never shows a state that isn't in force. That contract matters more here than in most
    * panels: a source reading "on" while the daemon has it off means work you believe is
@@ -101,21 +116,36 @@ export function useTaskSources(): TaskSourcesState {
       const before = viewRef.current;
       if (!before) return false;
       const seq = ++editSeq.current;
+      // Optimistically and IMMEDIATELY, outside the queue: what an operator sees when they
+      // finish typing must not wait on somebody else's round trip.
       setView({ ...before, sources });
-      const patch: TaskSourcesConfigPatch = { sources };
-      const res = await api.setTaskSources(patch);
-      if (!res.ok) {
-        // Say so either way - a refusal the operator never sees is how a panel comes to
-        // disagree with the daemon silently. But only REVERT while this is still the newest
-        // edit: a later one has already replaced what `before` holds, and its own confirming
-        // read is what corrects this one's optimistic value.
-        setError(whyItFailed(res.error));
-        if (readIsCurrent(seq, editSeq.current)) setView(before);
-        return false;
-      }
-      setError(null);
-      await refresh();
-      return true;
+
+      const queued = writing.current;
+      const attempt = (async (): Promise<boolean> => {
+        await queued;
+        // Superseded while queued. A later edit composed its blob from this one's optimistic
+        // view, so it already carries this change - and sending this older body after it would
+        // overwrite the newer field with a value the operator has moved past.
+        if (!readIsCurrent(seq, editSeq.current)) return true;
+        const patch: TaskSourcesConfigPatch = { sources };
+        const res = await api.setTaskSources(patch);
+        if (!res.ok) {
+          // Say so either way - a refusal the operator never sees is how a panel comes to
+          // disagree with the daemon silently. But only REVERT while this is still the newest
+          // edit: a later one has already replaced what `before` holds, and its own confirming
+          // read is what corrects this one's optimistic value.
+          setError(whyItFailed(res.error));
+          if (readIsCurrent(seq, editSeq.current)) setView(before);
+          return false;
+        }
+        setError(null);
+        await refresh();
+        return true;
+      })();
+      // Never a rejected link in the chain: one failed write must not stop the next one from
+      // taking its turn.
+      writing.current = attempt.catch(() => {});
+      return attempt;
     },
     [refresh, setView],
   );

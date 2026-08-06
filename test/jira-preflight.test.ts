@@ -51,6 +51,10 @@ done
 start=\${paginate%%:*}
 limit=\${paginate##*:}
 if [ -n "$FAKE_JIRA_CALLS" ]; then echo "$paginate" >> "$FAKE_JIRA_CALLS"; fi
+if [ -n "$FAKE_JIRA_FAIL_AT" ] && [ "$paginate" = "$FAKE_JIRA_FAIL_AT" ]; then
+  echo "Error: request timed out talking to Jira" 1>&2
+  exit 1
+fi
 
 case "$FAKE_JIRA_MODE" in
   unauthorized)
@@ -123,6 +127,8 @@ function machine(opts: {
   total?: string;
   /** A file the fake appends each requested `start:limit` window to. */
   calls?: string;
+  /** The `start:limit` window the fake should fail on, so one page of a walk can break. */
+  failAt?: string;
 }): void {
   process.env.PATH = `${opts.cli ? withJira : noJira}:/usr/bin:/bin`;
   for (const [key, value] of [
@@ -131,6 +137,7 @@ function machine(opts: {
     ["FAKE_JIRA_MODE", opts.mode],
     ["FAKE_JIRA_TOTAL", opts.total],
     ["FAKE_JIRA_CALLS", opts.calls],
+    ["FAKE_JIRA_FAIL_AT", opts.failAt],
   ] as const) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -318,6 +325,19 @@ test("a filter with one issue past the bound is reported, and stays within the c
   assert.equal(swept.items.length, 100, "exactly the cap, not the cap plus the lookahead");
   assert.match(swept.error!, /larger than one sweep can read/);
   assert.equal(callsIn(calls).at(-1), "100:1");
+});
+
+// A lookahead that fails leaves completeness UNKNOWN, and reporting that as "the filter is too
+// broad" would tell the operator to narrow a JQL that is fine. The transient failure is what
+// they need to see.
+test("a lookahead that fails reports its own failure, not a filter that is too broad", async () => {
+  machine({ cli: true, mode: "pages", total: "100", failAt: "100:1" });
+
+  const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
+  assert.deepEqual(swept.items, [], "completeness is unknown, so this is a failed sweep");
+  assert.match(swept.error!, /request timed out talking to Jira/);
+  assert.doesNotMatch(swept.error!, /larger than one sweep can read/);
+  assert.doesNotMatch(swept.error!, /narrow the JQL/);
 });
 
 // A rung that ACCEPTS the pagination argument and ignores it is the nastier version: walked to

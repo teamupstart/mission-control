@@ -826,8 +826,11 @@ async function walkCli(cfg: JiraConfig, ctx: SweepContext, budget: WalkBudget): 
  * An issue the walk has ALREADY collected is not a tail: that is a rung repeating itself, and
  * the honest answer to "is there more after this" is then no.
  *
- * A lookahead that fails leaves the question open, and an open question about completeness is
- * reported as truncation rather than assumed away.
+ * A lookahead that FAILS reports its own failure. Turning a timeout or an auth blip here into
+ * "this filter is larger than one sweep can read" would be a true-sounding sentence about the
+ * wrong thing, and it would tell an operator to narrow a JQL that is fine. Like every other
+ * failure mid-walk, it is fatal for the sweep: the pages already read are dropped rather than
+ * filed under a result whose completeness is unknown, and the next sweep re-reads them.
  */
 async function confirmTail(
   cfg: JiraConfig,
@@ -841,7 +844,7 @@ async function confirmTail(
       timeoutMs: JIRA_TIMEOUT_MS,
     }),
   );
-  if (after.error) return { issues, error: null, truncated: true };
+  if (after.error) return { issues, error: after.error, truncated: false };
   const tail = after.issues.some((issue) => {
     const key = externalIdFor(issue);
     return key !== null && !keys.has(key);

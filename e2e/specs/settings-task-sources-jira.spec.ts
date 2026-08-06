@@ -240,6 +240,69 @@ test("a config read that left before an edit cannot revert the field, or be save
     .toMatchObject({ site: "acme.atlassian.net", jql: JQL });
 });
 
+test("a slow save cannot land after a newer one and put the older value back", async ({
+  page,
+  daemon,
+}) => {
+  // The write half of the same class of defect as the case above. Every save PUTs the WHOLE
+  // source list, so two in flight together are decided by ARRIVAL rather than by intent: hold
+  // the first one past the second and it lands last, putting its own older blob back and
+  // dropping the newer field. `readIsCurrent` does not help here - it guards reads and local
+  // reverts, and a request already on the wire is neither.
+  const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
+    data: {
+      sources: [{ id: "jira-writes", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
+    },
+  });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
+
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  const site = page.getByLabel("Jira site");
+  await expect(site).toHaveValue("upstartnetwork.atlassian.net");
+
+  // Hold the FIRST write open. Later ones pass straight through, which is what lets an
+  // unserialized panel deliver them out of order.
+  let release: (() => void) | null = null;
+  const released = new Promise<void>((r) => {
+    release = r;
+  });
+  let held = false;
+  let hit: (() => void) | null = null;
+  const gateHit = new Promise<void>((r) => {
+    hit = r;
+  });
+  await page.route("**/api/task-sources/config", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = true;
+    hit?.();
+    await released;
+    await route.fallback();
+  });
+
+  // Two commits, back to back, with the first one's PUT stuck in the gate.
+  await site.fill("acme.atlassian.net");
+  await page.keyboard.press("Tab");
+  await gateHit;
+  await page.getByLabel("JQL filter").fill(JQL);
+  await page.keyboard.press("Tab");
+  release?.();
+
+  // Both edits in force. Unserialized, the second PUT went out while the first was held, and
+  // the first then arrived last carrying the pre-JQL blob - so the filter was silently lost.
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
+        const body = (await res.json()) as {
+          sources?: { config?: { site?: string; jql?: string } }[];
+        };
+        return body.sources?.[0]?.config ?? {};
+      },
+      { message: "neither edit may be overwritten by the other's write" },
+    )
+    .toMatchObject({ site: "acme.atlassian.net", jql: JQL });
+});
+
 test("an unusable Jira source names the fix, and a healthy one names Jira rather than gh", async ({
   page,
   daemon,

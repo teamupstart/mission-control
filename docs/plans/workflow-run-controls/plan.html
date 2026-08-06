@@ -378,7 +378,7 @@ unchanged-evidence recovery.</p>
 <tr><td><code>blocked</code> / <code>infrastructure_error</code></td><td>retry</td><td>Retry the failed call</td><td><code>retry</code></td></tr>
 <tr><td><code>blocked</code> / <code>check_cleanup_unresolved</code>, <code>capture_*</code></td><td>resubmit</td><td>Resume review</td><td><code>resubmit</code></td></tr>
 <tr><td><code>blocked</code> / <code>unchanged_evidence_exhausted</code></td><td>resubmit unchanged</td><td>Review this snapshot anyway</td><td><code>resubmit</code> + <code>resubmitUnchanged</code></td></tr>
-<tr><td><code>blocked</code> / <code>inspector_disabled</code></td><td>open settings</td><td>Turn Inspector on</td><td>settings route</td></tr>
+<tr><td><code>blocked</code> / <code>inspector_disabled</code></td><td class="off">none</td><td class="off">-</td><td class="off">the Inspector gate section already offers Open Inspector settings</td></tr>
 <tr><td><code>blocked</code> / <code>round_limit</code>, <code>session_disappeared</code></td><td class="off">none</td><td class="off">-</td><td class="off">Cancel is the honest move</td></tr>
 <tr><td><code>blocked</code> / delivery phases</td><td class="off">none</td><td class="off">-</td><td class="off">the deliveries section owns the choice</td></tr>
 <tr><td><code>blocked</code> / <code>inspector_findings</code>, <code>inspector_pr_closed</code></td><td class="off">none</td><td class="off">-</td><td class="off">the findings list owns the choice</td></tr>
@@ -386,6 +386,14 @@ unchanged-evidence recovery.</p>
 </tbody>
 </table>
 </div>
+
+<p><code>runNextMove</code> is deliberately <strong>POST-only</strong>: every move it returns is a
+mutation dispatched through the shared action store. Navigation is not modelled here. That is why
+<code>inspector_disabled</code> resolves to no move rather than to a &ldquo;Turn Inspector on&rdquo;
+button - <code>onOpenInspectorSettings</code> is a callback prop
+(<code>WorkflowRuns.tsx:449</code>), and an <code>Open Inspector settings</code> button already exists
+at <code>WorkflowRuns.tsx:1069</code> inside the Inspector final gate section, which is the section
+that owns it.</p>
 
 <p>Where the answer is <strong>none</strong>, the header says so in one sentence and names where the
 decision lives, which is the same closing move <code>runRemedy</code> makes:</p>

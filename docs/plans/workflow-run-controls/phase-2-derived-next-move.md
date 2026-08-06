@@ -133,7 +133,7 @@ underlying call is a submission.
 | `blocked`, `infrastructure_error` | retry | Retry the failed call | `retry` |
 | `blocked`, `check_cleanup_unresolved` / `capture_*` | resubmit | Resume review / Preview fresh evidence | `resubmit` |
 | `blocked`, `unchanged_evidence_exhausted` | resubmit unchanged | Review this snapshot anyway / Preview unchanged | `resubmit` + `resubmitUnchanged` |
-| `blocked`, `inspector_disabled` | open settings | Turn Inspector on | settings route |
+| `blocked`, `inspector_disabled` | none - see the POST-only note below | - | - |
 | `blocked`, `round_limit` / `session_disappeared` | none | - | - |
 | `blocked`, delivery phases | none | - | - |
 | `blocked`, `inspector_findings` / `inspector_pr_closed` | none | - | - |
@@ -143,10 +143,43 @@ Guard order mirrors `resubmitAvailability`'s, which mirrors the manager's, so th
 promises a call the daemon will refuse. Where `resubmitAvailability` returns a refusal, the move is
 `null` and the refusal string becomes the why-sentence.
 
+### `runNextMove` is POST-only, and navigation stays out of it
+
+**`RunNextMove` models exactly one thing: a mutation dispatched through `useRunActions`.** Every
+descriptor it returns has a `path`, a `body` and an optional `confirm`, and every one of them is sent
+by the shared action store, which owns the request-id retention that makes a retry idempotent. There
+is no navigation kind, and the type must not grow one in this phase.
+
+An earlier draft of this table returned `Turn Inspector on` with a "settings route" for
+`blocked`/`inspector_disabled`. That was wrong on two counts, both verified:
+
+1. **There is no route to send.** Inspector settings are opened through a **callback prop** -
+   `onOpenInspectorSettings?: () => void` (`WorkflowRuns.tsx:449`, defaulted at `427`, threaded from
+   `App.tsx:2172`). A `path` string has nothing to point at, so a POST descriptor could not express
+   it and `useRunActions` could not dispatch it.
+2. **The control already exists, in the section that owns it.**
+   `WorkflowRuns.tsx:1069` already renders
+   `<button className="btn btn-ghost" onClick={onOpenInspectorSettings}>Open Inspector settings</button>`
+   inside the Inspector final gate section (`1029-1089`). Hoisting a second one into the header would
+   duplicate a control forty lines down the same page.
+
+So `inspector_disabled` is a **no-move** state, handled exactly like the delivery and findings phases:
+`runNextMove` returns `null` and `runNoMoveReason` says why and names the section. The clause is
+already written - `BLOCKED_PHASE_CLAUSES` has `inspector_disabled: "Inspector off"`
+(`run-model.ts:669`) and the gate sentence map has "Inspector is switched off, so the gate cannot be
+evaluated." (`run-model.ts:694`) - so the why-sentence composes from existing copy.
+
+The benefit of holding this line: `useRunActions` dispatch stays **total** over `RunNextMove`. Every
+value the type can hold is sendable, with no kind the render site has to special-case. If a future
+change genuinely needs a navigation primary, that is a separate descriptor union modelled on
+`GateAction` (`run-actions.ts:25-31`), which already mixes an `href`-carrying `open-pr` with two POST
+kinds - not a widening of this one.
+
 Every `blocked` arm that returns `null` still gets a why-sentence, composed from
-`blockedPhaseClause` plus, for the delivery and findings phases, the section that owns the decision -
-"Confirm or discard it in Deliveries below", "Fix the findings below, then push". That is the same
-closing move `runRemedy` makes at `run-model.ts:1593-1596`.
+`blockedPhaseClause` plus, for the phases whose decision lives in a section below, a pointer to that
+section - "Confirm or discard it in Deliveries below", "Fix the findings below, then push",
+"Turn Inspector back on in the Inspector gate below". That is the same closing move `runRemedy` makes
+at `run-model.ts:1593-1596`.
 
 ## Implementation steps
 
@@ -154,9 +187,11 @@ closing move `runRemedy` makes at `run-model.ts:1593-1596`.
    - Add the policy condition to the `open-pr` push (`93-103`), matching the `prepare-pr` arm's
      existing shape: only push when `detail.version?.completionPolicy.kind === "inspector"`.
    - Add `export interface RunNextMove` carrying `id: RunActionId`, `label`, `tooltip`,
-     `kind`, the POST `path` with the run id interpolated, a `body` record for anything beyond
+     `kind`, the POST `path` (a full path string), a `body` record for anything beyond
      `requestId`, and an optional `confirm: WorkflowConfirmDescriptor | null`. Model it on
      `RunRemedy` (`run-model.ts:1483-1497`) so the two read as siblings.
+     **Keep it a single POST shape - do not add a navigation kind.** See the POST-only section
+     above for why `inspector_disabled` is a no-move state rather than a settings link.
    - Add `export function runNextMove(detail, opts): RunNextMove | null` implementing the table.
      Take `preview` from `detail.binding.deliveryMode !== "live"` inside the function rather than as a
      parameter, so no caller can disagree with it.
@@ -199,6 +234,11 @@ component today.
   labels and both unchanged-evidence phases. Add cases asserting the why-sentence text for the three
   `resubmitAvailability` refusals and for a delivery-blocked run, and a case asserting `Open PR` is
   **absent** (not disabled) when `completionPolicy.kind === "none"`.
+- Add a case asserting `runNextMove` returns `null` for `blocked`/`inspector_disabled` and that
+  `runNoMoveReason` names the Inspector gate section. This is the regression guard for the POST-only
+  invariant: it fails if somebody reintroduces a settings navigation as a primary.
+- Add a type-level guard that every `RunNextMove` the table can produce carries a non-empty `path`,
+  so a navigation descriptor cannot slip in without failing a test.
 - Cases at `539` and `558` assert `Cancel run` on blocked runs; they must keep passing untouched,
   which is the regression guard that this phase left the danger row alone.
 - **`test/workflow-ladder-actions.test.ts`**: add a case proving the ladder still renders its gate
@@ -217,6 +257,8 @@ component today.
 
 - At most one primary control renders for any run state, and the `runNextMove` unit table covers
   every row.
+- `RunNextMove` is a single POST shape with no navigation kind, and every value it can hold is
+  dispatchable through `useRunActions` without a special case.
 - A run with no move renders a why-sentence, never a disabled stand-in.
 - `Open PR` is absent under a non-inspector completion policy, in both the Runs header and the ladder,
   and no `!` assertion remains on a conditionally pushed action.
@@ -234,6 +276,9 @@ Later phases may rely on:
 - **`runNextMove(detail)` being the only place a primary move is decided**, and returning at most one
   descriptor. Phase 3 adds the terminal-run arm to this function; it does not add a second derivation
   or a bespoke button.
+- **`RunNextMove` being POST-only.** Phase 3's arm is a POST like every other, so it inherits this
+  invariant unchanged. Any future navigation primary is a separate union modelled on `GateAction`, not
+  a widening of this type.
 - **`RunNextMove`'s shape**, including `path`/`body`/`confirm`. Phase 3's arm is the first to carry a
   non-null `confirm` and the first whose `path` is keyed by binding rather than run, so the `path`
   field must already be a full path string rather than a run-relative action name. It is.
@@ -245,6 +290,21 @@ Must not change: `runRemedy`'s signature or behaviour, the `.wf-run-actions-dang
 
 ## Cross-phase audit record
 
+- **Corrected after Inspector review round 1 (PR #439).** The Inspector found that an earlier draft
+  of the next-move table returned `Turn Inspector on` with a "settings route" while `RunNextMove` was
+  specified as a POST descriptor dispatched through `useRunActions` - so the implementing agent would
+  have had to either send a navigation through the action controller or invent an unplanned special
+  case. Verified against the code and the finding was right, with the repository making it sharper
+  than the comment did: `onOpenInspectorSettings` is a callback prop (`WorkflowRuns.tsx:449`), not a
+  route, and `WorkflowRuns.tsx:1069` already renders an `Open Inspector settings` button inside the
+  Inspector gate section. Of the two fixes the Inspector offered - add a navigation descriptor kind, or
+  exclude navigation from this abstraction - the second was taken, because the first would have
+  fabricated a `path` for a callback and duplicated an existing control. `inspector_disabled` is now a
+  no-move state whose why-sentence names the gate section, matching the delivery and findings phases.
+  The POST-only invariant is recorded in the scope, the interface step, the exit criteria, the
+  downstream handoff and two new test cases. No approved decision changed: the user chose Mockup A's
+  "one derived primary in the header", and this is a modelling correction beneath that choice. The
+  source plan and both HTML renderings were updated to match.
 - **Reconciled against Phase 1.** Same JSX region, so this phase depends on Phase 1 rather than
   running beside it. Phase 1's contract that the version badge owns composer navigation is honoured:
   no `Open version` button returns. Phase 1 deliberately left `Open PR` alone so the policy condition

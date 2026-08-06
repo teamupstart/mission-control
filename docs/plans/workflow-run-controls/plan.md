@@ -160,11 +160,17 @@ The label is an imperative in the user's language, not the route's:
 | `blocked` / `infrastructure_error` | retry | Retry the failed call | `retry` |
 | `blocked` / `check_cleanup_unresolved`, `capture_*` | resubmit | Resume review | `resubmit` |
 | `blocked` / `unchanged_evidence_exhausted` | resubmit unchanged | Review this snapshot anyway | `resubmit` + `resubmitUnchanged` |
-| `blocked` / `inspector_disabled` | open settings | Turn Inspector on | settings route |
+| `blocked` / `inspector_disabled` | none | - | the Inspector gate section already offers Open Inspector settings |
 | `blocked` / `round_limit`, `session_disappeared` | none | - | Cancel is the honest move |
 | `blocked` / delivery phases | none | - | the deliveries section owns the choice |
 | `blocked` / `inspector_findings`, `inspector_pr_closed` | none | - | the findings list owns the choice |
 | `completed`, `cancelled`, `failed` | run again | Run this review again | `workflow-bindings/{id}/submit` |
+
+`runNextMove` is deliberately **POST-only**: every move it returns is a mutation dispatched through
+the shared action store. Navigation is not modelled here. That is why `inspector_disabled` resolves
+to no move rather than to a "Turn Inspector on" button - `onOpenInspectorSettings` is a callback prop
+(`WorkflowRuns.tsx:449`), and an `Open Inspector settings` button already exists at
+`WorkflowRuns.tsx:1069` inside the Inspector final gate section, which is the section that owns it.
 
 Where the answer is **none**, the header says so in one sentence and names where the decision
 lives, which is the same closing move `runRemedy` makes:

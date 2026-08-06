@@ -23,7 +23,9 @@ Submitted through the plan review and treated here as requirements, not open que
 
 ## Findings that changed the plan
 
-Four repository facts moved work between phases or added scope the source plan did not have.
+Five repository facts moved work between phases or added scope the source plan did not have. The
+fourth was raised by Inspector review and is recorded here with the others rather than only in the
+phase that owns it.
 
 1. **`Open PR` cannot be made conditional on its own.** `WorkflowRuns.tsx:568` asserts the action is
    always present (`…find(…)!`) and dereferences it unconditionally at `713-727`. Adding the policy
@@ -49,7 +51,17 @@ Four repository facts moved work between phases or added scope the source plan d
    gates are the only misreaders, so Phase 4 is scoped to those two call sites and records the map
    change as a forbidden "simplification".
 
-4. **Two copy gaps the source plan did not name.** `BLOCKED_PHASE_CLAUSES` (`run-model.ts:660-684`) has
+4. **`runNextMove` must stay POST-only, so Inspector settings is not a primary.** Raised by Inspector
+   review round 1 on PR #439 and confirmed: the source plan's table returned `Turn Inspector on` with a
+   "settings route", but `RunNextMove` is a POST descriptor dispatched through `useRunActions`. The
+   repository makes it sharper than the review did - Inspector settings open through a **callback prop**
+   (`onOpenInspectorSettings`, `WorkflowRuns.tsx:449`, threaded from `App.tsx:2172`), so there is no
+   path to send, and `WorkflowRuns.tsx:1069` **already** renders an `Open Inspector settings` button
+   inside the Inspector gate section. `blocked`/`inspector_disabled` is therefore a no-move state whose
+   why-sentence names that section, exactly like the delivery and findings phases. This keeps
+   `useRunActions` dispatch total over the type with no special-cased kind. Owned by Phase 2.
+
+5. **Two copy gaps the source plan did not name.** `BLOCKED_PHASE_CLAUSES` (`run-model.ts:660-684`) has
    no entry for either unchanged-evidence phase, so today they render the raw
    `phase.replaceAll("_", " ")` fallback ("unchanged evidence exhausted"). And `.wf-run-version`
    (`styles.css:435-441`) sets no `background`, so promoting the badge to a `<button>` renders a filled
@@ -103,6 +115,7 @@ owning phase's file.
 | `download` filenames stay `workflow-run-<id>.json` and `workflow-version-<n>.json`, matching the server's `Content-Disposition` pinned by `test/workflows-http.test.ts:261-307` | 1 | - |
 | `runNextMove(detail)` is the only place a primary move is decided, returning at most one descriptor | 2 | 3 |
 | `RunNextMove.path` is a full path string and `confirm` is part of the interface from the start | 2 | 3 (its arm is binding-keyed and confirmed) |
+| `RunNextMove` is POST-only: no navigation kind, every value dispatchable through `useRunActions` without a special case | 2 | 3 |
 | `runNoMoveReason(detail)` owns the why-sentence | 2 | 3 |
 | One `RunActionId` per intent, dispatched through the shared `run-action-store` | 2 | 3 |
 | `unchangedRequest`'s request-id retention is preserved, so an unchanged resubmit does not burn a repair round | 2 | 3 |
@@ -125,6 +138,7 @@ Every source-plan requirement and submitted selection, mapped to exactly one pha
 | The why-sentence replacing disabled stand-ins | 2 |
 | `Open PR` absent rather than disabled, plus the `!` repair | 2 |
 | Unchanged-evidence prose in `BLOCKED_PHASE_CLAUSES` | 2 |
+| `inspector_disabled` as a no-move state, not a settings primary | 2 |
 | `Copy feedback` stays in the header | 2 (retained, not moved) |
 | `Run this review again` on terminal runs | 3 |
 | Bind chip returns after a terminal run | 4 |

@@ -115,7 +115,9 @@ across five run states, built from the real token and class values in <code>src/
 </div>
 
 <h2>Findings that changed the plan</h2>
-<p>Four repository facts moved work between phases or added scope the source plan did not have.</p>
+<p>Five repository facts moved work between phases or added scope the source plan did not have. The
+fourth was raised by Inspector review and is recorded here with the others rather than only in the phase
+that owns it.</p>
 
 <div class="card warn">
 <p><strong>1. <code>Open PR</code> cannot be made conditional on its own.</strong>
@@ -152,7 +154,21 @@ change as a forbidden &ldquo;simplification&rdquo;.</p>
 </div>
 
 <div class="card warn">
-<p><strong>4. Two copy gaps the source plan did not name.</strong>
+<p><strong>4. <code>runNextMove</code> must stay POST-only, so Inspector settings is not a
+primary.</strong> Raised by Inspector review round 1 on PR #439 and confirmed: the source plan's table
+returned <code>Turn Inspector on</code> with a &ldquo;settings route&rdquo;, but
+<code>RunNextMove</code> is a POST descriptor dispatched through <code>useRunActions</code>. The
+repository makes it sharper than the review did - Inspector settings open through a <strong>callback
+prop</strong> (<code>onOpenInspectorSettings</code>, <code>WorkflowRuns.tsx:449</code>, threaded from
+<code>App.tsx:2172</code>), so there is no path to send, and <code>WorkflowRuns.tsx:1069</code>
+<strong>already</strong> renders an <code>Open Inspector settings</code> button inside the Inspector
+gate section. <code>blocked</code>/<code>inspector_disabled</code> is therefore a no-move state whose
+why-sentence names that section, exactly like the delivery and findings phases. This keeps
+<code>useRunActions</code> dispatch total over the type with no special-cased kind. Owned by Phase 2.</p>
+</div>
+
+<div class="card warn">
+<p><strong>5. Two copy gaps the source plan did not name.</strong>
 <code>BLOCKED_PHASE_CLAUSES</code> (<code>run-model.ts:660-684</code>) has no entry for either
 unchanged-evidence phase, so today they render the raw <code>phase.replaceAll("_", " ")</code> fallback
 (&ldquo;unchanged evidence exhausted&rdquo;). And <code>.wf-run-version</code>
@@ -236,6 +252,7 @@ owning phase's file.</p>
 <tr><td><code>download</code> filenames stay <code>workflow-run-&lt;id&gt;.json</code> and <code>workflow-version-&lt;n&gt;.json</code>, matching the server's <code>Content-Disposition</code> pinned by <code>test/workflows-http.test.ts:261-307</code></td><td>1</td><td class="none">-</td></tr>
 <tr><td><code>runNextMove(detail)</code> is the only place a primary move is decided, returning at most one descriptor</td><td>2</td><td>3</td></tr>
 <tr><td><code>RunNextMove.path</code> is a full path string and <code>confirm</code> is part of the interface from the start</td><td>2</td><td>3 (its arm is binding-keyed and confirmed)</td></tr>
+<tr><td><code>RunNextMove</code> is POST-only: no navigation kind, every value dispatchable through <code>useRunActions</code> without a special case</td><td>2</td><td>3</td></tr>
 <tr><td><code>runNoMoveReason(detail)</code> owns the why-sentence</td><td>2</td><td>3</td></tr>
 <tr><td>One <code>RunActionId</code> per intent, dispatched through the shared <code>run-action-store</code></td><td>2</td><td>3</td></tr>
 <tr><td><code>unchangedRequest</code>'s request-id retention is preserved, so an unchanged resubmit does not burn a repair round</td><td>2</td><td>3</td></tr>
@@ -261,6 +278,7 @@ owning phase's file.</p>
 <tr><td>The why-sentence replacing disabled stand-ins</td><td>2</td></tr>
 <tr><td><code>Open PR</code> absent rather than disabled, plus the <code>!</code> repair</td><td>2</td></tr>
 <tr><td>Unchanged-evidence prose in <code>BLOCKED_PHASE_CLAUSES</code></td><td>2</td></tr>
+<tr><td><code>inspector_disabled</code> as a no-move state, not a settings primary</td><td>2</td></tr>
 <tr><td><code>Copy feedback</code> stays in the header</td><td>2 (retained, not moved)</td></tr>
 <tr><td><code>Run this review again</code> on terminal runs</td><td>3</td></tr>
 <tr><td>Bind chip returns after a terminal run</td><td>4</td></tr>

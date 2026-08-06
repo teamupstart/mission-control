@@ -5910,8 +5910,12 @@ MCP servers unauthenticated instead.
 **The note never blocks a dispatch** - not the button, not `⌘Enter`, not "Add to backlog". It
 is a machine-configuration fact you may knowingly accept, unlike an
 [after-work Workflow](#workflows-and-personas) the daemon would have to refuse. It is read from
-disk on every open, so it disappears as soon as you finish the setup, with no restart. A
-machine with no UpstartClaw installed sees no note and no chrome at all.
+disk on every open, so it disappears as soon as you finish the setup, with no restart.
+
+A machine with no UpstartClaw installed sees no note and no chrome at all - **including one
+that uninstalled it**. The state file is not removed with the plugin, and a leftover file is
+not a finding: with the plugin gone there is no gate left to stall on, so there is nothing to
+tell you.
 
 ### One owner per concern
 

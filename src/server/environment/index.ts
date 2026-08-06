@@ -38,13 +38,17 @@ export const ENVIRONMENT_CHECKS: Record<EnvironmentCheckId, EnvironmentCheckImpl
 };
 
 /**
- * How much of a state file is ever read.
+ * How much of any checked file is ever read.
  *
- * These files hold a word. A bounded read means a checked file that is unexpectedly huge -
- * a log someone redirected over it, a binary - costs one page instead of its whole size,
- * and the value is `trim`ed and compared against a closed set either way.
+ * The bound exists so a file that is unexpectedly huge - a log someone redirected over a
+ * state file, a binary - costs one bounded read instead of its whole size. It is NOT sized to
+ * the smallest thing read: a state file holds one word, but Claude Code's install record is
+ * JSON that grows about 400 bytes per installed plugin, and a check that has to prove a plugin
+ * is installed must not miss its entry because it sat past the window. 64 KB covers roughly
+ * 160 installed plugins, which is more than the whole marketplace offers, and costs a single
+ * page-sized read on a surface that runs when a dispatch form opens.
  */
-const MAX_READ_BYTES = 4096;
+const MAX_READ_BYTES = 64 * 1024;
 
 /** ENOENT, or a missing parent directory: both mean "there is no such file". */
 function isMissing(error: unknown): boolean {

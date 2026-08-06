@@ -42,6 +42,10 @@ import type {
 //      unauthenticated, and a dispatched agent reaches them and fails on the credential
 //      instead of being told why. The warning text has to say the true consequence per
 //      state, or it sends the operator looking for a stall that will not happen.
+//
+// And one thing the state file is NOT: evidence that the plugin is installed. It records that
+// the setup skill ran here once, which stays true after an uninstall - nothing deletes it. So
+// installation is checked FIRST and every warning below is conditional on it; see `check`.
 
 /** The state file the plugin's setup skill writes, relative to the operator's home. */
 const STATE_FILE = [".claude", "upstartclaw-core-setup"] as const;
@@ -86,11 +90,11 @@ function quoted(value: string): string {
  * key - `"upstartclaw-core@<marketplace>"` - is the part that survives a revision, and the
  * quote and `@` boundaries are what keep it from matching the marketplace's own name.
  *
- * One-directional on purpose: a match here is proof, a miss is not a refutation. The record
- * is read under `MAX_READ_BYTES` and runs about 400 bytes per installed plugin, so on a
- * machine with dozens of them this entry can sit past the window. That is what the directory
- * probe is for, and why the two signals are OR'd rather than one being consulted as the
- * answer.
+ * One-directional on purpose: a match here is proof, a miss is not a refutation - the file may
+ * be absent, unparseable, or a shape whose keys moved. That is what the directory probe is for,
+ * and why the two signals are OR'd rather than either being consulted as the answer. Since
+ * detection now gates every warning this check can emit, a miss costs silence rather than a
+ * wrong sentence, which is the direction that makes the second signal worth its readdirs.
  */
 function recordNamesPlugin(text: string): boolean {
   return new RegExp(`"${PLUGIN}(@[^"]*)?"`).test(text);
@@ -126,9 +130,9 @@ async function pluginDirPresent(root: string, deps: EnvironmentDeps): Promise<bo
  *
  * Two independent signals, either of which is enough, because "installed" is a fact about
  * another tool's storage layout and this must not become a claim about one version of it:
- * Claude Code's own install record (cheap, one read, and may be truncated - see above), then
- * a directory bearing the plugin's name (complete within its bound). A machine with neither
- * is a machine that has never heard of UpstartClaw, and gets silence.
+ * Claude Code's own install record (one read), then a directory bearing the plugin's name. A
+ * machine with neither is a machine that does not have UpstartClaw installed right now - which
+ * includes one that uninstalled it - and gets silence.
  */
 async function pluginInstalled(deps: EnvironmentDeps): Promise<boolean> {
   const root = join(deps.homeDir, ...PLUGINS_DIR);
@@ -156,6 +160,20 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
   ...ENVIRONMENT_CHECK_INFO["upstartclaw-core-setup"],
 
   async check(deps: EnvironmentDeps): Promise<EnvironmentCheckResult> {
+    // Installation is the PRECONDITION for every warning below, not merely for the
+    // missing-file case, because every warning is a claim about what Claw's gate will do to a
+    // dispatched agent - and an uninstalled plugin has no gate. Nothing removes
+    // `~/.claude/upstartclaw-core-setup` when the plugin goes away (the skill writes it beside
+    // the settings, and uninstall only takes the plugin's own directory and its entry in the
+    // install record), so a machine that dropped UpstartClaw keeps a stale `no_setup` file
+    // forever. Reading that as a finding warns about a stall that cannot happen, on a machine
+    // this surface has promised to stay silent about.
+    //
+    // The cost of asking first is one small read on the common path. The cost of asking second
+    // was a false positive, which is the expensive kind of wrong here: a note the operator
+    // cannot act on is what teaches them to stop reading notes in this dialog.
+    if (!(await pluginInstalled(deps))) return { warning: null, detail: null };
+
     const path = join(deps.homeDir, ...STATE_FILE);
     const state = await deps.readText(path);
 
@@ -187,10 +205,10 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
       };
     }
 
-    // No state file. Silence unless the plugin is actually here: on a machine that has
-    // never installed UpstartClaw this is not a finding, and the dispatch form must show no
-    // note, no chrome, and nothing to dismiss.
-    if (!(await pluginInstalled(deps))) return { warning: null, detail: null };
+    // No state file, and the plugin is installed - a freshly installed plugin nobody has set
+    // up, which is precisely the stall case: `check-setup.sh` reads a missing file as
+    // `no_setup` and exits 2. The detail names both halves, because "there is no file" alone
+    // does not explain why that is worth saying.
     return {
       warning: blockedWarning(),
       detail: `no ${path}, and ${PLUGIN} is installed under ${join(deps.homeDir, ...PLUGINS_DIR)}`,

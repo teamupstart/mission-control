@@ -96,6 +96,32 @@ test("a machine with no UpstartClaw at all says nothing", async () => {
   assert.equal(view.detail, null);
 });
 
+// The uninstall case, and the reason installation is checked BEFORE the state file rather
+// than only when the file is missing. Nothing deletes `~/.claude/upstartclaw-core-setup` when
+// the plugin goes away, so a machine that tried UpstartClaw and dropped it keeps a stale
+// `no_setup` forever. Reading that as a finding warns about a gate that is no longer installed
+// and cannot stall anything - on a machine this surface promises to stay silent about.
+//
+// Every non-completed state is asserted, not just one, because each has its own branch and a
+// precondition applied to only some of them is the bug this test is named after.
+test("a leftover state file on a machine without the plugin says nothing", async () => {
+  for (const state of [
+    text("no_setup\n"),
+    text("in_progress"),
+    text("banana"),
+    text(""),
+    { ok: false, missing: false, reason: "EACCES: permission denied" } as FileRead,
+  ]) {
+    const view = await claw({ files: { [STATE]: state } });
+    assert.equal(
+      view.warning,
+      null,
+      `an uninstalled plugin must not warn about ${JSON.stringify(state)}`,
+    );
+    assert.equal(view.detail, null);
+  }
+});
+
 test("a finished setup says nothing", async () => {
   // Arranged WITH the plugin installed, so this is the "everything is fine" case rather
   // than the "nothing is here" case above - the two must not be provable by the same stub.
@@ -105,7 +131,7 @@ test("a finished setup says nothing", async () => {
 });
 
 test("no_setup warns that the gate will refuse the agent's tool calls, and names the fix", async () => {
-  const view = await claw({ files: { [STATE]: text("no_setup\n") } });
+  const view = await claw({ files: { [STATE]: text("no_setup\n") }, dirs: INSTALLED_LAYOUT });
   assert.match(view.warning ?? "", /stalls/);
   assert.match(view.warning ?? "", /\/upstartclaw-core:setup/);
   // The evidence, so an operator who disagrees knows which file the daemon read.
@@ -117,7 +143,7 @@ test("no_setup warns that the gate will refuse the agent's tool calls, and names
 // the agent fails on a credential. A note claiming a stall here would send the operator
 // hunting for a hang that never happens.
 test("in_progress warns about an unfinished setup rather than a stall", async () => {
-  const view = await claw({ files: { [STATE]: text("in_progress") } });
+  const view = await claw({ files: { [STATE]: text("in_progress") }, dirs: INSTALLED_LAYOUT });
   assert.match(view.warning ?? "", /never finished/);
   assert.match(view.warning ?? "", /unauthenticated/);
   assert.doesNotMatch(view.warning ?? "", /stalls/);
@@ -134,7 +160,7 @@ test("an unrecognised or empty state file is reported as the blocked case", asyn
     ["", `${STATE} reads an empty file`],
     ["   \n", `${STATE} reads an empty file`],
   ] as const) {
-    const view = await claw({ files: { [STATE]: text(value) } });
+    const view = await claw({ files: { [STATE]: text(value) }, dirs: INSTALLED_LAYOUT });
     assert.match(view.warning ?? "", /stalls/, `${JSON.stringify(value)} should warn`);
     assert.equal(view.detail, detail);
   }
@@ -143,6 +169,7 @@ test("an unrecognised or empty state file is reported as the blocked case", asyn
 test("a state file that exists but cannot be read is its own warning", async () => {
   const view = await claw({
     files: { [STATE]: { ok: false, missing: false, reason: "EACCES: permission denied" } },
+    dirs: INSTALLED_LAYOUT,
   });
   assert.match(view.warning ?? "", /cannot be read/);
   assert.match(view.warning ?? "", /\/upstartclaw-core:setup/);
@@ -154,7 +181,7 @@ test("a state file that exists but cannot be read is its own warning", async () 
 // which is why it is asserted to be the same sentence rather than a similar one.
 test("an installed plugin with no state file warns, by the plugin's directory", async () => {
   const view = await claw({ dirs: INSTALLED_LAYOUT });
-  const named = await claw({ files: { [STATE]: text("no_setup") } });
+  const named = await claw({ files: { [STATE]: text("no_setup") }, dirs: INSTALLED_LAYOUT });
   assert.equal(view.warning, named.warning);
   assert.match(view.detail ?? "", /no \/home\/tester\/\.claude\/upstartclaw-core-setup/);
   assert.match(view.detail ?? "", /upstartclaw-core is installed/);

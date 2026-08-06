@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -63,6 +63,42 @@ function writeState(daemon: DaemonHandle, value: string): void {
   writeFileSync(stateFile(daemon), value);
 }
 
+/** Where Claude Code keeps installed plugins, and its own record of them. */
+function pluginsDir(daemon: DaemonHandle): string {
+  return join(daemon.home, ".claude", "plugins");
+}
+
+/**
+ * Make the fixture home look like a machine with `upstartclaw-core` installed.
+ *
+ * Both signals the check reads, because a real installation has both: the cache directory
+ * (`cache/<marketplace>/<plugin>/<version>/`, the layout verified against a live install) and
+ * Claude Code's install record. Arranged rather than assumed - the check refuses to say
+ * anything about a machine that does not have the plugin, so without this every warning below
+ * would correctly never appear and the spec would assert nothing.
+ */
+function installPlugin(daemon: DaemonHandle): void {
+  mkdirSync(join(pluginsDir(daemon), "cache", "upstartclaw", "upstartclaw-core", "1.1.7"), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(pluginsDir(daemon), "installed_plugins.json"),
+    JSON.stringify({
+      version: 2,
+      plugins: { "upstartclaw-core@upstartclaw": [{ scope: "user", version: "1.1.7" }] },
+    }),
+  );
+}
+
+/** Take the plugin away and leave its state file behind, which is what an uninstall does. */
+function uninstallPlugin(daemon: DaemonHandle): void {
+  rmSync(join(pluginsDir(daemon), "cache"), { recursive: true, force: true });
+  writeFileSync(
+    join(pluginsDir(daemon), "installed_plugins.json"),
+    JSON.stringify({ version: 2, plugins: {} }),
+  );
+}
+
 /** Open the Dispatch modal. The env fetch rides the modal's mount, so each open re-asks. */
 async function openDispatch(page: Page) {
   // Not `{ exact: true }`: the keyboard hint renders inside the accessible name.
@@ -94,6 +130,7 @@ test("an unfinished UpstartClaw setup warns at dispatch time, and a finished one
 
   // Setup started and abandoned. Claw's gate lets tool calls through in this state, so the
   // note must say what actually goes wrong - unauthenticated servers - not claim a stall.
+  installPlugin(daemon);
   writeState(daemon, "in_progress\n");
   dialog = await openDispatch(dashboard);
   const note = dialog.getByText(UNFINISHED_NOTE);
@@ -123,10 +160,39 @@ test("an unfinished UpstartClaw setup warns at dispatch time, and a finished one
   await shoot(dashboard, "setup-blocked");
 });
 
+/**
+ * Uninstalling the plugin retires the note, even though its state file survives.
+ *
+ * Nothing deletes `~/.claude/upstartclaw-core-setup` when the plugin goes away, so a machine
+ * that tried UpstartClaw and dropped it keeps a stale `no_setup` indefinitely. Warning about
+ * that is a note the operator cannot act on: there is no gate left to stall on. Driven here as
+ * well as in `test/` because the promise is about what the dispatch form SHOWS, and it is the
+ * one the README makes to every non-Upstart machine.
+ */
+test("a leftover state file after an uninstall shows no note", async ({ dashboard, daemon }) => {
+  installPlugin(daemon);
+  writeState(daemon, "no_setup\n");
+
+  // Present first, so the absence below is a change and not an empty assertion.
+  let dialog = await openDispatch(dashboard);
+  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await closeDispatch(dashboard);
+
+  uninstallPlugin(daemon);
+
+  dialog = await openDispatch(dashboard);
+  await expect(dialog.getByText(STALL_NOTE)).toBeHidden();
+  await expect(dialog.getByText(/UpstartClaw core setup/)).toBeHidden();
+  // The file is still exactly where it was - the note went away because the plugin did, not
+  // because anything cleaned up after it.
+  expect(readFileSync(stateFile(daemon), "utf8")).toBe("no_setup\n");
+});
+
 test("the warning never blocks a dispatch - the agent still goes out", async ({
   dashboard,
   daemon,
 }) => {
+  installPlugin(daemon);
   writeState(daemon, "no_setup\n");
   const dialog = await openDispatch(dashboard);
   await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
@@ -168,6 +234,7 @@ test("an unreadable state file is reported as its own problem", async ({ dashboa
   // is the shape of every "present but unreadable" case (a permission, a broken install).
   // Reported distinctly so the operator repairs the file instead of re-running a setup that
   // may well have finished.
+  installPlugin(daemon);
   const path = stateFile(daemon);
   rmSync(path, { force: true });
   mkdirSync(path, { recursive: true });

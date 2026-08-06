@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow run controls redesign - phased implementation</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --panel: #f7f8fa; --panel-2: #eef0f4; --ink: #16181d;
+    --muted: #545a66; --dim: #858c99; --border: #dcdfe6; --border-soft: #e8eaf0;
+    --working: #4b62d8; --attention: #b07406; --danger: #c8352c; --good: #1d7a4c;
+    --code-bg: #f0f2f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1b1e24; --panel-2: #21252c; --ink: #e6e8ed;
+      --muted: #a2a9b6; --dim: #737a87; --border: #2e333c; --border-soft: #262b33;
+      --working: #8b9bf5; --attention: #e0a532; --danger: #e8756a; --good: #4cc588;
+      --code-bg: #1e2229;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    padding: 40px 24px 96px; -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header.doc { border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 8px; }
+  .eyebrow {
+    font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--working); margin: 0 0 6px;
+  }
+  h1 { font-size: 29px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -.02em; }
+  .lede { color: var(--muted); margin: 0; font-size: 15.5px; }
+  h2 {
+    font-size: 21px; margin: 40px 0 12px; letter-spacing: -.01em;
+    padding-bottom: 7px; border-bottom: 1px solid var(--border-soft);
+  }
+  h3 { font-size: 16.5px; margin: 26px 0 8px; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 12px; padding-left: 22px; }
+  li { margin: 4px 0; }
+  a { color: var(--working); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .875em; background: var(--code-bg); border: 1px solid var(--border-soft);
+    border-radius: 4px; padding: .08em .34em; word-break: break-word;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; margin: 0 0 14px;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 12.6px; line-height: 1.6; }
+  .tablewrap { overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 520px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th {
+    background: var(--panel-2); font-size: 11.5px; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--muted); white-space: nowrap;
+  }
+  tr:last-child td { border-bottom: 0; }
+  td code { font-size: .84em; }
+  .none { color: var(--dim); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin: 0 0 16px; }
+  .card.warn { border-left: 3px solid var(--attention); }
+  figure { margin: 20px 0 24px; }
+  figure svg { display: block; width: 100%; height: auto; max-width: 760px; margin: 0 auto; }
+  figcaption { font-size: 12.5px; color: var(--dim); margin-top: 8px; text-align: center; }
+  .footpath { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--dim); }
+  .d-box { fill: var(--panel); stroke: var(--border); stroke-width: 1.5; }
+  .d-box-pri { fill: var(--working); stroke: var(--working); stroke-width: 1.5; }
+  .d-t { fill: var(--ink); font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .d-t-sm { fill: var(--muted); font: 400 10.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .d-t-inv { fill: #fff; font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .d-t-lab { fill: var(--dim); font: 700 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: .08em; }
+  .d-arrow { stroke: var(--dim); stroke-width: 1.5; fill: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <p class="eyebrow">Phased implementation &middot; Mission Control</p>
+  <h1>Workflow run controls redesign</h1>
+  <p class="lede">Four phases. Three run sequentially because they restructure the same JSX region; the
+  fourth shares no file with any of them and merges whenever it is ready.</p>
+</header>
+
+<h2>Source</h2>
+<ul>
+<li>Approved plan: <a href="plan.md"><code>plan.md</code></a>, rendered at
+<a href="plan.html"><code>plan.html</code></a>.</li>
+<li>Reviewed mockups: <a href="mockups.html"><code>mockups.html</code></a> - Mockup A and Mockup B
+across five run states, built from the real token and class values in <code>src/web/styles.css</code>.</li>
+<li>Investigated against the tree at <code>18528997</code> (<code>origin/main</code>).</li>
+</ul>
+
+<h2>Incorporated human decisions</h2>
+<p>Submitted through the plan review and treated here as requirements, not open questions.</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Decision</th><th>Adopted</th><th>Owning phase</th></tr></thead>
+<tbody>
+<tr><td>Approach</td><td><strong>Mockup A - zones in the header.</strong> One derived primary in the action row; a sentence in the identity block when there is no move. Mockup B's state card is <strong>not</strong> implemented.</td><td>Phase 2</td></tr>
+<tr><td>Run id and both JSON downloads</td><td>A collapsed &ldquo;Audit and bug reports&rdquo; <code>&lt;details&gt;</code> at the page bottom beside the Timeline.</td><td>Phase 1</td></tr>
+<tr><td>Terminal runs</td><td>Offer <strong>Run this review again</strong> through the existing binding submit route. No new endpoint.</td><td>Phase 3</td></tr>
+<tr><td>Copy feedback</td><td>Stays in the header, zone 2.</td><td>Phase 2</td></tr>
+<tr><td>Bug: <code>Copy run id</code> silent clipboard failure</td><td>Fixed via <code>copyText()</code>.</td><td>Phase 1</td></tr>
+<tr><td>Bug: <code>&#65291; workflow</code> chip vanishing forever</td><td>Gate reads openness through <code>workflowRunIsOpen</code>.</td><td>Phase 4</td></tr>
+<tr><td>Bug: <code>Open PR</code> disabled when there is no PR to open</td><td>Gated on a usable <code>gate.state.prUrl</code>.</td><td>Phase 2</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Findings that changed the plan</h2>
+<p>Five repository facts moved work between phases or added scope the source plan did not have.
+Findings 1 and 4 were sharpened or raised by Inspector review on PR #439, and are recorded here with the
+others rather than only in the phases that own them.</p>
+
+<div class="card warn">
+<p><strong>1. <code>Open PR</code> must be gated on a usable PR URL, and cannot be made conditional on its
+own.</strong> <code>WorkflowRuns.tsx:568</code> asserts the action is always present
+(<code>…find(…)!</code>) and dereferences it unconditionally at <code>713-727</code>, so making it
+conditional without repairing that call site throws a <code>TypeError</code>. The condition and the repair
+are one atomic change, owned by Phase 2, which is why Phase 1 deliberately leaves <code>Open PR</code>
+alone even while removing four neighbouring controls.</p>
+<p style="margin-bottom:0"><strong>The condition is <code>gate?.state.prUrl !== null</code>, not the
+completion policy</strong> - corrected after Inspector review round 3. Policy alone leaves a
+destination-less button on <code>inspector</code>-policy runs parked in <code>waiting_for_pr</code>, which
+are parked precisely <em>because</em> no PR is adopted yet, and those are the very runs the change is meant
+to clean up. Requiring the URL covers the no-PR-concept case too, so it subsumes the policy check and lets
+<code>href</code> become a non-nullable <code>string</code>.</p>
+</div>
+
+<div class="card warn">
+<p><strong>2. The unchanged-evidence affordance is derivable from run detail, but the request id is
+not.</strong> The manager persists the refusal as a run phase -
+<code>waiting_for_session</code>/<code>unchanged_evidence</code>, or
+<code>blocked</code>/<code>unchanged_evidence_exhausted</code> (<code>manager.ts:4420-4426</code>) - so
+<code>runNextMove</code> can decide <em>whether</em> to offer &ldquo;Review this snapshot anyway&rdquo;
+without client state. But replaying the original <code>requestId</code> revives the failed submission
+<strong>in the same round</strong> (<code>manager.ts:1153-1171</code>), while a fresh id takes the
+<code>createRepairSubmission({ round: latest.round + 1 })</code> path
+(<code>manager.ts:1227-1236</code>) and <strong>burns a repair round</strong>. So the existing
+<code>unchangedRequest</code> ref (<code>WorkflowRuns.tsx:1451</code>) must survive Phase 2's refactor
+untouched. Recorded as an explicit constraint rather than discovered mid-edit.</p>
+</div>
+
+<div class="card warn">
+<p><strong>3. The bind-chip fix must not touch <code>workflowRunBySession</code>.</strong> Narrowing that
+map to open runs would delete the Approved/Failed chip (<code>session-bits.tsx:141-175</code>), the board
+tile's ladder (<code>SessionTile.tsx:215-224</code>) and the console Workflows tab body
+(<code>ConsoleDetail.tsx:460-465</code>), all of which deliberately read terminal runs. Every consumer
+that needs openness already re-narrows with <code>workflowRunIsOpen</code>
+(<code>held.ts:22-31</code>, <code>held.ts:47-51</code>, <code>BacklogColumn.tsx:405</code>). The two
+bind-chip gates are the only misreaders, so Phase 4 is scoped to those two call sites and records the map
+change as a forbidden &ldquo;simplification&rdquo;.</p>
+</div>
+
+<div class="card warn">
+<p><strong>4. <code>runNextMove</code> must stay POST-only, so Inspector settings is not a
+primary.</strong> Raised by Inspector review round 1 on PR #439 and confirmed: the source plan's table
+returned <code>Turn Inspector on</code> with a &ldquo;settings route&rdquo;, but
+<code>RunNextMove</code> is a POST descriptor dispatched through <code>useRunActions</code>. The
+repository makes it sharper than the review did - Inspector settings open through a <strong>callback
+prop</strong> (<code>onOpenInspectorSettings</code>, <code>WorkflowRuns.tsx:449</code>, threaded from
+<code>App.tsx:2172</code>), so there is no path to send, and <code>WorkflowRuns.tsx:1069</code>
+<strong>already</strong> renders an <code>Open Inspector settings</code> button inside the Inspector
+gate section. <code>blocked</code>/<code>inspector_disabled</code> is therefore a no-move state whose
+why-sentence names that section, exactly like the delivery and findings phases. This keeps
+<code>useRunActions</code> dispatch total over the type with no special-cased kind. Owned by Phase 2.</p>
+</div>
+
+<div class="card warn">
+<p><strong>5. Two copy gaps the source plan did not name.</strong>
+<code>BLOCKED_PHASE_CLAUSES</code> (<code>run-model.ts:660-684</code>) has no entry for either
+unchanged-evidence phase, so today they render the raw <code>phase.replaceAll("_", " ")</code> fallback
+(&ldquo;unchanged evidence exhausted&rdquo;). And <code>.wf-run-version</code>
+(<code>styles.css:435-441</code>) sets no <code>background</code>, so promoting the badge to a
+<code>&lt;button&gt;</code> renders a filled pill - found by rendering the mockup, not by reading the CSS.
+Assigned to Phases 2 and 1 respectively.</p>
+</div>
+
+<h2>Phases</h2>
+<div class="tablewrap">
+<table>
+<thead><tr><th>#</th><th>Phase</th><th>Depends on</th><th>Delivers</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><a href="phase-1-declutter-run-header.md">Declutter the run header</a></td><td class="none">-</td><td>Audit disclosure; version badge absorbs <code>Open version</code>; four controls leave the header; clipboard bug fixed</td></tr>
+<tr><td>2</td><td><a href="phase-2-derived-next-move.md">The derived next move</a></td><td>1</td><td><code>runNextMove</code>; one primary; the why-sentence; <code>Open PR</code> URL-gated; unchanged-evidence prose</td></tr>
+<tr><td>3</td><td><a href="phase-3-run-review-again.md">Run this review again</a></td><td>2</td><td>Terminal runs offer a fresh run through the existing binding submit route</td></tr>
+<tr><td>4</td><td><a href="phase-4-bind-chip-returns.md">The bind chip returns</a></td><td class="none">-</td><td><code>&#65291; workflow</code> reappears once a run is terminal</td></tr>
+</tbody>
+</table>
+</div>
+
+<figure>
+<svg viewBox="0 0 760 190" role="img" aria-label="Dependency graph. Phase 1 leads to Phase 2, which leads to Phase 3. Phase 4 stands alone with no dependency edges.">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <text class="d-t-lab" x="10" y="18">SEQUENTIAL - ALL THREE RESTRUCTURE .WF-RUN-ACTIONS</text>
+  <rect class="d-box-pri" x="10" y="30" width="212" height="52" rx="9"/>
+  <text class="d-t-inv" x="116" y="52" text-anchor="middle">Phase 1</text>
+  <text class="d-t-inv" x="116" y="69" text-anchor="middle" style="font-weight:400;opacity:.88">Declutter the run header</text>
+
+  <rect class="d-box" x="274" y="30" width="212" height="52" rx="9"/>
+  <text class="d-t" x="380" y="52" text-anchor="middle">Phase 2</text>
+  <text class="d-t-sm" x="380" y="69" text-anchor="middle">The derived next move</text>
+
+  <rect class="d-box" x="538" y="30" width="212" height="52" rx="9"/>
+  <text class="d-t" x="644" y="52" text-anchor="middle">Phase 3</text>
+  <text class="d-t-sm" x="644" y="69" text-anchor="middle">Run this review again</text>
+
+  <path class="d-arrow" d="M222,56 L268,56" marker-end="url(#a)"/>
+  <path class="d-arrow" d="M486,56 L532,56" marker-end="url(#a)"/>
+
+  <text class="d-t-lab" x="10" y="126">INDEPENDENT - SHARES NO FILE, MERGES ANY TIME</text>
+  <rect class="d-box" x="10" y="138" width="212" height="52" rx="9"/>
+  <text class="d-t" x="116" y="160" text-anchor="middle">Phase 4</text>
+  <text class="d-t-sm" x="116" y="177" text-anchor="middle">The bind chip returns</text>
+</svg>
+<figcaption>Phase 4 has no edges: it edits only <code>SessionCard.tsx</code> and
+<code>ConsoleDetail.tsx</code>.</figcaption>
+</figure>
+
+<h2>Concurrency groups</h2>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Group</th><th>Phases</th><th>Why they may run together</th></tr></thead>
+<tbody>
+<tr><td>A</td><td><strong>1</strong> and <strong>4</strong></td><td>Disjoint file sets. Phase 1 edits <code>WorkflowRuns.tsx</code> and <code>styles.css</code>; Phase 4 edits <code>SessionCard.tsx</code>, <code>ConsoleDetail.tsx</code> and possibly <code>held.ts</code>.</td></tr>
+<tr><td>B</td><td><strong>2</strong> (after 1) and <strong>4</strong></td><td>Same reasoning. Phase 4 may still be open when Phase 2 starts.</td></tr>
+<tr><td>C</td><td><strong>3</strong> (after 2) and <strong>4</strong></td><td>Same reasoning.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Phases 1 &rarr; 2 &rarr; 3 are strictly sequential: all three restructure the same JSX region
+(<code>.wf-run-actions</code>, <code>WorkflowRuns.tsx:629</code>) and the same derivation module
+(<code>run-actions.ts</code>). Splitting them concurrently would conflict on nearly every changed line.</p>
+<p>Merge order: <code>1</code>, then <code>2</code>, then <code>3</code>. Phase <code>4</code> merges at
+any point, before or after any of them.</p>
+
+<h2>Cross-phase contracts</h2>
+<p>Established by an earlier phase, relied on by a later one, and not to be changed without editing the
+owning phase's file.</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Contract</th><th>Owner</th><th>Consumers</th></tr></thead>
+<tbody>
+<tr><td><code>.wf-run-actions</code> contains only run-affecting controls; the audit trio lives in <code>.wf-run-audit</code></td><td>1</td><td>2, 3</td></tr>
+<tr><td>The version badge owns composer navigation; no <code>Open version</code> button returns</td><td>1</td><td>2, 3</td></tr>
+<tr><td><code>copyText()</code> is the only clipboard path in <code>WorkflowRuns.tsx</code></td><td>1</td><td>2, 3</td></tr>
+<tr><td><code>download</code> filenames stay <code>workflow-run-&lt;id&gt;.json</code> and <code>workflow-version-&lt;n&gt;.json</code>, matching the server's <code>Content-Disposition</code> pinned by <code>test/workflows-http.test.ts:261-307</code></td><td>1</td><td class="none">-</td></tr>
+<tr><td><code>runNextMove(detail)</code> is the only place a primary move is decided, returning at most one descriptor</td><td>2</td><td>3</td></tr>
+<tr><td><code>RunNextMove.path</code> is a full path string and <code>confirm</code> is part of the interface from the start</td><td>2</td><td>3 (its arm is binding-keyed and confirmed)</td></tr>
+<tr><td><code>RunNextMove</code> is POST-only: no navigation kind, every value dispatchable through <code>useRunActions</code> without a special case</td><td>2</td><td>3</td></tr>
+<tr><td><code>runNoMoveReason(detail)</code> owns the why-sentence</td><td>2</td><td>3</td></tr>
+<tr><td>One <code>RunActionId</code> per intent, dispatched through the shared <code>run-action-store</code></td><td>2</td><td>3</td></tr>
+<tr><td><code>unchangedRequest</code>'s request-id retention is preserved, so an unchanged resubmit does not burn a repair round</td><td>2</td><td>3</td></tr>
+<tr><td><code>runRemedy</code> in <code>run-model.ts</code> is unchanged; it serves a summary-only surface under a stricter contract</td><td>2</td><td>3</td></tr>
+<tr><td><code>.wf-run-actions-danger</code> is untouched: <code>Restart full workflow</code> and <code>Cancel run</code> keep placement, tone and phrase confirmation</td><td>1, 2</td><td>3</td></tr>
+<tr><td><code>workflowRunBySession</code> retains terminal runs; openness is read per call site via <code>workflowRunIsOpen</code></td><td>4</td><td class="none">-</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Requirement ownership</h2>
+<p>Every source-plan requirement and submitted selection, mapped to exactly one phase.</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Requirement</th><th>Phase</th></tr></thead>
+<tbody>
+<tr><td>Remove <code>Copy run id</code>, <code>Export run</code>, <code>Export version</code>, <code>Open version</code> from the header</td><td>1</td></tr>
+<tr><td>Audit disclosure beside the Timeline</td><td>1</td></tr>
+<tr><td>Version badge becomes the composer link</td><td>1</td></tr>
+<tr><td>Clipboard bug (<code>copyText()</code>)</td><td>1</td></tr>
+<tr><td><code>runNextMove</code> and the next-move table</td><td>2</td></tr>
+<tr><td>One primary control, never two</td><td>2</td></tr>
+<tr><td>The why-sentence replacing disabled stand-ins</td><td>2</td></tr>
+<tr><td><code>Open PR</code> absent whenever there is no PR URL (not policy-gated), plus the <code>!</code> repair</td><td>2</td></tr>
+<tr><td>Unchanged-evidence prose in <code>BLOCKED_PHASE_CLAUSES</code></td><td>2</td></tr>
+<tr><td><code>inspector_disabled</code> as a no-move state, not a settings primary</td><td>2</td></tr>
+<tr><td><code>Copy feedback</code> stays in the header</td><td>2 (retained, not moved)</td></tr>
+<tr><td><code>Run this review again</code> on terminal runs</td><td>3</td></tr>
+<tr><td>Bind chip returns after a terminal run</td><td>4</td></tr>
+<tr><td>Mockup B's state card</td><td class="none">none - explicitly rejected</td></tr>
+<tr><td>A new import endpoint, a run-id filter, an overflow kebab menu</td><td class="none">none - explicitly out of scope</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Final verification strategy</h2>
+<p>Every phase runs the same five commands, and each ships its own Playwright spec because the repository
+requires one for every UI change with no exemptions:</p>
+<pre><code>npm run typecheck
+npm run lint
+npm test
+npm run build      # required before e2e: the suite drives dist/, not src/
+npm run test:e2e   # needs `npx playwright install chromium` once per machine</code></pre>
+
+<p>New specs, one per phase:</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Phase</th><th>Spec</th><th>Seeds from</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>e2e/specs/workflow-run-audit.spec.ts</code></td><td><code>workflow-skipped-status.spec.ts:44-95</code> (simplest completed run)</td></tr>
+<tr><td>2</td><td><code>e2e/specs/workflow-next-move.spec.ts</code></td><td><code>workflow-blocked-resubmit.spec.ts:45-103</code> (<code>E2E_FAIL_VERDICT</code>)</td></tr>
+<tr><td>3</td><td><code>e2e/specs/workflow-run-again.spec.ts</code></td><td><code>workflow-skipped-status.spec.ts:44-95</code></td></tr>
+<tr><td>4</td><td><code>e2e/specs/workflow-bind-chip-returns.spec.ts</code></td><td><code>workflow-ladder-members.spec.ts:73-133</code> (<code>seedApprovedRun</code>, returns sessionId)</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Existing specs and tests each phase must update, so no phase discovers them late:</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Phase</th><th>Must update</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>test/workflow-runs-render.test.ts:503-517</code>, <code>:1039</code>, <code>:1081</code>; <code>test/workflow-builder-render.test.ts:331</code></td></tr>
+<tr><td>2</td><td><code>test/workflow-runs-render.test.ts</code> (header assertions &rarr; <code>runNextMove</code> unit table); <code>test/workflow-ladder-actions.test.ts</code>; <code>e2e/specs/workflow-blocked-resubmit.spec.ts:116-156</code></td></tr>
+<tr><td>3</td><td><code>test/workflow-runs-render.test.ts</code> (terminal rows)</td></tr>
+<tr><td>4</td><td>the <code>renderToStaticMarkup</code> tests covering <code>SessionCard</code> / <code>ConsoleDetail</code> headers</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="card">
+<p><strong>Not to be touched, despite matching on the string <code>Cancel run</code>:</strong>
+<code>e2e/specs/line-drawers.spec.ts:617,630,810</code> click the <em>confirm modal's</em> button raised by
+the review drawer's Dismiss remedy (<code>run-model.ts:1585</code>), not the run header's.</p>
+<p style="margin-bottom:0">There is no shared e2e seeding helper. Each of the twelve existing workflow
+specs carries its own <code>api</code> + <code>dispatch</code> + <code>seed*Run</code> copies; that is the
+established pattern, not an oversight to route around. Every agent binary is redirected at a fake by
+<code>e2e/fixtures/fake-agents.ts</code>, so no spec spends model tokens - a dispatch launches the CLI
+through both the one-shot <code>claude -p</code> runner and the Agent SDK session, and both stay
+faked.</p>
+</div>
+
+<p>After all four phases merge, the run header offers at most six controls (one primary, up to three
+context, two destructive), a stopped run explains itself in prose, a finished run can be run again from
+either the run page or the session surfaces, and the run id and both JSON exports are one disclosure away
+rather than competing with <code>Cancel run</code>.</p>
+
+<p class="footpath">Source of truth:
+<code>docs/plans/workflow-run-controls/phased-plan.md</code>. This page is a rendering of it.</p>
+
+</div>
+</body>
+</html>

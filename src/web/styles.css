@@ -13606,6 +13606,47 @@ select.foreman-model-input {
   min-width: 0;
 }
 
+/* ---- Foreman's configuration groups ----
+   A compact local rail over one visible card. This is separate from `.sc-seg`: the latter
+   is a real radio group for changing a stored value, while this strip only changes which
+   already-mounted section is exposed. */
+.sc-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.sc-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  appearance: none;
+  padding: 7px 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.sc-tab:hover {
+  color: var(--fg);
+}
+.sc-tab.is-active {
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--fg);
+}
+.sc-tab:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+
 /* ---- a control card ---- */
 .sc-card {
   border: 1px solid var(--border);

@@ -3717,7 +3717,14 @@ depth.
 Foreman's completion checks use the card's [durable Goal](#goal), while its latest tactical
 focus remains separate.
 
-Two default-on safeguards under **Settings → Foreman → Completion safeguards** decide which
+**Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
+tier, **Models** for the provider and four Foreman roles, **Launches** for the three
+per-harness backlog models, and **Safety** for the completion safeguards. The current Foreman
+posture stays above the tabs so a stopped worker is always visible. **Live repositories** and
+**Right now** stay below them as read-only cards; the repository card shows the grant count
+and links to **Settings → Trust**, where repository access is edited.
+
+Two default-on safeguards under **Settings → Foreman → Safety** decide which
 finished work never reaches an automatic completion action:
 
 - **Skip automatic completion for Scout tasks** uses the task's durable `Kind`. A Scout is

@@ -14,6 +14,7 @@ import { sessionHandle } from "../src/web/components/settings-console.tsx";
 import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { ForemanEpisodeSummary, ForemanStatus } from "../src/shared/types.ts";
+import { FOREMAN_SETTINGS_TABS } from "../src/web/lib/foreman-settings-tabs.ts";
 
 // What is at stake: this panel now makes two claims nothing else in the app makes, and
 // both are the kind that are worse wrong than absent.
@@ -179,6 +180,34 @@ test("a disabled Foreman says off rather than describing a mode nothing runs", (
   });
   assert.match(out, /Off - nothing is being answered/);
   assert.doesNotMatch(out, /Live - replying in sessions/);
+});
+
+// ---- the configuration tabs ------------------------------------------------------------
+
+test("the Foreman groups are one accessible roving tab set with every panel mounted", () => {
+  const out = html();
+  assert.equal((out.match(/role="tablist"/g) ?? []).length, 1);
+  assert.match(out, /role="tablist"[^>]*aria-label="Foreman configuration groups"/);
+
+  const strip = out.slice(out.indexOf('role="tablist"'), out.indexOf('role="tabpanel"'));
+  assert.equal((strip.match(/role="tab"/g) ?? []).length, 4);
+  assert.equal((strip.match(/aria-selected="true"/g) ?? []).length, 1);
+  assert.equal((strip.match(/tabindex="0"/g) ?? []).length, 1);
+  assert.equal((strip.match(/tabindex="-1"/g) ?? []).length, 3);
+
+  const panels = [...out.matchAll(/<div[^>]*role="tabpanel"[^>]*>/g)].map((match) => match[0]);
+  assert.equal(panels.length, 4);
+  assert.equal(panels.filter((panel) => panel.includes('hidden=""')).length, 3);
+  for (const group of FOREMAN_SETTINGS_TABS) {
+    assert.ok(
+      panels.some(
+        (panel) =>
+          panel.includes(`id="foreman-settings-panel-${group.id}"`) &&
+          panel.includes(`aria-labelledby="foreman-settings-tab-${group.id}"`),
+      ),
+      `${group.label} is not wired to its tab`,
+    );
+  }
 });
 
 // ---- the anchors are a public contract -------------------------------------------------

@@ -77,6 +77,11 @@ function render(
   );
 }
 
+/** The outer category rail only. A category may legitimately render its own nested tabs. */
+function railMarkup(html: string): string {
+  return html.slice(html.indexOf('<div class="settings-nav"'), html.indexOf('<div class="settings-pane"'));
+}
+
 /** A status tuple with every fact off, so a test flips exactly the one it is about. */
 function status(over: Partial<SettingsStatus> = {}): SettingsStatus {
   return {
@@ -347,14 +352,14 @@ test("exactly one category is active at a time", () => {
 // The rail is a tab set, not navigation: buttons swap which panel renders beside them,
 // so assistive tech should hear "tab 1 of 2, selected", not "current page".
 test("the rail is a vertical tablist of tabs", () => {
-  const html = render();
+  const html = railMarkup(render());
   assert.match(html, /role="tablist"[^>]*aria-orientation="vertical"/);
   assert.equal((html.match(/role="tab"/g) ?? []).length, SETTINGS_CATEGORIES.length);
 });
 
 test("aria-selected tracks the active category, and only it", () => {
   for (const active of SETTINGS_CATEGORIES) {
-    const html = render(active.id);
+    const html = railMarkup(render(active.id));
     assert.equal((html.match(/aria-selected="true"/g) ?? []).length, 1);
     assert.equal(
       (html.match(/aria-selected="false"/g) ?? []).length,
@@ -371,7 +376,7 @@ test("aria-selected tracks the active category, and only it", () => {
 // Roving tabindex: the rail is one Tab stop, and arrows (not Tab) move within it.
 test("only the active tab is in the tab order", () => {
   for (const active of SETTINGS_CATEGORIES) {
-    const html = render(active.id);
+    const html = railMarkup(render(active.id));
     assert.equal((html.match(/tabindex="0"/g) ?? []).length, 1);
     assert.equal((html.match(/tabindex="-1"/g) ?? []).length, SETTINGS_CATEGORIES.length - 1);
     assert.match(html, /class="settings-nav-item is-active"[^>]*tabindex="0"/);

@@ -26,7 +26,7 @@ two-column rhythm - the wide JQL field is deliberately **last** of the inputs, s
 field anywhere earlier leaves a half-empty row above it, and this puts the query directly
 over the warning and the priority switch that are both about it.
 
-![A configured Jira source showing the site, the JQL filter, the per-sweep cap and the priority switch](./jira-source-configured.png)
+![A configured Jira source showing the site, the JQL filter, the page size and the priority switch](./jira-source-configured.png)
 
 ## A missing credential, named where it was asked for
 

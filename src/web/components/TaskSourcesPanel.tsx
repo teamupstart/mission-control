@@ -348,15 +348,20 @@ function JiraFields({
       </label>
 
       <label className="ts-field">
-        <span className="ts-field-label">Issues per sweep</span>
-        <input
-          className="field-input"
-          type="number"
-          min={1}
-          max={200}
-          value={cfg.limit}
-          onChange={(e) => onChange({ ...cfg, limit: Number(e.target.value) || cfg.limit })}
-        />
+        {/* PAGE size, not a per-sweep cap: a sweep walks pages until the filter is exhausted,
+            because a filter read only as its first page can never reach its own tail. What is
+            actually FILED is bounded by "Most tasks per sweep" above. */}
+        <span className="ts-field-label">Issues per page</span>
+        <Tooltip label="How many issues one request asks Jira for. A sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds">
+          <input
+            className="field-input"
+            type="number"
+            min={1}
+            max={200}
+            value={cfg.limit}
+            onChange={(e) => onChange({ ...cfg, limit: Number(e.target.value) || cfg.limit })}
+          />
+        </Tooltip>
       </label>
 
       {/* Last of the inputs rather than second, though it is the most important one: it spans

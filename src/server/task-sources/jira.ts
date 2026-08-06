@@ -45,12 +45,37 @@ const REST_FIELDS = "summary,description,priority";
  *
  * `/rest/api/3/search` - what a 2024 recipe reaches for, and what this phase's plan named -
  * is retired on Jira Cloud in favour of this one, which takes the same `jql` and returns
- * the same `{issues: […]}` envelope with token pagination instead of `startAt`. Pagination
- * is deliberately not used: one sweep asks for `limit` issues and files what it gets, and
- * the ledger in `task_source_seen` is what makes the next sweep pick up where this one
- * stopped.
+ * the same `{issues: […]}` envelope with token pagination instead of `startAt`.
  */
 const REST_SEARCH_PATH = "/rest/api/3/search/jql";
+
+/**
+ * Most issues ONE sweep will look at, however many the filter matches.
+ *
+ * A sweep walks pages until the filter is exhausted rather than reading only the first one,
+ * and this is why it can stop. The first draft did not page at all, which was wrong in a way
+ * worth writing down: `cfg.limit` issues were fetched, `ingest.ts` de-duplicated them against
+ * `task_source_seen`, and every later sweep re-fetched the SAME leading page and reported it
+ * as already filed. A filter matching more than one page could never reach the rest of itself
+ * - not slowly, but never - and since the sweep looked healthy and filed nothing, it was
+ * indistinguishable from an upstream with no new work. That is the exact failure this whole
+ * file is arranged against.
+ *
+ * A ceiling is still needed, because "walk until exhausted" against a filter matching 40,000
+ * issues is not a background job. Hitting it is reported (`sweepResultFromWalk`) rather than
+ * silently truncated, because a filter this source cannot see the end of has a tail that is
+ * unreachable however many times it runs, and the fix - narrow the JQL - is the operator's.
+ */
+const MAX_SWEEP_ISSUES = 1000;
+
+/**
+ * Most REQUESTS one sweep may spend, whatever page size is configured.
+ *
+ * The issue ceiling alone is not a bound on work: at a page size of 1 it authorises a thousand
+ * round trips, and on the CLI rung a thousand subprocesses. Both bounds are needed, and
+ * whichever is reached first stops the walk and reports truncation.
+ */
+const MAX_SWEEP_PAGES = 50;
 
 /** What to say when there is no way to reach Jira at all. Names BOTH fixes. */
 const NO_PATH =
@@ -103,48 +128,103 @@ export function credentialGap(env: NodeJS.ProcessEnv): string | null {
 }
 
 /**
- * The bare host of a configured site.
+ * The host this source may send a credential to, or "" when the configured site is not one.
  *
  * Operators paste what their browser shows them - `https://acme.atlassian.net/jira/software/...`
- * - and a source configured that way must not build `https://https://acme…`. The scheme,
- * any path and any trailing slash are dropped; the port is kept, because a self-hosted
- * instance needs it.
+ * - so a URL is accepted and reduced to its host, port included for a self-hosted instance.
+ *
+ * The reduction is done by `URL`, not by stripping with a regex, and that is a security
+ * boundary rather than tidiness. `https://acme.atlassian.net@evil.example` looks like the
+ * company's Jira and is not: the parser reads `acme.atlassian.net` as USERINFO and
+ * `evil.example` as the host, so a regex that only removed the scheme and the path would hand
+ * that whole string back, `https://${host}` would rebuild it unchanged, and the request -
+ * carrying `JIRA_API_TOKEN` in an Authorization header - would go to `evil.example`. A
+ * credential in a site field is never a legitimate configuration, so it is REFUSED here
+ * rather than accepted in a reduced form. `siteProblem` is what says so out loud.
  */
 export function siteHost(site: string): string {
-  return site
-    .trim()
-    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
-    .replace(/[/?#].*$/, "")
-    .replace(/\/+$/, "");
+  const raw = site.trim();
+  if (!raw) return "";
+  let url: URL;
+  try {
+    // The panel asks for a bare host; a pasted URL is what an operator has in hand.
+    url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    return "";
+  }
+  if (url.username || url.password) return "";
+  // `http://` is accepted as INPUT, because that is what a self-hosted instance's own links
+  // look like, and the request is still built as `https://` below - this source never
+  // downgrades a connection it is about to put a token on. Any other scheme is not a site.
+  if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+  return url.host;
 }
 
 /**
- * The `jira issue list` argv for this config.
+ * Why the configured site cannot be used, or null when it can.
+ *
+ * Three sentences rather than one, because "no site" and "that site would leak your token"
+ * have nothing to do with each other and the second is the one nobody would guess.
+ */
+export function siteProblem(site: string): string | null {
+  const raw = site.trim();
+  if (!raw) {
+    return "this source has no Jira site - set it to your Jira host, e.g. your-org.atlassian.net";
+  }
+  if (siteHost(site)) return null;
+  if (raw.includes("@")) {
+    return (
+      "the Jira site must be a host, not a URL carrying a credential - a value like " +
+      "`your-org.atlassian.net@elsewhere.example` names `elsewhere.example` as the server, " +
+      "and JIRA_API_TOKEN would be sent there. Set it to your Jira host on its own"
+    );
+  }
+  return `"${raw.slice(0, 60)}" is not a Jira host - set it to something like your-org.atlassian.net`;
+}
+
+/**
+ * The `jira issue list` argv for one page of this config's filter.
  *
  * `--raw` is the load-bearing flag: it prints the API's own JSON, which is the SAME
  * envelope the REST rung reads, so both rungs share one mapper and one set of tests rather
- * than adding a table-parser that would break on a truncated column. No limit flag is
- * passed - jira-cli has spelled that argument differently across versions, and an unknown
- * flag would take the CLI rung out entirely - so the cap is applied when reading instead
- * (`candidatesFrom`), which bounds both rungs identically.
+ * than adding a table-parser that would break on a truncated column.
+ *
+ * `--paginate start:limit` is what makes `cfg.limit` mean anything on this rung and what
+ * lets the walk advance. Without it the CLI's own default page size decided what was
+ * fetched, every sweep re-read that same page, and the tail of a larger filter was
+ * unreachable. A CLI too old to know the flag exits non-zero rather than ignoring it, which
+ * `cliFailure` names and the ladder answers by falling through to REST - a loud stop with a
+ * fix in it, which is the direction this source has to fail in.
  */
-export function jiraIssueListArgs(cfg: JiraConfig): string[] {
-  return ["issue", "list", "--jql", cfg.jql.trim(), "--raw"];
+export function jiraIssueListArgs(cfg: JiraConfig, start = 0): string[] {
+  return [
+    "issue",
+    "list",
+    "--jql",
+    cfg.jql.trim(),
+    "--paginate",
+    `${start}:${cfg.limit}`,
+    "--raw",
+  ];
 }
 
 /**
- * The REST search URL for this config.
+ * The REST search URL for one page of this config's filter.
  *
  * Encoded with `encodeURIComponent` rather than `URLSearchParams`, which spells a space as
  * `+`: that is correct for a form body and merely conventional in a query string, and a JQL
  * query is mostly spaces. `%20` is unambiguous everywhere, including to whatever proxy sits
  * between the daemon and Jira.
+ *
+ * `nextPageToken` is the enhanced endpoint's cursor, echoed back from the previous page. It
+ * is Jira's own opaque string and is never constructed here.
  */
-export function searchUrl(cfg: JiraConfig): string {
+export function searchUrl(cfg: JiraConfig, pageToken: string | null = null): string {
   const query = [
     `jql=${encodeURIComponent(cfg.jql.trim())}`,
     `maxResults=${encodeURIComponent(String(cfg.limit))}`,
     `fields=${encodeURIComponent(REST_FIELDS)}`,
+    ...(pageToken ? [`nextPageToken=${encodeURIComponent(pageToken)}`] : []),
   ].join("&");
   return `https://${siteHost(cfg.site)}${REST_SEARCH_PATH}?${query}`;
 }
@@ -186,7 +266,10 @@ export function browseUrlFor(issue: JiraIssue, cfg: JiraConfig): string | null {
 function hostOfSelf(self: unknown): string {
   if (typeof self !== "string") return "";
   try {
-    return new URL(self).host;
+    const url = new URL(self);
+    // Same refusal as `siteHost`, for a smaller stake: no credential rides a browse link, but
+    // a userinfo host in a response would put a link to somebody else's server on a card.
+    return url.username || url.password ? "" : url.host;
   } catch {
     return "";
   }
@@ -314,34 +397,50 @@ export function candidateFrom(
   };
 }
 
-/** Map a page of issues, dropping the ones we cannot name, and honour the configured cap. */
+/**
+ * Map issues to candidates, dropping the ones we cannot name.
+ *
+ * No cap here. `cfg.limit` is the PAGE SIZE - what one request asks Jira for - and the walk
+ * is what bounds the total, at `MAX_SWEEP_ISSUES`. Capping here as well used to be how the
+ * source silently discarded everything after the first page.
+ *
+ * Returning more than the source will file is deliberate and is the whole repair: `ingest.ts`
+ * drops what `task_source_seen` already holds and only THEN applies `maxPerSweep`, so a
+ * filter with 400 already-filed issues and 3 new ones files the 3.
+ */
 function candidatesFrom(issues: JiraIssue[], cfg: JiraConfig, ctx: SweepContext): TaskCandidate[] {
   return issues
-    .slice(0, cfg.limit)
     .map((i) => candidateFrom(i, cfg, ctx))
     .filter((c): c is TaskCandidate => c !== null);
 }
 
 /**
- * Read a JSON body as a list of issues.
+ * Read a JSON body as one page of issues.
  *
  * One reader for both rungs: `jira issue list --raw` prints the API's own
  * `{"issues": […]}` envelope, and a bare array is accepted too so a wrapper or a future
  * CLI version that unwraps it does not read as "no work".
+ *
+ * `nextPageToken` is carried through when the enhanced endpoint sent one. It is absent on the
+ * last page, absent from a bare array, and absent from the CLI's output, so a rung that has
+ * no cursor simply reports none and the walk falls back to its own page arithmetic.
  */
-export function issuesFrom(text: string): { issues: JiraIssue[] } | { error: string } {
+export function issuesFrom(
+  text: string,
+): { issues: JiraIssue[]; nextPageToken: string | null } | { error: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text.trim() || "{}");
   } catch {
     return { error: "Jira returned output that is not JSON" };
   }
-  const envelope = (parsed as { issues?: unknown } | null)?.issues;
-  const list = Array.isArray(parsed) ? parsed : Array.isArray(envelope) ? envelope : null;
+  const envelope = parsed as { issues?: unknown; nextPageToken?: unknown } | null;
+  const list = Array.isArray(parsed) ? parsed : Array.isArray(envelope?.issues) ? envelope.issues : null;
   // Malformed output is an anomaly, not "no issues" - the same reading the GitHub source
   // takes of a `gh` that answered with something unexpected.
   if (!list) return { error: "Jira returned an unexpected shape" };
-  return { issues: list as JiraIssue[] };
+  const token = typeof envelope?.nextPageToken === "string" ? envelope.nextPageToken.trim() : "";
+  return { issues: list as JiraIssue[], nextPageToken: token || null };
 }
 
 /** First non-empty line of some output, for a one-line "why". */
@@ -410,6 +509,12 @@ export function cliFailure(res: CliRun): string {
   if (looksUnauthenticated(`${res.stderr}\n${res.stdout}`)) {
     return `the jira CLI is not authenticated${why ? ` - ${why}` : ""} - export JIRA_API_TOKEN and run \`jira init\` if you have not`;
   }
+  // A CLI that does not know `--paginate` cannot be asked for a bounded page, and a sweep
+  // that cannot page cannot reach past the first one. Named as its own state because the fix
+  // is neither the token nor the query: upgrade it, or let the REST rung do the paging.
+  if (/unknown flag|unknown shorthand|flag provided but not defined|--paginate/i.test(res.stderr)) {
+    return `this jira CLI does not support \`--paginate\`${why ? ` - ${why}` : ""} - upgrade it (\`brew upgrade jira-cli\`), or set JIRA_API_TOKEN and JIRA_EMAIL so the REST rung can page`;
+  }
   return `jira issue list failed${why ? `: ${why}` : ""}`;
 }
 
@@ -463,36 +568,127 @@ export function restFailure(res: RestAnswer, cfg: JiraConfig): string {
   return `Jira could not run this query (HTTP ${res.status})${why ? ` - ${why}` : ""}`;
 }
 
-/**
- * Read one `jira issue list --raw` run as a sweep result.
- *
- * The rule this holds, on every branch: a non-zero exit, unparseable output or an
- * abandoned run becomes `{items: [], error}` and NEVER an empty success.
- */
-export function sweepResultFromCli(res: CliRun, cfg: JiraConfig, ctx: SweepContext): SweepResult {
-  if (res.code !== 0) {
-    // The one non-zero exit that is not a failure: the CLI's way of saying the filter
-    // matched nothing. Reporting it would make a healthy, up-to-date source look broken.
-    if (CLI_EMPTY.test(`${res.stderr}\n${res.stdout}`)) return { items: [], error: null };
-    return { items: [], error: cliFailure(res) };
-  }
-  if (ctx.signal.aborted) return { items: [], error: "the sweep was abandoned" };
-  const read = issuesFrom(res.stdout);
-  if ("error" in read) return { items: [], error: read.error };
-  return { items: candidatesFrom(read.issues, cfg, ctx), error: null };
+/** One page a rung returned: what it held, whether there is a cursor, and why it failed. */
+export interface JiraPage {
+  issues: JiraIssue[];
+  nextPageToken: string | null;
+  error: string | null;
 }
 
-/** Read one REST search as a sweep result, under the same rule. */
+/**
+ * Read one `jira issue list --raw` run as a page.
+ *
+ * The rule this holds, on every branch: a non-zero exit or unparseable output becomes an
+ * ERROR and NEVER an empty page, because an empty page ends the walk and would read as
+ * "there is no more work".
+ */
+export function pageFromCli(res: CliRun): JiraPage {
+  const empty = { issues: [], nextPageToken: null };
+  if (res.code !== 0) {
+    // The one non-zero exit that is not a failure: the CLI's way of saying the filter matched
+    // nothing. Reporting it would make a healthy, up-to-date source look broken - and past
+    // the first page it is simply how the walk learns it has reached the end.
+    if (CLI_EMPTY.test(`${res.stderr}\n${res.stdout}`)) return { ...empty, error: null };
+    return { ...empty, error: cliFailure(res) };
+  }
+  const read = issuesFrom(res.stdout);
+  if ("error" in read) return { ...empty, error: read.error };
+  return { ...read, error: null };
+}
+
+/** Read one REST search as a page, under the same rule. */
+export function pageFromRest(res: RestAnswer, cfg: JiraConfig): JiraPage {
+  const empty = { issues: [], nextPageToken: null };
+  if (!res.ok) return { ...empty, error: restFailure(res, cfg) };
+  const read = issuesFrom(res.body);
+  if ("error" in read) return { ...empty, error: read.error };
+  return { ...read, error: null };
+}
+
+/** What one rung's paging walk produced. */
+export interface JiraWalk {
+  issues: JiraIssue[];
+  /** A rung failure. Always fatal for the sweep - a partial page is not "no work". */
+  error: string | null;
+  /** The walk stopped at its own ceiling with the filter still going. */
+  truncated: boolean;
+}
+
+/**
+ * Whether to ask for another page, and if not, why the walk stopped.
+ *
+ * Pure and exported because the two bounds it holds are the whole correctness of paging, and
+ * neither is cheap to reach through a real walk: `done` is a filter that has been read to its
+ * end, and `truncated` is one that has not and never will be.
+ */
+export function nextPage(
+  state: { fetched: number; pagesUsed: number; hasMore: boolean },
+  maxPages: number,
+): "more" | "done" | "truncated" {
+  if (!state.hasMore) return "done";
+  if (state.pagesUsed >= maxPages || state.fetched >= MAX_SWEEP_ISSUES) return "truncated";
+  return "more";
+}
+
+/** How many requests one sweep may spend, given the page size the operator chose. */
+function pagesFor(cfg: JiraConfig): number {
+  return Math.max(1, Math.min(MAX_SWEEP_PAGES, Math.ceil(MAX_SWEEP_ISSUES / cfg.limit)));
+}
+
+/**
+ * What to say when the filter is broader than one sweep can read.
+ *
+ * Two fixes, because there are two bounds. A genuinely enormous filter needs narrowing; a
+ * filter that merely outran a small page size needs a bigger page.
+ */
+function tooBroad(cfg: JiraConfig): string {
+  return (
+    `this filter is larger than one sweep can read (${MAX_SWEEP_ISSUES} issues or ` +
+    `${MAX_SWEEP_PAGES} requests, whichever comes first), so its tail can never be filed - ` +
+    "narrow the JQL with a status, a project or a date bound" +
+    (cfg.limit < 50 ? ", or raise Issues per page" : "")
+  );
+}
+
+/**
+ * Turn a walk into a sweep result.
+ *
+ * Truncation is reported as an ERROR while the items are still returned, which looks odd for
+ * about a second and is the honest reading: those candidates are real and `ingest.ts` should
+ * file the unseen ones, AND this source cannot see the end of its own filter, which is a
+ * misconfiguration the operator has to fix. Silence there would be the same failure as an
+ * empty sweep on a broken credential - work that never arrives, with nothing saying why.
+ */
+export function sweepResultFromWalk(
+  walk: JiraWalk,
+  cfg: JiraConfig,
+  ctx: SweepContext,
+): SweepResult {
+  if (walk.error) return { items: [], error: walk.error };
+  if (ctx.signal.aborted) return { items: [], error: "the sweep was abandoned" };
+  return {
+    items: candidatesFrom(walk.issues, cfg, ctx),
+    error: walk.truncated ? tooBroad(cfg) : null,
+  };
+}
+
+/**
+ * Read one page as a whole sweep result - the single-page shape, kept for the callers and
+ * tests that ask "what does this one answer mean", where paging is not the question.
+ */
+export function sweepResultFromCli(res: CliRun, cfg: JiraConfig, ctx: SweepContext): SweepResult {
+  const page = pageFromCli(res);
+  return sweepResultFromWalk({ ...page, truncated: false }, cfg, ctx);
+}
+
+/** The same, for one REST answer. */
 export function sweepResultFromRest(
   res: RestAnswer,
   cfg: JiraConfig,
   ctx: SweepContext,
 ): SweepResult {
-  if (!res.ok) return { items: [], error: restFailure(res, cfg) };
-  if (ctx.signal.aborted) return { items: [], error: "the sweep was abandoned" };
-  const read = issuesFrom(res.body);
-  if ("error" in read) return { items: [], error: read.error };
-  return { items: candidatesFrom(read.issues, cfg, ctx), error: null };
+  const page = pageFromRest(res, cfg);
+  return sweepResultFromWalk({ ...page, truncated: false }, cfg, ctx);
 }
 
 /**
@@ -508,10 +704,11 @@ async function restSearch(
   cfg: JiraConfig,
   cred: JiraRestCredential,
   ctx: SweepContext,
+  pageToken: string | null = null,
 ): Promise<RestAnswer> {
   const basic = Buffer.from(`${cred.email}:${cred.token}`, "utf8").toString("base64");
   try {
-    const res = await fetch(searchUrl(cfg), {
+    const res = await fetch(searchUrl(cfg, pageToken), {
       headers: { authorization: `Basic ${basic}`, accept: "application/json" },
       // Both bounds, together: the sweeper's own signal (so a shutdown or its 60s cap cuts
       // this off) and this source's 20s budget.
@@ -534,40 +731,101 @@ async function restSearch(
 }
 
 /**
- * Sweep the configured JQL, climbing the auth ladder.
+ * Walk the CLI rung's pages.
+ *
+ * `--paginate start:limit` is the cursor: the walk advances `start` by the page size until a
+ * SHORT page arrives, which is the API saying it has no more to give under this filter. An
+ * exactly-full final page costs one extra request that comes back empty, which is cheaper
+ * than guessing.
+ */
+async function walkCli(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Promise<JiraWalk> {
+  const issues: JiraIssue[] = [];
+  for (let pagesUsed = 0; ; pagesUsed += 1) {
+    if (ctx.signal.aborted) return { issues, error: "the sweep was abandoned", truncated: false };
+    // The CLI inherits the daemon's environment, which is where `JIRA_API_TOKEN` already is
+    // for the operators who have one - so nothing has to be passed through explicitly.
+    const res = await run(JIRA_BIN, jiraIssueListArgs(cfg, issues.length), {
+      timeoutMs: JIRA_TIMEOUT_MS,
+    });
+    const page = pageFromCli(res);
+    if (page.error) return { issues, error: page.error, truncated: false };
+    issues.push(...page.issues);
+    const step = nextPage(
+      { fetched: issues.length, pagesUsed: pagesUsed + 1, hasMore: page.issues.length >= cfg.limit },
+      maxPages,
+    );
+    if (step !== "more") return { issues, error: null, truncated: step === "truncated" };
+  }
+}
+
+/** Walk the REST rung's pages, following the cursor Jira hands back. */
+async function walkRest(
+  cfg: JiraConfig,
+  cred: JiraRestCredential,
+  ctx: SweepContext,
+  maxPages: number,
+): Promise<JiraWalk> {
+  const issues: JiraIssue[] = [];
+  let token: string | null = null;
+  for (let pagesUsed = 0; ; pagesUsed += 1) {
+    if (ctx.signal.aborted) return { issues, error: "the sweep was abandoned", truncated: false };
+    const page = pageFromRest(await restSearch(cfg, cred, ctx, token), cfg);
+    if (page.error) return { issues, error: page.error, truncated: false };
+    issues.push(...page.issues);
+    token = page.nextPageToken;
+    const step = nextPage(
+      {
+        fetched: issues.length,
+        pagesUsed: pagesUsed + 1,
+        // A cursor AND something on this page. A token with an empty page would otherwise
+        // loop against a server that keeps handing one back.
+        hasMore: token !== null && page.issues.length > 0,
+      },
+      maxPages,
+    );
+    if (step !== "more") return { issues, error: null, truncated: step === "truncated" };
+  }
+}
+
+/**
+ * Climb the auth ladder and walk whichever rung answers.
  *
  * CLI first when it is installed, REST when it is not - and REST as a RETRY when the CLI is
  * installed but could not answer, which is the common half-configured machine (jira-cli on
- * PATH, `jira init` never run, tokens exported for the shell helpers). Reporting a broken
- * source while a working path sits unused would be accurate and useless. If both rungs
- * fail, both reasons are reported: the operator has two things to look at and needs to know
- * which is which.
+ * PATH, `jira init` never run, tokens exported for the shell helpers), and now also the CLI
+ * that is too old to know `--paginate`. Reporting a broken source while a working path sits
+ * unused would be accurate and useless. If both rungs fail, both reasons are reported: the
+ * operator has two things to look at and needs to know which is which.
+ *
+ * `maxPages` is what separates a sweep from a preflight probe. A probe spends ONE request and
+ * asks only whether Jira answers this filter at all; a sweep reads to the end of it.
  */
-async function sweep(cfg: JiraConfig, ctx: SweepContext): Promise<SweepResult> {
-  if (!cfg.jql.trim()) return { items: [], error: NO_JQL };
-  if (!siteHost(cfg.site)) return { items: [], error: noSite() };
-
+async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Promise<JiraWalk> {
   const cred = restCredentialFrom(process.env);
-  // The CLI inherits the daemon's environment, which is where `JIRA_API_TOKEN` already is
-  // for the operators who have one - so nothing has to be passed through explicitly.
   if (await hasBin(JIRA_BIN)) {
-    const viaCli = sweepResultFromCli(
-      await run(JIRA_BIN, jiraIssueListArgs(cfg), { timeoutMs: JIRA_TIMEOUT_MS }),
-      cfg,
-      ctx,
-    );
+    const viaCli = await walkCli(cfg, ctx, maxPages);
     if (!viaCli.error || !cred || ctx.signal.aborted) return viaCli;
-    const viaRest = sweepResultFromRest(await restSearch(cfg, cred, ctx), cfg, ctx);
+    const viaRest = await walkRest(cfg, cred, ctx, maxPages);
     if (!viaRest.error) return viaRest;
-    return { items: [], error: `${viaCli.error}; the REST fallback also failed: ${viaRest.error}` };
+    return {
+      issues: [],
+      error: `${viaCli.error}; the REST fallback also failed: ${viaRest.error}`,
+      truncated: false,
+    };
   }
-
-  if (!cred) return { items: [], error: credentialGap(process.env) ?? NO_PATH };
-  return sweepResultFromRest(await restSearch(cfg, cred, ctx), cfg, ctx);
+  if (!cred) {
+    return { issues: [], error: credentialGap(process.env) ?? NO_PATH, truncated: false };
+  }
+  return walkRest(cfg, cred, ctx, maxPages);
 }
 
-function noSite(): string {
-  return "this source has no Jira site - set it to your Jira host, e.g. your-org.atlassian.net";
+/** Sweep the configured JQL: every page of it, up to what one sweep may read. */
+async function sweep(cfg: JiraConfig, ctx: SweepContext): Promise<SweepResult> {
+  if (!cfg.jql.trim()) return { items: [], error: NO_JQL };
+  const site = siteProblem(cfg.site);
+  if (site) return { items: [], error: site };
+
+  return sweepResultFromWalk(await ladder(cfg, ctx, pagesFor(cfg)), cfg, ctx);
 }
 
 /**
@@ -577,21 +835,25 @@ function noSite(): string {
  * subprocess or a round trip, and so each answer names ONE thing to go and do:
  *
  *  1. an empty filter, which is storable and sweeps nothing;
- *  2. no site to ask;
+ *  2. a site that is missing, malformed, or carrying a credential;
  *  3. no rung at all - neither the CLI nor a (whole) credential;
  *  4. whatever the real query says, which is what separates "not authenticated" from
- *     "cannot run this JQL". It runs the operator's own filter bounded to one issue, so it
- *     exercises the same ladder, the same auth and the same JQL the sweep will, and files
+ *     "cannot run this JQL". It runs the operator's own filter for ONE issue on ONE page, so
+ *     it exercises the same ladder, the same auth and the same JQL the sweep will, and files
  *     nothing - a sweep RETURNS candidates, and only `ingest.ts` writes.
+ *
+ * Truncation is deliberately not consulted: a probe asks whether Jira answers, and a filter
+ * being broader than one sweep is the sweep's report to make, not this one's.
  */
 async function preflight(cfg: JiraConfig, ctx: SweepContext): Promise<string | null> {
   if (!cfg.jql.trim()) return NO_JQL;
-  if (!siteHost(cfg.site)) return noSite();
+  const site = siteProblem(cfg.site);
+  if (site) return site;
 
   const cred = restCredentialFrom(process.env);
   if (!cred && !(await hasBin(JIRA_BIN))) return credentialGap(process.env) ?? NO_PATH;
 
-  return (await sweep({ ...cfg, limit: 1 }, ctx)).error;
+  return (await ladder({ ...cfg, limit: 1 }, ctx, 1)).error;
 }
 
 export const jira: TaskSourceImpl<JiraConfig> = {

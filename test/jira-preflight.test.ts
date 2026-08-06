@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,11 +32,26 @@ mkdirSync(withJira);
 mkdirSync(noJira);
 after(() => rmSync(home, { recursive: true, force: true }));
 
-// One fake CLI, four behaviours, selected by an env var - so the PATH stays fixed and the
-// only thing a test changes is what the CLI says back.
+// One fake CLI, six behaviours, selected by an env var - so the PATH stays fixed and the only
+// thing a test changes is what the CLI says back.
+//
+// It parses `--paginate start:limit` and serves that window of a virtual result set, which is
+// what makes the PAGING walk drivable here rather than only in a unit test over the decision
+// function: `FAKE_JIRA_CALLS` records the window each invocation asked for, so a test can
+// assert the sequence of requests and that a probe spends exactly one.
 writeFileSync(
   join(withJira, "jira"),
   `#!/bin/sh
+paginate=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--paginate" ]; then paginate="$a"; fi
+  prev="$a"
+done
+start=\${paginate%%:*}
+limit=\${paginate##*:}
+if [ -n "$FAKE_JIRA_CALLS" ]; then echo "$paginate" >> "$FAKE_JIRA_CALLS"; fi
+
 case "$FAKE_JIRA_MODE" in
   unauthorized)
     echo "Received unexpected response '401 Unauthorized' from Jira" 1>&2; exit 1 ;;
@@ -46,6 +61,19 @@ case "$FAKE_JIRA_MODE" in
     echo "Error: jql: Field 'nope' does not exist" 1>&2; exit 1 ;;
   empty)
     echo "No result found for given query in project \\"MC\\"" 1>&2; exit 1 ;;
+  oldcli)
+    echo "unknown flag: --paginate" 1>&2; exit 1 ;;
+  pages)
+    total=\${FAKE_JIRA_TOTAL:-7}
+    out=""
+    i=\$start
+    end=\$((start + limit))
+    while [ \$i -lt \$end ] && [ \$i -lt \$total ]; do
+      if [ -n "\$out" ]; then out="\$out,"; fi
+      out="\$out{\\"key\\":\\"MC-\$i\\",\\"fields\\":{\\"summary\\":\\"Issue \$i\\"}}"
+      i=\$((i + 1))
+    done
+    printf '{"issues":[%s]}' "\$out" ;;
   *)
     printf '{"issues":[{"key":"MC-1","self":"https://acme.atlassian.net/rest/api/3/issue/1","fields":{"summary":"Fix the thing","description":"Do it.","priority":{"name":"Highest"}}}]}' ;;
 esac
@@ -84,16 +112,32 @@ const ctx: SweepContext = {
  * rung and at their real Jira. `which` has to stay reachable, since that is how a bare
  * command name is resolved.
  */
-function machine(opts: { cli: boolean; email?: string; token?: string; mode?: string }): void {
+function machine(opts: {
+  cli: boolean;
+  email?: string;
+  token?: string;
+  mode?: string;
+  /** How many issues the fake's virtual result set holds, in `pages` mode. */
+  total?: string;
+  /** A file the fake appends each requested `start:limit` window to. */
+  calls?: string;
+}): void {
   process.env.PATH = `${opts.cli ? withJira : noJira}:/usr/bin:/bin`;
   for (const [key, value] of [
     ["JIRA_EMAIL", opts.email],
     ["JIRA_API_TOKEN", opts.token],
     ["FAKE_JIRA_MODE", opts.mode],
+    ["FAKE_JIRA_TOTAL", opts.total],
+    ["FAKE_JIRA_CALLS", opts.calls],
   ] as const) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+}
+
+/** The `start:limit` windows the fake was asked for, in order. */
+function callsIn(path: string): string[] {
+  return readFileSync(path, "utf8").trim().split("\n").filter(Boolean);
 }
 
 const PATH_BEFORE = process.env.PATH;
@@ -199,6 +243,58 @@ test("a filter that currently matches nothing is healthy, not broken", async () 
   const swept = await jira.sweep(cfg(), ctx);
   assert.deepEqual(swept.items, []);
   assert.equal(swept.error, null);
+});
+
+// ---- paging: the difference between reaching the tail of a filter and never ----
+
+// The defect this pins, and the reason the fake parses `--paginate`: the first draft asked for
+// one page and stopped. `ingest.ts` de-duplicated those issues against `task_source_seen`, and
+// every later sweep re-fetched the SAME leading page and reported it as already filed - so a
+// filter matching more than one page could never reach the rest of itself. Not slowly: never.
+// And it looked healthy the whole time, which is the failure this file exists to prevent.
+test("a filter with more issues than one page yields all of them, in one sweep", async () => {
+  const calls = join(home, "calls-multi");
+  machine({ cli: true, mode: "pages", total: "7", calls });
+
+  const swept = await jira.sweep(cfg({ limit: 3 }), ctx);
+  assert.equal(swept.error, null);
+  assert.deepEqual(
+    swept.items.map((i) => i.ref.externalId),
+    ["MC-0", "MC-1", "MC-2", "MC-3", "MC-4", "MC-5", "MC-6"],
+    "the tail of the filter is reachable, not just the first page",
+  );
+  // Three requests, advancing, and it stopped on the SHORT page rather than asking forever.
+  assert.deepEqual(callsIn(calls), ["0:3", "3:3", "6:3"]);
+});
+
+test("a filter that fits in one page costs one request", async () => {
+  const calls = join(home, "calls-single");
+  machine({ cli: true, mode: "pages", total: "2", calls });
+
+  const swept = await jira.sweep(cfg({ limit: 50 }), ctx);
+  assert.equal(swept.error, null);
+  assert.equal(swept.items.length, 2);
+  assert.deepEqual(callsIn(calls), ["0:50"], "a short first page is the end of the filter");
+});
+
+// A probe is a question about reachability, not a sweep: it must not walk a 20-page filter to
+// answer "does Jira take this JQL".
+test("a preflight probe spends exactly one request, for one issue", async () => {
+  const calls = join(home, "calls-probe");
+  machine({ cli: true, mode: "pages", total: "500", calls });
+
+  assert.equal(await jira.preflight(cfg({ limit: 50 }), ctx), null);
+  assert.deepEqual(callsIn(calls), ["0:1"]);
+});
+
+// The rung that cannot page at all. Named as its own state because the fix is neither the
+// token nor the query - and with a credential present the other rung simply takes over.
+test("a CLI too old for --paginate says so, and names the two ways forward", async () => {
+  machine({ cli: true, mode: "oldcli" });
+  const said = await jira.preflight(cfg(), ctx);
+  assert.match(said!, /does not support `--paginate`/);
+  assert.match(said!, /upgrade it/);
+  assert.match(said!, /JIRA_API_TOKEN and JIRA_EMAIL so the REST rung can page/);
 });
 
 // ---- the REST rung, and the retry between them ----

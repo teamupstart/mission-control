@@ -14,6 +14,7 @@ import {
   externalIdFor,
   issuesFrom,
   jiraIssueListArgs,
+  nextPage,
   plainTextFrom,
   priorityFor,
   restCredentialFrom,
@@ -21,7 +22,9 @@ import {
   restMessage,
   searchUrl,
   siteHost,
+  siteProblem,
   sweepResultFromCli,
+  sweepResultFromWalk,
   sweepResultFromRest,
 } from "../src/server/task-sources/jira.ts";
 import { stubRun } from "../src/server/util/exec.ts";
@@ -51,6 +54,12 @@ const ctx: SweepContext = {
   repoRoot: "/repo",
   signal: new AbortController().signal,
 };
+
+/** The value that follows `flag` in an argv, or undefined. */
+function argAfter(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  return i === -1 ? undefined : args[i + 1];
+}
 
 const ISSUE = {
   key: "MC-42",
@@ -82,15 +91,66 @@ test("a pasted browser URL is reduced to the host it names", () => {
   assert.equal(siteHost("   "), "", "nothing configured is answerable as nothing");
 });
 
+// THE credential boundary, and the reason the host is the URL parser's answer rather than a
+// regex's. `https://acme.atlassian.net@evil.example` reads as the company's Jira and is not:
+// the parser takes `acme.atlassian.net` as USERINFO and `evil.example` as the host, so a
+// reduction that only stripped the scheme and the path would hand the whole string back,
+// `https://${host}` would rebuild it unchanged, and the request - carrying JIRA_API_TOKEN in
+// an Authorization header - would go to somebody else's server. Refused, not repaired.
+test("a site carrying a credential is refused, not reduced", () => {
+  for (const hostile of [
+    "https://acme.atlassian.net@evil.example",
+    "acme.atlassian.net@evil.example",
+    "https://user:pass@evil.example",
+    "https://acme.atlassian.net@evil.example/rest/api/3/search/jql",
+  ]) {
+    assert.equal(siteHost(hostile), "", `${hostile} must not resolve to a target`);
+    // And the operator is told which mistake this is, since "no Jira site" would send them
+    // looking for an empty field they can see is not empty.
+    assert.match(siteProblem(hostile)!, /credential/);
+    assert.match(siteProblem(hostile)!, /JIRA_API_TOKEN would be sent/);
+  }
+  // The host that string was trying to look like still works on its own.
+  assert.equal(siteHost("acme.atlassian.net"), "acme.atlassian.net");
+  assert.equal(siteProblem("acme.atlassian.net"), null);
+});
+
+test("a site that is not a host at all is named as that, and nothing else is a target", () => {
+  assert.match(siteProblem("")!, /no Jira site/);
+  assert.match(siteProblem("   ")!, /no Jira site/);
+  // Not http(s) - a scheme that would never be a Jira, and `https://${host}` would smuggle it.
+  for (const bad of ["javascript:alert(1)", "file:///etc/passwd", "not a host", "http://"]) {
+    assert.equal(siteHost(bad), "", `${bad} must not resolve to a target`);
+    assert.ok(siteProblem(bad), `${bad} must be explained`);
+  }
+  assert.match(siteProblem("not a host")!, /is not a Jira host/);
+});
+
 // ---- the two rungs' requests ----
 
 // `--raw` is what makes both rungs share one mapper: it prints the API's own envelope
-// instead of a column layout that truncates. No limit flag - jira-cli has spelled that
-// argument differently across versions, and an unknown flag takes the whole rung out.
+// instead of a column layout that truncates.
 test("the CLI is asked for the API's own JSON, with the filter as one argument", () => {
-  const args = jiraIssueListArgs(cfg({ jql: "  project = MC AND status = Open  " }));
-  assert.deepEqual(args, ["issue", "list", "--jql", "project = MC AND status = Open", "--raw"]);
+  const args = jiraIssueListArgs(cfg({ jql: "  project = MC AND status = Open  ", limit: 50 }));
+  assert.deepEqual(args, [
+    "issue",
+    "list",
+    "--jql",
+    "project = MC AND status = Open",
+    "--paginate",
+    "0:50",
+    "--raw",
+  ]);
   assert.equal(args.includes("--plain"), false, "table output would need a parser and truncates");
+});
+
+// The defect this argument exists for: without a page bound, the CLI's own default decided
+// what was fetched, every sweep re-read that same leading page, and a filter matching more
+// than one page could never reach the rest of itself - forever, and looking healthy.
+test("the CLI is asked for a specific page, so the walk can advance", () => {
+  assert.equal(argAfter(jiraIssueListArgs(cfg({ limit: 25 }), 0), "--paginate"), "0:25");
+  assert.equal(argAfter(jiraIssueListArgs(cfg({ limit: 25 }), 25), "--paginate"), "25:25");
+  assert.equal(argAfter(jiraIssueListArgs(cfg({ limit: 25 }), 200), "--paginate"), "200:25");
 });
 
 // The endpoint matters: v3's plain `/search` is retired on Jira Cloud, and a source pointed
@@ -109,6 +169,76 @@ test("the REST rung asks the enhanced search endpoint, with the filter encoded",
   // conventional in a query string. `%20` is unambiguous to whatever proxy is in the way.
   assert.match(raw, /jql=project%20%3D%20MC/);
   assert.doesNotMatch(raw, /\+/);
+});
+
+// The cursor goes on the URL only when there is one, so page 1 asks with no token at all.
+test("a later page carries Jira's own cursor", () => {
+  assert.doesNotMatch(searchUrl(cfg()), /nextPageToken/);
+  const page2 = new URL(searchUrl(cfg(), "tok/2+3"));
+  assert.equal(page2.searchParams.get("nextPageToken"), "tok/2+3");
+  assert.match(searchUrl(cfg(), "tok/2+3"), /nextPageToken=tok%2F2%2B3/, "opaque, so fully encoded");
+});
+
+// ---- paging, which is the difference between reaching the tail of a filter and never ----
+
+// What is at stake: a filter matching more than one page used to be read only as its first
+// page, so once those issues were in `task_source_seen` every later sweep re-fetched the same
+// leading rows, reported them as already filed, and the rest of the filter was unreachable -
+// permanently, and looking exactly like an upstream with no new work.
+//
+// The two bounds are pinned here rather than through a walk because reaching the ceiling for
+// real costs a thousand issues.
+test("a full page means keep going, a short page means the filter is exhausted", () => {
+  assert.equal(nextPage({ fetched: 50, pagesUsed: 1, hasMore: true }, 20), "more");
+  assert.equal(nextPage({ fetched: 12, pagesUsed: 1, hasMore: false }, 20), "done");
+  assert.equal(nextPage({ fetched: 0, pagesUsed: 1, hasMore: false }, 20), "done");
+});
+
+test("the walk stops at its own ceiling, and says the filter is bigger than a sweep", () => {
+  // Out of pages...
+  assert.equal(nextPage({ fetched: 500, pagesUsed: 20, hasMore: true }, 20), "truncated");
+  // ...or out of issues, whichever comes first. Both must stop, or a 40,000-issue filter is a
+  // sweep that never ends.
+  assert.equal(nextPage({ fetched: 1000, pagesUsed: 3, hasMore: true }, 500), "truncated");
+  assert.equal(nextPage({ fetched: 999, pagesUsed: 3, hasMore: true }, 500), "more");
+});
+
+// Truncation is REPORTED, and the items still come back. Both halves matter: ingest should
+// file the unseen ones it did reach, and the operator has to learn that the tail of this
+// filter is unreachable however many times the sweep runs. Silence there would be the same
+// defect as an empty sweep on a broken credential.
+test("a truncated walk files what it read AND names what to change", () => {
+  const walk = {
+    issues: [ISSUE, { ...ISSUE, key: "MC-43" }],
+    error: null,
+    truncated: true,
+  };
+  const r = sweepResultFromWalk(walk, cfg(), ctx);
+  assert.equal(r.items.length, 2, "what it did read is still filed");
+  assert.match(r.error!, /larger than one sweep can read \(1000 issues or 50 requests/);
+  assert.match(r.error!, /narrow the JQL/);
+  // Two bounds, so two fixes: a small page size is what a big filter outran, and saying so
+  // only where it applies keeps the sentence about one thing.
+  assert.doesNotMatch(r.error!, /Issues per page/, "at the default page size, that is not the fix");
+  assert.match(sweepResultFromWalk(walk, cfg({ limit: 5 }), ctx).error!, /raise Issues per page/);
+});
+
+test("an untruncated walk is a clean success", () => {
+  const r = sweepResultFromWalk({ issues: [ISSUE], error: null, truncated: false }, cfg(), ctx);
+  assert.equal(r.error, null);
+  assert.equal(r.items.length, 1);
+});
+
+// A rung failure mid-walk is fatal, and never a partial success: pages 1-3 arriving and page 4
+// failing must not read as "the filter holds three pages".
+test("a rung that fails mid-walk reports the failure rather than the pages it had", () => {
+  const r = sweepResultFromWalk(
+    { issues: [ISSUE], error: "jira issue list failed: boom", truncated: false },
+    cfg(),
+    ctx,
+  );
+  assert.deepEqual(r.items, []);
+  assert.match(r.error!, /boom/);
 });
 
 // ---- the credential, which is never stored ----
@@ -247,10 +377,27 @@ test("an enormous description is truncated, and says so", () => {
 // ---- reading a page of issues ----
 
 test("both the API envelope and a bare array read as issues", () => {
-  assert.deepEqual(issuesFrom('{"issues":[{"key":"MC-1"}]}'), { issues: [{ key: "MC-1" }] });
-  assert.deepEqual(issuesFrom('[{"key":"MC-1"}]'), { issues: [{ key: "MC-1" }] });
+  assert.deepEqual(issuesFrom('{"issues":[{"key":"MC-1"}]}'), {
+    issues: [{ key: "MC-1" }],
+    nextPageToken: null,
+  });
+  assert.deepEqual(issuesFrom('[{"key":"MC-1"}]'), {
+    issues: [{ key: "MC-1" }],
+    nextPageToken: null,
+  });
   assert.match((issuesFrom("<html>") as { error: string }).error, /not JSON/);
   assert.match((issuesFrom('{"total":3}') as { error: string }).error, /unexpected shape/);
+});
+
+// The cursor the enhanced endpoint hands back, carried through so the walk can ask for the
+// next page. Absent on the last page, and absent from a rung that has no cursor at all.
+test("a page carries the cursor Jira sent, and none when there isn't one", () => {
+  const more = issuesFrom('{"issues":[{"key":"MC-1"}],"nextPageToken":"tok-2"}');
+  assert.equal("nextPageToken" in more && more.nextPageToken, "tok-2");
+  const last = issuesFrom('{"issues":[{"key":"MC-9"}]}');
+  assert.equal("nextPageToken" in last && last.nextPageToken, null);
+  const blank = issuesFrom('{"issues":[],"nextPageToken":"   "}');
+  assert.equal("nextPageToken" in blank && blank.nextPageToken, null, "whitespace is not a cursor");
 });
 
 // ---- the CLI rung's failures ----
@@ -312,7 +459,10 @@ test("a clean CLI run with no matching issues is an empty SUCCESS", () => {
   assert.equal(r.error, null);
 });
 
-test("a clean run maps every issue it can name, and stops at the configured cap", () => {
+// Every issue the page held, and NOT a slice at `cfg.limit`. That field is the page SIZE - what
+// one request asks Jira for - so re-applying it here is how the source used to discard
+// everything the walk had gone and fetched beyond the first page.
+test("a clean run maps every issue it can name, whatever the page size says", () => {
   const many = Array.from({ length: 5 }, (_, i) => ({ ...ISSUE, key: `MC-${i}` }));
   const r = sweepResultFromCli(
     stubRun({ stdout: JSON.stringify({ issues: [...many, { fields: { summary: "no key" } }] }), stderr: "", code: 0 }),
@@ -320,7 +470,7 @@ test("a clean run maps every issue it can name, and stops at the configured cap"
     ctx,
   );
   assert.equal(r.error, null);
-  assert.deepEqual(r.items.map((i) => i.ref.externalId), ["MC-0", "MC-1", "MC-2"]);
+  assert.deepEqual(r.items.map((i) => i.ref.externalId), ["MC-0", "MC-1", "MC-2", "MC-3", "MC-4"]);
 });
 
 // A sweep abandoned by its timeout must not report the partial answer it happened to have,

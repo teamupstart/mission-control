@@ -1952,9 +1952,9 @@ else, it never dispatches, and a task you delete stays deleted.
 
 | Field | Meaning |
 |---|---|
-| **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - the scheme and path are dropped. Defaults to `upstartnetwork.atlassian.net` |
+| **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - it is parsed and reduced to its host. A value carrying a credential (`your-org.atlassian.net@elsewhere.example`) is **refused**, not reduced: that string names `elsewhere.example` as the server, and the token would be sent there. Defaults to `upstartnetwork.atlassian.net` |
 | **JQL filter** | the query, exactly as Jira's own search bar takes it. **Blank sweeps nothing**, and the panel says so rather than letting it look healthy |
-| **Issues per sweep** | how many issues one sweep asks for (also bounded by **Most tasks per sweep** above) |
+| **Issues per page** | how many issues **one request** asks Jira for. A sweep keeps asking until the filter is exhausted, so this is a request size, not a limit on what a sweep finds - what actually gets *filed* is bounded by **Most tasks per sweep** above |
 | **Take each task's priority from the Jira issue's own** | maps Jira's priority onto the [task's](#priority-and-labels): Highest/Blocker/Critical/`P0` → Blocker, High/Major/`P1` → High, Medium/`P2` → Med, Low/Lowest/Minor/`P3`/`P4` → Low. A name from a custom scheme leaves the source's default in place rather than inventing one. Off, every swept task takes the source's default |
 
 Everything else a Jira query needs - project, status, assignee, labels, ordering - is
@@ -1966,6 +1966,13 @@ Each issue becomes one task: its summary as the title, and an intent carrying
 agent's first prompt has the actual text rather than a key to go and look up. Descriptions
 arrive from Jira Cloud as ADF (a document tree, not a string) and are flattened to the text
 a human wrote; anything past 4000 characters is truncated and says so.
+
+**A sweep reads the whole filter, not its first page.** It pages until the result set is
+exhausted, and the [ledger](#a-task-you-delete-stays-deleted) is what stops the next sweep
+re-filing any of it - so a queue of 400 issues drains at **Most tasks per sweep** per sweep
+instead of stopping after the first page forever. One sweep will read at most **1000 issues or
+50 requests**, whichever comes first; a filter bigger than that has a tail no sweep can reach,
+so it is reported on the source ("narrow the JQL…") rather than silently truncated.
 
 **Auth is a ladder, and no rung of it stores a secret.**
 
@@ -2000,6 +2007,9 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | `Jira could not run this query (HTTP 400) - <what Jira said>` | the JQL is the problem, not the credential |
 | `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is `NODE_EXTRA_CA_CERTS` |
 | `the jira CLI did not answer within 20s - it may be waiting for input` | the CLI is prompting, which a background sweep cannot answer. Run it once by hand to see what it wants |
+| `the Jira site must be a host, not a URL carrying a credential` | the site names one server and would send the token to another - set it to the host on its own |
+| `this jira CLI does not support --paginate` | too old to be asked for a bounded page, and a sweep that cannot page cannot reach past the first one. `brew upgrade jira-cli`, or set the two variables so the REST rung pages instead |
+| `this filter is larger than one sweep can read` | more than 1000 issues (or 50 requests) match, so the tail is unreachable - narrow the JQL |
 
 A sweep reports the same sentences on the source itself, so a failure that happens at 3am
 is still legible at 9am. The one non-zero exit that is *not* a failure: `jira-cli` exits

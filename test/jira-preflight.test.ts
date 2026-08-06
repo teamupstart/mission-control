@@ -51,10 +51,6 @@ done
 start=\${paginate%%:*}
 limit=\${paginate##*:}
 if [ -n "$FAKE_JIRA_CALLS" ]; then echo "$paginate" >> "$FAKE_JIRA_CALLS"; fi
-if [ -n "$FAKE_JIRA_FAIL_AT" ] && [ "$paginate" = "$FAKE_JIRA_FAIL_AT" ]; then
-  echo "Error: request timed out talking to Jira" 1>&2
-  exit 1
-fi
 
 case "$FAKE_JIRA_MODE" in
   unauthorized)
@@ -67,8 +63,6 @@ case "$FAKE_JIRA_MODE" in
     echo "No result found for given query in project \\"MC\\"" 1>&2; exit 1 ;;
   oldcli)
     echo "unknown flag: --paginate" 1>&2; exit 1 ;;
-  stuck)
-    printf '{"issues":[{"key":"MC-0","fields":{"summary":"Issue 0"}},{"key":"MC-1","fields":{"summary":"Issue 1"}}]}' ;;
   pages)
     total=\${FAKE_JIRA_TOTAL:-7}
     out=""
@@ -127,8 +121,6 @@ function machine(opts: {
   total?: string;
   /** A file the fake appends each requested `start:limit` window to. */
   calls?: string;
-  /** The `start:limit` window the fake should fail on, so one page of a walk can break. */
-  failAt?: string;
 }): void {
   process.env.PATH = `${opts.cli ? withJira : noJira}:/usr/bin:/bin`;
   for (const [key, value] of [
@@ -137,7 +129,6 @@ function machine(opts: {
     ["FAKE_JIRA_MODE", opts.mode],
     ["FAKE_JIRA_TOTAL", opts.total],
     ["FAKE_JIRA_CALLS", opts.calls],
-    ["FAKE_JIRA_FAIL_AT", opts.failAt],
   ] as const) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -254,125 +245,80 @@ test("a filter that currently matches nothing is healthy, not broken", async () 
   assert.equal(swept.error, null);
 });
 
-// ---- paging: the difference between reaching the tail of a filter and never ----
+// ---- one CLI request, and what happens when the filter is bigger than it ----
 
-// The defect this pins, and the reason the fake parses `--paginate`: the first draft asked for
-// one page and stopped. `ingest.ts` de-duplicated those issues against `task_source_seen`, and
-// every later sweep re-fetched the SAME leading page and reported it as already filed - so a
-// filter matching more than one page could never reach the rest of itself. Not slowly: never.
-// And it looked healthy the whole time, which is the failure this file exists to prevent.
-test("a filter with more issues than one page yields all of them, in one sweep", async () => {
-  const calls = join(home, "calls-multi");
+// The repair Inspector rounds 7 and 9 asked for. Current jira-cli ignores the offset half of
+// `--paginate`, so this rung cannot page - and the version of this source that tried detected the
+// repeated page and stopped with an error, which left a CLI-only machine filing NOTHING out of any
+// filter bigger than one request. Loud, and still no work arriving.
+//
+// Now the request that DID succeed is filed, with a sentence naming the two ways to reach the rest.
+test("a filter bigger than one CLI request files that request AND names the tail", async () => {
+  const calls = join(home, "calls-cli-only");
   machine({ cli: true, mode: "pages", total: "7", calls });
 
   const swept = await jira.sweep(cfg({ limit: 3 }), ctx);
-  assert.equal(swept.error, null);
   assert.deepEqual(
     swept.items.map((i) => i.ref.externalId),
-    ["MC-0", "MC-1", "MC-2", "MC-3", "MC-4", "MC-5", "MC-6"],
-    "the tail of the filter is reachable, not just the first page",
+    ["MC-0", "MC-1", "MC-2"],
+    "the page is filed - real work, deduped by the ledger like any other",
   );
-  // Three requests, advancing, and it stopped on the SHORT page rather than asking forever.
-  assert.deepEqual(callsIn(calls), ["0:3", "3:3", "6:3"]);
+  assert.match(swept.error!, /cannot be asked for a second page/);
+  assert.match(swept.error!, /JIRA_API_TOKEN and JIRA_EMAIL/, "one way out");
+  assert.match(swept.error!, /narrow the JQL/, "and the other");
+  // ONE request, asking for one more than the page size - the extra row is the completeness
+  // probe, and no offset is ever sent.
+  assert.deepEqual(callsIn(calls), ["0:4"]);
 });
 
-test("a filter that fits in one page costs one request", async () => {
-  const calls = join(home, "calls-single");
+test("a filter that fits in one CLI request is complete, with no advisory", async () => {
+  const calls = join(home, "calls-cli-fits");
   machine({ cli: true, mode: "pages", total: "2", calls });
 
   const swept = await jira.sweep(cfg({ limit: 50 }), ctx);
-  assert.equal(swept.error, null);
+  assert.equal(swept.error, null, "nothing is out of reach, so there is nothing to say");
   assert.equal(swept.items.length, 2);
-  assert.deepEqual(callsIn(calls), ["0:50"], "a short first page is the end of the filter");
+  assert.deepEqual(callsIn(calls), ["0:51"]);
 });
 
-// A probe is a question about reachability, not a sweep: it must not walk a 20-page filter to
-// answer "does Jira take this JQL".
-test("a preflight probe spends exactly one request, for one issue", async () => {
+// The boundary the probe exists to get right: a filter of exactly the page size is COMPLETE, and
+// must not be reported as having a tail. An earlier design inferred "there is more" from a full
+// page and needed a second request to tell these apart.
+test("a filter of exactly the page size is complete, in one request", async () => {
+  const calls = join(home, "calls-cli-exact");
+  machine({ cli: true, mode: "pages", total: "3", calls });
+
+  const swept = await jira.sweep(cfg({ limit: 3 }), ctx);
+  assert.equal(swept.items.length, 3);
+  assert.equal(swept.error, null, "the extra row came back empty, so the filter ended here");
+  assert.deepEqual(callsIn(calls), ["0:4"]);
+});
+
+// With a credential, the rung that CAN page takes the whole filter - which is the other half of
+// round 9's fix, and the reason a CLI-only machine is the only one that sees the advisory. The
+// REST rung is aimed at a dead port here, so what proves the handoff is that the failure is the
+// REST rung's own rather than the CLI advisory.
+test("a filter bigger than one CLI request is handed to REST when a credential exists", async () => {
+  const port = await deadPort();
+  machine({ cli: true, mode: "pages", total: "7", email: "a@b.c", token: "t" });
+
+  const swept = await jira.sweep(cfg({ limit: 3, site: `127.0.0.1:${port}` }), ctx);
+  assert.match(swept.error!, /could not reach Jira at 127\.0\.0\.1:/);
+  assert.doesNotMatch(swept.error!, /cannot be asked for a second page/, "REST owns this filter now");
+});
+
+// A probe asks whether Jira answers this filter at all. Where the filter ENDS is not its question,
+// so it must not spend a request finding out.
+test("a preflight probe spends exactly one request", async () => {
   const calls = join(home, "calls-probe");
   machine({ cli: true, mode: "pages", total: "500", calls });
 
   assert.equal(await jira.preflight(cfg({ limit: 50 }), ctx), null);
-  assert.deepEqual(callsIn(calls), ["0:1"]);
+  assert.deepEqual(callsIn(calls), ["0:2"], "one issue, plus the row that would answer 'more?'");
 });
 
-// A filter whose size lands exactly on the walk's page bound ends on a FULL page, and this
-// rung has no cursor - so "the page was full" would be read as "there is more" and a source
-// reading its filter completely would report itself as too broad on every sweep, telling the
-// operator to narrow a JQL that is already fine. 50 pages of 2 is exactly 100 issues.
-test("a filter ending exactly on the page bound is complete, not truncated", async () => {
-  const calls = join(home, "calls-exact");
-  machine({ cli: true, mode: "pages", total: "100", calls });
-
-  const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
-  assert.equal(swept.items.length, 100);
-  assert.equal(swept.error, null, "there is no tail, so there is nothing to report");
-  // 50 pages, plus the lookahead that established the end - and that lookahead asks for ONE
-  // issue, not a 51st page: it answers a yes/no question, and keeping a page would push the
-  // sweep past the very cap the answer is about.
-  assert.equal(callsIn(calls).length, 51);
-  assert.equal(callsIn(calls).at(-1), "100:1");
-});
-
-// And the lookahead must not paper over a real tail: one more issue than fits is still reported.
-// The issue it saw is NOT filed - the walk's cap is what a sweep processes, and the sentence
-// quotes that number, so the lookahead keeps nothing.
-test("a filter with one issue past the bound is reported, and stays within the cap", async () => {
-  const calls = join(home, "calls-past-bound");
-  machine({ cli: true, mode: "pages", total: "101", calls });
-
-  const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
-  assert.equal(swept.items.length, 100, "exactly the cap, not the cap plus the lookahead");
-  assert.match(swept.error!, /larger than one sweep can read/);
-  assert.equal(callsIn(calls).at(-1), "100:1");
-});
-
-// The Inspector's own arithmetic, driven end to end: a page size of 199 buys six requests, so
-// six full pages would put 1,194 issues in hand while every sentence about them quotes 1,000.
-// Pages are clipped on the way in, so a sweep processes exactly the cap and not one more.
-test("a sweep never returns more issues than the cap it reports", async () => {
-  const calls = join(home, "calls-cap");
-  machine({ cli: true, mode: "pages", total: "1194", calls });
-
-  const swept = await jira.sweep(cfg({ limit: 199 }), ctx);
-  assert.equal(swept.items.length, 1000, "the cap, exactly - not 1194, and not 1000 plus a page");
-  assert.match(swept.error!, /larger than one sweep can read/);
-  // Six requests and no lookahead: the clipped rows are the tail, seen rather than inferred.
-  assert.equal(callsIn(calls).length, 6);
-  assert.equal(callsIn(calls).at(-1), "995:199");
-});
-
-// A lookahead that fails leaves completeness UNKNOWN, and reporting that as "the filter is too
-// broad" would tell the operator to narrow a JQL that is fine. The transient failure is what
-// they need to see.
-test("a lookahead that fails reports its own failure, not a filter that is too broad", async () => {
-  machine({ cli: true, mode: "pages", total: "100", failAt: "100:1" });
-
-  const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
-  assert.deepEqual(swept.items, [], "completeness is unknown, so this is a failed sweep");
-  assert.match(swept.error!, /request timed out talking to Jira/);
-  assert.doesNotMatch(swept.error!, /larger than one sweep can read/);
-  assert.doesNotMatch(swept.error!, /narrow the JQL/);
-});
-
-// A rung that ACCEPTS the pagination argument and ignores it is the nastier version: walked to
-// the ceiling, it would be reported as a filter too broad to read, which is a true sentence
-// about the wrong thing - the operator would go and narrow a JQL that was never the problem.
-test("a CLI that ignores --paginate is named as that, not as a filter that is too broad", async () => {
-  const calls = join(home, "calls-stuck");
-  machine({ cli: true, mode: "stuck", calls });
-
-  const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
-  assert.deepEqual(swept.items, []);
-  assert.match(swept.error!, /returned the same page again/);
-  assert.match(swept.error!, /upgrade it/);
-  assert.doesNotMatch(swept.error!, /narrow the JQL/, "narrowing the filter would not help");
-  // And it stopped at the repeat rather than spending the whole page budget on it.
-  assert.equal(callsIn(calls).length, 2);
-});
-
-// The rung that cannot page at all. Named as its own state because the fix is neither the
-// token nor the query - and with a credential present the other rung simply takes over.
+// A CLI too old to know the flag at all exits non-zero rather than ignoring it. Its own state,
+// because the fix is neither the token nor the query.
 test("a CLI too old for --paginate says so, and names the two ways forward", async () => {
   machine({ cli: true, mode: "oldcli" });
   const said = await jira.preflight(cfg(), ctx);

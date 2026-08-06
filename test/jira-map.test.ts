@@ -65,10 +65,10 @@ const ctx: SweepContext = {
  * the module, so nothing is exported for tests alone and this cannot drift from the real path.
  */
 const cliResult = (res: RunResult, c: JiraConfig = cfg(), context: SweepContext = ctx) =>
-  sweepResultFromWalk({ ...pageFromCli(res), truncated: false }, c, context);
+  sweepResultFromWalk({ ...pageFromCli(res), advisory: null }, c, context);
 
 const restResult = (res: RestAnswer, c: JiraConfig = cfg(), context: SweepContext = ctx) =>
-  sweepResultFromWalk({ ...pageFromRest(res, c), truncated: false }, c, context);
+  sweepResultFromWalk({ ...pageFromRest(res, c), advisory: null }, c, context);
 
 /** The value that follows `flag` in an argv, or undefined. */
 function argAfter(args: string[], flag: string): string | undefined {
@@ -143,8 +143,8 @@ test("a site that is not a host at all is named as that, and nothing else is a t
 
 // ---- the two rungs' requests ----
 
-// `--raw` is what makes both rungs share one mapper: it prints the API's own envelope
-// instead of a column layout that truncates.
+// `--raw` is what makes both rungs share one mapper: it prints the API's own envelope instead of
+// a column layout that truncates.
 test("the CLI is asked for the API's own JSON, with the filter as one argument", () => {
   const args = jiraIssueListArgs(cfg({ jql: "  project = MC AND status = Open  ", limit: 50 }));
   assert.deepEqual(args, [
@@ -153,19 +153,26 @@ test("the CLI is asked for the API's own JSON, with the filter as one argument",
     "--jql",
     "project = MC AND status = Open",
     "--paginate",
-    "0:50",
+    "0:51",
     "--raw",
   ]);
   assert.equal(args.includes("--plain"), false, "table output would need a parser and truncates");
 });
 
-// The defect this argument exists for: without a page bound, the CLI's own default decided
-// what was fetched, every sweep re-read that same leading page, and a filter matching more
-// than one page could never reach the rest of itself - forever, and looking healthy.
-test("the CLI is asked for a specific page, so the walk can advance", () => {
-  assert.equal(argAfter(jiraIssueListArgs(cfg({ limit: 25 }), 0), "--paginate"), "0:25");
-  assert.equal(argAfter(jiraIssueListArgs(cfg({ limit: 25 }), 25), "--paginate"), "25:25");
-  assert.equal(argAfter(jiraIssueListArgs(cfg({ limit: 25 }), 200), "--paginate"), "200:25");
+// Two claims in one argument, and both are repairs.
+//
+// The offset is ALWAYS 0, because current jira-cli ignores that half against Jira's enhanced
+// search - a second request returns the first page again. A walk built on it does not advance,
+// and the version of this source that tried detected the repeat and stopped with an error, which
+// left a CLI-only machine filing nothing out of any filter bigger than one page.
+//
+// The limit is `limit + 1`, because the limit half IS honoured - so one extra row is an exact
+// answer to "is there anything after this page", with no cursor and no lookahead request. That
+// row is a probe and never a candidate: `readCli` trims it off.
+test("the CLI is asked for one more than the page size, and never an offset", () => {
+  for (const limit of [1, 25, 199, 200]) {
+    assert.equal(argAfter(jiraIssueListArgs(cfg({ limit })), "--paginate"), `0:${limit + 1}`);
+  }
 });
 
 // The endpoint matters: v3's plain `/search` is retired on Jira Cloud, and a source pointed
@@ -262,37 +269,32 @@ test("a page that fits is kept whole, and is not a tail signal", () => {
   assert.equal(held.length, 3);
 });
 
-// Truncation is REPORTED, and the items still come back. Both halves matter: ingest should
-// file the unseen ones it did reach, and the operator has to learn that the tail of this
-// filter is unreachable however many times the sweep runs. Silence there would be the same
-// defect as an empty sweep on a broken credential.
-test("a truncated walk files what it read AND names what to change", () => {
+// An advisory is REPORTED, and the items still come back. Both halves matter: ingest should file
+// the candidates the rung did reach, and the operator has to learn that the tail of this filter is
+// out of reach however many times the sweep runs. Silence there would be the same defect as an
+// empty sweep on a broken credential.
+test("a walk with an advisory files what it read AND names what to change", () => {
   const walk = {
     issues: [ISSUE, { ...ISSUE, key: "MC-43" }],
     error: null,
-    truncated: true,
+    advisory: "this filter is larger than one sweep can read - narrow the JQL",
   };
   const r = sweepResultFromWalk(walk, cfg(), ctx);
   assert.equal(r.items.length, 2, "what it did read is still filed");
-  assert.match(r.error!, /larger than one sweep can read \(1000 issues or 50 requests/);
-  assert.match(r.error!, /narrow the JQL/);
-  // Two bounds, so two fixes: a small page size is what a big filter outran, and saying so
-  // only where it applies keeps the sentence about one thing.
-  assert.doesNotMatch(r.error!, /Issues per page/, "at the default page size, that is not the fix");
-  assert.match(sweepResultFromWalk(walk, cfg({ limit: 5 }), ctx).error!, /raise Issues per page/);
+  assert.equal(r.error, walk.advisory, "verbatim - the sentence is the point");
 });
 
-test("an untruncated walk is a clean success", () => {
-  const r = sweepResultFromWalk({ issues: [ISSUE], error: null, truncated: false }, cfg(), ctx);
+test("a walk with no advisory is a clean success", () => {
+  const r = sweepResultFromWalk({ issues: [ISSUE], error: null, advisory: null }, cfg(), ctx);
   assert.equal(r.error, null);
   assert.equal(r.items.length, 1);
 });
 
-// A rung failure mid-walk is fatal, and never a partial success: pages 1-3 arriving and page 4
-// failing must not read as "the filter holds three pages".
+// A rung failure is fatal, and never a partial success: pages 1-3 arriving and page 4 failing must
+// not read as "the filter holds three pages".
 test("a rung that fails mid-walk reports the failure rather than the pages it had", () => {
   const r = sweepResultFromWalk(
-    { issues: [ISSUE], error: "jira issue list failed: boom", truncated: false },
+    { issues: [ISSUE], error: "jira issue list failed: boom", advisory: null },
     cfg(),
     ctx,
   );

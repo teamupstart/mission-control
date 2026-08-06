@@ -1954,7 +1954,7 @@ else, it never dispatches, and a task you delete stays deleted.
 |---|---|
 | **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - it is parsed and reduced to its host. A value carrying a credential (`your-org.atlassian.net@elsewhere.example`) is **refused**, not reduced: that string names `elsewhere.example` as the server, and the token would be sent there. Defaults to `upstartnetwork.atlassian.net` |
 | **JQL filter** | the query, exactly as Jira's own search bar takes it. **Blank sweeps nothing**, and the panel says so rather than letting it look healthy |
-| **Issues per page** | how many issues **one request** asks Jira for. A sweep keeps asking until the filter is exhausted, so this is a request size, not a limit on what a sweep finds - what actually gets *filed* is bounded by **Most tasks per sweep** above |
+| **Issues per page** | how many issues **one request** asks Jira for. Over REST a sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds; over the `jira` CLI it *is* the whole request, because that CLI cannot be asked for a second page (below). What actually gets *filed* is bounded by **Most tasks per sweep** above |
 | **Take each task's priority from the Jira issue's own** | maps Jira's priority onto the [task's](#priority-and-labels): Highest/Blocker/Critical/`P0` → Blocker, High/Major/`P1` → High, Medium/`P2` → Med, Low/Lowest/Minor/`P3`/`P4` → Low. A name from a custom scheme leaves the source's default in place rather than inventing one. Off, every swept task takes the source's default |
 
 Everything else a Jira query needs - project, status, assignee, labels, ordering - is
@@ -1967,14 +1967,24 @@ agent's first prompt has the actual text rather than a key to go and look up. De
 arrive from Jira Cloud as ADF (a document tree, not a string) and are flattened to the text
 a human wrote; anything past 4000 characters is truncated and says so.
 
-**A sweep reads the whole filter, not its first page.** It pages until the result set is
-exhausted, and the [ledger](#a-task-you-delete-stays-deleted) is what stops the next sweep
-re-filing any of it - so a queue of 400 issues drains at **Most tasks per sweep** per sweep
-instead of stopping after the first page forever. One sweep processes at most **1000 issues**, over at most
-**50 page requests**, whichever it reaches first (plus a single-issue check at that boundary, to
-tell a filter that genuinely ended from one with a tail). A filter bigger than that has a tail
-no sweep can reach, so it is reported on the source ("narrow the JQL…") rather than silently
-truncated.
+**A sweep reads the whole filter, not its first page** - over REST. It pages until the result set
+is exhausted, and the [ledger](#a-task-you-delete-stays-deleted) is what stops the next sweep
+re-filing any of it, so a queue of 400 issues drains at **Most tasks per sweep** per sweep instead
+of stopping after the first page forever. One sweep processes at most **1000 issues** over at most
+**50 requests**, whichever it reaches first; a filter bigger than that has a tail no sweep can
+reach, so it says so on the source rather than truncating silently.
+
+**The `jira` CLI cannot page, and the source no longer pretends it can.** That CLI ignores the
+offset half of its own `--paginate` argument against Jira's search API, so asking for a second
+page returns the first one again. This source therefore makes **one** CLI request - asking for one
+issue more than the page size, which is an exact test for whether anything follows - and then:
+
+- **fits in one request** → that is the whole filter, and the sweep is complete;
+- **more than that, and `JIRA_API_TOKEN` + `JIRA_EMAIL` are set** → the REST rung takes the filter
+  from the top and pages it properly;
+- **more than that, with no credential** → the request it *did* read is filed, plus a sentence
+  saying the tail is out of reach and naming the two ways to change that (set the variables, or
+  narrow the JQL). Work still arrives; it is just bounded, and it says so.
 
 **Auth is a ladder, and no rung of it stores a secret.**
 
@@ -2010,7 +2020,7 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is `NODE_EXTRA_CA_CERTS` |
 | `the jira CLI did not answer within 20s - it may be waiting for input` | the CLI is prompting, which a background sweep cannot answer. Run it once by hand to see what it wants |
 | `the Jira site must be a host, not a URL carrying a credential` | the site names one server and would send the token to another - set it to the host on its own |
-| `this jira CLI does not support --paginate` | too old to be asked for a bounded page, and a sweep that cannot page cannot reach past the first one. `brew upgrade jira-cli`, or set the two variables so the REST rung pages instead |
+| `this jira CLI does not support --paginate` | too old to be asked for a bounded request at all. `brew upgrade jira-cli`, or set the two variables so the REST rung is used instead |
 | `this filter is larger than one sweep can read` | more than 1000 issues (or 50 requests) match, so the tail is unreachable - narrow the JQL |
 
 A sweep reports the same sentences on the source itself, so a failure that happens at 3am
@@ -2019,8 +2029,8 @@ and a preflight reads a single page:
 
 | What the source says | What to do |
 |---|---|
-| `the jira CLI returned the same page again instead of the next one` | it accepted `--paginate` and ignored it, so the filter cannot be read past its first page. `brew upgrade jira-cli`, or set the two variables so the REST rung pages instead. (From Jira itself, suspect a caching proxy) |
-| a transient failure quoted at the end of a large sweep | the check that establishes where a filter ends failed on its own request - the sweep files nothing that tick and the next one re-reads it. The sentence is the CLI's or Jira's own, never "narrow the JQL" |
+| `this filter has more issues than the N one jira CLI request returns` | the CLI cannot page (above). The newest N are filed; set `JIRA_API_TOKEN` + `JIRA_EMAIL` so the REST rung can reach the rest, or narrow the JQL |
+| `Jira returned the same page again instead of the next one` | a REST cursor that is not advancing - suspect a caching proxy between the daemon and Jira |
 
 The one non-zero exit that is *not* a failure: `jira-cli` exits non-zero to say "no result
 found for given query", which is a filter that is simply up to date and stays **healthy**.

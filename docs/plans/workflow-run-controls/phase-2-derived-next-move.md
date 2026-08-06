@@ -26,8 +26,8 @@ In scope:
 2. Restructure `.wf-run-actions` into the primary move, then context controls, keeping the existing
    `.wf-run-actions-danger` group untouched.
 3. The why-sentence (`.wf-run-why`) in the identity block, rendered only when there is no move.
-4. Make `open-pr` conditional on the run's completion policy, and repair the non-null assertion this
-   invalidates.
+4. Gate `open-pr` on a usable PR URL (**not** the completion policy), and repair the non-null assertion
+   that making it conditional invalidates.
 5. Add the two missing `BLOCKED_PHASE_CLAUSES` entries for `unchanged_evidence` and
    `unchanged_evidence_exhausted`.
 
@@ -60,7 +60,7 @@ const openPrAction = gateActions.find((action) => action.kind === "open-pr")!;
 ```
 
 and then dereferences `openPrAction.href`, `.tooltip` and `.label` unconditionally at `713-727`,
-outside any policy guard. `inspectorGateActions` currently pushes `open-pr` unconditionally
+outside any guard at all. `inspectorGateActions` currently pushes `open-pr` unconditionally
 (`run-actions.ts:93-103`), which is what makes the `!` true today. Adding the policy condition
 without repairing this call site throws a `TypeError` for every non-inspector run. The repair is to
 match the existing `preparePrAction`/`recheckAction` shape at `566-567`, which are found without `!`
@@ -246,7 +246,7 @@ at `run-model.ts:1593-1596`.
      `runActionTooltip` supplying the busy copy.
    - Keep the resubmit path routing through the existing `resubmit(unchanged)` handler
      (`1593-1617`) so `unchangedRequest` keeps supplying the request id. Do not reimplement the POST.
-   - Keep `Copy feedback` and the conditional `Open PR` as the context controls after the primary.
+   - Keep `Copy feedback` and the URL-gated `Open PR` as the context controls after the primary.
    - Render `{noMoveReason && <p className="wf-run-why">…</p>}` in the identity block between the
      facts row and the `<small>` timestamps.
 
@@ -330,6 +330,16 @@ Must not change: `runRemedy`'s signature or behaviour, the `.wf-run-actions-dang
 
 ## Cross-phase audit record
 
+- **Corrected after Inspector review round 4 (PR #439).** The Inspector found the source plan's
+  "Files touched" table still said `open-pr` becomes conditional on the policy, contradicting Zone 2 and
+  this phase after the round-3 fix - a summary an implementer could follow straight back into the
+  destination-less state. Rather than fix the one row named, every mention of `open-pr` across all nine
+  artifacts was audited, which turned up the same stale framing in **five files**: the source plan's
+  table and its HTML twin, this phase's scope item 4, its handoff note, and - most consequentially -
+  **Phase 1's non-goal and audit record**, which called the deferred work "the `open-pr` policy
+  condition" and would have handed the wrong mental model to whoever picks up Phase 2. All now say
+  PR-URL gate. Recorded here rather than in Phase 1 because this phase owns the behaviour; Phase 1's
+  wording change is cosmetic and alters none of its scope.
 - **Corrected after Inspector review round 3 (PR #439).** The Inspector found this phase's
   implementation step gated `open-pr` on the completion policy alone, while the adopted design
   (`plan.md` zone 2) says it renders only when `gate.state.prUrl` exists - so an `inspector`-policy run
@@ -370,7 +380,7 @@ Must not change: `runRemedy`'s signature or behaviour, the `.wf-run-actions-dang
   source plan and both HTML renderings were updated to match.
 - **Reconciled against Phase 1.** Same JSX region, so this phase depends on Phase 1 rather than
   running beside it. Phase 1's contract that the version badge owns composer navigation is honoured:
-  no `Open version` button returns. Phase 1 deliberately left `Open PR` alone so the policy condition
+  no `Open version` button returns. Phase 1 deliberately left `Open PR` alone so the URL gate
   and the `!` repair land together here, in one diff.
 - **Reconciled after Phase 3 authoring.** Phase 3 needs `RunNextMove.path` to hold a full path and
   `confirm` to be part of the interface from the start; both were folded into this phase's step 1 so

@@ -591,7 +591,7 @@ once. It should be absent, not disabled, which is rule 2 of the doctrine above.<
 <table>
 <thead><tr><th>File</th><th>Change</th></tr></thead>
 <tbody>
-<tr><td><code>src/web/workflows/run-actions.ts</code></td><td>add <code>runNextMove(detail)</code>; make <code>open-pr</code> conditional on the policy</td></tr>
+<tr><td><code>src/web/workflows/run-actions.ts</code></td><td>add <code>runNextMove(detail)</code>; gate <code>open-pr</code> on a usable <code>gate.state.prUrl</code></td></tr>
 <tr><td><code>src/web/workflows/WorkflowRuns.tsx</code></td><td>rebuild <code>.wf-run-actions</code> as zones; add the audit <code>&lt;details&gt;</code>; link the version badge; add Run again</td></tr>
 <tr><td><code>src/web/styles.css</code></td><td><code>.wf-run-why</code>, <code>.wf-run-audit</code>; keep <code>.wf-run-actions-danger</code></td></tr>
 <tr><td><code>src/web/components/SessionCard.tsx</code>, <code>layouts/ConsoleDetail.tsx</code></td><td>bind chip gate: no <em>open</em> run, not no run ever</td></tr>

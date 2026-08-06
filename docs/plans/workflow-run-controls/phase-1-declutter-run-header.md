@@ -30,7 +30,7 @@ In scope:
 
 Non-goals, owned elsewhere:
 
-- Deriving a single next move, the why-sentence, and the `open-pr` policy condition: **Phase 2**.
+- Deriving a single next move, the why-sentence, and the `open-pr` PR-URL gate: **Phase 2**.
 - `Run this review again` on terminal runs: **Phase 3**.
 - The `＋ workflow` bind chip: **Phase 4**.
 - Any change to `Submit fresh evidence`, `Submit unchanged`, `Prepare PR in session`,
@@ -173,7 +173,7 @@ Must not change: the `download` filenames, the two export routes, or
 ## Cross-phase audit record
 
 - **Initial authoring.** No earlier phases exist. Boundaries chosen so this phase is pure relocation:
-  it deliberately does **not** touch `Open PR`, whose fix requires the policy condition and the
+  it deliberately does **not** touch `Open PR`, whose fix requires the PR-URL gate and the
   non-null-assertion repair that Phase 2 owns, because splitting that across two phases would leave
   a window where `openPrAction!` is dereferenced against a conditional array.
 - **Reconciled after Phase 2 authoring.** Phase 2 restructures the same JSX region

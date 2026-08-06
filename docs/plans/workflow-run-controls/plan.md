@@ -294,7 +294,7 @@ run page's dead ends dead.
 
 | File | Change |
 | --- | --- |
-| `src/web/workflows/run-actions.ts` | add `runNextMove(detail)`; make `open-pr` conditional on the policy |
+| `src/web/workflows/run-actions.ts` | add `runNextMove(detail)`; gate `open-pr` on a usable `gate.state.prUrl` |
 | `src/web/workflows/WorkflowRuns.tsx` | rebuild `.wf-run-actions` as zones; add the audit `<details>`; link the version badge; add Run again |
 | `src/web/styles.css` | `.wf-run-why`, `.wf-run-audit`; keep `.wf-run-actions-danger` |
 | `src/web/components/SessionCard.tsx`, `layouts/ConsoleDetail.tsx` | bind chip gate: no *open* run, not no run ever |

@@ -78,7 +78,7 @@ the others rather than only in the phases that own them.
 | # | Phase | File | Depends on | Delivers |
 | --- | --- | --- | --- | --- |
 | 1 | Declutter the run header | [`phase-1-declutter-run-header.md`](phase-1-declutter-run-header.md) | - | Audit disclosure; version badge absorbs `Open version`; four controls leave the header; clipboard bug fixed |
-| 2 | The derived next move | [`phase-2-derived-next-move.md`](phase-2-derived-next-move.md) | 1 | `runNextMove`; one primary; the why-sentence; `Open PR` conditional; unchanged-evidence prose |
+| 2 | The derived next move | [`phase-2-derived-next-move.md`](phase-2-derived-next-move.md) | 1 | `runNextMove`; one primary; the why-sentence; `Open PR` URL-gated; unchanged-evidence prose |
 | 3 | Run this review again | [`phase-3-run-review-again.md`](phase-3-run-review-again.md) | 2 | Terminal runs offer a fresh run through the existing binding submit route |
 | 4 | The bind chip returns | [`phase-4-bind-chip-returns.md`](phase-4-bind-chip-returns.md) | - | `＋ workflow` reappears once a run is terminal |
 

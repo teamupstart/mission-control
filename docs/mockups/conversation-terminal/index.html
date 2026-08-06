@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Conversation terminal concepts | Mission Control</title>
+    <link rel="stylesheet" href="shell.css" />
+  </head>
+  <body class="overview">
+    <main class="overview-wrap">
+      <header class="overview-head">
+        <div>
+          <p class="overview-kicker">Mission Control · Conversation study</p>
+          <h1>Make the agent feel like a live process.</h1>
+        </div>
+        <p class="overview-intro">
+          Three ways to steer a coding session without falling back to a generic chat window.
+          <strong>The first two feel native to a terminal.</strong> The third spends that familiarity
+          on a quieter reading experience for long-running work.
+        </p>
+      </header>
+
+      <section class="concept-cards" aria-label="Conversation concepts">
+        <a class="concept-card" href="01-native-pty.html">
+          <div class="card-preview" aria-hidden="true">
+            <div class="mini-tabs"><i></i><i></i><i></i><i></i></div>
+            <span class="mini-terminal">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </span>
+            <span class="mini-prompt"></span>
+          </div>
+          <div class="concept-copy">
+            <span class="concept-number">01 · TERMINAL</span>
+            <h2>Native PTY</h2>
+            <p>
+              One continuous prompt and output stream. Human instructions look executable,
+              agent prose reads as stdout, and tool runs fold into command records. No bubbles.
+            </p>
+            <footer>
+              Strongest immersion · Lowest separation
+              <strong>Open concept →</strong>
+            </footer>
+          </div>
+        </a>
+
+        <a class="concept-card" href="02-duplex-console.html">
+          <div class="card-preview" aria-hidden="true">
+            <div class="mini-tabs"><i></i><i></i><i></i><i></i></div>
+            <span class="mini-duplex">
+              <span><i></i><i></i><i></i><i></i><i></i><i></i></span>
+              <span><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            </span>
+            <span class="mini-prompt"></span>
+          </div>
+          <div class="concept-copy">
+            <span class="concept-number">02 · TERMINAL</span>
+            <h2>Duplex Console</h2>
+            <p>
+              A split terminal keeps the agent's narrative in the main channel and transcript-observed
+              tool activity in a sideband. It ends in a compact multiplexer status line.
+            </p>
+            <footer>
+              Best live scan · More screen density
+              <strong>Open concept →</strong>
+            </footer>
+          </div>
+        </a>
+
+        <a class="concept-card" href="03-operator-log.html">
+          <div class="card-preview" aria-hidden="true">
+            <div class="mini-tabs"><i></i><i></i><i></i><i></i></div>
+            <span class="mini-ledger">
+              <span class="rail"></span>
+              <span class="story"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+              <span class="aside"><i></i><i></i><i></i><i></i></span>
+            </span>
+            <span class="mini-prompt"></span>
+          </div>
+          <div class="concept-copy">
+            <span class="concept-number">03 · READING</span>
+            <h2>Operator Log</h2>
+            <p>
+              A chronological field log treats your messages as directives and the agent's work
+              as a readable report. Session purpose and position stay pinned in a context rail.
+            </p>
+            <footer>
+              Best long read · Least terminal-like
+              <strong>Open concept →</strong>
+            </footer>
+          </div>
+        </a>
+      </section>
+
+      <aside class="comparison-note">
+        <span class="key">1–3</span>
+        <span>
+          Use the number keys to move between concepts. Each full view is responsive. This study
+          focuses on layout, information hierarchy, and terminal feel rather than complete app behavior.
+          <b>All three preserve the current product's tabs, worktree context, keyboard language,
+          and dense dark environment.</b>
+        </span>
+      </aside>
+    </main>
+    <script src="mockups.js"></script>
+  </body>
+</html>

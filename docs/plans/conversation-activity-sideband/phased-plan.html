@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Conversation observed activity sideband: phased plan</title>
+  <style>
+    :root {
+      --bg: #eef0ea;
+      --panel: #fafbf7;
+      --ink: #18211c;
+      --muted: #637067;
+      --line: #c8d0c9;
+      --accent: #176b57;
+      --soft: #d9ece5;
+      --hot: #bc512c;
+      --hot-soft: #f3ded5;
+      --terminal: #101713;
+      --terminal-ink: #cbefdc;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101411;
+        --panel: #18201b;
+        --ink: #edf4ee;
+        --muted: #a7b4ab;
+        --line: #344039;
+        --accent: #71d0b6;
+        --soft: #1d4539;
+        --hot: #f09a75;
+        --hot-soft: #472d23;
+        --terminal: #080d0a;
+        --terminal-ink: #c8f0da;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; min-width: 0; background: var(--bg); color: var(--ink); font: 16px/1.58 var(--sans); }
+    a { color: var(--accent); text-underline-offset: .18em; }
+    code { font-family: var(--mono); font-size: .9em; }
+    .frame { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100vh; }
+    aside.nav {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      height: 100vh;
+      overflow: auto;
+      padding: 28px 22px;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .mark { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 28px; border-radius: 8px; background: var(--terminal); color: var(--terminal-ink); font: 800 19px/1 var(--mono); }
+    .nav .label, .eyebrow { color: var(--accent); font: 700 11px/1.2 var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+    .nav h2 { margin: 8px 0 24px; font-size: 18px; line-height: 1.15; }
+    .nav a { display: block; margin: 5px 0; padding: 8px 10px; border-radius: 7px; color: var(--muted); font-size: 13px; text-decoration: none; }
+    .nav a:hover { background: var(--soft); color: var(--ink); }
+    .nav .resources { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+    main { min-width: 0; padding: clamp(28px, 6vw, 76px); }
+    .wrap { width: min(920px, 100%); margin: 0 auto; }
+    header { margin-bottom: 64px; }
+    h1 { max-width: 780px; margin: 12px 0 18px; font-size: clamp(42px, 7vw, 78px); line-height: .96; letter-spacing: -.052em; }
+    .lede { max-width: 700px; color: var(--muted); font-size: 19px; }
+    .badge { display: inline-flex; gap: 8px; align-items: center; margin-top: 18px; border: 1px solid var(--accent); border-radius: 999px; padding: 7px 11px; background: var(--soft); color: var(--accent); font: 700 12px/1 var(--mono); }
+    .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    section { margin: 64px 0; scroll-margin-top: 28px; }
+    h2 { margin: 7px 0 18px; font-size: clamp(27px, 4vw, 40px); line-height: 1.06; letter-spacing: -.035em; }
+    h3 { margin: 0 0 8px; font-size: 18px; }
+    p { max-width: 76ch; }
+    .decision {
+      border-left: 4px solid var(--hot);
+      padding: 18px 22px;
+      background: var(--hot-soft);
+    }
+    .decision p { margin: 0; }
+    .findings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .finding { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: var(--panel); }
+    .finding b { display: block; margin-bottom: 6px; color: var(--accent); font: 700 12px/1.2 var(--mono); }
+    .finding p { margin: 0; color: var(--muted); font-size: 14px; }
+    .phase {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--accent);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: 0 16px 40px color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+    .phase-head { display: grid; grid-template-columns: 110px minmax(0, 1fr); border-bottom: 1px solid var(--line); }
+    .phase-num { display: grid; place-items: center; min-height: 150px; background: var(--terminal); color: var(--terminal-ink); font: 800 56px/1 var(--mono); }
+    .phase-title { padding: 26px; }
+    .phase-title h3 { margin: 5px 0 9px; font-size: 27px; }
+    .phase-title p { margin: 0; color: var(--muted); }
+    .phase-body { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; padding: 24px 26px; }
+    .phase ul, .audit-list, .verify-list { margin: 9px 0 0; padding-left: 20px; }
+    .phase li, .audit-list li, .verify-list li { margin: 7px 0; }
+    .phase-link { display: inline-block; margin-top: 14px; border-radius: 7px; padding: 9px 12px; background: var(--accent); color: var(--panel); font: 700 12px/1 var(--mono); text-decoration: none; }
+    .sequence { display: grid; grid-template-columns: 1fr 50px 1fr 50px 1fr; align-items: center; gap: 4px; }
+    .step { min-height: 120px; border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: var(--panel); }
+    .step b { color: var(--accent); font: 700 12px/1.2 var(--mono); }
+    .step p { margin: 8px 0 0; font-size: 14px; }
+    .arrow { color: var(--hot); text-align: center; font: 700 24px/1 var(--mono); }
+    .contracts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--line); }
+    .contract { padding: 17px; background: var(--panel); }
+    .contract b { display: block; margin-bottom: 5px; color: var(--accent); font: 700 12px/1.2 var(--mono); }
+    .contract p { margin: 0; color: var(--muted); font-size: 13px; }
+    .terminal {
+      border-radius: 12px;
+      background: var(--terminal);
+      color: var(--terminal-ink);
+      padding: 20px;
+      font: 13px/1.75 var(--mono);
+    }
+    .terminal strong { color: var(--hot); }
+    .terminal .line { display: block; }
+    footer { margin-top: 76px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--muted); font: 12px/1.5 var(--mono); }
+    @media (max-width: 840px) {
+      .frame { grid-template-columns: 1fr; }
+      aside.nav { position: static; width: auto; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      .nav .mark { margin-bottom: 12px; }
+      .nav h2 { margin-bottom: 12px; }
+      .nav-links { display: flex; flex-wrap: wrap; }
+      .nav .resources { margin-top: 10px; padding-top: 10px; }
+    }
+    @media (max-width: 620px) {
+      main { padding: 28px 16px 50px; }
+      .findings, .phase-body, .contracts { grid-template-columns: 1fr; }
+      .phase-head { grid-template-columns: 72px minmax(0, 1fr); }
+      .phase-num { font-size: 38px; }
+      .phase-title { padding: 20px; }
+      .sequence { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); padding: 4px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <aside class="nav">
+      <div class="mark" aria-hidden="true">01</div>
+      <div class="label">Implementation packet</div>
+      <h2>Observed activity sideband</h2>
+      <nav class="nav-links" aria-label="Page sections">
+        <a href="#decision">Decision</a>
+        <a href="#findings">Findings</a>
+        <a href="#phase">Phase 1</a>
+        <a href="#order">Merge order</a>
+        <a href="#contracts">Contracts</a>
+        <a href="#verification">Release bar</a>
+      </nav>
+      <div class="resources">
+        <div class="label">Resources</div>
+        <a href="plan.html">Source plan</a>
+        <a href="phase-1-observed-activity-sideband.md">Detailed phase</a>
+        <a href="../../mockups/conversation-terminal/02-duplex-console.html">Duplex Console</a>
+        <a href="phased-plan.md">Markdown source</a>
+      </div>
+    </aside>
+
+    <main>
+      <div class="wrap">
+        <header>
+          <div class="eyebrow">Merge-aware phased plan</div>
+          <h1>One phase. One honest vertical slice.</h1>
+          <p class="lede">The activity model, responsive rail, Find interaction, geometry proof, browser behavior, and documentation share ownership and should land together.</p>
+          <div class="badge">Ready to schedule after push</div>
+        </header>
+
+        <section id="decision">
+          <div class="eyebrow">Human decision incorporated</div>
+          <h2>Scope 1 is fixed.</h2>
+          <div class="decision"><p>The operator selected an observed-only browser projection over existing transcript tool calls and requested scheduling on August 6, 2026. Lifecycle telemetry and operating-system process monitoring are excluded. No product choice remains open in this packet.</p></div>
+        </section>
+
+        <section id="findings">
+          <div class="eyebrow">Repository findings</div>
+          <h2>The seams already exist.</h2>
+          <div class="findings">
+            <article class="finding"><b>CANONICAL STATE</b><p><code>TranscriptPanel</code> owns loaded messages in both Conversation hosts.</p></article>
+            <article class="finding"><b>COMPLETE INPUT</b><p>Activity must read messages directly because folded transcript rows can omit tools attached to prose.</p></article>
+            <article class="finding"><b>SHARED PROJECTION</b><p><code>toolChip()</code> already normalizes compact labels and targets.</p></article>
+            <article class="finding"><b>RAIL OWNERSHIP</b><p>Find already owns the secondary column and narrow-container transition.</p></article>
+            <article class="finding"><b>GEOMETRY PROOF</b><p>Existing Electron coverage measures log, composer, Find, Console detail, and expanded cards.</p></article>
+            <article class="finding"><b>BROWSER PROOF</b><p>User-visible behavior belongs in Playwright and must use fake agent binaries.</p></article>
+          </div>
+        </section>
+
+        <section id="phase">
+          <div class="eyebrow">Phase topology</div>
+          <h2>The complete implementation route.</h2>
+          <article class="phase">
+            <div class="phase-head">
+              <div class="phase-num">1</div>
+              <div class="phase-title">
+                <div class="eyebrow">Concurrency group A · planning PR dependency</div>
+                <h3>Observed activity sideband</h3>
+                <p>A tested, documented transcript-derived rail in Console detail and expanded session cards.</p>
+              </div>
+            </div>
+            <div class="phase-body">
+              <div>
+                <h3>Build</h3>
+                <ul>
+                  <li>Pure activity projection over loaded messages</li>
+                  <li>Accessible wide rail and narrow treatment</li>
+                  <li>Exclusive rail ownership with Find</li>
+                  <li>README observed-only contract</li>
+                </ul>
+              </div>
+              <div>
+                <h3>Prove</h3>
+                <ul>
+                  <li>Projection unit tests</li>
+                  <li>Electron geometry in both hosts</li>
+                  <li>Playwright with deterministic fake tools</li>
+                  <li>Full release checks and visual pass</li>
+                </ul>
+                <a class="phase-link" href="phase-1-observed-activity-sideband.md">Read detailed phase →</a>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section id="order">
+          <div class="eyebrow">Merge order</div>
+          <h2>The task is intentionally held by this PR.</h2>
+          <div class="sequence" role="list" aria-label="Merge and implementation sequence">
+            <article class="step" role="listitem"><b>1 · PLAN</b><p>Commit and push mockups plus all plan artifacts.</p></article>
+            <div class="arrow" aria-hidden="true">→</div>
+            <article class="step" role="listitem"><b>2 · RELEASE</b><p>Merge this planning PR to release the dependency-linked phase task.</p></article>
+            <div class="arrow" aria-hidden="true">→</div>
+            <article class="step" role="listitem"><b>3 · IMPLEMENT</b><p>Land Phase 1 only after its complete exit gate is green.</p></article>
+          </div>
+        </section>
+
+        <section id="contracts">
+          <div class="eyebrow">Compatibility audit</div>
+          <h2>No new source of truth.</h2>
+          <div class="contracts">
+            <article class="contract"><b>SHARED TYPES</b><p>No wire or persisted schema change.</p></article>
+            <article class="contract"><b>SERVER</b><p>No route, stream, poller, hook field, or database writer.</p></article>
+            <article class="contract"><b>WEB</b><p>One projection from canonical transcript state.</p></article>
+            <article class="contract"><b>LAYOUT</b><p>Reuse the secondary column and narrow transition.</p></article>
+            <article class="contract"><b>SEARCH</b><p>Transcript remains canonical; activity does not double-count.</p></article>
+            <article class="contract"><b>HARNESSES</b><p>All degrade through the same normalized tool shape.</p></article>
+          </div>
+          <ul class="audit-list">
+            <li>Observed language never becomes an implied lifecycle state.</li>
+            <li>Find owns the rail while open; activity returns on close.</li>
+            <li>The composer remains pinned and accessible in both host contexts.</li>
+            <li>Future lifecycle work remains a separate cross-harness contract.</li>
+          </ul>
+        </section>
+
+        <section id="verification">
+          <div class="eyebrow">Final verification</div>
+          <h2>Phase 1 is the release candidate.</h2>
+          <div class="terminal" aria-label="Release verification list">
+            <span class="line"><strong>01</strong> focused activity projection tests</span>
+            <span class="line"><strong>02</strong> Electron Conversation geometry coverage</span>
+            <span class="line"><strong>03</strong> typecheck + lint + full unit suite</span>
+            <span class="line"><strong>04</strong> production build + bundle smoke</span>
+            <span class="line"><strong>05</strong> focused + full Playwright with fake agents</span>
+            <span class="line"><strong>06</strong> desktop + narrow manual visual verification</span>
+            <span class="line"><strong>07</strong> README consistency review</span>
+          </div>
+          <p>The detailed phase is the proposed route, not the specification. The implementer uses judgment, preserves the contracts, and records material deviations in the implementation PR.</p>
+        </section>
+
+        <section>
+          <div class="decision"><p><strong>Scheduling rule:</strong> create the phase task only after this packet and all linked mockups are committed and pushed. Record its task ID in the planning PR description and make it depend on the current planning session so the merge releases the work.</p></div>
+        </section>
+
+        <footer>Conversation observed activity sideband · phased-plan.md · 2026-08-06</footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

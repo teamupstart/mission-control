@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>02 Duplex Console | Conversation terminal concepts</title>
+    <link rel="stylesheet" href="shell.css" />
+  </head>
+  <body class="concept-duplex">
+    <nav class="mockbar" aria-label="Mockup navigation">
+      <b>Conversation study</b>
+      <a href="index.html">All options</a>
+      <span class="spacer"></span>
+      <a href="01-native-pty.html">1 Native PTY</a>
+      <a href="02-duplex-console.html" aria-current="page">2 Duplex</a>
+      <a href="03-operator-log.html">3 Operator Log</a>
+    </nav>
+
+    <header class="concept-note">
+      <div>
+        <h1>02 · Duplex Console</h1>
+        <p>
+          Prose and observed tool activity travel on parallel channels. The main terminal stays
+          readable while the sideband answers “what actions appeared in this transcript?” at a glance.
+        </p>
+      </div>
+      <span class="terminal-tag">▥ Multiplexer feel</span>
+    </header>
+
+    <nav class="app-tabs" aria-label="Session sections">
+      <button class="app-tab active" type="button"><kbd>g</kbd>Conversation</button>
+      <button class="app-tab" type="button"><kbd>q</kbd>Work queue</button>
+      <button class="app-tab" type="button"><kbd>y</kbd>Workflows</button>
+      <button class="app-tab" type="button"><kbd>d</kbd>Diff</button>
+      <button class="app-tab" type="button"><kbd>⇧F</kbd>Files</button>
+    </nav>
+
+    <main class="duplex-window">
+      <div class="session-context">
+        <span class="label">Worktree</span>
+        <span class="path">/Users/jordanmance/.treehouse/ai-harness-c7356c/32/ai-harness</span>
+        <span class="spacer"></span>
+        <button class="quiet-btn" type="button" data-action="Opening a shell in Ghostty">
+          <span class="glyph">❯_</span> Terminal <span aria-hidden="true">⌄</span>
+        </button>
+        <button class="quiet-btn" type="button" data-action="Focusing the live Codex session">
+          <span class="glyph">◆</span> Codex <span aria-hidden="true">⌄</span>
+        </button>
+      </div>
+
+      <section class="duplex-frame" aria-label="Duplex console conversation mockup">
+        <header class="duplex-head">
+          <span><i aria-hidden="true"></i><b>Channel 0</b> agent output · follow on</span>
+          <span><b>Channel 1</b> observed tools · transcript</span>
+        </header>
+
+        <div class="duplex-grid">
+          <section class="output-pane" aria-label="Agent output">
+            <p class="terminal-welcome">
+              mission attach codex@97533<br />
+              connected to session 019c4e · scrollback 327 lines · utf-8
+            </p>
+
+            <article class="duplex-turn agent">
+              <header class="duplex-role">codex <time datetime="2026-08-06T07:29:00-04:00">07:29:00</time></header>
+              <p class="duplex-copy">
+                The interaction contract is ready for implementation. The persistent directive stays
+                scoped to the workflow run and Persona node, then each claimed Persona attempt records
+                the exact directive it received.
+              </p>
+            </article>
+
+            <article class="duplex-turn user">
+              <header class="duplex-role">operator <time datetime="2026-08-06T07:31:00-04:00">07:31:00</time></header>
+              <p class="duplex-copy">looks good, go ahead and implement it</p>
+            </article>
+
+            <article class="duplex-turn agent">
+              <header class="duplex-role">codex <time datetime="2026-08-06T07:31:08-04:00">07:31:08</time></header>
+              <p class="duplex-copy">
+                I’m implementing the approved interaction and persistence contract now. I’ll keep the
+                feedback scoped to (workflow run, Persona node), apply it to the next eligible Persona
+                execution and every later round until removed, and preserve it in run history.
+              </p>
+              <p class="duplex-copy">
+                Because this changes visible workflow behavior, I’m using the approved mockup and will
+                add Playwright coverage alongside focused server and prompt tests.
+              </p>
+            </article>
+
+            <article class="duplex-turn agent">
+              <header class="duplex-role">codex <time datetime="2026-08-06T07:32:11-04:00">07:32:11</time></header>
+              <p class="duplex-copy">
+                I’ve settled the storage model: active directives live on the run, keyed by Persona
+                node, while every claimed Persona attempt receives an immutable snapshot of the
+                directive it actually used. That gives us persistence across rounds and accurate
+                history if the feedback is edited or removed later.
+              </p>
+            </article>
+          </section>
+
+          <aside class="event-pane" aria-label="Observed transcript tool activity">
+            <div class="event-group">
+              <div class="event-time">07:31:12 · observed in transcript</div>
+              <div class="event-line"><span class="event-kind">search</span><code>PersonaDirective</code></div>
+              <div class="event-line"><span class="event-kind">read</span><code>src/server/workflows/runner.ts</code></div>
+              <div class="event-line"><span class="event-kind">git</span><code>status --short</code></div>
+              <span class="event-count">3 tool invocations</span>
+            </div>
+
+            <div class="event-group">
+              <div class="event-time">07:32:16 · observed in transcript</div>
+              <div class="event-line"><span class="event-kind">patch</span><code>src/server/db.ts</code></div>
+              <div class="event-line"><span class="event-kind">patch</span><code>src/shared/protocol.ts</code></div>
+              <div class="event-line"><span class="event-kind">patch</span><code>ExecutionPage.tsx</code></div>
+              <div class="event-line"><span class="event-kind">test</span><code>workflow-run-actions</code></div>
+              <span class="event-count">4 tool invocations</span>
+            </div>
+
+            <div class="event-group">
+              <div class="event-time">07:33:02 · observed in transcript</div>
+              <div class="event-line"><span class="event-kind">read</span><code>e2e/README.md</code></div>
+              <div class="event-line"><span class="event-kind">write</span><code>persona-directives.spec.ts</code></div>
+            </div>
+          </aside>
+        </div>
+
+        <form class="duplex-compose" data-composer>
+          <div class="duplex-prompt">
+            <label for="duplex-input">operator</label>
+            <input
+              id="duplex-input"
+              name="instruction"
+              autocomplete="off"
+              placeholder="Send the next instruction…"
+            />
+            <span class="send-key">enter</span>
+          </div>
+          <div class="sideband-status"><b>● transcript stream open</b><span>loaded window · observed only</span></div>
+        </form>
+
+        <footer class="muxbar">
+          <span class="mux-session">[mc:persona-directives]</span>
+          <span class="mux-window">0:conversation*</span>
+          <span>1:diff</span>
+          <span>2:files</span>
+          <span class="mux-spacer"></span>
+          <span class="mux-working">codex working</span>
+          <span>07:34</span>
+        </footer>
+      </section>
+    </main>
+
+    <output class="toast" data-toast aria-live="polite"></output>
+    <script src="mockups.js"></script>
+  </body>
+</html>

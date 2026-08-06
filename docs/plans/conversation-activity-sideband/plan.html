@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Conversation observed activity sideband</title>
+  <style>
+    :root {
+      --paper: #f4f1e8;
+      --panel: #fffdf7;
+      --ink: #17211d;
+      --muted: #5d6862;
+      --line: #c9cec5;
+      --strong-line: #8f9b92;
+      --accent: #0f6f5d;
+      --accent-soft: #d8eee6;
+      --signal: #bd4b22;
+      --signal-soft: #f5ded4;
+      --code: #16241f;
+      --code-ink: #d8f7e9;
+      --shadow: 0 14px 42px rgba(29, 43, 36, .09);
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #111613;
+        --panel: #18201c;
+        --ink: #edf4ee;
+        --muted: #abb9b0;
+        --line: #35443b;
+        --strong-line: #617269;
+        --accent: #77d5bd;
+        --accent-soft: #1f493e;
+        --signal: #f19a73;
+        --signal-soft: #4a2d22;
+        --code: #0a0f0c;
+        --code-ink: #c9f4df;
+        --shadow: 0 18px 52px rgba(0, 0, 0, .28);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 0;
+      background:
+        linear-gradient(var(--line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line) 1px, transparent 1px),
+        var(--paper);
+      background-size: 32px 32px;
+      color: var(--ink);
+      font: 16px/1.6 var(--sans);
+    }
+    a { color: var(--accent); text-underline-offset: .18em; }
+    a:hover { text-decoration-thickness: 2px; }
+    code { font-family: var(--mono); font-size: .9em; }
+    main { width: min(1160px, calc(100% - 32px)); margin: 32px auto 72px; }
+    .sheet {
+      overflow: hidden;
+      border: 1px solid var(--strong-line);
+      border-radius: 20px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .masthead {
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) minmax(240px, .5fr);
+      gap: 28px;
+      padding: clamp(28px, 5vw, 64px);
+      border-bottom: 1px solid var(--line);
+    }
+    .kicker, .eyebrow {
+      color: var(--accent);
+      font: 700 12px/1.2 var(--mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 820px;
+      margin: 12px 0 16px;
+      font-size: clamp(40px, 7vw, 84px);
+      line-height: .94;
+      letter-spacing: -.055em;
+    }
+    .lede { max-width: 720px; margin: 0; color: var(--muted); font-size: 19px; }
+    .status-card {
+      align-self: end;
+      border-left: 4px solid var(--signal);
+      padding: 4px 0 4px 18px;
+    }
+    .status-card strong { display: block; margin: 5px 0; font-size: 21px; }
+    .status-card p { margin: 0; color: var(--muted); }
+    .toplinks { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+    .toplinks a {
+      border: 1px solid var(--strong-line);
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: var(--paper);
+      color: var(--ink);
+      font: 650 13px/1.2 var(--mono);
+      text-decoration: none;
+    }
+    .toplinks a:first-child { border-color: var(--accent); background: var(--accent); color: var(--panel); }
+    .content { padding: clamp(24px, 5vw, 60px); }
+    .decision {
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      gap: 22px;
+      margin-bottom: 52px;
+      padding: 24px;
+      border: 1px solid var(--accent);
+      border-radius: 14px;
+      background: var(--accent-soft);
+    }
+    .decision p { margin: 0; font-size: 18px; }
+    section { margin: 58px 0; scroll-margin-top: 20px; }
+    h2 { margin: 0 0 18px; font-size: clamp(26px, 4vw, 42px); line-height: 1.05; letter-spacing: -.035em; }
+    h3 { margin: 0 0 8px; font-size: 18px; }
+    p { max-width: 78ch; }
+    .facts, .experience, .checks {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .fact, .experience article, .check {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      background: color-mix(in srgb, var(--panel) 90%, var(--paper));
+    }
+    .fact b { display: block; margin-bottom: 6px; color: var(--accent); font: 700 13px/1.2 var(--mono); }
+    .fact p, .experience p, .check p { margin: 0; color: var(--muted); font-size: 14px; }
+    .flow {
+      overflow: hidden;
+      border: 1px solid var(--strong-line);
+      border-radius: 16px;
+      background: var(--code);
+      color: var(--code-ink);
+      padding: 16px;
+    }
+    .flow svg { display: block; width: 100%; height: auto; min-height: 260px; }
+    .flow text { fill: var(--code-ink); font-family: var(--mono); }
+    .flow .node { fill: #1d3028; stroke: #70bda4; stroke-width: 1.5; }
+    .flow .new { fill: #3b271e; stroke: #ee9169; }
+    .flow .edge { stroke: #78a994; stroke-width: 2; fill: none; }
+    .flow .branch { stroke: #ee9169; }
+    .flow figcaption { color: #a7cbbb; font: 13px/1.5 var(--mono); }
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, .48fr);
+      gap: 28px;
+      align-items: start;
+    }
+    ol.requirements { margin: 0; padding: 0; list-style: none; counter-reset: req; }
+    .requirements li {
+      counter-increment: req;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+      padding: 13px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .requirements li::before {
+      content: "R" counter(req);
+      color: var(--accent);
+      font: 700 12px/1.7 var(--mono);
+    }
+    .warning {
+      border-top: 4px solid var(--signal);
+      border-radius: 10px;
+      padding: 20px;
+      background: var(--signal-soft);
+    }
+    .warning h3 { color: var(--signal); }
+    .warning ul, .plain-list { margin: 12px 0 0; padding-left: 20px; }
+    .warning li, .plain-list li { margin: 7px 0; }
+    .acceptance {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--line);
+    }
+    .acceptance div { position: relative; padding: 18px 18px 18px 48px; background: var(--panel); }
+    .acceptance div::before {
+      content: "✓";
+      position: absolute;
+      left: 18px;
+      color: var(--accent);
+      font-weight: 800;
+    }
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px clamp(24px, 5vw, 60px);
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font: 12px/1.4 var(--mono);
+    }
+    @media (max-width: 820px) {
+      .masthead, .decision, .split { grid-template-columns: 1fr; }
+      .facts, .experience, .checks { grid-template-columns: 1fr 1fr; }
+      .status-card { align-self: auto; }
+    }
+    @media (max-width: 560px) {
+      main { width: min(100% - 16px, 1160px); margin-top: 8px; }
+      .sheet { border-radius: 12px; }
+      .facts, .experience, .checks, .acceptance { grid-template-columns: 1fr; }
+      .masthead, .content { padding: 24px 18px; }
+      .decision { padding: 18px; }
+      .footer { flex-direction: column; padding: 18px; }
+      .flow { padding: 8px; }
+      .flow svg { min-height: 420px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <main>
+    <article class="sheet">
+      <header class="masthead">
+        <div>
+          <div class="kicker">Mission Control / Product plan / Scope 1</div>
+          <h1>Observed activity, without pretending it is telemetry.</h1>
+          <p class="lede">A compact Conversation sideband built from transcript data Mission Control already receives. It helps people scan agent actions while staying honest about what the system can prove.</p>
+          <nav class="toplinks" aria-label="Plan resources">
+            <a href="phased-plan.html">Review implementation phase</a>
+            <a href="../../mockups/conversation-terminal/02-duplex-console.html">Open Duplex Console</a>
+            <a href="../../mockups/conversation-terminal/index.html">Compare all mockups</a>
+            <a href="plan.md">Markdown source</a>
+          </nav>
+        </div>
+        <aside class="status-card">
+          <span class="eyebrow">Decision recorded</span>
+          <strong>Scope 1 approved</strong>
+          <p>Selected and authorized for phasing and scheduling on August 6, 2026.</p>
+        </aside>
+      </header>
+
+      <div class="content">
+        <div class="decision">
+          <div class="eyebrow">The promise</div>
+          <p>Show that a tool invocation was observed, its approximate transcript time, and a display-safe target. Never claim that it is running, complete, successful, failed, or of a known duration.</p>
+        </div>
+
+        <section id="problem">
+          <div class="eyebrow">Problem</div>
+          <h2>Agent prose is readable. Agent action is buried.</h2>
+          <p>Conversation already contains inline tool chips, but they are hard to scan across a long exchange. The Duplex Console concept adds a secondary channel that answers a narrower question: what actions has the agent attempted while producing this conversation?</p>
+          <div class="facts">
+            <article class="fact"><b>AVAILABLE NOW</b><p>Tool name, optional recorded input, and approximate message time.</p></article>
+            <article class="fact"><b>ALREADY STREAMED</b><p>Per-session transcript SSE with reconnect and older scrollback.</p></article>
+            <article class="fact"><b>NOT UNIFORM</b><p>Result, duration, lifecycle state, and stable invocation identity.</p></article>
+          </div>
+        </section>
+
+        <section id="experience">
+          <div class="eyebrow">Intended experience</div>
+          <h2>One source, two reading modes.</h2>
+          <div class="experience">
+            <article><h3>Wide surfaces</h3><p>A right-side Observed activity rail shows time, tool label, and a compact target. Transcript and rail scroll independently; composer stays pinned.</p></article>
+            <article><h3>Narrow surfaces</h3><p>Activity stacks or collapses instead of permanently squeezing the transcript. Console detail and expanded cards share the same behavior.</p></article>
+            <article><h3>Find interaction</h3><p>Find owns the secondary rail while open. Closing Find restores activity. Search remains canonical to the transcript, without duplicate matches.</p></article>
+            <article><h3>Empty state</h3><p>The rail says “No observed tool activity yet.” It does not imply a connection failure or disable an otherwise usable composer.</p></article>
+            <article><h3>History</h3><p>Older loaded messages add older activity. The activity window intentionally matches the loaded transcript window.</p></article>
+            <article><h3>Reconnect</h3><p>The rail re-derives from deduplicated transcript state rather than maintaining a second event cache.</p></article>
+          </div>
+        </section>
+
+        <section id="flow">
+          <div class="eyebrow">Data flow</div>
+          <h2>The server path stays exactly where it is.</h2>
+          <figure class="flow">
+            <svg viewBox="0 0 1000 300" role="img" aria-labelledby="flow-title flow-desc" preserveAspectRatio="xMidYMid meet">
+              <title id="flow-title">Existing transcript flow with new browser projection</title>
+              <desc id="flow-desc">Harness transcript files pass through the current parser and transcript server-sent events into TranscriptPanel messages. Those messages feed the current conversation transcript and the new observed activity projection.</desc>
+              <defs>
+                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#78a994"/></marker>
+                <marker id="arrow-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#ee9169"/></marker>
+              </defs>
+              <rect class="node" x="20" y="108" width="180" height="72" rx="10"/>
+              <text x="110" y="138" text-anchor="middle" font-size="14"><tspan x="110">Harness transcript</tspan><tspan x="110" dy="20">files</tspan></text>
+              <path class="edge" d="M200 144 H270" marker-end="url(#arrow)"/>
+              <rect class="node" x="280" y="108" width="180" height="72" rx="10"/>
+              <text x="370" y="138" text-anchor="middle" font-size="14"><tspan x="370">Existing transcript</tspan><tspan x="370" dy="20">parser + SSE</tspan></text>
+              <path class="edge" d="M460 144 H530" marker-end="url(#arrow)"/>
+              <rect class="node" x="540" y="108" width="180" height="72" rx="10"/>
+              <text x="630" y="138" text-anchor="middle" font-size="14"><tspan x="630">TranscriptPanel</tspan><tspan x="630" dy="20">messages</tspan></text>
+              <path class="edge" d="M720 132 C765 132 765 70 810 70" marker-end="url(#arrow)"/>
+              <rect class="node" x="820" y="34" width="160" height="72" rx="10"/>
+              <text x="900" y="64" text-anchor="middle" font-size="14"><tspan x="900">Conversation</tspan><tspan x="900" dy="20">transcript</tspan></text>
+              <path class="edge branch" d="M720 156 C765 156 765 228 810 228" marker-end="url(#arrow-new)"/>
+              <rect class="node new" x="820" y="192" width="160" height="72" rx="10"/>
+              <text x="900" y="220" text-anchor="middle" font-size="14"><tspan x="900">Observed activity</tspan><tspan x="900" dy="20">projection</tspan></text>
+            </svg>
+            <figcaption>Orange marks the only new data consumer. No new event, route, hook, parser, or database path is introduced.</figcaption>
+          </figure>
+        </section>
+
+        <section id="requirements" class="split">
+          <div>
+            <div class="eyebrow">Requirements</div>
+            <h2>Small surface, strict contract.</h2>
+            <ol class="requirements">
+              <li>Derive activity only from messages already held by <code>TranscriptPanel</code>.</li>
+              <li>Include every loaded invocation once, including tools attached to prose turns.</li>
+              <li>Reuse the existing tool label and target projection.</li>
+              <li>Avoid result, status, duration, and process-coverage implications.</li>
+              <li>Preserve stream, scrollback, reconnect, composer, and eviction behavior.</li>
+              <li>Give Find temporary ownership of the secondary rail.</li>
+              <li>Preserve geometry in both Conversation hosts and at narrow widths.</li>
+              <li>Use semantic, keyboard-accessible controls without <code>data-testid</code>.</li>
+              <li>Document the observed-only meaning in the README.</li>
+            </ol>
+          </div>
+          <aside class="warning">
+            <h3>Explicitly outside Scope 1</h3>
+            <ul>
+              <li>Operating-system process capture</li>
+              <li>Raw command output</li>
+              <li>Success, failure, duration, or counts</li>
+              <li>New server events or database state</li>
+              <li>Cross-source lifecycle reconciliation</li>
+              <li>Changes to harness transcript semantics</li>
+              <li>Replacement of inline tool chips</li>
+            </ul>
+          </aside>
+        </section>
+
+        <section id="compatibility">
+          <div class="eyebrow">Compatibility and privacy</div>
+          <h2>No new contract, and no extra raw input.</h2>
+          <p>Wire contracts, persisted schemas, and harness protocols remain unchanged. Missing or partial input falls back to the normalized tool name. The sideband may expose no more raw input than the existing <code>toolChip()</code> projection already considers suitable for display.</p>
+        </section>
+
+        <section id="verification">
+          <div class="eyebrow">Verification strategy</div>
+          <h2>Prove projection, geometry, and real browser behavior.</h2>
+          <div class="checks">
+            <article class="check"><h3>Pure model</h3><p>Mixed turns, multiple tools, missing input, ordering, rerenders, and prepended history.</p></article>
+            <article class="check"><h3>Electron geometry</h3><p>Both hosts, wide and narrow, Find open and closed, pinned composer, and independent scroll.</p></article>
+            <article class="check"><h3>Playwright</h3><p>Built dashboard and fake agents only, including Find takeover and narrow operation.</p></article>
+            <article class="check"><h3>Release bar</h3><p>Typecheck, lint, unit tests, build, smoke, and relevant full e2e.</p></article>
+            <article class="check"><h3>Visual pass</h3><p>Desktop and narrow comparison to the Duplex Console direction.</p></article>
+            <article class="check"><h3>Documentation</h3><p>README describes loaded-transcript scope and the absence of lifecycle guarantees.</p></article>
+          </div>
+        </section>
+
+        <section id="acceptance">
+          <div class="eyebrow">Acceptance</div>
+          <h2>What must be true when the phase lands.</h2>
+          <div class="acceptance">
+            <div>Tool invocations are scannable without leaving Conversation.</div>
+            <div>No unsupported lifecycle fact appears in the rail.</div>
+            <div>Live updates, reconnect, and older scrollback remain consistent.</div>
+            <div>Find and activity never compete for the same secondary space.</div>
+            <div>Composer and transcript remain usable without host-page overflow.</div>
+            <div>Console detail and expanded cards behave the same.</div>
+            <div>Browser coverage proves the feature with fake-agent fixtures.</div>
+            <div>README and UI use the same observed-only contract.</div>
+          </div>
+        </section>
+
+        <section>
+          <div class="decision">
+            <div class="eyebrow">Delivery</div>
+            <p><strong>One coherent phase.</strong> Projection, UI, responsive geometry, tests, and documentation form one merge-safe vertical slice. <a href="phased-plan.html">Review the scheduled implementation route.</a></p>
+          </div>
+        </section>
+      </div>
+
+      <footer class="footer">
+        <span>Conversation observed activity sideband</span>
+        <span>Rendered from plan.md · 2026-08-06</span>
+      </footer>
+    </article>
+  </main>
+</body>
+</html>

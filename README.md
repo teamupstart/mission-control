@@ -3719,10 +3719,12 @@ focus remains separate.
 
 **Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
 tier, **Models** for the provider and four Foreman roles, **Launches** for the three
-per-harness backlog models, and **Safety** for the completion safeguards. The current Foreman
-posture stays above the tabs so a stopped worker is always visible. **Live repositories** and
-**Right now** stay below them as read-only cards; the repository card shows the grant count
-and links to **Settings → Trust**, where repository access is edited.
+per-harness backlog models, and **Safety** for the completion safeguards. Each tab shows how
+many settings it holds, and each field's explanation appears on hover or focus - as the
+control's tooltip and accessible description - rather than printing under the field. The
+current Foreman posture stays above the tabs so a stopped worker is always visible. **Live
+repositories** and **Right now** stay below them as read-only cards; the repository card
+shows the grant count and links to **Settings → Trust**, where repository access is edited.
 
 Two default-on safeguards under **Settings → Foreman → Safety** decide which
 finished work never reaches an automatic completion action:

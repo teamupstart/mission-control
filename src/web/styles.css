@@ -13646,6 +13646,12 @@ select.foreman-model-input {
   outline: 2px solid var(--working);
   outline-offset: 1px;
 }
+/* How many settings the group holds, so a tab you have not opened still says how much is
+   behind it. Hidden from the accessible name; the tab's tooltip announces it instead. */
+.sc-tab-count {
+  margin-left: 5px;
+  opacity: 0.55;
+}
 
 /* ---- a control card ---- */
 .sc-card {

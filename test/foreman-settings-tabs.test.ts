@@ -17,7 +17,7 @@ const OUTSIDE_TABS = new Set([
   "foreman/episodes",
 ]);
 
-function renderedAnchors(): Set<string> {
+function renderPanel(): string {
   const state: ForemanState = {
     config: null,
     status: null,
@@ -26,9 +26,13 @@ function renderedAnchors(): Set<string> {
     update: async () => true,
     error: null,
   };
-  const html = renderToStaticMarkup(
+  return renderToStaticMarkup(
     createElement(ForemanSettingsPanel, { state, onNavigate: () => {} }),
   );
+}
+
+function renderedAnchors(): Set<string> {
+  const html = renderPanel();
   return new Set([...html.matchAll(/data-anchor="([^"]+)"/g)].map((match) => match[1]!));
 }
 
@@ -69,4 +73,23 @@ test("every searchable Foreman control resolves to a tab or a deliberate outside
 
 test("the read-only and ledger anchors stay outside the configuration tabs", () => {
   for (const anchor of OUTSIDE_TABS) assert.equal(foremanTabForAnchor(anchor), null);
+});
+
+test("each tab states how many settings it holds, derived from the group table", () => {
+  const html = renderPanel();
+  for (const group of FOREMAN_SETTINGS_TABS) {
+    // The visible badge, out of the accessible name so the tab still announces as its
+    // group; the tooltip description below is what carries the count to a screen reader.
+    assert.match(
+      html,
+      new RegExp(
+        `${group.label}<span class="sc-tab-count" aria-hidden="true">${group.anchors.length}</span>`,
+      ),
+    );
+    const spelled = group.anchors.length === 1 ? "1 setting" : `${group.anchors.length} settings`;
+    assert.ok(
+      html.includes(`Show Foreman ${group.label} settings - ${spelled}`),
+      `the ${group.id} tab's description does not announce its count`,
+    );
+  }
 });

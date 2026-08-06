@@ -146,6 +146,12 @@ test("the panel has a model field, and shows what would actually run", () => {
   assert.match(html, new RegExp(INSPECTOR_MODEL_SPEC.fallback));
 });
 
+test("the model blurb is still printed under the field - Foreman's tooltip-only mode did not leak", () => {
+  // `ModelField.blurb` defaults to "block"; only the Foreman panel passes "hover". This
+  // panel must keep the visible paragraph, not just the tooltip's hidden copy.
+  assert.match(render(), /<p class="settings-hint foreman-model-blurb">Reviews each push/);
+});
+
 test("Inspector can select Codex and offers only Codex catalog models", () => {
   const html = render(state({
     config: InspectorConfigSchema.parse({ enabled: true, runner: "codex", model: "" }),

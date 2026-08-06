@@ -706,6 +706,11 @@ const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
   delivery_blocked: "delivery blocked",
   stale_capture: "evidence went stale",
   capture_error: "capture failed",
+  // The manager's two refusals for an evidence snapshot that did not move between rounds. Both
+  // were missing, so a run parked on either printed the raw phase code through the fallback
+  // below - "unchanged evidence exhausted" - in the one column whose whole job is being read.
+  unchanged_evidence: "evidence unchanged",
+  unchanged_evidence_exhausted: "evidence never changed",
   // Not a block at all: the binding was reattached to a live session and the run is parked
   // until somebody opens the next round. The clause says what HAPPENED; the remedy button
   // beside it says what to do about it, which is why this is not "reattached, needs

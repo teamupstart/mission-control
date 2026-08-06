@@ -512,6 +512,25 @@ button.wf-run-version:focus-visible {
   gap: 8px;
 }
 
+/* The sentence that replaces a disabled button, in the identity block beneath the facts row.
+   Capped at a reading measure rather than left to fill the header, because the identity block
+   is `margin-right: auto` in a flex row and an uncapped paragraph pushes the action row it is
+   explaining off to the far edge. No `margin` of its own: it is a `<p>`, so the rule above
+   zeroes it and the identity grid's own 4px gap does the spacing. */
+.wf-run-why {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 66ch;
+  padding: 1px 0 3px;
+}
+
+/* The fact leads; the pointer at whoever owns the decision follows it in muted text. */
+.wf-run-why b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 /* The bound session, as a link rather than a labelled button: the name IS the affordance,
    and a disabled one still has to say which session has gone. */
 .wf-run-session {

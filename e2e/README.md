@@ -603,6 +603,21 @@ they ask for it.
 
 The directory README records the regeneration command.
 
+### The run header's one next move
+
+[`docs/evidence/workflow-run-next-move/`](../docs/evidence/workflow-run-next-move/) carries two
+frames from `specs/workflow-blocked-resubmit.spec.ts`, and they answer the report that started
+this work: a screenshot of a blocked run offering nine controls with the reason inside a tooltip.
+
+`01-waiting-one-primary.png` is a run with a move - one filled primary, `Copy feedback` after it,
+`Cancel run` behind the divider - where five same-weight controls used to sit. `02-blocked-says-why.png`
+is the same header once its session disappeared: no primary at all, and the reason as a sentence
+in the identity block whose bolded first clause is the fact and whose second half names the move
+that IS available. That a refusal produces prose rather than a disabled button is checkable in the
+DOM as a count and a text node, and legible as a header only here.
+
+The directory README records the regeneration command.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

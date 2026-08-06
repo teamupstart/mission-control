@@ -19,7 +19,7 @@ import {
   sessionActionSkillLabel,
 } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
-import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
+import { workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import type { SessionActionProgress } from "./run-model.ts";
@@ -75,9 +75,12 @@ import {
   copyFeedbackAction,
   deliveryResolutionActions,
   inspectorGateActions,
-  resubmitAvailability,
+  refusedUnchangedRequestId,
   runActionTooltip,
+  runNextMove,
+  runNoMoveReason,
   type RunActionId,
+  type RunNextMove,
 } from "./run-actions.ts";
 import { useRunActions } from "./run-action-store.ts";
 import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
@@ -420,16 +423,13 @@ export function WorkflowRunView({
   detail,
   roundId = null,
   onRound = () => {},
-  onResubmit,
-  onRetry,
+  onNextMove = () => {},
   onCancel,
   onConfirm = () => {},
   onCopyFeedback = async () => {},
   onCopyRunId = async () => {},
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
-  onPreparePr = async () => {},
-  onRecheckInspector = async () => {},
   onRestartFull = async () => {},
   onRetryDelivery = async () => {},
   onResolveDelivery = async () => {},
@@ -442,8 +442,15 @@ export function WorkflowRunView({
   /** The submission being read. `null` means the newest one. */
   roundId?: string | null;
   onRound?: (submissionId: string) => void;
-  onResubmit: (unchanged: boolean) => Promise<void>;
-  onRetry: (attemptId?: string) => Promise<void>;
+  /**
+   * Dispatch the ONE move `runNextMove` derived for this run - the only run-advancing intent
+   * this header offers, so the host wires one callback rather than one per control.
+   *
+   * The descriptor carries its own `path` and `body`, so the host sends it uniformly through the
+   * shared action store; the resubmission family is the one arm it routes elsewhere, because the
+   * page owns the remembered request id that keeps an unchanged resubmit inside its round.
+   */
+  onNextMove?: (move: RunNextMove) => void;
   onCancel: () => Promise<void>;
   /** Destructive confirmations, hosted by the overlay registry rather than `window.confirm`. */
   onConfirm?: (request: WorkflowConfirmRequest) => void;
@@ -457,8 +464,6 @@ export function WorkflowRunView({
   onCopyRunId?: () => Promise<void>;
   onOpenSession?: () => void;
   onOpenInspectorSettings?: () => void;
-  onPreparePr?: () => Promise<void>;
-  onRecheckInspector?: () => Promise<void>;
   onRestartFull?: (confirmation?: string) => Promise<void>;
   onRetryDelivery?: (deliveryId: string) => Promise<void>;
   onResolveDelivery?: (
@@ -523,7 +528,6 @@ export function WorkflowRunView({
     && detail.contextState === "captured"
     && context === null;
   const inspectorGate = detail.inspectorGate;
-  const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
   // Split by what the attempt IS, read off the durable snapshot column the runtime writes for
   // exactly this kind - never guessed from the absence of a verdict, which is also what an
@@ -579,11 +583,18 @@ export function WorkflowRunView({
   const [feedbackCopied, setFeedbackCopied] = useState(false);
   const [runIdCopied, setRunIdCopied] = useState(false);
   const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
-  const resubmit = resubmitAvailability(detail, liveInspectorRepair);
-  const gateActions = inspectorGateActions(detail);
-  const preparePrAction = gateActions.find((action) => action.kind === "prepare-pr");
-  const recheckAction = gateActions.find((action) => action.kind === "recheck-inspector");
-  const openPrAction = gateActions.find((action) => action.kind === "open-pr")!;
+  /**
+   * The one thing to do about this run, and the sentence for when there is nothing.
+   *
+   * Exactly one of the two is ever non-null - `runNoMoveReason` returns `null` whenever a move
+   * exists - so the header cannot show a primary and an excuse for not having one at once.
+   */
+  const nextMove = runNextMove(detail);
+  const noMoveReason = runNoMoveReason(detail);
+  // No `!`: `inspectorGateActions` pushes `open-pr` only when there is a pull request to open,
+  // so this is `undefined` on every run with no adopted one - which is most of them.
+  const openPrAction = inspectorGateActions(detail)
+    .find((action) => action.kind === "open-pr");
   const totalCost = workflowCallCost(
     calls,
     detail.llmCallCount ?? calls.length,
@@ -662,74 +673,44 @@ export function WorkflowRunView({
               </button>
             </Tooltip>
           </p>
+          {/* The sentence that replaces a disabled button.
+              A stopped run's reason belongs in the page, not in a tooltip on a control that
+              refuses - and naming where the decision lives is what keeps the header from
+              pretending one button settles an Inspector finding or an uncertain delivery. It
+              renders only when `runNextMove` found nothing, so it never argues with a primary. */}
+          {noMoveReason && (
+            <p className="wf-run-why">
+              <b>{noMoveReason.cause}</b> {noMoveReason.consequence}
+            </p>
+          )}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
         </div>
 
         <div className="wf-run-actions">
-          {resubmit && (
-            <>
-              <Tooltip label={resubmit.refusal
-                ?? (resubmit.resuming
-                  ? "Re-read the session's current diff and resume this run where it stalled"
-                  : "Re-read the session's current diff and run the review again")}>
-                <button
-                  className="btn"
-                  disabled={resubmit.refusal !== null}
-                  onClick={() => void onResubmit(false)}
-                >
-                  {preview ? "Preview fresh evidence" : "Submit fresh evidence"}
-                </button>
-              </Tooltip>
-              <Tooltip label={resubmit.refusal
-                ?? "Run the review again against the evidence snapshot already taken"}>
-                <button
-                  className="btn btn-ghost"
-                  disabled={resubmit.refusal !== null}
-                  onClick={() => onConfirm({
-                    title: preview ? "Preview unchanged evidence" : "Submit unchanged evidence",
-                    body: "This runs every reviewer again against the snapshot already taken, so"
-                      + " nothing about the work under review has changed since the last round.",
-                    confirmLabel: preview ? "Preview unchanged" : "Submit unchanged",
-                    confirmHint: "Starts a new round against the existing evidence snapshot",
-                    onConfirm: () => void onResubmit(true),
-                  })}
-                >
-                  {preview ? "Preview unchanged" : "Submit unchanged"}
-                </button>
-              </Tooltip>
-            </>
-          )}
-          {preparePrAction && (
-            <Tooltip label={runActionTooltip(
-              preparePrAction,
-              isActionPending(preparePrAction.id),
-            )}>
+          {/* ONE next move, derived rather than assembled.
+              This row used to offer every control the run might accept - five conditional
+              blocks, all `btn` and `btn-ghost` peers, with the one that resolved the run last
+              and furthest right. `runNextMove` answers the question the reader actually has, and
+              because it returns at most one descriptor there is no arrangement of state in which
+              two primaries can appear. */}
+          {nextMove && (
+            <Tooltip label={runActionTooltip(nextMove, isActionPending(nextMove.id))}>
               <button
-                className="btn"
-                disabled={preparePrAction.disabled || isActionPending(preparePrAction.id)}
-                onClick={() => void onPreparePr()}
+                className="btn btn-primary"
+                disabled={isActionPending(nextMove.id)}
+                onClick={() => {
+                  if (!nextMove.confirm) {
+                    onNextMove(nextMove);
+                    return;
+                  }
+                  onConfirm({
+                    ...nextMove.confirm,
+                    onConfirm: () => onNextMove(nextMove),
+                  });
+                }}
               >
-                {preparePrAction.label}
-              </button>
-            </Tooltip>
-          )}
-          {detail.run.status === "blocked" && detail.run.currentPhase === "infrastructure_error" && (
-            <Tooltip label="The provider call failed rather than the review - try it again">
-              <button className="btn" onClick={() => void onRetry(failedAttempt?.id)}>Retry provider call</button>
-            </Tooltip>
-          )}
-          {recheckAction && (
-            <Tooltip label={runActionTooltip(
-              recheckAction,
-              isActionPending(recheckAction.id),
-            )}>
-              <button
-                className="btn btn-ghost"
-                disabled={recheckAction.disabled || isActionPending(recheckAction.id)}
-                onClick={() => void onRecheckInspector()}
-              >
-                {recheckAction.label}
+                {nextMove.label}
               </button>
             </Tooltip>
           )}
@@ -750,7 +731,12 @@ export function WorkflowRunView({
               {feedbackAction.label}
             </button>
           </Tooltip>
-          {openPrAction.href ? (
+          {/* Absent, not disabled, when there is no pull request to open - which is what the
+              descriptor's own existence now means. A greyed-out `Open PR` was the header
+              repeating a fact the Inspector gate section states properly a few sections down,
+              and it stood on the `waiting_for_pr` runs that are parked precisely BECAUSE no
+              pull request is adopted yet. */}
+          {openPrAction && (
             <Tooltip label={openPrAction.tooltip}>
               <a
                 className="btn btn-ghost"
@@ -760,10 +746,6 @@ export function WorkflowRunView({
               >
                 {openPrAction.label}
               </a>
-            </Tooltip>
-          ) : (
-            <Tooltip label={openPrAction.tooltip}>
-              <button className="btn btn-ghost" disabled>{openPrAction.label}</button>
             </Tooltip>
           )}
           {/* The run id and both JSON downloads are NOT here: they answer nobody reading a run,
@@ -1541,7 +1523,6 @@ export function WorkflowRuns({
   const mounted = useRef(false);
   const listGeneration = useRef(0);
   const selectedIndex = useRef(0);
-  const unchangedRequest = useRef<{ runId: string; requestId: string } | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const listPage = async (cursor: string | null, append: boolean): Promise<void> => {
@@ -1706,25 +1687,31 @@ export function WorkflowRuns({
 
   const resubmit = async (unchanged: boolean): Promise<void> => {
     if (!detail) return;
-    const remembered = unchangedRequest.current?.runId === detail.run.id
-      ? unchangedRequest.current.requestId
-      : null;
-    const requestId = unchanged && remembered ? remembered : crypto.randomUUID();
+    /*
+     * Replaying the refused submission's own request id is what keeps an unchanged resubmission
+     * INSIDE its round - the daemon finds that submission by trigger key and revives it, where a
+     * fresh id opens a repair round and spends one of the binding's.
+     *
+     * That id is DERIVED from the run rather than remembered from the request that earned the
+     * refusal. A `useRef` here was empty after any reload, and the header went on offering to
+     * review "this snapshot" while the daemon quietly opened a new round instead - a promise the
+     * label made and the mechanism could not keep. `refusedUnchangedRequestId` reads it off the
+     * refused submission's trigger key, so it survives a remount, a new tab, and a second
+     * operator arriving at the same run.
+     *
+     * `null` means no revivable submission, which is a correct answer rather than a failure: a
+     * fresh id is what the daemon accepts there.
+     */
+    const replay = unchanged ? refusedUnchangedRequestId(detail) : null;
+    const requestId = replay ?? crypto.randomUUID();
     setError(null);
     try {
       await workflowRequest(`/api/workflow-runs/${detail.run.id}/resubmit`, {
         method: "POST",
         body: JSON.stringify({ requestId, resubmitUnchanged: unchanged }),
       });
-      unchangedRequest.current = null;
       void load();
     } catch (caught) {
-      if (
-        caught instanceof WorkflowApiError
-        && caught.body?.code === "workflow_unchanged_evidence"
-      ) {
-        unchangedRequest.current = { runId: detail.run.id, requestId };
-      }
       setError(caught instanceof Error ? caught.message : "Workflow resubmission failed");
       void load(false, true);
     }
@@ -1942,12 +1929,29 @@ export function WorkflowRuns({
             roundId={roundId}
             onRound={setRoundId}
             onConfirm={setConfirm}
-            onResubmit={resubmit}
-            onRetry={async (nodeAttemptId) => {
-              await mutate(`/api/workflow-runs/${detail.run.id}/retry`, {
-                requestId: crypto.randomUUID(),
-                ...(nodeAttemptId ? { nodeAttemptId } : {}),
-              });
+            /*
+             * One dispatch for the one derived move.
+             *
+             * Every arm but the resubmissions goes through the shared action store from the
+             * descriptor's own `path` and `body`, which is what keeps `RunNextMove` POST-only:
+             * there is no kind this site special-cases, so a new row in `runNextMove` needs no
+             * new wiring here.
+             *
+             * The resubmission family is routed to the page's own handler rather than sent from
+             * here, and NOT for tidiness: that handler resolves the request id that keeps an
+             * unchanged resubmission inside the round it is repairing. Sending it generically
+             * would mint a fresh id and burn a repair round every time.
+             */
+            onNextMove={(move) => {
+              if (move.kind === "resubmit" || move.kind === "resubmit-unchanged") {
+                void resubmit(move.kind === "resubmit-unchanged");
+                return;
+              }
+              actionController.run(move.id, (requestId) =>
+                workflowRequest(move.path, {
+                  method: "POST",
+                  body: JSON.stringify({ requestId, ...move.body }),
+                }));
             }}
             onCancel={async () => {
               await mutate(`/api/workflow-runs/${detail.run.id}/cancel`, {
@@ -1958,26 +1962,6 @@ export function WorkflowRuns({
             onCopyRunId={copyRunId}
             onLoadEvents={loadMoreEvents}
             onLoadCalls={loadMoreCalls}
-            onPreparePr={async () => {
-              const action = inspectorGateActions(detail)
-                .find((candidate) => candidate.kind === "prepare-pr");
-              if (!action) return;
-              actionController.run(action.id, (requestId) =>
-                workflowRequest(`/api/workflow-runs/${detail.run.id}/prepare-pr`, {
-                  method: "POST",
-                  body: JSON.stringify({ requestId }),
-                }));
-            }}
-            onRecheckInspector={async () => {
-              const action = inspectorGateActions(detail)
-                .find((candidate) => candidate.kind === "recheck-inspector");
-              if (!action) return;
-              actionController.run(action.id, (requestId) =>
-                workflowRequest(`/api/workflow-runs/${detail.run.id}/recheck-inspector`, {
-                  method: "POST",
-                  body: JSON.stringify({ requestId }),
-                }));
-            }}
             onRestartFull={async (confirmation) => {
               await mutate(`/api/workflow-runs/${detail.run.id}/restart-full`, {
                 requestId: crypto.randomUUID(),

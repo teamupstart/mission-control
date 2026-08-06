@@ -100,13 +100,10 @@ function RunRow({
   // genuinely nothing to refetch.
   const actions = useRunActions(run.id, () => {});
   const pending = remedy ? actions.isPending(remedy.kind) : false;
-  // Through the run page's own helper, so "this action is already running" is written once.
-  const remedyTooltip = remedy
-    ? runActionTooltip(
-        { id: remedy.kind, label: remedy.label, tooltip: remedy.tooltip, disabled: pending },
-        pending,
-      )
-    : "";
+  // Through the run page's own helper, so "this action is already running" is written once. The
+  // remedy is passed as-is: the helper reads a tooltip and nothing else, so a stand-in
+  // descriptor built to satisfy its parameter was three fields it never looked at.
+  const remedyTooltip = remedy ? runActionTooltip(remedy, pending) : "";
   const tone = blocked ? " is-blocked" : waiting ? " is-waiting" : "";
   return (
     // A member keeps every column it would have had standing alone, and only moves right.

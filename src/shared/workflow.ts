@@ -1982,6 +1982,10 @@ export interface WorkflowSubmission {
   continuationNodeAttemptId: WorkflowNodeAttemptId | null;
   mode: WorkflowSubmissionMode;
   triggerSource: WorkflowTriggerSource;
+  /**
+   * The idempotency key the submission was created under. Composed for a manual submission by
+   * `manualWorkflowTriggerKey` below, which is also the only thing that reads one back apart.
+   */
   triggerKey: string;
   evidenceFingerprint: string;
   context: WorkflowJson;
@@ -1991,6 +1995,41 @@ export interface WorkflowSubmission {
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;
+}
+
+/**
+ * The idempotency key a MANUAL submission is filed under, composed in one place.
+ *
+ * It lives here, beside the field it is written into, because both sides of the wire need it and
+ * for opposite reasons. The daemon composes it to find a prior submission by trigger and replay
+ * it instead of creating a second; the browser reads one back to recover the request id of a
+ * submission the daemon REFUSED, which is the only way to ask for that exact submission again
+ * rather than a new round. A format spelled twice is a format that drifts, and the failure it
+ * drifts into is silent - a key that matches nothing looks exactly like a first attempt.
+ *
+ * Deliberately NOT the shape used by `restart-full` or `delivery-resolution`, which namespace a
+ * second segment inside this same prefix. `manualWorkflowTriggerRequestId` rejects those rather
+ * than returning their request id, because replaying one against `resubmit` would find a
+ * submission that is not the refused one.
+ */
+export function manualWorkflowTriggerKey(
+  bindingId: WorkflowBindingId,
+  requestId: string,
+): string {
+  return `manual:${bindingId}:${requestId}`;
+}
+
+/** The request id inside a manual submission key, or `null` when it is not one. */
+export function manualWorkflowTriggerRequestId(
+  bindingId: WorkflowBindingId,
+  triggerKey: string,
+): string | null {
+  const prefix = `manual:${bindingId}:`;
+  if (!triggerKey.startsWith(prefix)) return null;
+  const requestId = triggerKey.slice(prefix.length);
+  // A remaining separator means a namespaced sibling (`restart-full:`, `delivery-resolution:`),
+  // not a request id. Request ids are `crypto.randomUUID()` values and carry none.
+  return requestId.length > 0 && !requestId.includes(":") ? requestId : null;
 }
 
 export interface WorkflowNodeAttempt {

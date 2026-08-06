@@ -1,4 +1,6 @@
-import type { Page } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -6,16 +8,41 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 /**
  * A blocked run's header, driven the way an operator meets it.
  *
- * `manager.resubmit` has always accepted a `blocked` run, and the header offered the control
- * to `waiting_for_session` alone - so a run blocked on a fault that had since cleared showed
- * nothing but Cancel run and read as terminal. The two resubmissions now render for `blocked`
- * too, and carry the server's own refusal when it would reject the call.
+ * This is the state the whole run-controls redesign was reported from: a run whose bound session
+ * disappeared, with the reason hidden in the tooltip of a control that refuses. The header used
+ * to answer it with nine controls, two of which did anything, and the one that resolved the run
+ * sat last and furthest right. It now answers with a SENTENCE and Cancel run.
  *
- * No other layer sees this: the SSR render tests assert markup for a detail handed to them,
- * and only a browser against a live daemon proves the run REACHES this state and repaints
- * into it. The state is reached the way it is reached in production - the bound session goes
- * away, `session_remove` orphans the binding, and the active run is blocked underneath it.
+ * A resubmission is still offered for `blocked` - that part has not regressed and the next-move
+ * unit table pins it - but not HERE, because here the daemon would refuse it. The difference this
+ * spec exists to prove is what a refusal produces: prose in the page, not a dead button.
+ *
+ * No other layer sees this. The SSR render tests assert markup for a detail handed to them, and
+ * only a browser against a live daemon proves the run REACHES this state and repaints into it.
+ * The state is reached the way it is reached in production - the bound session goes away,
+ * `session_remove` orphans the binding, and the active run is blocked underneath it.
  */
+
+const EVIDENCE = fileURLToPath(
+  new URL("../../docs/evidence/workflow-run-next-move/", import.meta.url),
+);
+
+/**
+ * Photograph a state this spec has already asserted on.
+ *
+ * `toHaveCount(0)` proves the submissions and the disabled `Open PR` are unreachable, and the
+ * text assertions prove the sentence is there. Neither shows a reader what the header now READS
+ * like - a paragraph in the identity block and one destructive control, where the reported
+ * screenshot had nine peers and the reason inside a tooltip. Behind `MC_E2E_EVIDENCE` like every
+ * other capture in the suite, so an ordinary run does not rewrite a binary for no added signal.
+ */
+async function shoot(target: Page | Locator, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await target.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED docs/evidence/workflow-run-next-move/${name}.png`);
+}
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
@@ -113,20 +140,26 @@ async function seedFailedRun(
   return { runId, sessionId };
 }
 
-test("a blocked run still offers the resubmissions, carrying the reason they cannot run", async ({
+test("a run whose session disappeared explains itself in prose, with no dead controls", async ({
   dashboard,
   daemon,
 }) => {
   const { runId, sessionId } = await seedFailedRun(dashboard, daemon);
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
-  const fresh = dashboard.getByRole("button", { name: "Preview fresh evidence" });
-  const unchanged = dashboard.getByRole("button", { name: "Preview unchanged" });
+  const header = dashboard.locator("header.wf-run-head");
+  const primary = header.locator("button.btn-primary");
 
-  // While the run is parked with its session, both are live. This is the state the header
-  // has always handled, pinned here so the blocked assertions below mean something.
-  await expect(fresh).toBeEnabled();
-  await expect(unchanged).toBeEnabled();
+  // While the run is parked with its session there IS a move, and exactly one. Pinned here so
+  // the assertions after the kill are about a control that was genuinely reachable before it.
+  await expect(primary).toHaveCount(1);
+  await expect(primary).toHaveText("Preview fresh evidence");
+  await expect(primary).toBeEnabled();
+  await expect(header.locator("p.wf-run-why")).toHaveCount(0);
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and the header
+  // being photographed is what the pointer was last over.
+  await dashboard.mouse.move(0, 0);
+  await shoot(header, "01-waiting-one-primary");
 
   // The session goes away. `session_remove` orphans the binding and blocks the active run -
   // the exact production route into a blocked run, not a state written behind the daemon.
@@ -139,23 +172,39 @@ test("a blocked run still offers the resubmissions, carrying the reason they can
     )
     .toBe("blocked");
 
-  // The headline: the controls are still THERE. Before this they vanished with the status
-  // change, leaving Cancel run as the only thing an operator could reach.
-  await expect(fresh).toBeVisible({ timeout: 40_000 });
-  await expect(unchanged).toBeVisible();
+  /*
+   * The headline: the reason arrives as a sentence a person reads, in the identity block beside
+   * the run's own facts. It used to be the `title` of a greyed-out button, which is a place an
+   * operator finds a reason only by hovering the control that just refused them.
+   *
+   * Read off the DOM text rather than an accessible description, because there is deliberately
+   * no longer a control here to carry one.
+   */
+  const why = header.locator("p.wf-run-why");
+  await expect(why).toBeVisible({ timeout: 40_000 });
+  await expect(why).toContainText("The session this run was reviewing is gone,");
+  await expect(why).toContainText("so it cannot take another round.");
+  // And it names the move that IS available, which the old tooltip never did.
+  await expect(why).toContainText("Cancelling clears it from your queue");
 
-  // Present, refused, and legible about which of the server's refusals applies - rather than
-  // enabled onto a call that answers 409, or absent with no explanation at all.
-  await expect(fresh).toBeDisabled();
-  await expect(unchanged).toBeDisabled();
-  await expect(fresh).toHaveAccessibleDescription(
-    "The bound session is gone, so no further round can be prepared",
-  );
+  // No primary, and no disabled stand-in for one. Absence is the claim, so it is asserted as a
+  // count on controls that were provably present a moment ago rather than as a bare negative.
+  await expect(primary).toHaveCount(0);
+  await expect(header.getByRole("button", { name: "Preview fresh evidence" })).toHaveCount(0);
+  await expect(header.getByRole("button", { name: "Preview unchanged" })).toHaveCount(0);
+  // Nor an Open PR pointing nowhere: this run has no pull-request concept at all.
+  await expect(header.getByRole("button", { name: "Open PR" })).toHaveCount(0);
+  await expect(header.getByRole("link", { name: "Open PR" })).toHaveCount(0);
 
-  // Cancel run stays reachable beside them: a blocked run is still a run to close.
-  await expect(dashboard.getByRole("button", { name: "Cancel run" })).toBeVisible();
+  // Cancel run stays exactly where it was, in the danger group this change did not touch.
+  await expect(
+    header.locator(".wf-run-actions-danger").getByRole("button", { name: "Cancel run" }),
+  ).toBeVisible();
 
-  // And the daemon agrees about why, so the copy above is describing the real refusal.
+  await dashboard.mouse.move(0, 0);
+  await shoot(header, "02-blocked-says-why");
+
+  // And the daemon agrees about why, so the sentence above is describing the real refusal.
   const detail = await api<{
     run: { status: string; currentPhase: string };
     binding: { state: string; sessionId: string | null };

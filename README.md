@@ -3364,9 +3364,10 @@ place. A workflow whose final gate is Inspector ends the ladder with a fixed `In
 *after* the End outcome, marked `Fixed`, reading `Not reached` until the run gets there.
 Preview feedback can be copied there. The failing rung also reports a member that has failed consecutive
 repair rounds, the signal of a non-converging repair loop. At the Inspector gate, **Recheck
-Inspector** evaluates the wait again and **Open PR** opens the adopted pull request. A waiting
-run with a missing or unadopted PR also offers **Prepare PR in session** when its immutable run
-policy permits preparation. An uncertain delivery can be resolved under the same confirmation
+Inspector** evaluates the wait again, and **Open PR** opens the adopted pull request when there
+is one - it is absent rather than greyed out on a gate with no pull request adopted yet, which
+is every Inspector workflow up to the moment one is. A waiting run with a missing or unadopted
+PR also offers **Prepare PR in session** when its immutable run policy permits preparation. An uncertain delivery can be resolved under the same confirmation
 and typed-phrase guards as the Runs page. Use **Open run** for the full evidence and timeline.
 A published version whose graph cannot be expressed as stages keeps the existing workflow chip
 here and links to the Runs page, where its read-only graph remains available.
@@ -3474,8 +3475,27 @@ requested changes with evidence references, and the runner, model, duration and 
 actually ran. Inspector gate state, Foreman completion claims and repair deliveries are the
 same card with a different accent. Durable failures read as sentences - "The write may or may
 not have landed" - with the machine code kept beside them for a bug report, never instead of
-them. The timeline names Personas and rounds rather than printing payload JSON; **Export
-run** remains the complete durable record.
+them. The timeline names Personas and rounds rather than printing payload JSON; the run id and
+the complete durable JSON records sit beside it under **Audit and bug reports**, collapsed,
+because they answer a bug report rather than a reader.
+
+**The header offers one next move, derived from the run's own state.** Not every control the
+run might accept: a single primary, in the language of the person reading the page rather than
+of the route behind it. A parked run offers **Resume review**; an Inspector gate waiting on a
+pull request offers **Ask the session to open a PR**, or **Check again** when its immutable
+policy declines the handoff; a run blocked on an exhausted provider call offers **Retry the
+failed call**. A run whose evidence snapshot has not moved since the last round is refused by
+the daemon, and the primary becomes the recovery for exactly that refusal - **Review this
+snapshot anyway** - which is the only state it appears in.
+
+When there is no move, the header says so **in a sentence** and names where the decision
+actually lives: "Confirm or discard it in Deliveries below", "they are listed under Inspector
+final gate below". A control that cannot run is never left standing in place of an explanation.
+That covers the states nothing argument-free revives - the bound session is gone, the run is
+externally sourced, it has used every repair round its binding allows - and the states blocked
+on a judgement the page carries the material for further down. Beside the primary sit at most
+**Copy feedback** and **Open PR**, and **Open PR** appears only when there is an adopted pull
+request to open.
 
 Actions that cannot be taken back confirm in the app rather than in a browser dialog.
 **Cancel run**, the resubmission against unchanged evidence, and the delivery's **Mark
@@ -3583,12 +3603,10 @@ evidence and the same round, and the timeline records **Check cleanup resolved**
 had already spent every infrastructure attempt moves to `infrastructure_error` instead, which
 is the phase **Retry provider call** belongs to.
 
-Blocked is also no longer a dead end in the header. **Submit fresh evidence** and **Submit
-unchanged** render for a blocked run, not only a parked one, because the daemon has always
-accepted a resubmission for both. When the daemon would refuse - the bound session is gone,
-the run is externally sourced, or it has used every repair round its binding allows - the
-buttons stay visible and disabled, carrying that exact reason, rather than disappearing and
-leaving **Cancel run** as the only thing to reach.
+Blocked is also no longer a dead end in the header. A resubmission is offered for a blocked
+run, not only a parked one, because the daemon has always accepted one for both - so a run
+blocked on a fault that has since cleared, `check_cleanup_unresolved` once its pooled worktree
+came back, is recoverable from the page rather than reading as terminal.
 
 ### Live repair delivery and Foreman completion
 

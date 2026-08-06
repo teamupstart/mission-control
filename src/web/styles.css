@@ -6223,7 +6223,10 @@ mark.find-hit.is-current {
 }
 
 /* Unmet dependencies speak in the attention tone, once: a compact note beside the
-   dependencies, and the primary button recolored below. */
+   dependencies, and the primary button recolored below. An environment-check warning wears
+   the same shape deliberately - both say "this will not go the way you expect" in the
+   dispatch form's own voice, and a second amber treatment would only invite the reader to
+   work out what the difference in styling was supposed to mean. */
 .dispatch-wait-note {
   display: flex;
   align-items: baseline;
@@ -6234,6 +6237,20 @@ mark.find-hit.is-current {
   background: color-mix(in srgb, var(--attention) 7%, var(--panel));
   border-radius: 8px;
   padding: 8px 11px;
+}
+/* A paragraph in `.dispatch-body`'s flex column, so its own margin would double the gap. */
+.dispatch-env-note {
+  margin: 0;
+  line-height: 1.45;
+}
+/* The evidence, under the sentence: which file was read and what it said. Quieter and
+   monospaced, because it is a path to go look at rather than prose to read. */
+.dispatch-env-detail {
+  display: block;
+  margin-top: 5px;
+  font: 11px var(--mono);
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 /* The doubled class outranks .btn-primary's hover !important by specificity, whatever
    the source order. */

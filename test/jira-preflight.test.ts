@@ -63,6 +63,8 @@ case "$FAKE_JIRA_MODE" in
     echo "No result found for given query in project \\"MC\\"" 1>&2; exit 1 ;;
   oldcli)
     echo "unknown flag: --paginate" 1>&2; exit 1 ;;
+  stuck)
+    printf '{"issues":[{"key":"MC-0","fields":{"summary":"Issue 0"}},{"key":"MC-1","fields":{"summary":"Issue 1"}}]}' ;;
   pages)
     total=\${FAKE_JIRA_TOTAL:-7}
     out=""
@@ -285,6 +287,47 @@ test("a preflight probe spends exactly one request, for one issue", async () => 
 
   assert.equal(await jira.preflight(cfg({ limit: 50 }), ctx), null);
   assert.deepEqual(callsIn(calls), ["0:1"]);
+});
+
+// A filter whose size lands exactly on the walk's page bound ends on a FULL page, and this
+// rung has no cursor - so "the page was full" would be read as "there is more" and a source
+// reading its filter completely would report itself as too broad on every sweep, telling the
+// operator to narrow a JQL that is already fine. 50 pages of 2 is exactly 100 issues.
+test("a filter ending exactly on the page bound is complete, not truncated", async () => {
+  const calls = join(home, "calls-exact");
+  machine({ cli: true, mode: "pages", total: "100", calls });
+
+  const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
+  assert.equal(swept.items.length, 100);
+  assert.equal(swept.error, null, "there is no tail, so there is nothing to report");
+  // 50 pages, plus the one lookahead that established the end - and not a 51st page of data.
+  assert.equal(callsIn(calls).length, 51);
+  assert.equal(callsIn(calls).at(-1), "100:2");
+});
+
+// And the lookahead must not paper over a real tail: one more issue than fits is still reported.
+test("a filter with one issue past the bound is still reported as too large", async () => {
+  machine({ cli: true, mode: "pages", total: "101" });
+
+  const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
+  assert.equal(swept.items.length, 101, "including the one the lookahead found");
+  assert.match(swept.error!, /larger than one sweep can read/);
+});
+
+// A rung that ACCEPTS the pagination argument and ignores it is the nastier version: walked to
+// the ceiling, it would be reported as a filter too broad to read, which is a true sentence
+// about the wrong thing - the operator would go and narrow a JQL that was never the problem.
+test("a CLI that ignores --paginate is named as that, not as a filter that is too broad", async () => {
+  const calls = join(home, "calls-stuck");
+  machine({ cli: true, mode: "stuck", calls });
+
+  const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
+  assert.deepEqual(swept.items, []);
+  assert.match(swept.error!, /returned the same page again/);
+  assert.match(swept.error!, /upgrade it/);
+  assert.doesNotMatch(swept.error!, /narrow the JQL/, "narrowing the filter would not help");
+  // And it stopped at the repeat rather than spending the whole page budget on it.
+  assert.equal(callsIn(calls).length, 2);
 });
 
 // The rung that cannot page at all. Named as its own state because the fix is neither the

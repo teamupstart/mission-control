@@ -12,6 +12,7 @@ import {
   cliFailure,
   credentialGap,
   externalIdFor,
+  freshKeys,
   issuesFrom,
   jiraIssueListArgs,
   nextPage,
@@ -201,6 +202,19 @@ test("the walk stops at its own ceiling, and says the filter is bigger than a sw
   // sweep that never ends.
   assert.equal(nextPage({ fetched: 1000, pagesUsed: 3, hasMore: true }, 500), "truncated");
   assert.equal(nextPage({ fetched: 999, pagesUsed: 3, hasMore: true }, 500), "more");
+});
+
+// How the walk tells "the next page" from "the same page again", which is what a rung that
+// accepts a pagination argument and ignores it hands back. Counting mutates `seen` on purpose:
+// the count is only meaningful relative to everything collected before it.
+test("a page's new keys are counted once, and remembered", () => {
+  const seen = new Set<string>();
+  assert.equal(freshKeys([{ key: "MC-1" }, { key: "MC-2" }], seen), 2);
+  assert.equal(freshKeys([{ key: "MC-2" }, { key: "MC-3" }], seen), 1, "MC-2 was already held");
+  assert.equal(freshKeys([{ key: "MC-1" }, { key: "MC-3" }], seen), 0, "the same page again");
+  assert.deepEqual([...seen], ["MC-1", "MC-2", "MC-3"]);
+  // A row with no key cannot be counted or compared - it is dropped by the mapper anyway.
+  assert.equal(freshKeys([{ fields: { summary: "no key" } }], seen), 0);
 });
 
 // Truncation is REPORTED, and the items still come back. Both halves matter: ingest should

@@ -630,9 +630,59 @@ export function nextPage(
   return "more";
 }
 
-/** How many requests one sweep may spend, given the page size the operator chose. */
-function pagesFor(cfg: JiraConfig): number {
-  return Math.max(1, Math.min(MAX_SWEEP_PAGES, Math.ceil(MAX_SWEEP_ISSUES / cfg.limit)));
+/**
+ * How many of this page's issues the walk had not already collected - counting them INTO
+ * `seen`, which is what makes the next page's answer meaningful.
+ *
+ * The walk needs this to tell "another page" from "the same page again". A rung that accepts a
+ * pagination argument and ignores it - an older CLI, a proxy that caches, a server that keeps
+ * echoing one cursor - would otherwise be walked until the ceiling and then reported as a
+ * filter too broad to read, which is a true sentence about the wrong thing: the operator would
+ * go and narrow a JQL that was never the problem.
+ */
+export function freshKeys(page: JiraIssue[], seen: Set<string>): number {
+  let fresh = 0;
+  for (const issue of page) {
+    const key = externalIdFor(issue);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      fresh += 1;
+    }
+  }
+  return fresh;
+}
+
+/** What to say when a rung keeps answering with the page the walk already has. */
+function notAdvancing(via: "the jira CLI" | "Jira"): string {
+  return (
+    `${via} returned the same page again instead of the next one, so this filter cannot be ` +
+    "read past its first page" +
+    (via === "the jira CLI"
+      ? " - upgrade it (`brew upgrade jira-cli`), or set JIRA_API_TOKEN and JIRA_EMAIL so the REST rung can page"
+      : " - check whether a proxy is caching the search request")
+  );
+}
+
+/**
+ * What one call may spend, and whether it cares where the filter ends.
+ *
+ * The two callers want different things from the same walk. A SWEEP reads to the end and has to
+ * know whether it got there, so it pays for the lookahead that tells a filter ending on a full
+ * page from one with a tail. A PREFLIGHT PROBE asks only whether Jira answers this filter at
+ * all: one request, and truncation is not its question - spending a second request to answer
+ * something it will discard is waste an operator pays for on every click of Check it works.
+ */
+interface WalkBudget {
+  maxPages: number;
+  confirmTail: boolean;
+}
+
+/** The budget one sweep gets, given the page size the operator chose. */
+function sweepBudget(cfg: JiraConfig): WalkBudget {
+  return {
+    maxPages: Math.max(1, Math.min(MAX_SWEEP_PAGES, Math.ceil(MAX_SWEEP_ISSUES / cfg.limit))),
+    confirmTail: true,
+  };
 }
 
 /**
@@ -738,8 +788,9 @@ async function restSearch(
  * exactly-full final page costs one extra request that comes back empty, which is cheaper
  * than guessing.
  */
-async function walkCli(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Promise<JiraWalk> {
+async function walkCli(cfg: JiraConfig, ctx: SweepContext, budget: WalkBudget): Promise<JiraWalk> {
   const issues: JiraIssue[] = [];
+  const keys = new Set<string>();
   for (let pagesUsed = 0; ; pagesUsed += 1) {
     if (ctx.signal.aborted) return { issues, error: "the sweep was abandoned", truncated: false };
     // The CLI inherits the daemon's environment, which is where `JIRA_API_TOKEN` already is
@@ -749,13 +800,54 @@ async function walkCli(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Pr
     });
     const page = pageFromCli(res);
     if (page.error) return { issues, error: page.error, truncated: false };
+    const fresh = freshKeys(page.issues, keys);
     issues.push(...page.issues);
+    // Past the first page, a page carrying nothing new means the argument was ignored rather
+    // than honoured. Reported as itself, since "narrow the JQL" would be the wrong fix.
+    if (pagesUsed > 0 && page.issues.length > 0 && fresh === 0) {
+      return { issues, error: notAdvancing("the jira CLI"), truncated: false };
+    }
     const step = nextPage(
       { fetched: issues.length, pagesUsed: pagesUsed + 1, hasMore: page.issues.length >= cfg.limit },
-      maxPages,
+      budget.maxPages,
     );
-    if (step !== "more") return { issues, error: null, truncated: step === "truncated" };
+    if (step === "done") return { issues, error: null, truncated: false };
+    if (step === "truncated") {
+      return budget.confirmTail
+        ? await confirmTail(cfg, ctx, issues, keys)
+        : { issues, error: null, truncated: true };
+    }
   }
+}
+
+/**
+ * Is there actually a tail, or did the filter just END on a full page?
+ *
+ * This rung has no cursor, so "the page was full" is the only available signal for "there is
+ * more" - and a filter whose size is an exact multiple of the page size ends on a full page
+ * with nothing after it. Believing the inference there would leave a source that is reading
+ * its filter completely in an error state on every sweep, telling the operator to narrow a JQL
+ * that is already fine. One extra request settles it, and it is spent only at the boundary.
+ *
+ * What it finds is KEPT rather than discarded - the issues are real and `ingest.ts` should have
+ * the chance to file them - so the ceiling is "up to `MAX_SWEEP_ISSUES`, plus the page that
+ * proved the end". A lookahead that fails leaves the question open, and an open question about
+ * completeness is reported as truncation rather than assumed away.
+ */
+async function confirmTail(
+  cfg: JiraConfig,
+  ctx: SweepContext,
+  issues: JiraIssue[],
+  keys: Set<string>,
+): Promise<JiraWalk> {
+  if (ctx.signal.aborted) return { issues, error: null, truncated: true };
+  const after = pageFromCli(
+    await run(JIRA_BIN, jiraIssueListArgs(cfg, issues.length), { timeoutMs: JIRA_TIMEOUT_MS }),
+  );
+  if (after.error) return { issues, error: null, truncated: true };
+  const fresh = freshKeys(after.issues, keys);
+  issues.push(...after.issues);
+  return { issues, error: null, truncated: fresh > 0 };
 }
 
 /** Walk the REST rung's pages, following the cursor Jira hands back. */
@@ -763,15 +855,20 @@ async function walkRest(
   cfg: JiraConfig,
   cred: JiraRestCredential,
   ctx: SweepContext,
-  maxPages: number,
+  budget: WalkBudget,
 ): Promise<JiraWalk> {
   const issues: JiraIssue[] = [];
+  const keys = new Set<string>();
   let token: string | null = null;
   for (let pagesUsed = 0; ; pagesUsed += 1) {
     if (ctx.signal.aborted) return { issues, error: "the sweep was abandoned", truncated: false };
     const page = pageFromRest(await restSearch(cfg, cred, ctx, token), cfg);
     if (page.error) return { issues, error: page.error, truncated: false };
+    const fresh = freshKeys(page.issues, keys);
     issues.push(...page.issues);
+    if (pagesUsed > 0 && page.issues.length > 0 && fresh === 0) {
+      return { issues, error: notAdvancing("Jira"), truncated: false };
+    }
     token = page.nextPageToken;
     const step = nextPage(
       {
@@ -779,9 +876,13 @@ async function walkRest(
         pagesUsed: pagesUsed + 1,
         // A cursor AND something on this page. A token with an empty page would otherwise
         // loop against a server that keeps handing one back.
+        //
+        // No lookahead is needed on this rung, unlike the CLI's: the cursor is Jira SAYING
+        // there is another page, and it is absent on the last one - so truncation here is
+        // established rather than inferred from a full page.
         hasMore: token !== null && page.issues.length > 0,
       },
-      maxPages,
+      budget.maxPages,
     );
     if (step !== "more") return { issues, error: null, truncated: step === "truncated" };
   }
@@ -797,15 +898,15 @@ async function walkRest(
  * unused would be accurate and useless. If both rungs fail, both reasons are reported: the
  * operator has two things to look at and needs to know which is which.
  *
- * `maxPages` is what separates a sweep from a preflight probe. A probe spends ONE request and
+ * The budget is what separates a sweep from a preflight probe. A probe spends ONE request and
  * asks only whether Jira answers this filter at all; a sweep reads to the end of it.
  */
-async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Promise<JiraWalk> {
+async function ladder(cfg: JiraConfig, ctx: SweepContext, budget: WalkBudget): Promise<JiraWalk> {
   const cred = restCredentialFrom(process.env);
   if (await hasBin(JIRA_BIN)) {
-    const viaCli = await walkCli(cfg, ctx, maxPages);
+    const viaCli = await walkCli(cfg, ctx, budget);
     if (!viaCli.error || !cred || ctx.signal.aborted) return viaCli;
-    const viaRest = await walkRest(cfg, cred, ctx, maxPages);
+    const viaRest = await walkRest(cfg, cred, ctx, budget);
     if (!viaRest.error) return viaRest;
     return {
       issues: [],
@@ -816,7 +917,7 @@ async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Pro
   if (!cred) {
     return { issues: [], error: credentialGap(process.env) ?? NO_PATH, truncated: false };
   }
-  return walkRest(cfg, cred, ctx, maxPages);
+  return walkRest(cfg, cred, ctx, budget);
 }
 
 /** Sweep the configured JQL: every page of it, up to what one sweep may read. */
@@ -825,7 +926,7 @@ async function sweep(cfg: JiraConfig, ctx: SweepContext): Promise<SweepResult> {
   const site = siteProblem(cfg.site);
   if (site) return { items: [], error: site };
 
-  return sweepResultFromWalk(await ladder(cfg, ctx, pagesFor(cfg)), cfg, ctx);
+  return sweepResultFromWalk(await ladder(cfg, ctx, sweepBudget(cfg)), cfg, ctx);
 }
 
 /**
@@ -853,7 +954,7 @@ async function preflight(cfg: JiraConfig, ctx: SweepContext): Promise<string | n
   const cred = restCredentialFrom(process.env);
   if (!cred && !(await hasBin(JIRA_BIN))) return credentialGap(process.env) ?? NO_PATH;
 
-  return (await ladder({ ...cfg, limit: 1 }, ctx, 1)).error;
+  return (await ladder({ ...cfg, limit: 1 }, ctx, { maxPages: 1, confirmTail: false })).error;
 }
 
 export const jira: TaskSourceImpl<JiraConfig> = {

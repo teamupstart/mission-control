@@ -1863,6 +1863,15 @@ body {
 .topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-btn {
   padding: 0 9px;
 }
+/* The sole-survivor rounding, inherited from the rule the review button used to carry.
+   The reviews control renders only when the inbox holds anything, so on the COMMON
+   fleet (empty inbox) compaction leaves the live trigger as the pulse's only visible
+   segment - and its leading-edge-only rounding would draw a square trailing corner on
+   hover inside the container's fully rounded pill (`.pulse` does not clip). */
+.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse:not(:has(.pulse-btn)) .pulse-link,
+.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse:not(:has(.pulse-btn)) .pulse-link {
+  border-radius: 999px;
+}
 
 /* Rung 4: Foreman and the page segment drop to their glyphs. Split from rung 5 deliberately -
    bundled, the two shed everything at once, and a rung that saves far more than it had to

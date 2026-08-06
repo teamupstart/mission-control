@@ -226,6 +226,15 @@ test("the awake label never wraps the title bar, and compaction never hides the 
       message: "filter compaction took the Keep awake control off screen",
     })
     .toBe(true);
+  // The sole-survivor shape: this idle fleet's inbox is empty, so no reviews control
+  // renders and the trigger is the pulse's ONLY visible segment - which must take the
+  // FULL rounding, not keep the leading-edge-only radius that assumes a trailing
+  // sibling and draws a square corner on hover inside the rounded pill.
+  expect(
+    await trigger(dashboard).evaluate((el) => getComputedStyle(el).borderRadius),
+    "the lone live trigger kept its leading-edge-only rounding",
+  ).toBe("999px");
+
   await trigger(dashboard).click();
   await expect(dialog(dashboard)).toBeVisible();
   // Still the ACTIVE control, compacted: the switch inside reflects the held assertion.

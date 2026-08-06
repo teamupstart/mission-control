@@ -288,17 +288,33 @@ test("filter compaction keeps both interactive pulse controls visible", () => {
     assert.doesNotMatch(body, /border-left:\s*none/);
   }
 
-  // The empty-wrapper rule is GONE, not merely relaxed: with the live control leading,
+  // The empty-wrapper HIDE is GONE, not merely relaxed: with the live control leading,
   // the pulse is never empty, and a resurrected `.pulse:not(:has(.pulse-btn))` hide
-  // would take the Keep awake control off screen with it.
-  const emptyPulseSelectors = rules.filter(({ selector }) =>
-    /\.pulse:not\(:has\(\.pulse-btn\)\)/.test(selector),
+  // would take the Keep awake control off screen with it. Anchored at the subject and
+  // gated on display so the sole-survivor ROUNDING rule below does not trip it.
+  const emptyPulseSelectors = rules.filter(
+    ({ selector, body }) =>
+      /\.pulse:not\(:has\(\.pulse-btn\)\)$/.test(selector) && /display:\s*none/.test(body),
   );
   assert.deepEqual(
     emptyPulseSelectors.map(({ selector }) => selector),
     [],
-    "the empty-pulse rule is back, and it would hide the Keep awake control",
+    "the empty-pulse hide is back, and it would take the Keep awake control off screen",
   );
+
+  // And when no reviews control exists (empty inbox - the common fleet), the surviving
+  // live trigger takes the full rounding the review button used to take as sole
+  // survivor: its leading-edge-only radius would otherwise draw a square trailing
+  // corner on hover inside the pulse's fully rounded pill.
+  const soleSurvivor = rules.filter(({ selector }) =>
+    /\.pulse:not\(:has\(\.pulse-btn\)\) \.pulse-link$/.test(selector),
+  );
+  assert.equal(
+    soleSurvivor.length,
+    2,
+    "the lone live trigger must regain full rounding for focus and a held term",
+  );
+  for (const { body } of soleSurvivor) assert.match(body, /border-radius:\s*999px/);
 });
 
 test("Dispatch never degrades, and the labels that do are marked", () => {

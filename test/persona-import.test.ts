@@ -2,7 +2,7 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -133,7 +133,10 @@ test("the plugin version comes from the nearest .claude-plugin manifest, and the
   const path = writeRole("marketplace/plugins/agent-team/references/roles/tester.md");
   const persona = (await (await importRole(request, path)).json()) as ImportedPersona;
   assert.equal(persona.provenance?.pluginVersion, "0.2.0");
-  assert.equal(persona.provenance?.sourceRepo, join(sources, "marketplace"));
+  // Compared against the RESOLVED root, because ownership is discovered from where the bytes
+  // live. On macOS the temp tree is reached through `/var` -> `/private/var`, so this and
+  // `sourcePath` legitimately disagree about their prefix for the very same file.
+  assert.equal(persona.provenance?.sourceRepo, realpathSync(join(sources, "marketplace")));
 
   // A manifest with no usable version is not an answer, and a GRANDPARENT plugin's version is
   // not this document's - so the nearest manifest wins even when it says nothing.
@@ -244,6 +247,41 @@ test("a symlinked source is read through the link and remembered as the path tha
   assert.equal(persona.guidanceMarkdown, ROLE);
   // The operator's own path, not the resolved target: that is what they pointed at, and a plugin
   // upgrade that re-points the link is upstream CHANGE rather than a stale pin.
+  assert.equal(persona.provenance?.sourcePath, link);
+});
+
+/**
+ * Identity and OWNERSHIP are answered by two different paths, and this is the case that proves
+ * they have to be.
+ *
+ * A role file symlinked out of an installed plugin - the shape an operator gets the moment they
+ * keep a tidy directory of the roles they import - has its `.claude-plugin/plugin.json` and its
+ * `.git` above the TARGET and nothing whatsoever above the link. Walking the lexical path for
+ * those recorded `null` twice over for a file that plainly belongs to a versioned plugin, which
+ * is precisely the fact the drift badge is supposed to be able to name.
+ */
+test("provenance metadata is discovered through the link, while the path stays as named", async () => {
+  const { request } = fixture();
+  const plugin = join(sources, "linked-marketplace", "plugins", "role-pack");
+  mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
+  mkdirSync(join(sources, "linked-marketplace", ".git"), { recursive: true });
+  writeFileSync(
+    join(plugin, ".claude-plugin", "plugin.json"),
+    JSON.stringify({ name: "role-pack", version: "3.1.4" }),
+    "utf8",
+  );
+  const target = writeRole("linked-marketplace/plugins/role-pack/references/roles/auditor.md");
+  // The link lives OUTSIDE the plugin, so nothing is discoverable above it.
+  const link = join(sources, "my-roles-auditor.md");
+  symlinkSync(target, link);
+
+  const persona = (await (await importRole(request, link)).json()) as ImportedPersona;
+  assert.equal(persona.provenance?.pluginVersion, "3.1.4");
+  assert.equal(
+    persona.provenance?.sourceRepo,
+    realpathSync(join(sources, "linked-marketplace")),
+  );
+  // And the path is still the one the operator named, so re-import follows the link they made.
   assert.equal(persona.provenance?.sourcePath, link);
 });
 

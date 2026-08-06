@@ -165,9 +165,21 @@ export interface PersonaProvenance {
    * again on each read, on the resolved path, for exactly that reason.
    */
   sourcePath: string;
-  /** The enclosing git worktree root, when one was found by walking up from the file. */
+  /**
+   * The enclosing git worktree root, when one was found by walking up from the file.
+   *
+   * Discovered from the RESOLVED path, unlike `sourcePath` beside it, so these two can disagree
+   * about their prefix for a document reached through a link - which is correct rather than
+   * sloppy. What owns a file is a property of where its bytes live; where to re-read it is a
+   * property of what the operator pointed at.
+   */
   sourceRepo: string | null;
-  /** `version` from the nearest `.claude-plugin/plugin.json` above the file, when readable. */
+  /**
+   * `version` from the nearest `.claude-plugin/plugin.json` above the file, when readable.
+   *
+   * Found from the resolved path too, for the same reason - a role file symlinked out of an
+   * installed plugin still belongs to that plugin's version.
+   */
   pluginVersion: string | null;
   /** sha256 of the exact bytes read, hex. The one thing a drift check compares. */
   contentSha256: string;

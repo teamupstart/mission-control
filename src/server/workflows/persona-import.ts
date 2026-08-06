@@ -53,6 +53,21 @@ const PLUGIN_MANIFEST_MAX_BYTES = 64 * 1024;
 export interface PersonaSource {
   /** The path as provenance will record it: absolute, `.`/`..` resolved, links intact. */
   sourcePath: string;
+  /**
+   * The path the bytes actually came from, after links. DISCOVERY, never citation or identity.
+   *
+   * The same split `RepoDoc` draws, and for a reason that shows up here as missing metadata
+   * rather than as duplicated bytes: a role file reached through a symlink from outside its
+   * plugin has a `.claude-plugin/plugin.json` and a `.git` above its TARGET and nothing at all
+   * above the link. Walking the lexical path for those recorded `null` for a file that plainly
+   * belongs to a plugin.
+   *
+   * So the two questions get the two different paths. "Which file is this, and where do I
+   * re-read it" is answered by `sourcePath`, because that is what the operator pointed at and
+   * what should still be followed when a plugin upgrade re-points the link. "What owns this
+   * file" is answered here, because ownership is a property of where the bytes live.
+   */
+  realPath: string;
   /** Exact Markdown, decoded from the exact bytes that were hashed. */
   guidanceMarkdown: string;
   contentSha256: string;
@@ -173,7 +188,7 @@ export async function readPersonaSource(requestedPath: string): Promise<PersonaS
   if (guidanceMarkdown.trim().length === 0) {
     throw new PersonaImportError(`${sourcePath} has no content to review with`);
   }
-  return { sourcePath, guidanceMarkdown, contentSha256: sha256Hex(bytes) };
+  return { sourcePath, realPath: real, guidanceMarkdown, contentSha256: sha256Hex(bytes) };
 }
 
 /** Every directory from `from` up to the filesystem root, nearest first and bounded. */
@@ -257,9 +272,11 @@ export async function readImportedSource(
   now: number,
 ): Promise<{ source: PersonaSource; provenance: PersonaProvenance }> {
   const source = await readPersonaSource(requestedPath);
+  // From the RESOLVED path: what owns this document is a property of where its bytes live, and a
+  // link into a plugin has neither a manifest nor a `.git` above the link itself.
   const [pluginVersion, sourceRepo] = await Promise.all([
-    readPluginVersion(source.sourcePath),
-    readSourceRepo(source.sourcePath),
+    readPluginVersion(source.realPath),
+    readSourceRepo(source.realPath),
   ]);
   return {
     source,

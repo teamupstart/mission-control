@@ -1265,8 +1265,8 @@ const OPAQUE_KEYS = new Set([
  *
  * The previous reader printed `JSON.stringify(event.payload)`, which is where most of the
  * UUID wall came from: `persona_verdict` reads `{"nodeId":"7f3e…","persona":"Quality"}` and
- * the id is the wider half. Nothing is lost by phrasing it - **Export run** is the complete
- * durable record, and it is one click away in the header.
+ * the id is the wider half. Nothing is lost by phrasing it - the complete durable record is
+ * the run history JSON, one disclosure away under the Timeline.
  */
 export function eventLine(
   event: WorkflowEvent,

@@ -551,6 +551,21 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### The run header, decluttered
+
+[`docs/evidence/workflow-run-audit/`](../docs/evidence/workflow-run-audit/) carries three frames
+from `specs/workflow-run-audit.spec.ts`, and they exist because the change is a SUBTRACTION.
+`toHaveCount(0)` proves `Copy run id`, `Export run`, `Export version` and `Open version` are
+unreachable; only a picture shows what the action row reads like without them, and that the `v1`
+badge which absorbed `Open version` still looks like the badge it always was.
+
+`01-header.png` is the row itself. `02-collapsed.png` and `03-opened.png` are the
+`Audit and bug reports` disclosure the three of them moved into, closed and open - closed being
+the state that matters, since the whole claim is that this material costs a reader nothing until
+they ask for it.
+
+The directory README records the regeneration command.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

@@ -378,6 +378,20 @@ const render = (
   ...props,
 }));
 
+/**
+ * The run header alone - the identity block and both action rows.
+ *
+ * Scoped, because "the header offers this control" and "the page renders this control" are
+ * different claims and the whole point of the audit disclosure is that it is NOT in the
+ * header. Asserting on the full markup would let a control slide back into the action row
+ * as long as the string appeared somewhere.
+ */
+const headerOf = (html: string): string => {
+  const end = html.indexOf("</header>");
+  assert.notEqual(end, -1, "the run view rendered no header");
+  return html.slice(0, end);
+};
+
 /** Every identity the published graph carries. None of them may reach the screen. */
 const GRAPH_IDS = [...Object.values(NODE), ...Object.values(EDGE)];
 
@@ -507,14 +521,17 @@ test("a waiting run offers both resubmissions, the run actions, and cancel", () 
     summary: { ...base.summary, status: "waiting_for_session" },
     run: { ...base.run, status: "waiting_for_session" },
   });
-  assert.match(html, /Preview fresh evidence/);
-  assert.match(html, /Preview unchanged/);
-  assert.match(html, /Copy feedback/);
-  assert.match(html, /Copy run id/);
-  assert.match(html, /Export run/);
-  assert.match(html, /Export version/);
-  assert.match(html, /Open version/);
-  assert.match(html, /Cancel run/);
+  const header = headerOf(html);
+  assert.match(header, /Preview fresh evidence/);
+  assert.match(header, /Preview unchanged/);
+  assert.match(header, /Copy feedback/);
+  assert.match(header, /Cancel run/);
+  // The four controls that answer nothing a person reading a run asked are gone from the
+  // whole page under these names: three moved into the audit disclosure at its foot, and
+  // Open version was absorbed by the version badge, which is now the link itself.
+  for (const label of ["Copy run id", "Export run", "Export version", "Open version"]) {
+    assert.doesNotMatch(html, new RegExp(label), `${label} is still rendered`);
+  }
   assert.match(html, /Workflow-owned model calls/);
   assert.match(html, /harness\/runs-monitor/);
   // The captured evidence sections, with the compaction fallback named.
@@ -526,6 +543,94 @@ test("a waiting run offers both resubmissions, the run actions, and cancel", () 
   assert.match(html, /status truncated/);
   assert.match(html, /Join and gate packet/);
   assertNoGraphIds(html);
+});
+
+/**
+ * The audit trio, in the one place it belongs.
+ *
+ * The run id has no filter on this page to be pasted into and the route already carries it;
+ * neither export has an importer anywhere in the product, by deliberate design. All three are
+ * bug-report material, so they sit behind a disclosure beside the Timeline rather than
+ * competing with Cancel run - and the disclosure says who they are for in its own summary.
+ */
+test("the run id and both JSON records sit in a collapsed disclosure below the timeline", () => {
+  const html = render(runningDetail());
+  const details = html.slice(html.indexOf("<details class=\"wf-run-audit\""));
+
+  // Collapsed: no `open` attribute, so the rows cost a reader nothing until asked for.
+  assert.match(html, /<details class="wf-run-audit">/);
+  assert.doesNotMatch(html, /<details class="wf-run-audit" open/);
+  assert.match(details, /Audit and bug reports/);
+  // Below the Timeline, and out of the header entirely.
+  assert.ok(
+    html.indexOf("wf-run-timeline") < html.indexOf("wf-run-audit"),
+    "the audit disclosure must come after the timeline",
+  );
+  assert.doesNotMatch(headerOf(html), /wf-run-audit/);
+
+  // Three rows: the id itself, the run's history, the version it was pinned to.
+  assert.match(details, /<dt>Run id<\/dt><dd class="wf-run-audit-id">run<\/dd>/);
+  assert.match(details, /<dt>Run history<\/dt>/);
+  assert.match(details, /Every retained event, verdict, delivery and model call/);
+  assert.match(details, /<dt>Workflow v2<\/dt>/);
+  assert.match(details, /The immutable published definition this run was pinned to/);
+
+  // The filenames are the server's own `Content-Disposition` names, pinned by
+  // test/workflows-http.test.ts. A file must not be named two ways.
+  assert.match(details, /href="\/api\/workflow-runs\/run\/export" download="workflow-run-run\.json"/);
+  assert.match(
+    details,
+    /href="\/api\/workflows\/workflow\/versions\/2\/export" download="workflow-version-2\.json"/,
+  );
+
+  // Both downloads read "Download JSON" on screen, so each carries the name that tells a
+  // screen reader - and a role-based spec - which record it fetches.
+  assert.match(details, /aria-label="Download the run history as JSON"/);
+  assert.match(details, /aria-label="Download workflow version 2 as JSON"/);
+  assert.ok(hasTooltip(html, "Copy this durable workflow run id"));
+});
+
+test("a missing version leaves the audit row disabled rather than dropping it", () => {
+  const base = runningDetail();
+  const html = render({ ...base, version: null } as WorkflowRunDetail);
+  const details = html.slice(html.indexOf("<details class=\"wf-run-audit\""));
+
+  // The row is what says this run HAS a pinned version, so a corrupt definition is a fault
+  // to see rather than a row to hide - and there is no href to offer.
+  assert.match(details, /<dt>Workflow v2<\/dt>/);
+  assert.match(details, /<button class="btn btn-ghost" aria-label="Download workflow version 2 as JSON"[^>]*disabled/);
+  assert.doesNotMatch(details, /workflow-version-2\.json/);
+  assert.ok(hasTooltip(html, "The immutable published version is missing or corrupt"));
+  // The run's own history is unaffected by a missing definition.
+  assert.match(details, /download="workflow-run-run\.json"/);
+});
+
+/**
+ * The badge absorbed `Open version`.
+ *
+ * It already displayed the version, so a separate button for the same fact was a control the
+ * action row spent on navigation. Making the badge the link puts the affordance on the
+ * information, and the accessible name says where it goes - `v2` alone would not.
+ */
+test("the version badge is the composer link, and names the version it opens", () => {
+  const html = render(runningDetail());
+  const header = headerOf(html);
+  assert.match(
+    header,
+    /<button class="wf-run-version" aria-label="Open workflow version 2 in the composer"/,
+  );
+  assert.ok(hasTooltip(html, "Open workflow version 2 in the composer"));
+  assert.doesNotMatch(header, /<span class="wf-run-version">/);
+});
+
+test("a run whose version is missing cannot navigate to a composer that has nothing to show", () => {
+  const base = runningDetail();
+  const html = render({ ...base, version: null } as WorkflowRunDetail);
+  assert.match(
+    headerOf(html),
+    /<button class="wf-run-version" aria-label="Open workflow version 2 in the composer"[^>]*disabled/,
+  );
+  assert.ok(hasTooltip(html, "The immutable published version is missing or corrupt"));
 });
 
 /**
@@ -1036,7 +1141,9 @@ test("a missing immutable version blocks the strip without hiding the run", () =
   const base = runningDetail();
   const html = render({ ...base, version: null } as WorkflowRunDetail);
   assert.match(html, /The immutable workflow version is missing or corrupt/);
-  assert.match(html, /Export run/);
+  // The rest of the page is still there, including the run's own audit record - the run
+  // history does not depend on the definition being readable.
+  assert.match(html, /download="workflow-run-run\.json"/);
   assert.match(html, /Round 1/);
 });
 
@@ -1078,7 +1185,7 @@ test("a round whose captured context this build cannot read says so instead of t
   assert.doesNotMatch(earlier, /Original goal/);
   // The round is otherwise intact: its verdicts and the run's own actions are still there.
   assert.match(earlier, /Fix the race/);
-  assert.match(earlier, /Export run/);
+  assert.match(headerOf(earlier), /Copy feedback/);
   // And a readable round is unaffected.
   assert.doesNotMatch(
     render(base, { roundId: "submission-1" }),

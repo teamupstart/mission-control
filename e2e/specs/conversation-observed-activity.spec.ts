@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -17,6 +19,25 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  */
 
 const TOOL_TURN = "E2E_OBSERVED_TOOLS";
+
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/conversation-observed-activity/", import.meta.url));
+
+/**
+ * Photograph the surface this spec is already asserting on. Behind `MC_E2E_EVIDENCE`
+ * and committed, because a card carries a fresh worktree uuid and a relative clock, so
+ * an unconditional capture would rewrite a binary on every run for no added signal.
+ * Inside the regression rather than a staged walk: the point of the picture is that
+ * the assertions around it passed on the same run.
+ */
+async function shoot(page: Page, card: ReturnType<Page["locator"]>, name: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and
+  // it lands on top of the row being photographed.
+  await page.mouse.move(0, 0);
+  await card.screenshot({ path: `${EVIDENCE}${name}.png` });
+  console.log(`CAPTURED docs/evidence/conversation-observed-activity/${name}.png`);
+}
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -86,6 +107,8 @@ test("observed tool activity appears beside the conversation, honestly labelled"
   await expect(card.getByText("Mock reply with observed tools")).toBeVisible();
   await expect(card.locator(".transcript-log .tool-chip").filter({ hasText: "read" })).toBeVisible();
 
+  await shoot(dashboard, card, "01-wide-rail");
+
   // Observed-only language: the rows carry no lifecycle verdicts. These words failing
   // to appear is meaningful because the rows above are proven present.
   await expect(activity).not.toContainText(/running|complete|succeeded|failed|duration/i);
@@ -109,6 +132,8 @@ test("Find borrows the secondary rail and closing it restores Observed activity"
   await expect(card.getByRole("searchbox", { name: "Find in conversation" })).toBeVisible();
   await expect(card.getByRole("complementary", { name: "Search results" })).toBeVisible();
   await expect(card.getByRole("region", { name: "Observed activity" })).toHaveCount(0);
+
+  await shoot(dashboard, card, "02-find-owns-rail");
 
   // Closing find hands the column back, with the same rows still derived from the
   // same transcript state - nothing was lost to the takeover.
@@ -140,6 +165,8 @@ test("a narrow conversation collapses activity to a disclosure the reader can op
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(activity.getByText("bash", { exact: true })).toBeVisible();
   await expect(activity.getByText("src/web/styles.css")).toBeVisible();
+
+  await shoot(dashboard, card, "03-narrow-disclosure-open");
 
   // The composer survives the stacked section: still on screen, still writable.
   const reply = card.getByPlaceholder(/^Reply to this session/);

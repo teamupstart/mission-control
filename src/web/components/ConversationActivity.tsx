@@ -45,12 +45,15 @@ export function ConversationActivity({
   // Follow the newest invocation the way the log follows its tail: stick to the
   // bottom while the reader is there, stay put while they are reading history.
   // A layout effect so the correction lands before paint rather than as a jump.
+  // `open` is a dependency because the narrow disclosure mounts its list hidden:
+  // the scroll can only land once the body has a height, which is the moment the
+  // reader opens it - and what they asked to see is the latest activity.
   const bodyRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   useLayoutEffect(() => {
     const el = bodyRef.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [rows.length]);
+  }, [rows.length, open]);
 
   return (
     <section className="activity-rail" aria-labelledby={headingId} data-open={open ? "true" : "false"}>

@@ -479,7 +479,14 @@ export function SettingsPage({
       case "models":
         return <LlmSettingsPanel state={llm} />;
       case "foreman":
-        return <ForemanSettingsPanel state={foreman} onNavigate={navigateWithAnchor} />;
+        return (
+          <ForemanSettingsPanel
+            state={foreman}
+            onNavigate={navigateWithAnchor}
+            jumpAnchor={pending?.anchor ?? null}
+            jumpRequestId={pending?.id ?? null}
+          />
+        );
       case "workflows":
         return (
           <WorkflowSettingsPanel

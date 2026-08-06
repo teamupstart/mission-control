@@ -124,7 +124,7 @@ test("Foreman provider and every model are catalog-backed dropdowns", () => {
 
 test("Foreman exposes separate compatible defaults for fresh backlog launches", () => {
   const html = renderPanel(mkState());
-  assert.match(html, /Backlog launch models/);
+  assert.match(html, />Launches<\/h3>/);
   assert.match(html, /id="foreman-backlog-task-model-claude"/);
   assert.match(html, /id="foreman-backlog-task-model-codex"/);
   assert.match(html, /already names one/);
@@ -133,7 +133,7 @@ test("Foreman exposes separate compatible defaults for fresh backlog launches", 
 
 test("completion safeguards render as independent default-on settings", () => {
   const html = renderPanel(mkState());
-  assert.match(html, /Completion safeguards/);
+  assert.match(html, />Safety<\/h3>/);
   for (const label of [
     "Skip automatic completion for Scout tasks",
     "Skip automatic completion for mockups and review artifacts",

@@ -451,6 +451,7 @@ test("Foreman completion safeguards default on and persist independently", async
   daemon,
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/foreman`);
+  await dashboard.getByRole("tab", { name: "Safety" }).click();
 
   const scout = dashboard.getByRole("checkbox", {
     name: "Skip automatic completion for Scout tasks",
@@ -476,6 +477,7 @@ test("Foreman completion safeguards default on and persist independently", async
   }).toEqual({ scout: true, artifacts: false });
 
   await dashboard.reload();
+  await dashboard.getByRole("tab", { name: "Safety" }).click();
   await expect(scout).toBeChecked();
   await expect(artifacts).not.toBeChecked();
 });

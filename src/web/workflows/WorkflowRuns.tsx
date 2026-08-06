@@ -14,6 +14,7 @@ import type {
 } from "@shared/workflow.ts";
 import {
   formatCheckCommand,
+  isVerdictNode,
   sessionActionCompletionLabel,
   sessionActionSkillLabel,
 } from "@shared/workflow.ts";
@@ -54,6 +55,7 @@ import {
   previousFullWorkflowAttempts,
   priorAttemptPassed,
   readCapturedContext,
+  reviewerAttempts,
   runRounds,
   runStatusLabel,
   segmentProvenanceSentence,
@@ -528,7 +530,14 @@ export function WorkflowRunView({
     ...(continuationSource ? [continuationSource] : []),
     ...roundAttempts.filter((attempt) => attempt.sessionAction !== null),
   ];
-  const reviewAttempts = roundAttempts.filter((attempt) => attempt.sessionAction === null);
+  // Session actions leave; the Session, join and End attempts never belonged here at all - see
+  // `reviewerAttempts`, which is also what keeps a queued or errored reviewer in the list.
+  const reviewAttempts = reviewerAttempts(
+    roundAttempts.filter((attempt) => attempt.sessionAction === null),
+    version?.graph,
+  );
+  /** A published graph that CANNOT produce a verdict, which is a different empty than "not yet". */
+  const reviewerlessVersion = version ? !version.graph.nodes.some(isVerdictNode) : false;
   const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
   const previousFullAttempts = inspectorOnly
     ? previousFullWorkflowAttempts(detail, viewed)
@@ -959,7 +968,12 @@ export function WorkflowRunView({
           <p className="wf-run-empty">
             {inspectorOnly
               ? "This Inspector repair round ran no Personas."
-              : "No reviewer has been activated in this round yet."}
+              // "Not yet" is a promise, and a graph with no reviewer in it is never going to keep
+              // it. Worth its own sentence now that the structural attempts no longer fill this
+              // list: a Session-to-End workflow used to look like it had reviewed twice.
+              : reviewerlessVersion
+                ? "This workflow has no reviewers - nothing in it produces a verdict."
+                : "No reviewer has been activated in this round yet."}
           </p>
         ) : (
           <div className="wf-run-cards">

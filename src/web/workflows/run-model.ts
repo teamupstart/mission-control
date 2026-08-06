@@ -1,5 +1,6 @@
 import type {
   PersonaVerdict,
+  PublishedWorkflowGraph,
   WorkflowCheckOutcome,
   WorkflowCheckStatus,
   WorkflowContextSnapshot,
@@ -195,6 +196,36 @@ export function priorAttemptPassed(
 
 export function verdictOf(attempt: WorkflowNodeAttempt): PersonaVerdict | null {
   return attempt.verdict as unknown as PersonaVerdict | null;
+}
+
+/**
+ * The attempts "Reviewer verdicts" is about: the ones on a node that can hold an opinion.
+ *
+ * Every node in a graph owns attempt rows, including the three that are pure structure. The
+ * engine writes a `completed` attempt for the Session the moment a submission is captured
+ * (`submitted` needs a receipt to hang off), one for each `all_pass` join when it aggregates, and
+ * one for the End when the run terminates. Listed beside the reviewers, those read as verdicts
+ * nobody gave - "Session completed · attempt 1", "Stage 2 completed · attempt 1", "Complete
+ * completed · attempt 1" - which is exactly as much noise as the graph has structure, and their
+ * real state is already drawn on the pipeline strip above the list.
+ *
+ * The filter is by NODE KIND rather than by the absence of a verdict, because a reviewer with no
+ * verdict is the case that most needs showing: queued, running, retrying, or errored. And a
+ * structural attempt that is anything OTHER than quietly complete is kept too - if a join ever
+ * does hold an error, a reader has to see it rather than have this hide it.
+ */
+export function reviewerAttempts(
+  attempts: readonly WorkflowNodeAttempt[],
+  graph: PublishedWorkflowGraph | null | undefined,
+): WorkflowNodeAttempt[] {
+  if (!graph) return [...attempts];
+  const structural = new Set(
+    graph.nodes
+      .filter((node) => node.kind === "session" || node.kind === "all_pass" || node.kind === "end")
+      .map((node) => node.id),
+  );
+  return attempts.filter((attempt) =>
+    !(structural.has(attempt.nodeId) && attempt.state === "completed" && !attempt.error));
 }
 
 /**

@@ -211,6 +211,25 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --reporter=list
 ```
 
+### Reviewer verdicts lists reviewers only
+
+[`evidence/workflow-run-reviewer-verdicts.png`](evidence/workflow-run-reviewer-verdicts.png) is
+the run page of a completed two-reviewer run, captured by the regression that arrives at it from
+the session card's own `⌁ Approved` chip. Both reviewers are named with the verdict they gave, and
+the three structural attempts every graph produces - the Session, the all-pass join, the End - are
+absent: before the fix each rendered as a card reading `… completed · attempt 1` under a heading
+that promises a verdict. What those nodes did is still on the pipeline strip above, and the
+stage's own join packet is still under the list.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-run-reviewer-verdicts.spec.ts \
+  --reporter=list
+```
+
 ### Ship it replacement workflow
 
 The focused browser case opens the session's Ship it choice, verifies the visible

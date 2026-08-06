@@ -157,6 +157,46 @@ test("a Markdown role imported by path records where it came from, badges upstre
   await shoot(dashboard, "library-shelf");
 });
 
+/**
+ * Arriving at the Library is itself a request for a fresh answer.
+ *
+ * The drift hook is owned by the application root, which mounts once per page load - so the
+ * check used to run at STARTUP and never again. An operator who leaves the dashboard open,
+ * upgrades a plugin and then opens the Library would be shown the verdict from whenever the tab
+ * was first loaded, with nothing on screen admitting it was that old.
+ *
+ * Only a browser can tell this apart: the route assertion is identical either way, and the badge
+ * markup is identical either way. What differs is whether navigating away and back re-asks, and
+ * that is a sequence of two clicks.
+ */
+test("navigating back to the Library re-checks the source without pressing Check upstream", async ({
+  dashboard,
+  daemon,
+}) => {
+  const path = writeRole(daemon, ROLE_V1);
+  await dashboard.goto(`${daemon.baseURL}/#/library/personas`);
+  const sidebar = dashboard.getByRole("complementary", { name: "Persona library" });
+  await sidebar.getByLabel("Absolute path of a Markdown file on this machine").fill(path);
+  await sidebar.getByRole("button", { name: "Import from path" }).click();
+  const row = sidebar.getByRole("button", { name: /Claw Reviewer/ });
+  await expect(row).toBeVisible();
+  await expect(row).not.toContainText("upstream changed");
+
+  // The upstream moves on while the dashboard stays open, and the operator is somewhere else.
+  writeRole(daemon, ROLE_V2);
+  await dashboard.getByRole("navigation", { name: "Pages" })
+    .getByRole("button", { name: /Fleet/ }).click();
+  await expect(dashboard.getByRole("complementary", { name: "Persona library" })).toHaveCount(0);
+
+  // Coming back is the request. No Check upstream, no reload - the badge is simply current.
+  await dashboard.getByRole("navigation", { name: "Pages" })
+    .getByRole("button", { name: /Library/ }).click();
+  await expect(dashboard.getByRole("button", { name: /Claw Reviewer/ }))
+    .toContainText("upstream changed");
+  await dashboard.goto(`${daemon.baseURL}/#/library/personas`);
+  await expect(row).toContainText("upstream changed");
+});
+
 test("a path the daemon cannot read is refused by name, and authors nothing", async ({
   dashboard,
   daemon,

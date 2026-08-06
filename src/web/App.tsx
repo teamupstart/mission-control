@@ -217,7 +217,12 @@ export function App(): React.JSX.Element {
   // Owned here for the same reason as `cost` above: two surfaces read one answer. The Library
   // shelf badges reviewer cards with it and the Persona editor badges the open row, and a copy
   // per surface would mean two requests and two chances to disagree about the same file.
-  const personaDrift = usePersonaDrift();
+  //
+  // Scoped to the Library, which is where both of those surfaces live, so the check runs on every
+  // ARRIVAL there rather than once per page load. This component mounts once, so an unscoped hook
+  // would answer with whatever the disk said when the tab was opened - stale for exactly the
+  // operator who leaves the dashboard up and upgrades a plugin under it.
+  const personaDrift = usePersonaDrift(route.page === "library");
   // The worst subsystem status, inherited by the topbar gear from the settings rail dots.
   // Null status ("unknown", pre-snapshot) and an all-clear both render no dot.
   const gearDot = settingsGearDot(settingsStatus);

@@ -38,6 +38,12 @@ Non-goals:
 - The bind chip: **Phase 4**.
 - Any change to `runRemedy` in `run-model.ts`. It serves a summary-only surface under a stricter
   contract and stays as it is.
+- **Migrating `WorkflowLadder` onto `runNextMove`.** `runNextMove` is the Runs header's derivation
+  only. The ladder keeps reading `inspectorGateActions`, which already serves both surfaces; the only
+  thing this phase changes for the ladder is that filter's policy condition. A ladder primary would be
+  a change to what the session pane *does* - it deliberately takes no resubmit callback today
+  (`WorkflowLadderProps`, `WorkflowLadder.tsx:76-93`) and offers no submissions - and no phase owns
+  that. The source plan's decision-layer diagram was corrected to show this after Inspector review.
 - Any change to `.wf-run-actions-danger`. `Restart full workflow` and `Cancel run` keep their
   placement, tone and phrase confirmation.
 
@@ -290,6 +296,16 @@ Must not change: `runRemedy`'s signature or behaviour, the `.wf-run-actions-dang
 
 ## Cross-phase audit record
 
+- **Corrected after Inspector review round 2 (PR #439).** The Inspector found that the source plan's
+  "after" decision-layer diagram showed `runNextMove` feeding `WorkflowLadder`, while this phase scopes
+  `runNextMove` to the Runs header and leaves the ladder on `inspectorGateActions` - so the plan
+  prescribed a shared-derivation migration no phase owned. Confirmed and fixed by correcting the
+  diagram rather than by adding a ladder migration: the ladder takes no resubmit callback today
+  (`WorkflowLadder.tsx:76-93`) and shows no submissions, so a ladder primary would change what the
+  session pane does, which is outside the approved decision. The redrawn diagram now shows
+  `runNextMove` feeding only the header and `inspectorGateActions` feeding both surfaces in **both**
+  panels, which is also more accurate about the before state. Recorded as an explicit non-goal in this
+  phase's scope so no agent re-infers it.
 - **Corrected after Inspector review round 1 (PR #439).** The Inspector found that an earlier draft
   of the next-move table returned `Turn Inspector on` with a "settings route" while `RunNextMove` was
   specified as a POST descriptor dispatched through `useRunActions` - so the implementing agent would

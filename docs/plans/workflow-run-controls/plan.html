@@ -600,8 +600,15 @@ a stricter contract, and collapsing the two would drag detail-only fields into t
 siblings that agree on vocabulary - one <code>RunActionId</code> per intent, never one per surface
 (<code>run-model.ts:1485-1487</code>).</p>
 
+<p><code>runNextMove</code> is the <strong>header's</strong> derivation only. <code>WorkflowLadder</code>
+keeps reading <code>inspectorGateActions</code>, which already serves both surfaces today and continues
+to; this plan only tightens its policy filter. Migrating the ladder onto <code>runNextMove</code> is
+deliberately not proposed - the ladder offers no submissions at all today
+(<code>WorkflowLadderProps</code> takes no resubmit callback), so giving it a primary move would be a
+change to what the session pane does, which is not what this plan is for.</p>
+
 <figure>
-<svg viewBox="0 0 900 396" role="img" aria-label="Before and after of the decision layer. Before, the run header assembles eleven controls inline from run detail while runRemedy serves only the review drawer. After, a new runNextMove sits beside runRemedy in the shared module and feeds both the run header and the workflow ladder.">
+<svg viewBox="0 0 900 420" role="img" aria-label="Before and after of the decision layer. Before, the run header assembles its eleven controls inline, bypassing the shared module, while inspectorGateActions already serves both the header and the ladder and runRemedy serves the review drawer. After, runNextMove derives the header's controls; inspectorGateActions still serves both the header and the ladder, and runRemedy still serves the drawer.">
   <defs>
     <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
@@ -610,63 +617,77 @@ siblings that agree on vocabulary - one <code>RunActionId</code> per intent, nev
 
   <text class="d-t-lab" x="20" y="22">BEFORE</text>
   <text class="d-t-lab" x="140" y="48" text-anchor="middle">SOURCE</text>
-  <text class="d-t-lab" x="450" y="48" text-anchor="middle">DECISION LAYER</text>
+  <text class="d-t-lab" x="455" y="48" text-anchor="middle">DECISION LAYER</text>
   <text class="d-t-lab" x="760" y="48" text-anchor="middle">SURFACE</text>
 
-  <rect class="d-box-alt" x="60" y="60" width="160" height="36" rx="7"/>
-  <text class="d-t" x="140" y="83" text-anchor="middle">WorkflowRunSummary</text>
-  <rect class="d-box-alt" x="60" y="148" width="160" height="36" rx="7"/>
-  <text class="d-t" x="140" y="171" text-anchor="middle">WorkflowRunDetail</text>
+  <rect class="d-box-alt" x="60" y="58" width="160" height="34" rx="7"/>
+  <text class="d-t" x="140" y="80" text-anchor="middle">WorkflowRunDetail</text>
+  <rect class="d-box-alt" x="60" y="150" width="160" height="34" rx="7"/>
+  <text class="d-t" x="140" y="172" text-anchor="middle">WorkflowRunSummary</text>
 
-  <rect class="d-box" x="370" y="60" width="160" height="36" rx="7"/>
-  <text class="d-t" x="450" y="83" text-anchor="middle">runRemedy</text>
-  <text class="d-t-sm" x="450" y="122" text-anchor="middle">no shared derivation for run detail</text>
+  <rect class="d-box" x="370" y="100" width="170" height="34" rx="7"/>
+  <text class="d-t" x="455" y="122" text-anchor="middle">inspectorGateActions</text>
+  <rect class="d-box" x="370" y="150" width="170" height="34" rx="7"/>
+  <text class="d-t" x="455" y="172" text-anchor="middle">runRemedy</text>
 
-  <rect class="d-box" x="650" y="60" width="220" height="36" rx="7"/>
-  <text class="d-t" x="760" y="83" text-anchor="middle">ReviewDrawer &middot; one or none</text>
-  <rect class="d-box-bad" x="650" y="120" width="220" height="42" rx="7"/>
-  <text class="d-t" x="760" y="138" text-anchor="middle">WorkflowRuns header</text>
-  <text class="d-t-sm" x="760" y="154" text-anchor="middle">11 controls assembled inline</text>
-  <rect class="d-box" x="650" y="176" width="220" height="30" rx="7"/>
-  <text class="d-t" x="760" y="196" text-anchor="middle">WorkflowLadder</text>
+  <rect class="d-box-bad" x="650" y="58" width="220" height="40" rx="7"/>
+  <text class="d-t" x="760" y="76" text-anchor="middle">WorkflowRuns header</text>
+  <text class="d-t-sm" x="760" y="91" text-anchor="middle">11 controls, assembled in place</text>
+  <rect class="d-box" x="650" y="110" width="220" height="30" rx="7"/>
+  <text class="d-t" x="760" y="130" text-anchor="middle">WorkflowLadder</text>
+  <rect class="d-box" x="650" y="150" width="220" height="34" rx="7"/>
+  <text class="d-t" x="760" y="172" text-anchor="middle">ReviewDrawer &middot; one or none</text>
 
-  <path class="d-arrow" d="M220,78 L364,78" marker-end="url(#ah3)"/>
-  <path class="d-arrow" d="M530,78 L644,78" marker-end="url(#ah3)"/>
-  <path class="d-arrow" d="M220,166 L290,166"/>
-  <path class="d-arrow" d="M290,166 L290,141 L644,141" marker-end="url(#ah3)"/>
-  <path class="d-arrow" d="M290,166 L290,191 L644,191" marker-end="url(#ah3)"/>
+  <path class="d-arrow-dash" d="M220,70 L644,70" marker-end="url(#ah3)"/>
+  <text class="d-t-sm" x="430" y="64" text-anchor="middle">assembled inline, bypassing the module</text>
 
-  <line class="d-rule" x1="20" y1="228" x2="880" y2="228"/>
+  <path class="d-arrow" d="M220,84 L300,84 L300,117 L364,117" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M540,117 L595,117"/>
+  <path class="d-arrow" d="M595,117 L595,88 L644,88" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M595,117 L595,125 L644,125" marker-end="url(#ah3)"/>
 
-  <text class="d-t-lab" x="20" y="256">AFTER</text>
+  <path class="d-arrow" d="M220,167 L364,167" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M540,167 L644,167" marker-end="url(#ah3)"/>
 
-  <rect class="d-box-alt" x="60" y="272" width="160" height="34" rx="7"/>
-  <text class="d-t" x="140" y="294" text-anchor="middle">WorkflowRunDetail</text>
-  <rect class="d-box-alt" x="60" y="330" width="160" height="34" rx="7"/>
-  <text class="d-t" x="140" y="352" text-anchor="middle">WorkflowRunSummary</text>
+  <line class="d-rule" x1="20" y1="205" x2="880" y2="205"/>
 
-  <rect class="d-box-pri" x="370" y="272" width="160" height="34" rx="7"/>
-  <text class="d-t-inv" x="450" y="294" text-anchor="middle">runNextMove</text>
-  <rect class="d-box" x="370" y="330" width="160" height="34" rx="7"/>
-  <text class="d-t" x="450" y="352" text-anchor="middle">runRemedy</text>
-  <text class="d-t-sm" x="450" y="382" text-anchor="middle">shared module &middot; run-actions.ts, run-model.ts</text>
+  <text class="d-t-lab" x="20" y="238">AFTER</text>
 
-  <rect class="d-box" x="650" y="262" width="220" height="30" rx="7"/>
-  <text class="d-t" x="760" y="282" text-anchor="middle">WorkflowRuns header</text>
-  <rect class="d-box" x="650" y="298" width="220" height="30" rx="7"/>
-  <text class="d-t" x="760" y="318" text-anchor="middle">WorkflowLadder</text>
-  <rect class="d-box" x="650" y="332" width="220" height="30" rx="7"/>
-  <text class="d-t" x="760" y="352" text-anchor="middle">ReviewDrawer</text>
+  <rect class="d-box-alt" x="60" y="258" width="160" height="34" rx="7"/>
+  <text class="d-t" x="140" y="280" text-anchor="middle">WorkflowRunDetail</text>
+  <rect class="d-box-alt" x="60" y="350" width="160" height="34" rx="7"/>
+  <text class="d-t" x="140" y="372" text-anchor="middle">WorkflowRunSummary</text>
 
-  <path class="d-arrow" d="M220,289 L364,289" marker-end="url(#ah3)"/>
-  <path class="d-arrow" d="M220,347 L364,347" marker-end="url(#ah3)"/>
-  <path class="d-arrow" d="M530,289 L590,289"/>
-  <path class="d-arrow" d="M590,289 L590,277 L644,277" marker-end="url(#ah3)"/>
-  <path class="d-arrow" d="M590,289 L590,313 L644,313" marker-end="url(#ah3)"/>
-  <path class="d-arrow" d="M530,347 L644,347" marker-end="url(#ah3)"/>
+  <rect class="d-box-pri" x="370" y="251" width="170" height="34" rx="7"/>
+  <text class="d-t-inv" x="455" y="273" text-anchor="middle">runNextMove</text>
+  <rect class="d-box" x="370" y="300" width="170" height="34" rx="7"/>
+  <text class="d-t" x="455" y="322" text-anchor="middle">inspectorGateActions</text>
+  <rect class="d-box" x="370" y="350" width="170" height="34" rx="7"/>
+  <text class="d-t" x="455" y="372" text-anchor="middle">runRemedy</text>
+  <text class="d-t-sm" x="455" y="402" text-anchor="middle">shared module &middot; run-actions.ts, run-model.ts</text>
+
+  <rect class="d-box" x="650" y="251" width="220" height="34" rx="7"/>
+  <text class="d-t" x="760" y="273" text-anchor="middle">WorkflowRuns header</text>
+  <rect class="d-box" x="650" y="300" width="220" height="30" rx="7"/>
+  <text class="d-t" x="760" y="320" text-anchor="middle">WorkflowLadder</text>
+  <rect class="d-box" x="650" y="350" width="220" height="34" rx="7"/>
+  <text class="d-t" x="760" y="372" text-anchor="middle">ReviewDrawer</text>
+
+  <path class="d-arrow" d="M220,275 L300,275"/>
+  <path class="d-arrow" d="M300,275 L300,268 L364,268" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M300,275 L300,317 L364,317" marker-end="url(#ah3)"/>
+
+  <path class="d-arrow" d="M540,268 L644,268" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M540,310 L604,310 L604,288" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M540,318 L644,316" marker-end="url(#ah3)"/>
+
+  <path class="d-arrow" d="M220,367 L364,367" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M540,367 L644,367" marker-end="url(#ah3)"/>
 </svg>
-<figcaption>The decision layer. <code>runNextMove</code> joins <code>runRemedy</code> as a sibling, so all
-three surfaces read their controls from shared derivation instead of assembling them inline.</figcaption>
+<figcaption><code>runNextMove</code> is the header's own derivation, and joins
+<code>runRemedy</code> as a sibling in the shared module. <code>inspectorGateActions</code> already
+serves both the header and the ladder and continues to; this plan only tightens its policy
+filter.</figcaption>
 </figure>
 
 <h2>Testing</h2>

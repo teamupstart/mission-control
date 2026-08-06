@@ -333,22 +333,32 @@ siblings that agree on vocabulary - one `RunActionId` per intent, never one per 
 
 ### The decision layer
 
-Today the run header hand-assembles its controls inline while `run-actions.ts` supplies only
-descriptors, and `runRemedy` - the one function that actually decides *the* move - is reachable
-only from the drawer. After this change both derivations sit behind the shared module and all
-three surfaces read from it.
+Today the run header hand-assembles its own controls inline, bypassing the shared module, while
+`runRemedy` - the one function that actually decides *the* move - is reachable only from the drawer.
+After this change the header's controls come from `runNextMove` instead of being assembled in place.
+
+`runNextMove` is the **header's** derivation only. `WorkflowLadder` keeps reading
+`inspectorGateActions`, which already serves both surfaces today and continues to; this plan only
+tightens its policy filter. Migrating the ladder onto `runNextMove` is deliberately not proposed -
+the ladder offers no submissions at all today (`WorkflowLadderProps` takes no resubmit callback), so
+giving it a primary move would be a change to what the session pane does, which is not what this plan
+is for.
 
 ```mermaid
 graph LR
   subgraph before
-    D1[WorkflowRunDetail] --> H1[WorkflowRuns header<br/>11 inline controls]
+    D1[WorkflowRunDetail] -.->|assembled inline| H1[WorkflowRuns header<br/>11 controls]
+    D1 --> G1[inspectorGateActions]
+    G1 --> H1
+    G1 --> L1[WorkflowLadder]
     S1[WorkflowRunSummary] --> R1[runRemedy] --> V1[ReviewDrawer<br/>one button or none]
-    D1 --> L1[WorkflowLadder]
   end
   subgraph after
     D2[WorkflowRunDetail] --> N2[runNextMove]
     N2 --> H2[WorkflowRuns header<br/>one primary + context]
-    N2 --> L2[WorkflowLadder]
+    D2 --> G2[inspectorGateActions]
+    G2 --> H2
+    G2 --> L2[WorkflowLadder]
     S2[WorkflowRunSummary] --> R2[runRemedy] --> V2[ReviewDrawer]
   end
 ```

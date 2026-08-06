@@ -2821,6 +2821,13 @@ controls, keeps reserving its normalized name, and stays readable because drafts
 versions name its id. Built-in actions ship with the application, are marked `Built-in`, and
 are read-only; **Duplicate** is the way to a copy you own.
 
+The authored Markdown behind the built-ins is in this repository under [`actions/`](actions/) -
+Mission Control session actions, not GitHub Actions - one document per action, beside the
+[Persona documents](personas/) and compiled in the same way: run `npm run session-actions` after
+editing one, and commit the generated module. The heading-to-name rule is the Personas' rule. An
+action's required skill and completion are not in its Markdown, because those two are contracts
+the daemon enforces rather than prose.
+
 The completion selector offers what **this build can prove**, read from the daemon rather than
 from the browser's own copy of the list:
 
@@ -5945,7 +5952,7 @@ npm run install-statusline # + wrap the status line (terminal model / thinking /
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
 npm run personas       # recompile the built-in Personas from personas/*.md (commit the result)
-npm run session-actions # recompile the built-in session actions from docs/session-actions/*.md (commit the result)
+npm run session-actions # recompile the built-in session actions from actions/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
 ```

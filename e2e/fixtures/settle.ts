@@ -32,6 +32,18 @@ import { expect, type Locator } from "@playwright/test";
  * would make one caller's timing an accident of the other's.
  */
 export async function settled(locator: Locator): Promise<void> {
+  // A control that has GONE is not a control that is still moving, and telling those apart is
+  // worth three lines: `boundingBox()` on a detached locator waits out the entire test timeout and
+  // then reports `Test timeout of 120000ms exceeded`, with the call log as the only clue. Observed
+  // for real - `attention-pills-agree` asserts its pill visible, and under load the state behind it
+  // can clear before the click, so the pill is legitimately gone by the time this runs. Failing
+  // here says that in one line instead of two silent minutes.
+  await expect(
+    locator,
+    "settled() needs the control to still be present - it was asserted a moment ago, so if this " +
+      "fails the state behind it went away rather than the layout being restless",
+  ).toBeAttached({ timeout: 5_000 });
+
   let last = JSON.stringify(await locator.boundingBox());
   await expect.poll(async () => {
     const next = JSON.stringify(await locator.boundingBox());

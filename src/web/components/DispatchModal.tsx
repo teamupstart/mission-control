@@ -762,8 +762,14 @@ function DispatchModal({
     // the note is gone. A read taken once at load would go on naming a problem they have
     // already fixed, which is the fastest way to teach someone to ignore a warning.
     void fetchEnvironmentChecks().then((view) => {
-      if (!alive || !view) return;
-      setEnvWarnings(view.checks.filter((check) => check.warning !== null));
+      if (!alive) return;
+      // A read that did not land is reported as "nothing to warn about", never as the last
+      // answer. Those two are indistinguishable by design (see the state above), and this
+      // assignment is what makes that true HERE rather than only as a consequence of
+      // `DispatchLayer` unmounting the modal on close - which is where it currently comes
+      // from, and is not a property this callback should have to rely on. A note the daemon
+      // can no longer vouch for is the one kind that could outlive the problem it named.
+      setEnvWarnings(view ? view.checks.filter((check) => check.warning !== null) : []);
     });
     return () => {
       alive = false;

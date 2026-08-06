@@ -188,6 +188,53 @@ test("a leftover state file after an uninstall shows no note", async ({ dashboar
   expect(readFileSync(stateFile(daemon), "utf8")).toBe("no_setup\n");
 });
 
+/**
+ * A read that fails shows nothing, rather than the last answer or a broken form.
+ *
+ * The two failure shapes `fetchJson` folds into `null` are both driven here - a request that
+ * never completes, and one that answers 500 - because this surface's policy is that a fetch
+ * which did not land is indistinguishable from "nothing to report". The alternative, keeping
+ * the previous answer, is the one way a note could outlive the problem it named: the operator
+ * fixes their setup, the read fails, and the form still accuses them.
+ *
+ * The warning is made present first so neither absence below is an empty assertion.
+ */
+test("a failed environment read shows nothing and still lets the dispatch go", async ({
+  dashboard,
+  daemon,
+}) => {
+  installPlugin(daemon);
+  writeState(daemon, "no_setup\n");
+
+  let dialog = await openDispatch(dashboard);
+  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await closeDispatch(dashboard);
+
+  // A request that never completes.
+  await dashboard.route("**/api/environment/checks", (route) => route.abort());
+  dialog = await openDispatch(dashboard);
+  await expect(dialog.getByText(STALL_NOTE)).toBeHidden();
+  await expect(dialog.getByText(/UpstartClaw core setup/)).toBeHidden();
+  // The form is whole: a failed optional read must not cost the operator the dialog.
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeVisible();
+  await closeDispatch(dashboard);
+
+  // And one that answers, badly. `fetchJson` folds a non-2xx into the same `null`, and the
+  // route is documented as always-200, so a 500 here means the daemon is not itself.
+  await dashboard.unroute("**/api/environment/checks");
+  await dashboard.route("**/api/environment/checks", (route) => route.fulfill({ status: 500 }));
+  dialog = await openDispatch(dashboard);
+  await expect(dialog.getByText(STALL_NOTE)).toBeHidden();
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeVisible();
+  await closeDispatch(dashboard);
+
+  // Unrouted, the note comes back - which is what proves the two absences above were the
+  // failed reads and not something else having silenced the check for the rest of the test.
+  await dashboard.unroute("**/api/environment/checks");
+  dialog = await openDispatch(dashboard);
+  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+});
+
 test("the warning never blocks a dispatch - the agent still goes out", async ({
   dashboard,
   daemon,

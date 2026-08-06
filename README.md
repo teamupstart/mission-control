@@ -3153,17 +3153,25 @@ because it judged nothing:
 | PR on another branch | This turn opened a pull request from a different branch. |
 | Capturing evidence | The completion is satisfied and the fresh evidence is being captured. |
 | Complete | The turn finished and the downstream evidence exists. |
+| Could not run | A delivery or infrastructure problem, stated as a sentence. Never a repair packet, never a spent round. |
 
 A finished [Pull Request action](#pull-request-actions) also names **what it proved**: the pull
 request it verified, and the short commit its remote head was observed at. That link appears
 only once the proof exists - offering to open a pull request nothing has verified would be the
 claim this whole completion refuses to make.
-| Could not run | A delivery or infrastructure problem, stated as a sentence. Never a repair packet, never a spent round. |
 
 Each waiting or blocked action also carries the sentence behind its chip, and its own card
 under **Session actions** - separate from **Reviewer verdicts**, which promises a verdict an
 action does not produce. The card names the snapshot the version froze, what the action
 required, and a bounded preview of the exact instruction that was sent.
+
+**Reviewer verdicts lists what can hold an opinion, and nothing else.** Every node in a graph
+owns attempt rows, including the three kinds that are pure structure - the Session, each all-pass
+join, and the End - so a run used to list them here as cards reading `Session completed ·
+attempt 1`. Their state is already on the pipeline strip above, and a Persona or Check with no
+verdict yet (queued, retrying, errored) still appears, because that is the case a reader most
+needs. A workflow with no reviewer in it at all says so, rather than promising one that is not
+coming. A structural attempt that is anything other than quietly complete is still shown.
 
 The rail lists history newest first with a state chip, the bound conversation and a relative
 time. Four chips - **All**, **Running**, **Needs you**, **Done** - are shortcuts onto the
@@ -6031,25 +6039,80 @@ included, or reap a shared treehouse worktree pool it does not own. With discove
 demo fleet is SDK-runtime sessions only: the launcher flips `claude`/`codex` to `sdk` through
 `PUT /api/harnesses/config`, the same route the Settings panel uses.
 
+**A demo daemon opens on the Board.** The launcher writes `layout: "board"` through
+`PUT /api/ui/config` on every boot, beside the runtime override above and for the same reason: it
+asserts the demo's configuration rather than hoping a persistent state root still holds it. The
+Board because a demo is read before it is driven - a column per state answers "what is this fleet
+doing" in one look, and the seeded fleet is arranged for exactly that reading. Switching layout
+during a demo sticks for as long as that daemon runs; the next `npm run demo` opens on the Board
+again.
+
+Two layers cover it, and neither is prose. `test/demo-launch.test.ts` pins the parts that can be
+decided without a daemon: that `DEMO_LAYOUT` is a layout this build actually ships, that the body
+parses under the route's own `UiConfigPatchSchema` and mentions **only** `layout` (the patch is a
+plain `.partial()`, so a body naming `keybindings` would replace them), and that the launcher
+accepts only an echo of the stored value - a misspelled key is valid input that answers 200 and
+sets nothing. `npm run demo -- --check` then boots a real demo daemon, reboots over it, and reads
+the layout back from `GET /api/ui/config`. Launching the demo from `e2e/` is deliberately not
+attempted: those specs drive their own throwaway daemon, while the launcher owns a fixed port and
+the `~/.mission-control-demo*` roots that `--check` already uses.
+
 ### The seeded fleet
 
 `--fresh` runs `scripts/demo/seed.mjs`, and what it leaves behind is the first paint:
 
-- **Four session cards**, each restored from suspension with its whole conversation intact -
+- **Five session cards**, each restored from suspension with its whole conversation intact -
   paced assistant turns, tool chips, `TodoWrite` narration - and a **dirty worktree** behind
-  it, so Diff and Files are full the moment you click a card. One of them is **waiting on a
-  question you can answer**.
-- **Nine tasks across every state a board really shows**: `done`, three `running`, `cancelled`,
+  it, so Diff and Files are full the moment you click a card. Two of them are **waiting on a
+  question you can answer**, and each asks about its own work: a continuation is routed by the
+  scenario it continues (`"continues"` in a scenario file), because the prompt a restored session
+  receives is identical for every card and matching on it alone can only ever reach one.
+- **A card with a queue behind it.** **UI Polish** is parked on a question with **three messages
+  waiting in its outbox**, queued through the composer's own route (`POST /api/sessions/:id/inject`,
+  whose `origin: "human"` + `buffer: true` defaults are what route a message to
+  `PendingTurnManager` instead of typing it at the session). They are durable `pending_turns` rows,
+  so they survive the seeder's shutdown exactly as the conversation does - and they stay queued
+  because `canDrain` requires `paneDialog === null`: a card holding a question holds its outbox.
+  Answer the question and the three drain in order, which is the whole point of the affordance.
+- **Ten tasks across every state a board really shows**: `done`, four `running`, `cancelled`,
   and four in `backlog` - one of them blocked on another, one parked (`enabled: false`). Note
   that "blocked" and "parked" are not statuses; there are only six of those, and neither is
   among them.
 - **Reviews**: one pending `plan-decisions` prompt with selectable options, plus an approved
   plan and an answered question in a session's resolved history.
-- **A completed Workflow run** on the Runs page, with its binding and version behind it.
+- **One clean end-to-end Workflow run**, bound to a session, so the story a run tells is visible
+  from both ends: the card wears its `⌁ Approved` chip and the Runs page has the whole pipeline
+  behind it. The graph is the built-in **No-Mistakes Review**'s version 3, stage for stage - the
+  deterministic `typecheck`/`test` gate first, then Intent Conformance alone as the cheap judge,
+  then Code Risk, Test Evidence, Documentation and the seeded custom Persona in parallel behind it,
+  all-pass join, End. `test/demo-seed.test.ts` pins that shape against the built-in's own published
+  graph, so a change to the flagship fails there rather than drifting silently. The run went
+  through it on round one: both checks cleared (`skipped` - a fresh demo root configures no check
+  commands, exactly as the built-in behaves on any repository before its operator configures them),
+  every reviewer passed, no repair round, no retries. The seeder refuses to finish if the run is
+  anything less (`reviewOutcome`), because "a completed run" and "a run that reviewed something and
+  agreed" are not the same claim.
+
+  **The one stage it does not carry is the Inspector completion gate**, and that is a property of
+  the machine rather than a shortcut. `WorkflowManager.enterInspectorGate` records a gate entered
+  with the Inspector off as `blocked` - and the Inspector is off by default - so a run bound to the
+  built-in itself would put "Workflow blocked" on the demo's showcase card. Armed, the gate then
+  needs a pull request adopted into the Inspector's store and a fresh observation of its head, and
+  every read of that goes through `gh` against a real GitHub: nine call sites in
+  `src/server/inspector/github.ts`, no env override, while this demo reaches no network and its
+  repositories are local `git init` directories with no remote. `dry-run` mode does not change it -
+  it still adopts and still reviews. So the seeded copy carries `completionPolicy: {kind:"none"}`
+  and ends where its End node says it does.
 - **Two Recurring Missions** on the schedule spine, in your own timezone.
-- **A nonzero cost chip**: today's spend attributed to the live cards (so the per-card figures
-  and the topbar agree), several days of history behind it, and the automation line the
-  Foreman and Inspector loops populate.
+- **A nonzero cost chip**, built the way a real fleet's is. Each card's own spend comes from the
+  usage its scripted CLI reports on every finished turn's `result` frame - the same figure
+  `claudeTurnUsage` reads off a real embedded session, written by the same driver path - so the
+  per-card figures and the topbar agree because they are the same rows. Behind them: spend from
+  earlier today, several days of history, and the automation line the Foreman and Inspector loops
+  populate. Seeded spend cannot be attributed to a card through `/v1/metrics` at all, and that is
+  not a limitation of the seeder: Claude session spend has one writer per conversation, the driver
+  wins for an embedded session, and the OTLP ingest deliberately drops every datapoint naming a
+  driven session (`sdkOwnedNoteKey`) so a card cannot be charged twice.
 
 **It is all replay, not fabrication.** The seeder boots the daemon quietly, drives the same
 public routes the dashboard and the e2e specs drive (`POST /api/tasks`, `/dispatch`,
@@ -6075,13 +6138,19 @@ can only contain what the daemon durably stores:
 - **No origin chips on seeded turns.** Turn attribution (the foreman/workflow badges on a
   conversation) is in-memory only, keyed by a hash of the turn text (`src/server/injections.ts`),
   so it exists for live deliveries and cannot survive a restart. Seeded history carries none.
+- **No captured Goal on seeded sessions**, so the seeded run's "Captured intent and evidence"
+  panel reads `(No captured goal)`. A Goal exists only once a prompt has been captured from a
+  hook event (`Registry.captureGoalPrompt` is reached only from `applyHook`), and the scripted
+  CLIs install no hook bridge - so the refiner has nothing to reconcile. The instruction itself is
+  still there, under "Human decisions and rationale", read out of the transcript.
 - **No quota runway on the cost chip.** The rate-limit windows a session reports through
   `/statusline` live in a private in-memory field on the registry that nothing persists, so
   seeding one would simply be undone by the seeder's own shutdown. The chip still appears and
   still opens - it has the money and token rows, just no forward-looking one until a live
   session reports its windows.
 - **No pull-request or Inspector history.** Out of scope for demo mode - both act outside the
-  machine against real repositories.
+  machine against real repositories, which is also what keeps the seeded run's graph one stage
+  short of the built-in it copies (see the Workflow bullet above).
 
 ### Scenarios
 
@@ -6117,16 +6186,40 @@ the dispatch cut - so Diff and Files fill in for real (the path must stay inside
 `/api/sessions/:id/submit-options`; a scenario ends on its own `"result"` step or simply when
 it runs out of steps.
 
-Eight scenarios ship, in two groups. **Three are for live dispatch** from the dashboard, paced
+Ten scenarios ship, in three groups. **Three are for live dispatch** from the dashboard, paced
 theatrically so there is something to watch: a bug fix (edits two files, runs a Bash "test",
 completes), a rate-limit design question that blocks mid-turn on you, and a longer multi-step
-migration. **Four are the seeded fleet's** (`seed-*.json`), paced fast because their output is
-history rather than a performance - nobody watches a seed run. **One is the restart
-continuation** (`resume-continuation.json`), which matches the prompt the daemon sends a
-session that was mid-turn when it shut down and re-raises the question that session was
-blocked on. A seeded intent must reach its own scenario and never fall through to the default;
+migration. **Five are the seeded fleet's** (`seed-*.json`), paced fast because their output is
+history rather than a performance - nobody watches a seed run. **Two are restart continuations**
+(`resume-*.json`), played when the daemon relaunches a session whose turn was still open.
+A seeded intent must reach its own scenario and never fall through to the default;
 `test/demo-seed.test.ts` pins that routing, because a `match` list that shadows another
 produces a card whose conversation is plausibly about the wrong task and nothing errors.
+
+**A continuation is routed by the work it continues, not by its own text.** Every restored
+session receives the same prompt word for word ("Mission Control restarted while your previous
+turn…"), so matching on that text can only ever reach one scenario - which is why the demo could
+hold exactly one waiting-on-you card before this: a second one came back re-asking the first one's
+questions. A scenario declares `"continues": "<the original scenario's title>"`, and the player
+identifies the original by reading its own transcript's first human turn (`firstUserPrompt`), which
+is the only record of what the session was ever about that survives a restart. A session whose
+work declares no continuation still falls back to the generic `resume-continuation.json`.
+
+**The player also answers the daemon's own headless calls**, which is the half of a demo nothing
+on screen credits. `claude -p` is how the daemon titles an untitled dispatch, reconciles a Goal,
+compacts a workflow's intent - and how every Persona in a Workflow run reviews. That last one has
+no fallback: a verdict the daemon cannot parse is an infrastructure failure, and three of those
+block the run, so a seeded review workflow would end `Workflow blocked` rather than `⌁ Approved`.
+The player answers a review with a schema-valid **pass** that names the reviewer, and a Persona
+whose guidance contains `DEMO_FAIL_VERDICT` gets a **fail** with a requested change instead -
+which is how a future scenario can show a repair round. The marker is read from the quoted
+guidance only, never from the diff or transcript the prompt also carries, so the reviewed work
+cannot vote on itself.
+
+**Every finished turn also reports what it cost**, in the `result` frame's own
+`modelUsage`/`total_cost_usd` shape. That is the demo's per-card spend, and it has to arrive this
+way: the driver owns an embedded session's ledger and the OTLP ingest drops every datapoint naming
+a driven session, so a card's cost cannot be posted in from outside.
 
 **A resumed player continues its session rather than starting a new one.** Given
 `--resume=<id>` it adopts that id, appends to the transcript already at that path instead of

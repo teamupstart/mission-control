@@ -7,23 +7,44 @@ import {
   CreateScheduleSchema,
   CreateWorkflowSchema,
   DispatchSchema,
+  InjectPromptSchema,
   SpendReportSchema,
 } from "../src/shared/protocol.ts";
 import { LLM_SPEND_ROLES } from "../src/shared/llm-spend.ts";
 import { holdSignals } from "../scripts/demo/launch.mjs";
-import { loadScenarios, selectScenario } from "../scripts/demo/fake-claude.mjs";
+import {
+  CONTINUATION_MARKER,
+  DEMO_FAIL_VERDICT_MARKER,
+  continuationFor,
+  firstUserPrompt,
+  headlessAnswer,
+  loadScenarios,
+  selectContinuation,
+  selectScenario,
+  turnUsage,
+} from "../scripts/demo/fake-claude.mjs";
 import {
   SEED_BACKLOG_TASKS,
   SEED_PERSONA,
   SEED_SCHEDULES,
   SEED_SESSION_TASKS,
+  SEED_WORKFLOW_NAME,
+  SEED_WORKFLOW_REVIEWERS,
   automationReports,
   costExports,
+  reviewOutcome,
   scheduleBody,
   seedPlan,
   taskBody,
   workflowDraft,
 } from "../scripts/demo/seed.mjs";
+import { claudeTurnUsage } from "../src/server/harness/claude/sdk.ts";
+import { BUILTIN_PERSONAS } from "../src/server/workflows/builtin-personas.ts";
+import { BUILTIN_WORKFLOWS } from "../src/server/workflows/builtin-workflows.ts";
+import { buildPersonaPrompt } from "../src/server/workflows/prompt.ts";
+import { parsePersonaVerdict } from "../src/server/workflows/verdict.ts";
+import { projectStages, stageBlockers } from "../src/shared/workflow-stages.ts";
+import type { PersonaSnapshot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 
 /**
  * The demo seeder's pure half.
@@ -36,8 +57,8 @@ import {
  *
  * 1. **Scenario routing.** Every seeded intent must reach its OWN scenario. A `match` list
  *    that shadows another produces a demo whose conversation is plausibly about the wrong
- *    task - nothing errors, nothing is empty, it is just wrong, and a reader has to know all
- *    eight scenario files to notice.
+ *    task - nothing errors, nothing is empty, it is just wrong, and a reader has to know every
+ *    scenario file to notice.
  * 2. **Payloads against the daemon's own schemas.** The seeder posts to real routes, so a
  *    tightened Zod schema turns `--fresh` into a wall of 400s that nobody sees until they
  *    next demo. Parsing the bodies with the SAME schema the route uses moves that to here.
@@ -55,9 +76,9 @@ const RESTART_CONTINUATION_PROMPT =
 
 test("every shipped scenario file parses and exactly one is the default", () => {
   const scenarios = loadScenarios(SCENARIO_DIR);
-  // 8 rather than "some": a file that fails to parse is skipped silently by design (one bad
-  // scenario must not take the demo down), so only a count notices a broken one.
-  assert.equal(scenarios.length, 8, "all eight scenario files should load");
+  // A count rather than "some": a file that fails to parse is skipped silently by design (one
+  // bad scenario must not take the demo down), so only a count notices a broken one.
+  assert.equal(scenarios.length, 10, "all ten scenario files should load");
   const defaults = scenarios.filter((s) => s.default === true);
   assert.equal(defaults.length, 1, "exactly one scenario may be the fallback");
   for (const scenario of scenarios) {
@@ -74,6 +95,7 @@ test("each seeded session task routes to its own scenario, not another's", () =>
     "Stop the token refresh double-fetch",
     "Move the ledger to cursor pagination",
     "Add a health probe to the OTLP exporter",
+    "UI Polish",
   ]);
   // And no two of them share a scenario, which the list above would still allow if two
   // titles happened to match.
@@ -102,6 +124,113 @@ test("the restart continuation prompt routes to the scenario that asks again", (
     picked.steps.some((step) => step.kind === "ask"),
     "the continuation scenario must re-raise a question, or the card comes back idle",
   );
+  // The prompt itself carries the marker the player recognises a continuation by. Asserted
+  // against the real sentence rather than trusted, because the marker is a PREFIX of a daemon
+  // string this file also holds a copy of, and a drift between the two is silent.
+  assert.ok(RESTART_CONTINUATION_PROMPT.includes(CONTINUATION_MARKER));
+});
+
+test("each waiting session's continuation asks about ITS OWN work", () => {
+  // The demo could hold exactly one waiting-on-you card before continuations were routed by the
+  // work they belong to: every restored session gets the same prompt word for word, so a second
+  // one came back re-asking the first one's questions - a card narrating the wrong task, which is
+  // the failure this whole file exists to catch.
+  const scenarios = loadScenarios(SCENARIO_DIR);
+  const waiting = SEED_SESSION_TASKS.filter((task) => task.settle === "leave-waiting");
+  assert.ok(waiting.length >= 2, "this case is only meaningful with two waiting sessions");
+
+  const continuationTitles = waiting.map((task) =>
+    selectContinuation(scenarios, task.intent, RESTART_CONTINUATION_PROMPT).title);
+  assert.deepEqual(continuationTitles, [
+    // Pagination keeps the generic continuation it shipped with, whose questions are its own.
+    "Continuing after a restart",
+    "Continuing the UI polish after a restart",
+  ]);
+  assert.equal(new Set(continuationTitles).size, continuationTitles.length);
+
+  // And every continuation re-raises a question, because that held dialog is what keeps the card
+  // waiting on a human - and, for UI Polish, what holds its queued messages.
+  for (const title of continuationTitles) {
+    const scenario = scenarios.find((candidate) => candidate.title === title)!;
+    assert.ok(scenario.steps.some((step) => step.kind === "ask"), `${title} must ask again`);
+  }
+});
+
+test("a continuation is declared by the scenario it continues, and is never picked otherwise", () => {
+  const scenarios = loadScenarios(SCENARIO_DIR);
+  const uiPolish = scenarios.find((s) => s.title === "UI Polish")!;
+  assert.equal(continuationFor(scenarios, uiPolish)?.title, "Continuing the UI polish after a restart");
+  // A scenario nothing continues answers null rather than the first file that happens to sit
+  // beside it, which is what makes the fallback in `selectContinuation` reachable and honest.
+  assert.equal(continuationFor(scenarios, scenarios.find((s) => s.title === "UI Polish is not a thing")), null);
+  // A continuation must not be reachable from an ordinary dispatch: its `match` is empty, so the
+  // only way in is the continuation route. Otherwise a person dispatching "polish the UI" would
+  // get a session that opens by talking about a restart that never happened.
+  const continuation = scenarios.find((s) => s.continues === "UI Polish")!;
+  assert.deepEqual(continuation.match, []);
+  assert.notEqual(selectScenario(scenarios, uiPolish.title).title, continuation.title);
+});
+
+test("firstUserPrompt reads the dispatched intent back out of a transcript", () => {
+  // What a RESUMED player knows about the work it is continuing: nothing, except this file. The
+  // process is new, the prompt it just received is the same for every session, and the transcript
+  // is the only thing that survived the restart.
+  const record = (type: string, content: unknown): string =>
+    JSON.stringify({ type, uuid: `${type}-1`, message: { role: type, content } });
+  assert.equal(
+    firstUserPrompt([record("user", "UI polish: even out the card header chips.")]),
+    "UI polish: even out the card header chips.",
+  );
+  // The composer sends blocks rather than a bare string once anything is attached.
+  assert.equal(
+    firstUserPrompt([record("user", [{ type: "text", text: "queued follow-up" }])]),
+    "queued follow-up",
+  );
+  // The FIRST user turn, not the newest: on a second restart the transcript also holds the
+  // previous continuation prompt, and reading that would route the session to a continuation of
+  // a continuation.
+  assert.equal(
+    firstUserPrompt([
+      record("assistant", [{ type: "text", text: "working" }]),
+      record("user", "the original intent"),
+      record("user", RESTART_CONTINUATION_PROMPT),
+    ]),
+    "the original intent",
+  );
+  // Tolerant of a file another build wrote, and of no user turn at all.
+  assert.equal(firstUserPrompt(["", "not json", record("assistant", "hi")]), null);
+  assert.equal(firstUserPrompt([]), null);
+});
+
+test("the queued messages parse under the route's own InjectPromptSchema", () => {
+  // The seeder posts these to `/api/sessions/:id/inject`, and the two DEFAULTS are what make a
+  // message queue instead of being typed at the session: `origin: "human"` with `buffer: true` is
+  // the pair `PendingTurnManager.submit` is reached by.
+  const queued = SEED_SESSION_TASKS.flatMap((task) => task.queuedMessages ?? []);
+  assert.ok(queued.length >= 3, "the demo should show a queue with several messages in it");
+  for (const text of queued) {
+    const parsed = InjectPromptSchema.safeParse({ text });
+    assert.ok(parsed.success, parsed.success ? "" : parsed.error.message);
+    assert.equal(parsed.data.origin, "human");
+    assert.equal(parsed.data.buffer, true);
+  }
+});
+
+test("only a card parked on a question carries queued messages", () => {
+  // `PendingTurnManager.canDrain` requires `paneDialog === null`, so an outbox on any other kind
+  // of card is delivered about a second and a half after the demo opens - and the queue the card
+  // exists to show would be gone before anybody saw it.
+  for (const task of SEED_SESSION_TASKS) {
+    if ((task.queuedMessages ?? []).length === 0) continue;
+    assert.equal(
+      task.settle,
+      "leave-waiting",
+      `${task.key} queues messages but does not park on a question, so they would drain`,
+    );
+  }
+  const queueing = SEED_SESSION_TASKS.filter((task) => (task.queuedMessages ?? []).length > 0);
+  assert.equal(queueing.length, 1, "one card with an outbox is the demo; two is noise");
+  assert.equal(queueing[0]!.title, "UI Polish");
 });
 
 test("the live starter scenarios still own their own prompts", () => {
@@ -177,15 +306,338 @@ test("the seeded persona and workflow draft parse under their own schemas", () =
   assert.ok(persona.success, persona.success ? "" : persona.error.message);
 
   const workflow = CreateWorkflowSchema.safeParse({
-    name: "Demo review and ship",
-    draft: workflowDraft(),
+    name: SEED_WORKFLOW_NAME,
+    draft: workflowDraft({ customPersonaId: "persona-id" }),
   });
   assert.ok(workflow.success, workflow.success ? "" : workflow.error.message);
-  // The graph has to actually reach an end node, or the run would never complete and the
-  // seeder would wait its whole timeout out.
+  // `{kind:"none"}` by omission, and that is the load-bearing default: an `inspector` completion
+  // policy would park the run on the Inspector's pull-request gate, which the demo - no network,
+  // no `gh` - can never answer.
+  assert.deepEqual(workflow.data.completionPolicy, { kind: "none" });
+});
+
+test("the seeded workflow draft is a pipeline the app itself can read", () => {
+  // Hand-written to mirror `compileStages`, so the app's own projector is the only honest check
+  // that it wired the ports, the join and the repair routes the way a real editor would have. A
+  // graph the projector rejects still publishes and still runs - it just cannot be opened in the
+  // Pipeline editor, and the demo's showcase workflow opening in fallback Graph view would be a
+  // quiet downgrade nobody notices until they click it.
+  const draft = workflowDraft({ customPersonaId: "persona-id" });
+  assert.deepEqual(stageBlockers(draft), []);
+  const pipeline = projectStages(draft);
+  assert.ok(pipeline, "the seeded draft must express a pipeline");
+  assert.equal(pipeline.endOutcome, "Complete");
+  assert.deepEqual(
+    pipeline.stages.map((stage) =>
+      (stage.kind === "evaluation" ? stage.members : [stage.member]).map((member) =>
+        member.kind === "persona" ? member.personaId : `check:${member.kind === "check" ? member.slot : ""}`)),
+    [
+      // No-Mistakes Review v3's own stage order: the deterministic gate first, so a change that
+      // does not compile costs no model call...
+      ["check:typecheck", "check:test"],
+      // ...then Intent Conformance alone, the cheap judge that keeps a drifted change from
+      // costing four reviews...
+      [SEED_WORKFLOW_REVIEWERS.intent],
+      // ...then the deep reviews in parallel behind it, the seeded custom Persona among them.
+      [
+        SEED_WORKFLOW_REVIEWERS.risk,
+        SEED_WORKFLOW_REVIEWERS.evidence,
+        SEED_WORKFLOW_REVIEWERS.documentation,
+        "persona-id",
+      ],
+    ],
+  );
+  // Each parallel stage needs its all-pass join, or "they all agreed" would mean "the first one
+  // to answer agreed". The single-member stage must NOT have one.
+  const joins = pipeline.stages.map((stage) =>
+    stage.kind === "evaluation" ? stage.joinId !== null : false);
+  assert.deepEqual(joins, [true, false, true]);
+});
+
+test("the seeded workflow is No-Mistakes Review v3's shape, minus the Inspector gate", () => {
+  // The claim this pins is a comparison, and it is the reason the seeded copy exists at all: the
+  // graph is the built-in's, stage for stage, and the ONE thing dropped is the completion policy -
+  // which `enterInspectorGate` would record `blocked` on a machine with the Inspector off, and
+  // which cannot be satisfied here at all because every read of a pull request's state goes
+  // through `gh` against a real GitHub.
+  const builtin = BUILTIN_WORKFLOWS.find((w) => w.definition.name === "No-Mistakes Review");
+  assert.ok(builtin, "this build must still ship No-Mistakes Review");
+  const v3 = builtin.versions.find((version) => version.version === 3);
+  assert.ok(v3, "version 3 is the one whose graph the demo copies");
+
+  const stageShape = (graph: Parameters<typeof projectStages>[0]): string[][] =>
+    projectStages(graph)!.stages.map((stage) =>
+      (stage.kind === "evaluation" ? stage.members : [stage.member]).map((member) =>
+        member.kind === "persona"
+          ? member.personaId
+          : member.kind === "check"
+            ? `check:${member.slot}`
+            : `action:${member.sessionActionId}`));
+
+  // Same stages, in the same order, naming the same shipped roles - compared against the built-in's
+  // own published graph rather than against a description of it, so a version-3 edit fails here.
+  assert.deepEqual(
+    stageShape(workflowDraft()),
+    stageShape(v3.graph),
+    "the seeded stages must be version 3's",
+  );
+
+  // And the ONE difference: the built-in ends on the Inspector, the seeded copy on its End node.
+  assert.equal(v3.completionPolicy.kind, "inspector");
+  assert.equal(
+    CreateWorkflowSchema.parse({ name: SEED_WORKFLOW_NAME }).completionPolicy.kind,
+    "none",
+  );
+});
+
+test("the seeded workflow is still a pipeline without the custom persona", () => {
+  // The seeded Persona is created before the Workflow, but a plan without one (or a future
+  // reduced plan) must not produce a graph the projector rejects.
   const draft = workflowDraft();
-  assert.ok(draft.nodes.some((n) => n.kind === "end"));
-  assert.ok(draft.edges.some((e) => e.sourcePort === "submitted" && e.target === "end"));
+  assert.deepEqual(stageBlockers(draft), []);
+  assert.equal(projectStages(draft)?.stages.length, 3);
+  assert.equal(draft.nodes.filter((node) => node.kind === "persona").length, 4);
+  assert.equal(draft.nodes.filter((node) => node.kind === "check").length, 2);
+});
+
+test("every built-in reviewer the seeded workflow names is one this build ships", () => {
+  // A slug that no longer ships fails PUBLISH with a `missing_persona` diagnostic in the middle
+  // of a several-minute seed, which is the expensive place to find out.
+  const shipped = new Set(BUILTIN_PERSONAS.map((persona) => persona.id));
+  for (const [role, id] of Object.entries(SEED_WORKFLOW_REVIEWERS)) {
+    assert.ok(shipped.has(id), `${role} names ${id}, which BUILTIN_PERSONAS does not contain`);
+  }
+});
+
+/** A minimal-but-real review context, so the prompt under test is the prompt a run builds. */
+function reviewContext(): WorkflowContextSnapshot {
+  return {
+    primaryGoal: {
+      rawPrompt: "Add a health probe to the OTLP exporter so a wedged collector is visible.",
+      refined: null,
+      sourceNoteKey: "note",
+    },
+    humanDecisions: [],
+    constraints: [],
+    acceptanceCriteria: [],
+    priorPersonaFeedback: [],
+    session: { agent: "claude", name: "Add a health probe", cwd: "/repo", branch: "harness/probe" },
+    evidence: {
+      headSha: "1dbd885",
+      diffFingerprint: "fingerprint",
+      diff: "diff --git a/src/exporter-health.ts b/src/exporter-health.ts",
+      diffTruncated: false,
+      workingTreeDirty: true,
+      workingTreeStatus: [" M src/dashboard.ts"],
+      workingTreeStatusTruncated: false,
+      transcript: [{ role: "user", content: "Add a health probe" }],
+      transcriptAnchor: 1,
+      transcriptTruncated: false,
+      standards: [],
+      standardsTruncated: false,
+      retention: { state: "full" },
+    },
+    compaction: { status: "model", runner: "claude", model: "claude-haiku-4-5", error: null },
+  };
+}
+
+const snapshotOf = (name: string, guidanceMarkdown: string): PersonaSnapshot => ({
+  sourcePersonaId: "persona",
+  sourceRevision: 1,
+  name,
+  description: "",
+  guidanceMarkdown,
+  runner: null,
+  model: null,
+});
+
+test("the demo player answers a real Persona review prompt with a parseable pass", () => {
+  // THE case for the seeded run being a clean completion. A Persona review has no fallback: a
+  // verdict `parsePersonaVerdict` cannot read is an infrastructure failure, and three of those
+  // block the run - so the demo's showcase card would read "Workflow blocked" instead of
+  // "⌁ Approved". Both real halves are in the loop here: the daemon's own prompt builder and its
+  // own parser, with only the fake in between.
+  const prompt = buildPersonaPrompt(
+    snapshotOf("Intent Conformance Judge", "# Intent Conformance Judge\n\nJudge drift."),
+    reviewContext(),
+  );
+  const verdict = parsePersonaVerdict(headlessAnswer(prompt));
+  assert.ok(verdict, "the player's answer must parse as a PersonaVerdict");
+  assert.equal(verdict.verdict, "pass");
+  // Named, not generic: four cards all reading "Demo approval" would tell an operator nothing
+  // about which reviewer said it.
+  assert.match(verdict.summary, /Intent Conformance Judge/);
+});
+
+test("each seeded reviewer's verdict names that reviewer", () => {
+  // The custom entry is the REAL seeded document rather than a stand-in, which is what pins its
+  // heading and its `name` to agree: the verdict is rendered beside the node's own label, and two
+  // spellings of one reviewer read as two reviewers.
+  assert.match(SEED_PERSONA.guidanceMarkdown, new RegExp(`^# ${SEED_PERSONA.name}$`, "m"));
+  const guidance = {
+    "Code Risk Reviewer": "# Code Risk Reviewer\n\nHunt for the failure mode.",
+    "Test Evidence Auditor": "## Test Evidence Auditor\n\nWhich test would fail?",
+    [SEED_PERSONA.name]: SEED_PERSONA.guidanceMarkdown,
+  };
+  for (const [name, markdown] of Object.entries(guidance)) {
+    const verdict = parsePersonaVerdict(
+      headlessAnswer(buildPersonaPrompt(snapshotOf(name, markdown), reviewContext())),
+    );
+    assert.ok(verdict, `${name} produced an unparseable verdict`);
+    assert.equal(verdict.verdict, "pass");
+    // The heading of the quoted guidance, which is the only per-reviewer channel the prompt has.
+    assert.match(verdict.summary, new RegExp(markdown.match(/^#{1,3} (.+)$/m)![1]!));
+  }
+});
+
+test("a persona whose guidance carries the fail marker refuses, with evidence", () => {
+  // The steering channel a future demo scenario needs to show a repair round. It has to produce a
+  // verdict the parser accepts too, or it would block the run rather than send it back.
+  const verdict = parsePersonaVerdict(headlessAnswer(buildPersonaPrompt(
+    snapshotOf("Code Risk Reviewer", `# Code Risk Reviewer\n\n${DEMO_FAIL_VERDICT_MARKER}`),
+    reviewContext(),
+  )));
+  assert.ok(verdict);
+  assert.equal(verdict.verdict, "fail");
+  assert.equal(verdict.verdict === "fail" && verdict.requestedChanges.length, 1);
+  // `RequestedChangeInputSchema` demands at least one EvidenceRef per change; a change without
+  // one is a parse failure, which the engine reads as infrastructure trouble.
+  assert.ok(verdict.verdict === "fail" && verdict.requestedChanges[0]!.evidence.length > 0);
+});
+
+test("the fail marker steers only from the guidance, never from the reviewed work", () => {
+  // The prompt carries the session's diff and transcript as untrusted evidence. A marker matched
+  // anywhere in it would let the code under review decide its own verdict - which is the demo
+  // version of the injection the review contract exists to refuse.
+  const context = reviewContext();
+  context.evidence.diff = `+// ${DEMO_FAIL_VERDICT_MARKER}\n+const sneaky = true;`;
+  context.evidence.transcript = [{ role: "user", content: DEMO_FAIL_VERDICT_MARKER }];
+  const verdict = parsePersonaVerdict(headlessAnswer(buildPersonaPrompt(
+    snapshotOf("Code Risk Reviewer", "# Code Risk Reviewer\n\nHunt for the failure mode."),
+    context,
+  )));
+  assert.equal(verdict?.verdict, "pass");
+});
+
+test("the player still answers the daemon's other headless callers", () => {
+  // The verdict arm is checked FIRST, so this pins that it did not shadow the three callers that
+  // run on every demo dispatch. A review prompt quotes the session transcript, so the reverse
+  // shadowing is possible too.
+  assert.deepEqual(
+    JSON.parse(headlessAnswer("Compact workflow intent without rewriting it.\nsome intent")),
+    { constraints: [], acceptanceCriteria: [] },
+  );
+  const goal = JSON.parse(headlessAnswer(
+    "You reconcile the intent of an AI coding session\n"
+    + "## The specific unresolved instruction to classify now\nCache the scan\n\nNow output",
+  ));
+  assert.equal(goal.relationship, "initial");
+  assert.equal(goal.objective, "Cache the scan");
+  const titled = JSON.parse(headlessAnswer(
+    "You name coding tasks for a dispatch board\n## The task text\ncursor pagination"
+    + "\n\nNow output the title",
+  ));
+  // "Demo session" rather than the pagination scenario's title, because this PROCESS has no
+  // `MISSION_DEMO_SCENARIO_DIR` - the player read its built-in fallback table at import. Which
+  // title a real dispatch gets is pinned above, against the shipped scenario directory; what this
+  // asserts is only that the titler arm still answers a title-shaped object at all.
+  assert.equal(titled.title, "Demo session");
+});
+
+/** The run detail `reviewOutcome` reads, as deeply partial as the real route body is complete. */
+type RunDetailFixture = NonNullable<Parameters<typeof reviewOutcome>[0]>;
+type AttemptFixture = NonNullable<RunDetailFixture["attempts"]>[number];
+
+test("reviewOutcome calls a first-round unanimous pass clean, and nothing else", () => {
+  const attempt = (
+    nodeId: string,
+    name: string,
+    verdict: "pass" | "fail",
+    over: AttemptFixture = {},
+  ): AttemptFixture => ({
+    nodeId,
+    attempt: 1,
+    state: "completed",
+    persona: { name },
+    verdict: { verdict },
+    error: null,
+    sessionAction: null,
+    ...over,
+  });
+  /** The engine synthesizes these for every submission; they carry no verdict and no opinion. */
+  const structural = (nodeId: string): AttemptFixture =>
+    ({ nodeId, attempt: 1, state: "completed", persona: null, verdict: null, error: null });
+  const detail = (over: RunDetailFixture = {}): RunDetailFixture => ({
+    run: { status: "completed", currentPhase: "complete" },
+    summary: { round: 1, failedPersonaCount: 0 },
+    attempts: [
+      // Counted as reviewers, a run that reviewed nothing would look unanimous.
+      structural("session"),
+      structural("end"),
+      attempt("intent-conformance", "Intent Conformance Judge", "pass"),
+      attempt("code-risk", "Code Risk Reviewer", "pass"),
+    ],
+    ...over,
+  });
+
+  const clean = reviewOutcome(detail());
+  assert.equal(clean.clean, true);
+  assert.equal(clean.reviewers.length, 2, "only the verdict-bearing attempts are reviewers");
+  assert.match(clean.summary, /2 reviewers passed on round 1/);
+
+  // A Check carries a verdict too - synthetic, which is what lets a join aggregate it beside a
+  // Persona's - but it is counted apart: "7 reviewers passed" over five reviewers and two skipped
+  // checks would overstate what a demo of this pipeline actually demonstrates.
+  const gated = reviewOutcome(detail({
+    attempts: [
+      ...(detail().attempts ?? []),
+      { ...attempt("check-typecheck", "unused", "pass"), persona: null },
+      { ...attempt("check-test", "unused", "pass"), persona: null },
+    ],
+  }));
+  assert.equal(gated.clean, true);
+  assert.equal(gated.reviewers.length, 2);
+  assert.deepEqual(gated.checks.map((check) => check.name), ["check-typecheck", "check-test"]);
+  assert.match(gated.summary, /2 checks cleared, 2 reviewers passed on round 1/);
+
+  // A check that did NOT pass is not clean, even with every reviewer agreeing: the gate is the
+  // stage that decides whether the reviews were worth spending at all.
+  const failedCheck = reviewOutcome(detail({
+    attempts: [
+      ...(detail().attempts ?? []),
+      { ...attempt("check-test", "unused", "fail"), persona: null },
+    ],
+  }));
+  assert.equal(failedCheck.clean, false);
+  assert.match(failedCheck.summary, /1 did not pass/);
+
+  // Completed, but on round two: a completion that took a repair round is not what the demo is
+  // showing, and the count alone could never tell them apart.
+  const repaired = reviewOutcome(detail({ summary: { round: 2, failedPersonaCount: 1 } }));
+  assert.equal(repaired.clean, false);
+  assert.match(repaired.summary, /round 2/);
+
+  // Completed having reviewed nothing - exactly what the two-node stub this replaced produced.
+  const empty = reviewOutcome(detail({ attempts: [structural("session"), structural("end")] }));
+  assert.equal(empty.clean, false);
+  assert.match(empty.summary, /no reviewer/);
+
+  // Passed, but only after a provider retry: the run detail shows `attempt 2` on that card.
+  const retried = reviewOutcome(detail({
+    attempts: [
+      ...(detail().attempts ?? []),
+      attempt("code-risk", "Code Risk Reviewer", "pass", { attempt: 2 }),
+    ],
+  }));
+  assert.equal(retried.clean, false);
+  assert.match(retried.summary, /retried/);
+
+  // Blocked, which is what an unparseable verdict eventually produces.
+  const blocked = reviewOutcome(detail({
+    run: { status: "blocked", currentPhase: "infrastructure_error" },
+  }));
+  assert.equal(blocked.clean, false);
+  assert.match(blocked.summary, /blocked/);
 });
 
 test("cost exports stamp nanosecond timestamps as digit strings, never floats", () => {
@@ -193,7 +645,7 @@ test("cost exports stamp nanosecond timestamps as digit strings, never floats", 
   // is past Number.MAX_SAFE_INTEGER. A number here stringifies to "1.785e+21" and
   // `nanoString` (which demands /^\d+$/) drops the datapoint - a silently empty cost chip.
   const nowMs = 1_785_000_000_000;
-  const exports = costExports({ nowMs, sessionIds: ["sess-a"], days: 2 });
+  const exports = costExports({ nowMs, days: 2 });
   let points = 0;
   for (const body of exports) {
     for (const metric of body.resourceMetrics[0]!.scopeMetrics[0]!.metrics) {
@@ -209,10 +661,38 @@ test("cost exports stamp nanosecond timestamps as digit strings, never floats", 
   assert.ok(points > 0);
 });
 
-test("cost exports attribute today to live cards and backdate the rest", () => {
+test("a finished demo turn reports usage the driver can put in the ledger", () => {
+  // The other half of the demo's cost chip, and the half that has to go through the DRIVER: an
+  // OTLP row naming a driven session is dropped, so a card's own spend can only arrive off its
+  // `result` frame. `recordDriverTurnUsage` writes nothing unless `claudeTurnUsage` comes back
+  // with a turn id AND at least one model, which is exactly what an envelope missing `uuid` or
+  // `modelUsage` produces - silently, and only visible as a fleet that spent $0.00.
+  const frame = { type: "result", subtype: "success", session_id: "demo", ...turnUsage() };
+  const usage = claudeTurnUsage(frame as never, "claude-demo-mock");
+  assert.ok(usage, "the result frame must report usage");
+  assert.ok(usage.turnId, "without a turn id the ledger has no dedup key and drops the row");
+  assert.equal(usage.models?.length, 1);
+  const [model] = usage.models!;
+  assert.equal(model!.modelId, "claude-demo-mock", "the ledger charges the model the card shows");
+  // Priced: one unknown row today turns the whole fleet figure into "unpriced" rather than a
+  // smaller number, which reads as a broken chip.
+  assert.ok((model!.reportedCostUsd ?? 0) > 0);
+  assert.ok(model!.input > 0 && model!.output > 0 && model!.cacheRead > 0);
+
+  // Each turn differs, so a card's total is not one number times a count - and every turn gets
+  // its own id, or the ledger's unique index would treat the second as a re-record of the first.
+  const next = claudeTurnUsage(
+    { type: "result", ...turnUsage() } as never,
+    "claude-demo-mock",
+  );
+  assert.notEqual(next?.turnId, usage.turnId);
+  assert.notEqual(next?.models?.[0]?.input, model!.input);
+});
+
+test("cost exports name no live card, and reach both today and the days behind it", () => {
   const nowMs = 1_785_000_000_000;
   const days = 3;
-  const exports = costExports({ nowMs, sessionIds: ["sess-a", "sess-b"], days });
+  const exports = costExports({ nowMs, days });
   const rows = exports.flatMap((body) =>
     body.resourceMetrics[0]!.scopeMetrics[0]!.metrics.flatMap((m) =>
       m.sum.dataPoints.map((dp) => ({
@@ -222,15 +702,28 @@ test("cost exports attribute today to live cards and backdate the rest", () => {
     ),
   );
 
-  // The live ids carry today's spend, so the chip and the per-card figure agree.
-  for (const id of ["sess-a", "sess-b"]) {
-    const mine = rows.filter((r) => r.sessionId === id);
-    assert.ok(mine.length > 0, `${id} should carry some of today's spend`);
-    for (const row of mine) assert.ok(row.atMs <= nowMs && row.atMs > nowMs - 3_600_000);
+  // THE rule, and the one this used to get wrong: not one row may name a session the demo has a
+  // card for. `Registry.applyOtelMetrics` drops every datapoint whose note key belongs to a driven
+  // session (`sdkOwnedNoteKey`) - the driver owns that key's spend - so a row attributed to a
+  // seeded card is not a per-card figure, it is a row that silently never lands.
+  for (const row of rows) {
+    assert.match(
+      row.sessionId,
+      /^demo-(earlier-today|history)-/,
+      "an OTLP row may only name a session that is over",
+    );
   }
 
-  // History is NOT attributed to a card: a session that ran three days ago has none today,
-  // and claiming one would be the single dishonest row in the seed.
+  // Earlier today, so the topbar's today figure is nonzero even before a card finishes a turn -
+  // and never stamped ahead of `nowMs`, which would put spend in the future.
+  const today = rows.filter((r) => r.sessionId.startsWith("demo-earlier-today-"));
+  assert.ok(today.length > 0, "some of today's spend must come from a session that is over");
+  for (const row of today) {
+    assert.ok(row.atMs < nowMs, "earlier today means earlier");
+    assert.ok(row.atMs > nowMs - 3 * 3_600_000, "and still today, not last night");
+  }
+
+  // And the days behind it, so the cost drawer's per-day view has bars to draw.
   const history = rows.filter((r) => r.sessionId.startsWith("demo-history-"));
   assert.ok(history.length > 0);
   for (const row of history) assert.ok(row.atMs < nowMs, "history must be backdated");

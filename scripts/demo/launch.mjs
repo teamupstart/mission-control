@@ -47,6 +47,49 @@ const BOOT_TIMEOUT_MS = 30_000;
 const FOREMAN_TIMEOUT_MS = 30_000;
 const POLL_MS = 100;
 /**
+ * The arrangement a demo daemon opens on, one of `LAYOUT_MODES`.
+ *
+ * The Board, because a demo is read before it is driven: a column per state answers "what is this
+ * fleet doing" in one look, where Cards asks the viewer to read five headers and add them up. The
+ * seeded fleet is arranged for exactly that reading - work in progress, two cards waiting on a
+ * human, one approved - and a column count says it without a word of narration.
+ *
+ * Applied on EVERY boot, beside the runtime override above and for the same reason: this launcher
+ * asserts the demo's configuration rather than hoping a persistent state root still holds it. The
+ * cost is deliberate and small - an operator who switches layout mid-demo keeps that switch for as
+ * long as the daemon runs, and the next `npm run demo` opens on the Board again, which is what a
+ * presentation surface should do.
+ */
+export const DEMO_LAYOUT = "board";
+
+/**
+ * The exact body the launcher PUTs to `/api/ui/config`, and nothing more.
+ *
+ * A function rather than an inline literal at the call site, so `test/demo-launch.test.ts` can
+ * parse it with the ROUTE's own `UiConfigPatchSchema` - the same discipline every seeded body is
+ * held to. What that test is really guarding is the field list: the patch schema is a plain
+ * `.partial()` because each top-level key is owned whole by one panel, so a body that mentioned
+ * `keybindings` or `alerts` would REPLACE them, and a demo launcher would be quietly resetting
+ * preferences it has no business touching.
+ */
+export function demoUiConfigBody() {
+  return { layout: DEMO_LAYOUT };
+}
+
+/**
+ * Whether the daemon's answer proves it STORED the layout, rather than merely accepting the write.
+ *
+ * The failure this exists for is silent: `UiConfigPatchSchema` is a partial, so a key this
+ * launcher spelled wrong is valid input that sets nothing, answers 200, and leaves the demo
+ * opening on the shipped `grid` default. Reading the echo is the only way to tell that apart from
+ * a write that landed - and it has to be a strict equality against the config the route reports,
+ * because an absent field and a stored `grid` are the same mistake with different spellings.
+ */
+export function demoLayoutAccepted(answer) {
+  return answer?.config?.layout === DEMO_LAYOUT;
+}
+
+/**
  * How long a SIGTERM'd daemon gets to shut down on its own before it is killed.
  *
  * Generous, and load-bearing rather than merely polite: the daemon's own SIGTERM handler
@@ -64,7 +107,7 @@ const SHUTDOWN_GRACE_MS = 15_000;
  * only ran on ONE of several exit paths) and the race in this fix's own first attempt
  * (`process.exit` on a losing path could still run before the winning path's cleanup did).
  * Extracted so that ordering is unit-testable without booting a real daemon or Foreman -
- * see `launch.test.mjs`.
+ * see `test/demo-launch.test.ts`.
  */
 export function createShutdownGate(onStop) {
   let stopping = false;
@@ -493,6 +536,26 @@ export async function bootDaemon(root, port, env) {
     );
   }
 
+  const laidOut = await fetch(`${baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(demoUiConfigBody()),
+  });
+  if (!laidOut.ok) {
+    await stop();
+    throw new Error(
+      `[demo] could not open the dashboard on the ${DEMO_LAYOUT}: ${laidOut.status} ${await laidOut.text()}`,
+    );
+  }
+  // The echo, not the status - see `demoLayoutAccepted`.
+  const answer = await laidOut.json().catch(() => null);
+  if (!demoLayoutAccepted(answer)) {
+    await stop();
+    throw new Error(
+      `[demo] the daemon kept layout ${JSON.stringify(answer?.config?.layout)} rather than ${DEMO_LAYOUT}`,
+    );
+  }
+
   return { child, baseURL, readLog: () => log, stop };
 }
 
@@ -606,6 +669,10 @@ async function runCheck(port) {
         { timeoutMs: 60_000 },
       );
 
+      // Read the CONFIG the dashboard reads, not the value this process just posted: the write
+      // happens inside `bootDaemon`, and a route that accepted it while storing something else
+      // would leave the demo opening on the shipped default with nothing saying so.
+      const ui = await (await fetch(`${daemon.baseURL}/api/ui/config`)).json().catch(() => null);
       const checks = [
         [`tasks were seeded (${snap.tasks.length})`, snap.tasks.length > 0],
         [
@@ -619,6 +686,10 @@ async function runCheck(port) {
         [
           `the cost ledger has priced rows (${snap.fleetCost?.estimatedCostToday ?? "none"})`,
           (snap.fleetCost?.estimatedCostToday ?? 0) > 0,
+        ],
+        [
+          `the dashboard opens on the ${DEMO_LAYOUT} (${ui?.config?.layout ?? "unreadable"})`,
+          ui?.config?.layout === DEMO_LAYOUT,
         ],
       ];
       for (const [what, ok] of checks) {
@@ -686,7 +757,8 @@ async function main() {
   // signal received during that wait to fall through to Node's default (immediate exit, no
   // cleanup at all). `createShutdownGate` is what then keeps a losing racer from also
   // calling `process.exit` before the winner's own cleanup has run - the second, subtler
-  // bug that same round's fix first introduced and this one closes; see `launch.test.mjs`.
+  // bug that same round's fix first introduced and this one closes; see
+  // `test/demo-launch.test.ts`.
   let foreman = null;
   const gate = createShutdownGate(async (reason) => {
     console.log(`\n[demo] ${reason}: stopping (state root kept at ${root})`);

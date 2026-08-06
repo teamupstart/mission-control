@@ -151,6 +151,71 @@ export function selectScenario(scenarios, prompt) {
   return scenarios.find((s) => s.default) ?? scenarios[0];
 }
 
+/**
+ * The prompt `SdkSupervisor.resume` sends a session whose turn was still open at shutdown.
+ *
+ * Matched as a PREFIX of the real text rather than quoted whole: the daemon owns that sentence,
+ * and a scenario table pinned to its full wording would silently stop recognising a continuation
+ * the day someone rephrased the second half of it.
+ */
+export const CONTINUATION_MARKER = "Mission Control restarted while your previous turn";
+
+/**
+ * The scenario that continues `original`, or null when nothing declares itself its continuation.
+ *
+ * A continuation is the one prompt every restored session receives WORD FOR WORD, so matching on
+ * its text alone can only ever reach one scenario - which is why the demo could hold exactly one
+ * waiting-on-you card before this: a second one came back asking the first one's questions. The
+ * fix is to route a continuation by the work it belongs to, which the scenario file declares as
+ * `"continues": "<the original scenario's title>"`.
+ */
+export function continuationFor(scenarios, original) {
+  if (!original?.title) return null;
+  return scenarios.find((scenario) => scenario.continues === original.title) ?? null;
+}
+
+/**
+ * What to play for a restored session's continuation turn.
+ *
+ * `originalIntent` is this session's FIRST human turn, read back out of its own transcript - the
+ * only thing on hand that says what the session was ever about, since the continuation prompt
+ * says nothing about it. Falls back to ordinary prompt matching, which reaches the generic
+ * continuation scenario, so a session whose work declares no continuation still comes back
+ * re-asking rather than silently idle.
+ */
+export function selectContinuation(scenarios, originalIntent, prompt) {
+  const original = selectScenario(scenarios, originalIntent);
+  return continuationFor(scenarios, original) ?? selectScenario(scenarios, prompt);
+}
+
+/**
+ * The first human turn in a transcript this player wrote earlier: the dispatched intent.
+ *
+ * Reads the records rather than remembering anything, because a resumed player is a NEW process
+ * with no memory of the run it is continuing - the transcript file is the only thing that
+ * survived. Tolerant by construction: a record shape it does not recognise is skipped, and no
+ * user turn at all answers null rather than throwing on a file another build wrote.
+ */
+export function firstUserPrompt(lines) {
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record?.type !== "user") continue;
+    const content = record.message?.content;
+    if (typeof content === "string" && content.trim()) return content;
+    if (Array.isArray(content)) {
+      const text = content.filter((b) => b?.type === "text").map((b) => b.text).join("\n").trim();
+      if (text) return text;
+    }
+  }
+  return null;
+}
+
 const SCENARIOS = loadScenarios();
 
 /** `selectScenario` bound to this process's own loaded table. */
@@ -162,9 +227,9 @@ function pick(prompt) {
 //
 // `src/server/llm/claude-cli.ts` runs `claude -p --output-format json` for the daemon's own
 // offline work - the task titler and the goal refiner run through the daemon in every demo
-// session; the Foreman's own calls do NOT reach this file, because the launcher gives the
-// Foreman child the real `claude` bin in its own environment. One shot: prompt on stdin, a
-// single JSON object on stdout, exit.
+// session, and every Persona review a seeded Workflow run performs; the Foreman's own calls do
+// NOT reach this file, because the launcher gives the Foreman child the real `claude` bin in its
+// own environment. One shot: prompt on stdin, a single JSON object on stdout, exit.
 
 // Guarded so a test can import the scenario matcher without this file trying to BE a
 // session - importing a script must not run it. The same guard `launch.mjs` uses, and true
@@ -186,14 +251,100 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 }
 
 /**
- * One deterministic answer per kind of headless call this file recognizes by the RULES
- * text every caller embeds verbatim in its prompt. Unrecognized callers (for example an
- * ad-hoc Persona review with no scripted verdict) get the matched scenario's title as
- * plain text, which fails that caller's own schema - the same limitation the e2e fixture
- * accepts, and every caller here already has a deterministic-degradation fallback for a
- * parse miss (see `fallbackWorkflowContext` and friends), so this never blocks a demo.
+ * The marker a Persona's own guidance carries to make this player REFUSE its next review.
+ *
+ * The steering channel is the guidance rather than a flag on this process, because a review
+ * prompt embeds the published guidance verbatim (`buildPersonaPrompt`'s
+ * "# Published Persona guidance" section) and that is the only per-reviewer channel a scripted
+ * fake gets. Same trick as `e2e/fixtures/fake-claude.mjs`'s `E2E_FAIL_VERDICT`; nothing in the
+ * shipped demo uses it yet, and a scenario that wants to show a repair round is what it is for.
  */
-function headlessAnswer(prompt) {
+export const DEMO_FAIL_VERDICT_MARKER = "DEMO_FAIL_VERDICT";
+
+/** The two markers `buildPersonaPrompt` always emits, and no other caller here does. */
+const PERSONA_REVIEW_MARKERS = ["# Published Persona guidance", "A pass must have"];
+
+/**
+ * The reviewer's own name, taken from the first heading of the guidance the prompt quotes.
+ *
+ * Read out of the prompt rather than invented, because the verdict's summary is rendered on the
+ * run's reviewer card and "Demo approval" on four cards says nothing - `Intent Conformance Judge`
+ * beside `Code Risk Reviewer` is what makes a seeded run legible as a pipeline. The prompt never
+ * states the Persona name as a field, so the guidance's `# Heading` is the honest source.
+ */
+export function personaUnderReview(prompt) {
+  return quotedGuidance(prompt).match(/^#{1,3} (.+)$/m)?.[1]?.trim() || "Reviewer";
+}
+
+/**
+ * Just the guidance the prompt quotes, up to the section after it.
+ *
+ * Both reads below are scoped to this slice rather than to the whole prompt, and that is the
+ * difference between a per-reviewer channel and a trap: the prompt also carries the session's
+ * diff and transcript as untrusted evidence, so a fail marker matched anywhere would let the
+ * REVIEWED WORK decide its own verdict.
+ */
+function quotedGuidance(prompt) {
+  const after = String(prompt ?? "").split("# Published Persona guidance")[1] ?? "";
+  // The NEXT section by name, not "the next `# ` line": the guidance is Markdown and its own
+  // first line is usually a `#` heading, which is exactly the line this has to keep.
+  return after.split("# Prior Persona feedback")[0] ?? after;
+}
+
+/**
+ * A schema-valid `PersonaVerdict` for one review, passing unless the guidance asks otherwise.
+ *
+ * Pass is the default because the demo's one seeded run exists to show a CLEAN end-to-end
+ * completion - the pipeline agreeing on round one, which is the outcome an operator has never
+ * seen if every screenshot they have of the feature is a refusal. It is a fixed answer and not a
+ * judgement: this process cannot read a diff, and pretending to would be worse than saying so.
+ */
+export function personaVerdict(prompt) {
+  const persona = personaUnderReview(prompt);
+  if (quotedGuidance(prompt).includes(DEMO_FAIL_VERDICT_MARKER)) {
+    return {
+      verdict: "fail",
+      summary: `${persona} is asking for one change`,
+      requestedChanges: [
+        {
+          title: "Scripted demo objection",
+          rationale: `${persona} is scripted to refuse so the repair round is visible.`,
+          evidence: [{ kind: "goal", quote: "scripted demo evidence" }],
+        },
+      ],
+      confidence: 0.9,
+    };
+  }
+  return {
+    verdict: "pass",
+    summary: `${persona}: no objection`,
+    approvalDetails: {
+      reason: `${persona} found nothing to send back: the change matches what was asked and the`
+        + " tests in the diff cover the behaviour it adds.",
+      evidence: [],
+    },
+    confidence: 0.9,
+  };
+}
+
+/**
+ * One deterministic answer per kind of headless call this file recognizes by the RULES
+ * text every caller embeds verbatim in its prompt. Unrecognized callers get the matched
+ * scenario's title as plain text, which fails that caller's own schema - the same limitation the
+ * e2e fixture accepts, and every caller here already has a deterministic-degradation fallback for
+ * a parse miss (see `fallbackWorkflowContext` and friends), so this never blocks a demo.
+ *
+ * A workflow Persona review is deliberately NOT left to that degradation. It has no fallback:
+ * `parsePersonaVerdict` returning null is an infrastructure failure, and three of those block the
+ * run (`MAX_INFRA_ATTEMPTS`) - so a seeded Workflow with real reviewers in it would end
+ * `Workflow blocked` on the demo's own showcase card rather than `⌁ Approved`.
+ */
+export function headlessAnswer(prompt) {
+  // First, because a review prompt also quotes the session's transcript and could otherwise
+  // contain another caller's marker inside its own untrusted evidence block.
+  if (PERSONA_REVIEW_MARKERS.every((marker) => String(prompt ?? "").includes(marker))) {
+    return JSON.stringify(personaVerdict(prompt));
+  }
   // `src/server/workflows/context.ts`'s `compactPrompt` - the workflow intent compactor.
   if (prompt.includes("Compact workflow intent without rewriting it.")) {
     return JSON.stringify({ constraints: [], acceptanceCriteria: [] });
@@ -224,6 +375,68 @@ function headlessAnswer(prompt) {
     return JSON.stringify({ title: scenario.title || "Demo session" });
   }
   return pick(prompt).title || "Demo session";
+}
+
+/** How many turns this process has finished, so each one's usage differs a little. */
+let turnsFinished = 0;
+
+/**
+ * A stable 0-10 offset derived from this session's own id, so two CARDS differ too.
+ *
+ * Without it every session's first turn reports the identical figure - four cards reading exactly
+ * $0.48 in a screenshot, which is the tell that the numbers are a constant rather than a fleet.
+ * Folded from the id rather than randomized, so a resumed session keeps the scale it had before
+ * the restart instead of re-rolling its own history.
+ */
+const USAGE_OFFSET = [...SESSION_ID].reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 11;
+
+/**
+ * What a finished turn reports it cost, in the `result` frame's own shape.
+ *
+ * THIS is where a demo card's per-session cost comes from, and it has to be here rather than in
+ * the seeder. Claude session spend is written by whichever of two writers owns the note key
+ * (`Registry.applyOtelMetrics` -> `sdkOwnedNoteKey`): for a DRIVEN session the driver wins and
+ * every OTLP datapoint carrying that session's id is dropped on purpose, so the demo's cards -
+ * all of them SDK sessions - can never be given spend through `/v1/metrics`. They can be given
+ * it the way a real embedded session gets it: off the `result` frame, which
+ * `claudeTurnUsage` -> `recordDriverSessionUsage` reads into the ledger.
+ *
+ * Field names are the CLI's, read in one place by `claudeEnvelopeModels`: `modelUsage` keyed by
+ * model id, with `inputTokens`, `outputTokens`, `cacheReadInputTokens`,
+ * `cacheCreationInputTokens` and `costUSD`. The `uuid` is the turn's dedup identity
+ * (`claudeEnvelopeTurnId`); a frame without one records nothing at all, which is why it is minted
+ * here per turn rather than per process.
+ *
+ * The figures are invented, and that is the honest part of a demo whose model calls never
+ * happened - they are plausible rather than arbitrary (one mid-size turn on Sonnet, cache-heavy
+ * the way a real second turn is) and they vary per turn so a card's total is not a multiple.
+ */
+export function turnUsage() {
+  turnsFinished += 1;
+  const n = turnsFinished + USAGE_OFFSET;
+  const inputTokens = 3_400 + n * 820;
+  const outputTokens = 900 + n * 240;
+  const cacheReadInputTokens = 48_000 + n * 5_500;
+  const cacheCreationInputTokens = 6_200 + n * 400;
+  // Priced, not left null: an unpriced row takes the WHOLE fleet figure to "unpriced" rather
+  // than to a smaller number (`fleetEstimatedCostSince` returns null when any row is unknown).
+  const costUSD = Number((0.31 + n * 0.17).toFixed(4));
+  return {
+    uuid: randomUUID(),
+    total_cost_usd: costUSD,
+    modelUsage: {
+      // The BOUND model, so the ledger charges the card for the model the card says it is
+      // running. A real id here would read better in the cost drawer's per-model breakdown and
+      // would be the one line of this demo that lied about which model did the work.
+      [MODEL]: {
+        inputTokens,
+        outputTokens,
+        cacheReadInputTokens,
+        cacheCreationInputTokens,
+        costUSD,
+      },
+    },
+  };
 }
 
 function runSession() {
@@ -300,7 +513,7 @@ let turnOpen = false;
 function finishTurn() {
   turnOpen = false;
   clearTimeout(idleAfterResume);
-  emit({ type: "result", subtype: "success", session_id: SESSION_ID });
+  emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
 }
 
 /**
@@ -420,16 +633,30 @@ rl.on("line", (line) => {
           ? raw.filter((b) => b?.type === "text").map((b) => b.text).join("\n")
           : "";
 
+    // Read BEFORE this turn is appended, or the first user record would be the continuation
+    // prompt itself on every restored session after the first restart.
+    const original = prompt.includes(CONTINUATION_MARKER)
+      ? firstUserPrompt(existsSync(transcriptPath)
+        ? readFileSync(transcriptPath, "utf8").split("\n")
+        : [])
+      : null;
+
     appendTurn("user", prompt);
 
     // A message that arrives while a turn is already running (steps still pacing, or an
     // `ask` pending) is absorbed into the transcript for the record, but does not start a
     // second scenario - the one already in flight still owns the only `result` this turn
-    // will get.
+    // will get. This is also what holds a QUEUED message: `PendingTurnManager` only drains
+    // onto a session with no held dialog, so a card parked on an `ask` keeps its outbox.
     if (turnOpen) return;
 
     turnOpen = true;
-    runSteps(pick(prompt).steps);
+    // A continuation is routed by the work it belongs to rather than by its own text, which is
+    // identical for every restored session - see `selectContinuation`.
+    const scenario = original === null
+      ? pick(prompt)
+      : selectContinuation(SCENARIOS, original, prompt);
+    runSteps(scenario.steps);
   }
 });
 

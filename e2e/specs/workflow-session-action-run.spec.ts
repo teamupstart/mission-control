@@ -358,11 +358,20 @@ test("Preview prepares the identical packet and types nothing at all", async ({
   // no evidence suffix at all.
   await expect(dashboard.getByRole("group", { name: "Select a round" }).locator(".wf-run-round-name"))
     .toHaveText(["Round 1"]);
-  // Never filed under the heading that promises a verdict. The Session node's own attempt
-  // still sits there, which is what makes this assertion mean something: the section is
-  // populated, and the action is deliberately not in it.
-  await expect(dashboard.getByRole("heading", { name: "Reviewer verdicts" })).toBeVisible();
-  await expect(dashboard.locator(".wf-run-attempt")).not.toContainText(actionName);
+  // Never filed under the heading that promises a verdict. This graph holds no reviewer at all,
+  // so the section says exactly that - and the action's name is nowhere in it. It used to be
+  // asserted against `.wf-run-attempt`, which was populated by the Session and End nodes' own
+  // structural attempts; those no longer render as verdict-less reviewer cards, so the claim is
+  // made against the section itself rather than against cards that are gone.
+  const verdicts = dashboard.locator("section.wf-run-section")
+    .filter({ has: dashboard.getByRole("heading", { name: "Reviewer verdicts" }) });
+  await expect(verdicts).toContainText("This workflow has no reviewers");
+  // No card of any kind under that heading, which is the claim - the action has its own card in
+  // "Session actions", and this section files nothing. Asserted on CARDS rather than on the
+  // section's text because the join-and-gate packet below it prints the raw runtime JSON, action
+  // name included, and that disclosure is not a verdict.
+  await expect(verdicts.locator("article")).toHaveCount(0);
+  await expect(dashboard.locator("article.wf-run-action")).toContainText(actionName);
 
   // And the conversation carries no trace of the instruction. This is the assertion the
   // Preview promise actually reduces to: not "the delivery row says prepared", but "nothing
@@ -432,7 +441,16 @@ test("e toggles the selected Board workflow card without opening session detail"
   await api(daemon, "/api/ui/config", { layout: "grid" }, "PUT");
   await dashboard.reload();
   await expect(dashboard.locator("article.card")).toBeVisible();
-  await dashboard.keyboard.press("ArrowRight");
+  // The arrow is RE-PRESSED until something is selected, rather than pressed once and asserted.
+  // A keystroke that lands between the reload's first paint and the window handler being attached
+  // is simply lost, and the negative assertion below cannot retry an element into existence - so
+  // that race read as "the card was expanded", which is not what failed. Idempotent with one card
+  // in the fleet: right from the only card keeps selecting it. A BARRIER, not a mask - every
+  // assertion after this still fails as loudly as it did.
+  await expect.poll(async () => {
+    await dashboard.keyboard.press("ArrowRight");
+    return await dashboard.locator("article.card.selected").count();
+  }, { message: "an arrow press should select the only card in the fleet" }).toBe(1);
   const card = dashboard.locator("article.card.selected");
   await expect(card).not.toHaveClass(/expanded/);
   await dashboard.keyboard.press("Enter");

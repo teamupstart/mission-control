@@ -25,6 +25,15 @@
  * durable review row: `seed-cursor-pagination.json` stops on an `ask`, and
  * `resume-continuation.json` matches that continuation prompt and asks again.
  *
+ * THE SECOND TRICK: the Workflow run is a real review, not a completed formality. Its five
+ * reviewers are real Persona nodes whose verdicts come back through `claude -p` - the same
+ * headless protocol the titler and the goal refiner use, answered by `fake-claude.mjs`'s
+ * `personaVerdict` with a schema-valid pass. That is what makes ONE CLEAN end-to-end completion
+ * seedable at all: a Persona review has no degradation path (an unparseable verdict is an
+ * infrastructure failure, and three of those block the run), so the alternatives were a real
+ * pipeline with scripted verdicts, or the two-node stub this replaced whose "completed" run had
+ * reviewed nothing. `reviewOutcome` is what refuses to ship the difference silently.
+ *
  * WHY NO DIRECT DB WRITES. The phase plan allowed `usage_ledger` inserts through `node:sqlite`
  * as a documented fallback, on the finding that no public route feeds arbitrary ledger
  * history. That finding does not hold: `POST /v1/metrics` stamps each row from the
@@ -48,6 +57,82 @@ const DAY_MS = 86_400_000;
  * only turn a reportable outcome into a timeout.
  */
 export const WORKFLOW_RUN_SETTLED = ["completed", "cancelled", "failed", "blocked"];
+
+/**
+ * What the seeded run turned out to be, read from the run detail the dashboard reads.
+ *
+ * "Completed" alone is too weak a claim to seed a demo on. A run can complete having reviewed
+ * nothing, and it can complete on round three after two refusals and a provider retry - both are
+ * completions, and neither is the thing this seed exists to show. So `clean` means all of it at
+ * once: it completed, it did so on the FIRST round, every gate in the pipeline cleared, every
+ * reviewer answered pass, and no attempt errored or was retried.
+ *
+ * Checks are counted APART from reviewers rather than lumped in with them. Both carry a verdict -
+ * a Check's is synthetic, which is what lets a join aggregate the two kinds together - but a
+ * `skipped` check that passed because no command is configured is a different claim from a
+ * reviewer that read the diff and had no objection, and a summary that said "7 reviewers passed"
+ * would be overstating what this demo actually demonstrates.
+ *
+ * Pure, and separated from the HTTP that fetches the detail, so `test/demo-seed.test.ts` can hand
+ * it the shapes a real run produces - including the unhappy ones nobody wants to reproduce by
+ * hand - and pin what it calls clean.
+ */
+export function reviewOutcome(detail) {
+  const run = detail?.run ?? {};
+  const summary = detail?.summary ?? {};
+  const attempts = Array.isArray(detail?.attempts) ? detail.attempts : [];
+  // By the VERDICT an attempt carries: the `session`, join and `end` attempts are structure the
+  // engine synthesizes, so counting rows would call a run that reviewed nothing unanimous - which
+  // is exactly what the graph this replaced produced.
+  const verdictOf = (attempt) => (attempt.verdict && typeof attempt.verdict === "object"
+    ? attempt.verdict.verdict
+    : null);
+  const judged = attempts
+    .filter((attempt) => verdictOf(attempt) !== null)
+    .map((attempt) => ({
+      // A Check attempt carries no Persona snapshot, which is also how the run detail tells the
+      // two apart when it decides whether to draw a check card or a verdict card.
+      name: attempt.persona?.name ?? attempt.nodeId,
+      verdict: verdictOf(attempt),
+      attempt: attempt.attempt,
+      kind: attempt.persona ? "reviewer" : "check",
+    }));
+  const reviewers = judged.filter((item) => item.kind === "reviewer");
+  const checks = judged.filter((item) => item.kind === "check");
+  const refused = judged.filter((item) => item.verdict !== "pass");
+  const errored = attempts.filter((attempt) => attempt.state === "error" || attempt.error);
+  const retried = attempts.filter((attempt) => attempt.attempt > 1);
+  const round = summary.round ?? 1;
+  const clean = run.status === "completed"
+    && round === 1
+    && (summary.failedPersonaCount ?? 0) === 0
+    && reviewers.length > 0
+    && refused.length === 0
+    && errored.length === 0
+    && retried.length === 0;
+  const problems = [
+    ...(run.status === "completed" ? [] : [`status ${run.status} (${run.currentPhase})`]),
+    ...(round === 1 ? [] : [`reached round ${round}`]),
+    ...(reviewers.length === 0 ? ["no reviewer ever answered"] : []),
+    ...(refused.length === 0 ? [] : [`${refused.length} did not pass`]),
+    ...(errored.length === 0 ? [] : [`${errored.length} attempt(s) errored`]),
+    ...(retried.length === 0 ? [] : [`${retried.length} attempt(s) retried`]),
+  ];
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  return {
+    status: run.status ?? "unknown",
+    clean,
+    reviewers,
+    checks,
+    round,
+    summary: clean
+      ? [
+          checks.length === 0 ? null : `${plural(checks.length, "check")} cleared`,
+          `${plural(reviewers.length, "reviewer")} passed on round 1, no retries`,
+        ].filter(Boolean).join(", ")
+      : problems.join("; "),
+  };
+}
 
 // --- the seed plan (pure data, so it can be asserted without booting anything) --------------
 
@@ -100,6 +185,38 @@ export const SEED_SESSION_TASKS = [
     labels: ["observability"],
     /** The one a Workflow run is bound to, so the Runs page has history. */
     settle: "workflow",
+  },
+  {
+    key: "ui-polish",
+    repo: "demo-web",
+    title: "UI Polish",
+    intent: "UI polish: even out the card header chips, one truncation rule, keep the focus ring.",
+    priority: "low",
+    labels: ["dashboard", "ui"],
+    /**
+     * Parked on a question, which is also what HOLDS the messages queued below.
+     *
+     * `PendingTurnManager.canDrain` requires `paneDialog === null`, so an outbox on a card with a
+     * held question waits rather than draining - the same rule that makes queueing useful to a
+     * person in the first place. Left `leave-running` (idle), these three would be typed into the
+     * session about a second and a half after the demo opened, and the queue nobody got to see
+     * would be the point of the card.
+     */
+    settle: "leave-waiting",
+    /**
+     * The outbox, in the order it will be delivered. Every one of them is a real follow-up
+     * somebody would type while an agent is blocked on them, and the first still reads correctly
+     * after the question is answered - a queue whose head contradicts the answer would be a demo
+     * of a mistake.
+     */
+    queuedMessages: [
+      "While you are in there: the truncation helper needs to cover the board tile too - it cuts"
+      + " at a fixed 24 characters today and disagrees with the card about the same session.",
+      "Please keep the focus ring on the chips that became buttons. Losing it is how this became"
+      + " keyboard-hostile last time.",
+      "Once the header is even, take a screenshot at 1280 and at 1600 and put both in the PR"
+      + " description - the reviewer should not have to resize a window to see the fix.",
+    ],
   },
 ];
 
@@ -185,12 +302,20 @@ export const SEED_SCHEDULES = [
   },
 ];
 
-/** One custom Persona, so the Library shows something beside the built-ins. */
+/**
+ * One custom Persona, so the Library shows something beside the built-ins - and so the seeded
+ * Workflow has a reviewer an operator can see they WROTE, reviewing in the same stage as the
+ * shipped roles (`workflowDraft`).
+ */
 export const SEED_PERSONA = {
   name: "Demo test-first reviewer",
   description: "Refuses a diff whose behaviour change has no failing-first test.",
   guidanceMarkdown: [
-    "# Test-first reviewer",
+    // The heading matches `name` on purpose: `personaNameFromMarkdown` reads a Persona's name
+    // from its first heading, and this document is now quoted into a review prompt whose verdict
+    // is rendered beside the node's own label. A heading that said something else would put two
+    // different names on the same reviewer.
+    "# Demo test-first reviewer",
     "",
     "Read the diff, then answer one question: **if this change were reverted, which test would fail?**",
     "",
@@ -244,27 +369,207 @@ export function scheduleBody(spec, repoRoot, timezone) {
   };
 }
 
+/** What the seeded Workflow is called, in one place because the summary line names it too. */
+export const SEED_WORKFLOW_NAME = "Demo review and ship";
+
 /**
- * The Workflow the seeded run history comes from: a session node whose `submitted` port ends
- * the run. The narrowest published graph that produces a real completed run, which is what
- * the Runs page needs - the graph itself is not what a demo is showing off.
+ * The built-in review roles the seeded graph is composed from, by their durable ids.
+ *
+ * `builtin:<slug>` is `builtinPersonaId(slug)` and the slug is the `personas/*.md` filename, both
+ * documented append-only for a role that stays shipped - so naming them here is naming app data,
+ * not guessing at generated ids. `test/demo-seed.test.ts` pins each one against
+ * `BUILTIN_PERSONAS`, because a slug this build no longer ships would fail Publish with a
+ * `missing_persona` diagnostic mid-seed rather than at a test.
  */
-export function workflowDraft() {
-  return {
-    nodes: [
-      { id: "session", kind: "session", position: { x: 0, y: 0 } },
-      { id: "end", kind: "end", outcome: "Complete", position: { x: 240, y: 0 } },
-    ],
-    edges: [
-      {
-        id: "complete",
-        source: "session",
-        sourcePort: "submitted",
-        target: "end",
-        targetPort: "terminal",
-      },
-    ],
+export const SEED_WORKFLOW_REVIEWERS = {
+  intent: "builtin:intent-conformance-judge",
+  risk: "builtin:code-risk-reviewer",
+  evidence: "builtin:test-evidence-auditor",
+  documentation: "builtin:documentation-steward",
+};
+
+/** Node ids, named after the role so a run's attempt rows read as the pipeline they came from. */
+const SEED_WORKFLOW_NODES = {
+  session: "session",
+  typecheck: "check-typecheck",
+  test: "check-test",
+  buildJoin: "build-join",
+  intent: "intent-conformance",
+  risk: "code-risk",
+  evidence: "test-evidence",
+  documentation: "documentation",
+  custom: "demo-test-first",
+  depthJoin: "depth-join",
+  end: "end",
+};
+
+/** `compileStages`'s own layout constants, so the seeded canvas opens laid out rather than piled. */
+const LAYOUT = { originX: 60, originY: 60, columnStride: 280, rowStride: 170 };
+const positionAt = (column, row) => ({
+  x: LAYOUT.originX + column * LAYOUT.columnStride,
+  y: LAYOUT.originY + row * LAYOUT.rowStride,
+});
+
+/**
+ * The Workflow the seeded run comes from: the built-in **No-Mistakes Review**'s pipeline, minus
+ * the one stage this machine cannot answer, hand-compiled.
+ *
+ * WHAT IT IS. Version 3's authored shape, stage for stage: the deterministic gate first
+ * (`typecheck` and `test` in ONE stage, so both must clear before a model call is spent), then
+ * Intent Conformance alone as the cheap first judge, then the three deep reviews in parallel
+ * behind it. `customPersonaId` adds the SEEDED Persona (`SEED_PERSONA`) to that parallel stage
+ * beside the shipped ones - the only place in the demo where a Persona an operator wrote is
+ * visibly doing the job Personas are for.
+ *
+ * The two Checks are not decoration. With no command configured for either slot - which is every
+ * fresh demo root, because check execution is consent-gated and off - each one records `skipped`
+ * and PASSES, exactly as it does on any repository the built-in was bound to before its operator
+ * configured commands. So the demo shows the gate, shows why it did not run, and still completes.
+ *
+ * WHY NOT BIND THE BUILT-IN ITSELF - measured, not assumed. Every shipped version of No-Mistakes
+ * Review ends on `completionPolicy: {kind:"inspector"}`, and `WorkflowManager.enterInspectorGate`
+ * reads that policy against the machine it is running on:
+ *
+ *   - the Inspector is off by default (`InspectorConfigSchema`: `enabled: false`), and a gate
+ *     entered with it off is recorded `blocked`, phase `inspector_inspector_disabled`. A run bound
+ *     to the built-in here would put "Workflow blocked" on the demo's showcase card.
+ *   - armed, the gate then needs a pull request ADOPTED into the Inspector's own store and a fresh
+ *     observation of its head. Every read of that state goes through `run("gh", ...)` in
+ *     `src/server/inspector/github.ts` - nine call sites, no env indirection anywhere in the repo -
+ *     against a real GitHub. This demo reaches no network, fakes every binary by path override,
+ *     and its repositories are local `git init` directories with no remote. `dry-run` mode does not
+ *     help: it still adopts and still reviews.
+ *
+ * Satisfying that gate from here would mean either arming, inside a demo, the one subsystem that
+ * comments on real pull requests under the operator's own account, or adding a `gh` override to
+ * production Inspector code so a demo can stand in for GitHub. The first is a consent boundary
+ * this tooling must not cross; the second is a product change to the code that acts outside this
+ * machine, and it belongs to a task that asks for it. So the seeded copy carries the create-default
+ * `completionPolicy: {kind:"none"}` and ends where its End node says it does, and README.md's
+ * seeded-fleet section names the omission rather than letting a reader infer completeness.
+ *
+ * WHY NOT THE TWO-NODE STUB IT REPLACES. `session --submitted--> end` does complete, but it
+ * reviews nothing: no Persona node means no verdict, no round, and two synthetic attempts that
+ * the Runs page listed under "Reviewer verdicts" as `Session` and `Complete`. A demo of a review
+ * workflow whose run contains no review is the one row here that would be theatre.
+ *
+ * Emitted exactly as `compileStages` would emit it (same ports, same join wiring, same layout
+ * stride), by hand rather than by import, because this file is plain `.mjs` driving HTTP and
+ * `src/shared/workflow-stages.ts` is TypeScript. `test/demo-seed.test.ts` closes that gap the
+ * only way that matters: it runs the app's OWN `projectStages` over this graph and asserts the
+ * pipeline that comes back.
+ */
+export function workflowDraft({ customPersonaId = null } = {}) {
+  const check = (id, slot) => ({ id, node: { id, kind: "check", slot } });
+  const reviewer = (id, personaId) => ({ id, node: { id, kind: "persona", personaId } });
+  /**
+   * The pipeline, as stages. One list rather than a wall of node and edge literals, because the
+   * wiring below is `compileStages`'s rule applied uniformly - a stage's members are activated
+   * together, agree at a join when there is more than one of them, and return to the Session on
+   * any fail - and spelling that out three times is how one stage ends up wired differently.
+   */
+  const stages = [
+    {
+      joinId: SEED_WORKFLOW_NODES.buildJoin,
+      members: [
+        check(SEED_WORKFLOW_NODES.typecheck, "typecheck"),
+        check(SEED_WORKFLOW_NODES.test, "test"),
+      ],
+    },
+    {
+      joinId: null,
+      members: [reviewer(SEED_WORKFLOW_NODES.intent, SEED_WORKFLOW_REVIEWERS.intent)],
+    },
+    {
+      joinId: SEED_WORKFLOW_NODES.depthJoin,
+      members: [
+        reviewer(SEED_WORKFLOW_NODES.risk, SEED_WORKFLOW_REVIEWERS.risk),
+        reviewer(SEED_WORKFLOW_NODES.evidence, SEED_WORKFLOW_REVIEWERS.evidence),
+        reviewer(SEED_WORKFLOW_NODES.documentation, SEED_WORKFLOW_REVIEWERS.documentation),
+        ...(customPersonaId
+          ? [reviewer(SEED_WORKFLOW_NODES.custom, customPersonaId)]
+          : []),
+      ],
+    },
+  ];
+
+  const nodes = [{ id: SEED_WORKFLOW_NODES.session, kind: "session", position: positionAt(0, 0) }];
+  const edges = [];
+  let column = 1;
+  const activate = (targets, source, port) => {
+    for (const target of targets) {
+      edges.push({ id: `${source}-${port}-${target}`, source, sourcePort: port, target, targetPort: "activate" });
+    }
   };
+  const returnForChanges = (source) => {
+    edges.push({
+      id: `${source}-returns`,
+      source,
+      sourcePort: "fail",
+      target: SEED_WORKFLOW_NODES.session,
+      targetPort: "return_for_changes",
+    });
+  };
+
+  for (const stage of stages) {
+    stage.members.forEach((member, row) => {
+      nodes.push({ ...member.node, position: positionAt(column, row) });
+    });
+    if (stage.joinId) {
+      nodes.push({
+        id: stage.joinId,
+        kind: "all_pass",
+        position: positionAt(column + 1, (stage.members.length - 1) / 2),
+      });
+    }
+    column += stage.joinId ? 2 : 1;
+    // The node whose onward port carries the pipeline past this stage: its join when it has one,
+    // and its only member when it does not.
+    stage.exitId = stage.joinId ?? stage.members[0].id;
+  }
+  nodes.push({
+    id: SEED_WORKFLOW_NODES.end,
+    kind: "end",
+    outcome: "Complete",
+    position: positionAt(column, 0),
+  });
+
+  activate(stages[0].members.map((m) => m.id), SEED_WORKFLOW_NODES.session, "submitted");
+  stages.forEach((stage, index) => {
+    if (stage.joinId) {
+      // BOTH outcomes of every member feed the join: that is how an all-pass gate knows it has
+      // heard from everyone before deciding, rather than passing on the first pass.
+      for (const member of stage.members) {
+        for (const port of ["pass", "fail"]) {
+          edges.push({
+            id: `${member.id}-${port}`,
+            source: member.id,
+            sourcePort: port,
+            target: stage.joinId,
+            targetPort: "result",
+          });
+        }
+      }
+      returnForChanges(stage.joinId);
+    } else {
+      // A single-member stage returns its own fail route, which is what the graph validator
+      // demands of each stage - and what makes a refusal a repair round rather than a dead run.
+      returnForChanges(stage.members[0].id);
+    }
+    const next = stages[index + 1];
+    if (next) activate(next.members.map((m) => m.id), stage.exitId, "pass");
+    else {
+      edges.push({
+        id: "pipeline-completes",
+        source: stage.exitId,
+        sourcePort: "pass",
+        target: SEED_WORKFLOW_NODES.end,
+        targetPort: "terminal",
+      });
+    }
+  });
+
+  return { nodes, edges };
 }
 
 /**
@@ -304,9 +609,11 @@ export function seedPlan({ reduced = false } = {}) {
  *
  * `aggregationTemporality: 1` is delta - Claude Code's own default, and the one that makes
  * each export its own window so the rows accumulate instead of replacing each other.
- * `session.id` is the row's note key: pass a live session's `agentSessionId` and the figure
- * lands on that card as well as in the fleet total; pass anything else and it is history with
- * no card behind it, which is what yesterday's spend actually is.
+ *
+ * `session.id` is the row's note key, and it must NOT be a seeded card's: the ingest drops every
+ * datapoint whose note key belongs to a driven session, because the driver is that key's writer
+ * (see `costExports`). Every id passed here is therefore a session that is over - history with no
+ * card behind it, which is what past spend actually is.
  */
 export function costExport({ sessionId, atMs, costUsd, inputTokens, outputTokens }) {
   const nanos = (ms) => `${BigInt(Math.round(ms)) * 1_000_000n}`;
@@ -346,27 +653,39 @@ export function costExport({ sessionId, atMs, costUsd, inputTokens, outputTokens
 }
 
 /**
- * The fleet's ledger: today's spend attributed to the seeded cards, plus a few days behind it.
+ * The fleet's ledger BEHIND the cards: earlier today, and a few days before that.
  *
- * Today's rows carry the live sessions' own ids so the per-card cost and the topbar chip agree
- * (`estimatedCostToday` counts from local midnight, so only these reach the chip). The
- * backdated rows are deliberately NOT attributed to a card - a session that ran on Tuesday
- * has no card today, and pretending otherwise would be the one dishonest row in the seed.
+ * No row here is attributed to a seeded card, and that is a correction rather than a
+ * simplification. This function used to stamp today's rows with the live sessions'
+ * `agentSessionId`s on the premise that a card's own figure and the topbar chip would then
+ * agree. They never could: Claude session spend has exactly one writer per note key
+ * (`Registry.applyOtelMetrics` -> `sdkOwnedNoteKey`), the DRIVER wins for an embedded session,
+ * and every OTLP datapoint naming a driven session's id is dropped on the ingest path. The demo
+ * runs entirely on SDK sessions, so those rows were discarded in silence and the demo's cost chip
+ * read $0.00 - which is also what made `npm run demo -- --check` fail its ledger assertion.
+ *
+ * A card's own spend now comes from where a real embedded session's comes from: the `result`
+ * frame's usage, reported by `fake-claude.mjs`'s `turnUsage` and recorded by
+ * `recordDriverSessionUsage`. What these rows are for is the REST of the ledger - the spend a
+ * fleet has behind it, from sessions that are over. Two a day for `days` days, plus two from
+ * earlier today so the topbar's today figure has history in it even before a card finishes a
+ * turn (`--check`'s one session is left mid-question on purpose and finishes none).
  */
-export function costExports({ nowMs, sessionIds, days }) {
+export function costExports({ nowMs, days }) {
   const exports = [];
-  const todayShare = [4.12, 2.87, 1.94, 3.41];
-  sessionIds.forEach((sessionId, index) => {
+  // Minutes rather than an hour-of-day, so this cannot stamp a row into the FUTURE (or, near
+  // midnight, into yesterday's total) whatever time the demo is seeded at.
+  for (const [minutesAgo, costUsd] of [[47, 4.12], [23, 2.87]]) {
     exports.push(
       costExport({
-        sessionId,
-        atMs: nowMs - (index + 1) * 60_000,
-        costUsd: todayShare[index % todayShare.length],
-        inputTokens: 41_000 + index * 9_000,
-        outputTokens: 6_200 + index * 1_100,
+        sessionId: `demo-earlier-today-${minutesAgo}`,
+        atMs: nowMs - minutesAgo * 60_000,
+        costUsd,
+        inputTokens: 41_000 + minutesAgo * 90,
+        outputTokens: 6_200 + minutesAgo * 20,
       }),
     );
-  });
+  }
   for (let day = 1; day <= days; day++) {
     // Two exports a day, so a per-day view has more than a single bar to draw.
     for (const [slot, costUsd] of [
@@ -548,6 +867,8 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
     schedules: 0,
     personas: 0,
     workflowRuns: 0,
+    /** What the seeded run reviewed and how cleanly - `reviewOutcome`, or null when none ran. */
+    workflowReview: null,
     ledgerRows: 0,
   };
 
@@ -631,6 +952,53 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
           outcome: "Cached the workspace scan behind an mtime guard; second open is 12ms.",
         });
       }
+      // --- the outbox, through the composer's own route ------------------------------------
+      //
+      // `POST /api/sessions/:id/inject` with the default body IS what the composer sends when a
+      // person hits Queue: `InjectPromptSchema` defaults `origin: "human"` and `buffer: true`,
+      // which is the pair that routes a message to `PendingTurnManager.submit` instead of typing
+      // it at the session. Each one becomes a durable `pending_turns` row, so the outbox survives
+      // the shutdown below exactly as the conversation does.
+      //
+      // AFTER the settle wait, and that ordering is the whole trick: the queue is only held while
+      // the card has a dialog on it, so enqueueing before the question was raised would deliver
+      // the first message instead of queueing it.
+      const queuedMessages = spec.queuedMessages ?? [];
+      for (const text of queuedMessages) {
+        const submitted = await api.post(`/api/sessions/${settled.id}/inject`, { text });
+        // The route answers 200 with `ok: false` when the manager refuses (a session that cannot
+        // be messaged, an empty body), which a status check alone would read as success.
+        if (!submitted?.ok || submitted.delivery !== "pending") {
+          throw new Error(
+            `[seed] queueing a message on "${spec.title}" was not queued: ${JSON.stringify(submitted)}`,
+          );
+        }
+      }
+      if (queuedMessages.length > 0) {
+        // Read back from `/api/sessions`, not from the submit answers: the claim being made is
+        // that the outbox is STILL queued after every message landed, and only the session
+        // projection the dashboard reads can say that. A drain would show up here as a short list.
+        const outbox = await waitFor(
+          `${queuedMessages.length} queued message(s) on "${spec.title}"`,
+          async (note) => {
+            const sessions = await api.get("/api/sessions");
+            const live = sessions.find((s) => s.id === settled.id);
+            const pending = live?.pendingTurns ?? [];
+            note(`${pending.length} pending, states=${pending.map((t) => t.state).join("/") || "none"}`);
+            return pending.length === queuedMessages.length ? pending : null;
+          },
+          { timeoutMs: 15_000 },
+        );
+        const unqueued = outbox.filter((turn) => turn.state !== "queued");
+        if (unqueued.length > 0) {
+          throw new Error(
+            `[seed] ${unqueued.length} seeded message(s) left the queue before the demo started`
+            + ` (states: ${unqueued.map((t) => t.state).join(", ")})`,
+          );
+        }
+        log(`[seed] queued ${outbox.length} messages on "${spec.title}", held by its open question`);
+      }
+
       seeded.tasks.push({ title: spec.title, status: spec.settle });
       seeded.sessions.push({
         id: settled.id,
@@ -640,6 +1008,7 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
         taskId: task.id,
         cwd: settled.cwd,
         state: waiting ? "waiting on a question" : "idle",
+        queued: queuedMessages.length,
       });
     }
 
@@ -728,19 +1097,47 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
       log(`[seed] resolved two reviews on "${resolvedHost.title}"`);
     }
 
-    // --- a Persona, a Workflow, and one completed run --------------------------------------
+    // --- a Persona, a Workflow, and one clean completed run --------------------------------
+    let customPersonaId = null;
     if (plan.persona) {
-      await api.post("/api/personas", plan.persona);
+      // The id is KEPT rather than discarded: the seeded Workflow puts THIS Persona in its
+      // parallel stage, so the demo shows a reviewer the operator wrote working beside the
+      // shipped ones. `POST /api/personas` answers with the Persona itself (201).
+      const persona = await api.post("/api/personas", plan.persona);
+      customPersonaId = typeof persona?.id === "string" ? persona.id : null;
+      if (!customPersonaId) {
+        throw new Error(
+          `[seed] POST /api/personas answered without an id: ${JSON.stringify(persona)}`,
+        );
+      }
       seeded.personas += 1;
       log(`[seed] persona: ${plan.persona.name}`);
     }
 
     if (plan.workflow) {
       const host = sessionFor("probe");
-      if (host) {
+      // Loud, like the cleanliness check below: the run is bound to THIS session, and a plan that
+      // asks for a workflow but no longer dispatches its host would otherwise seed a fleet with
+      // no run in it at all and say so only in a count nobody reads.
+      if (!host) {
+        throw new Error(
+          "[seed] the plan asks for a workflow run but no session was dispatched to bind it to "
+          + '(no seeded task with settle: "workflow")',
+        );
+      }
+      {
+        // NOT waited for, and measured rather than assumed: the run's captured context will carry
+        // `primaryGoal.rawPrompt: ""`, so its "Captured intent and evidence" panel reads
+        // "(No captured goal)". That is not a race this seeder can wait out. A goal exists only
+        // once a prompt has been CAPTURED FROM A HOOK (`Registry.captureGoalPrompt` is reached
+        // only from `applyHook`, via `HookSpec.promptText`), and this demo installs no hook bridge
+        // for its scripted CLIs - so no prompt is ever captured and the refiner has nothing to
+        // reconcile. The same class of gap as the missing origin chips, and documented beside them
+        // in README.md. The human instruction is still in the panel, under "Human decisions and
+        // rationale", where the transcript reader put it.
         const created = await api.post("/api/workflows", {
-          name: "Demo review and ship",
-          draft: workflowDraft(),
+          name: SEED_WORKFLOW_NAME,
+          draft: workflowDraft({ customPersonaId }),
         });
         const published = await api.post(`/api/workflows/${created.workflow.id}/publish`, {
           expectedDraftRevision: 1,
@@ -767,16 +1164,29 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
           "the seeded workflow run to settle",
           async (note) => {
             const detail = await api.get(`/api/workflow-runs/${runId}`);
-            note(`status=${detail.run.status}`);
+            note(`status=${detail.run.status}, phase=${detail.run.currentPhase}`);
             // `WORKFLOW_RUN_TERMINAL_STATUSES` plus `blocked`: blocked is not terminal, but
             // it is settled enough to stop waiting on and worth surfacing in the summary
             // rather than timing out over.
-            return WORKFLOW_RUN_SETTLED.includes(detail.run.status) ? detail.run : null;
+            return WORKFLOW_RUN_SETTLED.includes(detail.run.status) ? detail : null;
           },
           { timeoutMs: 120_000 },
         );
+        const review = reviewOutcome(finished);
         seeded.workflowRuns += 1;
-        log(`[seed] workflow run ${finished.status} for "${host.title}"`);
+        seeded.workflowReview = { session: host.title, ...review };
+        log(
+          `[seed] workflow run ${review.status} for "${host.title}": ${review.summary}`,
+        );
+        // Loud rather than silent, because "at least one CLEAN end-to-end completion" is the
+        // point of seeding a run at all. A demo that quietly shipped a blocked run, a repair
+        // round, or a reviewer that never answered would look like the product failing at the
+        // one thing this card is meant to show.
+        if (!review.clean) {
+          throw new Error(
+            `[seed] the seeded workflow run is not a clean completion: ${review.summary}`,
+          );
+        }
       }
     }
 
@@ -791,9 +1201,13 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
     }
 
     // --- telemetry, through the daemon's own ingest routes ---------------------------------
+    //
+    // The CARDS' own spend is not posted here and cannot be: it was already written by the driver
+    // as each seeded turn finished, off the usage `fake-claude.mjs` reports on its `result` frame
+    // (see `costExports` for why an OTLP row naming a driven session is dropped). What follows is
+    // the ledger behind them.
     const nowMs = Date.now();
-    const liveIds = seeded.sessions.map((s) => s.agentSessionId).filter(Boolean);
-    for (const body of costExports({ nowMs, sessionIds: liveIds, days: plan.ledgerDays })) {
+    for (const body of costExports({ nowMs, days: plan.ledgerDays })) {
       await api.post("/v1/metrics", body, { auth: true });
       seeded.ledgerRows += 1;
     }
@@ -824,7 +1238,11 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
     `${seeded.tasks.length} tasks`,
     `${seeded.sessions.length} sessions`,
     `${seeded.reviews.pending} pending / ${seeded.reviews.resolved} resolved reviews`,
-    `${seeded.workflowRuns} workflow run(s)`,
+    // The count alone said nothing about whether the run was worth showing, which is the whole
+    // difference between a seeded completion and a seeded review.
+    seeded.workflowReview
+      ? `1 clean workflow run (${seeded.workflowReview.summary})`
+      : `${seeded.workflowRuns} workflow run(s)`,
     `${seeded.schedules} schedule(s)`,
     seeded.fleetCost != null ? `$${seeded.fleetCost.toFixed(2)} today` : "no priced spend",
   ].join(", ");
@@ -844,6 +1262,17 @@ function localTimezone() {
 export function printSeedSummary(seeded) {
   console.log(`[demo] seeded: ${seeded.headline}`);
   for (const session of seeded.sessions) {
-    console.log(`[demo]   session "${session.title}" (${session.state}) in ${session.cwd}`);
+    const queued = session.queued > 0 ? `, ${session.queued} queued message(s)` : "";
+    console.log(`[demo]   session "${session.title}" (${session.state}${queued}) in ${session.cwd}`);
+  }
+  // Named individually, because "1 clean workflow run" is a claim and these are what backs it:
+  // which reviewers answered on which session, which is also exactly what the card's ⌁ Approved
+  // chip and the Runs page will show.
+  if (seeded.workflowReview) {
+    console.log(
+      `[demo]   workflow "${SEED_WORKFLOW_NAME}" on "${seeded.workflowReview.session}": `
+      + [...seeded.workflowReview.checks, ...seeded.workflowReview.reviewers]
+        .map((item) => `${item.name} ${item.verdict}`).join(", "),
+    );
   }
 }

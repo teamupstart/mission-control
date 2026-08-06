@@ -1357,3 +1357,81 @@ test("a finished run withholds the toggle even when the host supplies one", () =
   assert.match(html, /is-disabled/);
   assert.doesNotMatch(html, /wf-pipeline-toggle/);
 });
+
+/** An attempt on a node that holds no opinion: Session, an all-pass join, End. */
+const structural = (id: string, submissionId: string, nodeId: string): WorkflowNodeAttempt =>
+  attempt(id, submissionId, nodeId, snapshot("unused", "unused"), {
+    persona: null,
+    runner: null,
+    model: null,
+    output: { outcome: "submitted" },
+  });
+
+test("the Session, join and End attempts are not drawn as reviewer verdicts", () => {
+  // The engine writes a `completed` attempt for each of the three structural nodes - the Session
+  // when evidence is captured, the join when it aggregates, the End when the run terminates.
+  // Listed beside the reviewers they read as verdicts nobody gave, and their real state is
+  // already on the strip above. Round 2's reviewers have no verdict YET, which is the case that
+  // makes this a node-kind question rather than a "has a verdict" one: they must stay.
+  const detail = runningDetail();
+  const viewed = detail.submissions[1]!.id;
+  detail.attempts = [
+    ...detail.attempts,
+    structural("attempt-session", viewed, NODE.session),
+    structural("attempt-join", viewed, NODE.join),
+    structural("attempt-end", viewed, NODE.end),
+  ];
+  const html = render(detail);
+  const cards = html.match(/wf-run-card wf-run-attempt/g) ?? [];
+  assert.equal(cards.length, 2, "only the two verdict-less REVIEWERS may render as attempt cards");
+  assert.match(html, /Quality reviewer/);
+  assert.match(html, /Security reviewer/);
+  // The three structural attempts each carried this, which is the string that gave a demo run
+  // three cards saying nothing.
+  assert.doesNotMatch(html, /completed · attempt 1/);
+  assertNoGraphIds(html);
+});
+
+test("a structural attempt that is not quietly complete is still shown", () => {
+  // The filter hides noise, not evidence. A join or Session attempt in any other state is
+  // something nobody expects, so hiding it would be the worst possible time to be tidy.
+  const detail = runningDetail();
+  const viewed = detail.submissions[1]!.id;
+  detail.attempts = [
+    ...detail.attempts,
+    { ...structural("attempt-join", viewed, NODE.join), state: "error", error: "join wedged" },
+  ];
+  const html = render(detail);
+  assert.match(html, /join wedged/);
+});
+
+test("a workflow with no reviewer in it says so instead of promising one", () => {
+  // A Session-to-End graph used to fill this section with its own two structural attempts, so
+  // "no reviewer yet" was never read. Now that they are gone, the sentence has to be true of a
+  // graph that will never have one.
+  const detail = runningDetail();
+  const bare = { id: "bare-session", kind: "session" as const, position: { x: 0, y: 0 } };
+  const end = { id: "bare-end", kind: "end" as const, outcome: "Complete", position: { x: 280, y: 0 } };
+  detail.version = {
+    ...version,
+    id: "bare-version",
+    graph: {
+      nodes: [bare, end],
+      edges: [{
+        id: "bare-edge",
+        source: bare.id,
+        sourcePort: "submitted",
+        target: end.id,
+        targetPort: "terminal",
+      }],
+    },
+  };
+  const viewed = detail.submissions[1]!.id;
+  detail.attempts = [
+    structural("attempt-session", viewed, bare.id),
+    structural("attempt-end", viewed, end.id),
+  ];
+  const html = render(detail);
+  assert.match(html, /This workflow has no reviewers/);
+  assert.doesNotMatch(html, /wf-run-attempt/);
+});

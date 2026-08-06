@@ -1,0 +1,34 @@
+{
+  "title": "Continuing the UI polish after a restart",
+  "continues": "UI Polish",
+  "match": [],
+  "default": false,
+  "steps": [
+    { "kind": "assistant", "text": "Picking this back up. The helper and its tests are still in the checkout, and the spacing rule I was waiting on you for never got answered - so I am asking again rather than guessing at it. There are also three messages of yours queued behind this; I will take them in order once this is unblocked.", "delayMs": 400 },
+    {
+      "kind": "ask",
+      "questions": [
+        {
+          "question": "How should the header space its chips?",
+          "header": "Chip spacing",
+          "options": [
+            { "label": "One 6px gap on the row", "description": "the row owns the spacing and every chip drops its own margins - consistent, and it re-flows correctly when a chip is absent" },
+            { "label": "Keep per-chip margins", "description": "a smaller diff today, but the row still reads unevenly the moment a chip is conditional" }
+          ]
+        },
+        {
+          "question": "What should a glyph-only chip do about its accessible name?",
+          "header": "Glyph chips",
+          "options": [
+            { "label": "Keep the glyph and add a label", "description": "the glyph stays decorative and the control carries a real name - two characters wider, readable by everything" },
+            { "label": "Glyph with a tooltip only", "description": "narrowest, but the accessible name is then whatever the tooltip happens to say" }
+          ]
+        }
+      ]
+    },
+    { "kind": "assistant", "text": "Thanks. Moving the spacing onto the row and giving the glyph chips real labels.", "delayMs": 600 },
+    { "kind": "tool", "name": "Edit", "input": { "file_path": "src/dashboard.ts", "description": "one gap on the header row, and drop the per-chip margins" }, "delayMs": 700 },
+    { "kind": "assistant", "text": "Header is even at every width now, and the glyph chips read as controls rather than as decoration. Your queued notes are next.", "delayMs": 600 },
+    { "kind": "result" }
+  ]
+}

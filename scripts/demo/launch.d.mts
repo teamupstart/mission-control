@@ -1,11 +1,24 @@
 // Types for the parts of `launch.mjs` other modules import: `seed.mjs` at runtime, and
-// `test/demo-seed.test.ts` under `noImplicitAny`. Same convention as
+// `test/demo-seed.test.ts` / `test/demo-launch.test.ts` under `noImplicitAny`. Same convention as
 // `scripts/db-shell.d.mts`. The launcher itself stays plain JavaScript - it runs with no
 // build step, which is the point.
+import type { LayoutMode } from "@shared/protocol.ts";
 
 export const DEFAULT_PORT: number;
 export const DEMO_ROOT_NAME: string;
 export const DEMO_CHECK_ROOT_NAME: string;
+
+/**
+ * The arrangement every demo daemon opens on. A `LayoutMode`, typed as the app's own union so a
+ * value this build does not ship is a compile error rather than a 400 in front of an audience.
+ */
+export const DEMO_LAYOUT: LayoutMode;
+
+/** The exact `PUT /api/ui/config` body the launcher sends. */
+export function demoUiConfigBody(): { layout: LayoutMode };
+
+/** Whether the daemon's answer proves it stored `DEMO_LAYOUT`, rather than merely accepting it. */
+export function demoLayoutAccepted(answer: unknown): boolean;
 
 /** Guarantees a cleanup runs exactly once, whichever caller claims the stop first. */
 export function createShutdownGate(onStop: (reason: string) => Promise<void> | void): {

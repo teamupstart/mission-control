@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AGENT_TYPES, type Session, type Task } from "@shared/types.ts";
+import { AGENT_TYPES, type KeepAwakeStatus, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
 import { backlogTasks, canCycleMode } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
@@ -26,6 +26,7 @@ import { settingsGearDot } from "./lib/settings-dots.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
 import { SpendChip } from "./components/SpendChip.tsx";
+import { KeepAwakeControl } from "./components/KeepAwakeControl.tsx";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
@@ -185,6 +186,7 @@ export function App(): React.JSX.Element {
     fleetCost,
     lineSummary,
     settingsStatus,
+    keepAwakeStatus,
     harnessesRevision,
     schedules,
     connected,
@@ -2020,6 +2022,7 @@ export function App(): React.JSX.Element {
           </label>
           <FleetPulse
             connected={connected}
+            keepAwake={keepAwakeStatus}
             sessions={sessions.length}
             attention={counts.attention}
             working={counts.working}
@@ -2928,6 +2931,7 @@ function PulseStat({
  */
 function FleetPulse({
   connected,
+  keepAwake,
   sessions,
   attention,
   working,
@@ -2935,6 +2939,8 @@ function FleetPulse({
   onOpenInbox,
 }: {
   connected: boolean;
+  /** The daemon's Keep Awake observation; null while unknown (pre-snapshot, or SSE down). */
+  keepAwake: KeepAwakeStatus | null;
   sessions: number;
   attention: number;
   working: number;
@@ -2958,18 +2964,11 @@ function FleetPulse({
 }): React.JSX.Element {
   return (
     <div className={`pulse${connected ? "" : " is-down"}`}>
-      <Tooltip
-        label={
-          connected
-            ? "Live - these figures are streaming from the daemon"
-            : "Reconnecting to the daemon - these figures may be stale"
-        }
-      >
-        <div className="pulse-seg pulse-link">
-          <span className="pulse-dot" aria-hidden />
-          <span className="pulse-link-label">{connected ? "live" : "reconnecting"}</span>
-        </div>
-      </Tooltip>
+      {/* The connection segment, now the Keep Awake control. It keeps the leading
+          position and the live/reconnecting word because the connection fact still
+          qualifies every figure to its right; the dropdown it opens is the one place
+          host power state is controlled from. */}
+      <KeepAwakeControl connected={connected} status={keepAwake} />
       <PulseStat
         n={sessions}
         label={sessions === 1 ? "session" : "sessions"}

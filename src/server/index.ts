@@ -40,6 +40,7 @@ import { startGoalRefiner } from "./goal/refiner.ts";
 import { startAwayWatcher } from "./away/watcher.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
+import { KeepAwakeManager } from "./keep-awake.ts";
 import { warnIfSessionAttributionDisabled } from "./cost.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
@@ -310,6 +311,15 @@ const schedules = new ScheduleManager({
 });
 let stopSchedules = () => {};
 
+// The transient Keep Awake owner. Constructed before the app so the routes never see a
+// daemon without it, and SEEDED into the registry before the server accepts traffic so
+// the very first snapshot already carries a truthful status - which, on every boot, is
+// `off`: the mode is deliberately never persisted or reacquired across restarts.
+const keepAwake = new KeepAwakeManager({
+  onStatus: (status) => registry.setKeepAwakeStatus(status),
+});
+registry.setKeepAwakeStatus(keepAwake.status());
+
 const app = buildApp(
   registry,
   reviews,
@@ -325,6 +335,8 @@ const app = buildApp(
   undefined,
   sessionActions,
   pendingTurns,
+  undefined,
+  keepAwake,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -394,6 +406,10 @@ async function shutdown(): Promise<void> {
   stopSkillsReloader();
   stopTaskSources();
   stopSchedules();
+  // Release the idle-sleep assertion while we can still do it gracefully. `caffeinate`'s
+  // own `-w <daemon PID>` covers every exit that never reaches this line, so this is the
+  // orderly half of a two-part cleanup, not the only one.
+  await keepAwake.stop();
   server.close();
   process.exit(0);
 }

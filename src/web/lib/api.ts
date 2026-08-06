@@ -7,6 +7,7 @@ import type {
   ForemanStatus,
   InspectorInspection,
   InspectorStatus,
+  KeepAwakeStatus,
   LlmStatus,
   MessageSendDisposition,
   PendingTurn,
@@ -738,6 +739,39 @@ export async function uploadImage(
     return { ok: true, upload: { path: data.path, name: data.name } };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Turn the transient Keep Awake mode on or off: `PUT /api/keep-awake`.
+ *
+ * Resolves with the daemon's OBSERVED status - never an echo of the request - and never
+ * throws into React, like the other mutators here. On a refusal (unsupported host, failed
+ * OS transition) the server sends its observed status beside the error, so the control
+ * can draw the failure at once instead of waiting for the SSE frame that carries it.
+ */
+export async function setKeepAwake(
+  enabled: boolean,
+): Promise<
+  | { ok: true; status: KeepAwakeStatus }
+  | { ok: false; error: string; status: KeepAwakeStatus | null }
+> {
+  try {
+    const res = await fetch("/api/keep-awake", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        status?: KeepAwakeStatus;
+      };
+      return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: data.status ?? null };
+    }
+    return { ok: true, status: (await res.json()) as KeepAwakeStatus };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), status: null };
   }
 }
 

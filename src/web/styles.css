@@ -1052,6 +1052,10 @@ body {
 /* The spend popover hangs off the cost chip IN the bar, so it opens entirely inside the
    drag rectangle - every row it draws, and the Cost settings link in its footer. */
 .is-desktop .spend-pop,
+/* The Keep awake dropdown hangs off the pulse's leading segment IN the bar, so like the
+   spend popover it opens entirely inside the drag rectangle - and its whole point is a
+   switch the OS must not eat. */
+.is-desktop .ka-pop,
 .is-desktop .combobox-list,
 .is-desktop .cmdbar,
 /* The ⌘K search palette panel opens near the top of the viewport, so it can land inside
@@ -1295,6 +1299,208 @@ body {
   50% {
     opacity: 0.55;
   }
+}
+
+/* ---- the Keep Awake control and its dropdown ----
+   The connection segment is now a BUTTON: it keeps its live/reconnecting meaning - the
+   first segment still qualifies every streamed figure beside it - and opens the compact
+   Keep awake dropdown anchored to it. The wrapper exists only to anchor that panel; it
+   must stay invisible to the pulse's own layout, which is why it stretches and why the
+   hairline the next segment used to inherit from `.pulse-seg + .pulse-seg` is restated
+   against it below. */
+.ka-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+.ka-wrap + .pulse-seg {
+  border-left: 1px solid var(--border-soft);
+}
+.pulse-link {
+  cursor: pointer;
+  /* Leading-edge rounding only, the mirror of `.pulse-btn`'s trailing edge: a fully
+     rounded hover inside the pill would read as a second pill. */
+  border-radius: 999px 0 0 999px;
+  transition: background 0.14s ease;
+}
+.pulse-link:hover,
+.pulse-link[aria-expanded="true"] {
+  background: var(--panel-2);
+}
+.pulse-link:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: -2px;
+}
+/* The mode states on the live dot. The WORD carries the mode (`live · awake`,
+   `live · awake failed`) - color alone must not - so these only make the dot agree
+   with it. Off keeps the plain green breathing dot above. */
+.pulse-link.is-awake .pulse-dot {
+  background: var(--purple);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--purple) 26%, transparent);
+  /* A steady halo: the green dot breathes to say "streaming", but a held power
+     assertion is a state, not activity. */
+  animation: none;
+}
+.pulse-link.is-awake-pending .pulse-dot {
+  background: var(--purple);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--purple) 18%, transparent);
+  animation: ka-settle 1.4s ease-in-out infinite;
+}
+.pulse-link.is-awake-failed .pulse-dot {
+  background: var(--danger);
+  box-shadow: none;
+  animation: none;
+}
+.pulse-link.is-awake-failed .pulse-link-label {
+  color: var(--danger);
+}
+/* Restrained on purpose - a transition normally settles in well under a second, so this
+   is a hint, not a spinner - and switched off entirely under reduced motion. */
+@keyframes ka-settle {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse-link.is-awake-pending .pulse-dot {
+    animation: none;
+  }
+}
+
+/* The dropdown. Hangs off `.ka-wrap`'s `position: relative`, reuses the fleet pulse's
+   dark surface, border, radius and typography, and is listed in the desktop shell's
+   no-drag rule above - a layer painted over the title bar does not take its own clicks
+   back unless it says so explicitly. Anchored LEFT because its trigger leads the pulse. */
+.ka-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  width: 268px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+/* The active border is the same purple as the active dot, and the failed border the same
+   red: the indicator opening to explain itself, not an unrelated settings card. */
+.ka-pop[data-state="on"] {
+  border-color: color-mix(in oklab, var(--purple) 55%, var(--border));
+}
+.ka-pop[data-state="failed"] {
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
+}
+.ka-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.ka-words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ka-title {
+  font-size: 10px;
+  font-weight: 640;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.ka-sub {
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.ka-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ka-reading {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.ka-pop[data-state="on"] .ka-reading {
+  color: var(--purple);
+}
+.ka-pop[data-state="failed"] .ka-reading {
+  color: var(--danger);
+}
+/* The switch: a real `role="switch"` button whose track turns the active dot's purple.
+   Disabled is dimmed, never hidden, so a reconnecting or unavailable dropdown still
+   shows WHAT it is refusing. */
+.ka-switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease;
+}
+.ka-switch[aria-checked="true"] {
+  background: color-mix(in oklab, var(--purple) 45%, var(--panel));
+  border-color: var(--purple);
+}
+.ka-switch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ka-switch:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+.ka-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg);
+  transition: left 0.14s ease;
+}
+.ka-switch[aria-checked="true"] .ka-knob {
+  left: 16px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ka-knob {
+    transition: none;
+  }
+}
+.ka-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 14px 12px;
+}
+.ka-body p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.ka-body .ka-life {
+  color: var(--dim);
+}
+.ka-body .ka-note.is-warn {
+  color: var(--attention);
+}
+.ka-body .ka-note.is-error {
+  color: var(--danger);
 }
 
 /* ---- the cost chip and its spend popover ----
@@ -1633,19 +1839,20 @@ body {
 .topbar[data-rung~="3"] .filter-box {
   padding-right: 4px;
 }
-/* Once the filter is collapsed there is no longer room for both it and the full readout, so
-   the four count readouts step aside while the field has focus or holds a term - but the
-   reviews control does not: an active filter must not make the bar's only route to reviews
-   unreachable. The surviving control sheds its redundant tone dot and becomes a complete
-   pill, including cancelling the divider it still inherits from preceding siblings even when
-   they are hidden. When no reviews control exists, the now-empty wrapper is neutralized; the
-   guard ensures a wrapper containing a control is never hidden. Together these preserve the
-   one-row budget without hiding an interactive element.
+/* Once the filter is collapsed there is no longer room for both it and the full readout,
+   so the count readouts step aside while the field has focus or holds a term - but the two
+   INTERACTIVE segments do not: an active filter must not make the bar's only route to
+   reviews, or its only route to Keep awake, unreachable. What survives is the pulse's two
+   controls drawn as one compact pill - the live segment leading (its dot is the one that
+   still carries meaning) and the reviews control trailing, which sheds its redundant tone
+   dot and keeps the hairline it inherits from its hidden siblings as the divider between
+   them. There is no empty-wrapper rule any more: the live control means the pulse is
+   never empty, even when no reviews control exists.
 
    Scoped to `.topbar` rather than written as a bare `:has()` so it cannot reach the search
    boxes on the settings and workflow pages. */
-.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-seg:not(.pulse-btn),
-.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-seg:not(.pulse-btn) {
+.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-seg:not(.pulse-btn):not(.pulse-link),
+.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-seg:not(.pulse-btn):not(.pulse-link) {
   display: none;
 }
 .topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-btn .pulse-dot,
@@ -1655,12 +1862,6 @@ body {
 .topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-btn,
 .topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-btn {
   padding: 0 9px;
-  border-left: none;
-  border-radius: 999px;
-}
-.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse:not(:has(.pulse-btn)),
-.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse:not(:has(.pulse-btn)) {
-  display: none;
 }
 
 /* Rung 4: Foreman and the page segment drop to their glyphs. Split from rung 5 deliberately -

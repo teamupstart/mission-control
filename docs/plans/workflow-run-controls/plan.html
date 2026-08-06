@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow run controls redesign</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --panel: #f7f8fa;
+    --panel-2: #eef0f4;
+    --ink: #16181d;
+    --muted: #545a66;
+    --dim: #858c99;
+    --border: #dcdfe6;
+    --border-soft: #e8eaf0;
+    --working: #4b62d8;
+    --attention: #b07406;
+    --danger: #c8352c;
+    --good: #1d7a4c;
+    --code-bg: #f0f2f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1b1e24;
+      --panel-2: #21252c;
+      --ink: #e6e8ed;
+      --muted: #a2a9b6;
+      --dim: #737a87;
+      --border: #2e333c;
+      --border-soft: #262b33;
+      --working: #8b9bf5;
+      --attention: #e0a532;
+      --danger: #e8756a;
+      --good: #4cc588;
+      --code-bg: #1e2229;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    padding: 40px 24px 96px;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; }
+  header.doc { border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 8px; }
+  .eyebrow {
+    font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--working); margin: 0 0 6px;
+  }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -.02em; }
+  .lede { color: var(--muted); margin: 0; font-size: 15.5px; }
+  h2 {
+    font-size: 21px; margin: 40px 0 12px; letter-spacing: -.01em;
+    padding-bottom: 7px; border-bottom: 1px solid var(--border-soft);
+  }
+  h3 { font-size: 16.5px; margin: 26px 0 8px; }
+  h4 { font-size: 14px; margin: 20px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 12px; padding-left: 22px; }
+  li { margin: 4px 0; }
+  li > strong:first-child { color: var(--ink); }
+  a { color: var(--working); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .875em; background: var(--code-bg); border: 1px solid var(--border-soft);
+    border-radius: 4px; padding: .08em .34em; word-break: break-word;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; margin: 0 0 14px;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 12.6px; line-height: 1.6; }
+  blockquote {
+    margin: 0 0 14px; padding: 10px 16px; border-left: 3px solid var(--border);
+    background: var(--panel); color: var(--muted); border-radius: 0 6px 6px 0;
+  }
+  blockquote p:last-child { margin-bottom: 0; }
+  blockquote .cite { display: block; margin-top: 6px; font-size: 12px; color: var(--dim); }
+  .tablewrap { overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 480px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { background: var(--panel-2); font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td code { font-size: .84em; }
+  .yes { color: var(--good); font-weight: 600; }
+  .no { color: var(--danger); font-weight: 600; }
+  .off { color: var(--dim); }
+  figure { margin: 20px 0 24px; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption { font-size: 12.5px; color: var(--dim); margin-top: 8px; text-align: center; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin: 0 0 16px; }
+  .card.warn { border-left: 3px solid var(--attention); }
+  .note { font-size: 13.5px; color: var(--muted); }
+  .footpath {
+    margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border);
+    font-size: 12.5px; color: var(--dim);
+  }
+  /* diagram theming */
+  .d-box { fill: var(--panel); stroke: var(--border); stroke-width: 1.5; }
+  .d-box-alt { fill: var(--panel-2); stroke: var(--border); stroke-width: 1.5; }
+  .d-box-pri { fill: var(--working); stroke: var(--working); stroke-width: 1.5; }
+  .d-box-bad { fill: var(--panel); stroke: var(--danger); stroke-width: 1.5; stroke-dasharray: 4 3; }
+  .d-t { fill: var(--ink); font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .d-t-sm { fill: var(--muted); font: 400 10.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .d-t-inv { fill: #fff; font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .d-t-lab { fill: var(--dim); font: 700 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: .08em; }
+  .d-t-mono { fill: var(--muted); font: 400 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .d-arrow { stroke: var(--dim); stroke-width: 1.5; fill: none; }
+  .d-arrow-dash { stroke: var(--dim); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+  .d-life { stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 4 4; }
+  .d-rule { stroke: var(--border-soft); stroke-width: 1; }
+  .d-chip { fill: var(--panel-2); stroke: var(--border); stroke-width: 1; }
+  .d-chip-off { fill: var(--panel); stroke: var(--border-soft); stroke-width: 1; stroke-dasharray: 3 2; }
+  .d-chip-t { fill: var(--muted); font: 500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .d-chip-t-off { fill: var(--dim); font: 500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .d-danger-t { fill: var(--danger); font: 500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <p class="eyebrow">Plan &middot; Mission Control</p>
+  <h1>Workflow run controls redesign</h1>
+  <p class="lede">The run page is for the person consuming a workflow, not authoring one. Today its header
+  offers thirteen peer controls with no primary; in the state that prompted this plan, seven of the nine
+  visible ones do nothing for that person.</p>
+</header>
+
+<h2>Decisions taken</h2>
+
+<p>Reviewed against two rendered mockups in <a href="mockups.html"><code>mockups.html</code></a>, which show
+both candidates across five run states using the real token and class values from
+<code>src/web/styles.css</code>.</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Decision</th><th>Adopted</th><th>Rejected alternative</th></tr></thead>
+<tbody>
+<tr><td>Where the reason and the move live</td><td><strong>A - zones in the header.</strong> One derived
+primary in the action row; a sentence in the identity block when there is no move.</td><td><strong>B - a
+tone-tinted state card</strong> beneath the header pairing reason with move. Reads better on a stopped run
+and has room for the round budget, but spends a card row on every healthy run and risks stacking with the
+two <code>role="status"</code> banners this page already renders.</td></tr>
+<tr><td>Run id and the two JSON downloads</td><td>Bottom disclosure, &ldquo;Audit and bug reports&rdquo;,
+beside the Timeline.</td><td>Removing them outright; keeping them in the header.</td></tr>
+<tr><td>Terminal runs</td><td>Offer <strong>Run this review again</strong>, through the existing binding
+submit route.</td><td>Leaving terminal runs read-only.</td></tr>
+<tr><td>Copy feedback</td><td>Stays in the header, zone 2.</td><td>Moving it onto the failing stage rung as
+<code>WorkflowLadder</code> does.</td></tr>
+<tr><td>Related bugs</td><td><strong>All three ship with this change.</strong></td><td>Deferring the
+bind-chip fix to keep the diff on one page.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>The evidence</h2>
+
+<p>The screenshot that prompted this plan is a run in the <code>session_disappeared</code> state: status
+<code>Blocked</code>, round 1 of 6, and the bound session name struck through. That strikethrough is
+<code>.wf-run-session:disabled</code> (<code>src/web/styles.css:515-519</code>), which fires on
+<code>!sessionBound</code>, meaning <code>detail.binding.sessionId === null</code> - the conversation this
+run was reviewing is gone.</p>
+
+<p>The header offers nine controls in that state:</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Control</th><th>Enabled?</th><th>Does it help?</th></tr></thead>
+<tbody>
+<tr><td>Submit fresh evidence</td><td class="off">disabled</td><td><span class="no">no</span> - refused, &ldquo;The bound session is gone&rdquo;</td></tr>
+<tr><td>Submit unchanged</td><td class="off">disabled</td><td><span class="no">no</span> - same refusal</td></tr>
+<tr><td>Copy feedback</td><td>enabled</td><td><span class="yes">yes</span></td></tr>
+<tr><td>Open PR</td><td class="off">disabled</td><td><span class="no">no</span> - run has no adopted PR</td></tr>
+<tr><td>Open version</td><td>enabled</td><td><span class="no">no</span> - navigates to the composer</td></tr>
+<tr><td>Export run</td><td>enabled</td><td><span class="no">no</span> - downloads JSON nothing can read back</td></tr>
+<tr><td>Export version</td><td>enabled</td><td><span class="no">no</span> - downloads JSON nothing can read back</td></tr>
+<tr><td>Copy run id</td><td>enabled</td><td><span class="no">no</span></td></tr>
+<tr><td>Cancel run</td><td>enabled</td><td><span class="yes">yes</span> - and it is the only honest move left</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Nine controls, two of which do anything for the person reading the page, and the one that resolves the
+run sits last and furthest right.</p>
+
+<div class="card warn">
+<p>Meanwhile the fleet triage drawer, looking at the same run through a strictly <em>smaller</em> data set,
+renders exactly one button: <strong>Dismiss</strong>. <code>runRemedy</code> in
+<code>src/web/workflows/run-model.ts:1575-1591</code> maps <code>session_disappeared</code> to a single
+cancel with a confirmation, because that is the only thing that needs nothing but a run id and the only
+thing the daemon will accept.</p>
+<p class="note" style="margin-bottom:0"><strong>The drawer already got this right. The run page has more
+information and gives less guidance.</strong></p>
+</div>
+
+<h2>Who this page is for</h2>
+
+<p>The consuming user. Somebody whose agent is being reviewed by a workflow they did not author. They care
+about four questions, in this order:</p>
+
+<ol>
+<li><strong>Is it moving?</strong> Status, round N of M, which stage.</li>
+<li><strong>If it stopped, why?</strong> In a sentence, not a phase enum.</li>
+<li><strong>What is the one thing I do about it?</strong> Resume, retry, restart, cancel, run it again.</li>
+<li><strong>Where is the work?</strong> Jump to the session, open the PR, get the feedback out.</li>
+</ol>
+
+<p>Nothing in that list is served by a run id, a run JSON, or a version JSON.</p>
+
+<h2>The three questions, answered</h2>
+
+<h3>Why would I copy the run id?</h3>
+
+<p>For almost nothing. The run id is a durable internal identifier. The page's own filter rail
+(<code>src/web/workflows/WorkflowRuns.tsx:1695-1754</code>) filters by <strong>State</strong>,
+<strong>Workflow id</strong> and <strong>Session</strong> - there is no run-id filter to paste it into. The
+route is already <code>#/runs/{runId}</code>, so on the web build the id is in the address bar, and on the
+Electron build there is no address bar to need it for. Its real consumers are <code>curl</code> against the
+loopback API and a bug report to whoever wrote the workflow. Both are developer acts.</p>
+
+<p>It is also the only clipboard control on the page that bypasses the shared helper:</p>
+
+<pre><code>// WorkflowRuns.tsx:775
+onClick={() =&gt; void navigator.clipboard.writeText(detail.run.id)}</code></pre>
+
+<p><code>src/web/lib/clipboard.ts:9</code> exists precisely because &ldquo;the async Clipboard API can be
+absent or permission-blocked even after a direct click&rdquo;, and it falls back to a synthetic selection.
+<code>Copy feedback</code> uses it. <code>Copy run id</code> does not, so in the Electron renderer it can
+fail silently - the rejected promise is swallowed by <code>void</code>. So the least useful control on the
+page is also the only broken one.</p>
+
+<h3>Why would I export the run?</h3>
+
+<p>There is nothing to export it <em>to</em>. There is no import endpoint anywhere in the codebase, and that
+is deliberate and test-enforced:</p>
+
+<pre><code>// test/workflow-security.test.ts:38
+assert.doesNotMatch(routes, /app\.(?:post|put|patch|delete)\([^)]*\/export/);</code></pre>
+
+<blockquote>
+<p>Import remains out of scope to avoid inventing conflict and trust rules at the end of the project.</p>
+<span class="cite">docs/plans/workflow-builder/phase-6-hardening-polish.md:189</span>
+</blockquote>
+
+<p>So an exported run is a file that no surface in this product consumes. Everything in it is already
+rendered on the page below the header - the timeline, reviewer verdicts, the Inspector gate, deliveries,
+evidence snapshots and the workflow-owned model calls. Export is a bug-report attachment. That is a real
+use, and it is not a header use.</p>
+
+<h3>Why would I export the version, when versions live in the composer?</h3>
+
+<p>You would not. That reading is correct. The version is immutable and owned by the Library and the
+composer, and <code>Open version</code> already navigates there (<code>requestWorkflowVersionOpen</code> +
+hash route, <code>WorkflowRuns.tsx:735-743</code>). <code>Export version</code> downloads the definition of
+the workflow, which says nothing about whether <em>this run</em> is healthy. It is library surface leaking
+into a run-monitoring page.</p>
+
+<h2>The doctrine is already written down</h2>
+
+<p>Two places in this codebase state the rule the run header breaks.</p>
+
+<blockquote>
+<p>Coloured by consequence, at rest rather than on hover - four identical grey pills make you read the
+labels to find the one you want, and the destructive one sits inches from the harmless one.</p>
+<span class="cite">src/web/styles.css:17152-17155, on the console footer's action pills</span>
+</blockquote>
+
+<blockquote>
+<p>1. <strong>The route must need nothing but a run id.</strong> [...] A triage row has no room for a form,
+and a control that opens one is the run page wearing a disguise.<br>
+2. <strong>The SUMMARY must prove the daemon will accept it.</strong> A button that always answers 409 is
+worse than no button.</p>
+<span class="cite">src/web/workflows/run-model.ts:1472-1482, on what a triage row may offer</span>
+</blockquote>
+
+<p>The run header is eleven identical grey pills (<code>btn</code> and <code>btn-ghost</code>, no primary
+anywhere) with the destructive ones one row down. And it violates rule 2 in the other direction: it renders
+<code>Open PR</code> disabled on every run that has no PR concept at all, and both submissions disabled
+whenever the binding is not active.</p>
+
+<p>The redesign is not a new idea. It is applying the drawer's doctrine to the page the drawer defers to.</p>
+
+<h2>The redesign: one next move, then the rest</h2>
+
+<p>Four zones replace one flat row.</p>
+
+<figure>
+<svg viewBox="0 0 900 392" role="img" aria-label="Before and after of the run header control surface. Before: one flat row of eleven controls plus two destructive ones. After: four zones with one primary next move, three context links, two destructive controls, and an audit disclosure moved to the page bottom.">
+  <defs>
+    <marker id="ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+
+  <text class="d-t-lab" x="20" y="26">HEADER TODAY &middot; 13 PEERS, NO PRIMARY</text>
+  <rect class="d-box-bad" x="20" y="38" width="860" height="94" rx="9"/>
+
+  <rect class="d-chip" x="35" y="52" width="132" height="24" rx="6"/>
+  <text class="d-chip-t" x="101" y="68" text-anchor="middle">Submit fresh evidence</text>
+  <rect class="d-chip" x="177" y="52" width="112" height="24" rx="6"/>
+  <text class="d-chip-t" x="233" y="68" text-anchor="middle">Submit unchanged</text>
+  <rect class="d-chip" x="299" y="52" width="82" height="24" rx="6"/>
+  <text class="d-chip-t" x="340" y="68" text-anchor="middle">Prepare PR</text>
+  <rect class="d-chip" x="391" y="52" width="118" height="24" rx="6"/>
+  <text class="d-chip-t" x="450" y="68" text-anchor="middle">Retry provider call</text>
+  <rect class="d-chip" x="519" y="52" width="118" height="24" rx="6"/>
+  <text class="d-chip-t" x="578" y="68" text-anchor="middle">Recheck Inspector</text>
+  <rect class="d-chip" x="647" y="52" width="100" height="24" rx="6"/>
+  <text class="d-chip-t" x="697" y="68" text-anchor="middle">Copy feedback</text>
+
+  <rect class="d-chip-off" x="35" y="86" width="68" height="24" rx="6"/>
+  <text class="d-chip-t-off" x="69" y="102" text-anchor="middle">Open PR</text>
+  <rect class="d-chip" x="113" y="86" width="95" height="24" rx="6"/>
+  <text class="d-chip-t" x="160" y="102" text-anchor="middle">Open version</text>
+  <rect class="d-chip" x="218" y="86" width="85" height="24" rx="6"/>
+  <text class="d-chip-t" x="260" y="102" text-anchor="middle">Export run</text>
+  <rect class="d-chip" x="313" y="86" width="100" height="24" rx="6"/>
+  <text class="d-chip-t" x="363" y="102" text-anchor="middle">Export version</text>
+  <rect class="d-chip" x="423" y="86" width="88" height="24" rx="6"/>
+  <text class="d-chip-t" x="467" y="102" text-anchor="middle">Copy run id</text>
+
+  <line class="d-rule" x1="537" y1="82" x2="537" y2="116"/>
+  <rect class="d-chip" x="560" y="86" width="140" height="24" rx="6"/>
+  <text class="d-danger-t" x="630" y="102" text-anchor="middle">Restart full workflow</text>
+  <rect class="d-chip" x="710" y="86" width="85" height="24" rx="6"/>
+  <text class="d-danger-t" x="752" y="102" text-anchor="middle">Cancel run</text>
+
+  <text class="d-t-lab" x="20" y="176">HEADER AFTER &middot; 4 ZONES, ONE PRIMARY</text>
+  <rect class="d-box-pri" x="20" y="190" width="252" height="58" rx="9"/>
+  <text class="d-t-inv" x="146" y="214" text-anchor="middle">zone 1 &middot; one next move</text>
+  <text class="d-t-inv" x="146" y="232" text-anchor="middle" style="font-weight:400;opacity:.85">derived, imperative, or absent</text>
+
+  <rect class="d-box" x="286" y="190" width="298" height="58" rx="9"/>
+  <text class="d-t" x="435" y="214" text-anchor="middle">zone 2 &middot; context</text>
+  <text class="d-t-sm" x="435" y="232" text-anchor="middle">session &middot; Open PR &middot; Copy feedback</text>
+
+  <rect class="d-box" x="612" y="190" width="268" height="58" rx="9"/>
+  <line x1="626" y1="202" x2="626" y2="236" stroke="var(--danger)" stroke-width="2"/>
+  <text class="d-t" x="756" y="214" text-anchor="middle">zone 3 &middot; destructive</text>
+  <text class="d-t-sm" x="756" y="232" text-anchor="middle">Restart... &middot; Cancel run</text>
+
+  <path class="d-arrow-dash" d="M450,252 L450,296" marker-end="url(#ah1)"/>
+  <rect class="d-box-alt" x="20" y="300" width="860" height="62" rx="9"/>
+  <text class="d-t" x="450" y="324" text-anchor="middle">zone 4 &middot; page bottom, beside the Timeline</text>
+  <text class="d-t-sm" x="450" y="343" text-anchor="middle">&lt;details&gt; &ldquo;Audit and bug reports&rdquo; &nbsp;&rarr;&nbsp; run id &middot; download run JSON &middot; download workflow version JSON</text>
+</svg>
+<figcaption>The control surface, before and after. Dashed chips are rendered-but-disabled today.</figcaption>
+</figure>
+
+<h3>Zone 1 - the next move (exactly one, <code>.btn-primary</code>)</h3>
+
+<p>A new <code>runNextMove(detail)</code> in <code>src/web/workflows/run-actions.ts</code> returns at most
+one action. It is the detail-level sibling of <code>runRemedy</code>, and because it reads
+<code>WorkflowRunDetail</code> instead of <code>WorkflowRunSummary</code> it can resolve a move in the
+states <code>runRemedy</code> explicitly punts to the run page - the gate actions, the targeted retry, the
+unchanged-evidence recovery.</p>
+
+<p>The label is an imperative in the user's language, not the route's:</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Run state</th><th>Next move</th><th>Label</th><th>Route</th></tr></thead>
+<tbody>
+<tr><td><code>capturing</code>, <code>running</code></td><td class="off">none</td><td class="off">-</td><td class="off">live progress speaks</td></tr>
+<tr><td><code>waiting_for_session</code></td><td>resubmit</td><td>Resume review</td><td><code>resubmit</code></td></tr>
+<tr><td><code>waiting_for_session</code> after a <code>workflow_unchanged_evidence</code> refusal</td><td>resubmit unchanged</td><td>Review this snapshot anyway</td><td><code>resubmit</code> + <code>resubmitUnchanged</code></td></tr>
+<tr><td><code>waiting_for_pr</code>, gate offers the handoff</td><td>prepare-pr</td><td>Ask the session to open a PR</td><td><code>prepare-pr</code></td></tr>
+<tr><td><code>waiting_for_pr</code>, no handoff arm</td><td>recheck</td><td>Check again</td><td><code>recheck-inspector</code></td></tr>
+<tr><td><code>waiting_for_inspector</code></td><td>recheck</td><td>Check again</td><td><code>recheck-inspector</code></td></tr>
+<tr><td><code>waiting_for_new_head</code></td><td>recheck</td><td>Check again</td><td><code>recheck-inspector</code></td></tr>
+<tr><td><code>blocked</code> / <code>infrastructure_error</code></td><td>retry</td><td>Retry the failed call</td><td><code>retry</code></td></tr>
+<tr><td><code>blocked</code> / <code>check_cleanup_unresolved</code>, <code>capture_*</code></td><td>resubmit</td><td>Resume review</td><td><code>resubmit</code></td></tr>
+<tr><td><code>blocked</code> / <code>unchanged_evidence_exhausted</code></td><td>resubmit unchanged</td><td>Review this snapshot anyway</td><td><code>resubmit</code> + <code>resubmitUnchanged</code></td></tr>
+<tr><td><code>blocked</code> / <code>inspector_disabled</code></td><td>open settings</td><td>Turn Inspector on</td><td>settings route</td></tr>
+<tr><td><code>blocked</code> / <code>round_limit</code>, <code>session_disappeared</code></td><td class="off">none</td><td class="off">-</td><td class="off">Cancel is the honest move</td></tr>
+<tr><td><code>blocked</code> / delivery phases</td><td class="off">none</td><td class="off">-</td><td class="off">the deliveries section owns the choice</td></tr>
+<tr><td><code>blocked</code> / <code>inspector_findings</code>, <code>inspector_pr_closed</code></td><td class="off">none</td><td class="off">-</td><td class="off">the findings list owns the choice</td></tr>
+<tr><td><code>completed</code>, <code>cancelled</code>, <code>failed</code></td><td>run again</td><td>Run this review again</td><td><code>workflow-bindings/{id}/submit</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Where the answer is <strong>none</strong>, the header says so in one sentence and names where the
+decision lives, which is the same closing move <code>runRemedy</code> makes:</p>
+
+<blockquote>
+<p>Everything else - Inspector findings, a closed pull request, an unresolved delivery - is blocked on a
+DECISION, and the material for that decision is the run page's. The row still says why; it just does not
+pretend one button settles it.</p>
+<span class="cite">run-model.ts:1593-1596</span>
+</blockquote>
+
+<p>So: &ldquo;This run is waiting on a delivery decision below.&rdquo; Never a disabled button standing in
+for a sentence.</p>
+
+<p>The refusal copy that <code>resubmitAvailability</code> already produces
+(<code>run-actions.ts:191-199</code>) becomes that sentence rather than a tooltip on a dead control. In the
+screenshot's state the header would read <em>&ldquo;The session this run was reviewing is gone, so it cannot
+take another round.&rdquo;</em> with Cancel run in the danger zone, and nothing else.</p>
+
+<h3>Zone 2 - context links (ghost, at most three)</h3>
+
+<p>Get me to the work. These do not change the run.</p>
+
+<ul>
+<li><strong>The session name</strong> - already a link in the identity block
+(<code>WorkflowRuns.tsx:612-623</code>). Stays.</li>
+<li><strong>Open PR</strong> - only rendered when <code>gate.state.prUrl</code> exists. A disabled Open PR
+on a run with no PR concept is noise; today it is pushed unconditionally
+(<code>run-actions.ts:94-103</code>).</li>
+<li><strong>Copy feedback</strong> - stays, using <code>copyText()</code>. This is the one control here
+that a consuming user reaches for constantly: it is how the review's verdicts get into their agent.</li>
+</ul>
+
+<h3>Zone 3 - destructive, kept apart (unchanged)</h3>
+
+<p><code>.wf-run-actions-danger</code> already does the right thing and the code says why
+(<code>WorkflowRuns.tsx:782-783</code>, <code>styles.css:528-529</code>): separated by a
+<code>border-left</code>, never filled red, because these sit beside actions an operator clicks all day.
+<strong>Restart full workflow</strong> and <strong>Cancel run</strong> stay exactly as they are, phrase
+confirmation included.</p>
+
+<h3>Zone 4 - the audit disclosure, out of the header</h3>
+
+<p><code>Copy run id</code>, <code>Export run</code> and <code>Export version</code> move to a
+<code>&lt;details className="wf-run-audit"&gt;</code> at the bottom of the page, beside the Timeline, where
+audit material already lives. The precedent and its charter are <code>ScheduleDetail.tsx:186</code> /
+<code>styles.css:20505</code>:</p>
+
+<blockquote><p>The exact stored configuration: an audit view, so it sits behind a disclosure.</p></blockquote>
+
+<p>Relabelled honestly, since nobody is &ldquo;exporting&rdquo; anything:</p>
+
+<ul>
+<li>Run id, with a copy affordance that uses <code>copyText()</code></li>
+<li>Download run JSON</li>
+<li>Download workflow version JSON</li>
+</ul>
+
+<p>Summary text: <strong>&ldquo;Audit and bug reports&rdquo;</strong>. That names who the contents are for,
+which is the whole point of moving them.</p>
+
+<h3>The version badge absorbs Open version</h3>
+
+<p><code>Open version</code> becomes the <code>v8</code> badge itself (<code>.wf-run-version</code>,
+<code>WorkflowRuns.tsx:609</code>). The badge already displays the version; making it the link kills a
+header button and puts the affordance where the information is. Tooltip: &ldquo;Open workflow version 8 in
+the composer.&rdquo;</p>
+
+<h3>Count</h3>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th></th><th>Today</th><th>After</th></tr></thead>
+<tbody>
+<tr><td>Header controls, maximum</td><td>11 + 2 danger = <strong>13</strong></td><td>1 primary + 3 context + 2 danger = <strong>6</strong></td></tr>
+<tr><td>Header controls, screenshot state</td><td><strong>9</strong></td><td><strong>1</strong> (Cancel run) + a sentence</td></tr>
+<tr><td>Controls that change the run, screenshot state</td><td>1 of 9</td><td>1 of 1</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>New capability: Run this review again</h2>
+
+<p>This is the gap behind &ldquo;reschedule it fresh&rdquo;, and today the page has no answer. On a terminal
+run every control is inert: <code>resubmitAvailability</code> returns <code>null</code> for anything not
+<code>waiting_for_session</code> or <code>blocked</code> (<code>run-actions.ts:188</code>), and Cancel run
+is not rendered at all (<code>WorkflowRuns.tsx:804</code>). A completed or failed run offers Copy feedback,
+Open PR, Open version, Export run, Export version and Copy run id - six controls, none of which run
+anything.</p>
+
+<p>It needs <strong>no new endpoint</strong>.
+<code>POST /api/workflow-bindings/{bindingId}/submit</code> already does it:</p>
+
+<ul>
+<li><code>activeRunForBinding</code> defines &ldquo;open&rdquo; by SQL exclusion of exactly the three
+terminal statuses (<code>src/server/workflows/store.ts:2468-2475</code>), so once a run is
+<code>completed</code>/<code>cancelled</code>/<code>failed</code> the <code>run_active</code> refusal
+(<code>manager.ts:1042-1045</code>) no longer fires.</li>
+<li>The binding stays <code>active</code> after its run finishes. Nothing in the completion path writes
+<code>workflow_bindings.state</code>; the only writers are orphan, pause and archive
+(<code>store.ts:5168</code>, <code>5201</code>, <code>5234</code>).</li>
+<li>There is no once-only guard. <code>test/workflow-bindings-http.test.ts:388-424</code> already pins
+submit &rarr; idempotent replay &rarr; completed with the binding untouched.</li>
+<li>Idempotency is by <code>requestId</code>, so a fresh <code>crypto.randomUUID()</code> starts a new run
+and a replay returns the old one.</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 900 424" role="img" aria-label="Sequence diagram for Run this review again. The run page header posts to the binding submit route, the manager checks the binding is active and that no run is open, the store confirms the prior run is terminal, a new round-one submission is created, and the header routes to the new run.">
+  <defs>
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+
+  <rect class="d-box-pri" x="20" y="16" width="150" height="34" rx="7"/>
+  <text class="d-t-inv" x="95" y="38" text-anchor="middle">Run page header</text>
+  <rect class="d-box" x="255" y="16" width="128" height="34" rx="7"/>
+  <text class="d-t" x="319" y="38" text-anchor="middle">routes.ts</text>
+  <rect class="d-box" x="468" y="16" width="196" height="34" rx="7"/>
+  <text class="d-t" x="566" y="38" text-anchor="middle">manager.prepareSubmit</text>
+  <rect class="d-box" x="762" y="16" width="118" height="34" rx="7"/>
+  <text class="d-t" x="821" y="38" text-anchor="middle">store</text>
+
+  <line class="d-life" x1="95" y1="50" x2="95" y2="410"/>
+  <line class="d-life" x1="319" y1="50" x2="319" y2="410"/>
+  <line class="d-life" x1="566" y1="50" x2="566" y2="410"/>
+  <line class="d-life" x1="821" y1="50" x2="821" y2="410"/>
+
+  <path class="d-arrow" d="M95,90 L313,90" marker-end="url(#ah2)"/>
+  <text class="d-t-mono" x="100" y="84">POST /api/workflow-bindings/{id}/submit</text>
+  <text class="d-t-mono" x="100" y="105">{ requestId: fresh uuid }</text>
+
+  <path class="d-arrow" d="M319,138 L560,138" marker-end="url(#ah2)"/>
+  <text class="d-t-mono" x="324" y="132">enqueueSubmit</text>
+
+  <path class="d-arrow" d="M566,168 L618,168 L618,192 L572,192" marker-end="url(#ah2)"/>
+  <text class="d-t-mono" x="626" y="184">binding.state === &quot;active&quot; ?</text>
+
+  <path class="d-arrow" d="M566,226 L815,226" marker-end="url(#ah2)"/>
+  <text class="d-t-mono" x="571" y="220">activeRunForBinding(binding.id)</text>
+
+  <path class="d-arrow-dash" d="M821,262 L572,262" marker-end="url(#ah2)"/>
+  <text class="d-t-mono" x="600" y="256">null - prior run is terminal</text>
+
+  <path class="d-arrow" d="M566,300 L815,300" marker-end="url(#ah2)"/>
+  <text class="d-t-mono" x="571" y="294">createInitialSubmission (round 1, capturing)</text>
+
+  <path class="d-arrow-dash" d="M821,340 L101,340" marker-end="url(#ah2)"/>
+  <text class="d-t-mono" x="150" y="334">202 { run }, then SSE run_upsert</text>
+
+  <path class="d-arrow" d="M95,368 L150,368 L150,392 L101,392" marker-end="url(#ah2)"/>
+  <text class="d-t-mono" x="158" y="384">route to #/runs/{newRunId}</text>
+</svg>
+<figcaption>Run this review again reuses the proven binding submit path. No new endpoint, no schema change.</figcaption>
+</figure>
+
+<p>Preconditions to mirror in the client, in the manager's own order: binding
+<code>state === "active"</code>, no active run, and not externally sourced. Confirmation is warranted but
+not phrase-gated - it spends model tokens and creates a new run, so the confirm body should say so.</p>
+
+<p><code>WorkflowBindingDialog.tsx:414-418</code> already ships this call under the label
+<strong>&ldquo;Submit bound version&rdquo;</strong>, so the mechanism is proven in the UI. The label is the
+problem, not the plumbing.</p>
+
+<h2>Related bugs found</h2>
+
+<p>Three, all in scope for this change: they are the same surface, and two of them are what make the run
+page's dead ends dead.</p>
+
+<ol>
+<li><strong><code>Copy run id</code> can fail silently in Electron.</strong>
+<code>WorkflowRuns.tsx:775</code> bypasses <code>copyText()</code>. Fixed for free by rebuilding it inside
+the audit disclosure.</li>
+<li><strong>The <code>&#65291; workflow</code> bind chip disappears forever once a session has ever had a
+run.</strong> <code>SessionCard.tsx:271-283</code> and <code>ConsoleDetail.tsx:286-295</code> both gate on
+<code>!workflowRun</code>, and <code>workflowRunBySession</code> (<code>App.tsx:966-973</code>) keeps the
+newest run per session <em>including terminal ones</em> - nothing prunes completed runs from the SSE map.
+So after one review completes, the session surfaces offer no way to run a workflow on that session again,
+and neither does the run page. &ldquo;Run this review again&rdquo; closes the loop from the run page; the
+chip's own gate should become &ldquo;no <em>open</em> run&rdquo; rather than &ldquo;no run ever&rdquo;.</li>
+<li><strong><code>Open PR</code> is rendered disabled on runs with no PR concept.</strong>
+<code>inspectorGateActions</code> pushes it unconditionally (<code>run-actions.ts:94-103</code>) even when
+the completion policy is not <code>inspector</code>. It should be absent, not disabled, which is rule 2 of
+the doctrine above.</li>
+</ol>
+
+<h2>Files touched</h2>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>File</th><th>Change</th></tr></thead>
+<tbody>
+<tr><td><code>src/web/workflows/run-actions.ts</code></td><td>add <code>runNextMove(detail)</code>; make <code>open-pr</code> conditional on the policy</td></tr>
+<tr><td><code>src/web/workflows/WorkflowRuns.tsx</code></td><td>rebuild <code>.wf-run-actions</code> as zones; add the audit <code>&lt;details&gt;</code>; link the version badge; add Run again</td></tr>
+<tr><td><code>src/web/styles.css</code></td><td><code>.wf-run-why</code>, <code>.wf-run-audit</code>; keep <code>.wf-run-actions-danger</code></td></tr>
+<tr><td><code>src/web/components/SessionCard.tsx</code>, <code>layouts/ConsoleDetail.tsx</code></td><td>bind chip gate: no <em>open</em> run, not no run ever</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><code>run-model.ts</code>'s <code>runRemedy</code> is left alone. It serves a summary-only surface under
+a stricter contract, and collapsing the two would drag detail-only fields into the drawer. They stay
+siblings that agree on vocabulary - one <code>RunActionId</code> per intent, never one per surface
+(<code>run-model.ts:1485-1487</code>).</p>
+
+<figure>
+<svg viewBox="0 0 900 396" role="img" aria-label="Before and after of the decision layer. Before, the run header assembles eleven controls inline from run detail while runRemedy serves only the review drawer. After, a new runNextMove sits beside runRemedy in the shared module and feeds both the run header and the workflow ladder.">
+  <defs>
+    <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+
+  <text class="d-t-lab" x="20" y="22">BEFORE</text>
+  <text class="d-t-lab" x="140" y="48" text-anchor="middle">SOURCE</text>
+  <text class="d-t-lab" x="450" y="48" text-anchor="middle">DECISION LAYER</text>
+  <text class="d-t-lab" x="760" y="48" text-anchor="middle">SURFACE</text>
+
+  <rect class="d-box-alt" x="60" y="60" width="160" height="36" rx="7"/>
+  <text class="d-t" x="140" y="83" text-anchor="middle">WorkflowRunSummary</text>
+  <rect class="d-box-alt" x="60" y="148" width="160" height="36" rx="7"/>
+  <text class="d-t" x="140" y="171" text-anchor="middle">WorkflowRunDetail</text>
+
+  <rect class="d-box" x="370" y="60" width="160" height="36" rx="7"/>
+  <text class="d-t" x="450" y="83" text-anchor="middle">runRemedy</text>
+  <text class="d-t-sm" x="450" y="122" text-anchor="middle">no shared derivation for run detail</text>
+
+  <rect class="d-box" x="650" y="60" width="220" height="36" rx="7"/>
+  <text class="d-t" x="760" y="83" text-anchor="middle">ReviewDrawer &middot; one or none</text>
+  <rect class="d-box-bad" x="650" y="120" width="220" height="42" rx="7"/>
+  <text class="d-t" x="760" y="138" text-anchor="middle">WorkflowRuns header</text>
+  <text class="d-t-sm" x="760" y="154" text-anchor="middle">11 controls assembled inline</text>
+  <rect class="d-box" x="650" y="176" width="220" height="30" rx="7"/>
+  <text class="d-t" x="760" y="196" text-anchor="middle">WorkflowLadder</text>
+
+  <path class="d-arrow" d="M220,78 L364,78" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M530,78 L644,78" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M220,166 L290,166"/>
+  <path class="d-arrow" d="M290,166 L290,141 L644,141" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M290,166 L290,191 L644,191" marker-end="url(#ah3)"/>
+
+  <line class="d-rule" x1="20" y1="228" x2="880" y2="228"/>
+
+  <text class="d-t-lab" x="20" y="256">AFTER</text>
+
+  <rect class="d-box-alt" x="60" y="272" width="160" height="34" rx="7"/>
+  <text class="d-t" x="140" y="294" text-anchor="middle">WorkflowRunDetail</text>
+  <rect class="d-box-alt" x="60" y="330" width="160" height="34" rx="7"/>
+  <text class="d-t" x="140" y="352" text-anchor="middle">WorkflowRunSummary</text>
+
+  <rect class="d-box-pri" x="370" y="272" width="160" height="34" rx="7"/>
+  <text class="d-t-inv" x="450" y="294" text-anchor="middle">runNextMove</text>
+  <rect class="d-box" x="370" y="330" width="160" height="34" rx="7"/>
+  <text class="d-t" x="450" y="352" text-anchor="middle">runRemedy</text>
+  <text class="d-t-sm" x="450" y="382" text-anchor="middle">shared module &middot; run-actions.ts, run-model.ts</text>
+
+  <rect class="d-box" x="650" y="262" width="220" height="30" rx="7"/>
+  <text class="d-t" x="760" y="282" text-anchor="middle">WorkflowRuns header</text>
+  <rect class="d-box" x="650" y="298" width="220" height="30" rx="7"/>
+  <text class="d-t" x="760" y="318" text-anchor="middle">WorkflowLadder</text>
+  <rect class="d-box" x="650" y="332" width="220" height="30" rx="7"/>
+  <text class="d-t" x="760" y="352" text-anchor="middle">ReviewDrawer</text>
+
+  <path class="d-arrow" d="M220,289 L364,289" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M220,347 L364,347" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M530,289 L590,289"/>
+  <path class="d-arrow" d="M590,289 L590,277 L644,277" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M590,289 L590,313 L644,313" marker-end="url(#ah3)"/>
+  <path class="d-arrow" d="M530,347 L644,347" marker-end="url(#ah3)"/>
+</svg>
+<figcaption>The decision layer. <code>runNextMove</code> joins <code>runRemedy</code> as a sibling, so all
+three surfaces read their controls from shared derivation instead of assembling them inline.</figcaption>
+</figure>
+
+<h2>Testing</h2>
+
+<ul>
+<li><strong><code>e2e/</code> spec, required.</strong> <code>e2e/specs/workflow-run-controls.spec.ts</code>:
+a blocked run with a gone session shows one sentence and Cancel run and <em>not</em> the submissions; a
+terminal run offers Run this review again and starting it produces a new run id; the audit disclosure is
+collapsed until opened. No <code>data-testid</code>; select by role and accessible name.</li>
+<li><strong><code>e2e/specs/workflow-blocked-resubmit.spec.ts:116-156</code></strong> asserts the current
+<code>Preview fresh evidence</code> / <code>Preview unchanged</code> / <code>Cancel run</code> header.
+Update to the new labels.</li>
+<li><strong><code>test/workflow-runs-render.test.ts:503-517</code></strong> asserts all six of Copy
+feedback, Copy run id, Export run, Export version, Open version, Cancel run in the header. Rewrite as the
+zone assertions, plus a <code>runNextMove</code> unit table covering every row of the table above.</li>
+<li><strong><code>test/workflow-builder-render.test.ts:331</code></strong> covers the Runs-to-composer
+version handoff; retarget from the button to the badge.</li>
+<li><strong>Unaffected, despite the string match:</strong>
+<code>e2e/specs/line-drawers.spec.ts:617,630,810</code> click <code>Cancel run</code> on the <em>confirm
+modal</em> raised by the drawer's Dismiss remedy (<code>run-model.ts:1585</code>), not the run header.</li>
+<li><code>styles.css:1050-1075</code> needs no entry - the audit disclosure is in the document flow, not a
+popover, so the Electron drag-region list does not apply.</li>
+</ul>
+
+<h2>Deliberately not doing</h2>
+
+<ul>
+<li><strong>An overflow kebab menu.</strong> There is no reusable menu primitive;
+<code>OpenInMenu.tsx</code> and <code>LaunchMenu.tsx</code> are ~90% duplicated hand-rolled popovers with
+capture-phase Escape handling and a drag-region registration requirement. Introducing a third to hide
+three controls nobody needs is more machinery than deleting the problem. A <code>&lt;details&gt;</code> has
+precedent and costs nothing.</li>
+<li><strong>Removing export entirely.</strong> Bug reports are a real use. The disclosure keeps it
+reachable and stops it competing with Cancel run.</li>
+<li><strong>A run-id filter.</strong> That would make Copy run id useful, which is solving the wrong
+problem.</li>
+</ul>
+
+<p class="footpath">Source of truth: <code>docs/plans/workflow-run-controls/plan.md</code>. This page is a
+rendering of it, generated beside it as <code>plan.html</code>.</p>
+
+</div>
+</body>
+</html>

@@ -1,6 +1,6 @@
 // GENERATED FILE - do not edit by hand.
 //
-// Written by `scripts/builtin-session-actions.ts` from `docs/session-actions/*.md`, which are the
+// Written by `scripts/builtin-session-actions.ts` from `actions/*.md`, which are the
 // authored source. Edit the Markdown there and run `npm run session-actions`.
 
 /** The exact bytes of each shipped SessionAction document, in filename order. */

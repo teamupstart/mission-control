@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PULL_REQUEST_SKILL } from "../src/shared/skills.ts";
@@ -19,7 +19,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-builtin-session-actions-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const root = resolve(import.meta.dirname, "..");
-const docsDir = join(root, "docs", "session-actions");
+const actionsDir = join(root, "actions");
 const generatedPath = join(
   root, "src", "server", "workflows", "builtin-session-actions.generated.ts",
 );
@@ -40,22 +40,48 @@ after(() => rmSync(home, { recursive: true, force: true }));
 test("the committed module is exactly what regenerating produces", async () => {
   // The GENERATOR is imported rather than re-implemented. A drift check that rendered the
   // module its own way would agree with itself and not with `npm run session-actions`.
-  const { builtinSessionActionSources, renderBuiltinSessionActionModule } =
+  const { NON_SESSION_ACTION_DOCUMENTS, builtinSessionActionSources, renderBuiltinSessionActionModule } =
     await import("../scripts/builtin-session-actions.ts");
   assert.equal(
     readFileSync(generatedPath, "utf8"),
-    renderBuiltinSessionActionModule(builtinSessionActionSources(docsDir)),
+    renderBuiltinSessionActionModule(builtinSessionActionSources(actionsDir)),
     "run `npm run session-actions` and commit the result",
   );
 
-  const documents = readdirSync(docsDir).filter((entry) => entry.endsWith(".md"));
+  // The same exclusion the generator applies, from the generator, so this count cannot drift
+  // into agreeing with a second copy of the rule instead of with the module.
+  const excluded = new Set<string>(NON_SESSION_ACTION_DOCUMENTS);
+  const documents = readdirSync(actionsDir)
+    .filter((entry) => entry.endsWith(".md") && !excluded.has(entry));
   assert.ok(documents.length > 0);
   assert.equal(BUILTIN_SESSION_ACTION_SOURCES.length, documents.length);
   for (const source of BUILTIN_SESSION_ACTION_SOURCES) {
     assert.equal(
       source.promptMarkdown,
-      readFileSync(join(docsDir, `${source.slug}.md`), "utf8"),
+      readFileSync(join(actionsDir, `${source.slug}.md`), "utf8"),
       `${source.slug} is not byte-identical to its document`,
+    );
+  }
+});
+
+// `actions/` holds one document that is not a session action - the README explaining that the
+// directory is not GitHub Actions - and the generator globs the whole directory. Both
+// directions of that exclusion are failure modes worth a name. A listed document that is gone
+// means the list has gone stale and no longer describes the directory; a listed document that
+// compiled in anyway means the catalog is offering the directory's own documentation as an
+// instruction to type into an operator's conversation.
+test("the README is in actions/ and is not a session action", async () => {
+  const { NON_SESSION_ACTION_DOCUMENTS } = await import("../scripts/builtin-session-actions.ts");
+  const slugs = new Set<string>(BUILTIN_SESSION_ACTION_SOURCES.map((source) => source.slug));
+  for (const document of NON_SESSION_ACTION_DOCUMENTS) {
+    assert.ok(
+      existsSync(join(actionsDir, document)),
+      `${document} is excluded from the generator but is not in actions/ - update NON_SESSION_ACTION_DOCUMENTS`,
+    );
+    assert.equal(
+      slugs.has(document.slice(0, -".md".length)),
+      false,
+      `${document} compiled in as a built-in session action`,
     );
   }
 });

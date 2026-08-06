@@ -19,19 +19,24 @@ Submitted through the plan review and treated here as requirements, not open que
 | Copy feedback | Stays in the header, zone 2. | Phase 2 |
 | Bug: `Copy run id` silent clipboard failure | Fixed via `copyText()`. | Phase 1 |
 | Bug: `＋ workflow` chip vanishing forever | Gate reads openness through `workflowRunIsOpen`. | Phase 4 |
-| Bug: `Open PR` disabled on runs with no PR concept | Made conditional on the completion policy. | Phase 2 |
+| Bug: `Open PR` disabled when there is no PR to open | Gated on a usable `gate.state.prUrl`. | Phase 2 |
 
 ## Findings that changed the plan
 
-Five repository facts moved work between phases or added scope the source plan did not have. The
-fourth was raised by Inspector review and is recorded here with the others rather than only in the
-phase that owns it.
+Five repository facts moved work between phases or added scope the source plan did not have.
+Findings 1 and 4 were sharpened or raised by Inspector review on PR #439, and are recorded here with
+the others rather than only in the phases that own them.
 
-1. **`Open PR` cannot be made conditional on its own.** `WorkflowRuns.tsx:568` asserts the action is
-   always present (`…find(…)!`) and dereferences it unconditionally at `713-727`. Adding the policy
-   condition without repairing that call site throws a `TypeError` on every non-inspector run. The
-   condition and the repair are therefore one atomic change, owned by Phase 2, which is why Phase 1
-   deliberately leaves `Open PR` alone even though it is removing four neighbouring controls.
+1. **`Open PR` must be gated on a usable PR URL, and cannot be made conditional on its own.**
+   `WorkflowRuns.tsx:568` asserts the action is always present (`…find(…)!`) and dereferences it
+   unconditionally at `713-727`, so making it conditional without repairing that call site throws a
+   `TypeError`. The condition and the repair are one atomic change, owned by Phase 2, which is why
+   Phase 1 deliberately leaves `Open PR` alone even while removing four neighbouring controls.
+   **The condition is `gate?.state.prUrl !== null`, not the completion policy** - corrected after
+   Inspector review round 3. Policy alone leaves a destination-less button on `inspector`-policy runs
+   parked in `waiting_for_pr`, which are parked precisely *because* no PR is adopted yet, and those are
+   the very runs the change is meant to clean up. Requiring the URL covers the no-PR-concept case too,
+   so it subsumes the policy check and lets `href` become a non-nullable `string`.
 
 2. **The unchanged-evidence affordance is derivable from run detail, but the request id is not.** The
    manager persists the refusal as a run phase - `waiting_for_session`/`unchanged_evidence`, or
@@ -136,7 +141,7 @@ Every source-plan requirement and submitted selection, mapped to exactly one pha
 | `runNextMove` and the next-move table | 2 |
 | One primary control, never two | 2 |
 | The why-sentence replacing disabled stand-ins | 2 |
-| `Open PR` absent rather than disabled, plus the `!` repair | 2 |
+| `Open PR` absent whenever there is no PR URL (not policy-gated), plus the `!` repair | 2 |
 | Unchanged-evidence prose in `BLOCKED_PHASE_CLAUSES` | 2 |
 | `inspector_disabled` as a no-move state, not a settings primary | 2 |
 | `Copy feedback` stays in the header | 2 (retained, not moved) |

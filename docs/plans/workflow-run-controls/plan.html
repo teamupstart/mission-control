@@ -282,7 +282,7 @@ worse than no button.</p>
 
 <p>The run header is eleven identical grey pills (<code>btn</code> and <code>btn-ghost</code>, no primary
 anywhere) with the destructive ones one row down. And it violates rule 2 in the other direction: it renders
-<code>Open PR</code> disabled on every run that has no PR concept at all, and both submissions disabled
+<code>Open PR</code> disabled on every run with no PR to open, and both submissions disabled
 whenever the binding is not active.</p>
 
 <p>The redesign is not a new idea. It is applying the drawer's doctrine to the page the drawer defers to.</p>
@@ -421,8 +421,8 @@ take another round.&rdquo;</em> with Cancel run in the danger zone, and nothing 
 <li><strong>The session name</strong> - already a link in the identity block
 (<code>WorkflowRuns.tsx:612-623</code>). Stays.</li>
 <li><strong>Open PR</strong> - only rendered when <code>gate.state.prUrl</code> exists. A disabled Open PR
-on a run with no PR concept is noise; today it is pushed unconditionally
-(<code>run-actions.ts:94-103</code>).</li>
+on a run with no PR to open is noise, and that includes an <code>inspector</code>-policy run still waiting
+for one; today it is pushed unconditionally (<code>run-actions.ts:94-103</code>).</li>
 <li><strong>Copy feedback</strong> - stays, using <code>copyText()</code>. This is the one control here
 that a consuming user reaches for constantly: it is how the review's verdicts get into their agent.</li>
 </ul>
@@ -575,10 +575,14 @@ newest run per session <em>including terminal ones</em> - nothing prunes complet
 So after one review completes, the session surfaces offer no way to run a workflow on that session again,
 and neither does the run page. &ldquo;Run this review again&rdquo; closes the loop from the run page; the
 chip's own gate should become &ldquo;no <em>open</em> run&rdquo; rather than &ldquo;no run ever&rdquo;.</li>
-<li><strong><code>Open PR</code> is rendered disabled on runs with no PR concept.</strong>
-<code>inspectorGateActions</code> pushes it unconditionally (<code>run-actions.ts:94-103</code>) even when
-the completion policy is not <code>inspector</code>. It should be absent, not disabled, which is rule 2 of
-the doctrine above.</li>
+<li><strong><code>Open PR</code> is rendered disabled whenever there is no PR to open.</strong>
+<code>inspectorGateActions</code> pushes it unconditionally (<code>run-actions.ts:94-103</code>), so it
+appears greyed out both on runs with no pull-request concept at all and on <code>inspector</code>-policy
+runs still waiting for a PR - the latter being the common case, since such a run is parked precisely
+<em>because</em> no PR is adopted yet. The gate section below already says so and offers
+<code>Prepare PR in session</code>, so the header button repeats it. The condition is <strong>a usable
+<code>gate.state.prUrl</code></strong>, not the completion policy; requiring the URL covers both cases at
+once. It should be absent, not disabled, which is rule 2 of the doctrine above.</li>
 </ol>
 
 <h2>Files touched</h2>

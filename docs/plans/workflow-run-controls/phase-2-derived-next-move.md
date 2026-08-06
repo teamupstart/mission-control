@@ -98,6 +98,21 @@ finds nothing and takes the `createRepairSubmission({ round: latest.round + 1 })
   is today's behaviour too; this phase does not regress it and does not attempt to fix it. A durable
   fix means the server surfacing the pending refusal's trigger key, which is out of scope.
 
+### `Open PR` needs a URL, not a policy
+
+Raised by Inspector review round 3 and confirmed. The condition that matters is
+**`gate?.state.prUrl !== null`**, not the completion policy.
+
+The two are not equivalent, and the gap is the common case: an `inspector`-policy run sitting in
+`waiting_for_pr` is there *because* no PR has been adopted yet, with `waitReason` of `missing_pr` or
+`unadopted_pr` (`run-actions.ts:70-72`). A policy-only gate keeps a destination-less `Open PR` on
+exactly those runs - the disabled stand-in this phase exists to remove. `href` is already
+`gate?.state.prUrl ?? null` today (`run-actions.ts:93`), so the URL is right there to test.
+
+Nothing is lost by hiding it. A `waiting_for_pr` run's gate section already explains that no PR is
+adopted and offers `Prepare PR in session` and `Recheck Inspector`, so a greyed-out header button
+repeats a fact the page states properly a few sections down.
+
 ### Other findings
 
 - `detail.summary` carries `round` and `maxRepairRounds` (`src/shared/workflow.ts:2177`, `:2213`), and
@@ -190,8 +205,20 @@ at `run-model.ts:1593-1596`.
 ## Implementation steps
 
 1. **`src/web/workflows/run-actions.ts`**
-   - Add the policy condition to the `open-pr` push (`93-103`), matching the `prepare-pr` arm's
-     existing shape: only push when `detail.version?.completionPolicy.kind === "inspector"`.
+   - Gate the `open-pr` push (`93-103`) on **a usable PR URL**: push it only when
+     `gate?.state.prUrl` is non-null. That is the condition the adopted design states
+     (`plan.md`, zone 2) and the one the reviewed mockup renders - a control named "Open PR" earns
+     its place when there is a PR to open, and not otherwise.
+     Requiring the URL **subsumes** the completion-policy check, since a run with no adopted PR has no
+     `prUrl` whatever its policy, so a separate `completionPolicy.kind === "inspector"` condition is
+     redundant. Keep it only if it reads more clearly beside the `prepare-pr` arm; do not rely on it
+     alone. **Policy alone is not sufficient**: an `inspector`-policy run in `waiting_for_pr` is
+     waiting precisely *because* no PR exists yet, so a policy-only gate would keep a destination-less
+     Open PR on the exact runs this change is meant to clean up.
+   - With that gate in place, `open-pr` can only ever hold a real URL, so **strengthen the type**:
+     `href` becomes `string` rather than `string | null` and its `disabled` is always `false`. The
+     compiler then rejects a future reintroduction of the destination-less entry, which is a better
+     guard than a test. Drop the now-dead "This run has no adopted pull request" tooltip branch.
    - Add `export interface RunNextMove` carrying `id: RunActionId`, `label`, `tooltip`,
      `kind`, the POST `path` (a full path string), a `body` record for anything beyond
      `requestId`, and an optional `confirm: WorkflowConfirmDescriptor | null`. Model it on
@@ -238,8 +265,12 @@ component today.
 - **`test/workflow-runs-render.test.ts`**: replace the header-control assertions with a
   `runNextMove` unit table covering **every row** of the table above, including both preview and live
   labels and both unchanged-evidence phases. Add cases asserting the why-sentence text for the three
-  `resubmitAvailability` refusals and for a delivery-blocked run, and a case asserting `Open PR` is
-  **absent** (not disabled) when `completionPolicy.kind === "none"`.
+  `resubmitAvailability` refusals and for a delivery-blocked run.
+- **`Open PR`, three cases**, since the policy-versus-URL distinction is what round 3 of review caught:
+  absent when `completionPolicy.kind === "none"`; **absent when the policy is `inspector` but
+  `gate.state.prUrl` is null** (a `waiting_for_pr` run - this is the case a policy-only gate would get
+  wrong); and present, enabled, with the real href when `prUrl` is set. Assert absence, not
+  `disabled === true`.
 - Add a case asserting `runNextMove` returns `null` for `blocked`/`inspector_disabled` and that
   `runNoMoveReason` names the Inspector gate section. This is the regression guard for the POST-only
   invariant: it fails if somebody reintroduces a settings navigation as a primary.
@@ -248,7 +279,9 @@ component today.
 - Cases at `539` and `558` assert `Cancel run` on blocked runs; they must keep passing untouched,
   which is the regression guard that this phase left the danger row alone.
 - **`test/workflow-ladder-actions.test.ts`**: add a case proving the ladder still renders its gate
-  actions under an `inspector` policy and renders none under `"none"`, pinning the shared filter.
+  actions under an `inspector` policy and renders none under `"none"`, pinning the shared filter. Check
+  this file first for an existing assertion that the ladder shows a **disabled** `Open PR`; if one
+  exists it now asserts removed behaviour and must be retargeted to absence rather than deleted.
 - **`e2e/specs/workflow-blocked-resubmit.spec.ts:116-156`** asserts `Preview fresh evidence`,
   `Preview unchanged` and the refusal tooltips on a `session_disappeared` run. Rewrite for the new
   shape: the run shows **no** submission control, shows the why-sentence naming the gone session, and
@@ -266,8 +299,9 @@ component today.
 - `RunNextMove` is a single POST shape with no navigation kind, and every value it can hold is
   dispatchable through `useRunActions` without a special case.
 - A run with no move renders a why-sentence, never a disabled stand-in.
-- `Open PR` is absent under a non-inspector completion policy, in both the Runs header and the ladder,
-  and no `!` assertion remains on a conditionally pushed action.
+- `Open PR` is **absent whenever the run has no adopted PR URL** - including an `inspector`-policy run
+  waiting on a PR - in both the Runs header and the ladder. Its `href` is a non-nullable `string`, it
+  is never rendered disabled, and no `!` assertion remains on a conditionally pushed action.
 - The two unchanged-evidence phases render prose, not `phase.replaceAll("_", " ")` output.
 - Preview-mode labels still say Preview.
 - `.wf-run-actions-danger` is byte-identical to Phase 1's output.
@@ -296,6 +330,19 @@ Must not change: `runRemedy`'s signature or behaviour, the `.wf-run-actions-dang
 
 ## Cross-phase audit record
 
+- **Corrected after Inspector review round 3 (PR #439).** The Inspector found this phase's
+  implementation step gated `open-pr` on the completion policy alone, while the adopted design
+  (`plan.md` zone 2) says it renders only when `gate.state.prUrl` exists - so an `inspector`-policy run
+  waiting on a PR would keep a destination-less `Open PR`, which is the disabled stand-in this phase
+  exists to delete. Confirmed, and confirmed that the drift was the phase file's alone: `plan.md:196`
+  and the mockup the human actually reviewed (`mockups.html:305`, "absent rather than disabled, because
+  this run has no adopted PR") both already state the URL condition. Fixed by making the phase match
+  them, not the reverse. Requiring the URL subsumes the policy check, so the step now also strengthens
+  `open-pr`'s `href` to a non-nullable `string` with `disabled` always `false`, letting the compiler
+  reject a reintroduction. Three test cases replace the single policy case, including the
+  inspector-policy-without-URL case a policy-only gate would get wrong, and the ladder test bullet now
+  warns that an existing disabled-`Open PR` assertion must be retargeted rather than deleted. No
+  approved decision changed; this restores the plan's own stated behaviour.
 - **Corrected after Inspector review round 2 (PR #439).** The Inspector found that the source plan's
   "after" decision-layer diagram showed `runNextMove` feeding `WorkflowLadder`, while this phase scopes
   `runNextMove` to the Runs header and leaves the ladder on `inspectorGateActions` - so the plan

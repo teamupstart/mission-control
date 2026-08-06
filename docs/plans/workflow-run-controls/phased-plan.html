@@ -109,23 +109,29 @@ across five run states, built from the real token and class values in <code>src/
 <tr><td>Copy feedback</td><td>Stays in the header, zone 2.</td><td>Phase 2</td></tr>
 <tr><td>Bug: <code>Copy run id</code> silent clipboard failure</td><td>Fixed via <code>copyText()</code>.</td><td>Phase 1</td></tr>
 <tr><td>Bug: <code>&#65291; workflow</code> chip vanishing forever</td><td>Gate reads openness through <code>workflowRunIsOpen</code>.</td><td>Phase 4</td></tr>
-<tr><td>Bug: <code>Open PR</code> disabled on runs with no PR concept</td><td>Made conditional on the completion policy.</td><td>Phase 2</td></tr>
+<tr><td>Bug: <code>Open PR</code> disabled when there is no PR to open</td><td>Gated on a usable <code>gate.state.prUrl</code>.</td><td>Phase 2</td></tr>
 </tbody>
 </table>
 </div>
 
 <h2>Findings that changed the plan</h2>
-<p>Five repository facts moved work between phases or added scope the source plan did not have. The
-fourth was raised by Inspector review and is recorded here with the others rather than only in the phase
-that owns it.</p>
+<p>Five repository facts moved work between phases or added scope the source plan did not have.
+Findings 1 and 4 were sharpened or raised by Inspector review on PR #439, and are recorded here with the
+others rather than only in the phases that own them.</p>
 
 <div class="card warn">
-<p><strong>1. <code>Open PR</code> cannot be made conditional on its own.</strong>
-<code>WorkflowRuns.tsx:568</code> asserts the action is always present (<code>…find(…)!</code>) and
-dereferences it unconditionally at <code>713-727</code>. Adding the policy condition without repairing
-that call site throws a <code>TypeError</code> on every non-inspector run. The condition and the repair
-are therefore one atomic change, owned by Phase 2, which is why Phase 1 deliberately leaves
-<code>Open PR</code> alone even though it is removing four neighbouring controls.</p>
+<p><strong>1. <code>Open PR</code> must be gated on a usable PR URL, and cannot be made conditional on its
+own.</strong> <code>WorkflowRuns.tsx:568</code> asserts the action is always present
+(<code>…find(…)!</code>) and dereferences it unconditionally at <code>713-727</code>, so making it
+conditional without repairing that call site throws a <code>TypeError</code>. The condition and the repair
+are one atomic change, owned by Phase 2, which is why Phase 1 deliberately leaves <code>Open PR</code>
+alone even while removing four neighbouring controls.</p>
+<p style="margin-bottom:0"><strong>The condition is <code>gate?.state.prUrl !== null</code>, not the
+completion policy</strong> - corrected after Inspector review round 3. Policy alone leaves a
+destination-less button on <code>inspector</code>-policy runs parked in <code>waiting_for_pr</code>, which
+are parked precisely <em>because</em> no PR is adopted yet, and those are the very runs the change is meant
+to clean up. Requiring the URL covers the no-PR-concept case too, so it subsumes the policy check and lets
+<code>href</code> become a non-nullable <code>string</code>.</p>
 </div>
 
 <div class="card warn">
@@ -276,7 +282,7 @@ owning phase's file.</p>
 <tr><td><code>runNextMove</code> and the next-move table</td><td>2</td></tr>
 <tr><td>One primary control, never two</td><td>2</td></tr>
 <tr><td>The why-sentence replacing disabled stand-ins</td><td>2</td></tr>
-<tr><td><code>Open PR</code> absent rather than disabled, plus the <code>!</code> repair</td><td>2</td></tr>
+<tr><td><code>Open PR</code> absent whenever there is no PR URL (not policy-gated), plus the <code>!</code> repair</td><td>2</td></tr>
 <tr><td>Unchanged-evidence prose in <code>BLOCKED_PHASE_CLAUSES</code></td><td>2</td></tr>
 <tr><td><code>inspector_disabled</code> as a no-move state, not a settings primary</td><td>2</td></tr>
 <tr><td><code>Copy feedback</code> stays in the header</td><td>2 (retained, not moved)</td></tr>

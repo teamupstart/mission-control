@@ -129,7 +129,7 @@ Two places in this codebase state the rule the run header breaks.
 
 The run header is eleven identical grey pills (`btn` and `btn-ghost`, no primary anywhere) with
 the destructive ones one row down. And it violates rule 2 in the other direction: it renders
-`Open PR` disabled on every run that has no PR concept at all, and both submissions disabled
+`Open PR` disabled on every run with no PR to open, and both submissions disabled
 whenever the binding is not active.
 
 The redesign is not a new idea. It is applying the drawer's doctrine to the page the drawer
@@ -194,7 +194,8 @@ Get me to the work. These do not change the run.
 
 - **The session name** - already a link in the identity block (`WorkflowRuns.tsx:612-623`). Stays.
 - **Open PR** - only rendered when `gate.state.prUrl` exists. A disabled Open PR on a run with
-  no PR concept is noise; today it is pushed unconditionally (`run-actions.ts:94-103`).
+  no PR to open is noise, and that includes an `inspector`-policy run still waiting for one; today it
+  is pushed unconditionally (`run-actions.ts:94-103`).
 - **Copy feedback** - stays, using `copyText()`. This is the one control here that a consuming
   user reaches for constantly: it is how the review's verdicts get into their agent.
 
@@ -281,9 +282,13 @@ run page's dead ends dead.
    neither does the run page. "Run this review again" closes the loop from the run page; the
    chip's own gate should become "no *open* run" rather than "no run ever".
 
-3. **`Open PR` is rendered disabled on runs with no PR concept.** `inspectorGateActions`
-   pushes it unconditionally (`run-actions.ts:94-103`) even when the completion policy is not
-   `inspector`. It should be absent, not disabled, which is rule 2 of the doctrine above.
+3. **`Open PR` is rendered disabled whenever there is no PR to open.** `inspectorGateActions`
+   pushes it unconditionally (`run-actions.ts:94-103`), so it appears greyed out both on runs with no
+   pull-request concept at all and on `inspector`-policy runs still waiting for a PR - the latter being
+   the common case, since such a run is parked precisely *because* no PR is adopted yet. The gate
+   section below already says so and offers `Prepare PR in session`, so the header button repeats it.
+   The condition is **a usable `gate.state.prUrl`**, not the completion policy; requiring the URL
+   covers both cases at once. It should be absent, not disabled, which is rule 2 of the doctrine above.
 
 ## Files touched
 

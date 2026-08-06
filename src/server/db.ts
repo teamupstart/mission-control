@@ -350,6 +350,12 @@ export function openDb(): DatabaseSync {
 
     -- Reusable workflow judges. guidance_md is exact operator-authored Markdown: no
     -- normalized copy exists and every write names this column directly.
+    --
+    -- import_provenance_json records where an IMPORTED Persona's guidance was read from
+    -- (PersonaProvenance: path, repo, plugin version, content hash, imported-at). NULL is the
+    -- ordinary case and means "authored here", which is also what every row written before the
+    -- column existed genuinely was - hence nullable with no default. It is live-catalog data
+    -- only: published versions carry their own guidance copy and never consult this.
     CREATE TABLE IF NOT EXISTS personas (
       id              TEXT PRIMARY KEY,
       name            TEXT NOT NULL,
@@ -361,7 +367,8 @@ export function openDb(): DatabaseSync {
       revision        INTEGER NOT NULL DEFAULT 1,
       archived_at     INTEGER,
       created_at      INTEGER NOT NULL,
-      updated_at      INTEGER NOT NULL
+      updated_at      INTEGER NOT NULL,
+      import_provenance_json TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_personas_normalized_name
       ON personas(normalized_name);
@@ -1505,6 +1512,12 @@ function migrate(d: DatabaseSync): void {
 
   // The action a waiting attempt is executing, frozen from the run's immutable version.
   addColumn(d, "workflow_node_attempts", "session_action_snapshot_json", "TEXT");
+
+  // Where an imported Persona was read from, so an upstream edit can be SEEN rather than
+  // silently adopted. Nullable with no default because a Persona authored in the editor
+  // genuinely has no source file, and that is exactly what every pre-feature row is. No index:
+  // provenance is read with the row it belongs to and never searched by.
+  addColumn(d, "personas", "import_provenance_json", "TEXT");
 
   // The delivery-to-attempt link. Nullable with no default so every historical row - every
   // persona_feedback, inspector_feedback, unchanged_evidence_nudge and pr_handoff ever

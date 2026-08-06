@@ -36,6 +36,7 @@ const persona = (
   archivedAt: null,
   createdAt: builtin ? 0 : 1,
   updatedAt: builtin ? 0 : 1,
+  provenance: null,
   builtin,
   execution: {
     runner: { id: "claude", source: "default", unknown: null },

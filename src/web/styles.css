@@ -10749,6 +10749,38 @@ select.ensemble-judge-persona {
 .persona-file-input {
   display: none;
 }
+/* Import-by-path and the upstream re-check, on their own strip under the file picker: the path
+   field needs the width of the row, and putting it beside the State select would squeeze both
+   to where neither reads.
+   The field takes a line of its own and the two buttons share the next one. On one line in a
+   ~280px rail the field collapses to a slot too narrow to read a path in and both labels wrap
+   mid-phrase - which is what this looked like before the rows were split. */
+.persona-import-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.persona-import-path {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.persona-import-source .btn {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+.persona-import-source input {
+  width: 100%;
+  padding: 7px 9px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+}
 .persona-list,
 .wf-action-list {
   display: flex;
@@ -10815,6 +10847,14 @@ select.ensemble-judge-persona {
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 999px;
+}
+/* The one tag on these rows that is not provenance-as-trivia: an imported Persona's source file
+   has moved on, and adopting it is a decision waiting for the operator. Toned like every other
+   "this needs you" surface rather than muted like `Built-in` beside it. */
+.persona-list-tag.is-attention {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 10%, var(--panel-2));
 }
 .persona-list-item small,
 .persona-list-empty,
@@ -10898,6 +10938,21 @@ select.ensemble-judge-persona {
 }
 .persona-state.conflict span {
   flex: 1;
+}
+/* Drift reads as information, not as a fault: the stored guidance is intact and still what runs,
+   so this is the one status on the line that does not take the attention colour. A paragraph
+   rather than a row, because the action it names lives in the header with Save and Archive. */
+.persona-state.drift {
+  color: var(--muted);
+  background: var(--panel-2);
+}
+/* Where this Persona's guidance was read from, under the name it was read into. Dim and mono:
+   it is a path an operator scans for a directory they recognise, not prose. */
+.persona-source {
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
 }
 /* The same two toned states for `.wf-state`, which had only the base box: an editor holding
    unsaved text read as ordinary prose, and a `role="alert"` conflict banner - the one moment

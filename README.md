@@ -2665,7 +2665,7 @@ normalized names.
 
 Guidance is exact text. Accepted Markdown is not trimmed or newline-normalized when it is
 created or updated. Copy writes that same text to the browser clipboard, download writes it
-to a local `.md` Blob, and import stores `File.text()` unchanged after deriving a proposed
+to a local `.md` Blob, and both imports store the document unchanged after deriving a proposed
 name from the first level-one heading or the filename. Download URLs are revoked after the
 click. Duplicate creates a new Persona rather than editing the source.
 
@@ -2675,6 +2675,69 @@ the Persona's provider override or the app-wide provider; then the Persona's mod
 unknown to an older build is reported and falls back through the shared provider ladder.
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
+
+### Importing a Persona from a file
+
+There are two ways to bring an externally-authored Markdown role in, and they differ in one
+thing that matters:
+
+- **Import .md** picks a file with the browser's file dialog. The bytes are uploaded and stored.
+  Mission Control never learns where the file was, so nothing can be said later about it.
+- **Import from path** names an absolute path *on the machine the daemon runs on*. The daemon
+  reads that file itself, which is what lets the Persona remember where its guidance came from.
+
+An imported Persona is an ordinary Persona: revisioned, editable, archivable, offered to any
+workflow stage. What it carries in addition is **provenance** - the source path, the enclosing
+git worktree when there is one, the version from the nearest `.claude-plugin/plugin.json` when
+the file sits under an installed Claude Code plugin, a sha256 of the exact bytes read, and when
+it was imported. The editor prints the path and the timestamp under the Persona's name.
+
+The name comes from the document's first level-one heading (or the filename, when it has none)
+and the description from the paragraph under it - the same rule the built-ins and **Import .md**
+use, so one document arrives under one name however it got here.
+
+The path is refused, by name, when it is not absolute, when nothing is there, when it is not a
+regular file, when it is not valid UTF-8 or contains NUL bytes, or when it is larger than the
+100,000-byte guidance limit. An oversized file is **refused rather than truncated**: a Persona
+carrying a prefix of its source would still be a valid reviewer while judging with less
+authority than the document it names.
+
+#### Upstream changes
+
+Source files move on - a plugin upgrade, a `git pull`. Mission Control re-reads every imported
+Persona's source when an authoring surface opens and when you press **Check upstream**, hashes
+what it finds, and compares it with the hash recorded at import. Nothing is watched or polled in
+the background, and nothing is ever adopted automatically.
+
+A Persona whose source has changed is tagged `upstream changed` in the Persona list and on its
+Library card, and its editor says so. One whose source cannot be read at all - deleted, moved,
+replaced by a directory, grown past the limit - is tagged `source missing`. In both cases the
+**stored guidance is unchanged and is still exactly what runs**.
+
+**Re-import from source** adopts the file's current text as a new revision through the same
+compare-and-swap as any other save, so a re-import from a stale tab is refused rather than
+overwriting whatever landed first. It replaces the guidance and the provenance record; the name
+and description stay yours, because you may have edited them and because a heading that now
+collides with another Persona would otherwise make the change impossible to adopt at all.
+
+Published workflow versions and ensemble evaluations are untouched by all of this. A published
+version carries its own copy of the guidance it was published with, exactly as it does for an
+edited or archived Persona (see
+[Workflow drafts and published versions](#workflow-drafts-and-published-versions)), so an upstream
+edit can never change what a judge already scored with. Adopting drift into a workflow is two
+deliberate steps: re-import, then publish a new version.
+
+Re-import is refused for a built-in, for an archived Persona, and for one that was authored in
+the editor rather than imported - there is no source file to re-read, and the refusal says so.
+
+The motivating source for this is [UpstartClaw](https://github.com/teamupstart/claude-code-extensions)'s
+`agent-team` role documents (Reviewer, Tester, and the rest), which are shaped as
+persona-plus-DO/DON'T contracts and read as review roles almost unchanged. Point **Import from
+path** at one inside the installed plugin, for example
+`~/.claude/plugins/.../plugins/agent-team/references/roles/reviewer.md`, and the Persona records
+the plugin version it was adapted from. When the plugin is upgraded, the badge appears and the
+diff is yours to adopt. None of those documents are copied into this repository: they are the
+plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 

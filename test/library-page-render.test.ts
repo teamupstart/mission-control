@@ -221,3 +221,29 @@ test("the card model sorts by name and never invents a description", () => {
   assert.match(page({ personas: [persona({ description: "" })] }), /No description/);
   assert.equal(actionCards([action()])[0]?.fact, "Skill · pull-request · Pull request is opened and verified");
 });
+
+// A drifted source file is a DURABLE fact about the asset - it stays drifted until a human
+// adopts it - so it belongs on a card tag rather than on the runs page with the live state.
+test("a reviewer card is tagged when its imported source file has moved on", () => {
+  const imported = persona({ id: "p-imported", name: "Reviewer", normalizedName: "reviewer", builtin: false });
+  const untagged = personaCards([imported]);
+  assert.deepEqual(untagged[0]?.tags, [], "no check has been made, so the card claims nothing");
+
+  const tagged = personaCards([imported], new Map([["p-imported", "changed"]]));
+  assert.deepEqual(tagged[0]?.tags, [{ label: "upstream changed", tone: "attention" }]);
+  assert.deepEqual(
+    personaCards([imported], new Map([["p-imported", "missing"]]))[0]?.tags,
+    [{ label: "source missing", tone: "attention" }],
+  );
+  assert.deepEqual(personaCards([imported], new Map([["p-imported", "current"]]))[0]?.tags, []);
+
+  // Beside the built-in tag rather than replacing it: the two say different things.
+  assert.deepEqual(
+    personaCards([persona({ id: "p-1" })], new Map([["p-1", "changed"]]))[0]?.tags,
+    [{ label: "built-in", tone: "builtin" }, { label: "upstream changed", tone: "attention" }],
+  );
+  assert.match(
+    page({ personas: [imported], personaUpstream: new Map([["p-imported", "changed"]]) }),
+    /upstream changed/,
+  );
+});

@@ -1,4 +1,5 @@
 import type {
+  WorkflowBindingState,
   WorkflowDelivery,
   WorkflowRunDetail,
 } from "@shared/workflow.ts";
@@ -308,12 +309,19 @@ export interface RunNextMove {
     | "resubmit-unchanged"
     | "prepare-pr"
     | "recheck-inspector"
-    | "retry";
+    | "retry"
+    | "run-again";
   label: string;
   tooltip: string;
-  /** The POST path, run id already interpolated. */
+  /**
+   * The POST path, its id already interpolated.
+   *
+   * A FULL path rather than an action name, because `run-again` is keyed by the BINDING and
+   * every other arm by the run. One descriptor that can only spell one route would have made
+   * the terminal arm a second derivation.
+   */
   path: string;
-  /** Everything the route needs beyond `requestId`. Empty for three of the five. */
+  /** Everything the route needs beyond `requestId`. Empty for five of the six. */
   body: Record<string, string | boolean>;
   /** `null` fires immediately; a move that spends a round warns first. */
   confirm: WorkflowConfirmDescriptor | null;
@@ -376,13 +384,84 @@ function liveInspectorRepair(detail: WorkflowRunDetail): boolean {
   return orderedSubmissions(detail).at(-1)?.mode === "inspector_only";
 }
 
+/**
+ * The one thing a FINISHED run can still do: review the same session again.
+ *
+ * This closed the page's largest dead end. A `completed`, `cancelled` or `failed` run used to
+ * render six controls and not one of them ran anything - a review that had finished was the end
+ * of the road, with no path back to reviewing that session from anywhere in the product.
+ *
+ * It needs no new route, and the daemon proves it rather than this comment: `activeRunForBinding`
+ * defines "open" by SQL exclusion of exactly the three terminal statuses, so the `run_active`
+ * refusal stops firing the moment the prior run finishes; nothing in the completion path writes
+ * `workflow_bindings.state`, so the binding is still `active`; and the only per-submission guard
+ * is the `requestId`-derived trigger key, which is idempotency rather than exclusivity.
+ *
+ * Two asymmetries live here and nowhere else in this function, both deliberate:
+ *
+ *  - It is keyed by `detail.binding.id`, not by the run. A run is a thing that happened; only
+ *    the binding can start another one.
+ *  - Its success lands the reader on a DIFFERENT run, so the caller routes rather than reloads.
+ */
+function runAgainMove(detail: WorkflowRunDetail, preview: boolean): RunNextMove | null {
+  /*
+   * The manager's refusals, in `prepareSubmit`'s own order. Where either holds, the move is
+   * `null` and `runNoMoveReason` turns it into the sentence - never a disabled button.
+   *
+   * The one refusal not mirrored here is `run_active`, and it cannot be: run detail carries no
+   * sibling runs, so a page reading an OLDER terminal run of a binding that has since started
+   * another has no way to know. That is the one path to a 409, it needs two runs of one binding
+   * to reach, and the daemon's own sentence is what the page then shows.
+   */
+  if (detail.binding.state !== "active") return null;
+  if (detail.externalSource) return null;
+
+  /*
+   * WHICH version runs again, and why the copy has to be careful about it.
+   *
+   * The submit route runs the version the BINDING points at now, which is not necessarily the
+   * one this run used - rebinding the same session to a newer published version leaves this
+   * finished run pinned to the old one. The number of the new one is not on the wire (the
+   * binding carries a version id, and `detail.version` is the RUN's version), so where they
+   * disagree the confirm says so instead of naming a version that would not run. A button that
+   * spends model tokens must not name the wrong workflow version while doing it.
+   */
+  const rebound = detail.binding.workflowVersionId !== detail.run.workflowVersionId;
+  const session = detail.binding.sessionName;
+  const version = `${detail.summary.workflowName} v${detail.summary.workflowVersion}`;
+  const body = rebound
+    ? `${session} is bound to a different published version than the ${version} this run used,`
+      + " so the new run uses the bound one. It reads that session's current diff and"
+      + " transcript, starts a NEW run and spends model tokens; this finished run stays in"
+      + " history."
+    : `This reads ${session}'s current diff and transcript, then runs every reviewer in`
+      + ` ${version} against that fresh evidence. It starts a NEW run and spends model tokens;`
+      + " this finished run stays in history.";
+  return {
+    id: "run-again",
+    kind: "run-again",
+    label: preview ? "Preview this review again" : "Run this review again",
+    tooltip: "Capture fresh evidence from the session and start a new run of this workflow",
+    path: `/api/workflow-bindings/${encodeURIComponent(detail.binding.id)}/submit`,
+    body: {},
+    // Confirmed, because it spends model tokens and creates a run. NOT phrase-gated: the
+    // phrase exists for the two actions that abandon work, and this one only adds.
+    confirm: {
+      title: preview ? "Preview this review again" : "Run this review again",
+      body,
+      confirmLabel: preview ? "Preview again" : "Run again",
+      confirmHint: "Starts a new run against the same session",
+    },
+  };
+}
+
 export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
   const { status, currentPhase } = detail.run;
   const preview = detail.binding.deliveryMode !== "live";
 
-  // Terminal. `Run this review again` is the next phase's arm on this same function; it is not
-  // a second derivation and not a bespoke button.
-  if (!workflowRunIsOpen(status)) return null;
+  // Terminal. The one arm that STARTS a run rather than advancing one, and an arm on this same
+  // function rather than a second derivation or a bespoke button.
+  if (!workflowRunIsOpen(status)) return runAgainMove(detail, preview);
 
   // In flight. The pipeline strip below is already saying what is happening, and a run that is
   // moving does not need a button telling you to wait.
@@ -555,6 +634,36 @@ const NO_MOVE_SENTENCES: Record<string, RunNoMoveReason> = {
 };
 
 /**
+ * Why a finished run cannot be run again, per binding state.
+ *
+ * Exhaustive over the union minus `active` rather than one lumped sentence, because the three
+ * are three different situations and only one of them is "the session is gone". A fourth binding
+ * state fails to compile here, which is the point of spelling the type out.
+ *
+ * `resubmitAvailability` lumps all three into "the bound session is gone" for an OPEN run, and
+ * that stays its wording: there the move being refused is another round of a run in progress,
+ * and Cancel run is the sentence's companion. Here the run is over and there is nothing to
+ * cancel, so the sentence's job is to name what would make another run possible.
+ */
+const NO_RERUN_SENTENCES: Record<Exclude<WorkflowBindingState, "active">, RunNoMoveReason> = {
+  orphaned: {
+    cause: "The session this review ran against is gone,",
+    consequence: "so it cannot be run again from here. Its evidence and verdicts stay in"
+      + " history.",
+  },
+  paused: {
+    cause: "This review's binding is paused,",
+    consequence: "so it cannot be run again from here. Reattaching the workflow to the session"
+      + " is what starts another run.",
+  },
+  archived: {
+    cause: "This review's binding was archived,",
+    consequence: "so it cannot be run again from here. Binding the workflow to a session again"
+      + " is what starts another run.",
+  },
+};
+
+/**
  * The sentence a run with no move puts in front of the reader, or `null`.
  *
  * Never a disabled button standing in for an explanation, and never a sentence competing with a
@@ -565,10 +674,31 @@ export function runNoMoveReason(detail: WorkflowRunDetail): RunNoMoveReason | nu
   if (runNextMove(detail) !== null) return null;
   const { status, currentPhase } = detail.run;
 
-  // A finished run needs no explanation, and a moving one is explained by the strip below.
+  /*
+   * A finished run explains itself only when it cannot be RUN AGAIN.
+   *
+   * With an active binding it always can, so this is unreachable for the healthy case: the guard
+   * above has already returned `null` because `runAgainMove` produced the primary. What is left
+   * is the finished run whose binding has since gone, and it earns a sentence for the same
+   * reason a blocked one does - the reader is looking for the button the plan promised and it is
+   * not there.
+   */
+  if (!workflowRunIsOpen(status)) {
+    if (detail.externalSource) {
+      return {
+        cause: "An external orchestrator started this run,",
+        consequence: "so starting another one is its call rather than this page's. Its"
+          + " provenance is named just below.",
+      };
+    }
+    return detail.binding.state === "active"
+      ? null
+      : NO_RERUN_SENTENCES[detail.binding.state];
+  }
+
+  // A moving run is explained by the strip below it, not by a paragraph telling you to wait.
   if (
-    !workflowRunIsOpen(status)
-    || status === "capturing"
+    status === "capturing"
     || status === "running"
     || status === "waiting_for_action"
   ) return null;

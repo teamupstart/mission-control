@@ -447,8 +447,9 @@ export function WorkflowRunView({
    * this header offers, so the host wires one callback rather than one per control.
    *
    * The descriptor carries its own `path` and `body`, so the host sends it uniformly through the
-   * shared action store; the resubmission family is the one arm it routes elsewhere, because the
-   * page owns the remembered request id that keeps an unchanged resubmit inside its round.
+   * shared action store. Two arms need more than that and the host owns both: the resubmission
+   * family, because the page resolves the request id that keeps an unchanged resubmit inside its
+   * round, and `run-again`, because the run it creates is a different one to route to.
    */
   onNextMove?: (move: RunNextMove) => void;
   onCancel: () => Promise<void>;
@@ -1945,6 +1946,38 @@ export function WorkflowRuns({
             onNextMove={(move) => {
               if (move.kind === "resubmit" || move.kind === "resubmit-unchanged") {
                 void resubmit(move.kind === "resubmit-unchanged");
+                return;
+              }
+              /*
+               * The only move whose success lands on a DIFFERENT run.
+               *
+               * Every other arm advances the run being read, so settling it means reloading this
+               * page. This one asks the BINDING for a new run, so the run it returns is the one
+               * the reader now wants: staying put would leave them on the finished run they just
+               * asked to repeat, watching nothing happen.
+               *
+               * Through the shared store like every other arm, and not for symmetry - it is what
+               * retains the request id across a failed response. A network error here with a
+               * fresh id per click is how one intent becomes two runs and two rounds of model
+               * spend; replaying the same id is answered idempotently with the run already made.
+               * `run_active` and `inactive_binding` cannot be ruled out from run detail alone
+               * (it carries no sibling runs), and they surface as the daemon's own sentence on
+               * the page's error line.
+               *
+               * `onSelectRun` rather than a hash write: it is the router's own entry point, so
+               * this leaves a history step back to the finished run and honours the same
+               * navigation gate every other move on this page does.
+               */
+              if (move.kind === "run-again") {
+                actionController.run(move.id, async (requestId) => {
+                  // `idempotent: true` arrives on a replay and is not an error - the run in the
+                  // body is the one this intent made, so it is the one to open.
+                  const started = await workflowRequest<{ run: { id: string } }>(move.path, {
+                    method: "POST",
+                    body: JSON.stringify({ requestId, ...move.body }),
+                  });
+                  onSelectRun(started.run.id);
+                });
                 return;
               }
               actionController.run(move.id, (requestId) =>

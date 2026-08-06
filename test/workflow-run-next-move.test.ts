@@ -56,6 +56,13 @@ interface Shape {
   inspectorOnly?: boolean;
   /** The newest submission's own status and idempotency key, for the replay derivation. */
   submissionStatus?: string;
+  /**
+   * The version the BINDING points at now, when it is no longer the one this run used.
+   *
+   * Rebinding the same session to a newer published version leaves a finished run pinned to
+   * the old one, and the rerun submits the bound one - so the confirm has to say which.
+   */
+  boundVersionId?: string;
   triggerSource?: string;
   triggerKey?: string;
   gate?: { waitReason: WorkflowGateWaitReason | null; prUrl?: string | null } | null;
@@ -80,6 +87,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
     submissionStatus = "running",
     triggerSource = "manual",
     triggerKey = manualWorkflowTriggerKey("binding", "request-1"),
+    boundVersionId = "version",
   } = shape;
   const inspectorGate: WorkflowInspectorGateDetail | null = gate
     ? {
@@ -101,9 +109,18 @@ function detailFor(shape: Shape): WorkflowRunDetail {
       }
     : null;
   return {
-    summary: { id: "run", status, phase, round, maxRepairRounds },
+    summary: {
+      id: "run",
+      status,
+      phase,
+      round,
+      maxRepairRounds,
+      workflowName: "Release review",
+      workflowVersion: 2,
+    },
     binding: {
       id: "binding",
+      workflowVersionId: boundVersionId,
       deliveryMode: live ? "live" : "preview",
       state: bindingState,
       sessionId: bindingState === "active" ? "session" : null,
@@ -114,7 +131,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
         ? { kind: "inspector", onFindings: "restart_workflow", missingPrAction }
         : { kind: "none" },
     } as WorkflowVersion,
-    run: { id: "run", status, currentPhase: phase },
+    run: { id: "run", status, currentPhase: phase, workflowVersionId: "version" },
     submissions: [{
       id: "submission",
       round,
@@ -152,11 +169,93 @@ test("a run in flight is explained by its own progress, not by a button", () => 
   }
 });
 
-test("a terminal run has no move in this phase, and needs no sentence", () => {
+/**
+ * The plan's largest functional gap: a finished run that could not be run again.
+ *
+ * Every terminal status reaches the same arm, and it is the one move keyed by the BINDING rather
+ * than the run - a run is a thing that happened, and only the binding can start another. The path
+ * assertion is the regression guard against copying the resubmission's shape: a
+ * `/api/workflow-runs/{id}/resubmit` here would be sent at a route that refuses a terminal run,
+ * and both spellings look equally plausible in a diff.
+ */
+test("every terminal status offers the rerun, keyed by the binding rather than the run", () => {
   for (const status of ["completed", "cancelled", "failed"] as const) {
-    assert.equal(moveOf({ status }), null);
-    assert.equal(runNoMoveReason(detailFor({ status })), null);
+    const detail = detailFor({ status, live: true });
+    const move = runNextMove(detail);
+    assert.ok(move, `${status} must offer a move`);
+    assert.equal(move.kind, "run-again");
+    assert.equal(move.label, "Run this review again");
+    assert.equal(move.path, "/api/workflow-bindings/binding/submit");
+    assert.doesNotMatch(move.path, /\/api\/workflow-runs\//, `${status} sent a run-keyed path`);
+    assert.deepEqual(move.body, {});
+    // Confirmed, because it captures fresh evidence and spends model tokens. NOT phrase-gated:
+    // the typed phrase exists for the two actions that abandon work, and this one only adds.
+    assert.ok(move.confirm, `${status} must confirm before spending tokens`);
+    assert.equal(move.confirm.requirePhrase, undefined);
+    assert.match(move.confirm.body, /spends model tokens/);
+    assert.match(move.confirm.body, /starts a NEW run/i);
+    // Named in the reader's terms: which workflow, which version, which session.
+    assert.match(move.confirm.body, /Release review v2/);
+    assert.match(move.confirm.body, /Fix the diff link/);
+    // A move and a sentence never sit together, terminal runs included.
+    assert.equal(runNoMoveReason(detail), null, `${status} must not also explain itself`);
   }
+});
+
+/** A bound preview must never invite an operator to a live submission, here as anywhere. */
+test("a finished preview offers to preview again, not to run", () => {
+  assert.deepEqual(
+    moveOf({ status: "completed" }),
+    { kind: "run-again", label: "Preview this review again" },
+  );
+});
+
+/**
+ * WHICH version the rerun would actually run.
+ *
+ * The submit route runs the version the binding points at NOW. Rebinding the same session to a
+ * newer published version leaves this finished run pinned to the old one, so naming this run's
+ * `v2` in the confirm would be a promise the route does not keep - and this is a button that
+ * spends model tokens while making it.
+ */
+test("a rebound session's rerun says the bound version is not this run's", () => {
+  const move = runNextMove(detailFor({ status: "completed", boundVersionId: "version-9" }));
+  assert.match(
+    move?.confirm?.body ?? "",
+    /bound to a different published version than the Release review v2 this run used/,
+  );
+  assert.match(move?.confirm?.body ?? "", /the new run uses the bound one/);
+});
+
+/**
+ * A finished run whose binding has gone is the one terminal state with no move, so it takes the
+ * same treatment every other no-move state does: a sentence naming what would make another run
+ * possible. Three states, three sentences, because "paused" and "the session is gone" are not
+ * the same situation and a reader who is told the wrong one goes looking in the wrong place.
+ */
+test("a finished run whose binding has gone says so rather than offering a dead rerun", () => {
+  const rows: [WorkflowBindingState, RegExp][] = [
+    ["orphaned", /^The session this review ran against is gone,$/],
+    ["paused", /^This review's binding is paused,$/],
+    ["archived", /^This review's binding was archived,$/],
+  ];
+  for (const [bindingState, cause] of rows) {
+    const detail = detailFor({ status: "completed", bindingState });
+    assert.equal(runNextMove(detail), null, `a ${bindingState} binding must offer no rerun`);
+    const reason = runNoMoveReason(detail);
+    assert.match(reason?.cause ?? "", cause, `a ${bindingState} binding must say why`);
+    assert.match(reason?.consequence ?? "", /cannot be run again from here/);
+  }
+});
+
+/** The orchestrator that filed the run owns the next one, and the page says so. */
+test("an externally sourced finished run leaves the next one to its orchestrator", () => {
+  const detail = detailFor({ status: "failed", externalSource: true });
+  assert.equal(runNextMove(detail), null);
+  assert.equal(
+    runNoMoveReason(detail)?.cause,
+    "An external orchestrator started this run,",
+  );
 });
 
 test("a waiting run resumes the review, in the binding's own voice", () => {
@@ -532,7 +631,16 @@ test("every move the table can produce is a sendable POST, and never sits beside
           );
           if (!move) continue;
           moves += 1;
-          assert.match(move.path, /^\/api\/workflow-runs\/run\/[a-z-]+$/, `${status}/${phase}`);
+          // Two route shapes and no third: every arm advances the RUN, except the rerun, which
+          // asks the BINDING for a new one. Both are POSTs the action store can dispatch, and a
+          // navigation descriptor would match neither.
+          assert.match(
+            move.path,
+            move.kind === "run-again"
+              ? /^\/api\/workflow-bindings\/binding\/submit$/
+              : /^\/api\/workflow-runs\/run\/[a-z-]+$/,
+            `${status}/${phase}`,
+          );
           assert.ok(move.label.length > 0, `${status}/${phase} has an empty label`);
           assert.ok(move.tooltip.length > 0, `${status}/${phase} has an empty tooltip`);
           assert.ok(move.id.length > 0, `${status}/${phase} has an empty action id`);

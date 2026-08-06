@@ -757,6 +757,54 @@ test("a running run offers no primary and no sentence", () => {
   assert.doesNotMatch(header, /wf-run-why/);
 });
 
+/**
+ * A finished run was the page's dead end: six controls and not one of them ran anything.
+ *
+ * Cancel run is correctly absent here - there is nothing left to stop - which is exactly what
+ * left a completed run with no run-affecting control at all. The primary is the one thing a
+ * finished run can still do, and it is the only one on this page keyed by the binding.
+ */
+function terminalDetail(): WorkflowRunDetail {
+  const base = runningDetail();
+  return {
+    ...base,
+    summary: { ...base.summary, status: "completed" },
+    run: { ...base.run, status: "completed", currentPhase: "completed", completedAt: 12 },
+  };
+}
+
+test("a finished run offers the rerun as its one primary, with no cancel to stop", () => {
+  const header = headerOf(render(terminalDetail()));
+  // The fixture binds a preview, so the label is the preview branch - a bound preview must never
+  // invite an operator to a live submission.
+  assert.match(header, /class="btn btn-primary"[^>]*>Preview this review again</);
+  assert.equal((header.match(/btn-primary/g) ?? []).length, 1);
+  assert.match(header, /Copy feedback/);
+  // Nothing to cancel, and nothing to explain: the move IS the explanation.
+  assert.doesNotMatch(header, /Cancel run/);
+  assert.doesNotMatch(header, /wf-run-why/);
+  assert.ok(
+    tooltipLabels(render(terminalDetail()))
+      .some((label) => label.includes("Capture fresh evidence from the session")),
+    "the rerun must say what it captures",
+  );
+});
+
+/** The binding is what starts another run, so a finished run without one says what would. */
+test("a finished run whose binding was orphaned explains itself instead", () => {
+  const base = terminalDetail();
+  const header = headerOf(render({
+    ...base,
+    binding: { ...base.binding, state: "orphaned", sessionId: null },
+  }));
+  assert.match(
+    header,
+    /<p class="wf-run-why"><b>The session this review ran against is gone,<\/b> so it cannot be run again from here\./,
+  );
+  assert.doesNotMatch(header, /btn-primary/);
+  assert.doesNotMatch(header, /review again/);
+});
+
 test("a live delivery keeps every recovery control and says what each state means", () => {
   const base = runningDetail();
   const html = render({

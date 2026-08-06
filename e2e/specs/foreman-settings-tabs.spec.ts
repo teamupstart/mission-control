@@ -1,7 +1,8 @@
-import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 
 const GROUPS = ["Posture", "Models", "Launches", "Safety"] as const;
 
@@ -77,8 +78,9 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
 
   await tab(dashboard, "Models").click();
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.locator(".settings-section.sc-section").screenshot({
-      path: fileURLToPath(new URL("../evidence/foreman-settings-tabs.png", import.meta.url)),
+      path: `${EVIDENCE}foreman-settings-tabs.png`,
     });
   }
 });
@@ -161,3 +163,4 @@ test("Live repositories is a read-only count that links to the separate Trust ed
   await expect(dashboard.getByRole("table", { name: "Repository trust grants" })).toBeVisible();
   await expect(dashboard.getByPlaceholder("search repos or type a path…")).toBeVisible();
 });
+const EVIDENCE = artifactsDir("foreman-settings-tabs");

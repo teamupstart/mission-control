@@ -1,10 +1,10 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -24,7 +24,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * conversation underneath.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/topbar-one-row/", import.meta.url));
+const EVIDENCE = artifactsDir("topbar-one-row");
 
 /** The daemon's loopback token, which the cost ingest route requires. */
 function token(daemon: DaemonHandle): string {

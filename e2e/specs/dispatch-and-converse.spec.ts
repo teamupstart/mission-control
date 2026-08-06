@@ -1,11 +1,11 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
 
@@ -27,20 +27,20 @@ import { settled } from "../fixtures/settle.ts";
  */
 
 const TASK = "write a haiku about flexbox";
-const FOREMAN_EVIDENCE = fileURLToPath(
-  new URL("../../docs/evidence/foreman-pr-follow-through/", import.meta.url),
-);
+const FOREMAN_EVIDENCE = artifactsDir("foreman-pr-follow-through");
+const EVIDENCE = artifactsDir("dispatch-and-converse");
 
 async function captureForemanEvidence(
   popover: ReturnType<Page["getByRole"]>,
 ): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  mkdirSync(FOREMAN_EVIDENCE, { recursive: true });
 
   console.log("OBSERVED Foreman Then exposes Ask and Straight to PR, with no automatic review option");
   console.log("OBSERVED review-comment and CI follow-through are separate checked controls");
   console.log("OBSERVED the CI control says it does not create a PR and requires one to exist");
   await popover.screenshot({ path: join(FOREMAN_EVIDENCE, "foreman-settings.png") });
-  console.log("CAPTURED docs/evidence/foreman-pr-follow-through/foreman-settings.png");
+  console.log("CAPTURED e2e/.artifacts/foreman-pr-follow-through/foreman-settings.png");
 
   // The workflow evidence packet can name a binary PNG but cannot display its pixels. Serialize
   // the exact asserted browser DOM beside it and link the dashboard's real stylesheet, giving the
@@ -102,7 +102,7 @@ async function captureForemanEvidence(
 </html>
 `;
   writeFileSync(join(FOREMAN_EVIDENCE, "foreman-settings.html"), renderedHtml);
-  console.log("CAPTURED docs/evidence/foreman-pr-follow-through/foreman-settings.html");
+  console.log("CAPTURED e2e/.artifacts/foreman-pr-follow-through/foreman-settings.html");
 }
 
 async function api<T>(
@@ -216,9 +216,9 @@ test("Complete closes promptly while an accepted SDK stop drains", async ({ dash
   if (process.env.MC_E2E_EVIDENCE) {
     console.log("OBSERVED Complete closed while the accepted SDK stop was still draining");
     await card.screenshot({
-      path: fileURLToPath(new URL("../evidence/complete-stopping-state.png", import.meta.url)),
+      path: `${EVIDENCE}complete-stopping-state.png`,
     });
-    console.log("CAPTURED e2e/evidence/complete-stopping-state.png");
+    console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/complete-stopping-state.png");
   }
   await expect(card).toContainText("exited", { timeout: 10_000 });
 });
@@ -300,12 +300,13 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   // only on failure, which means a green run leaves nothing a reviewer can look at - and
   // "the conversation renders" is a claim that deserves to be seen rather than read.
   //
-  // Behind an env flag, and committed, because the alternative is a binary that changes on
+  // Behind an env flag, and gitignored, because the alternative is a binary that changes on
   // every run: the card carries a relative timestamp and a fresh worktree uuid, so an
   // unconditional capture would churn the repository for no added signal. Regenerate with
   // `MC_E2E_EVIDENCE=1 npm run test:e2e`. This follows the same shape as the `*-evidence`
-  // generators under `scripts/`, which also produce committed artifacts on demand.
+  // generators under `scripts/`, which also produce pull-request artifacts on demand.
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
     // The expanded card is a fixed-height box and its log scrolls, so a plain capture shows
     // only the last turn and a half. Unclip both FOR THE CAPTURE ONLY, so one image holds
     // all six turns. This changes nothing the test asserted - every expectation above has
@@ -320,7 +321,7 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
       }
     });
     await card.screenshot({
-      path: fileURLToPath(new URL("../evidence/conversation.png", import.meta.url)),
+      path: `${EVIDENCE}conversation.png`,
     });
   }
 });
@@ -379,13 +380,14 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   await expect(card.getByRole("button", { name: "Send direct PR instruction" })).toBeVisible();
 
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
     // eslint-disable-next-line no-console
     console.log('OBSERVED Ship it panel exposes "Run No-Mistakes Review" beside the direct shipping path');
     await card.screenshot({
-      path: fileURLToPath(new URL("../evidence/ship-it-review-control.png", import.meta.url)),
+      path: `${EVIDENCE}ship-it-review-control.png`,
     });
     // eslint-disable-next-line no-console
-    console.log("CAPTURED e2e/evidence/ship-it-review-control.png");
+    console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/ship-it-review-control.png");
   }
 
   const request = dashboard.waitForRequest((candidate) =>
@@ -400,6 +402,7 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   const sent = await request;
   expect(sent.postDataJSON()).toEqual({ requestId: expect.any(String) });
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
     // eslint-disable-next-line no-console
     console.log("OBSERVED POST /api/sessions/:id/workflow-review with a requestId");
   }
@@ -438,11 +441,11 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
       `OBSERVED Runs monitor selected the created No-Mistakes Review v${runVersion} run`,
     );
     await dashboard.screenshot({
-      path: fileURLToPath(new URL("../evidence/ship-it-review-run.png", import.meta.url)),
+      path: `${EVIDENCE}ship-it-review-run.png`,
       fullPage: true,
     });
     // eslint-disable-next-line no-console
-    console.log("CAPTURED e2e/evidence/ship-it-review-run.png");
+    console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/ship-it-review-run.png");
   }
 });
 

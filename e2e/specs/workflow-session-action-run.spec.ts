@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -29,9 +29,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const NODE = { session: "session-node", action: "action-node", end: "end-node" };
 const PROMPT = "# Tidy the workspace\n\nRemove the stray scratch file and say so.\n";
-const SHORTCUT_EVIDENCE = fileURLToPath(
-  new URL("../../docs/evidence/board-workflow-shortcut/", import.meta.url),
-);
+const SHORTCUT_EVIDENCE = artifactsDir("board-workflow-shortcut");
 
 /** Capture the two asserted Board states without rewriting evidence on an ordinary run. */
 async function captureBoardShortcut(page: Page, name: string): Promise<void> {
@@ -40,7 +38,7 @@ async function captureBoardShortcut(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${SHORTCUT_EVIDENCE}${name}.png`, fullPage: true });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/board-workflow-shortcut/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/board-workflow-shortcut/${name}.png`);
 }
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method?: string): Promise<T> {

@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -20,7 +20,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * form - `dispatch-and-converse.spec.ts` owns launching.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/library-cross-link/", import.meta.url));
+const EVIDENCE = artifactsDir("library-cross-link");
+const WORKFLOW_GRAPH_EVIDENCE = artifactsDir("workflow-graph");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -49,7 +50,7 @@ async function shoot(page: Page, name: string): Promise<void> {
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${EVIDENCE}${name}-${suffix}.png` });
     // eslint-disable-next-line no-console
-    console.log(`CAPTURED docs/evidence/library-cross-link/${name}-${suffix}.png`);
+  console.log(`CAPTURED e2e/.artifacts/library-cross-link/${name}-${suffix}.png`);
   }
   await page.setViewportSize(original);
   await page.waitForTimeout(150);
@@ -302,13 +303,14 @@ test("the built-in workflow graph fills the full builder canvas", async ({
   expect(geometry.bottomGap).toBeLessThanOrEqual(1);
 
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(WORKFLOW_GRAPH_EVIDENCE, { recursive: true });
     await dashboard.mouse.move(0, 0);
     await dashboard.screenshot({
-      path: fileURLToPath(new URL("../evidence/workflow-graph-full-canvas.png", import.meta.url)),
+      path: `${WORKFLOW_GRAPH_EVIDENCE}workflow-graph-full-canvas.png`,
       fullPage: true,
     });
     // eslint-disable-next-line no-console
-    console.log("CAPTURED e2e/evidence/workflow-graph-full-canvas.png");
+    console.log("CAPTURED e2e/.artifacts/workflow-graph/workflow-graph-full-canvas.png");
   }
 });
 

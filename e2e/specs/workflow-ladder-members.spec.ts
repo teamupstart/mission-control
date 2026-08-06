@@ -1,7 +1,8 @@
-import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -32,6 +33,7 @@ const REVIEWER = {
   evidence: "E2E evidence auditor",
   docs: "E2E docs steward",
 };
+const EVIDENCE = artifactsDir("workflow-ladder-members");
 
 const WORKFLOW = "E2E ladder members";
 
@@ -184,11 +186,12 @@ test("the Workflows tab names the reviewers that approved a passed stage", async
   await expect(dashboard.getByRole("button", { name: "Show full workflow" })).toHaveCount(0);
 
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.screenshot({
-      path: fileURLToPath(new URL("../evidence/workflow-ladder-members.png", import.meta.url)),
+      path: `${EVIDENCE}workflow-ladder-members.png`,
       fullPage: true,
     });
     // eslint-disable-next-line no-console
-    console.log("CAPTURED e2e/evidence/workflow-ladder-members.png");
+    console.log("CAPTURED e2e/.artifacts/workflow-ladder-members/workflow-ladder-members.png");
   }
 });

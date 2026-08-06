@@ -869,9 +869,8 @@ Claude's own submit path. If Claude has further questions, the next one takes th
 place and you answer it the same way; if its review tab reports a question still unanswered,
 the form is left up rather than sent half-filled.
 
-**An answered question stays in the conversation.** See the
-[runtime capture](docs/evidence/driver-question-in-conversation/README.md) for the form and
-the entry it leaves. Submitting an `AskUserQuestion` form on
+**An answered question stays in the conversation.** The original pull request includes a
+runtime capture of the form and the entry it leaves. Submitting an `AskUserQuestion` form on
 an Agent SDK session writes the same gold entry a review answer writes - the questions
 replayed with every option they offered, the ones you took marked, and any custom answer you
 typed - placed at the point in time you answered. Permission prompts, plan approvals and
@@ -948,8 +947,8 @@ time for the complete local instant with weekday, date, seconds, and timezone; t
 there rather than on every row, where it would repeat unchanged down a whole session. A
 transcript record with no timestamp shows none rather than inventing one; a folded run of
 tool calls shows when that run began. Inline Foreman entries use the same absolute clock,
-while the Foreman history drawer keeps its relative age. See the
-[runtime capture](docs/evidence/conversation-timestamps/README.md) for the rendered layout.
+while the Foreman history drawer keeps its relative age. The original pull request includes a
+runtime capture of the rendered layout.
 
 Four voices share the log, told apart by colour rather than by label alone: the agent's turns
 in its own harness accent, your typed replies in blue, Foreman's entries in purple, and - in
@@ -958,9 +957,8 @@ gold - the answers you gave its questions, whether it asked through the
 [own question form](#answer-a-sessions-menu-from-the-dashboard). The gold entries are
 not transcript turns; like Foreman's, they happened beside the conversation and are placed by
 when they happened, so an agent that blocked on a question for an hour shows your answer
-after the hour of work, not before it. See the
-[runtime capture](docs/evidence/review-answers-in-conversation/README.md) for how the four
-read against each other.
+after the hour of work, not before it. The original pull request includes a runtime capture of
+how the four read against each other.
 
 Scroll to the top of the log and the page above loads automatically, then the page above
 that, back to the session's first turn. **Load older messages** does the same on click,
@@ -1397,9 +1395,8 @@ how you were asked:
 | **A dismissal** | that you closed it without choosing, and nothing more |
 
 It is a record, not a control: nothing on it can be clicked, and a resolved review cannot be
-answered twice. See the
-[runtime capture](docs/evidence/review-answers-in-conversation/README.md) for both shapes
-rendered in a conversation, beside an ordinary user turn and a Foreman one.
+answered twice. The original pull request includes a runtime capture of both shapes rendered in
+a conversation, beside an ordinary user turn and a Foreman one.
 
 This exists because the answer had nowhere else to go. It reaches the agent as an MCP tool
 result, and a transcript turn that is purely a tool result is dropped by every harness parser
@@ -2531,9 +2528,8 @@ everything you author once and reuse, and **Runs** monitors live and finished wo
 Nothing on the Library runs - each shelf carries a single cross-link to where its assets are
 executing, and no live state beyond it. That link sits beside the shelf's question as a
 counted pill wearing a status dot: blue while work is merely open, amber when the count is
-one you have to answer. See the
-[runtime capture](docs/evidence/library-cross-link/README.md) for both the wide and the
-narrow layout.
+one you have to answer. The original pull request includes runtime captures of both the wide
+and narrow layouts.
 
 Switching primary pages changes only the dashboard body. The fleet header, live SSE
 connection, and Cards, Console, or Board selection stay mounted, so returning to **Fleet**
@@ -5223,8 +5219,7 @@ twice. Refreshing the file list invalidates the cached listing so the next reade
 and the previous one stays in force until the new one lands, rather than un-linking the
 open transcript while it is in flight.
 
-The click flow is captured end to end in
-[`docs/evidence/transcript-path-links/`](docs/evidence/transcript-path-links/README.md).
+The original pull request includes the end-to-end capture of this click flow.
 
 ## Tooltips
 

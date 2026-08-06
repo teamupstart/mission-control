@@ -30,13 +30,15 @@ npx playwright show-trace test-results/<dir>/trace.zip
 
 ## Evidence
 
-Successful-path artifacts are committed where reviewers need to inspect the rendered state
-because a green Playwright run leaves nothing behind on its own: `screenshot`, `video` and
-`trace` are all configured `on-failure`, so success is exactly the case with no record.
+Successful-path artifacts go to gitignored `e2e/.artifacts/<topic>/` because a green Playwright
+run leaves nothing behind on its own: `screenshot`, `video` and `trace` are all configured
+`on-failure`, so success is exactly the case with no record. Attach the generated screenshots
+and transcripts to the pull request. Never commit them, including evidence produced for or
+submitted to workflow personas.
 
 ### Full workflow graph canvas
 
-[`evidence/workflow-graph-full-canvas.png`](evidence/workflow-graph-full-canvas.png) is captured
+`e2e/.artifacts/workflow-graph/workflow-graph-full-canvas.png` is captured
 by the Library regression after it opens the built-in No-Mistakes Review workflow, switches to
 Graph, and proves the React Flow viewport fills the builder canvas. The fixed 1682 by 1100
 viewport makes the repaired working surface reviewer-visible at the scale where the defect was
@@ -54,7 +56,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### Sibling links in the HTML preview
 
-[`evidence/preview-sibling-link.png`](evidence/preview-sibling-link.png) is captured after
+`e2e/.artifacts/preview-sibling-links/preview-sibling-link.png` is captured after
 the sibling-link regression clicks `<a href="b.html">` inside the sandboxed preview of
 `docs/a.html`: the sibling document is rendered in the preview pane and the file list's
 selection has followed it. Before the fix this exact click left a white pane - the srcdoc
@@ -73,7 +75,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### A spent Foreman note retiring itself
 
-[`docs/evidence/foreman-note-retires-on-your-answer/`](../docs/evidence/foreman-note-retires-on-your-answer/)
+`e2e/.artifacts/foreman-note-retires-on-your-answer/`
 holds two before/after pairs from the run that asserts answering an ask retires the Foreman
 note pinned on it - one pair for the driver form, one for the MCP review channel. The bug was
 reported as a screenshot of a stale `SUGGESTED ANSWER` banner, so the frames answer it in the
@@ -83,7 +85,7 @@ explicit about the two pre-existing warts the frames also happen to show.
 
 ### Per-harness dispatch defaults propagating
 
-[`docs/evidence/harness-defaults-propagate/`](../docs/evidence/harness-defaults-propagate/)
+`e2e/.artifacts/harness-defaults-propagate/`
 holds two captures from the run that asserts a saved per-harness model takes effect without a
 restart. `harnesses-card-saved.png` is the Claude Code card after the edit, with its own
 sentence naming the flag the next launch carries (`--model claude-sonnet-5`).
@@ -101,7 +103,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### Foreman PR follow-through
 
-[`docs/evidence/foreman-pr-follow-through/`](../docs/evidence/foreman-pr-follow-through/)
+`e2e/.artifacts/foreman-pr-follow-through/`
 contains PNG and reviewer-renderable HTML captures of the asserted built-dashboard Foreman
 settings, plus the focused browser and behavior transcripts. The visual shows that automatic
 No-Mistakes review is absent, Straight to PR is bounded by Workflow ownership, and CI
@@ -115,9 +117,9 @@ The focused Complete case keeps its fake SDK subprocess alive for four seconds a
 accepted. It verifies the Complete modal closes within 1.5 seconds, the retained session card
 reads `stopping` with its Complete action unavailable, and the card later reaches `exited`.
 
-The actual successful command output is committed as
-[`evidence/complete-stopping-transcript.txt`](evidence/complete-stopping-transcript.txt).
-[`evidence/complete-stopping-state.png`](evidence/complete-stopping-state.png) is the visual
+The successful command output belongs at
+`e2e/.artifacts/dispatch-and-converse/complete-stopping-transcript.txt`.
+`e2e/.artifacts/dispatch-and-converse/complete-stopping-state.png` is the visual
 capture from that same run and shows the session card while the SDK event stream is draining.
 
 Regenerate both with:
@@ -136,7 +138,7 @@ Actual output from the captured run:
 Running 1 test using 1 worker
 
 OBSERVED Complete closed while the accepted SDK stop was still draining
-CAPTURED e2e/evidence/complete-stopping-state.png
+CAPTURED e2e/.artifacts/dispatch-and-converse/complete-stopping-state.png
   ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:143:1 › Complete closes promptly while an accepted SDK stop drains (8.0s)
 
   1 passed (8.8s)
@@ -148,9 +150,9 @@ The focused bind-and-submit case holds evidence compaction open for five seconds
 `202 Accepted` response with a durable `capturing` run, follows the browser to that exact run,
 and verifies the visible run header says `Capturing evidence` before compaction finishes.
 
-The actual successful command output is committed as
-[`evidence/workflow-submit-accepted-transcript.txt`](evidence/workflow-submit-accepted-transcript.txt).
-[`evidence/workflow-submit-accepted.png`](evidence/workflow-submit-accepted.png) is the visual
+The successful command output belongs at
+`e2e/.artifacts/workflow-submit-accepted/workflow-submit-accepted-transcript.txt`.
+`e2e/.artifacts/workflow-submit-accepted/workflow-submit-accepted.png` is the visual
 capture from that same run and shows the selected run detail page in the capturing state.
 
 Regenerate both with:
@@ -169,7 +171,7 @@ Running 1 test using 1 worker
 
 OBSERVED bind-and-submit returned 202 with a durable capturing run
 OBSERVED the accepted run detail page says "Capturing evidence"
-CAPTURED e2e/evidence/workflow-submit-accepted.png
+CAPTURED e2e/.artifacts/workflow-submit-accepted/workflow-submit-accepted.png
   ✓  1 [chromium] › e2e/specs/workflow-submit-accepted.spec.ts:45:1 › Bind and submit opens the durable capturing run before compaction finishes (2.8s)
 
   1 passed (3.5s)
@@ -177,7 +179,7 @@ CAPTURED e2e/evidence/workflow-submit-accepted.png
 
 ### Continue in terminal carries the permission mode
 
-[`docs/evidence/resume-mode-carry/`](../docs/evidence/resume-mode-carry/) holds the paired
+`e2e/.artifacts/resume-mode-carry/` holds the paired
 red and green transcripts for `specs/continue-in-terminal-mode.spec.ts`, the two frames of
 the asserted browser state (the card's mode chip beside the open "resume this conversation
 in" chooser, per harness), and the real CLIs' own `--help` output for the flags the resume
@@ -194,7 +196,7 @@ terminal to run. The directory README records the regeneration commands.
 
 ### Board workflow shortcut
 
-[`docs/evidence/board-workflow-shortcut/`](../docs/evidence/board-workflow-shortcut/) contains
+`e2e/.artifacts/board-workflow-shortcut/` contains
 two full-Board captures from the same passing browser regression. `01-expanded.png` is taken
 after the selected card receives its first <kbd>e</kbd>: the full workflow ladder is visible,
 the control reads **Collapse workflow**, and the Board remains in overview mode. `02-collapsed.png`
@@ -213,7 +215,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### Reviewer verdicts lists reviewers only
 
-[`evidence/workflow-run-reviewer-verdicts.png`](evidence/workflow-run-reviewer-verdicts.png) is
+`e2e/.artifacts/workflow-run-reviewer-verdicts/workflow-run-reviewer-verdicts.png` is
 the run page of a completed two-reviewer run, captured by the regression that arrives at it from
 the session card's own `⌁ Approved` chip. Both reviewers are named with the verdict they gave, and
 the three structural attempts every graph produces - the Session, the all-pass join, the End - are
@@ -237,13 +239,13 @@ The focused browser case opens the session's Ship it choice, verifies the visibl
 for the matching durable run, opens that exact run in the dashboard, and verifies the run
 reader names `No-Mistakes Review`.
 
-The actual successful command output is committed as
-[`evidence/ship-it-review-transcript.txt`](evidence/ship-it-review-transcript.txt). Two runtime
+The successful command output belongs at
+`e2e/.artifacts/dispatch-and-converse/ship-it-review-transcript.txt`. Two runtime
 captures from that same command make both visible states reviewable:
 
-- [`evidence/ship-it-review-control.png`](evidence/ship-it-review-control.png) shows the Ship it
+- `e2e/.artifacts/dispatch-and-converse/ship-it-review-control.png` shows the Ship it
   panel with `Run No-Mistakes Review` next to the direct shipping path.
-- [`evidence/ship-it-review-run.png`](evidence/ship-it-review-run.png) shows the run created by
+- `e2e/.artifacts/dispatch-and-converse/ship-it-review-run.png` shows the run created by
   that click, selected in the Runs monitor with its workflow name, version, state, stages,
   evidence, model-call ledger, and timeline.
 
@@ -264,10 +266,10 @@ Actual output from the captured run:
 Running 1 test using 1 worker
 
 OBSERVED Ship it panel exposes "Run No-Mistakes Review" beside the direct shipping path
-CAPTURED e2e/evidence/ship-it-review-control.png
+CAPTURED e2e/.artifacts/dispatch-and-converse/ship-it-review-control.png
 OBSERVED POST /api/sessions/:id/workflow-review with a requestId
 OBSERVED Runs monitor selected the created No-Mistakes Review v8 run
-CAPTURED e2e/evidence/ship-it-review-run.png
+CAPTURED e2e/.artifacts/dispatch-and-converse/ship-it-review-run.png
   ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:157:1 › Ship it starts No-Mistakes Review through the workflow route (3.7s)
 
   1 passed (4.2s)
@@ -294,7 +296,7 @@ successful `npm run build` first.
 
 ### The conversation
 
-[`evidence/conversation.png`](evidence/conversation.png) is a capture from a green run: a
+`e2e/.artifacts/dispatch-and-converse/conversation.png` is a capture from a green run: a
 dispatched session's expanded conversation carrying the seeded dispatch turn plus the three
 messages the spec types and the three mocked replies that came back, with the `Agent SDK`
 runtime badge and the `Claude e2e Mock` model line the driver reported.
@@ -311,7 +313,7 @@ every run for no added signal.
 
 ### The agent's own question
 
-[`docs/evidence/driver-question-in-conversation/`](../docs/evidence/driver-question-in-conversation/)
+`e2e/.artifacts/driver-question-in-conversation/`
 carries the two frames `specs/driver-question-in-conversation.spec.ts` takes between its own
 assertions: the `AskUserQuestion` form an Agent SDK session raises, and the gold entry the
 answer leaves in that session's conversation.
@@ -329,7 +331,7 @@ MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
 
 ### Queued turn delivery
 
-[`docs/evidence/queued-turn-delivery/`](../docs/evidence/queued-turn-delivery/) carries the
+`e2e/.artifacts/queued-turn-delivery/` carries the
 frames `specs/queued-turn-delivery.spec.ts` takes between its own assertions, behind the same
 `MC_E2E_EVIDENCE` flag: a message queued against a working driver, and that same message
 delivered as an ordinary turn and answered once the session goes idle. The second frame is the
@@ -349,7 +351,7 @@ MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
 
 ### The Line
 
-[`docs/evidence/line-strip/`](../docs/evidence/line-strip/) carries three artifacts, and they
+`e2e/.artifacts/line-strip/` carries three artifacts, and they
 answer different questions. Two of them the spec writes itself under `MC_E2E_EVIDENCE`; the
 third is the run's stdout, which nothing writes to disk on its own - the command below
 redirects it, and that redirection is not optional.
@@ -360,7 +362,7 @@ task is filed, with the Backlog stage naming what autopilot would take next, and
 name, count and sentence, with the wire feeding it lit to match. "Amber when it needs the
 operator" is checkable in the DOM as a class name and readable as a strip only here.
 
-[`transcript.txt`](../docs/evidence/line-strip/transcript.txt) is the run's own verbatim
+`e2e/.artifacts/line-strip/transcript.txt` is the run's own verbatim
 stdout, and it exists because `2 passed` is a verdict rather than evidence: it says some
 assertions held, not that the strip rendered six stages, took an SSE update with no reload,
 went amber, and navigated on click. Each `OBSERVED` line is printed only after the assertion
@@ -376,12 +378,12 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/line-strip.spec.ts \
   --workers=1 --reporter=list \
-  | tee docs/evidence/line-strip/transcript.txt
+  | tee e2e/.artifacts/line-strip/transcript.txt
 ```
 
 Three parts of that are load-bearing. `MC_E2E_EVIDENCE` is what turns the screenshots and the
 `OBSERVED` lines on at all. `--workers=1` keeps the two tests' output from interleaving,
-which is what makes the committed transcript readable and stable between runs. And the `tee`
+which is what makes the pull-request transcript readable and stable between runs. And the `tee`
 is the only thing that produces `transcript.txt` - without it you regenerate two files out of
 three and the third silently keeps describing an older run.
 
@@ -392,9 +394,9 @@ Running 2 tests using 1 worker
 
 OBSERVED the strip rendered 6 stages in pipeline order: Intake -> Backlog -> Working -> Review -> Decide -> Shipped
 OBSERVED a filed backlog task reached the strip over SSE, no reload: Backlog 0 -> 1, "next up: Fix pane focus stealing"
-CAPTURED docs/evidence/line-strip/line-live.png
+CAPTURED e2e/.artifacts/line-strip/line-live.png
 OBSERVED parking that task turned Backlog amber (tone-attention), and it is the only amber stage
-CAPTURED docs/evidence/line-strip/line-attention.png
+CAPTURED e2e/.artifacts/line-strip/line-attention.png
 OBSERVED clicking the Shipped stage opened the Shipped drawer in place, without leaving #/fleet
 OBSERVED the drawer's "Ship log →" escalation navigated to #/shipped
 OBSERVED the strip is fleet-only: it did not follow the navigation off the fleet page
@@ -415,7 +417,7 @@ fleet when something finally navigates.
 
 ### The Line's drawers
 
-[`docs/evidence/line-drawers/`](../docs/evidence/line-drawers/) carries sixteen frames and the
+`e2e/.artifacts/line-drawers/` carries sixteen frames and the
 run's own stdout, written by `specs/line-drawers.spec.ts` under the same `MC_E2E_EVIDENCE`
 flag. The frames answer what only a picture can: `review-open.png` is a live run's ladder with
 the session card **below it at full size**, `board-pushed-down.png` and `board-returned.png`
@@ -461,7 +463,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/line-drawers.spec.ts \
   --workers=1 --reporter=list \
-  | tee docs/evidence/line-drawers/transcript.txt
+  | tee e2e/.artifacts/line-drawers/transcript.txt
 ```
 
 `--workers=1` keeps the twenty-one tests' output from interleaving, and the `tee` is the only
@@ -470,7 +472,7 @@ seventeen.
 
 ### The topbar's one row
 
-[`docs/evidence/topbar-one-row/`](../docs/evidence/topbar-one-row/) carries two frames of the
+`e2e/.artifacts/topbar-one-row/` carries two frames of the
 same bar, same fleet, same 1360px viewport, separated only by the commit: 113px on two rows,
 and 69px on one. `specs/topbar-one-row.spec.ts` asserts the row count in the DOM as a height,
 which is the honest check and is completely illegible as a title bar - these are what make it
@@ -492,7 +494,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### The everything-palette
 
-[`docs/evidence/palette/`](../docs/evidence/palette/) carries three frames and the run's own
+`e2e/.artifacts/palette/` carries three frames and the run's own
 stdout, written by `specs/palette.spec.ts` under the same `MC_E2E_EVIDENCE` flag.
 
 The frames answer what only a picture can. `palette-empty.png` is the palette before a letter
@@ -503,7 +505,7 @@ Settings, each row carrying a kind chip" is checkable in the DOM as a role and a
 legible as a palette only here. `palette-kind-filter.png` is the same query after one
 <kbd>Tab</kbd>: narrowed to a single kind, with the active filter named beside the caret.
 
-[`transcript.txt`](../docs/evidence/palette/transcript.txt) is the run's verbatim stdout, and
+`e2e/.artifacts/palette/transcript.txt` is the run's verbatim stdout, and
 it exists because `7 passed` is a verdict rather than evidence: it says some assertions held,
 not that ⌘K opened on five different pages, that a live run carried its status into the row,
 or that a setting row landed on its control rather than the top of its panel.
@@ -516,7 +518,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/palette.spec.ts \
   --workers=1 --reporter=list \
-  | tee docs/evidence/palette/transcript.txt
+  | tee e2e/.artifacts/palette/transcript.txt
 ```
 
 `--workers=1` keeps the seven tests' output from interleaving, and the `tee` is the only thing
@@ -524,7 +526,7 @@ that produces `transcript.txt`.
 
 ### Where the Inspector's brief lives
 
-[`docs/evidence/inspector-brief-location/`](../docs/evidence/inspector-brief-location/) carries
+`e2e/.artifacts/inspector-brief-location/` carries
 three frames from `specs/inspector-brief-location.spec.ts`, which asserts that the Inspector
 panel names both places a repo may keep its brief - `personas/INSPECTOR.md` first, a root
 `INSPECTOR.md` as the fallback - and that neither filename is split across lines.
@@ -553,7 +555,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### The run header, decluttered
 
-[`docs/evidence/workflow-run-audit/`](../docs/evidence/workflow-run-audit/) carries three frames
+`e2e/.artifacts/workflow-run-audit/` carries three frames
 from `specs/workflow-run-audit.spec.ts`, and they exist because the change is a SUBTRACTION.
 `toHaveCount(0)` proves `Copy run id`, `Export run`, `Export version` and `Open version` are
 unreachable; only a picture shows what the action row reads like without them, and that the `v1`

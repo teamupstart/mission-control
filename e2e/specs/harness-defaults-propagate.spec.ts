@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
  * INVESTIGATION SPEC - reproduces the reported "per-harness model changes are not taken
@@ -23,7 +23,7 @@ import { expect, test } from "../fixtures/test.ts";
 
 const CLAUDE_MODEL = "Default model for dispatched Claude Code sessions";
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/harness-defaults-propagate/", import.meta.url));
+const EVIDENCE = artifactsDir("harness-defaults-propagate");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -41,7 +41,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // oxlint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/harness-defaults-propagate/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/harness-defaults-propagate/${name}.png`);
 }
 
 test("a model just changed in Settings is not overwritten by an in-flight config poll", async ({

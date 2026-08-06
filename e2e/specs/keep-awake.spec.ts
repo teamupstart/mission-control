@@ -1,10 +1,10 @@
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -19,7 +19,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * only here can two browser windows be proven to converge on one truth without a reload.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/keep-awake/", import.meta.url));
+const EVIDENCE = artifactsDir("keep-awake");
 
 /** The records the fake caffeinate writes: argv at start, a reason at exit. */
 function records(daemon: DaemonHandle, kind: "start" | "exit"): { argv?: string[] }[] {

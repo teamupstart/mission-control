@@ -1,9 +1,9 @@
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -29,7 +29,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * that is the only thing separating Approve for me from Ask for approval.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/resume-mode-carry/", import.meta.url));
+const EVIDENCE = artifactsDir("resume-mode-carry");
 
 async function shoot(page: Page, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;

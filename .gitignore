@@ -13,3 +13,4 @@ release/
 test-results/
 playwright-report/
 e2e/.probe/
+e2e/.artifacts/

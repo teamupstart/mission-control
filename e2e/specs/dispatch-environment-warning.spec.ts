@@ -189,6 +189,30 @@ test("a leftover state file after an uninstall shows no note", async ({ dashboar
 });
 
 /**
+ * A state file the gate refuses still warns, however much it looks like a finished setup.
+ *
+ * `completed\r\n` - a file written with CRLF line endings - is the shape of this: UpstartClaw's
+ * `STATE=$(cat …)` strips the newline and leaves the carriage return, `case` matches the bare
+ * word, and the gate exits 2 on every core MCP call. A lenient comparison in the check would
+ * show the operator a clean dispatch form while their fleet stalls, which is the only direction
+ * of wrong this surface cannot afford. Driven here because silence is what a person would have
+ * seen, and silence is invisible in a unit assertion until someone thinks to look for it.
+ */
+test("a state file the gate refuses still warns, CRLF and all", async ({ dashboard, daemon }) => {
+  installPlugin(daemon);
+  writeState(daemon, "completed\r\n");
+
+  const dialog = await openDispatch(dashboard);
+  await expect(dialog.getByText(/UpstartClaw core setup/)).toBeVisible();
+  // Named as the malformed file it is - the operator's setup ran, and the fix is one character
+  // to delete rather than an hour of sign-in flows.
+  await expect(dialog.getByText(/whitespace/)).toBeVisible();
+  // And the evidence shows the invisible character rather than hiding it, which is the whole
+  // reason the detail line escapes what it prints.
+  await expect(dialog.getByText(/completed\\r/)).toBeVisible();
+});
+
+/**
  * A read that fails shows nothing, rather than the last answer or a broken form.
  *
  * The two failure shapes `fetchJson` folds into `null` are both driven here - a request that

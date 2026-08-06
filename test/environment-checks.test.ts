@@ -153,16 +153,67 @@ test("in_progress warns about an unfinished setup rather than a stall", async ()
 
 // The gate's `*` branch: anything it does not recognise exits 2, so an unexpected value is
 // the blocked case and not a state of its own. An empty file is the same story and is worth
-// pinning separately, because "" is the value a half-written file leaves behind.
+// pinning separately, because "" is the value a half-written file leaves behind. Whitespace
+// only is a third: the gate sees the spaces (substitution strips newlines and nothing else),
+// so the value is not empty and the detail must not claim it is.
 test("an unrecognised or empty state file is reported as the blocked case", async () => {
   for (const [value, detail] of [
     ["banana", `${STATE} reads "banana"`],
     ["", `${STATE} reads an empty file`],
-    ["   \n", `${STATE} reads an empty file`],
+    ["   \n", `${STATE} reads "   "`],
   ] as const) {
     const view = await claw({ files: { [STATE]: text(value) }, dirs: INSTALLED_LAYOUT });
     assert.match(view.warning ?? "", /stalls/, `${JSON.stringify(value)} should warn`);
     assert.equal(view.detail, detail);
+  }
+});
+
+// The comparison has to be the GATE'S, not a lenient one. `STATE=$(cat file)` strips trailing
+// newlines and nothing else, and `case "$STATE" in completed | in_progress)` forgives no
+// whitespace - so every value below is one the gate REFUSES with exit 2 while a `trim()` here
+// would have called the machine ready. That is the silent direction of wrong: the form says
+// everything is fine and the agent stalls on its first tool call.
+//
+// Each row was checked against a real shell before being written down.
+test("values the gate refuses are not excused by surrounding whitespace", async () => {
+  for (const value of [
+    " completed\n",
+    "completed \n",
+    "completed\t\n",
+    "completed\r\n", // a CRLF file: substitution leaves the carriage return behind
+    "\ncompleted\n",
+    " in_progress\n",
+    "in_progress \n",
+  ]) {
+    const view = await claw({ files: { [STATE]: text(value) }, dirs: INSTALLED_LAYOUT });
+    assert.notEqual(view.warning, null, `${JSON.stringify(value)} must not read as set up`);
+    // Named as the malformed file it is, rather than as an unfinished setup: the operator's
+    // setup DID run, and the fix is a character to delete.
+    assert.match(view.warning ?? "", /whitespace/, `${JSON.stringify(value)} should say why`);
+    assert.match(view.warning ?? "", /stalls/);
+    // The detail escapes what is invisible, so a stray \r is legible rather than baffling.
+    assert.equal(view.detail, `${STATE} reads ${JSON.stringify(value.replace(/\n+$/, ""))}`);
+  }
+});
+
+// The other half of the same claim: what the gate DOES accept stays silent. Trailing newlines
+// are the one thing command substitution removes, so a file written by `echo` is fine however
+// many of them it ends with.
+test("values the gate accepts stay silent, trailing newlines and all", async () => {
+  for (const value of ["completed", "completed\n", "completed\n\n\n"]) {
+    const view = await claw({ files: { [STATE]: text(value) }, dirs: INSTALLED_LAYOUT });
+    assert.equal(view.warning, null, `${JSON.stringify(value)} is set up as far as the gate is`);
+    assert.equal(view.detail, null);
+  }
+});
+
+// `in_progress` with trailing newlines is the same story on the other accepted value: the gate
+// lets it through, so the note has to be the unfinished-setup one and not the stall.
+test("in_progress survives its trailing newlines as the unfinished-setup note", async () => {
+  for (const value of ["in_progress", "in_progress\n", "in_progress\n\n"]) {
+    const view = await claw({ files: { [STATE]: text(value) }, dirs: INSTALLED_LAYOUT });
+    assert.match(view.warning ?? "", /never finished/, JSON.stringify(value));
+    assert.doesNotMatch(view.warning ?? "", /stalls/);
   }
 });
 

@@ -46,6 +46,12 @@ import type {
 // And one thing the state file is NOT: evidence that the plugin is installed. It records that
 // the setup skill ran here once, which stays true after an uninstall - nothing deletes it. So
 // installation is checked FIRST and every warning below is conditional on it; see `check`.
+//
+// The comparison is the gate's, byte for byte - see `gateValue`. `$( … )` strips trailing
+// newlines and NOTHING else, and `case` does not forgive whitespace, so this module's job is to
+// agree with a shell rather than to be forgiving. Being more permissive than the gate is the
+// one error here that fails silently: the form calls the machine ready while every core tool
+// call is refused.
 
 /** The state file the plugin's setup skill writes, relative to the operator's home. */
 const STATE_FILE = [".claude", "upstartclaw-core-setup"] as const;
@@ -77,9 +83,44 @@ const MAX_DEPTH = 3;
 /** A hard ceiling on directories listed, so no layout can turn this probe into a stall. */
 const MAX_DIRS = 200;
 
-/** `"in_progress"` for a value, `an empty file` for the empty string. */
+/**
+ * The value UpstartClaw's gate will actually compare, from the bytes on disk.
+ *
+ * `STATE=$(cat "$STATE_FILE" …)` - command substitution strips TRAILING NEWLINES and nothing
+ * else, and `case "$STATE" in completed | in_progress)` are exact matches with no whitespace
+ * tolerance. So ` completed`, `completed `, `completed\r` (a CRLF file) and `\ncompleted` are
+ * all values the gate REFUSES.
+ *
+ * This was `trim()`, which called every one of those set up while the machine blocked every
+ * core MCP call - a false negative on precisely the case this check exists to catch, and the
+ * worst direction for this surface to be wrong in. Verified row by row against a real shell.
+ */
+function gateValue(text: string): string {
+  return text.replace(/\n+$/, "");
+}
+
+/**
+ * How a value is shown to the operator: `"in_progress"`, or `an empty file` for zero bytes.
+ *
+ * `JSON.stringify` rather than bare quotes, because the values worth reporting here are the
+ * ones whose problem is INVISIBLE. A detail line saying `reads "completed"` when the file holds
+ * `completed\r` sends the reader looking for a bug in Mission Control; `reads "completed\r"`
+ * tells them what to delete.
+ */
 function quoted(value: string): string {
-  return value ? `"${value}"` : "an empty file";
+  return value === "" ? "an empty file" : JSON.stringify(value);
+}
+
+/**
+ * True when the file holds an accepted word wrapped in whitespace the gate will not forgive.
+ *
+ * Worth its own branch, not folded into the generic refusal: "setup has not finished" is the
+ * wrong story to tell someone whose file says ` completed`. Their setup DID finish - the file
+ * is malformed - and the fix is a character to delete rather than an hour of sign-in flows.
+ */
+function isNearMiss(value: string): boolean {
+  const bare = value.trim();
+  return bare !== value && (bare === COMPLETED || bare === IN_PROGRESS);
 }
 
 /**
@@ -178,13 +219,19 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
     const state = await deps.readText(path);
 
     if (state.ok) {
-      const value = state.text.trim();
+      const value = gateValue(state.text);
       if (value === COMPLETED) return { warning: null, detail: null };
       if (value === IN_PROGRESS) {
         return {
           warning:
             "Setup was started and never finished. UpstartClaw lets tool calls through while setup is in progress, so a dispatched agent reaches the core MCP servers unauthenticated and fails on the credential rather than being told why. "
             + fix("Finish"),
+          detail: `${path} reads ${quoted(value)}`,
+        };
+      }
+      if (isNearMiss(value)) {
+        return {
+          warning: `The setup state file holds ${quoted(value)} - the right word with whitespace UpstartClaw's gate will not accept, since it matches the bare word and its shell strips only trailing newlines. The gate therefore refuses every core MCP call and an unattended dispatched agent stalls. Rewrite the file as the bare word, or re-run ${SETUP_COMMAND} in an interactive Claude Code session.`,
           detail: `${path} reads ${quoted(value)}`,
         };
       }

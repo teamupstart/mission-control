@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keep Awake mode: phased implementation</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f5f8;
+      --paper: #ffffff;
+      --paper-2: #f7f8fb;
+      --ink: #18202b;
+      --muted: #5d6878;
+      --dim: #7b8594;
+      --line: #d9dee6;
+      --line-soft: #e9edf2;
+      --green: #16835c;
+      --purple: #7353ba;
+      --purple-soft: #f0ebfb;
+      --red: #c83a35;
+      --shadow: 0 18px 50px rgba(27, 34, 46, 0.12);
+      --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a0c0f;
+        --paper: #14181e;
+        --paper-2: #171c23;
+        --ink: #e7ebf1;
+        --muted: #a2acbb;
+        --dim: #7c8798;
+        --line: #2a323d;
+        --line-soft: #202731;
+        --green: #35c08a;
+        --purple: #a371f7;
+        --purple-soft: #211a31;
+        --red: #f85149;
+        --shadow: 0 20px 54px rgba(0, 0, 0, 0.38);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      min-width: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 84% 7%, color-mix(in srgb, var(--purple) 10%, transparent), transparent 24rem),
+        var(--bg);
+      font: 15px/1.65 var(--sans);
+    }
+    main {
+      width: min(1060px, calc(100% - 32px));
+      margin: 32px auto 72px;
+      overflow: hidden;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+    header {
+      position: relative;
+      padding: 54px clamp(24px, 6vw, 72px) 44px;
+      overflow: hidden;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(135deg, var(--paper), var(--purple-soft));
+    }
+    header::after {
+      content: "1";
+      position: absolute;
+      right: clamp(18px, 6vw, 72px);
+      bottom: -22px;
+      color: color-mix(in srgb, var(--purple) 17%, transparent);
+      font: 800 170px/1 var(--mono);
+    }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--purple);
+      font: 700 11px/1.2 var(--mono);
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { line-height: 1.2; letter-spacing: -.025em; }
+    h1 { max-width: 790px; margin: 0; font-size: clamp(36px, 7vw, 68px); }
+    .lede { max-width: 760px; margin: 18px 0 0; color: var(--muted); font-size: 18px; }
+    article { padding: 8px clamp(24px, 6vw, 72px) 64px; }
+    section { padding-top: 34px; }
+    h2 { margin: 0 0 14px; padding-top: 8px; font-size: 27px; }
+    h3 { margin: 28px 0 10px; font-size: 19px; }
+    p { margin: 10px 0; }
+    a { color: var(--purple); text-underline-offset: 3px; }
+    code {
+      padding: .12em .35em;
+      border: 1px solid var(--line-soft);
+      border-radius: 5px;
+      background: var(--paper-2);
+      font: .9em/1.4 var(--mono);
+    }
+    ul, ol { padding-left: 24px; }
+    li + li { margin-top: 7px; }
+    .decision, .note {
+      margin: 18px 0;
+      padding: 16px 18px;
+      border: 1px solid color-mix(in srgb, var(--purple) 45%, var(--line));
+      border-radius: 12px;
+      background: var(--purple-soft);
+    }
+    .decision strong { color: var(--purple); }
+    .table-wrap { max-width: 100%; overflow-x: auto; margin: 18px 0; }
+    table { width: 100%; min-width: 670px; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 12px 13px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line-soft); }
+    th { color: var(--dim); font: 700 10px/1.35 var(--mono); letter-spacing: .11em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .phase-card {
+      margin: 22px 0;
+      padding: clamp(18px, 4vw, 28px);
+      border: 1px solid color-mix(in srgb, var(--purple) 46%, var(--line));
+      border-radius: 14px;
+      background: linear-gradient(145deg, var(--paper), var(--purple-soft));
+    }
+    .phase-card .number { color: var(--purple); font: 700 11px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+    .phase-card h3 { margin-top: 8px; }
+    .phase-card a { font-weight: 700; }
+    .flow {
+      width: 100%;
+      height: auto;
+      margin: 20px 0 8px;
+      overflow: visible;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--paper-2);
+    }
+    .flow .box { fill: var(--paper); stroke: var(--line); stroke-width: 1.5; }
+    .flow .active { fill: var(--purple-soft); stroke: var(--purple); }
+    .flow .arrow { fill: none; stroke: var(--dim); stroke-width: 1.7; marker-end: url(#arrow); }
+    .flow text { fill: var(--ink); font: 600 12px var(--sans); text-anchor: middle; }
+    .flow .label { fill: var(--muted); font: 11px var(--mono); }
+    .checks { columns: 2; column-gap: 42px; }
+    .checks li { break-inside: avoid; }
+    footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 20px clamp(24px, 6vw, 72px);
+      border-top: 1px solid var(--line);
+      color: var(--dim);
+      background: var(--paper-2);
+      font: 11px/1.5 var(--mono);
+    }
+    @media (max-width: 760px) {
+      main { width: min(100% - 16px, 1060px); margin-top: 8px; border-radius: 13px; }
+      header { padding-top: 38px; }
+      header::after { display: none; }
+      .checks { columns: 1; }
+      footer { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Mission Control · phased implementation</p>
+    <h1>Keep Awake mode</h1>
+    <p class="lede">One merge-safe vertical slice from the daemon-owned power assertion to the live indicator, with the approved restart-to-off lifecycle.</p>
+  </header>
+  <article>
+    <section>
+      <h2>Source of truth</h2>
+      <p>The approved product behavior lives in <a href="plan.html">the Keep Awake plan</a>. The implementation may adapt where repository evidence requires it, but it must preserve the user-visible goal and this lifecycle decision.</p>
+      <div class="decision"><strong>Decision recorded:</strong> Keep Awake applies only to the current daemon run. A daemon restart, crash, or quit resets the mode to off. Mission Control neither persists nor reacquires the assertion.</div>
+    </section>
+
+    <section>
+      <h2>Repository findings</h2>
+      <ol>
+        <li>The inert leading segment of <code>FleetPulse</code> is already the connection indicator and is the correct trigger and dropdown anchor.</li>
+        <li><code>Registry.snapshot()</code>, Registry events, and <code>useEventStream</code> are the existing convergence path for daemon-owned live state. Keep Awake must use that path and clear to unknown on disconnect.</li>
+        <li>The daemon owns long-lived services and ordered signal shutdown. It can stop the child gracefully, while <code>caffeinate -w &lt;daemon PID&gt;</code> covers abrupt exits.</li>
+        <li><code>buildApp()</code> appends optional injected managers for compatibility with focused route tests. The new manager follows that pattern.</li>
+        <li>The topbar's rung-3 selectors currently preserve only the trailing review button. They must preserve both interactive pulse controls after the live segment becomes a button.</li>
+        <li>The anchored panel must join the Electron title-bar no-drag selectors.</li>
+        <li>CI and Playwright run on Linux, so tests need injected process seams and a <code>MISSION_KEEP_AWAKE_BIN</code> fixture override.</li>
+        <li>No database, config write, startup restore, or automatic child restart belongs in the approved transient design.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Phase graph</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Phase</th><th>Outcome</th><th>Direct dependency</th><th>Concurrency</th></tr></thead>
+          <tbody><tr><td>1. Keep Awake vertical slice</td><td>Transient idle-sleep inhibition, live indicator dropdown, cross-window SSE truth, tests, and docs</td><td>This planning PR merged</td><td>No other implementation phase</td></tr></tbody>
+        </table>
+      </div>
+      <svg class="flow" viewBox="0 0 900 164" role="img" aria-labelledby="graph-title graph-desc">
+        <title id="graph-title">Keep Awake implementation phase graph</title>
+        <desc id="graph-desc">The planning pull request unlocks one vertical implementation phase, which produces a reviewable implementation pull request with green checks.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--dim)"></path></marker>
+        </defs>
+        <rect class="box" x="34" y="48" width="214" height="66" rx="10"></rect>
+        <text x="141" y="76">Planning PR</text><text class="label" x="141" y="96">approved artifacts</text>
+        <path class="arrow" d="M248 81 H338"></path><text class="label" x="293" y="67">merge</text>
+        <rect class="box active" x="338" y="38" width="226" height="86" rx="10"></rect>
+        <text x="451" y="73">Phase 1</text><text class="label" x="451" y="94">vertical slice</text>
+        <path class="arrow" d="M564 81 H654"></path><text class="label" x="609" y="67">complete</text>
+        <rect class="box" x="654" y="48" width="212" height="66" rx="10"></rect>
+        <text x="760" y="76">Implementation PR</text><text class="label" x="760" y="96">green checks</text>
+      </svg>
+      <p>One phase is the fewest merge-safe decomposition. Splitting shared state, server ownership, and the only UI control would land either unused public contracts or a dead/local-only control.</p>
+    </section>
+
+    <section>
+      <h2>Phase 1: Keep Awake vertical slice</h2>
+      <div class="phase-card">
+        <div class="number">Phase 01 · one task</div>
+        <h3>Deliver the operable feature end to end</h3>
+        <p>Add a bounded daemon manager, loopback routes, Registry/SSE state, and the matched live-indicator control. Finish the same change with responsive, accessibility, process-lifecycle, browser, and macOS proof.</p>
+        <p><a href="phase-1-keep-awake-vertical-slice.md">Read the detailed phase contract →</a></p>
+      </div>
+      <h3>Inside the phase</h3>
+      <ol>
+        <li>Define append-only runtime status, event, snapshot, and request contracts. Add no persisted config.</li>
+        <li>Implement <code>KeepAwakeManager</code> with direct <code>spawn</code>, exact <code>-i -w</code> arguments, serialized transitions, truthful failures, and bounded shutdown.</li>
+        <li>Wire GET/PUT routes, Registry publication, SSE convergence, daemon startup seeding, and ordered cleanup.</li>
+        <li>Replace the leading live segment with an accessible trigger and anchored switch dialog driven only by daemon state.</li>
+        <li>Preserve both pulse controls through responsive compaction and add the panel to Electron no-drag coverage.</li>
+        <li>Add unit, HTTP, SSE, render, Playwright, screenshot, README, runbook, and real macOS verification evidence.</li>
+      </ol>
+      <h3>Hard boundaries</h3>
+      <ul>
+        <li>Use <code>['-i', '-w', String(daemonPid)]</code> with <code>shell: false</code>. Never add <code>-d</code>, <code>-u</code>, or <code>-s</code>.</li>
+        <li>Unexpected child exit becomes a visible error and is not silently restarted.</li>
+        <li>Every daemon starts off. No SQLite, <code>app_config</code>, startup restoration, or saved preference is introduced.</li>
+        <li>Unsupported production platforms refuse visibly. The environment override exists for the built Linux test fixture.</li>
+        <li>Away mode, Recurring Missions, Electron IPC, and future platform providers remain unchanged.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Request and status flow</h2>
+      <svg class="flow" viewBox="0 0 900 300" role="img" aria-labelledby="flow-title flow-desc">
+        <title id="flow-title">Keep Awake request and observed-status flow</title>
+        <desc id="flow-desc">The live indicator sends a request to the daemon manager, which owns caffeinate. Observed status returns through Registry and server-sent events to all dashboards.</desc>
+        <defs>
+          <marker id="arrow2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--dim)"></path></marker>
+        </defs>
+        <style>.request-arrow{fill:none;stroke:var(--dim);stroke-width:1.7;marker-end:url(#arrow2)}</style>
+        <rect class="box active" x="35" y="52" width="176" height="64" rx="10"></rect><text x="123" y="79">Live indicator</text><text class="label" x="123" y="99">all dashboards</text>
+        <path class="request-arrow" d="M211 84 H292"></path><text class="label" x="251" y="70">PUT</text>
+        <rect class="box" x="292" y="52" width="145" height="64" rx="10"></rect><text x="364" y="79">Daemon route</text><text class="label" x="364" y="99">loopback</text>
+        <path class="request-arrow" d="M437 84 H518"></path>
+        <rect class="box" x="518" y="52" width="178" height="64" rx="10"></rect><text x="607" y="79">KeepAwakeManager</text><text class="label" x="607" y="99">single owner</text>
+        <path class="request-arrow" d="M696 84 H764"></path><text class="label" x="730" y="70">spawn</text>
+        <rect class="box active" x="764" y="42" width="102" height="84" rx="10"></rect><text x="815" y="76">caffeinate</text><text class="label" x="815" y="97">-i -w PID</text>
+        <path class="request-arrow" d="M607 116 V207 H496"></path><text class="label" x="626" y="170">observed status</text>
+        <rect class="box" x="318" y="176" width="178" height="64" rx="10"></rect><text x="407" y="203">Registry</text><text class="label" x="407" y="223">snapshot + events</text>
+        <path class="request-arrow" d="M318 208 H219"></path><text class="label" x="268" y="194">SSE</text>
+        <rect class="box active" x="43" y="176" width="176" height="64" rx="10"></rect><text x="131" y="203">Live indicator</text><text class="label" x="131" y="223">truth converges</text>
+      </svg>
+      <p>The write response waits for the completed transition. Registry plus SSE remains the only browser state source and makes every open dashboard converge. If SSE disconnects, status becomes unknown and reconnecting takes precedence over any stale awake label.</p>
+    </section>
+
+    <section>
+      <h2>Release gate and proof</h2>
+      <p>The implementation task depends directly on this planning session and stays backlogged until this planning PR merges. The implementation PR must be complete without a cleanup phase.</p>
+      <ul class="checks">
+        <li>Focused manager, route, Registry/SSE, render, ladder, popover, and drag-region tests</li>
+        <li><code>npm run typecheck</code>, <code>npm run lint</code>, and <code>npm test</code></li>
+        <li><code>npm run build</code> followed by <code>npm run smoke</code></li>
+        <li>Keep Awake Playwright spec and existing topbar width suite</li>
+        <li>Active-dropdown review screenshot</li>
+        <li>Real macOS <code>pmset -g assertions</code>, lock-screen, cleanup, and restart-reset receipt</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Compatibility audit</h2>
+      <ul>
+        <li>Every approved source-plan requirement is owned by Phase 1 exactly once.</li>
+        <li>The transient lifecycle appears in ownership, startup behavior, UI copy, tests, and the explicit absence of persistence.</li>
+        <li>No second phase can create schema, API, CSS, or merge conflicts.</li>
+        <li>The phase ends with an operable repository and no undocumented follow-up work.</li>
+        <li>All task pointers are repository-relative and are verified in the pushed planning commit before scheduling.</li>
+      </ul>
+    </section>
+  </article>
+  <footer><span>Mission Control · Keep Awake</span><span>Approved and phased · 2026-08-05</span></footer>
+</main>
+</body>
+</html>

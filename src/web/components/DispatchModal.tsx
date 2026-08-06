@@ -14,7 +14,8 @@ import type { HarnessesConfig, TaskDependencyInput } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
-import { api, fetchHarnessesConfig, fetchRepos } from "../lib/api.ts";
+import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
+import { api, fetchEnvironmentChecks, fetchHarnessesConfig, fetchRepos } from "../lib/api.ts";
 import { readLastDispatchRepo, rememberDispatchRepo } from "../lib/lastRepo.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
@@ -537,6 +538,17 @@ function DispatchModal({
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
   const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
+  /**
+   * What this MACHINE has to say about tooling a launched session will inherit - already
+   * filtered to the checks that actually found something, so rendering is a fold over it.
+   *
+   * Empty on a machine none of the checks recognise, which is most of them, and empty when
+   * the fetch does not land. Both must look identical here: this is context, not a gate, and
+   * nothing below reaches `submit` or the primary button's `disabled`. An operator who knows
+   * their agent will hit a setup gate is still allowed to dispatch - that is the difference
+   * between this and `selectedWorkflowBlocked`, which genuinely blocks.
+   */
+  const [envWarnings, setEnvWarnings] = useState<EnvironmentCheckView[]>([]);
   // Which action is in flight, not merely whether one is: both footer buttons submit,
   // and only the one that was pressed should say so.
   const [pending, setPending] = useState<null | "shelve" | "dispatch">(null);
@@ -745,6 +757,14 @@ function DispatchModal({
         if (alive) setWorkflowConfig(config);
       })
       .catch(() => {});
+    // Asked on every open, never cached, because the answer changes when the operator
+    // repairs their own machine - they run the setup a warning names, reopen the form, and
+    // the note is gone. A read taken once at load would go on naming a problem they have
+    // already fixed, which is the fastest way to teach someone to ignore a warning.
+    void fetchEnvironmentChecks().then((view) => {
+      if (!alive || !view) return;
+      setEnvWarnings(view.checks.filter((check) => check.warning !== null));
+    });
     return () => {
       alive = false;
     };
@@ -1393,6 +1413,21 @@ function DispatchModal({
             launch={ensembleLaunch}
           />
         )}
+
+        {/* What the MACHINE says about tooling this dispatch would inherit from `~/.claude`.
+            Last in the body, so it is the final thing read before the buttons - and a note,
+            never a gate: the footer below is untouched by it, because a stalled agent is a
+            cost the operator may knowingly accept while a blocked Workflow is a task the
+            daemon would have to refuse. Absent entirely on a machine no check recognises. */}
+        {envWarnings.map((check) => (
+          <p className="dispatch-wait-note dispatch-env-note" key={check.id}>
+            <span aria-hidden>⚠</span>
+            <span>
+              <strong>{check.label}:</strong> {check.warning}
+              {check.detail && <span className="dispatch-env-detail">{check.detail}</span>}
+            </span>
+          </p>
+        ))}
 
         {error && <p className="dispatch-error">{error}</p>}
       </div>

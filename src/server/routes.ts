@@ -147,6 +147,8 @@ import { taskSourceKinds } from "./task-sources/index.ts";
 import { noteTaskSourceConfigChange, preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
 import type { TaskSourcesView } from "@shared/task-source.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
+import { environmentCheckViews } from "./environment/index.ts";
+import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import { getInspectorConfig, inspectorModel, setInspectorConfig } from "./inspector/config.ts";
 import { getLlmConfig, llmStatus, setLlmConfig } from "./llm/config.ts";
@@ -3153,6 +3155,17 @@ export function buildApp(
     }
     return c.json(costTelemetryStatus());
   });
+
+  // --- Environment checks: what the MACHINE says about the tooling a dispatch inherits ---
+  //
+  // Always 200, carrying its own result - the shape `POST /api/ensembles/preview` uses: "your
+  // machine has a problem" is the ANSWER to this question, not a failure of the request, and a
+  // non-2xx here would make the dispatch form's optional fetch drop a finding it asked for.
+  //
+  // Computed per request rather than at boot; see `environmentCheckViews` for why an operator
+  // who fixes what a warning names must not have to restart the daemon to stop seeing it.
+  app.get("/api/environment/checks", async (c) =>
+    c.json({ checks: await environmentCheckViews() } satisfies EnvironmentChecksView));
 
   // --- dispatch: launch/queue agents (localhost only) ---
   app.post("/api/tasks", async (c) => {

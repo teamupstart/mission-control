@@ -33,6 +33,7 @@ import {
   deriveImportedPersonaName,
   personaMarkdownBlob,
 } from "../src/web/workflows/personaApi.ts";
+import { personaDriftSurface } from "../src/web/workflows/usePersonaDrift.ts";
 
 // What is at stake: Phase 1 ships an editor, not only routes. Its empty, conflict, and archive
 // states must say what will happen before a click, while the selected state must expose every
@@ -405,6 +406,35 @@ test("the sidebar tags a drifted Persona beside the built-in tag, and only when 
   assert.match(html, />Import from path</);
   assert.match(html, />Check upstream</);
   assert.match(html, />Import \.md</);
+});
+
+/**
+ * Which surface counts as "a badge is on screen here", as a pure rule.
+ *
+ * The drift check is keyed on this rather than on the route, because the two surfaces that render
+ * these badges share one route: `#/library` draws a card per Persona and `#/library/personas`
+ * draws the sidebar rows and the editor. A boolean over "am I on the Library" cannot tell an
+ * arrival at one from an arrival at the other, so clicking a card to open its Persona skipped the
+ * check on the surface the operator had just opened to look at.
+ */
+test("the drift check is keyed to the surface that renders badges, not to the Library route", () => {
+  // The Library's front page renders a card per Persona.
+  assert.equal(personaDriftSurface("library", null), "library-shelf");
+  // The Persona authoring surface is a DIFFERENT token, so shelf -> editor is a change, and a
+  // change is what re-asks the disk.
+  assert.equal(personaDriftSurface("library", "personas"), "personas");
+  assert.notEqual(
+    personaDriftSurface("library", null),
+    personaDriftSurface("library", "personas"),
+  );
+  // Surfaces with no upstream badge on them cost no file reads at all - and leaving one for the
+  // shelf is then a null -> token transition, which fetches.
+  for (const shelf of ["workflows", "actions", "ensembles", "missions"]) {
+    assert.equal(personaDriftSurface("library", shelf), null);
+  }
+  for (const page of ["fleet", "runs", "settings", "ensembles"]) {
+    assert.equal(personaDriftSurface(page, null), null);
+  }
 });
 
 test("an unknown stored provider is reported and survives an unrelated edit", () => {

@@ -197,6 +197,42 @@ test("navigating back to the Library re-checks the source without pressing Check
   await expect(row).toContainText("upstream changed");
 });
 
+/**
+ * Opening a Persona FROM the shelf is an arrival too, even though the route never leaves the
+ * Library.
+ *
+ * This is the sequence a person actually performs: look at the shelf, notice nothing, click into
+ * the reviewer to read it. The shelf and the editor share `#/library`, so a check keyed on "am I
+ * on the Library" stayed satisfied across that click and the editor opened with no warning on it -
+ * on precisely the Persona the operator had just chosen to look at.
+ */
+test("opening a Persona from the shelf re-checks its source, without leaving the Library", async ({
+  dashboard,
+  daemon,
+}) => {
+  const path = writeRole(daemon, ROLE_V1);
+  await dashboard.goto(`${daemon.baseURL}/#/library/personas`);
+  const sidebar = dashboard.getByRole("complementary", { name: "Persona library" });
+  await sidebar.getByLabel("Absolute path of a Markdown file on this machine").fill(path);
+  await sidebar.getByRole("button", { name: "Import from path" }).click();
+  await expect(dashboard.locator("p.persona-source")).toContainText(path);
+
+  // Back to the shelf, where the card is current, and the file moves while it is on screen.
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  const card = dashboard.getByRole("button", { name: /Claw Reviewer/ });
+  await expect(card).toBeVisible();
+  await expect(card).not.toContainText("upstream changed");
+  writeRole(daemon, ROLE_V2);
+
+  // One click, no route change beyond the shelf-to-editor step, no Check upstream, no reload.
+  await card.click();
+  await expect(dashboard.getByRole("complementary", { name: "Persona library" })).toBeVisible();
+  await expect(dashboard.getByText("The source file has changed since this Persona was imported"))
+    .toBeVisible();
+  await expect(sidebar.getByRole("button", { name: /Claw Reviewer/ }))
+    .toContainText("upstream changed");
+});
+
 test("a path the daemon cannot read is refused by name, and authors nothing", async ({
   dashboard,
   daemon,

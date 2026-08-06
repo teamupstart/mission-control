@@ -22,13 +22,15 @@ import {
   restFailure,
   restMessage,
   searchUrl,
+  pageFromCli,
+  pageFromRest,
   siteHost,
   siteProblem,
-  sweepResultFromCli,
   sweepResultFromWalk,
-  sweepResultFromRest,
+  type RestAnswer,
 } from "../src/server/task-sources/jira.ts";
 import { stubRun } from "../src/server/util/exec.ts";
+import type { RunResult } from "../src/server/util/exec.ts";
 
 // What is at stake: four things a background Jira sweep gives nobody the chance to notice.
 //
@@ -55,6 +57,17 @@ const ctx: SweepContext = {
   repoRoot: "/repo",
   signal: new AbortController().signal,
 };
+
+/**
+ * One rung answer as a whole sweep result - the same two calls production makes for a single
+ * page (`pageFrom*` then `sweepResultFromWalk`), composed here rather than behind a wrapper in
+ * the module, so nothing is exported for tests alone and this cannot drift from the real path.
+ */
+const cliResult = (res: RunResult, c: JiraConfig = cfg(), context: SweepContext = ctx) =>
+  sweepResultFromWalk({ ...pageFromCli(res), truncated: false }, c, context);
+
+const restResult = (res: RestAnswer, c: JiraConfig = cfg(), context: SweepContext = ctx) =>
+  sweepResultFromWalk({ ...pageFromRest(res, c), truncated: false }, c, context);
 
 /** The value that follows `flag` in an argv, or undefined. */
 function argAfter(args: string[], flag: string): string | undefined {
@@ -417,7 +430,7 @@ test("a page carries the cursor Jira sent, and none when there isn't one", () =>
 // ---- the CLI rung's failures ----
 
 test("a non-zero jira exit is an error, never an empty success", () => {
-  const r = sweepResultFromCli(stubRun({ stdout: "", stderr: "boom: bad flag", code: 1 }), cfg(), ctx);
+  const r = cliResult(stubRun({ stdout: "", stderr: "boom: bad flag", code: 1 }));
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /jira issue list failed: boom: bad flag/);
 });
@@ -425,10 +438,8 @@ test("a non-zero jira exit is an error, never an empty success", () => {
 // A credential problem has a different fix from a broken query, so it gets a different
 // sentence - that is the whole reason `preflight` is separate from `sweep`.
 test("an unauthenticated CLI names the credential, not the query", () => {
-  const r = sweepResultFromCli(
+  const r = cliResult(
     stubRun({ stdout: "", stderr: "Received unexpected response '401 Unauthorized'", code: 1 }),
-    cfg(),
-    ctx,
   );
   assert.match(r.error!, /not authenticated/);
   assert.match(r.error!, /JIRA_API_TOKEN/);
@@ -440,11 +451,7 @@ test("an unauthenticated CLI names the credential, not the query", () => {
 // the entire diagnosis. `outcomeUnknown` is the fact that separates "it refused" from "it
 // never answered", and a CLI that never answers is usually one waiting on a prompt.
 test("a jira that never answered says so, rather than reporting a bare failure", () => {
-  const r = sweepResultFromCli(
-    { stdout: "", stderr: "", code: 1, outcomeUnknown: true },
-    cfg(),
-    ctx,
-  );
+  const r = cliResult({ stdout: "", stderr: "", code: 1, outcomeUnknown: true, overflowed: false });
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /did not answer within 20s/);
   assert.match(r.error!, /waiting for input/);
@@ -453,22 +460,20 @@ test("a jira that never answered says so, rather than reporting a bare failure",
 // The inversion this file also has to prevent: jira-cli exits NON-ZERO when the filter
 // matched nothing, and reporting that would show a healthy, up-to-date source as broken.
 test("the CLI's own \"no result found\" is an empty SUCCESS, however it exits", () => {
-  const r = sweepResultFromCli(
+  const r = cliResult(
     stubRun({ stdout: "", stderr: "\x1b[31mNo result found for given query in project \"MC\"\x1b[0m", code: 1 }),
-    cfg(),
-    ctx,
   );
   assert.deepEqual(r.items, []);
   assert.equal(r.error, null);
 });
 
 test("CLI output that is not JSON, or not a list, is an error too", () => {
-  assert.match(sweepResultFromCli(stubRun({ stdout: "MC-1  Some issue", stderr: "", code: 0 }), cfg(), ctx).error!, /not JSON/);
-  assert.match(sweepResultFromCli(stubRun({ stdout: '{"total":0}', stderr: "", code: 0 }), cfg(), ctx).error!, /unexpected shape/);
+  assert.match(cliResult(stubRun({ stdout: "MC-1  Some issue", stderr: "", code: 0 })).error!, /not JSON/);
+  assert.match(cliResult(stubRun({ stdout: '{"total":0}', stderr: "", code: 0 })).error!, /unexpected shape/);
 });
 
 test("a clean CLI run with no matching issues is an empty SUCCESS", () => {
-  const r = sweepResultFromCli(stubRun({ stdout: '{"issues":[]}', stderr: "", code: 0 }), cfg(), ctx);
+  const r = cliResult(stubRun({ stdout: '{"issues":[]}', stderr: "", code: 0 }));
   assert.deepEqual(r.items, []);
   assert.equal(r.error, null);
 });
@@ -478,10 +483,9 @@ test("a clean CLI run with no matching issues is an empty SUCCESS", () => {
 // everything the walk had gone and fetched beyond the first page.
 test("a clean run maps every issue it can name, whatever the page size says", () => {
   const many = Array.from({ length: 5 }, (_, i) => ({ ...ISSUE, key: `MC-${i}` }));
-  const r = sweepResultFromCli(
+  const r = cliResult(
     stubRun({ stdout: JSON.stringify({ issues: [...many, { fields: { summary: "no key" } }] }), stderr: "", code: 0 }),
     cfg({ limit: 3 }),
-    ctx,
   );
   assert.equal(r.error, null);
   assert.deepEqual(r.items.map((i) => i.ref.externalId), ["MC-0", "MC-1", "MC-2", "MC-3", "MC-4"]);
@@ -490,10 +494,11 @@ test("a clean run maps every issue it can name, whatever the page size says", ()
 // A sweep abandoned by its timeout must not report the partial answer it happened to have,
 // and must not report success.
 test("an abandoned sweep says so rather than filing what it had", () => {
-  const r = sweepResultFromCli(stubRun({ stdout: JSON.stringify({ issues: [ISSUE] }), stderr: "", code: 0 }), cfg(), {
-    ...ctx,
-    signal: AbortSignal.abort(),
-  });
+  const r = cliResult(
+    stubRun({ stdout: JSON.stringify({ issues: [ISSUE] }), stderr: "", code: 0 }),
+    cfg(),
+    { ...ctx, signal: AbortSignal.abort() },
+  );
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /abandoned/);
 });
@@ -501,10 +506,9 @@ test("an abandoned sweep says so rather than filing what it had", () => {
 // ---- the REST rung's failures ----
 
 test("a rejected credential is reported as a credential problem, with the host", () => {
-  const r = sweepResultFromRest(
+  const r = restResult(
     { ok: false, status: 401, body: '{"errorMessages":["Client must be authenticated"]}' },
     cfg({ site: "acme.atlassian.net" }),
-    ctx,
   );
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /JIRA_API_TOKEN \/ JIRA_EMAIL/);
@@ -514,11 +518,11 @@ test("a rejected credential is reported as a credential problem, with the host",
 });
 
 test("a query Jira refuses is reported as a query problem, quoting Jira", () => {
-  const r = sweepResultFromRest(
-    { ok: false, status: 400, body: '{"errorMessages":["Field \'nope\' does not exist"]}' },
-    cfg(),
-    ctx,
-  );
+  const r = restResult({
+    ok: false,
+    status: 400,
+    body: '{"errorMessages":["Field \'nope\' does not exist"]}',
+  });
   assert.match(r.error!, /could not run this query \(HTTP 400\)/);
   assert.match(r.error!, /does not exist/);
   assert.doesNotMatch(r.error!, /JIRA_API_TOKEN/, "the credential is not the fix here");
@@ -527,10 +531,9 @@ test("a query Jira refuses is reported as a query problem, quoting Jira", () => 
 // A network that never answered is "unknown", not "there is no work" - the stance
 // `SweepResult` documents and `pr.ts` takes when `gh` is unreachable.
 test("a site that never answered names the host, not a status code", () => {
-  const r = sweepResultFromRest(
+  const r = restResult(
     { ok: false, status: 0, body: "getaddrinfo ENOTFOUND typo.atlassian.net" },
     cfg({ site: "typo.atlassian.net" }),
-    ctx,
   );
   assert.match(r.error!, /could not reach Jira at typo\.atlassian\.net/);
   assert.match(r.error!, /ENOTFOUND/);
@@ -549,11 +552,7 @@ test("Jira's error envelope is quoted from wherever it put the message", () => {
 });
 
 test("a successful REST search maps its issues", () => {
-  const r = sweepResultFromRest(
-    { ok: true, status: 200, body: JSON.stringify({ issues: [ISSUE] }) },
-    cfg(),
-    ctx,
-  );
+  const r = restResult({ ok: true, status: 200, body: JSON.stringify({ issues: [ISSUE] }) });
   assert.equal(r.error, null);
   assert.equal(r.items.length, 1);
   assert.equal(r.items[0]!.ref.externalId, "MC-42");

@@ -730,25 +730,6 @@ export function sweepResultFromWalk(
 }
 
 /**
- * Read one page as a whole sweep result - the single-page shape, kept for the callers and
- * tests that ask "what does this one answer mean", where paging is not the question.
- */
-export function sweepResultFromCli(res: CliRun, cfg: JiraConfig, ctx: SweepContext): SweepResult {
-  const page = pageFromCli(res);
-  return sweepResultFromWalk({ ...page, truncated: false }, cfg, ctx);
-}
-
-/** The same, for one REST answer. */
-export function sweepResultFromRest(
-  res: RestAnswer,
-  cfg: JiraConfig,
-  ctx: SweepContext,
-): SweepResult {
-  const page = pageFromRest(res, cfg);
-  return sweepResultFromWalk({ ...page, truncated: false }, cfg, ctx);
-}
-
-/**
  * Ask Jira's REST API directly, with the env credential.
  *
  * Never resolves to a throw: a DNS failure, a refused connection or a TLS rejection is an

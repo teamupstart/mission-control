@@ -50,6 +50,11 @@ export async function claudeExecutable(): Promise<string> {
  * match - so every hook from every embedded session would land on whichever card holds the
  * daemon's terminal. Dropping the three vars makes those hooks fall through to their
  * session-id match, which is the truthful one for a session that has no pane at all.
+ *
+ * `CLAUDE_CODE_ENTRYPOINT` is the same leak on a different axis: it says how the CLI was
+ * invoked, and the SDK sets `sdk-ts` only when the variable is absent. A daemon launched
+ * from inside a Claude Code session inherits `cli` and would hand that identity to every
+ * SDK session it starts.
  */
 export function sdkSubprocessEnv(
   base: NodeJS.ProcessEnv = process.env,
@@ -58,6 +63,7 @@ export function sdkSubprocessEnv(
   delete env.TMUX_PANE;
   delete env.WEZTERM_PANE;
   delete env.TERM_PROGRAM;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
   return env;
 }
 

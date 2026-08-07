@@ -50,7 +50,7 @@ and get your decision back.
   edit or send, and a switch on the row [holds it back](#hold-a-backlog-item-back)
   from the autopilot without taking it off the list).
 - **Pulls work in** from systems that already hold it: a [task source](#task-sources-pulling-work-into-the-backlog)
-  sweeps GitHub issues on a schedule and files them into the backlog, so the work you
+  sweeps GitHub issues or a Jira JQL filter on a schedule and files them into the backlog, so the work you
   already wrote down somewhere doesn't have to be re-typed. It files backlog rows and
   nothing else - it never dispatches an agent and never types into a session. Ships with
   no sources configured.
@@ -1991,7 +1991,7 @@ turning it on is consent. Per source:
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
 | **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries |
 | **Sweep now** | run it once, right now, and see what it filed |
-| **Check it works** | is `gh` installed, authenticated, and able to list issues here? |
+| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks - and names - its own: `gh` for GitHub issues, the `jira` CLI or a `JIRA_API_TOKEN` for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
 
 Pausing clears the source's previous health, so re-enabling it cannot inherit a stale
@@ -2000,7 +2000,7 @@ already counts as that fresh result.
 
 ### GitHub issues
 
-The first (and so far only) kind. **Auth is the `gh` CLI**, run inside the repo, so this
+The first kind, and the shape every other one follows. **Auth is the `gh` CLI**, run inside the repo, so this
 feature stores no token, opens no OAuth flow and adds no new secret - if `gh auth status`
 works in that checkout, the source works.
 
@@ -2021,6 +2021,111 @@ so the agent's first prompt has the actual text rather than a number to go and l
 abandoned sweep is reported as an error on the source and shown in the panel - because an
 empty sweep and a broken one are otherwise indistinguishable, and the difference is a week
 of silence.
+
+### Jira
+
+Points at a **JQL filter** and files each issue it matches as one backlog task. Same
+contract as the GitHub source in every way that matters: it files backlog rows and nothing
+else, it never dispatches, and a task you delete stays deleted.
+
+| Field | Meaning |
+|---|---|
+| **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - it is parsed and reduced to its host. Two refusals guard the credential: a value carrying one (`your-org.atlassian.net@elsewhere.example`) is **refused rather than reduced**, because that string names `elsewhere.example` as the server; and the REST rung will only authenticate to **Jira Cloud** unless you name the host in `JIRA_ALLOWED_HOSTS` (below). Defaults to `upstartnetwork.atlassian.net` |
+| **JQL filter** | the query, exactly as Jira's own search bar takes it. **Blank sweeps nothing**, and the panel says so rather than letting it look healthy |
+| **Issues per page** | how many issues **one request** asks Jira for. Over REST a sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds; over the `jira` CLI it *is* the whole request, because that CLI cannot be asked for a second page (below). What actually gets *filed* is bounded by **Most tasks per sweep** above |
+| **Take each task's priority from the Jira issue's own** | maps Jira's priority onto the [task's](#priority-and-labels): Highest/Blocker/Critical/`P0` → Blocker, High/Major/`P1` → High, Medium/`P2` → Med, Low/Lowest/Minor/`P3`/`P4` → Low. A name from a custom scheme leaves the source's default in place rather than inventing one. Off, every swept task takes the source's default |
+
+Everything else a Jira query needs - project, status, assignee, labels, ordering - is
+already *in* the JQL, so it isn't re-expressed as controls beside it. One place to say one
+thing.
+
+Each issue becomes one task: its summary as the title, and an intent carrying
+`Jira issue MC-123: <summary>`, the **browse URL**, and the issue's **description**, so the
+agent's first prompt has the actual text rather than a key to go and look up. Descriptions
+arrive from Jira Cloud as ADF (a document tree, not a string) and are flattened to the text
+a human wrote; anything past 4000 characters is truncated and says so.
+
+**A sweep reads the whole filter, not its first page** - over REST. It pages until the result set
+is exhausted, and the [ledger](#a-task-you-delete-stays-deleted) is what stops the next sweep
+re-filing any of it, so a queue of 400 issues drains at **Most tasks per sweep** per sweep instead
+of stopping after the first page forever. One sweep processes at most **1000 issues** over at most
+**50 requests**, whichever it reaches first; a filter bigger than that has a tail no sweep can
+reach, so it says so on the source rather than truncating silently.
+
+**The `jira` CLI cannot page, and the source no longer pretends it can.** That CLI ignores the
+offset half of its own `--paginate` argument against Jira's search API, so asking for a second
+page returns the first one again. This source therefore makes **one** CLI request - asking for one
+issue more than the page size, which is an exact test for whether anything follows - and then:
+
+- **fits in one request** → that is the whole filter, and the sweep is complete;
+- **more than that, and `JIRA_API_TOKEN` + `JIRA_EMAIL` are set** → the REST rung takes the filter
+  from the top and pages it properly;
+- **more than that, with no credential** → the request it *did* read is filed, plus a sentence
+  saying the tail is out of reach and naming the two ways to change that (set the variables, or
+  narrow the JQL). Work still arrives; it is just bounded, and it says so.
+
+**Auth is a ladder, and no rung of it stores a secret.**
+
+1. Your **`jira` CLI** ([`ankitpokhrel/jira-cli`](https://github.com/ankitpokhrel/jira-cli),
+   `brew install ankitpokhrel/jira-cli/jira-cli` then `jira init`), if it's on the daemon's
+   `PATH`. It already knows your site and your login, so this is the `gh` trade again.
+2. Otherwise **`JIRA_API_TOKEN` + `JIRA_EMAIL`** from the daemon's own environment, against
+   Jira's REST search API. Both are needed - basic auth is the pair - and neither is ever
+   written to Mission Control's database.
+
+If the CLI is installed but can't answer (a common half-configured machine: `jira` on
+`PATH`, `jira init` never run, tokens exported for shell helpers), the credential is tried
+as a **fallback** rather than the source being declared broken with a working path unused.
+When neither works, both reasons are reported.
+
+**Where the token may go is constrained, not just where it comes from.** The REST rung sends
+`JIRA_API_TOKEN` in an `Authorization` header, so it will only do that for a **Jira Cloud** host
+(`*.atlassian.net`). A self-hosted instance - or anything else - must be named in
+`JIRA_ALLOWED_HOSTS` in the daemon's environment, comma-separated, with `*.example.internal`
+allowed for a whole domain. Otherwise the source refuses **before making any request** and says so.
+
+That is not only about typos. `PUT /api/task-sources/config` is a localhost route and this daemon
+dispatches agents onto the same machine, so a config write is a way to *aim* the credential: a
+lookalike host in a pasted runbook, or a prompt-injected agent writing a source, would otherwise
+exfiltrate the token rather than merely misconfigure a sweep. **The `jira` CLI rung is unaffected**
+either way, because it authenticates with its own configuration and never receives this token - so
+a self-hosted Jira reached through the CLI needs no allowlist entry at all.
+
+Two operational notes. The environment is the **daemon's**, read when it sweeps - exporting
+the variables in a shell after the daemon started does not reach it, so restart the daemon
+(`make restart`) after adding them. And behind a TLS-inspecting VPN the REST rung needs the
+proxy's CA in `NODE_EXTRA_CA_CERTS` in that same environment; certificate verification is
+never disabled to work around it.
+
+**A broken credential never reads as "no issues".** That is the whole reason `preflight`
+exists, and **Check it works** distinguishes, each naming one thing to go and do:
+
+| What it says | What to do |
+|---|---|
+| `set a JQL query in this source's settings` | the filter is empty - paste one |
+| `no way to reach Jira: install the CLI … or set JIRA_API_TOKEN and JIRA_EMAIL` | neither rung is available |
+| `JIRA_API_TOKEN is set but JIRA_EMAIL is not` | half a credential, named as the half that's missing |
+| `the jira CLI is installed but not configured … run jira init` | installed, never pointed at a site |
+| `the jira CLI is not authenticated` / `Jira rejected the JIRA_API_TOKEN / JIRA_EMAIL credential (HTTP 401)` | the credential is wrong or expired |
+| `Jira could not run this query (HTTP 400) - <what Jira said>` | the JQL is the problem, not the credential |
+| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is `NODE_EXTRA_CA_CERTS` |
+| `the jira CLI did not answer within 20s - it may be waiting for input` | the CLI is prompting, which a background sweep cannot answer. Run it once by hand to see what it wants |
+| `the Jira site must be a host, not a URL carrying a credential` | the site names one server and would send the token to another - set it to the host on its own |
+| `refusing to send JIRA_API_TOKEN to <host>` | that host is not Jira Cloud and is not in `JIRA_ALLOWED_HOSTS`. Name it there if it really is your Jira; the CLI rung keeps working regardless |
+| `this jira CLI does not support --paginate` | too old to be asked for a bounded request at all. `brew upgrade jira-cli`, or set the two variables so the REST rung is used instead |
+| `this filter is larger than one sweep can read` | more than 1000 issues (or 50 requests) match, so the tail is unreachable - narrow the JQL |
+
+A sweep reports the same sentences on the source itself, so a failure that happens at 3am
+is still legible at 9am - plus two that only a sweep can reach, since they are about paging
+and a preflight reads a single page:
+
+| What the source says | What to do |
+|---|---|
+| `this filter has more issues than the N one jira CLI request returns` | the CLI cannot page (above). The newest N are filed; set `JIRA_API_TOKEN` + `JIRA_EMAIL` so the REST rung can reach the rest, or narrow the JQL |
+| `Jira returned the same page again instead of the next one` | a REST cursor that is not advancing - suspect a caching proxy between the daemon and Jira |
+
+The one non-zero exit that is *not* a failure: `jira-cli` exits non-zero to say "no result
+found for given query", which is a filter that is simply up to date and stays **healthy**.
 
 ### A task you delete stays deleted
 
@@ -2661,7 +2766,7 @@ normalized names.
 
 Guidance is exact text. Accepted Markdown is not trimmed or newline-normalized when it is
 created or updated. Copy writes that same text to the browser clipboard, download writes it
-to a local `.md` Blob, and import stores `File.text()` unchanged after deriving a proposed
+to a local `.md` Blob, and both imports store the document unchanged after deriving a proposed
 name from the first level-one heading or the filename. Download URLs are revoked after the
 click. Duplicate creates a new Persona rather than editing the source.
 
@@ -2671,6 +2776,69 @@ the Persona's provider override or the app-wide provider; then the Persona's mod
 unknown to an older build is reported and falls back through the shared provider ladder.
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
+
+### Importing a Persona from a file
+
+There are two ways to bring an externally-authored Markdown role in, and they differ in one
+thing that matters:
+
+- **Import .md** picks a file with the browser's file dialog. The bytes are uploaded and stored.
+  Mission Control never learns where the file was, so nothing can be said later about it.
+- **Import from path** names an absolute path *on the machine the daemon runs on*. The daemon
+  reads that file itself, which is what lets the Persona remember where its guidance came from.
+
+An imported Persona is an ordinary Persona: revisioned, editable, archivable, offered to any
+workflow stage. What it carries in addition is **provenance** - the source path, the enclosing
+git worktree when there is one, the version from the nearest `.claude-plugin/plugin.json` when
+the file sits under an installed Claude Code plugin, a sha256 of the exact bytes read, and when
+it was imported. The editor prints the path and the timestamp under the Persona's name.
+
+The name comes from the document's first level-one heading (or the filename, when it has none)
+and the description from the paragraph under it - the same rule the built-ins and **Import .md**
+use, so one document arrives under one name however it got here.
+
+The path is refused, by name, when it is not absolute, when nothing is there, when it is not a
+regular file, when it is not valid UTF-8 or contains NUL bytes, or when it is larger than the
+100,000-byte guidance limit. An oversized file is **refused rather than truncated**: a Persona
+carrying a prefix of its source would still be a valid reviewer while judging with less
+authority than the document it names.
+
+#### Upstream changes
+
+Source files move on - a plugin upgrade, a `git pull`. Mission Control re-reads every imported
+Persona's source when an authoring surface opens and when you press **Check upstream**, hashes
+what it finds, and compares it with the hash recorded at import. Nothing is watched or polled in
+the background, and nothing is ever adopted automatically.
+
+A Persona whose source has changed is tagged `upstream changed` in the Persona list and on its
+Library card, and its editor says so. One whose source cannot be read at all - deleted, moved,
+replaced by a directory, grown past the limit - is tagged `source missing`. In both cases the
+**stored guidance is unchanged and is still exactly what runs**.
+
+**Re-import from source** adopts the file's current text as a new revision through the same
+compare-and-swap as any other save, so a re-import from a stale tab is refused rather than
+overwriting whatever landed first. It replaces the guidance and the provenance record; the name
+and description stay yours, because you may have edited them and because a heading that now
+collides with another Persona would otherwise make the change impossible to adopt at all.
+
+Published workflow versions and ensemble evaluations are untouched by all of this. A published
+version carries its own copy of the guidance it was published with, exactly as it does for an
+edited or archived Persona (see
+[Workflow drafts and published versions](#workflow-drafts-and-published-versions)), so an upstream
+edit can never change what a judge already scored with. Adopting drift into a workflow is two
+deliberate steps: re-import, then publish a new version.
+
+Re-import is refused for a built-in, for an archived Persona, and for one that was authored in
+the editor rather than imported - there is no source file to re-read, and the refusal says so.
+
+The motivating source for this is [UpstartClaw](https://github.com/teamupstart/claude-code-extensions)'s
+`agent-team` role documents (Reviewer, Tester, and the rest), which are shaped as
+persona-plus-DO/DON'T contracts and read as review roles almost unchanged. Point **Import from
+path** at one inside the installed plugin, for example
+`~/.claude/plugins/.../plugins/agent-team/references/roles/reviewer.md`, and the Persona records
+the plugin version it was adapted from. When the plugin is upgraded, the badge appears and the
+diff is yours to adopt. None of those documents are copied into this repository: they are the
+plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
@@ -3192,9 +3360,10 @@ place. A workflow whose final gate is Inspector ends the ladder with a fixed `In
 *after* the End outcome, marked `Fixed`, reading `Not reached` until the run gets there.
 Preview feedback can be copied there. The failing rung also reports a member that has failed consecutive
 repair rounds, the signal of a non-converging repair loop. At the Inspector gate, **Recheck
-Inspector** evaluates the wait again and **Open PR** opens the adopted pull request. A waiting
-run with a missing or unadopted PR also offers **Prepare PR in session** when its immutable run
-policy permits preparation. An uncertain delivery can be resolved under the same confirmation
+Inspector** evaluates the wait again, and **Open PR** opens the adopted pull request when there
+is one - it is absent rather than greyed out on a gate with no pull request adopted yet, which
+is every Inspector workflow up to the moment one is. A waiting run with a missing or unadopted
+PR also offers **Prepare PR in session** when its immutable run policy permits preparation. An uncertain delivery can be resolved under the same confirmation
 and typed-phrase guards as the Runs page. Use **Open run** for the full evidence and timeline.
 A published version whose graph cannot be expressed as stages keeps the existing workflow chip
 here and links to the Runs page, where its read-only graph remains available.
@@ -3302,13 +3471,42 @@ requested changes with evidence references, and the runner, model, duration and 
 actually ran. Inspector gate state, Foreman completion claims and repair deliveries are the
 same card with a different accent. Durable failures read as sentences - "The write may or may
 not have landed" - with the machine code kept beside them for a bug report, never instead of
-them. The timeline names Personas and rounds rather than printing payload JSON; **Export
-run** remains the complete durable record.
+them. The timeline names Personas and rounds rather than printing payload JSON; the run id and
+the complete durable JSON records sit beside it under **Audit and bug reports**, collapsed,
+because they answer a bug report rather than a reader.
+
+**The header offers one next move, derived from the run's own state.** Not every control the
+run might accept: a single primary, in the language of the person reading the page rather than
+of the route behind it. A parked run offers **Resume review**; an Inspector gate waiting on a
+pull request offers **Ask the session to open a PR**, or **Check again** when its immutable
+policy declines the handoff; a run blocked on an exhausted provider call offers **Retry the
+failed call**. A run whose evidence snapshot has not moved since the last round is refused by
+the daemon, and the primary becomes the recovery for exactly that refusal - **Review this
+snapshot anyway** - which is the only state it appears in.
+
+When there is no move, the header says so **in a sentence** and names where the decision
+actually lives: "Confirm or discard it in Deliveries below", "they are listed under Inspector
+final gate below". A control that cannot run is never left standing in place of an explanation.
+That covers the states nothing argument-free revives - the bound session is gone, the run is
+externally sourced, it has used every repair round its binding allows - and the states blocked
+on a judgement the page carries the material for further down. Beside the primary sit at most
+**Copy feedback** and **Open PR**, and **Open PR** appears only when there is an adopted pull
+request to open.
+
+**A finished run can be run again.** A `completed`, `cancelled` or `failed` run used to be the
+end of the road - every control left on it copied, downloaded or navigated, and nothing anywhere
+offered to review that session again. Its primary is now **Run this review again**, or **Preview
+this review again** on a bound preview: it reads the session's current diff and transcript, runs
+the version that session is bound to against that fresh evidence, and takes you to the new run.
+The finished one stays in history. Where the binding has since been paused, orphaned or archived
+there is no run to start, so the header says which of those it is and what would start another.
 
 Actions that cannot be taken back confirm in the app rather than in a browser dialog.
-**Cancel run**, the resubmission against unchanged evidence, and the delivery's **Mark
-delivered** ask once; **Restart full workflow** and **Discard and send new round** require
-the exact phrase the daemon also demands, typed into the confirm.
+**Cancel run**, the resubmission against unchanged evidence, running a finished review again,
+and the delivery's **Mark delivered** ask once; **Restart full workflow** and **Discard and send
+new round** require the exact phrase the daemon also demands, typed into the confirm. Running a
+review again asks because it spends model tokens and creates a run, not because it destroys
+anything, so it takes one click to confirm rather than a typed phrase.
 
 With no runs at all the tab offers **Bind to a session…**, the same dialog the builder's
 right rail opens.
@@ -3411,12 +3609,10 @@ evidence and the same round, and the timeline records **Check cleanup resolved**
 had already spent every infrastructure attempt moves to `infrastructure_error` instead, which
 is the phase **Retry provider call** belongs to.
 
-Blocked is also no longer a dead end in the header. **Submit fresh evidence** and **Submit
-unchanged** render for a blocked run, not only a parked one, because the daemon has always
-accepted a resubmission for both. When the daemon would refuse - the bound session is gone,
-the run is externally sourced, or it has used every repair round its binding allows - the
-buttons stay visible and disabled, carrying that exact reason, rather than disappearing and
-leaving **Cancel run** as the only thing to reach.
+Blocked is also no longer a dead end in the header. A resubmission is offered for a blocked
+run, not only a parked one, because the daemon has always accepted one for both - so a run
+blocked on a fault that has since cleared, `check_cleanup_unresolved` once its pooled worktree
+came back, is recoverable from the page rather than reading as terminal.
 
 ### Live repair delivery and Foreman completion
 
@@ -3773,10 +3969,12 @@ focus remains separate.
 
 **Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
 tier, **Models** for the provider and four Foreman roles, **Launches** for the three
-per-harness backlog models, and **Safety** for the completion safeguards. The current Foreman
-posture stays above the tabs so a stopped worker is always visible. **Live repositories** and
-**Right now** stay below them as read-only cards; the repository card shows the grant count
-and links to **Settings → Trust**, where repository access is edited.
+per-harness backlog models, and **Safety** for the completion safeguards. Each tab shows how
+many settings it holds, and each field's explanation appears on hover or focus - as the
+control's tooltip and accessible description - rather than printing under the field. The
+current Foreman posture stays above the tabs so a stopped worker is always visible. **Live
+repositories** and **Right now** stay below them as read-only cards; the repository card
+shows the grant count and links to **Settings → Trust**, where repository access is edited.
 
 Two default-on safeguards under **Settings → Foreman → Safety** decide which
 finished work never reaches an automatic completion action:
@@ -6021,6 +6219,9 @@ internal tracker becomes backlog rows.
 | `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](#the-ask-channel)'s `--mcp-config`. If the path doesn't exist the channel is skipped entirely and the session keeps Claude's built-in menu |
 | `MISSION_TASK_SOURCE_TICK_MS` | `30000` | [Task sources](#task-sources-pulling-work-into-the-backlog): how often the sweeper wakes to ask which sources are due. Not the sweep interval - that is per source, and clamped to 1 minute - 24 hours. Floored at `5000` |
 | `MISSION_TASK_SOURCE_TIMEOUT_MS` | `60000` | Task sources: hard cap on one sweep, so a hung source cannot wedge its own schedule. Floored at `5000` |
+| `JIRA_API_TOKEN` | unset | [Jira task sources](#jira): the API token the REST fallback authenticates with when the `jira` CLI is not on the daemon's `PATH` (or cannot answer). Read **bare**, without the `MISSION_` prefix, because it is the same variable `jira-cli` and Atlassian's own shell helpers already use - so a machine set up for either needs nothing new. Never stored in Mission Control's database; read from the daemon's environment when it sweeps, so a variable exported after the daemon started needs a restart to reach it |
+| `JIRA_EMAIL` | unset | Jira task sources: the account the token belongs to. Jira basic auth is the **pair** - one without the other is reported by name in the source's preflight rather than failing as a bad password |
+| `JIRA_ALLOWED_HOSTS` | unset (Jira Cloud only) | [Jira task sources](#jira): extra hosts the REST rung may send `JIRA_API_TOKEN` to, comma-separated; `*.example.internal` allows a whole domain. Without it the credential goes only to `*.atlassian.net`, so a lookalike host - or a config written by something other than you, since the config route is localhost-reachable and dispatched agents share the machine - cannot aim the token elsewhere. Read bare, like the credential itself: widening the target and holding the token are then the same act of trust. Does not affect the `jira` CLI, which uses its own credentials |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where Claude's symlinks are written; set, it wins outright. Overridable so tests never touch your real one - though setting `MISSION_HOME` is the better isolation, because it covers every harness at once and so covers the ones added later. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links. Under the `node --test` runner a reconcile pass over any of the three real directories below is **refused outright**, whatever the config says: pinning one variable and forgetting the others is how `npm run test` came to silently uninstall the machine's live Codex and Pi skills on every run |
 | `CODEX_SKILLS_DIR` | `~/.agents/skills` | the same override for Codex's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/codex-skills`, for the same reason. Point both at one path and the reconciler still walks it once |

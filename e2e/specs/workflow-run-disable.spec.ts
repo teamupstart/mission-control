@@ -170,10 +170,23 @@ test("clicking a reviewer disables it for this run, and the next round auto-pass
   );
   expect(disabled.run.disabledNodeIds).toEqual([NODE.blocking]);
 
-  // The headline: resubmit against the same evidence. Round 2 must auto-pass the disabled
-  // blocker and reach the second reviewer, whose scripted fail becomes the round's REAL
-  // objection - proof the run went PAST the switched-off gate.
-  await dashboard.getByRole("button", { name: "Preview unchanged" }).click();
+  /*
+   * The headline: resubmit against the same evidence. Round 2 must auto-pass the disabled
+   * blocker and reach the second reviewer, whose scripted fail becomes the round's REAL
+   * objection - proof the run went PAST the switched-off gate.
+   *
+   * Reaching an unchanged resubmission takes two presses of the SAME primary now, and that is
+   * the honest route rather than a workaround. Nothing has been delivered to this session, so
+   * the first press is refused for an evidence snapshot that never moved - and the recovery for
+   * that refusal is what the primary becomes. Before, the header offered both submissions at
+   * once and this spec skipped straight to the second, which is a state an operator only ever
+   * arrives at through the first.
+   */
+  const primary = dashboard.locator("header.wf-run-head button.btn-primary");
+  await expect(primary).toHaveText("Preview fresh evidence");
+  await primary.click();
+  await expect(primary).toHaveText("Preview unchanged", { timeout: 40_000 });
+  await primary.click();
   await dashboard.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
 
   await expect(row("Blocking reviewer")).toContainText("Disabled", { timeout: 40_000 });

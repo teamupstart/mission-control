@@ -1,10 +1,11 @@
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { recordsIn } from "../fixtures/records.ts";
 
 /**
  * Continuing an Agent SDK session in a terminal carries the mode it was running in.
@@ -62,16 +63,12 @@ async function dispatch(page: Page, daemon: DaemonHandle, agent: "claude" | "cod
  * inspect has already happened by then, which is the half a user's terminal actually runs.
  */
 function recordedWorkspaceCommands(daemon: DaemonHandle): string[] {
-  return readdirSync(daemon.recordDir)
-    .filter((file) => file.startsWith("cmux-"))
-    .sort()
-    .map((file) => {
-      const record = JSON.parse(readFileSync(join(daemon.recordDir, file), "utf8")) as {
-        argv: string[];
-      };
-      if (record.argv[0] !== "new-workspace") return "";
-      const at = record.argv.indexOf("--command");
-      return at >= 0 ? (record.argv[at + 1] ?? "") : "";
+  return recordsIn<{ argv?: unknown }>(daemon.recordDir, (file) => file.startsWith("cmux-"))
+    .map((record) => {
+      if (!Array.isArray(record.argv) || record.argv[0] !== "new-workspace") return "";
+      const argv = record.argv as string[];
+      const at = argv.indexOf("--command");
+      return at >= 0 ? (argv[at + 1] ?? "") : "";
     })
     .filter(Boolean);
 }

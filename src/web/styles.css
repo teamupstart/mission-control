@@ -512,6 +512,25 @@ button.wf-run-version:focus-visible {
   gap: 8px;
 }
 
+/* The sentence that replaces a disabled button, in the identity block beneath the facts row.
+   Capped at a reading measure rather than left to fill the header, because the identity block
+   is `margin-right: auto` in a flex row and an uncapped paragraph pushes the action row it is
+   explaining off to the far edge. No `margin` of its own: it is a `<p>`, so the rule above
+   zeroes it and the identity grid's own 4px gap does the spacing. */
+.wf-run-why {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 66ch;
+  padding: 1px 0 3px;
+}
+
+/* The fact leads; the pointer at whoever owns the decision follows it in muted text. */
+.wf-run-why b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 /* The bound session, as a link rather than a labelled button: the name IS the affordance,
    and a disabled one still has to say which session has gone. */
 .wf-run-session {
@@ -10749,6 +10768,38 @@ select.ensemble-judge-persona {
 .persona-file-input {
   display: none;
 }
+/* Import-by-path and the upstream re-check, on their own strip under the file picker: the path
+   field needs the width of the row, and putting it beside the State select would squeeze both
+   to where neither reads.
+   The field takes a line of its own and the two buttons share the next one. On one line in a
+   ~280px rail the field collapses to a slot too narrow to read a path in and both labels wrap
+   mid-phrase - which is what this looked like before the rows were split. */
+.persona-import-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.persona-import-path {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.persona-import-source .btn {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+.persona-import-source input {
+  width: 100%;
+  padding: 7px 9px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+}
 .persona-list,
 .wf-action-list {
   display: flex;
@@ -10815,6 +10866,14 @@ select.ensemble-judge-persona {
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 999px;
+}
+/* The one tag on these rows that is not provenance-as-trivia: an imported Persona's source file
+   has moved on, and adopting it is a decision waiting for the operator. Toned like every other
+   "this needs you" surface rather than muted like `Built-in` beside it. */
+.persona-list-tag.is-attention {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 10%, var(--panel-2));
 }
 .persona-list-item small,
 .persona-list-empty,
@@ -10898,6 +10957,21 @@ select.ensemble-judge-persona {
 }
 .persona-state.conflict span {
   flex: 1;
+}
+/* Drift reads as information, not as a fault: the stored guidance is intact and still what runs,
+   so this is the one status on the line that does not take the attention colour. A paragraph
+   rather than a row, because the action it names lives in the header with Save and Archive. */
+.persona-state.drift {
+  color: var(--muted);
+  background: var(--panel-2);
+}
+/* Where this Persona's guidance was read from, under the name it was read into. Dim and mono:
+   it is a path an operator scans for a directory they recognise, not prose. */
+.persona-source {
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
 }
 /* The same two toned states for `.wf-state`, which had only the base box: an editor holding
    unsaved text read as ordinary prose, and a `role="alert"` conflict banner - the one moment
@@ -12956,6 +13030,12 @@ select.ensemble-judge-persona {
 .ts-check {
   grid-column: 1 / -1;
 }
+/* The "this filter sweeps nothing" warning, which is a sentence rather than a field: it
+   spans the row for the reason `.ts-field-wide` does, since a 220px grid cell would break
+   one line of prose across five. */
+.ts-no-jql {
+  grid-column: 1 / -1;
+}
 /* One label -> priority mapping. The label field takes the room; the picker and the
    remove button are sized to their content so a column of these lines up. */
 .ts-prio-row {
@@ -13872,6 +13952,12 @@ select.foreman-model-input {
 .sc-tab:focus-visible {
   outline: 2px solid var(--working);
   outline-offset: 1px;
+}
+/* How many settings the group holds, so a tab you have not opened still says how much is
+   behind it. Hidden from the accessible name; the tab's tooltip announces it instead. */
+.sc-tab-count {
+  margin-left: 5px;
+  opacity: 0.55;
 }
 
 /* ---- a control card ---- */

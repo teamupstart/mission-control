@@ -2312,6 +2312,59 @@ export const ArchivePersonaSchema = z.object({
 });
 export type ArchivePersona = z.infer<typeof ArchivePersonaSchema>;
 
+/**
+ * A path on the DAEMON's machine, as an import request body.
+ *
+ * Absolute and NUL-free is checked here, before any code touches the filesystem, because both
+ * refusals are about the string and neither improves by being discovered mid-read. Everything
+ * else a path can be wrong about - a directory, a dangling link, a 4MB file, bytes that are not
+ * UTF-8 - can only be learned by looking, and the reader names each of those separately.
+ *
+ * A ceiling of 4096 is the common `PATH_MAX`; this is a bound on nonsense, not a portability
+ * claim.
+ */
+export const PersonaSourcePathSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine((value) => !value.includes("\0"), { message: "path may not contain a NUL byte" })
+  // Judged on the string exactly as POSIX does, rather than through `node:path`, so this
+  // schema stays usable in a browser that has no `path` module to import.
+  .refine((value) => value.startsWith("/"), {
+    message: "path must be absolute - Mission Control reads it on the daemon's machine",
+  });
+
+export const ImportPersonaSchema = z.object({ path: PersonaSourcePathSchema });
+export type ImportPersona = z.infer<typeof ImportPersonaSchema>;
+
+/**
+ * Re-import carries only the revision it believes it is replacing.
+ *
+ * Deliberately not the path: the path is provenance the daemon already stores, and accepting
+ * one here would let a browser re-point a Persona at another file while calling it a refresh.
+ * Changing where a Persona comes from is an import, which creates its own row.
+ */
+export const ReimportPersonaSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+});
+export type ReimportPersona = z.infer<typeof ReimportPersonaSchema>;
+
+/**
+ * The provenance blob as it is stored, and as it is read back.
+ *
+ * Bounded field by field because this is durable text that a later build parses: an unbounded
+ * `sourceRepo` would let one malformed write make every read of that row expensive. Strict on
+ * shape and tolerant in use - the store degrades a blob that fails this to null rather than
+ * failing the Persona.
+ */
+export const PersonaProvenanceSchema = z.object({
+  sourcePath: PersonaSourcePathSchema,
+  sourceRepo: z.string().min(1).max(4096).nullable(),
+  pluginVersion: z.string().min(1).max(200).nullable(),
+  contentSha256: z.string().regex(/^[0-9a-f]{64}$/, "contentSha256 must be lowercase hex sha256"),
+  importedAt: z.number().int().nonnegative(),
+});
+
 const WorkflowIdSchema = z.string().min(1).max(200);
 const WorkflowNodeIdSchema = z.string().min(1).max(200);
 const WorkflowOutcomeSchema = z.string().min(1).max(200);

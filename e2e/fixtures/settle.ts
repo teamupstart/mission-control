@@ -16,6 +16,15 @@ import { expect, type Locator } from "@playwright/test";
  * BARRIER, never a mask: the assertions that the control EXISTS and says the right thing run
  * before this, so a genuinely missing or wrong control fails exactly as loudly as it did.
  *
+ * The CADENCE is pinned at 100ms rather than left to `expect.poll`'s default, and that is the
+ * difference between this converging and not. The default schedule backs off to one read per
+ * second, so a bar that reflows every few hundred milliseconds is sampled almost exclusively
+ * across its churn: two reads a second apart keep differing, and the barrier burns its whole
+ * 30s budget while the element is in fact holding still for stretches at a time. Observed as a
+ * timeout in `attention-pills-agree.spec.ts` under the full suite's parallel load, passing
+ * 6/6 in isolation. A fixed fast cadence asks the same question often enough to hear the
+ * answer; the definition of settled is unchanged.
+ *
  * Shared rather than copied per spec because it was already written twice, and the second
  * copy is how the third one gets slightly different numbers. `line-drawers.spec.ts` keeps its
  * own `settledBox` on purpose: that one wants five stable reads on a FIXED cadence and the
@@ -29,5 +38,5 @@ export async function settled(locator: Locator): Promise<void> {
     const same = next === last;
     last = next;
     return same;
-  }, { timeout: 30_000 }).toBe(true);
+  }, { intervals: [100], timeout: 30_000 }).toBe(true);
 }

@@ -22,6 +22,7 @@ const BASE: Persona = {
   archivedAt: null,
   createdAt: 1,
   updatedAt: 1,
+  provenance: null,
   builtin: false,
 };
 

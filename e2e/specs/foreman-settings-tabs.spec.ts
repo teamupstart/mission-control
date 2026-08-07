@@ -1,10 +1,17 @@
 import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
+import { FOREMAN_SETTINGS_TABS } from "../../src/web/lib/foreman-settings-tabs.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 const GROUPS = ["Posture", "Models", "Launches", "Safety"] as const;
+
+function declaredCount(name: (typeof GROUPS)[number]): number {
+  const group = FOREMAN_SETTINGS_TABS.find((candidate) => candidate.label === name);
+  if (!group) throw new Error(`no Foreman settings group is labelled ${name}`);
+  return group.anchors.length;
+}
 
 function controls(page: Page): Locator {
   return page.locator(".sc-controls");
@@ -32,6 +39,9 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
 
   for (const name of GROUPS) {
     const selectedTab = tab(dashboard, name);
+    // The settings count rides the tab face, so an unopened tab already says how much is
+    // behind it - while the accessible name stays the bare group name this locator uses.
+    await expect(selectedTab).toHaveText(`${name}${declaredCount(name)}`);
     await selectedTab.click();
     await expect(selectedTab).toHaveAttribute("aria-selected", "true");
     await expect(posture).toBeVisible();
@@ -66,11 +76,13 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
     heights.set(name, height);
   }
 
-  // Phase 1 keeps every field's visible prose by contract, so it cannot reproduce the
-  // mockup's sub-800 measurements until Phase 2 moves those blurbs on demand. It does prove
-  // the groups no longer sum to the previous 1988px column.
-  expect(Math.max(...heights.values()), "the hidden groups still contribute to layout")
-    .toBeLessThan(1_200);
+  // The bound sits between two measured states of this column, not at a target: with the
+  // per-field prose printed (Phase 1) the tallest tab laid out at 1134px, and with it moved
+  // into the tooltips it lays out at 889px. 1000 is the midpoint-ish line that a reprinting
+  // regression must cross while leaving ~110px for CI font metrics - a knife-edge assert
+  // against the observed value itself would turn rounding into flakes.
+  expect(Math.max(...heights.values()), "a field's explanation is printing under it again")
+    .toBeLessThan(1_000);
   if (process.env.MC_E2E_EVIDENCE) {
     // eslint-disable-next-line no-console
     console.log(`OBSERVED Foreman control heights: ${JSON.stringify(Object.fromEntries(heights))}`);
@@ -83,6 +95,29 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
       path: `${EVIDENCE}foreman-settings-tabs.png`,
     });
   }
+});
+
+test("a model field's explanation is not printed but arrives on focus", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/foreman`);
+  await tab(dashboard, "Models").click();
+  const review = panel(dashboard, "Models").getByRole("combobox", { name: "Review" });
+  await expect(review).toBeVisible();
+
+  // The explanation is the field's accessible description - announced with the control
+  // whether or not a pointer ever hovers it...
+  await expect(review).toHaveAccessibleDescription(
+    /Judges a stuck session's pending question/,
+  );
+  // ...and it paints as the tooltip when the field takes keyboard focus.
+  await review.focus();
+  await expect(dashboard.locator(".tooltip"))
+    .toHaveText(/Judges a stuck session's pending question/);
+
+  // What earned the shorter column: the explanation no longer prints under the field.
+  await expect(panel(dashboard, "Models").locator(".foreman-model-blurb")).toHaveCount(0);
 });
 
 test("the Foreman tabs use selection-following-focus keyboard navigation", async ({

@@ -26,7 +26,15 @@ Mission Control's product reference is organized by feature below.
 
 ## Architecture
 
-Reserved for architecture documentation.
+- [Architecture overview](architecture.md)
+- [Session lifecycle](session-lifecycle.md)
+- [Dispatch and runtimes](dispatch-and-runtimes.md)
+- [Harnesses and terminal backends](harnesses-and-terminals.md)
+- [Workflows, personas, actions, and ensembles](workflow-system.md)
+- [Tasks, queues, and schedules](tasks-and-scheduling.md)
+- [Database and migrations](database-and-migrations.md)
+- [Event stream](event-stream.md)
+- [Desktop shell and packaging](desktop-and-packaging.md)
 
 ## Contributing and setup
 

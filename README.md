@@ -3298,9 +3298,19 @@ not. Delete asks for confirmation and cannot be undone.
 ### Manual Preview runs
 
 Bind a session to an exact published workflow version from the workflow history or from any
-fleet layout, then choose **Preview**. A binding records the conversation note key, harness,
-name, working directory, and repository root, and pins the immutable version id. Publishing or
-editing a newer workflow cannot change an existing binding or run.
+fleet layout, then choose **Preview**. On a Cards card and in the Console and Board detail
+header, the offer is a **＋ workflow** chip, and it is present whenever no run currently *owns*
+that session - which includes a session whose last run has finished. A finished run shows both:
+its outcome chip (**Approved**, **Preview cancelled**, **Preview failed**) as history, and the
+＋ workflow chip as the next move. Only an open run withdraws the offer, on the same
+[held-ness join](#layout-cards-console-or-board) the held tag and the backlog drop target
+read, because that is the window in which the daemon would refuse a second binding anyway
+as a conflict. A binding records the
+conversation note key, harness, name, working directory, and repository root, and pins the
+immutable version id. Publishing or editing a newer workflow cannot change an existing binding
+or run. Reaching for the chip on a session that is still bound to an active binding opens the
+dialog on that binding rather than an error: choosing the bound version offers **Submit bound
+version**, and choosing a different one explains the conflict.
 
 Each submit and resubmit carries a durable request key. The daemon creates the submission
 before evidence capture, so retrying the same request returns the same durable row and never

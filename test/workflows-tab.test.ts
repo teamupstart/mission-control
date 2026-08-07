@@ -5,66 +5,24 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session } from "../src/shared/types.ts";
-import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { SessionWorkflowsPane } from "../src/web/components/SessionWorkflowsPane.tsx";
 import { detailTabs } from "../src/web/lib/detailTabs.ts";
 import { ACTIONS, resolveKeybindings } from "../src/web/lib/keybindings.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { mkSessionView } from "./helpers/session-view.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
 
 const read = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
 function view(session: Session, over: Partial<SessionViewProps> = {}): SessionViewProps {
-  return {
-    sessions: [session],
-    tasks: [],
-    backlog: [],
-    onEditTask: () => {},
-    backlogPlan: null,
-    selectedId: session.id,
-    consoleZone: "rail",
-    onConsoleZoneChange: () => {},
-    onSelect: () => {},
-    onDeselect: () => {},
-    expandedId: session.id,
-    onToggleExpand: () => {},
-    onOpenReviews: () => {},
-    onOpenDiff: () => {},
-    onOpenFiles: () => {},
-    onOpenFile: () => false,
-    onOpenFilePath: () => {},
-    fileTabRequest: null,
-    conversationTabRequest: null,
-    workflowsTabRequest: null,
-    diffTabRequest: null,
-    files: {} as SessionFilesController,
-    onReset: () => {},
-    onComplete: () => {},
-    onKill: () => {},
-    onKilled: () => {},
-    resetNonces: {},
-    registerEl: () => {},
-    registerActions: () => {},
-    registerLaunchers: () => {},
-    registerFind: () => {},
-    registerDetailScroll: () => {},
-    registerReaderTab: () => {},
-    renamingId: null,
-    onRenameStart: () => {},
-    onRenameClose: () => {},
-    foremanMode: "dry-run",
-    foremanEnabled: false,
-    foremanAllowlist: [],
-    inputReviewBySession: new Map<string, string>(),
-    pendingReviewIds: new Set<string>(),
-    reviews: [],
+  return mkSessionView(session, {
     workflowRunBySession: new Map([[session.id, { ...LADDER_SUMMARY, sessionId: session.id }]]),
     onOpenWorkflowRun: () => {},
     ...over,
-  };
+  });
 }
 
 function detailHtml(session: Session): string {

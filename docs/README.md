@@ -30,7 +30,8 @@ Reserved for architecture documentation.
 
 ## Contributing and setup
 
-Reserved for contributor and setup documentation.
+- [Contributing](../CONTRIBUTING.md)
+- [First-run setup](setup.md)
 
 ## Support
 

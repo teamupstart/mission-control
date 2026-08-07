@@ -8,22 +8,25 @@
 // is installed, and write this repo's treehouse.toml. Every step detects whether
 // it is already done, so this is safe to run repeatedly.
 //
-// Usage: node scripts/init.mjs [--dry-run] [--skip-hooks] [--skip-build]
+// Usage: node scripts/init.mjs [--dry-run] [--skip-hooks] [--skip-build] [--with-e2e]
 //   --dry-run     print what each step would do, change nothing
 //   --skip-hooks  don't touch ~/.claude/settings.json (the Claude hooks)
 //   --skip-build  don't run the web/MCP build
+//   --with-e2e    also require the Playwright Chromium browser for browser tests
 
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { have } from "./lib.mjs";
+import { chromiumPrerequisiteMessage, nodePrerequisiteMessage } from "./init-prerequisites.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = new Set(process.argv.slice(2));
 const dryRun = argv.has("--dry-run");
 const skipHooks = argv.has("--skip-hooks");
 const skipBuild = argv.has("--skip-build");
+const withE2e = argv.has("--with-e2e");
 
 let stepNo = 0;
 const problems = [];
@@ -38,6 +41,21 @@ const warn = (m) => {
   console.log(`   \x1b[33m⚠\x1b[0m ${m}`);
   problems.push(m);
 };
+
+function fail(message) {
+  console.error(`\n${message}`);
+  process.exit(1);
+}
+
+async function chromiumPath() {
+  try {
+    const { chromium } = await import("@playwright/test");
+    const path = chromium.executablePath();
+    return existsSync(path) ? path : null;
+  } catch {
+    return null;
+  }
+}
 
 function cap(cmd, args, opts = {}) {
   try {
@@ -70,7 +88,13 @@ function run(cmd, args, opts = {}) {
 console.log(`\x1b[1mMission Control · init\x1b[0m${dryRun ? "  (dry-run)" : ""}`);
 console.log(`repo: ${repo}`);
 
-// 1. Node dependencies -------------------------------------------------------
+// 1. Runtime prerequisite -----------------------------------------------------
+heading("Node.js prerequisite");
+const nodeProblem = nodePrerequisiteMessage(process.versions.node);
+if (nodeProblem) fail(nodeProblem);
+ok(`Node.js ${process.versions.node}`);
+
+// 2. Node dependencies -------------------------------------------------------
 heading("Node dependencies");
 if (existsSync(join(repo, "node_modules"))) {
   ok("node_modules present");
@@ -80,7 +104,15 @@ if (existsSync(join(repo, "node_modules"))) {
   if (run("npm", ["install", "--no-audit", "--no-fund"])) ok("dependencies installed");
 }
 
-// 2. Build -------------------------------------------------------------------
+// 3. Browser prerequisite -----------------------------------------------------
+if (withE2e) {
+  heading("Playwright Chromium prerequisite");
+  const path = await chromiumPath();
+  if (!path) fail(chromiumPrerequisiteMessage());
+  ok(`Chromium available (${path})`);
+}
+
+// 4. Build -------------------------------------------------------------------
 heading("Build (web UI + MCP bundle)");
 if (skipBuild) {
   ok("skipped (--skip-build)");
@@ -88,7 +120,7 @@ if (skipBuild) {
   ok("built dist/web + dist/mcp");
 }
 
-// 3. treehouse (pooled worktrees) --------------------------------------------
+// 5. treehouse (pooled worktrees) --------------------------------------------
 heading("treehouse - pooled git worktrees");
 if (have("treehouse")) {
   ok(`installed (${ver("treehouse")})`);
@@ -112,7 +144,7 @@ if (existsSync(join(repo, "treehouse.toml"))) {
   ok("wrote treehouse.toml");
 }
 
-// 4. Claude status hooks -----------------------------------------------------
+// 6. Claude status hooks -----------------------------------------------------
 heading("Claude status hooks");
 if (skipHooks) {
   ok("skipped (--skip-hooks) - wire later with `npm run install-hooks`");

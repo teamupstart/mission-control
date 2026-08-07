@@ -100,6 +100,6 @@ const page = `<!doctype html><html><head><meta charset="utf-8">
 </div>
 </body></html>`;
 
-const out = fileURLToPath(new URL("../docs/mockups/_launcher-preview.html", import.meta.url));
+const out = fileURLToPath(new URL("../docs/archive/mockups/_launcher-preview.html", import.meta.url));
 writeFileSync(out, page);
 console.log(out);

@@ -2,7 +2,7 @@
 
 Implementation index for [plan.md](plan.md) - the approved source plan turning the BACKLOG
 stage click into the queue drawer (mockup A) and the autopilot planner (mockup B), per the
-mockups in `docs/mockups/backlog-expanded-menu.html`.
+mockups in `docs/archive/mockups/backlog-expanded-menu.html`.
 
 ## Incorporated human decisions
 

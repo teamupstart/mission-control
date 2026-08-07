@@ -2,7 +2,7 @@
 
 Source plan: [plan.md](plan.md)
 
-Approved visual direction: [Duplex Console mockup](../../mockups/conversation-terminal/02-duplex-console.html)
+Approved visual direction: [Duplex Console mockup](../../archive/mockups/conversation-terminal/02-duplex-console.html)
 
 Status: Ready to schedule after this planning branch is pushed
 

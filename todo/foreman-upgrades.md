@@ -92,8 +92,8 @@ it through the loop it already runs. Closes the gap from "auto-responder" to fir
 distinction so escalation policy differs by deliverable type (PR/merge vs report).
 
 ### 5. Codex support — shipped within the launch-scoped boundary
-See [Foreman](../README.md#foreman-auto-responder) and
-[Work queues](../README.md#work-queues-load-a-session-up-and-walk-away) for the current support
+See [Foreman](../docs/foreman.md#foreman-auto-responder) and
+[Work queues](../docs/work-queues.md#work-queues-load-a-session-up-and-walk-away) for the current support
 contract and launch-scoped authorization boundary.
 
 ### 6. Turn-end / wedged-session recovery — reliability

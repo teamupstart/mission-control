@@ -4,7 +4,7 @@ The terminal mechanism this plan set out to replace drove sessions by typing int
 bracketed paste, a measured settle window, an Enter that may or may not land, and a
 screen-scrape parser that reads permission prompts and `AskUserQuestion` menus off a pane
 capture so a cursor walk can answer them. The
-[README](../../../README.md#dispatch-an-agent) owns the current runtime-specific dispatch
+[README](../../dispatch-and-backlog.md#dispatch-an-agent) owns the current runtime-specific dispatch
 contract. This plan migrates dispatched Claude and Codex sessions to their vendors'
 programmatic interfaces - the Claude Agent SDK and Codex's `app-server` protocol - behind a
 shared abstraction, selected by a settings toggle, without adding new agent ids and without

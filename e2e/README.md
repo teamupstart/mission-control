@@ -634,6 +634,32 @@ session, the workflow version and the model spend.
 
 Attach the generated frames to the pull request; they are never committed.
 
+### The bind chip, back after a finished run
+
+`e2e/.artifacts/workflow-bind-chip-returns/` carries four frames from
+`specs/workflow-bind-chip-returns.spec.ts`. They exist because the fix is a control *appearing*,
+and the state it appears in used to be a dead end: a session whose review had completed hid the
+`＋ workflow` chip forever, so the outcome chip stood there with no next move beside it.
+
+`console-detail-approved-and-bind-chip.png` is the headline - a console detail header reading
+`⌁ Approved` and `＋ workflow` side by side, the history and the next move at once.
+`card-approved-and-bind-chip.png` is the same pairing on a Cards card, at the narrow width where
+the head has to wrap to fit both. `bind-dialog-from-finished-run.png` and
+`console-detail-bind-dialog.png` are where each chip leads: the bind dialog pinned to that
+session, with the bound version chosen and `Submit bound version` enabled - the resubmit the
+daemon accepts while the original binding is still active.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-bind-chip-returns.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

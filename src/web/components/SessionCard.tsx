@@ -6,7 +6,7 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
-import { sessionIsHeld } from "../lib/held.ts";
+import { sessionCanBindWorkflow, sessionIsHeld } from "../lib/held.ts";
 import { queueChipVisible, queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { Keycap } from "./Keycap.tsx";
@@ -268,7 +268,11 @@ export function SessionCard({
               : undefined
           }
         />
-        {!workflowRun && onBindWorkflow && (
+        {/* Not `!workflowRun`: a finished run leaves its outcome chip standing beside this one,
+            because the outcome is history and this is the next move. `sessionCanBindWorkflow`
+            asks whether a run still OWNS the session, which is the only thing that should
+            withhold the offer. */}
+        {sessionCanBindWorkflow(workflowRun) && onBindWorkflow && (
           <Tooltip label="Bind a published workflow version">
             <button
               className="workflow-bind-chip"

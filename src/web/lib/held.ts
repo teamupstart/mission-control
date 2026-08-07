@@ -49,3 +49,27 @@ export function sessionIsHeld(
 ): boolean {
   return run != null && workflowRunIsOpen(run.status) && tone === "idle";
 }
+
+/**
+ * Whether a session surface may still offer to bind a workflow to it.
+ *
+ * The run half of the same join, read the other way round. A session is bindable when no run
+ * OWNS it right now - which is not the same question as "has this session ever had a run", and
+ * the difference was a dead end: the `＋ workflow` chip asked the second question, so a session
+ * whose review had finished hid the chip forever and could never be reviewed again from the
+ * card or the console detail header.
+ *
+ * The run it was bound to is still worth drawing after it ends - `WorkflowChip` says "Approved"
+ * or "Preview cancelled" off the very same summary - so a terminal run shows BOTH: the outcome
+ * chip as history, this chip as the next move. That pairing is why the fix lives here and not in
+ * `workflowRunBySession`, which deliberately keeps the newest run per session, terminal ones
+ * included, and which several display surfaces read for exactly that reason: the outcome chip,
+ * the board tile's ladder, and the console's Workflows tab. Narrowing that map would delete the
+ * history to fix the affordance. Narrowing it here fixes the affordance and keeps the history.
+ *
+ * `workflowRunIsOpen` rather than a terminal-status list of our own, for the reason
+ * `heldSessionIds` gives: `WORKFLOW_RUN_STATUSES` is append-only.
+ */
+export function sessionCanBindWorkflow(run: WorkflowRunSummary | null | undefined): boolean {
+  return run == null || !workflowRunIsOpen(run.status);
+}

@@ -1,0 +1,87 @@
+# First-run setup
+
+This walkthrough takes a new checkout from clone to a running Mission Control and
+its full verification suite. For the contributor expectations and test policy, see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Prerequisites
+
+Install Node.js 24 or newer and verify it:
+
+```sh
+node --version
+```
+
+Browser tests also need Playwright Chromium once per machine. `npm install` does not
+download it, so install it explicitly when you need e2e coverage:
+
+```sh
+npx playwright install chromium
+```
+
+## Bootstrap the checkout
+
+```sh
+git clone <repository-url>
+cd ai-harness
+make init
+```
+
+`make init` is safe to repeat. It installs npm dependencies, builds the application,
+installs or configures treehouse pooled worktrees, and merges the Claude status hooks
+into `~/.claude/settings.json` without replacing your other hooks. To validate the
+browser prerequisite as part of bootstrap, run:
+
+```sh
+make init ARGS="--with-e2e"
+```
+
+The init command checks the Node version before it changes the checkout, and checks
+for Chromium before build and hook setup when `--with-e2e` is requested. Each failed
+check prints the command that fixes it. `make setup` is available when you want only
+dependencies, build, and hooks, without treehouse setup.
+
+## Run Mission Control
+
+```sh
+npm run dev
+```
+
+This starts the daemon and Vite dashboard. Open `http://127.0.0.1:5173`. To run the
+desktop shell too, use `npm run dev:desktop`; `npm run dev:start` also starts Foreman.
+
+The daemon's default state directory is `~/.mission-control`. It contains the SQLite
+database, token, logs, and dispatch worktrees. Set `MISSION_HOME` to use a separate
+state root; [configuration.md](configuration.md) documents that and the other runtime
+settings. `make db` opens the active database in a read-only shell.
+
+The Claude status hooks installed by `make init` take effect for sessions started
+after installation. Re-run `npm run install-hooks` after changing hook configuration.
+
+## Verify the checkout
+
+```sh
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e
+```
+
+The e2e suite drives the built dashboard and built daemon, so build first. It uses
+fake agents and does not spend model tokens. See [e2e/README.md](../e2e/README.md) for
+focused commands, traces, and its isolation rules.
+
+## Explore without real agent sessions
+
+After building, launch the isolated demo:
+
+```sh
+npm run demo
+```
+
+Demo mode uses `~/.mission-control-demo` rather than your normal state directory and
+replaces agent binaries with local scenario players. `npm run demo -- --fresh` rebuilds
+and seeds a populated demo fleet; it takes longer because it drives real application
+routes. See [demo-mode.md](demo-mode.md) for its flags and boundaries.

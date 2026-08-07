@@ -38,7 +38,8 @@ Mission Control's product reference is organized by feature below.
 
 ## Contributing and setup
 
-Reserved for contributor and setup documentation.
+- [Contributing](../CONTRIBUTING.md)
+- [First-run setup](setup.md)
 
 ## Support
 

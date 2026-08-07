@@ -11,7 +11,7 @@ Turn the read-only dashboard into a launch pad. From the UI you pick a repo, typ
 task, and hit **Dispatch**. The daemon provisions an **isolated git worktree**, opens a
 **detached tmux session** running the agent (`claude`/`codex`) in that worktree, and
 delivers the task as the agent's first prompt. The
-[README](../../../README.md#dispatch-an-agent) owns the current runtime-specific launch and
+[README](../../dispatch-and-backlog.md#dispatch-an-agent) owns the current runtime-specific launch and
 delivery contract. The new session shows up on the grid within one poll, **bound to a
 persistent task record** that carries its intent (and later its outcome).
 

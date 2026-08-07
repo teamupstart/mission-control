@@ -1,0 +1,338 @@
+# Inspector (automated PR review)
+
+The Inspector reviews the pull requests **Mission Control opened** - and only those -
+against the reviewed repo's [`INSPECTOR.md`](#inspectormd), leaves inline review comments for what it finds,
+answers replies in its own threads, re-reviews on every push, and resolves its own
+threads once a push fixes what they were about. When a live review finds nothing further
+and every earlier Inspector finding is resolved, it leaves one top-level comment for that
+head saying the pull request is safe to merge.
+
+It ships **off**, in **dry run**, trusting **no repositories**. Turning it on is three
+separate acts in Settings → Inspector, and the first two are reversible without anyone
+else seeing anything. Enabling and mode live on the Inspector panel; which repos it may post
+in is a column of **Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)** now (the
+panel shows the count and links there), the same list `mode` is checked against below.
+
+### Only our pull requests
+
+This is the whole consent model, so it is worth being precise about. Mission Control
+learns about PRs two loose ways - a URL sniffed out of any `Bash` result, and
+`gh pr list --head <branch>` - and neither can tell a PR you opened from one a colleague
+opened on the same branch. Neither adopts anything.
+
+A PR is adopted for review only when the hook saw the agent run **`gh pr create`**. It is
+matched on the command, not the output, because `gh pr view` prints the same URL.
+
+Adopted PRs are recorded durably and stay adopted while they are open, even after the
+session that opened them exits. A PR with no adoption record is never touched. Adoption is
+not consent to post - that is `mode` plus the allowlist - so a PR is recorded whenever the
+proof arrives, including while the Inspector is switched off. That single local insert is
+the only thing it does while off; it runs no `gh` and no model.
+
+### Knowing its own comments
+
+A comment counts as the Inspector's own only if **both** are true: it was written by the
+login `gh` is authenticated as, **and** it carries a hidden marker
+(`<!-- mission-inspector:v1 … -->`) at the very start of its body. That is what decides
+which threads get resolved and which questions get answered.
+
+Neither half is enough alone, for different reasons. The account is shared - you comment
+under it, other agents run as you, a second Mission Control on another machine posts as
+you - so the author cannot tell our comments from those; the marker can. And the marker's
+prefix is a fixed public string whose fingerprints are visible in any PR's page source, so
+anyone who can comment on the pull request can paste one; the author check is what stops a
+forged comment being read as ours. If `gh` cannot say who we are, nothing counts as ours
+and nothing is resolved or answered.
+
+The marker must be at the *start* of a body to count. GitHub's quote-reply prefixes every
+line with `> `, so a human quoting one of our comments would otherwise be mistaken for us
+and never answered.
+
+### What it can read, and why that is a trade
+
+On Claude, the reviewer runs `claude -p` with **`Read`, `Grep`, `Glob`** in the reviewed
+worktree. Reviewing a diff without being able to open a file misses most of what matters -
+whether a change breaks a caller three files away, whether there is a test - so the grant is
+deliberate. It also means a pull request diff (which anyone can author) reaches a model
+that can read the filesystem, whose output is published publicly.
+
+Five things stand in the way of that:
+
+1. **Tool allowlist** - reading only. No `Bash`, no `Write`/`Edit`, no `WebFetch`, no MCP.
+2. **Path deny rules** handed to Claude Code itself, covering `.env*`, keys, `.ssh`,
+   `.aws`, `.git/config`, and Mission Control's own state - denied for all three of
+   `Read`, `Grep` and `Glob`, since `Grep` prints the lines of any path it is given.
+3. **Working directory** is the reviewed worktree; under `-p` a read outside it has nobody
+   to approve it, so it fails.
+4. **Every finding must name a file the PR changed.** One that doesn't is discarded - so
+   "read a secret and repeat it" produces a comment with nowhere to land.
+5. **A secret scrubber** on every outbound string, including the review summary, which is
+   the one output rule 4 does not constrain.
+
+**On Codex there is no grant at all, and the Inspector says so rather than pretending.**
+The five constraints above are enforced by the provider, not asked for in the prompt, and
+`codex exec` cannot express this exact per-tool deny list. Rather than accept a weaker
+grant under the same name, the runner declares it can sandbox none, and the Inspector hands
+it no tools: a Codex review reads the diff in the prompt and nothing else. That is a
+narrower review - it cannot go and check the caller three files away - and it is the
+honest version of the trade, which is why the panel prints it beside the provider picker.
+
+It never approves or requests changes; it comments. It does not chase comments to
+resolution - it surfaces issues and resolves what later pushes fix.
+
+### INSPECTOR.md
+
+Put one in the repository being reviewed, at `personas/INSPECTOR.md` or at the root. It tells
+the Inspector what the project cares about and, as importantly, what not to comment on - an
+automated reviewer that pattern-matches style nits is worse than none. This repo's own is
+[`personas/INSPECTOR.md`](../personas/INSPECTOR.md).
+
+Both locations are supported and `personas/` wins when a repo has both: it keeps the brief
+beside the [rest of the persona documents](../personas/), while the root name is what repos
+configured before that convention already carry, and demoting those to the default brief would
+weaken their reviews without anything failing. A blank file at the preferred path falls through
+to the root rather than shadowing it.
+
+A repo with neither is reviewed against a built-in default brief instead - general engineering
+judgement, with the same insistence on a low noise floor - so the Inspector still works on a
+repo nobody has configured. It's read fresh each round, so editing it changes the next review.
+
+The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the Inspector judges a PR
+against the contract the repo actually asserts. Both names are consulted, at the repo root
+and in any directory the PR touched, but a document is loaded **once**: repos commonly ship
+one of those names as a symlink to the other (this one does), and two names for a single
+file are one contract, not two copies of it in the prompt.
+
+### On the card
+
+A session whose pull request has been adopted grows a `⌕` chip beside its PR chip, and the
+mark next to the glyph is where the review stands: no mark at all means adopted but not
+looked at yet, `✓` means reviewed with nothing outstanding, a number is the count of open
+findings, and `!` means the last round didn't complete. It's a mark rather than a word
+because a word costs the card title the width it needs; the sentence is in the tooltip. In
+`dry-run` the chip is set apart - a dashed border, a dotted underline in the rail - and the
+tooltip says nothing was posted.
+
+Cards, board tiles and the console detail all carry it, and there it opens the pull
+request. The console rail carries the same mark without the link, and only when there is
+something to say - open findings or a failed round - because a rail line is scanned rather
+than read.
+
+### The review model
+
+**Settings → Inspector → Model** names what the review and the follow-up replies spawn as,
+and the **Provider** row above it names the CLI they spawn through. It ships as
+`claude-sonnet-5` on the `claude` provider, and the field's own line tells you where the
+value in force came from - your config, `MISSION_INSPECTOR_MODEL` in the daemon's
+environment, or the shipped default. Leave it empty to accept whichever of the other two
+applies. The Inspector keeps its own provider choice rather than following the app-wide
+one, because [what it can read](#what-it-can-read-and-why-that-is-a-trade) changes with it.
+
+Naming a default at all is the point. An unset `--model` inherits whatever the local
+`claude` CLI happens to default to - on one machine that resolved to the 1M-context Opus
+tier at roughly $2 a round - and nothing in the app recorded it or could show it to you.
+
+A model is a **cost** choice here, not a latency one. The same 10KB PR measured 225s on
+Opus and 272s on Sonnet: the cheaper model read more files to reach the same verdict. See
+`MISSION_INSPECTOR_TIMEOUT_MS` for the ceiling those numbers set.
+
+### Dry run
+
+`dry-run` does everything except post: it adopts, reviews, computes findings and dedupes
+them, then records them instead of publishing. **Settings → Inspector → Inspections** is
+where you read what it would have said. Run it there on a few of your own PRs before you
+let it speak.
+
+Each row says where that PR stands: `queued` (adopted, not yet looked at), `failed` (the
+last round errored - hover the link for why), a finding count, or `clean`, beside a count
+of the findings a later push has since fixed. A PR that has since closed reads `merged` or
+`closed` and is dimmed: it left the sweep for good, so it is history rather than a queue. A
+closed PR that *was* reviewed keeps its findings, because what the Inspector said about
+something that landed is the more useful fact.
+
+The count strip above the table tallies those same states and filters to one when you click
+it - on a ledger that is mostly landed work, *with findings* is how you get to the two rows
+that need you. The **Health** card beside it reports the last completed review and the last
+failure, which is the difference between an Inspector that is quiet and one that has been
+erroring for three hours; in the list those look identical, because every row simply keeps
+its last verdict.
+
+The table shows 25 rows at a time, with **Newer** and **Older** under it and a `1-25 of 50`
+readout between them, and it scrolls inside its own frame rather than growing the page. This
+is the same table the Shipping and Foreman panels use, on purpose: the strip is the only
+control for shortening the list, so it has to stay in view while you read the list it
+filters. Picking a tile starts that filtered list at its first page, and the pager is absent
+when everything already fits. The Inspector's list is the 50 most recently reviewed pull
+requests, so the total counts what this panel was served, not everything the database holds.
+
+## Shipping (YOLO mode)
+
+**Settings → Shipping** is where you decide what lands without you. **YOLO mode** merges
+the pull requests Mission Control opened - the same adopted set the Inspector reviews, and
+only those.
+
+It ships **off**, trusting **no repositories**, with a **10 minute** soak.
+
+### What has to be true
+
+Every one of these, on the same read of the pull request:
+
+| Gate | Why |
+|---|---|
+| The Inspector reviewed **this** push | a review of the previous head is not a review of what would land |
+| The Inspector **published** that review | on, **live**, and the repo on *its* allowlist - see below |
+| No active Inspector-gated workflow owns the PR | YOLO mode cannot merge around incomplete Personas or final-gate handling |
+| No open Inspector findings | posted or previewed in dry run - a finding is a finding |
+| No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
+| Nobody requested changes, no required review outstanding | a human veto outranks a clean automated review |
+| **CI passing** on the head commit | a commit with **no** checks does not pass this: it has never been asked |
+| GitHub says it merges cleanly | `CONFLICTING` blocks, and so does mergeability it has not computed yet |
+| Open for the **soak** | the window in which somebody can look and say no |
+| The repo holds the **merge grant** | its own column in [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository), not the Inspector's |
+
+The soak is measured from when the pull request was opened, and defaults to 10 minutes.
+Zero means "merge as soon as everything else passes". A push resets the review gate rather
+than the soak - the new head has to be reviewed clean before anything merges.
+
+The merge itself is a compare-and-swap against the head that was evaluated, so a push
+landing in the seconds between the decision and the call makes GitHub refuse rather than
+merge code nothing has looked at. Squash by default; merge commit and rebase are the other
+two options.
+
+The workflow veto is narrow and can only block. Inspector remains the sole PR poller, and Shipping
+remains the sole merge executor; Shipping rides the Inspector tick instead of polling independently.
+An active published Inspector gate vetoes its adopted or candidate PR; completed, cancelled,
+archived, and no-final-gate workflows do not.
+
+### It needs the Inspector, fully on
+
+YOLO mode rides the Inspector's poll and merges what the Inspector reviewed clean, so with
+the Inspector switched **off** nothing is ever reviewed, nothing qualifies, and nothing
+merges. It is not a way to merge unreviewed pull requests.
+
+All **three** of the Inspector's switches count, not just the first, because a review it
+never published is not a review anything may act on:
+
+| Inspector state | YOLO mode |
+|---|---|
+| **off** | nothing is reviewed, so nothing merges |
+| on, but **dry run** | it reviews and publishes nothing - no merge |
+| on and live, repo **not on the Inspector's allowlist** | same: it reviews, publishes nothing - no merge |
+| on, live, repo on **both** allowlists | the gates above decide |
+
+The middle two are worth stating plainly because they are not obvious: dry run still
+*reviews*, and it advances the reviewed head exactly as a live round does. Only the
+publishing stops. So "the Inspector reviewed this push" is true in dry run, and it is not
+sufficient - **dry run means dry for the merge too**. While YOLO mode is armed, Shipping's
+**Prerequisites** card names whichever of the three is in the way and links to the control
+that fixes it; each reason also appears per pull request in the *Merge queue*. The card
+says so only while something is genuinely unmet - a checklist of green ticks is one nobody
+reads on the day a tick turns red.
+
+Switching from dry run to live does not promote the review that already ran. The reviewed
+head records the Inspector posture that produced it; once live, the Inspector reviews that
+same head again, and only the new live result can authorize a later merge. Rows created by
+an older build have no recorded posture and fail closed through the same re-review path.
+
+The two allowlists stay separate: letting the Inspector comment on a repo is a smaller
+grant than letting it merge there, so a repo has to be on both. Shipping's list does not
+stand in for the Inspector's. Both are columns of
+**Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)** now (the Shipping panel shows
+the merge count and links there); the separation is exactly why Trust draws them as two
+columns and flags the one dangerous combination - merge granted, review not - in amber.
+
+### Why it did not merge
+
+An auto-merger's failure mode is merging nothing and never saying why, so **Settings →
+Shipping → Merge queue** carries the current reason per PR: soaking, CI still running,
+three open findings, not on the allowlist. *Soaking* is its own tile in the strip rather
+than part of *held at a gate*, because it is the one block that clears itself - counting it
+as an obstruction is how the safety valve ends up turned down to zero. When GitHub refuses the merge
+outright - a branch protection rule this app cannot see - its own message is shown there
+verbatim, because that is the only account you get of a rule nothing here can read. The
+queue is drawn as the [same paged table](#dry-run) the Inspector's is, over the same 50 rows.
+
+### When a task's pull request merges
+
+A task whose pull request merged ends as **done**, with that pull request as its outcome,
+instead of as `failed`. This is **not tied to YOLO mode** - a pull request you merged
+yourself on GitHub lands its task exactly the same way.
+
+It matters because `failed` means "ended with no outcome recorded", and a failed task
+reports as a *stopped* blocker - so every task declared to wait on it deadlocks behind
+work that actually shipped. A task left unsettled costs more than a stale row, too: a live
+session counts against the `maxSessions` ceiling, *and* the backlog autopilot refuses to
+hand work to an agent that still has a non-terminal task bound to it, so a finished agent
+both occupies a slot and is ineligible to use it.
+
+**The merge alone does not end the task.** An agent routinely lands an intermediate pull
+request and carries on, and you might merge, read the diff for a minute, and only then
+tell it to continue - so no delay after the merge is long enough to rule more work out.
+The merge is recorded when it happens, and the task is first concluded once its agent
+**appears to have finished the episode**: idle, nothing queued, and not rolled onto new
+work. An agent that is mid-turn is left alone whatever its pull request did.
+
+Once the agent is **gone for good**, though, any pull request it merged is its outcome -
+including one on an episode it had already rolled past. The two cases differ because a
+present agent may still be mid-turn: while it is here, a rollover means it was handed more
+work, so the merge is not concluded yet (above). But a departed agent has no work in flight
+to strand, and reporting a pull request that actually shipped as `failed` would deadlock
+every task waiting on it behind a *stopped* blocker. The merge survives the rollover in the
+task's durable record, so a later prompt cannot outrun it; if several of the agent's
+episodes merged, the **most recent** merge is the one recorded.
+
+An idle agent cannot tell you whether it is finished or merely waiting to be typed at, so
+that conclusion is **reversible**: once a follow-up prompt is delivered, the task goes back
+to running and drops the outcome. Only conclusions Mission Control drew from idleness are
+undone this way - an outcome you recorded yourself is never overwritten. This correction is
+deliberately limited to the current daemon run; after a restart, a completed task stays
+done.
+
+#### A merge that lands when nobody is watching
+
+Neither of those two moments is guaranteed to arrive. An agent killed while the daemon was
+down is never seen being evicted, and a pull request you merge days later belongs to a
+session that no longer exists - so the merge had no observer at all, and the task sat
+`running` or `failed` for as long as you left it there.
+
+So while its row is still present in Mission Control, a task's own pull requests are
+**polled by URL** for as long as its completion is still in question, alongside the ones a
+declared dependency is waiting on and at the same rate. No session needs to exist. When one
+of them merges, the task is completed from the durable record - and that includes rows that
+had already been written off:
+
+| Status when the merge is observed | What happens |
+|---|---|
+| `running`, `dispatching`, agent gone | **done**, with the pull request as its outcome |
+| `running`, `dispatching`, agent still here | nothing yet - the narrower rule above owns it, because the agent may be mid-turn |
+| `failed`, `cancelled` | **upgraded to done**: the error is cleared and the pull request becomes the outcome |
+| `done` | untouched - your outcome is never overwritten |
+| `backlog` | untouched: a rescheduled task is being re-run, so its previous attempt's merge is not this run's result |
+
+Only a **merged** pull request does this. One that was closed without merging changes
+nothing, and neither does one still open. An upgrade records an outcome and nothing else:
+the worktree, branch and any terminal home stay exactly where they were, still behind the
+**Clean up** button, because freeing a checkout runs `git worktree remove --force` and
+stays a human's click. Tasks that declared a dependency on the upgraded one are released
+at the same moment, which is the point - a `stopped` blocker over work that shipped is
+what stalls a backlog.
+
+Unlike the idle conclusion, this one is **not reversible**: it was drawn from a pull
+request in main, not from an agent that had gone quiet, so an agent typing again does not
+reopen it.
+
+What happens to the agent is yours to choose, in **Settings → Shipping**:
+
+| Close the session after merge | What happens |
+|---|---|
+| **off** (default) | The agent stays, with its checkout and its context. Once idle, its merged task lands; a later follow-up reopens it |
+| **on** | If the agent is idle with an empty queue when the merge is observed, Mission Control first marks the task done and then closes its session, freeing a fleet slot for a fresh dispatch. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
+
+An agent that is still **working**, awaiting input, awaiting review, or carrying queued
+work is neither closed nor failed as a substitute for completion, even with the switch
+on. The merge is recorded either way, so its task lands correctly whenever the episode
+does finish.
+
+The reclaim is conditional on purpose: a merge proves the *committed* work landed and says
+nothing about files still sitting unsaved in that checkout, and reclaiming runs
+`git worktree remove --force`. Anything that could be lost stays behind a human click.

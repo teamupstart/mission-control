@@ -4,7 +4,7 @@ Parent plan: [Conversation observed activity sideband](plan.md)
 
 Phase index: [phased-plan.md](phased-plan.md)
 
-Visual target: [Duplex Console mockup](../../mockups/conversation-terminal/02-duplex-console.html)
+Visual target: [Duplex Console mockup](../../archive/mockups/conversation-terminal/02-duplex-console.html)
 
 ## Outcome
 

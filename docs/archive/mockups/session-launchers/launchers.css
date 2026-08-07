@@ -2,7 +2,7 @@
  * Shared chrome for the "open a terminal / open the agent CLI" placement mockups.
  *
  * Tokens are lifted verbatim from the CURRENT src/web/styles.css :root block, not from
- * docs/mockups/theme.css - that older copy still carries --claude / --codex, which the
+ * docs/archive/mockups/theme.css - that older copy still carries --claude / --codex, which the
  * shipping app deleted (a harness colour is declared on the harness and arrives as an
  * inline --agent-accent). Anything below the token block reproduces just enough console
  * detail / grid card chrome to judge a PLACEMENT. Only the launcher controls are up for

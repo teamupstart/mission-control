@@ -42,7 +42,7 @@
     "session-actions": "tsx scripts/builtin-session-actions.ts",
     "session": "node scripts/new-session.mjs",
     "worktree-setup": "node scripts/worktree-setup.mjs",
-    "setup": "npm run build && npm run install-hooks",
+    "setup": "npm install && npm run build && npm run install-hooks",
     "install-hooks": "tsx hooks/install.mjs",
     "install-statusline": "tsx hooks/install.mjs --statusline",
     "install-telemetry": "tsx hooks/install.mjs --telemetry",

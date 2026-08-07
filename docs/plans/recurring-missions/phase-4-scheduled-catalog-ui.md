@@ -25,7 +25,7 @@ Before implementation:
 2. Run all schedule foundation, manager, HTTP, and SSE suites unchanged.
 3. Re-read [`plan.md`](plan.md), [`phased-plan.md`](phased-plan.md), all three prior phase
    files, and the approved
-   [`../../mockups/recurring-missions/index.html`](../../mockups/recurring-missions/index.html).
+   [`../../mockups/recurring-missions/index.html`](../../archive/mockups/recurring-missions/index.html).
 4. Open all current session renderers before changing task metadata:
    `SessionCard`, `ConsoleDetail`, `SessionTile`, and `RailRow`.
 5. Inspect then-current `App.tsx`, `SessionViewProps`/`cardProps`, overlay registry, topbar,

@@ -57,13 +57,13 @@ test("a head-looking comment cannot swallow the preview CSP or its bridges", () 
 test("checkout-local stylesheets are inlined without weakening the preview CSP", async () => {
   const reads: string[] = [];
   const source = '<html><head><link rel="stylesheet" href="theme.css"></head><body>ok</body></html>';
-  const hydrated = await inlinePreviewStyles(source, "docs/mockups/index.html", async (path) => {
+  const hydrated = await inlinePreviewStyles(source, "docs/archive/mockups/index.html", async (path) => {
     reads.push(path);
     return ":root { --bg: #111; }";
   });
-  assert.deepEqual(reads, ["docs/mockups/theme.css"]);
+  assert.deepEqual(reads, ["docs/archive/mockups/theme.css"]);
   assert.doesNotMatch(hydrated, /<link/);
-  assert.match(hydrated, /data-mission-source="docs\/mockups\/theme\.css"/);
+  assert.match(hydrated, /data-mission-source="docs\/archive\/mockups\/theme\.css"/);
   assert.match(hydrated, /--bg: #111/);
   const preview = htmlPreviewSource(hydrated);
   assert.match(preview, /style-src 'unsafe-inline'/);

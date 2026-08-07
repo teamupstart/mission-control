@@ -1,7 +1,7 @@
 # Phase 2 - Grouping by reason, and the strip's split count
 
 Source plan: [`plan.md`](plan.md) · index: [`phased-plan.md`](phased-plan.md) · mockups:
-[`../../mockups/line-review-drawer/index.html`](../../mockups/line-review-drawer/index.html)
+[`../../mockups/line-review-drawer/index.html`](../../archive/mockups/line-review-drawer/index.html)
 (the section headed **Option B**)
 
 ## Outcome

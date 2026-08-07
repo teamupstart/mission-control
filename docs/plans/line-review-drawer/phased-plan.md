@@ -1,7 +1,7 @@
 # Phased implementation - the Line's Review drawer
 
 Source plan: [`plan.md`](plan.md) ([rendered](plan.html)) · mockups:
-[`../../mockups/line-review-drawer/index.html`](../../mockups/line-review-drawer/index.html)
+[`../../mockups/line-review-drawer/index.html`](../../archive/mockups/line-review-drawer/index.html)
 
 ## Incorporated human decisions
 

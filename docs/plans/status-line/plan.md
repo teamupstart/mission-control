@@ -11,7 +11,7 @@ Related: ccstatusline (the terminal status line we already read these values fro
 [`../mission-report/plan.md`](../mission-report/plan.md) (the report can surface the same
 fields once they exist on `Session`). Current user-facing behavior for the runtime row,
 including its live effort picker, is owned by the README's
-[Status line](../../README.md#status-line-optional) section.
+[Status line](../../sessions.md#status-line-optional) section.
 
 ## Goal
 

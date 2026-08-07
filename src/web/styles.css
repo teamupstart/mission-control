@@ -17160,7 +17160,7 @@ span.line-run-prov {
 }
 
 /* ---- console detail: a bespoke, tabbed reading of one session ----
-   Ported from docs/mockups/console.html: fixed chrome (head / sub / tabs / foot),
+   Ported from docs/archive/mockups/console.html: fixed chrome (head / sub / tabs / foot),
    only the body switches. Padding lives on each section, not the container, so the
    dividing rules run edge to edge. */
 .cdetail {

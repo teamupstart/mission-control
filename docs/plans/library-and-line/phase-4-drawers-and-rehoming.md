@@ -19,7 +19,7 @@ The Line's stages open drawers in place, and execution views leave the Workflows
   `#/workflows/*` spelling redirects permanently; the interim two-tab Workflows page retires; the
   Library's per-shelf cross-links retarget to the new routes.
 
-Visual reference: `docs/mockups/automation-prominence-2/1-library-line.html`, Frame A drawer and
+Visual reference: `docs/archive/mockups/automation-prominence-2/1-library-line.html`, Frame A drawer and
 design notes 02/05.
 
 ## 2. Entry criteria and dependencies

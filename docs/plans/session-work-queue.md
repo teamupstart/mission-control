@@ -841,6 +841,6 @@ need a live agent, which the project guardrail puts off-limits for an automated 
 the manual list below remain worth a human pass with a scratch tmux session before trusting live mode.
 
 Current harness support and its launch-scoped safety boundary are documented in
-[Work queues](../../README.md#work-queues-load-a-session-up-and-walk-away).
+[Work queues](../work-queues.md#work-queues-load-a-session-up-and-walk-away).
 
 ## Out of scope (future)

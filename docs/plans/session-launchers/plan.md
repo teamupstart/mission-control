@@ -4,7 +4,7 @@ Two controls at the top of every conversation. **Terminal** opens a shell in the
 worktree. The agent control focuses a live pane, hands a live embedded conversation to a
 terminal, or resumes an exited conversation whose checkout and id survive.
 
-Mockups: `docs/mockups/session-launchers/index.html`. Option 01 (conversation toolbar) was
+Mockups: `docs/archive/mockups/session-launchers/index.html`. Option 01 (conversation toolbar) was
 selected, along with three behavioural decisions recorded under
 [Decisions taken](#decisions-taken).
 

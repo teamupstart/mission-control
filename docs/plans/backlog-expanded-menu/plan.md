@@ -3,7 +3,7 @@
 Clicking the BACKLOG stage on The Line opens the Sitrep panel today (README's Roundup). That
 panel reads the whole fleet; the stage click deserves a surface about the backlog itself. This
 plan delivers two composed features, explored as mockups A and B in
-`docs/mockups/backlog-expanded-menu.html`:
+`docs/archive/mockups/backlog-expanded-menu.html`:
 
 - **The queue drawer (A)**: Backlog joins Intake, Review, and Decide as the fourth Line drawer.
   Plan-ordered rows, one per task, with the actions an operator reaches for while triaging:

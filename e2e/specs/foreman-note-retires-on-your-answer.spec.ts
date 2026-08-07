@@ -1,10 +1,10 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { dialogMarker } from "../../src/server/foreman/pending.ts";
 
@@ -50,9 +50,7 @@ const SUGGESTION = "Choose biome - it is already in the toolchain.";
 /** The sentence the dashboard shows for a note whose review has since been resolved. */
 const STALE_HINT = /already been resolved/;
 
-const EVIDENCE = fileURLToPath(
-  new URL("../../docs/evidence/foreman-note-retires-on-your-answer/", import.meta.url),
-);
+const EVIDENCE = artifactsDir("foreman-note-retires-on-your-answer");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -73,7 +71,7 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/foreman-note-retires-on-your-answer/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/foreman-note-retires-on-your-answer/${name}.png`);
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {

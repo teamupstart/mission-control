@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -43,7 +43,7 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
 
 const STAGES = ["Intake", "Backlog", "Working", "Review", "Decide", "Shipped"];
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/line-strip/", import.meta.url));
+const EVIDENCE = artifactsDir("line-strip");
 
 /**
  * Photograph the strip this spec is already asserting on.
@@ -62,11 +62,11 @@ async function shoot(page: Page, line: Locator, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await line.screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/line-strip/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/line-strip/${name}.png`);
 }
 
 /**
- * Narrate a step that just passed, so the committed transcript evidences the WALK and not
+ * Narrate a step that just passed, so the pull-request transcript evidences the WALK and not
  * only its verdict.
  *
  * `2 passed` says a spec named some assertions and they held; it does not say the strip

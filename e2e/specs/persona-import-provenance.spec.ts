@@ -1,9 +1,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -39,7 +39,7 @@ const ROLE_V1 = [
 
 const ROLE_V2 = `${ROLE_V1}\n## DON'T\n\n- Comment on formatting.\n`;
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/persona-import-provenance/", import.meta.url));
+const EVIDENCE = artifactsDir("persona-import-provenance");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -57,7 +57,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/persona-import-provenance/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/persona-import-provenance/${name}.png`);
 }
 
 function writeRole(daemon: DaemonHandle, text: string): string {
@@ -73,7 +73,7 @@ test("a Markdown role imported by path records where it came from, badges upstre
   daemon,
 }) => {
   const path = writeRole(daemon, ROLE_V1);
-  // Fixed for the captures below, so the committed evidence is reviewable at the width an
+  // Fixed for the captures below, so PR-attached evidence is reviewable at the width an
   // operator actually uses rather than at whatever the runner's default happens to be.
   await dashboard.setViewportSize({ width: 1440, height: 900 });
   await dashboard.goto(`${daemon.baseURL}/#/library/personas`);

@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -31,7 +31,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const NODE = { persona: "run-again-persona" };
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/workflow-run-again/", import.meta.url));
+const EVIDENCE = artifactsDir("workflow-run-again");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -46,7 +46,7 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/workflow-run-again/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/workflow-run-again/${name}.png`);
 }
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {

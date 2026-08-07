@@ -1,9 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
  * The Inspector settings panel tells an operator where their brief has to live.
@@ -27,7 +27,7 @@ import { expect, test } from "../fixtures/test.ts";
  * No model tokens: nothing here dispatches an agent.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/inspector-brief-location/", import.meta.url));
+const EVIDENCE = artifactsDir("inspector-brief-location");
 
 /**
  * Photograph the paragraph this spec has just asserted on.

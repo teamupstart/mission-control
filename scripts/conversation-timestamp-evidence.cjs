@@ -6,7 +6,7 @@ const { buildSync } = require("esbuild");
 const { app, BrowserWindow } = require("electron");
 
 const repo = resolve(__dirname, "..");
-const outDir = join(repo, "docs", "evidence", "conversation-timestamps");
+const outDir = join(repo, "e2e", ".artifacts", "conversation-timestamps");
 const outPath = join(outDir, "conversation-timestamps.png");
 const buildDir = mkdtempSync(join(tmpdir(), "conversation-timestamp-evidence-"));
 

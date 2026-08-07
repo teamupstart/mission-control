@@ -1,11 +1,11 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -31,7 +31,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const TASK = "write a haiku about flexbox";
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/session-spend/", import.meta.url));
+const EVIDENCE = artifactsDir("session-spend");
 
 /** The daemon's loopback token, for the routes that require it. */
 function token(daemon: DaemonHandle): string {
@@ -60,7 +60,7 @@ async function capture(target: Locator | Page, name: string, observed: string): 
   await expect(page.locator(".tooltip")).toHaveCount(0);
   console.log(`OBSERVED ${observed}`);
   await target.screenshot({ path: join(EVIDENCE, name) });
-  console.log(`CAPTURED docs/evidence/session-spend/${name}`);
+  console.log(`CAPTURED e2e/.artifacts/session-spend/${name}`);
 }
 
 /**

@@ -134,7 +134,7 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
   // of the doc into every Inspector review and Foreman verify prompt. The waste is
   // min(fileSize, MAX_FILE_BYTES) per duplicated doc, so it tracks whatever the root doc
   // currently weighs rather than being a fixed figure - it was 24,576 bytes per prompt
-  // when the defect was found. See docs/evidence/inspector-prompt-bytes.md.
+  // when the defect was found. See docs/agent-guides/inspector-prompt-bytes.md.
   //
   // `identity` keys on the path the read RESOLVED to, which `readRepoDoc` already
   // computed and now reports. Deliberately not a second `realpathSync` here: this

@@ -29,7 +29,7 @@ import { buildReviewPrompt } from "../src/server/inspector/prompt.ts";
 // 6,076 bytes while this fix was in review, which moved the real-checkout saving from
 // 24,605 bytes to 6,093 without anything here changing. A guard pinned to the live file
 // would have started failing for a reason that has nothing to do with the defect.
-// `docs/evidence/inspector-prompt-bytes.md` is where the checkout-specific number lives,
+// `docs/agent-guides/inspector-prompt-bytes.md` is where the checkout-specific number lives,
 // and it is re-measurable by design.
 
 /** Mirrors MAX_FILE_BYTES, so the numbers here are the ones production actually pays. */

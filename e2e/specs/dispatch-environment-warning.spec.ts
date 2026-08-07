@@ -1,10 +1,10 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -26,9 +26,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * dispatch in this suite, so it spends no model tokens.
  */
 
-const EVIDENCE = fileURLToPath(
-  new URL("../../docs/evidence/dispatch-environment-warning/", import.meta.url),
-);
+const EVIDENCE = artifactsDir("dispatch-environment-warning");
 
 /**
  * Capture the note as a reader meets it.
@@ -47,7 +45,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // oxlint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/dispatch-environment-warning/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/dispatch-environment-warning/${name}.png`);
 }
 
 /** Where the plugin's setup skill records how far it got, inside the daemon's isolated home. */

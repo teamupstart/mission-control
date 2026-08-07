@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -20,11 +20,11 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const TOOL_TURN = "E2E_OBSERVED_TOOLS";
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/conversation-observed-activity/", import.meta.url));
+const EVIDENCE = artifactsDir("conversation-observed-activity");
 
 /**
  * Photograph the surface this spec is already asserting on. Behind `MC_E2E_EVIDENCE`
- * and committed, because a card carries a fresh worktree uuid and a relative clock, so
+ * and produced outside the repository, because a card carries a fresh worktree uuid and a relative clock, so
  * an unconditional capture would rewrite a binary on every run for no added signal.
  * Inside the regression rather than a staged walk: the point of the picture is that
  * the assertions around it passed on the same run.
@@ -36,7 +36,7 @@ async function shoot(page: Page, card: ReturnType<Page["locator"]>, name: string
   // it lands on top of the row being photographed.
   await page.mouse.move(0, 0);
   await card.screenshot({ path: `${EVIDENCE}${name}.png` });
-  console.log(`CAPTURED docs/evidence/conversation-observed-activity/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/conversation-observed-activity/${name}.png`);
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {

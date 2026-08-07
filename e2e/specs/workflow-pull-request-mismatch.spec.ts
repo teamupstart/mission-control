@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -41,9 +41,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const NODE = { session: "session-node", action: "action-node", end: "end-node" };
 const PROMPT = "# Pull Request\n\nOpen the pull request for the reviewed work.\n";
-const EVIDENCE = fileURLToPath(
-  new URL("../../docs/evidence/workflow-session-action-authoring/", import.meta.url),
-);
+const EVIDENCE = artifactsDir("workflow-session-action-authoring");
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method?: string): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {

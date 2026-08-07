@@ -1,9 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
  * Adding a Jira task source, in the panel an operator actually uses.
@@ -39,7 +39,7 @@ const NO_CREDENTIAL =
   "no way to reach Jira: install the CLI (`brew install ankitpokhrel/jira-cli/jira-cli` " +
   "then `jira init`), or set JIRA_API_TOKEN and JIRA_EMAIL in the daemon's environment";
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/jira-task-source/", import.meta.url));
+const EVIDENCE = artifactsDir("jira-task-source");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -57,7 +57,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // oxlint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/jira-task-source/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/jira-task-source/${name}.png`);
 }
 
 test("a Jira source is addable from the panel, arrives off, and keeps its filter", async ({

@@ -12,10 +12,10 @@ organized by the split the current UI blurs: **what you author** versus **what i
 
 Mockups (the visual source for every surface named here):
 
-- Round 2 (this direction): `docs/mockups/automation-prominence-2/` - `index.html`,
+- Round 2 (this direction): `docs/archive/mockups/automation-prominence-2/` - `index.html`,
   `1-library-line.html` (the adopted concept), `2-standing-orders.html`, `3-threads.html`
   (explored alternatives, not adopted).
-- Round 1 (lineage): `docs/mockups/automation-prominence/` - the original Library (2), Line (3),
+- Round 1 (lineage): `docs/archive/mockups/automation-prominence/` - the original Library (2), Line (3),
   and Palette (4) concepts this direction merges.
 
 ## Problem

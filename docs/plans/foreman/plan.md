@@ -226,4 +226,4 @@ server → worker → UI in that order (each independently testable).
 ## Out of scope (future)
 
 Current harness support has moved beyond this original v1 scope; see
-[Foreman](../../../README.md#foreman-auto-responder).
+[Foreman](../../foreman.md#foreman-auto-responder).

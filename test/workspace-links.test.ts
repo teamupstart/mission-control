@@ -13,8 +13,8 @@ const CWD = "/Users/jordan/work tree";
 
 test("resolves the absolute Codex file-link shape inside the session checkout", () => {
   assert.deepEqual(
-    workspaceFileTarget("/Users/jordan/work%20tree/docs/mockups/feature-lab/index.html", CWD),
-    { path: "docs/mockups/feature-lab/index.html", line: null, column: null },
+    workspaceFileTarget("/Users/jordan/work%20tree/docs/archive/mockups/feature-lab/index.html", CWD),
+    { path: "docs/archive/mockups/feature-lab/index.html", line: null, column: null },
   );
 });
 
@@ -215,13 +215,13 @@ test("a listing-matched path keeps its source location", () => {
 
 test("HTML assets resolve from the document directory but cannot escape the checkout", () => {
   assert.equal(
-    workspaceAssetPath("theme.css?v=2", "docs/mockups/feature-lab/index.html"),
-    "docs/mockups/feature-lab/theme.css",
+    workspaceAssetPath("theme.css?v=2", "docs/archive/mockups/feature-lab/index.html"),
+    "docs/archive/mockups/feature-lab/theme.css",
   );
   assert.equal(
-    workspaceAssetPath("../theme.css", "docs/mockups/feature-lab/index.html"),
-    "docs/mockups/theme.css",
+    workspaceAssetPath("../theme.css", "docs/archive/mockups/feature-lab/index.html"),
+    "docs/archive/mockups/theme.css",
   );
-  assert.equal(workspaceAssetPath("../../../../secret.css", "docs/mockups/index.html"), null);
-  assert.equal(workspaceAssetPath("https://example.com/theme.css", "docs/mockups/index.html"), null);
+  assert.equal(workspaceAssetPath("../../../../secret.css", "docs/archive/mockups/index.html"), null);
+  assert.equal(workspaceAssetPath("https://example.com/theme.css", "docs/archive/mockups/index.html"), null);
 });

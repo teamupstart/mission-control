@@ -124,7 +124,7 @@ render otherwise) and is clipped while the track is closed.
 ### Selection & keyboard (superseded)
 
 The later board keyboard-navigation change separated the overview cursor from
-the open detail. The [README keyboard reference](../../../README.md#keyboard-shortcuts)
+the open detail. The [README keyboard reference](../../ui.md#keyboard-shortcuts)
 owns the current interaction contract; this original plan's selection and
 keyboard notes are superseded.
 

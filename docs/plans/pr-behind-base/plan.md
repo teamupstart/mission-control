@@ -301,7 +301,7 @@ Presented via `request_plan_decisions` rather than settled here.
    category, or fold the toggle into Harnesses?
 4. **Codex.** Resolved: Mission Control-launched sessions use launch-scoped hooks; passive
    discovery alone never authorizes automation. See
-   [Foreman](../../../README.md#foreman-auto-responder).
+   [Foreman](../../foreman.md#foreman-auto-responder).
 
 ---
 

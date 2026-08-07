@@ -2,9 +2,9 @@
 
 Status: Approved for phasing and scheduling on 2026-08-06
 
-Visual direction: [Duplex Console mockup](../../mockups/conversation-terminal/02-duplex-console.html)
+Visual direction: [Duplex Console mockup](../../archive/mockups/conversation-terminal/02-duplex-console.html)
 
-Mockup set: [Conversation terminal approaches](../../mockups/conversation-terminal/index.html)
+Mockup set: [Conversation terminal approaches](../../archive/mockups/conversation-terminal/index.html)
 
 ## Decision
 

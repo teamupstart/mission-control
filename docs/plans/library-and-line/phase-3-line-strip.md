@@ -9,7 +9,7 @@ one change-gated SSE event (`line_summary`); the strip never recomputes fleet st
 Stage clicks navigate to existing views (no drawers yet - phase 4). The Shipped stage carries the
 per-PR cost figure from `FleetCost.prsToday`.
 
-Visual reference: `docs/mockups/automation-prominence-2/1-library-line.html`, Frame A strip.
+Visual reference: `docs/archive/mockups/automation-prominence-2/1-library-line.html`, Frame A strip.
 
 ## 2. Entry criteria and dependencies
 

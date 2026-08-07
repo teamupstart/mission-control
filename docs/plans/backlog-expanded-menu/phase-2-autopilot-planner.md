@@ -114,7 +114,7 @@ change. No migration.
 - `npm run typecheck && npm run lint`
 - `npm test` - line-drawer suites plus foreman-related render tests stay green.
 - `npm run build && npm run test:e2e` - the extended `line-drawers.spec.ts`.
-- Runtime visual pass against mockup B (`docs/mockups/backlog-expanded-menu.html`): popover
+- Runtime visual pass against mockup B (`docs/archive/mockups/backlog-expanded-menu.html`): popover
   anchoring, spacing, and the footer line in both autopilot states.
 
 ## Merge and exit criteria

@@ -34,7 +34,7 @@ remains selectable per harness and operator sessions keep the whole pane stack:
   needs them, remain live and are NOT removable; verify the sdk branch never reaches
   them and mark them terminal-branch-only in comments. Pi's terminal launch now carries
   turn one natively; the current contract is owned by the
-  [README](../../../README.md#dispatch-an-agent).
+  [README](../../dispatch-and-backlog.md#dispatch-an-agent).
 - The ask-channel AskUserQuestion redirect (`askChannelArgs`): still live for
   terminal-runtime Claude dispatches - NOT removable; phase 2 already scoped it.
 - Phase 2's interim SDK-queue refusal: removed by phase 3 - verify no trace remains.

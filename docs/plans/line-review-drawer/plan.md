@@ -53,7 +53,7 @@ Submitted through the dashboard's plan review, and settled:
 ## What ships
 
 Two phases, matching the two approved mockups in
-[`docs/mockups/line-review-drawer/index.html`](../../mockups/line-review-drawer/index.html).
+[`docs/archive/mockups/line-review-drawer/index.html`](../../archive/mockups/line-review-drawer/index.html).
 
 ### Phase A - name it, say why, offer the one move
 

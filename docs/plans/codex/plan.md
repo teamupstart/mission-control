@@ -1,8 +1,8 @@
 # Integrating Codex properly
 
 > Historical implementation analysis. Current user-facing behavior is documented in
-> [Foreman](../../../README.md#foreman-auto-responder) and
-> [Work queues](../../../README.md#work-queues-load-a-session-up-and-walk-away); capability
+> [Foreman](../../foreman.md#foreman-auto-responder) and
+> [Work queues](../../work-queues.md#work-queues-load-a-session-up-and-walk-away); capability
 > ownership lives in `HARNESS_CAPABILITIES` and `HARNESSES`. The current cost contract is
 > owned by the [unified Claude and Codex cost plan](../codex-cost-estimates/plan.md).
 

@@ -294,7 +294,7 @@ Reviewed and decided 2026-08-09:
 | Chunk | Files | Size |
 | --- | --- | --- |
 | `foreman_invites` table + rekey + registry resolution + comparator | `db.ts`, `registry.ts`, `types.ts` | M |
-| Dispatcher auto-invite + invite routes + protocol schemas | `dispatcher.ts`, `routes.ts`, `protocol.ts` | S |
+| Dispatcher auto-invite + invite routes | `dispatcher.ts`, `routes.ts` | S |
 | `foremanTriageAuthorized` widening + call-site gates + daemon backstop | `foreman/*`, `routes.ts` | M |
 | Rail button three states + drawer withdraw + send-block reason | `ConsoleDetail.tsx`, `ForemanDrawer`, `lib/foreman.ts`, `styles.css` | M |
 | Unit + e2e tests, fixture default flip | `test/`, `e2e/` | M |

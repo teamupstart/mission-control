@@ -78,12 +78,18 @@ Non-goals:
   (approved deviation; they are bookkeeping downstream of typing acts these gates
   refuse). The worker's `sendText(submit: true)` delegates to `inject`
   (`client.ts:1291`), so gating `/inject` covers submitted text.
-- Tests that will need invite declarations once the gates land (from the verification
-  sweep): `test/queue-machine.test.ts` (local `mkSession` at `:53`; the `:408`
-  operator-codex ordering case will lose its rest-half entry once an uninvited session
-  drops out - update the expectation or declare an invite, whichever the case's
-  intent is; its intent is hook authorization, so declare `foremanInvite: "dispatch"`
-  and add a separate uninvited case), `test/prompted-wrapup.test.ts`,
+- Tests that will need invite handling once the gates land (from the verification
+  sweep): `test/queue-machine.test.ts` has its own hand-rolled `mkSession` (`:53`)
+  backing roughly 25 call sites in the file. Set that local fixture's base to
+  `foremanInvite: "dispatch"` - the same rationale as C5: these fixtures model
+  dispatched, hooked sessions. With that base, every existing case in the file keeps
+  its current behavior with no edits, including the `:408` operator-codex ordering
+  case (its subject stays invited; its point is hook authorization, which is
+  unchanged). Do not set the base to `null`: that silently drops most of the file's
+  sessions out of `tickTargets` and rewrites two dozen assertions to say something
+  they were never about. The uninvited coverage comes only from new cases declaring
+  `foremanInvite: null` explicitly. Same treatment for `test/prompted-wrapup.test.ts`
+  (local `mkSession` at `:62`),
   `test/harness-capabilities.test.ts` (uses shared `mkSession`, which defaults
   `"dispatch"` - likely no change), `test/foreman-review-followup.test.ts`,
   `test/backlog-machine.test.ts`, and the registry-minted-session suites
@@ -122,9 +128,11 @@ Non-goals:
      session cannot be resolved cheaply from the review record, document and skip this
      one route - the three above cover every direct typing path.
 7. **Tests**:
-   - `test/queue-machine.test.ts`: declare invites where participation is the test's
-     premise; add "tickTargets skips an uninvited session on both halves" (needs-you
-     shape and open-work shape, both with `foremanInvite: null`).
+   - `test/queue-machine.test.ts`: base the local `mkSession` on
+     `foremanInvite: "dispatch"` so every existing case (including `:408`) keeps its
+     behavior without edits; add "tickTargets skips an uninvited session on both
+     halves" (needs-you shape and open-work shape, both declaring
+     `foremanInvite: null`).
    - `test/foreman-review-followup.test.ts`: `decide({session: mkSession({
      foremanInvite: null })}).kind === "skip"` with a `/not invited/` match.
    - `test/backlog-machine.test.ts`: `agentIsFree` refuses `null` and `"operator"`;
@@ -194,3 +202,9 @@ by adding 403s for Foreman-marked writes into uninvited sessions.
   move together; recorded here and in the source plan's gating section.
 - 2026-08-09 (authoring): review-resolve backstop marked judgment-call (step 6) - the
   three marker-carrying typing routes are the hard requirement.
+- 2026-08-09 (Inspector round 2): the queue-machine.test.ts guidance contradicted
+  itself - it predicted the `:408` case would lose its rest-half entry while also
+  prescribing a non-null invite that keeps it. Resolved by stating the local
+  fixture's base value plainly (`"dispatch"`, per C5's rationale), under which no
+  existing case in the file changes and uninvited coverage is new cases only; the
+  same rule extended to `test/prompted-wrapup.test.ts`'s local fixture.

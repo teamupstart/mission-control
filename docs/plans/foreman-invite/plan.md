@@ -59,7 +59,7 @@ pattern instead of inventing a parallel one.
 ```mermaid
 flowchart LR
   W[Foreman worker] -->|GET sessions snapshot| D[Daemon]
-  W --> G{foremanMayTrack?\nsession.foremanInvite != null}
+  W --> G{invite gate\nsession.foremanInvite != null}
   G -->|invited| A[tickTargets / reviewFollowup / backlog]
   G -->|not invited| S[skip session]
   A -->|POST /inject, notes, queue ticks| D
@@ -255,7 +255,7 @@ the drawer header with the Withdraw invite action.
 
 ## Tests
 
-- **Unit** (`test/`): `foremanMayTrack` matrix; `tickTargets` skips an uninvited
+- **Unit** (`test/`): `foremanTriageAuthorized` matrix; `tickTargets` skips an uninvited
   session on both halves (mirroring the existing hook-authorization case at
   `test/queue-machine.test.ts:408`); `decideReviewFollowup` first-refusal;
   `agentIsFree` refusal; dispatcher writes the invite row
@@ -295,7 +295,7 @@ Reviewed and decided 2026-08-09:
 | --- | --- | --- |
 | `foreman_invites` table + rekey + registry resolution + comparator | `db.ts`, `registry.ts`, `types.ts` | M |
 | Dispatcher auto-invite + invite routes + protocol schemas | `dispatcher.ts`, `routes.ts`, `protocol.ts` | S |
-| `foremanMayTrack` + three call-site gates + daemon backstop | `foreman/*`, `routes.ts` | M |
+| `foremanTriageAuthorized` widening + call-site gates + daemon backstop | `foreman/*`, `routes.ts` | M |
 | Rail button three states + drawer withdraw + send-block reason | `ConsoleDetail.tsx`, `ForemanDrawer`, `lib/foreman.ts`, `styles.css` | M |
 | Unit + e2e tests, fixture default flip | `test/`, `e2e/` | M |
 

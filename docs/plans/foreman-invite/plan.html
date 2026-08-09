@@ -282,7 +282,7 @@ key this way. Invites join that pattern instead of inventing a parallel one.</p>
 
   <!-- gate -->
   <rect class="gate" x="228" y="88" width="188" height="74" rx="8"/>
-  <text x="322" y="113" text-anchor="middle" font-weight="600">foremanMayTrack?</text>
+  <text x="322" y="113" text-anchor="middle" font-weight="600">invite gate</text>
   <text x="322" y="131" text-anchor="middle" class="small">session.foremanInvite</text>
   <text x="322" y="146" text-anchor="middle" class="small">!= null</text>
 
@@ -529,7 +529,7 @@ selection gates already refused, and widening their schemas is not worth the chu
 
 <h3>The Invite foreman button</h3>
 <p>The far-right rail slot in the detail tab strip
-(<code>ConsoleDetail.tsx:387-398</code>) currently renders <strong>Foreman intent</strong>
+(<code>ConsoleDetail.tsx:390-401</code>) currently renders <strong>Foreman intent</strong>
 (or <strong>Foreman &middot; N</strong> once episodes exist), gated on
 <code>episodes.length &gt; 0 || session.goal</code>. It becomes a three-state
 control:</p>
@@ -678,7 +678,7 @@ receiving notes, and any pre-existing note still renders and resolves.</p>
 
 <h2>Tests</h2>
 <ul>
-  <li><strong>Unit</strong> (<code>test/</code>): <code>foremanMayTrack</code> matrix;
+  <li><strong>Unit</strong> (<code>test/</code>): <code>foremanTriageAuthorized</code> matrix;
       <code>tickTargets</code> skips an uninvited session on both halves (mirroring the
       existing hook-authorization case at <code>test/queue-machine.test.ts:408</code>);
       <code>decideReviewFollowup</code> first-refusal; <code>agentIsFree</code> refusal;
@@ -726,7 +726,7 @@ receiving notes, and any pre-existing note still renders and resolves.</p>
       <td><code>db.ts</code>, <code>registry.ts</code>, <code>types.ts</code></td><td>M</td></tr>
   <tr><td>Dispatcher auto-invite + invite routes + protocol schemas</td>
       <td><code>dispatcher.ts</code>, <code>routes.ts</code>, <code>protocol.ts</code></td><td>S</td></tr>
-  <tr><td><code>foremanMayTrack</code> + three call-site gates + daemon backstop</td>
+  <tr><td><code>foremanTriageAuthorized</code> widening + call-site gates + daemon backstop</td>
       <td><code>foreman/*</code>, <code>routes.ts</code></td><td>M</td></tr>
   <tr><td>Rail button three states + drawer withdraw + send-block reason</td>
       <td><code>ConsoleDetail.tsx</code>, <code>ForemanDrawer</code>, <code>lib/foreman.ts</code>, <code>styles.css</code></td><td>M</td></tr>

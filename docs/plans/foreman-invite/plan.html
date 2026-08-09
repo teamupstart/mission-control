@@ -1,0 +1,743 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foreman invites: keep Foreman out of sessions Mission Control did not create</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f6f7f9;
+    --fg: #1c2129;
+    --muted: #5b6572;
+    --dim: #7c8798;
+    --border: #dde2e9;
+    --border-soft: #e8ecf1;
+    --accent: #7846c0;
+    --link: #2563c4;
+    --code-bg: #f2f4f7;
+    --warn-bg: #fdf6e8;
+    --warn-border: #ecd9ac;
+    --sans: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --svg-box: #ffffff;
+    --svg-stroke: #9aa4b1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --bg-soft: #14181e;
+      --fg: #e7ebf1;
+      --muted: #939eae;
+      --dim: #7c8798;
+      --border: #232a33;
+      --border-soft: #1b2129;
+      --accent: #a371f7;
+      --link: #6cb0ff;
+      --code-bg: #171c23;
+      --warn-bg: #241d10;
+      --warn-border: #4a3b1c;
+      --svg-box: #14181e;
+      --svg-stroke: #4a5563;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.65 var(--sans);
+  }
+  .page { max-width: 880px; margin: 0 auto; padding: 44px 28px 90px; }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .byline { font: 12px/1.5 var(--mono); color: var(--dim); margin-bottom: 34px; }
+  h2 { font-size: 19px; margin: 44px 0 12px; letter-spacing: -0.01em;
+       padding-top: 18px; border-top: 1px solid var(--border-soft); }
+  h3 { font-size: 15.5px; margin: 26px 0 8px; }
+  p, li { color: var(--fg); }
+  li { margin: 4px 0; }
+  a { color: var(--link); }
+  code {
+    font: 12.5px/1.5 var(--mono);
+    background: var(--code-bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+  }
+  pre code { background: none; border: 0; padding: 0; white-space: pre; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 12px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--bg-soft); font-size: 12.5px; }
+  td code { white-space: nowrap; }
+  .callout {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 14px;
+  }
+  figure { margin: 22px 0; }
+  figcaption { font: 12px/1.5 var(--mono); color: var(--dim); margin-top: 8px; }
+  .diagram { overflow-x: auto; background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 10px; padding: 14px; }
+  .diagram svg { display: block; min-width: 760px; }
+  svg .box   { fill: var(--svg-box); stroke: var(--svg-stroke); stroke-width: 1.2; rx: 8; }
+  svg .gate  { fill: var(--svg-box); stroke: var(--accent); stroke-width: 1.4; rx: 8; }
+  svg .store { fill: var(--svg-box); stroke: #35a87f; stroke-width: 1.3; rx: 8; }
+  svg .bad   { fill: var(--svg-box); stroke: #d1564e; stroke-width: 1.2; rx: 8; }
+  svg text   { font: 12px var(--sans); fill: var(--fg); }
+  svg .small { font: 10.5px var(--mono); fill: var(--muted); }
+  svg .lbl   { font: 10.5px var(--mono); fill: var(--dim); }
+  svg .edge  { stroke: var(--svg-stroke); stroke-width: 1.2; fill: none; }
+  svg .edge-ok   { stroke: #35a87f; stroke-width: 1.3; fill: none; }
+  svg .edge-no   { stroke: #d1564e; stroke-width: 1.2; fill: none; stroke-dasharray: 4 3; }
+  svg .edge-acc  { stroke: var(--accent); stroke-width: 1.3; fill: none; }
+
+  /* ---------- Mockup: always the app's dark palette, whatever the reader's theme ---------- */
+  .mock-wrap { margin: 18px 0 8px; }
+  .mock-frame {
+    background: #0a0c0f;
+    border: 1px solid #232a33;
+    border-radius: 10px;
+    overflow: hidden;
+    font-family: var(--sans);
+    color-scheme: dark;
+  }
+  .mock-head { display: flex; align-items: center; gap: 10px; padding: 14px 22px 4px; }
+  .mock-dot { width: 9px; height: 9px; border-radius: 50%; background: #d97757; flex: none; }
+  .mock-title { font-size: 14px; font-weight: 600; color: #e7ebf1; }
+  .mock-where { font: 11px var(--mono); color: #7c8798; }
+  .mock-badge {
+    font: 10px var(--mono); text-transform: uppercase; letter-spacing: .08em;
+    color: #35c08a; border: 1px solid #24463a; border-radius: 999px; padding: 2px 9px;
+  }
+  .mock-spacer { flex: 1; }
+  .mock-cost { font: 11px var(--mono); color: #939eae; }
+  .mock-sub { display: flex; gap: 18px; padding: 2px 22px 10px; font: 11px var(--mono); color: #7c8798; }
+  .mock-sub .k { color: #4d5866; margin-right: 6px; }
+  .mock-sub .branch { color: #35c08a; }
+  .mock-tabs {
+    display: flex; gap: 2px; align-items: center;
+    padding: 0 22px; border-bottom: 1px solid #1b2129;
+  }
+  .mock-tab {
+    position: relative; display: inline-flex; align-items: center; gap: 6px;
+    padding: 10px 13px; font-size: 12.5px; font-weight: 600; color: #939eae;
+  }
+  .mock-tab.on { color: #e7ebf1; }
+  .mock-tab.on::after {
+    content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
+    height: 2px; border-radius: 2px; background: #4a9eff;
+  }
+  .mock-key {
+    font: 9px var(--mono); color: #7c8798; border: 1px solid #232a33;
+    border-radius: 4px; padding: 0 4px; line-height: 14px;
+  }
+  .mock-pip {
+    min-width: 16px; padding: 0 4px; font: 700 10px var(--mono); text-align: center;
+    border-radius: 999px; color: #0a0c0f; background: #f6a733;
+  }
+  .mock-rail {
+    margin-left: auto; align-self: center; display: inline-flex; align-items: center; gap: 7px;
+    padding: 4px 10px; border: 1px solid #232a33; border-radius: 7px;
+    font: 10.5px var(--mono); letter-spacing: .07em; text-transform: uppercase; color: #939eae;
+  }
+  .mock-rail.invite {
+    color: #a371f7; border-color: rgba(163, 113, 247, .5);
+    background: rgba(163, 113, 247, .08);
+  }
+  .mock-rail .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: #f6a733; flex: none;
+    box-shadow: 0 0 0 3px rgba(246, 167, 51, .22);
+  }
+  .mock-tipline { display: flex; justify-content: flex-end; padding: 8px 22px 16px; }
+  .mock-tip {
+    max-width: 340px; background: #171c23; border: 1px solid #232a33; border-radius: 7px;
+    padding: 8px 12px; font-size: 11.5px; line-height: 1.5; color: #939eae;
+  }
+  .mock-body { padding: 14px 22px 18px; }
+  .mock-hint { font-size: 12.5px; line-height: 1.55; color: #939eae; max-width: 520px; }
+  .mock-hint .invite-word { color: #a371f7; }
+  .mock-drawer {
+    margin: 0 0 0 auto; max-width: 380px; background: #14181e;
+    border: 1px solid #232a33; border-radius: 8px; padding: 12px 16px;
+  }
+  .mock-drawer-head { display: flex; align-items: baseline; gap: 10px; }
+  .mock-drawer-title {
+    font: 10.5px var(--mono); letter-spacing: .07em; text-transform: uppercase; color: #a371f7;
+  }
+  .mock-drawer-withdraw {
+    margin-left: auto; font-size: 11px; color: #7c8798;
+    border-bottom: 1px dotted #4d5866; cursor: pointer;
+  }
+  .mock-drawer-intent { margin-top: 8px; font-size: 12.5px; color: #e7ebf1; }
+  .mock-drawer-sub { margin-top: 2px; font-size: 11px; color: #7c8798; }
+  .mock-caption { font: 12px/1.6 var(--mono); color: var(--dim); margin: 8px 2px 26px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Foreman invites: keep Foreman out of sessions Mission Control did not create</h1>
+<div class="byline">docs/plans/foreman-invite/plan.md &middot; rendered 2026-08-09, decisions applied and repository-verified</div>
+
+<h2>Problem</h2>
+<p>Foreman currently tracks and types into every session it can see, including personal
+Claude chats the operator started by hand. The system has no concept of session origin,
+and the one authorization predicate it does have uses hook visibility as a proxy for
+"we launched it". Claude's hooks are machine-scoped, so every personal Claude session
+on the machine passes that check.</p>
+<p>Three Foreman action paths reach sessions, and only one is gated at all:</p>
+<div class="scroll">
+<table>
+  <tr><th>Path</th><th>Where</th><th>Gate today</th></tr>
+  <tr>
+    <td>Triage / needs-you and work-queue ticks</td>
+    <td><code>tickTargets</code>, <code>src/server/foreman/queue-machine.ts:210</code></td>
+    <td><code>foremanTriageAuthorized</code> on the needs-you half only; the work-queue and
+        prompted-wrapup half checks only harness capability</td>
+  </tr>
+  <tr>
+    <td>PR follow-through ("create a PR", "follow CI")</td>
+    <td><code>runReviewFollowup</code>, <code>src/server/foreman/worker.ts:796</code></td>
+    <td>none - iterates every session with an open PR</td>
+  </tr>
+  <tr>
+    <td>Backlog autopilot (assigns whole tasks)</td>
+    <td><code>agentIsFree</code>, <code>src/server/foreman/backlog-machine.ts:198</code></td>
+    <td>mode + allowlist; explicitly counts hand-started terminals</td>
+  </tr>
+</table>
+</div>
+<p class="callout">The PR follow-through path is the one interrupting personal sessions
+with instructions to create a PR.</p>
+
+<h2>Design: Foreman participation is an invite</h2>
+<p>One mechanism replaces origin inference everywhere: <strong>Foreman may only act in a
+session that holds an invite.</strong> A session's invite state is a new field on the
+shared <code>Session</code> record:</p>
+<pre><code>foremanInvite: "sdk" | "dispatch" | "operator" | null</code></pre>
+<ul>
+  <li><code>"sdk"</code> - embedded SDK sessions. Mission Control created them by
+      definition; they are invited by default, no row stored.</li>
+  <li><code>"dispatch"</code> - Mission Control dispatched this terminal session for a
+      task. The dispatcher writes the invite automatically once discovery confirms the
+      spawn.</li>
+  <li><code>"operator"</code> - a human clicked <strong>Invite foreman</strong> on the
+      session.</li>
+  <li><code>null</code> - every other discovered session, and any session whose invite
+      was withdrawn. Foreman does not track it, does not write notes or goals for it,
+      does not tick its queue, does not follow its PRs, and the daemon refuses
+      Foreman-origin writes into it.</li>
+</ul>
+<p>Auto-discovered sessions therefore default to Foreman-off, and the invite is the
+single explicit way back in. Withdrawal is authoritative for every session: a
+<code>withdrawn</code> tombstone row beats even the implicit SDK grant, so the operator
+can kick Foreman out of any session, embedded ones included, and invite it back
+later.</p>
+
+<h3>Why an invite table and not an origin flag</h3>
+<p>MC-dispatched terminal sessions re-enter the registry through the same TTY discovery
+scan as personal sessions (<code>Dispatcher.dispatch</code> spawns, then waits for the
+poller via <code>waitForSessionAtCwd</code>, <code>src/server/dispatcher.ts:267</code>),
+and the task linkage that could distinguish them is pruned when the task finishes.
+Session ids are synthetic (tty+pid+start) and re-mint on restart. The codebase already
+solves durable per-session state with <code>note_key</code> rows
+(<code>noteKeyFor = agentSessionId ?? id</code>, <code>registry.ts:5654</code>) -
+<code>session_notes</code>, <code>session_goals</code>, and <code>skills_acks</code> all
+key this way. Invites join that pattern instead of inventing a parallel one.</p>
+
+<h2>Flow change: Foreman targeting</h2>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 860 300" width="860" height="300" role="img"
+     aria-label="Foreman worker gates itself on the invite, and the daemon refuses foreman writes into uninvited sessions">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--svg-stroke)"/>
+    </marker>
+    <marker id="a-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#35a87f"/>
+    </marker>
+    <marker id="a-no" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d1564e"/>
+    </marker>
+    <marker id="a-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+
+  <!-- Foreman worker -->
+  <rect class="box" x="20" y="96" width="150" height="58" rx="8"/>
+  <text x="95" y="120" text-anchor="middle" font-weight="600">Foreman worker</text>
+  <text x="95" y="138" text-anchor="middle" class="small">separate process</text>
+
+  <!-- gate -->
+  <rect class="gate" x="228" y="88" width="188" height="74" rx="8"/>
+  <text x="322" y="113" text-anchor="middle" font-weight="600">invite gate</text>
+  <text x="322" y="131" text-anchor="middle" class="small">session.foremanInvite</text>
+  <text x="322" y="146" text-anchor="middle" class="small">!= null</text>
+
+  <!-- skip -->
+  <rect class="box" x="248" y="222" width="148" height="44" rx="8"/>
+  <text x="322" y="248" text-anchor="middle" class="small">skip session entirely</text>
+
+  <!-- actions -->
+  <rect class="box" x="474" y="88" width="160" height="74" rx="8"/>
+  <text x="554" y="110" text-anchor="middle" font-weight="600">Action paths</text>
+  <text x="554" y="128" text-anchor="middle" class="small">tickTargets</text>
+  <text x="554" y="142" text-anchor="middle" class="small">reviewFollowup / backlog</text>
+
+  <!-- daemon -->
+  <rect class="box" x="474" y="14" width="160" height="44" rx="8"/>
+  <text x="554" y="40" text-anchor="middle" font-weight="600">Daemon</text>
+
+  <!-- guard -->
+  <rect class="gate" x="672" y="88" width="168" height="74" rx="8"/>
+  <text x="756" y="110" text-anchor="middle" font-weight="600">PromptWriteGuard</text>
+  <text x="756" y="128" text-anchor="middle" class="small">foreman origin +</text>
+  <text x="756" y="142" text-anchor="middle" class="small">no invite?</text>
+
+  <!-- refuse -->
+  <rect class="bad" x="672" y="222" width="168" height="44" rx="8"/>
+  <text x="756" y="248" text-anchor="middle" class="small">403, never reaches pane</text>
+
+  <!-- pane -->
+  <rect class="store" x="672" y="14" width="168" height="44" rx="8"/>
+  <text x="756" y="40" text-anchor="middle" font-weight="600">pane / SDK driver</text>
+
+  <!-- edges -->
+  <path class="edge" d="M170 116 L228 116" marker-end="url(#a)"/>
+  <text x="199" y="108" text-anchor="middle" class="lbl">snapshot</text>
+
+  <path class="edge-ok" d="M416 118 L474 118" marker-end="url(#a-ok)"/>
+  <text x="445" y="110" text-anchor="middle" class="lbl">invited</text>
+
+  <path class="edge-no" d="M322 162 L322 222" marker-end="url(#a-no)"/>
+  <text x="376" y="196" text-anchor="middle" class="lbl">not invited</text>
+
+  <path class="edge" d="M554 88 L554 58" marker-end="url(#a)"/>
+  <text x="612" y="76" text-anchor="middle" class="lbl">POST /inject, notes</text>
+
+  <path class="edge-acc" d="M634 36 Q 700 36 738 88" marker-end="url(#a-acc)"/>
+
+  <path class="edge-no" d="M756 162 L756 222" marker-end="url(#a-no)"/>
+  <text x="792" y="196" text-anchor="middle" class="lbl">refuse</text>
+
+  <path class="edge-ok" d="M792 88 Q 812 70 800 58" marker-end="url(#a-ok)"/>
+  <text x="826" y="76" text-anchor="middle" class="lbl">allow</text>
+</svg>
+</div>
+<figcaption>The worker gates itself on the snapshot field (it never touches SQLite -
+the daemon stays the only database writer), and the daemon independently refuses
+Foreman-origin writes into uninvited sessions, so the worker gate cannot be bypassed by
+a stale or buggy worker.</figcaption>
+</figure>
+
+<h2>Flow change: how a session becomes invited (or uninvited)</h2>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 860 320" width="860" height="320" role="img"
+     aria-label="Three invite sources feed the foreman_invites table and the registry, which broadcasts the field to the dashboard and the worker">
+  <defs>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--svg-stroke)"/>
+    </marker>
+    <marker id="b-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+
+  <!-- sources -->
+  <rect class="box" x="20" y="20" width="212" height="56" rx="8"/>
+  <text x="126" y="43" text-anchor="middle" font-weight="600">SDK supervisor adopt</text>
+  <text x="126" y="61" text-anchor="middle" class="small">"sdk" by default, no row</text>
+
+  <rect class="box" x="20" y="100" width="212" height="56" rx="8"/>
+  <text x="126" y="123" text-anchor="middle" font-weight="600">Dispatcher</text>
+  <text x="126" y="141" text-anchor="middle" class="small">after waitForSessionAtCwd</text>
+
+  <rect class="box" x="20" y="180" width="212" height="56" rx="8"/>
+  <text x="126" y="203" text-anchor="middle" font-weight="600">Invite / Withdraw buttons</text>
+  <text x="126" y="221" text-anchor="middle" class="small">POST invites · DELETE tombstones</text>
+
+  <rect class="box" x="20" y="260" width="212" height="44" rx="8"/>
+  <text x="126" y="280" text-anchor="middle" font-weight="600">Discovery poller</text>
+  <text x="126" y="296" text-anchor="middle" class="small">no row found: null</text>
+
+  <!-- table -->
+  <rect class="store" x="322" y="118" width="204" height="60" rx="8"/>
+  <text x="424" y="142" text-anchor="middle" font-weight="600">foreman_invites</text>
+  <text x="424" y="160" text-anchor="middle" class="small">dispatch · operator · withdrawn</text>
+
+  <!-- registry -->
+  <rect class="box" x="592" y="118" width="130" height="60" rx="8"/>
+  <text x="657" y="142" text-anchor="middle" font-weight="600">Registry</text>
+  <text x="657" y="160" text-anchor="middle" class="small">merge + comparator</text>
+
+  <!-- consumers -->
+  <rect class="box" x="700" y="24" width="140" height="52" rx="8"/>
+  <text x="770" y="45" text-anchor="middle" font-weight="600">Dashboard</text>
+  <text x="770" y="63" text-anchor="middle" class="small">session_upsert</text>
+
+  <rect class="box" x="700" y="228" width="140" height="52" rx="8"/>
+  <text x="770" y="249" text-anchor="middle" font-weight="600">Foreman worker</text>
+  <text x="770" y="267" text-anchor="middle" class="small">snapshot field</text>
+
+  <!-- edges -->
+  <path class="edge" d="M232 48 Q 480 48 620 118" marker-end="url(#b)"/>
+  <path class="edge-acc" d="M232 128 Q 280 128 330 140" marker-end="url(#b-acc)"/>
+  <text x="278" y="120" text-anchor="middle" class="lbl">source=dispatch</text>
+  <path class="edge-acc" d="M232 208 Q 280 208 330 162" marker-end="url(#b-acc)"/>
+  <text x="278" y="216" text-anchor="middle" class="lbl">operator / withdrawn</text>
+  <path class="edge" d="M232 282 Q 480 282 620 178" marker-end="url(#b)"/>
+  <path class="edge" d="M518 148 L592 148" marker-end="url(#b)"/>
+  <text x="555" y="140" text-anchor="middle" class="lbl">lookup</text>
+  <path class="edge" d="M700 118 Q 680 90 700 66 " marker-end="url(#b)" transform="translate(8,0)"/>
+  <path class="edge" d="M708 178 Q 690 206 708 232" marker-end="url(#b)"/>
+</svg>
+</div>
+<figcaption>An invite row survives daemon restarts. The registry moves it from the
+synthetic session id to the agent session id at its existing key-rotation detection
+points, and a <code>withdrawn</code> row resolves to null for every session, SDK
+included.</figcaption>
+</figure>
+
+<h2>Data model and server changes</h2>
+<ol>
+  <li><strong><code>foreman_invites</code> table</strong> (<code>src/server/db.ts</code>,
+      beside <code>session_goals</code> and <code>skills_acks</code>):
+<pre><code>CREATE TABLE IF NOT EXISTS foreman_invites (
+  note_key   TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
+  source     TEXT NOT NULL CHECK (source IN ('dispatch','operator','withdrawn')),
+  created_at INTEGER NOT NULL
+);</code></pre>
+      One row per key holds the latest explicit state; <code>'withdrawn'</code> is the
+      tombstone that overrides the implicit SDK grant. New-table creation is safe on
+      existing databases; no column migration needed. Key rotation must be handled
+      explicitly: only <code>pending_turns</code> auto-rekeys today
+      (<code>PendingTurnManager.moveConversationKey</code>,
+      <code>pending-turns.ts:387</code>); notes and goals strand their rows, which for
+      an invite would silently kick Foreman off a dispatched session the moment its
+      hooks land. The registry owns the invite cache (loaded at boot like notes,
+      <code>registry.ts:595</code>), so it moves the row and cache entry at all four
+      of its noteKey-rotation points - the cost-recompute comparisons at
+      <code>registry.ts:1596</code>, <code>1829</code>, <code>3550</code>, and
+      <code>bindLaunchedAgentSession</code> (<code>registry.ts:1933</code>), the
+      Pi-dispatch rebind that would otherwise strand a freshly dispatched Pi session's
+      invite - and session reset (<code>reset.ts:117-124</code>) moves the invite to
+      the post-reset key
+      rather than dropping it - an invite belongs to the pane, not the conversation. A
+      <code>pruneForemanInvites</code> sweep follows the <code>pruneSessionGoals</code>
+      pattern for hygiene.</li>
+  <li><strong><code>Session.foremanInvite</code></strong> (<code>src/shared/types.ts</code>,
+      beside <code>runtime</code>), plus the compiler-forced comparator entry in
+      <code>SESSION_FIELD_COMPARATORS</code> (<code>src/server/registry.ts:5808</code>,
+      <code>byValue</code>).</li>
+  <li><strong>Registry</strong> resolves the field at merge time from one rule: a
+      <code>'withdrawn'</code> row means <code>null</code>; otherwise
+      <code>registerSdkSession</code> resolves <code>"sdk"</code>, and
+      <code>mergeDiscovered</code> resolves <code>"dispatch"</code>,
+      <code>"operator"</code>, or <code>null</code> from the cached invite map (in
+      memory like notes). Field changes emit the usual <code>session_upsert</code> - no
+      new server event type, so <code>useEventStream.ts</code> needs only the type
+      update.</li>
+  <li><strong>Dispatcher</strong> writes the <code>source='dispatch'</code> invite
+      immediately after <code>waitForSessionAtCwd</code> succeeds
+      (<code>dispatcher.ts:267</code>), next to the existing
+      <code>terminalResourceId</code> patch - through a new
+      <code>Registry.setForemanInvite</code> method, since the dispatcher deliberately
+      has no db access. The embedded SDK dispatch branch returns earlier and needs no
+      row: SDK sessions default to <code>"sdk"</code>.</li>
+  <li><strong>Routes</strong> (<code>src/server/routes.ts</code>; both body-less,
+      matching every existing DELETE):
+      <ul>
+        <li><code>POST /api/sessions/:id/foreman-invite</code> - invite,
+            <strong>restore-then-elevate</strong>: a no-op when already invited;
+            otherwise it deletes a <code>'withdrawn'</code> tombstone so
+            runtime-implied grants resume - a withdrawn SDK session gets
+            <code>"sdk"</code> back, backlog eligibility included, rather than a
+            permanent invisible <code>"operator"</code> downgrade - and writes
+            <code>source='operator'</code> only when the state would otherwise stay
+            <code>null</code>. One documented residue: a withdrawn, previously
+            dispatched terminal re-invites as <code>"operator"</code> (the tombstone
+            replaced its <code>'dispatch'</code> row) until a fresh dispatch restores
+            <code>"dispatch"</code>.</li>
+        <li><code>DELETE /api/sessions/:id/foreman-invite</code> - withdraw: upsert the
+            <code>'withdrawn'</code> tombstone, so the withdrawal also beats the
+            implicit SDK grant and survives restarts. The verb still removes the
+            resource (the invite); the tombstone is how removal stays authoritative for
+            sessions that would otherwise re-derive one.</li>
+      </ul></li>
+</ol>
+
+<h2>Foreman worker gating</h2>
+<p>The invite check lands inside <code>foremanTriageAuthorized</code>
+(<code>src/server/foreman/authorization.ts:9</code>), not inside
+<code>foremanAutomationAuthorized</code>: the latter is mirrored browser-side by
+<code>workQueueBlockedReason</code> (<code>src/shared/harness-capabilities.ts:711</code>)
+and <code>test/queue-apply-sdk.test.ts</code> pins the two in agreement, so widening it
+would force the capability mirror to learn invite policy. Placing it in
+<code>foremanTriageAuthorized</code> covers four call sites at once: the
+<code>tickTargets</code> needs-you half, <code>processSession</code>
+(<code>worker.ts:1690</code>), <code>decideQueueTick</code>
+(<code>queue-machine.ts:326</code>), and <code>countNeedsYou</code>
+(<code>foreman/config.ts:218</code>) - the dashboard badge that must stay in lockstep
+with the worker or it counts sessions the worker will never process. The remaining
+selection sites get explicit gates:</p>
+<ul>
+  <li><code>tickTargets</code> rest half (<code>queue-machine.ts:214-220</code>) - a
+      new invite conjunct beside the <code>workQueue</code> capability check; the two
+      halves cannot share one call site because the rest half must stay reachable for
+      hookless sessions with open work.</li>
+  <li><code>decideReviewFollowup</code> (<code>review-followup.ts:134</code>) - a new
+      early <code>skip</code> refusal in the ordered gate list, covering both the
+      initial decision and the freshness re-decision in
+      <code>runReviewFollowup</code>.</li>
+  <li><code>agentIsFree</code> (<code>backlog-machine.ts:198</code>) - the backlog
+      autopilot only assigns tasks into sessions whose invite is <code>"sdk"</code> or
+      <code>"dispatch"</code>. An <code>"operator"</code> invite grants triage, wrapup,
+      and PR follow-through but never backlog assignment - inviting Foreman to help
+      with current work must not let the autopilot drop new tasks into a personal chat.
+      The deliberate drag-assign asymmetry (documented at
+      <code>backlog-machine.ts:162</code> and <code>234</code>, enforced server-side in
+      <code>TaskManager.assign</code>, <code>tasks.ts:1376</code>) stays: a human
+      dragging a task onto a session is always allowed; only the background loop is
+      gated. <code>activeAgentCount</code> keeps counting uninvited sessions toward
+      <code>maxSessions</code> - that cap is a claim about machine load, not
+      participation.</li>
+</ul>
+<p>The daemon-side backstop gates the routes whose payloads already carry an actor
+marker: <code>/inject</code> (<code>origin: "foreman"</code>, refused through the
+existing <code>PromptWriteGuard</code> hook, <code>actions.ts:346</code>),
+<code>/select-option</code> and <code>/submit-options</code>
+(<code>by: "foreman"</code>), and review resolution. Those cover every typing act,
+including the worker's submitted <code>sendText</code>, which delegates to inject. The
+note and queue-state writes carry no actor marker (<code>SetNoteSchema</code> has no
+actor field) and stay ungated: they are bookkeeping downstream of a typing act the
+selection gates already refused, and widening their schemas is not worth the churn.</p>
+
+<h2>UI changes</h2>
+
+<h3>The Invite foreman button</h3>
+<p>The far-right rail slot in the detail tab strip
+(<code>ConsoleDetail.tsx:390-401</code>) currently renders <strong>Foreman intent</strong>
+(or <strong>Foreman &middot; N</strong> once episodes exist), gated on
+<code>episodes.length &gt; 0 || session.goal</code>. It becomes a three-state
+control:</p>
+<ol>
+  <li><strong>Uninvited, live session</strong>: renders <strong>＋ Invite foreman</strong>
+      in the same slot and silhouette, accented with the Foreman purple
+      (<code>--foreman</code>) so it reads as an action rather than a status. Click posts
+      the invite; the resulting <code>session_upsert</code> swaps the button in place.
+      No confirm step - the action is cheap and reversible.</li>
+  <li><strong>Invited, no history</strong>: renders <strong>Foreman intent</strong>
+      exactly as today, and now always (not only when a goal exists), so the slot never
+      goes empty right after an invite and the drawer is reachable to capture an
+      objective or withdraw the invite.</li>
+  <li><strong>Invited, with episodes</strong>: <strong>Foreman &middot; N</strong> with
+      the attention dot, unchanged.</li>
+</ol>
+<p>Withdrawing the invite lives in the Foreman drawer header as a small
+<strong>Withdraw invite</strong> action, between the title and the pinned close button
+(<code>ForemanDrawer.tsx:65-86</code>); the drawer's props widen to carry the session,
+which deliberately breaks its render-test helper so every fixture states the new input.
+On withdrawal the rail returns to state 1 - for every session, embedded SDK ones
+included, since the tombstone beats the implicit grant. Both new buttons get their own
+<code>Tooltip</code> wrapper: the tooltip-coverage scan walks every component under
+<code>src/web</code>.</p>
+
+<h3>Honest silence everywhere else</h3>
+<p><code>ForemanSendBlock</code> (<code>src/web/lib/foreman.ts:34</code>) gains
+<code>"not-invited"</code>, branching after <code>"foreman-off"</code> and before
+<code>"drafts-only"</code> - an uninvited session is skipped regardless of mode, so mode
+must not be the explanation. <code>foremanSendBlock</code> gains an
+<code>invited</code> input (it is called directly by the work-queue panel, so the plain
+function needs the field, not just <code>sessionSendBlock</code>). One new case in the
+shared <code>DraftHint</code> (<code>foreman-bits.tsx:130</code>) covers the console
+strip and the grid card at once; the work-queue panel's <code>QueueHint</code> gains
+the same case, and its render gate widens so the sentence also shows on an empty queue
+- today the hint only renders with open items, which would leave an uninvited
+empty-queue session unexplained. The sentence points at the rail button. The grid
+<code>SessionCard</code> needs no new control in v1: uninvited sessions simply stop
+receiving notes, and any pre-existing note still renders and resolves.</p>
+
+<h2>Mockup</h2>
+
+<div class="mock-wrap">
+  <div class="mock-frame">
+    <div class="mock-head">
+      <span class="mock-dot"></span>
+      <span class="mock-title">api debugging</span>
+      <span class="mock-where">tmux &middot; %4</span>
+      <span class="mock-badge">idle</span>
+      <span class="mock-spacer"></span>
+      <span class="mock-cost">$0.42</span>
+    </div>
+    <div class="mock-sub">
+      <span><span class="k">path</span>~/workspace/scratch</span>
+      <span><span class="k">branch</span><span class="branch">main</span></span>
+    </div>
+    <div class="mock-tabs">
+      <span class="mock-tab on"><span class="mock-key">g</span>Conversation</span>
+      <span class="mock-tab"><span class="mock-key">q</span>Work queue</span>
+      <span class="mock-tab"><span class="mock-key">y</span>Workflows</span>
+      <span class="mock-tab"><span class="mock-key">d</span>Diff</span>
+      <span class="mock-tab"><span class="mock-key">⇧F</span>Files</span>
+      <span class="mock-rail invite">＋ Invite foreman</span>
+    </div>
+    <div class="mock-tipline">
+      <span class="mock-tip">Foreman is not in this session. Invite it to triage,
+      wrap up, and follow PRs here.</span>
+    </div>
+  </div>
+  <div class="mock-caption">State 1 - a discovered personal session. The rail slot that
+  used to show "Foreman intent" offers the invite instead, in the Foreman purple, with
+  its hover tooltip. One click, no confirm.</div>
+
+  <div class="mock-frame">
+    <div class="mock-tabs">
+      <span class="mock-tab on"><span class="mock-key">g</span>Conversation</span>
+      <span class="mock-tab"><span class="mock-key">q</span>Work queue</span>
+      <span class="mock-tab"><span class="mock-key">y</span>Workflows</span>
+      <span class="mock-tab"><span class="mock-key">d</span>Diff</span>
+      <span class="mock-tab"><span class="mock-key">⇧F</span>Files</span>
+      <span class="mock-rail">Foreman intent</span>
+    </div>
+  </div>
+  <div class="mock-caption">State 2 - immediately after the invite. The button swaps in
+  place to today's "Foreman intent", opening the drawer to capture an objective. The
+  slot no longer disappears when there is no goal yet.</div>
+
+  <div class="mock-frame">
+    <div class="mock-tabs">
+      <span class="mock-tab on"><span class="mock-key">g</span>Conversation</span>
+      <span class="mock-tab"><span class="mock-key">q</span>Work queue<span class="mock-pip">2</span></span>
+      <span class="mock-tab"><span class="mock-key">y</span>Workflows</span>
+      <span class="mock-tab"><span class="mock-key">d</span>Diff</span>
+      <span class="mock-tab"><span class="mock-key">⇧F</span>Files</span>
+      <span class="mock-rail"><span class="dot"></span>Foreman &middot; 3</span>
+    </div>
+  </div>
+  <div class="mock-caption">State 3 - Foreman has decision history here. Unchanged from
+  today: the count and the attention dot.</div>
+
+  <div class="mock-frame">
+    <div class="mock-body">
+      <div class="mock-hint">Nothing queued. <span class="invite-word">Foreman is not in
+      this session</span> - invite it from the rail above to let it triage and wrap up
+      here.</div>
+    </div>
+  </div>
+  <div class="mock-caption">Work queue panel on an uninvited session - the new
+  "not-invited" reason, so the silence is explained instead of read as a bug.</div>
+
+  <div class="mock-frame">
+    <div class="mock-body">
+      <div class="mock-drawer">
+        <div class="mock-drawer-head">
+          <span class="mock-drawer-title">Foreman</span>
+          <span class="mock-drawer-withdraw">Withdraw invite</span>
+        </div>
+        <div class="mock-drawer-intent">Land the retry fix and open a PR</div>
+        <div class="mock-drawer-sub">objective &middot; set by you &middot; 2 decisions</div>
+      </div>
+    </div>
+  </div>
+  <div class="mock-caption">Drawer header with the "Withdraw invite" action.
+  Withdrawing returns the rail to state 1.</div>
+</div>
+
+<h2>Compatibility and rollout</h2>
+<ul>
+  <li>On upgrade the invite table is empty, so every already-running terminal session -
+      including previously dispatched ones - starts uninvited. Foreman goes quiet on
+      them until the next dispatch or a manual invite. SDK sessions are unaffected. This
+      is a release-note item, not a migration.</li>
+  <li>The fleet-wide Foreman config (enabled, mode, repo allowlist) is untouched and
+      still gates on top of invites.</li>
+  <li><code>test/helpers/session-fixture.ts</code> defaults
+      <code>foremanInvite: "dispatch"</code> - true to what the fixture models (a
+      dispatched worktree session), and it preserves the meaning of every test written
+      under participate-always semantics. Tests exercising the new gating declare
+      <code>foremanInvite: null</code> explicitly. A <code>null</code> default was
+      considered and rejected: the rail renders in nearly every ConsoleDetail test (the
+      fixture's goal is non-null), so a <code>null</code> default would churn unrelated
+      render tests into the invite state.</li>
+  <li>README's Foreman section and the change-contracts doc are updated in the same
+      change.</li>
+</ul>
+
+<h2>Tests</h2>
+<ul>
+  <li><strong>Unit</strong> (<code>test/</code>): <code>foremanTriageAuthorized</code> matrix;
+      <code>tickTargets</code> skips an uninvited session on both halves (mirroring the
+      existing hook-authorization case at <code>test/queue-machine.test.ts:408</code>);
+      <code>decideReviewFollowup</code> first-refusal; <code>agentIsFree</code> refusal;
+      dispatcher writes the invite row (<code>test/dispatch.test.ts</code> family);
+      invite rekey on agent-session binding; <code>foremanSendBlock</code> ordering;
+      <code>renderToStaticMarkup</code> for the three rail states.</li>
+  <li><strong>E2E</strong> (<code>e2e/</code>, required for the UI change): discovery is
+      deliberately hard-off in the e2e fixture (<code>MISSION_POLL_MS=0</code> - it
+      would adopt the developer's real sessions), so the spec exercises the cycle on a
+      dispatched session, which the tombstone makes possible: dispatch through the real
+      modal, open the Foreman drawer, Withdraw invite, assert the rail flips to
+      ＋ Invite foreman and the work-queue tab explains the silence, then Invite and
+      assert the rail returns to Foreman intent. All three rail states, both routes,
+      and the new reason, with zero fixture changes. Selected by role and accessible
+      name, no test ids, fake agents only.</li>
+</ul>
+
+<h2>Resolved decisions</h2>
+<p>Reviewed and decided 2026-08-09:</p>
+<ol>
+  <li><strong>Dispatched terminals are auto-invited</strong>
+      (<code>source='dispatch'</code>). The Foreman autopilot keeps working on task
+      sessions unchanged.</li>
+  <li><strong>An operator invite grants everything except backlog assignment</strong>:
+      triage, wrapup, and PR follow-through. The backlog autopilot assigns tasks only
+      into <code>"sdk"</code> and <code>"dispatch"</code> sessions.</li>
+  <li><strong>Withdraw lives in the Foreman drawer header</strong>, returning the rail
+      to the Invite foreman state.</li>
+</ol>
+
+<h2>Out of scope</h2>
+<ul>
+  <li>An invite affordance on the grid <code>SessionCard</code> (the console and board
+      drill-in share <code>ConsoleDetail</code>, which covers both detail surfaces).</li>
+  <li>Any change to how a human manually messages, drags tasks onto, or reviews a
+      session.</li>
+  <li>Per-repo or fleet-wide invite defaults beyond the existing allowlist.</li>
+</ul>
+
+<h2>Effort</h2>
+<div class="scroll">
+<table>
+  <tr><th>Chunk</th><th>Files</th><th>Size</th></tr>
+  <tr><td><code>foreman_invites</code> table + rekey + registry resolution + comparator</td>
+      <td><code>db.ts</code>, <code>registry.ts</code>, <code>types.ts</code></td><td>M</td></tr>
+  <tr><td>Dispatcher auto-invite + invite routes</td>
+      <td><code>dispatcher.ts</code>, <code>routes.ts</code></td><td>S</td></tr>
+  <tr><td><code>foremanTriageAuthorized</code> widening + call-site gates + daemon backstop</td>
+      <td><code>foreman/*</code>, <code>routes.ts</code></td><td>M</td></tr>
+  <tr><td>Rail button three states + drawer withdraw + send-block reason</td>
+      <td><code>ConsoleDetail.tsx</code>, <code>ForemanDrawer</code>, <code>lib/foreman.ts</code>, <code>styles.css</code></td><td>M</td></tr>
+  <tr><td>Unit + e2e tests, fixture default flip</td>
+      <td><code>test/</code>, <code>e2e/</code></td><td>M</td></tr>
+</table>
+</div>
+<p>Roughly 1.5 to 2 days of focused work. Ships as one PR, or two (server invite model,
+then worker gating + UI) if a smaller review is preferred - the second half is the one
+that stops the interruptions and depends on the first.</p>
+
+</div>
+</body>
+</html>

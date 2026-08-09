@@ -50,10 +50,17 @@ by symbol if drifted):
 - Key rotation: only `pending_turns` auto-rekeys today
   (`PendingTurnManager.moveConversationKey`, `src/server/pending-turns.ts:387-421`,
   driven by `observeSession` `:317-322`). Notes and goals strand their rows
-  (`claude-cli.ts:260` documents the resulting incident). The registry already detects
-  noteKey rotation inline for cost recompute: `registry.ts:1596`, `:1829`,
-  `:3550-3551` (`noteKeyFor(next) !== noteKeyFor(s)`). The invite move hooks those
-  same comparisons.
+  (`claude-cli.ts:260` documents the resulting incident). The registry detects noteKey
+  rotation at **four** sites, and the invite move must cover all of them: the three
+  inline cost-recompute comparisons (`registry.ts:1596`, `:1829`, `:3550-3551`,
+  `noteKeyFor(next) !== noteKeyFor(s)`) **and** `bindLaunchedAgentSession`
+  (`registry.ts:1933-1954`), which the dispatcher calls at `dispatcher.ts:282` for
+  every Pi launch carrying a pre-assigned `piLaunch.sessionId` - it swaps
+  `agentSessionId` and already re-resolves note/goal/cost/queue off the new key.
+  Because the dispatcher writes the `'dispatch'` invite under the pre-rebind synthetic
+  key (`:267-271`), missing this fourth site would strand a Pi-dispatched session's
+  invite and silently un-invite Foreman from a session Mission Control just dispatched
+  (Pi's runtime is `terminal`, so no implicit grant catches it).
 - `Dispatcher` has no db import; all persistence goes through `this.registry`
   (`dispatcher.ts:610-614`). `waitForSessionAtCwd` returns `Session | null`
   (`registry.ts:4429`) and fires the moment the process exists - `agentSessionId` is
@@ -139,10 +146,14 @@ by symbol if drifted):
      every live session sharing the key (mirror `syncSessionsForNote`,
      `registry.ts:5041`). Return the new `ForemanInvite | null` or undefined when no
      session.
-   - Key-rotation move: at each of the three existing `noteKeyFor(next) !==
-     noteKeyFor(s)` comparisons (`:1596`, `:1829`, `:3550`), also
-     `moveForemanInvite(oldKey, newKey)` + cache move. Extract a small private helper
-     so the three sites share one implementation.
+   - Key-rotation move: extract one small private helper (old key, new key →
+     `moveForemanInvite` + cache move) and invoke it at **all four** rotation sites:
+     the three existing `noteKeyFor(next) !== noteKeyFor(s)` comparisons (`:1596`,
+     `:1829`, `:3550`) and `bindLaunchedAgentSession` (`:1933-1954`, beside its
+     existing note/goal/cost re-resolution). Acceptable alternative if the fixed list
+     proves fragile during implementation: rekey reactively off every session key
+     change the way `PendingTurnManager.observeSession` does, which covers rotation
+     sites by construction; record the choice in the PR.
    - Wire `pruneForemanInvites` wherever `pruneGoals` runs (`registry.ts:5017-5028`).
 4. **`src/server/reset.ts`** - at `:117-124`, move the invite to the post-reset key
    (same from/to keys `clearPendingTurns` uses) instead of leaving it stranded.
@@ -167,8 +178,10 @@ by symbol if drifted):
    - New `test/foreman-invite.test.ts` (or extend the db/registry suites): db
      accessor round-trip incl. tombstone upsert-over and CHECK rejection; rotation
      move (invite written under synthetic key survives a simulated binding to an
-     agentSessionId); prune keeps live keys; registry resolution matrix (sdk default,
-     dispatch row, operator row, withdrawn row on sdk and on terminal, no row);
+     agentSessionId); a Pi-shaped rotation case (invite written under the synthetic
+     key survives `bindLaunchedAgentSession` rebinding to a pre-assigned id); prune
+     keeps live keys; registry resolution matrix (sdk default, dispatch row, operator
+     row, withdrawn row on sdk and on terminal, no row);
      `setForemanInvite`/`withdrawForemanInvite` emit `session_upsert`.
    - Dispatcher: extend the `test/dispatch.test.ts` family - a terminal dispatch ends
      with the discovered session carrying `foremanInvite: "dispatch"`; an SDK dispatch
@@ -232,7 +245,13 @@ by symbol if drifted):
 - 2026-08-09 (authoring): source plan's "POST schema in `src/shared/protocol.ts`"
   dropped - neither route carries a body, so this phase touches no protocol schemas.
   The plan's data-model item 5 parenthetical is superseded by this file.
-- 2026-08-09 (authoring): decided the invite move rides the registry's three existing
-  noteKey-rotation comparisons rather than a new `PendingTurnManager`-style
-  subscriber, because the invite cache is registry-owned state (notes pattern) and the
-  rotation points already exist inline.
+- 2026-08-09 (authoring): decided the invite move rides the registry's existing
+  noteKey-rotation points rather than a new `PendingTurnManager`-style subscriber,
+  because the invite cache is registry-owned state (notes pattern) and the rotation
+  points already exist inline.
+- 2026-08-09 (Inspector round 1, confirmed against the repo): the rotation list was
+  three sites and missed `bindLaunchedAgentSession` - the Pi-dispatch rebind that
+  would have stranded a freshly dispatched Pi session's invite, reproducing the exact
+  bug class this design exists to prevent. Fixed: four sites via one shared helper,
+  with the reactive `observeSession`-style rekey named as the acceptable alternative;
+  a Pi-shaped rotation test added to section 5 step 7. Source plan updated to match.

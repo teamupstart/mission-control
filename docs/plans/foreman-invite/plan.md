@@ -108,9 +108,11 @@ flowchart TD
    (`PendingTurnManager.moveConversationKey`, `pending-turns.ts:387`); notes and goals
    strand their rows, which for an invite would silently kick Foreman off a dispatched
    session the moment its hooks land. The registry owns the invite cache (loaded at
-   boot like notes, `registry.ts:595`), so it moves the row and cache entry at its
-   existing noteKey-rotation detection points (the cost-recompute comparisons at
-   `registry.ts:1596`, `1829`, `3550`), and session reset (`reset.ts:117-124`) moves
+   boot like notes, `registry.ts:595`), so it moves the row and cache entry at all
+   four of its noteKey-rotation points - the cost-recompute comparisons at
+   `registry.ts:1596`, `1829`, `3550`, and `bindLaunchedAgentSession`
+   (`registry.ts:1933`), the Pi-dispatch rebind that would otherwise strand a freshly
+   dispatched Pi session's invite - and session reset (`reset.ts:117-124`) moves
    the invite to the post-reset key rather than dropping it - an invite belongs to the
    pane, not the conversation. A `pruneForemanInvites` sweep follows the
    `pruneSessionGoals` pattern for hygiene.

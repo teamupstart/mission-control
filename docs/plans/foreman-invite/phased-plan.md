@@ -68,7 +68,7 @@ documented); after 3, the full approved plan is live.
 | --- | --- | --- | --- |
 | C1 | `Session.foremanInvite: "sdk" \| "dispatch" \| "operator" \| null`; `'withdrawn'` resolves to `null`, never surfaces | 1 | 2, 3 |
 | C2 | `foreman_invites(note_key PK, source, created_at)`; source domain append-only; rotation/reset/prune lifecycle | 1 | 2, 3 |
-| C3 | `POST` / `DELETE /api/sessions/:id/foreman-invite`; body-less; tombstone withdrawal; emits `session_upsert` | 1 | 3 |
+| C3 | `POST` / `DELETE /api/sessions/:id/foreman-invite`; body-less; POST is restore-then-elevate (no-op when invited, tombstone deletion resumes implicit grants, `'operator'` only from null); DELETE is tombstone withdrawal; emits `session_upsert` | 1 | 3 |
 | C4 | `Registry.setForemanInvite` / `withdrawForemanInvite` are the only write doors; worker and dispatcher never touch SQLite | 1 | 2 |
 | C5 | `mkSession` defaults `foremanInvite: "dispatch"`; uninvited tests declare `null` | 1 | 2, 3 |
 | C6 | Worker acts only when invite non-null; backlog assigns only `"sdk"\|"dispatch"`; human paths never invite-gated; daemon 403s Foreman-marked typing into uninvited sessions | 2 | 3 |

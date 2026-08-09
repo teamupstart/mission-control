@@ -133,10 +133,16 @@ flowchart TD
    the dispatcher deliberately has no db access. The embedded SDK dispatch branch
    returns earlier and needs no row: SDK sessions default to `"sdk"`.
 
-5. **Routes** (`src/server/routes.ts`, POST schema in `src/shared/protocol.ts`; the
-   DELETE takes no body, matching every existing DELETE):
-   - `POST /api/sessions/:id/foreman-invite` - upsert `source='operator'`, overwriting
-     a tombstone.
+5. **Routes** (`src/server/routes.ts`; both body-less, matching every existing
+   DELETE):
+   - `POST /api/sessions/:id/foreman-invite` - invite, **restore-then-elevate**: a
+     no-op when already invited; otherwise it deletes a `'withdrawn'` tombstone so
+     runtime-implied grants resume - a withdrawn SDK session gets `"sdk"` back,
+     backlog eligibility included, rather than a permanent invisible `"operator"`
+     downgrade - and writes `source='operator'` only when the state would otherwise
+     stay `null`. One documented residue: a withdrawn, previously dispatched
+     terminal re-invites as `"operator"` (the tombstone replaced its `'dispatch'`
+     row) until a fresh dispatch restores `"dispatch"`.
    - `DELETE /api/sessions/:id/foreman-invite` - withdraw: upsert the `'withdrawn'`
      tombstone, so the withdrawal also beats the implicit SDK grant and survives
      restarts. The verb still removes the resource (the invite); the tombstone is how

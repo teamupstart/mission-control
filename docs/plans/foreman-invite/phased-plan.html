@@ -174,7 +174,9 @@ live.</p>
   <tr><td>C2</td><td><code>foreman_invites(note_key PK, source, created_at)</code>;
       source domain append-only; rotation/reset/prune lifecycle</td><td>1</td><td>2, 3</td></tr>
   <tr><td>C3</td><td><code>POST</code> / <code>DELETE /api/sessions/:id/foreman-invite</code>;
-      body-less; tombstone withdrawal; emits <code>session_upsert</code></td><td>1</td><td>3</td></tr>
+      body-less; POST is restore-then-elevate (no-op when invited, tombstone deletion
+      resumes implicit grants, <code>'operator'</code> only from null); DELETE is
+      tombstone withdrawal; emits <code>session_upsert</code></td><td>1</td><td>3</td></tr>
   <tr><td>C4</td><td><code>Registry.setForemanInvite</code> / <code>withdrawForemanInvite</code>
       are the only write doors; worker and dispatcher never touch SQLite</td><td>1</td><td>2</td></tr>
   <tr><td>C5</td><td><code>mkSession</code> defaults <code>foremanInvite: "dispatch"</code>;

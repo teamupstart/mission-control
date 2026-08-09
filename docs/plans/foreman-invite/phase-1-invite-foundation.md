@@ -140,12 +140,19 @@ by symbol if drifted):
      `rememberAgentSession` where that ordering exists.
    - Comparator entry `foremanInvite: byValue` in `SESSION_FIELD_COMPARATORS`, in
      `Session` field order.
-   - Public `setForemanInvite(sessionId, source: "dispatch" | "operator")` and
-     `withdrawForemanInvite(sessionId)` - resolve the session, upsert the row
-     (`'withdrawn'` for withdraw), update the cache, then re-resolve and emit for
-     every live session sharing the key (mirror `syncSessionsForNote`,
-     `registry.ts:5041`). Return the new `ForemanInvite | null` or undefined when no
-     session.
+   - Public write doors, each resolving the session, writing the row, updating the
+     cache, then re-resolving and emitting for every live session sharing the key
+     (mirror `syncSessionsForNote`, `registry.ts:5041`), returning the new
+     `ForemanInvite | null` or undefined when no session:
+     - `setForemanInvite(sessionId, "dispatch")` - plain upsert; the dispatcher's
+       door.
+     - `inviteForeman(sessionId)` - the operator door, **restore-then-elevate**:
+       no-op when the session already resolves invited; otherwise delete a
+       `'withdrawn'` row if present and re-resolve, so a withdrawn SDK session gets
+       its implicit `"sdk"` grant back - backlog eligibility included - instead of a
+       permanent, invisible `"operator"` downgrade; only if the state is still `null`
+       upsert `'operator'`.
+     - `withdrawForemanInvite(sessionId)` - upsert the `'withdrawn'` tombstone.
    - Key-rotation move: extract one small private helper (old key, new key →
      `moveForemanInvite` + cache move) and invoke it at **all four** rotation sites:
      the three existing `noteKeyFor(next) !== noteKeyFor(s)` comparisons (`:1596`,
@@ -162,11 +169,11 @@ by symbol if drifted):
    `terminalResourceId` patch.
 6. **`src/server/routes.ts`** - beside the note routes:
    - `POST /api/sessions/:id/foreman-invite` → 404 when no session, else
-     `registry.setForemanInvite(id, "operator")`, return the resolved state.
+     `registry.inviteForeman(id)`, return the resolved state.
    - `DELETE /api/sessions/:id/foreman-invite` → 404 when no session, else
      `registry.withdrawForemanInvite(id)`, return the resolved state. Route comment
      explains the tombstone (withdrawal must beat the implicit SDK grant and survive
-     restarts).
+     restarts) and the restore-then-elevate re-invite.
 7. **Fixtures and tests**:
    - `test/helpers/session-fixture.ts`: `foremanInvite: "dispatch"` default (the
      fixture models a dispatched worktree session; preserves the meaning of every
@@ -181,8 +188,12 @@ by symbol if drifted):
      agentSessionId); a Pi-shaped rotation case (invite written under the synthetic
      key survives `bindLaunchedAgentSession` rebinding to a pre-assigned id); prune
      keeps live keys; registry resolution matrix (sdk default, dispatch row, operator
-     row, withdrawn row on sdk and on terminal, no row);
-     `setForemanInvite`/`withdrawForemanInvite` emit `session_upsert`.
+     row, withdrawn row on sdk and on terminal, no row); the restore-then-elevate
+     matrix (withdraw-then-reinvite on an SDK session restores `"sdk"`, not
+     `"operator"`; on a never-invited terminal yields `"operator"`; on a withdrawn
+     previously-dispatched terminal yields `"operator"`; invite on an already-invited
+     session is a no-op); `inviteForeman`/`withdrawForemanInvite` emit
+     `session_upsert`.
    - Dispatcher: extend the `test/dispatch.test.ts` family - a terminal dispatch ends
      with the discovered session carrying `foremanInvite: "dispatch"`; an SDK dispatch
      carries `"sdk"` with no row.
@@ -232,9 +243,14 @@ by symbol if drifted):
   the registry with the tombstone rule; `'withdrawn'` never surfaces on the field.
 - **C2**: `foreman_invites(note_key PK, source, created_at)` with the append-only
   source domain and note-key lifecycle (rotation move, reset move, prune).
-- **C3**: `POST /api/sessions/:id/foreman-invite` → operator invite;
+- **C3**: `POST /api/sessions/:id/foreman-invite` → restore-then-elevate invite
+  (no-op when already invited; deletes a tombstone so implicit grants resume; writes
+  `'operator'` only when the state would otherwise stay `null`);
   `DELETE /api/sessions/:id/foreman-invite` → authoritative withdrawal (tombstone);
-  both emit `session_upsert`; both 404 on unknown session; both body-less.
+  both emit `session_upsert`; both 404 on unknown session; both body-less. Documented
+  consequence: a withdrawn, previously dispatched terminal re-invites as
+  `"operator"` (the tombstone replaced its `'dispatch'` row); a fresh dispatch
+  restores `"dispatch"`.
 - **C4**: `Registry.setForemanInvite` / `Registry.withdrawForemanInvite` are the only
   write doors; the Foreman worker and the dispatcher never touch SQLite for invites.
 - **C5**: `mkSession` defaults `foremanInvite: "dispatch"`; tests that need an
@@ -249,6 +265,15 @@ by symbol if drifted):
   noteKey-rotation points rather than a new `PendingTurnManager`-style subscriber,
   because the invite cache is registry-owned state (notes pattern) and the rotation
   points already exist inline.
+- 2026-08-09 (Inspector round 3): the original POST semantics (always upsert
+  `'operator'`) made withdraw-then-reinvite a permanent, invisible backlog downgrade
+  for SDK sessions - the exact cycle the phase 3 e2e spec drives. Fixed with
+  restore-then-elevate: re-invite deletes the tombstone so runtime-implied grants
+  resume, and elevates to `'operator'` only from a truly null state; POST is a no-op
+  on an already-invited session (which also prevents the API downgrading a
+  `'dispatch'` row). The one-way residue that remains - a withdrawn
+  previously-dispatched terminal re-invites as `"operator"` until dispatched again -
+  is documented in C3 and the PR's known gaps rather than hidden.
 - 2026-08-09 (Inspector round 1, confirmed against the repo): the rotation list was
   three sites and missed `bindLaunchedAgentSession` - the Pi-dispatch rebind that
   would have stranded a freshly dispatched Pi session's invite, reproducing the exact

@@ -457,12 +457,20 @@ included.</figcaption>
       <code>Registry.setForemanInvite</code> method, since the dispatcher deliberately
       has no db access. The embedded SDK dispatch branch returns earlier and needs no
       row: SDK sessions default to <code>"sdk"</code>.</li>
-  <li><strong>Routes</strong> (<code>src/server/routes.ts</code>, POST schema in
-      <code>src/shared/protocol.ts</code>; the DELETE takes no body, matching every
-      existing DELETE):
+  <li><strong>Routes</strong> (<code>src/server/routes.ts</code>; both body-less,
+      matching every existing DELETE):
       <ul>
-        <li><code>POST /api/sessions/:id/foreman-invite</code> - upsert
-            <code>source='operator'</code>, overwriting a tombstone.</li>
+        <li><code>POST /api/sessions/:id/foreman-invite</code> - invite,
+            <strong>restore-then-elevate</strong>: a no-op when already invited;
+            otherwise it deletes a <code>'withdrawn'</code> tombstone so
+            runtime-implied grants resume - a withdrawn SDK session gets
+            <code>"sdk"</code> back, backlog eligibility included, rather than a
+            permanent invisible <code>"operator"</code> downgrade - and writes
+            <code>source='operator'</code> only when the state would otherwise stay
+            <code>null</code>. One documented residue: a withdrawn, previously
+            dispatched terminal re-invites as <code>"operator"</code> (the tombstone
+            replaced its <code>'dispatch'</code> row) until a fresh dispatch restores
+            <code>"dispatch"</code>.</li>
         <li><code>DELETE /api/sessions/:id/foreman-invite</code> - withdraw: upsert the
             <code>'withdrawn'</code> tombstone, so the withdrawal also beats the
             implicit SDK grant and survives restarts. The verb still removes the

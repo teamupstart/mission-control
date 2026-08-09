@@ -22,6 +22,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "goal-feature",
     runtime: "terminal",
+    // A dispatched worktree session (the cwd and branch say so), like the shared fixture.
+    foremanInvite: "dispatch",
     nameSource: "tmux",
     state: "working",
     cwd: "/wt/goal",

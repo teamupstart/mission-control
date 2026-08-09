@@ -65,6 +65,9 @@ test("a visible change emits", () => {
     // affordances a card draws (a Send box with no pane behind it, no Focus, no Rename), so
     // an entry left out of the record would render the wrong set once and never correct it.
     { runtime: "sdk" as const, terminals: [], tty: null },
+    // An invite or a withdrawal often lands with nothing else on the session moving -
+    // left out, phase 3's rail control would swap only when something unrelated did.
+    { foremanInvite: null },
   ];
   for (const over of cases) {
     const field = Object.keys(over)[0];

@@ -269,6 +269,14 @@ export class Dispatcher {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
       this.patch(taskId, { terminalResourceId: innermostTerminalResourceId(discovered) });
+      // Mission Control launched this session, so Foreman is invited by construction -
+      // recorded the moment discovery confirms the spawn, through the registry (the
+      // dispatcher deliberately has no db access). The row lands under whatever key the
+      // session holds right now (almost always the synthetic id - hooks have not fired
+      // yet) and the registry's rotation move carries it to the agent-session key when
+      // the binding arrives. The embedded branch above needs no row: an SDK session is
+      // invited by its runtime.
+      this.registry.setForemanInvite(discovered.id, "dispatch");
       if (await this.abortIfSettled(taskId)) return;
 
       // Discovery only proves the process exists. Hooked agents prove they can READ before

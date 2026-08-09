@@ -343,6 +343,21 @@ export function openDb(): DatabaseSync {
       updated_at              INTEGER NOT NULL
     );
 
+    -- Whether Foreman is invited to act in a session. Keyed like session_notes so the
+    -- invite shares that lifecycle (rotation, reset, prune), and one row per key holds
+    -- the latest explicit state: 'dispatch' (Mission Control launched this terminal
+    -- session for a task), 'operator' (a human invited Foreman), or 'withdrawn' - the
+    -- tombstone an operator's withdrawal writes. The tombstone is a stored fact rather
+    -- than a deleted row because withdrawal must beat the IMPLICIT grant an SDK-runtime
+    -- session re-derives on every resolution, and must survive a restart. SDK sessions
+    -- otherwise store nothing: their invite is implied by the runtime. The source domain
+    -- is append-only from the moment it shipped - see docs/agent-guides/change-contracts.md.
+    CREATE TABLE IF NOT EXISTS foreman_invites (
+      note_key   TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
+      source     TEXT NOT NULL CHECK (source IN ('dispatch','operator','withdrawn')),
+      created_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS app_config (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -3925,6 +3940,103 @@ export function pruneSessionGoals(liveKeys: Iterable<string>, olderThan: number)
   const r = openDb()
     .prepare(
       `DELETE FROM session_goals WHERE updated_at < ? AND note_key NOT IN (${placeholders})`,
+    )
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
+// ---- foreman invites (whether Foreman may act in a session) ----
+
+/**
+ * The persisted invite domain. `'withdrawn'` is the tombstone and never surfaces on
+ * `Session.foremanInvite` - the registry resolves it to `null`. Append-only, like the
+ * shared `FOREMAN_INVITES` tuple it extends.
+ */
+export type ForemanInviteSource = "dispatch" | "operator" | "withdrawn";
+
+export interface ForemanInviteRow {
+  noteKey: string;
+  source: ForemanInviteSource;
+  createdAt: number;
+}
+
+export function upsertForemanInvite(
+  noteKey: string,
+  source: ForemanInviteSource,
+  now = Date.now(),
+): void {
+  openDb()
+    .prepare(
+      `INSERT INTO foreman_invites (note_key, source, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET source=excluded.source, created_at=excluded.created_at`,
+    )
+    .run(noteKey, source, now);
+}
+
+export function getForemanInvite(noteKey: string): ForemanInviteRow | undefined {
+  const r = openDb()
+    .prepare(`SELECT note_key, source, created_at FROM foreman_invites WHERE note_key = ?`)
+    .get(noteKey) as unknown as
+    | { note_key: string; source: ForemanInviteSource; created_at: number }
+    | undefined;
+  return r ? { noteKey: r.note_key, source: r.source, createdAt: r.created_at } : undefined;
+}
+
+/** Restore-then-elevate's first half: dropping a tombstone lets implicit grants resume. */
+export function deleteForemanInvite(noteKey: string): void {
+  openDb().prepare(`DELETE FROM foreman_invites WHERE note_key = ?`).run(noteKey);
+}
+
+/** All invites, reloaded into the registry on start - the notes/goals boot pattern. */
+export function loadForemanInvites(): ForemanInviteRow[] {
+  const rows = openDb()
+    .prepare(`SELECT note_key, source, created_at FROM foreman_invites`)
+    .all() as unknown as Array<{ note_key: string; source: ForemanInviteSource; created_at: number }>;
+  return rows.map((r) => ({ noteKey: r.note_key, source: r.source, createdAt: r.created_at }));
+}
+
+/**
+ * Carry an invite across a note-key rotation - the binding of an agent session id, a
+ * Pi launch rebind, or a reset - so a dispatched session does not silently lose Foreman
+ * the moment its hooks land. `session_notes` and `session_goals` strand their rows on
+ * rotation and live with it; an invite stranding is a policy change, not stale prose.
+ *
+ * Last-write-wins with the moved row's own `created_at`: the row followed the pane, and
+ * a row already sitting under the target key is the same pane's earlier state.
+ */
+export function moveForemanInvite(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  const row = getForemanInvite(fromKey);
+  if (!row) return;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(
+      `INSERT INTO foreman_invites (note_key, source, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET source=excluded.source, created_at=excluded.created_at`,
+    ).run(toKey, row.source, row.createdAt);
+    d.prepare(`DELETE FROM foreman_invites WHERE note_key = ?`).run(fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * Delete invites that belong to no live session and have gone stale. Returns how many.
+ *
+ * The same shape and the same safety property as `pruneSessionGoals` above: a row whose
+ * key still belongs to a session is never touched no matter how old, and an EMPTY
+ * `liveKeys` means "liveness unknown", never "nothing is live", and so deletes nothing.
+ */
+export function pruneForemanInvites(liveKeys: Iterable<string>, olderThan: number): number {
+  const keys = [...new Set(liveKeys)];
+  if (!keys.length) return 0;
+  const placeholders = keys.map(() => "?").join(",");
+  const r = openDb()
+    .prepare(
+      `DELETE FROM foreman_invites WHERE created_at < ? AND note_key NOT IN (${placeholders})`,
     )
     .run(olderThan, ...keys);
   return Number(r.changes);

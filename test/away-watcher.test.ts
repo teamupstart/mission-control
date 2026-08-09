@@ -31,6 +31,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "sess",
     runtime: "terminal",
+    // The away digest covers every session on the machine, invited or not.
+    foremanInvite: null,
     nameSource: "process",
     state: "working" as SessionState,
     cwd: null,

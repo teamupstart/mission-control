@@ -99,6 +99,25 @@ export const SESSION_RUNTIMES = ["terminal", "sdk"] as const;
 export type SessionRuntime = (typeof SESSION_RUNTIMES)[number];
 
 /**
+ * How Foreman came to be invited into a session - the value of `Session.foremanInvite`
+ * when it is invited at all.
+ *
+ * - `"sdk"`: an embedded session Mission Control runs by definition; invited implicitly,
+ *   with no stored row.
+ * - `"dispatch"`: Mission Control dispatched this terminal session for a task; the
+ *   dispatcher records the invite once discovery confirms the spawn.
+ * - `"operator"`: a human invited Foreman explicitly.
+ *
+ * APPEND-ONLY, and a tuple rather than a bare union because the values are persisted in
+ * `foreman_invites.source`. That persisted domain additionally contains `'withdrawn'` -
+ * the tombstone an operator's withdrawal writes, which beats even the implicit SDK grant -
+ * and it NEVER surfaces here: the registry resolves a withdrawn row to `null`, the same
+ * value an ordinary discovered session carries.
+ */
+export const FOREMAN_INVITES = ["sdk", "dispatch", "operator"] as const;
+export type ForemanInvite = (typeof FOREMAN_INVITES)[number];
+
+/**
  * What an embedded driver's acknowledgement means for the submitted message.
  *
  * Both current drivers fold a message sent mid-turn into the turn already running, and both
@@ -373,6 +392,19 @@ export interface Session {
    * by the supervisor, but nothing outside it may key behaviour on the spelling.
    */
   runtime: SessionRuntime;
+  /**
+   * Whether Foreman is invited to act in this session, and on whose word - see
+   * `FOREMAN_INVITES`. `null` means uninvited: every plainly discovered session, and any
+   * session whose invite was withdrawn.
+   *
+   * RESOLVED by the registry, never stored on the session: a `'withdrawn'` row in
+   * `foreman_invites` resolves to `null` (the tombstone beats even the implicit SDK
+   * grant); otherwise a stored `'dispatch'` or `'operator'` row resolves to its own
+   * value; otherwise an SDK-runtime session resolves to `"sdk"` and everything else to
+   * `null`. Nothing reads this field yet - the Foreman worker gating and the UI land in
+   * later phases of `docs/plans/foreman-invite/phased-plan.md`.
+   */
+  foremanInvite: ForemanInvite | null;
   /**
    * Display name. A terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an

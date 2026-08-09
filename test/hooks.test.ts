@@ -17,6 +17,8 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     agent: "claude",
     name: "n",
     runtime: "terminal",
+    // Hook ingest mechanics on a plainly discovered session - no invite in play.
+    foremanInvite: null,
     nameSource: "tmux",
     state: "working",
     cwd: null,

@@ -46,6 +46,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "old",
     runtime: "terminal",
+    // Rename is pane mechanics; a discovered session is the honest shape here.
+    foremanInvite: null,
     nameSource: "tmux",
     state: "working" as SessionState,
     cwd: null,

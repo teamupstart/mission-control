@@ -2629,6 +2629,35 @@ export function buildApp(
     return c.json(note);
   });
 
+  // --- Foreman invites (whether Foreman may act in a session) ---
+  //
+  // Both routes are deliberately body-less (POST carries no options - the source is
+  // always 'operator' - and DELETE matches every existing DELETE), so neither needs a
+  // protocol.ts schema. State changes reach the dashboard as ordinary session_upserts.
+
+  // Invite - restore-then-elevate, not a blind 'operator' write: a no-op when already
+  // invited, deletes a 'withdrawn' tombstone so runtime-implied grants resume (a
+  // withdrawn SDK session gets "sdk" back rather than a permanent invisible "operator"
+  // downgrade), and writes 'operator' only when the state would otherwise stay null.
+  app.post("/api/sessions/:id/foreman-invite", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const foremanInvite = registry.inviteForeman(session.id);
+    if (foremanInvite === undefined) return c.json({ error: "no such session" }, 404);
+    return c.json({ foremanInvite });
+  });
+
+  // Withdraw. DELETE still removes the resource (the invite); the 'withdrawn' tombstone
+  // it stores is how that removal stays authoritative for sessions that would otherwise
+  // re-derive a grant from their runtime, and how it survives a daemon restart.
+  app.delete("/api/sessions/:id/foreman-invite", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const foremanInvite = registry.withdrawForemanInvite(session.id);
+    if (foremanInvite === undefined) return c.json({ error: "no such session" }, 404);
+    return c.json({ foremanInvite });
+  });
+
   // --- Foreman episodes: the append-only record behind the note ---
 
   // Written by the worker (a separate process with no DB access of its own) once it

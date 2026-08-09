@@ -559,11 +559,12 @@ LIMIT 20;
             </details>
 
             <details class="family">
-              <summary><strong>Foreman</strong><span>3 tables</span></summary>
+              <summary><strong>Foreman</strong><span>4 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>foreman_episodes</code><p>Append-only decision history: situation, captured question or terminal pane, triage evidence, chosen action, delivery, and resolution attribution.</p></div>
                 <div class="table-row"><code>foreman_queues</code><p>One current queue header per stable note key, including checkout reattach hints and wrap-up guards.</p></div>
                 <div class="table-row"><code>foreman_queue_items</code><p>Ordered durable instructions and their propose, send, verify, recover, complete, or escalation lifecycle.</p></div>
+                <div class="table-row"><code>foreman_invites</code><p>Whether Foreman may act in a session, per stable note key: a dispatch or operator grant, or the withdrawn tombstone that beats even the implicit SDK-runtime grant.</p></div>
               </div>
             </details>
 

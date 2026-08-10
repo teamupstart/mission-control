@@ -396,6 +396,12 @@ test("switching to an unbound session clears the previous session's workflow", a
   await published.selectOption("");
   await expect.poll(() => selectedLabel(published)).toBe("Choose a published version");
   await expect(bind.getByText(/^This version defaults to /)).toHaveCount(0);
+  // Nor a conflict. Clearing the select is "no opinion", and the binding comparison read the
+  // empty string as a DIFFERENT version - so the dialog told the operator to archive the
+  // binding before "selecting another version" when they had selected none, pointing at a
+  // remedy for a problem they did not have.
+  await expect(bind.getByText(/Archive that binding/)).toHaveCount(0);
+  await expect(bind.getByText(/already bound to/i)).toHaveCount(0);
 });
 
 test("a session bound to a superseded version still gets its defaults hint", async ({

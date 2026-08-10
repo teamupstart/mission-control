@@ -1438,6 +1438,19 @@ test("binding selection reuses only the requested immutable version", () => {
     workflowBindingSelection([pausedOther], session, "version-one"),
     { existing: undefined, conflict: undefined },
   );
+
+  // An empty selection is NO OPINION, not a conflict. Every comparison here is against
+  // `versionId`, and `active.workflowVersionId === ""` is false for any real binding - so
+  // clearing the select on a bound session reported that binding as a conflict and told the
+  // operator to archive it before "selecting another version". They had selected nothing.
+  assert.deepEqual(
+    workflowBindingSelection([active], session, ""),
+    { existing: undefined, conflict: undefined },
+  );
+  assert.deepEqual(
+    workflowBindingSelection([pausedExact, active], session, ""),
+    { existing: undefined, conflict: undefined },
+  );
 });
 
 // ---- Check attempts ----

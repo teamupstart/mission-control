@@ -29,6 +29,16 @@ export function workflowBindingSelection(
   versionId: string,
 ): { existing: WorkflowBinding | undefined; conflict: WorkflowBinding | undefined } {
   if (!session) return { existing: undefined, conflict: undefined };
+  /*
+   * An empty selection is not a conflict. Every comparison below is against `versionId`, and
+   * `active.workflowVersionId === ""` is false for any real binding, so clearing the select on
+   * an already-bound session reported the binding as a CONFLICT and told the operator to
+   * "Archive that binding before selecting another version". They had not selected another
+   * one; they had selected nothing, and the way forward is to pick a version, not to archive
+   * anything. Answering "no opinion" for an empty selection keeps the notices about versions
+   * the operator actually chose.
+   */
+  if (!versionId) return { existing: undefined, conflict: undefined };
   const compatible = bindings.filter((binding) =>
     binding.state !== "archived"
     && (

@@ -1,21 +1,24 @@
 import type {
+  PushContext,
+  PushDraft,
+  PushResult,
   SweepContext,
   SweepResult,
   TaskSourceImpl,
   TaskSourceInstance,
   TaskSourceKind,
 } from "@shared/task-source.ts";
-import { TASK_SOURCE_KINDS } from "@shared/task-source.ts";
+import { TASK_SOURCE_KINDS, TASK_SOURCE_KIND_INFO } from "@shared/task-source.ts";
 import { githubIssues } from "./github-issues.ts";
 import { jira } from "./jira.ts";
 
 // The registry of implementations - the server half of the split
 // `HARNESS_CAPABILITIES` / `HARNESSES` makes: `TASK_SOURCE_KIND_INFO`
 // (@shared/task-source.ts) holds what the browser can answer, and each implementation
-// spreads its own info in and adds the two calls that leave the process.
+// spreads its own info in and adds the calls that leave the process.
 //
-// Reach an implementation through `sweepSource` / `preflightSource` below, never by
-// testing `inst.kind` at a call site.
+// Reach an implementation through `sweepSource` / `preflightSource` / `pushToSource`
+// below, never by testing `inst.kind` at a call site.
 
 /**
  * A registered implementation with its config type ERASED - which is how the daemon
@@ -26,8 +29,17 @@ interface ErasedTaskSource {
   kind: TaskSourceKind;
   label: string;
   blurb: string;
+  /** Mirrors the kind's `canPush`, so one object answers every question about a kind. */
+  canPush: boolean;
   preflight(config: unknown, ctx: SweepContext): Promise<string | null>;
   sweep(config: unknown, ctx: SweepContext): Promise<SweepResult>;
+  /**
+   * Null when this kind cannot receive a pushed task.
+   *
+   * Null rather than absent, because "this slot exists and is empty" is checkable and
+   * `undefined` on an optional property is not distinguishable from a typo in the key.
+   */
+  push: ((config: unknown, draft: PushDraft, ctx: PushContext) => Promise<PushResult>) | null;
 }
 
 /**
@@ -49,6 +61,7 @@ function erase<C>(impl: TaskSourceImpl<C>): ErasedTaskSource {
     kind: impl.kind,
     label: impl.label,
     blurb: impl.blurb,
+    canPush: TASK_SOURCE_KIND_INFO[impl.kind].canPush,
     async preflight(config, ctx) {
       const parsed = impl.configSchema.safeParse(config ?? {});
       if (!parsed.success) return reason(parsed.error);
@@ -59,6 +72,22 @@ function erase<C>(impl: TaskSourceImpl<C>): ErasedTaskSource {
       if (!parsed.success) return { items: [], error: reason(parsed.error) };
       return impl.sweep(parsed.data, ctx);
     },
+    // Same boundary parse, and the same rule about what a rejected blob becomes - except
+    // the stakes are higher here than for a sweep. `outcomeUnknown: false` is a FACT: the
+    // config never reached an implementation, so no subprocess ran and nothing was
+    // published. That is the one direction a caller may safely retry from.
+    //
+    // Called back through `impl` rather than through a captured reference, exactly as the
+    // two above are, so an implementation written as a method keeps its receiver.
+    push: impl.push
+      ? async (config, draft, ctx) => {
+          const parsed = impl.configSchema.safeParse(config ?? {});
+          if (!parsed.success) {
+            return { ref: null, error: reason(parsed.error), outcomeUnknown: false };
+          }
+          return impl.push!(parsed.data, draft, ctx);
+        }
+      : null,
   };
 }
 
@@ -111,5 +140,53 @@ export async function preflightSource(
     return await TASK_SOURCES[inst.kind].preflight(inst.config, ctx);
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/**
+ * Can this configured source receive a task pushed outward from the backlog?
+ *
+ * The call-site-safe spelling of the question, so nothing outside this file tests
+ * `inst.kind` to decide - which is how a third kind ends up push-capable everywhere
+ * except the one branch somebody forgot.
+ */
+export function canPushTo(inst: TaskSourceInstance): boolean {
+  return TASK_SOURCES[inst.kind].canPush;
+}
+
+/**
+ * Push one task to a configured source, reporting a thrown implementation as a refusal.
+ *
+ * The catch differs from `sweepSource`'s in what it is allowed to conclude, and the
+ * difference is the whole safety property. A throw out of here is OUR code failing -
+ * building an argv, reading a result - because `run()` never throws and reports its own
+ * `outcomeUnknown` when a child dies. So a throw means the subprocess either never ran or
+ * already told us what happened, and `outcomeUnknown: false` is a fact rather than an
+ * optimistic default.
+ *
+ * A kind with no `push` is an ERROR, never a silent success: the caller asked for an item
+ * to be published, and "nothing happened, all fine" would leave a task looking filed.
+ */
+export async function pushToSource(
+  inst: TaskSourceInstance,
+  draft: PushDraft,
+  ctx: PushContext,
+): Promise<PushResult> {
+  const push = TASK_SOURCES[inst.kind].push;
+  if (!push) {
+    return {
+      ref: null,
+      error: `${inst.kind} cannot receive pushed tasks`,
+      outcomeUnknown: false,
+    };
+  }
+  try {
+    return await push(inst.config, draft, ctx);
+  } catch (err) {
+    return {
+      ref: null,
+      error: err instanceof Error ? err.message : String(err),
+      outcomeUnknown: false,
+    };
   }
 }

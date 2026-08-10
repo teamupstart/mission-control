@@ -10,7 +10,12 @@ import {
   TaskSourceInstanceSchema,
   TaskSourcesConfigSchema,
 } from "../src/shared/task-source.ts";
-import { TASK_SOURCES, taskSourceKinds } from "../src/server/task-sources/index.ts";
+import {
+  TASK_SOURCES,
+  canPushTo,
+  pushToSource,
+  taskSourceKinds,
+} from "../src/server/task-sources/index.ts";
 
 // What is at stake: a task source's kind id is PERSISTED inside the `taskSources` blob in
 // `app_config`, so the list is append-only in the same way skill directory prefixes and
@@ -138,4 +143,70 @@ test("a sweep of an unusable config is an error, not an empty success", async ()
     assert.deepEqual(r.items, []);
     assert.ok(r.error, `${kind} reported "no work" for a config it cannot read`);
   }
+});
+
+// ---- the outward verb ----
+//
+// Push is the direction a mistake cannot be taken back in: it PUBLISHES to a tracker
+// other people read, and deleting the local task does not retract the issue. So the
+// registry has to be exactly as trustworthy about which kinds can do it as about which
+// kinds exist at all.
+
+const instanceOf = (kind: (typeof TASK_SOURCE_KINDS)[number]) =>
+  TaskSourceInstanceSchema.parse({ id: "s1", kind, repoRoot: "/repo" });
+
+// The two halves of `canPush` live in different files on purpose - the browser reads the
+// declaration, the daemon holds the implementation - and nothing but this test makes them
+// agree. `true` with no `push` is a button that fails when pressed; `push` with `false` is
+// a capability no operator can ever reach.
+test("a kind says canPush exactly when its implementation can push", () => {
+  for (const kind of TASK_SOURCE_KINDS) {
+    const declared = TASK_SOURCE_KIND_INFO[kind].canPush;
+    assert.equal(
+      TASK_SOURCES[kind].push !== null,
+      declared,
+      `${kind} declares canPush=${declared} and implements the opposite`,
+    );
+    // The registry mirrors the declaration rather than keeping a second opinion, and
+    // `canPushTo` is the only spelling a call site outside the registry may use.
+    assert.equal(TASK_SOURCES[kind].canPush, declared);
+    assert.equal(canPushTo(instanceOf(kind)), declared);
+  }
+});
+
+// "Nothing happened, all fine" is the one answer this call may never give: the caller
+// asked for an item to be published, and a silent success leaves a task looking filed
+// upstream when no issue exists.
+test("pushing to a kind that cannot receive is an error, never a silent success", async () => {
+  const r = await pushToSource(
+    instanceOf("jira"),
+    { title: "t", intent: "i" },
+    { sourceId: "s1", repoRoot: "/repo", signal: new AbortController().signal },
+  );
+  assert.equal(r.ref, null);
+  assert.match(r.error!, /jira cannot receive pushed tasks/);
+  // A fact, not a hedge: no subprocess ran, so nothing was published and a caller may
+  // safely act on that.
+  assert.equal(r.outcomeUnknown, false);
+});
+
+// The same boundary parse `sweep` gets, and it matters more here: the implementation is
+// entitled to its own schema's output, and a blob an older build wrote must be refused
+// BEFORE anything is spawned rather than half-way through building an argv.
+test("push parses config at the boundary and refuses an unusable blob as an error", async () => {
+  const inst = {
+    ...instanceOf("github-issues"),
+    // Refused by the schema's own refinement, so this never reaches an implementation -
+    // which is what keeps this test from spawning gh against a real repo.
+    config: { assignedToMe: true, unassignedOnly: true },
+  };
+  const r = await pushToSource(
+    inst,
+    { title: "t", intent: "i" },
+    { sourceId: "s1", repoRoot: "/repo", signal: new AbortController().signal },
+  );
+  assert.equal(r.ref, null);
+  assert.match(r.error!, /not valid for github-issues/);
+  // Nothing was spawned, so a retry after fixing the config cannot duplicate anything.
+  assert.equal(r.outcomeUnknown, false);
 });

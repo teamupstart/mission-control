@@ -1,3 +1,4 @@
+import { ghBin } from "../config.ts";
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
 import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
@@ -98,7 +99,7 @@ export async function authenticatedLogin(
   now: number = Date.now(),
 ): Promise<string | null> {
   if (now < loginExpiresAt) return cachedLogin;
-  const res = await run("gh", ["api", "user", "--jq", ".login"], {
+  const res = await run(ghBin(), ["api", "user", "--jq", ".login"], {
     cwd: cwd ?? undefined,
     timeoutMs: GH_TIMEOUT_MS,
   });
@@ -270,7 +271,7 @@ export async function fetchPr(
   number: number,
 ): Promise<GhResult<PrSnapshot>> {
   const res = await run(
-    "gh",
+    ghBin(),
     [
       "api",
       "graphql",
@@ -444,7 +445,7 @@ async function fetchReviewPage(
   before: string,
 ): Promise<GhResult<ReviewPage>> {
   const res = await run(
-    "gh",
+    ghBin(),
     [
       "api",
       "graphql",
@@ -486,7 +487,7 @@ async function fetchThreadPage(
   after: string,
 ): Promise<GhResult<ThreadPage>> {
   const res = await run(
-    "gh",
+    ghBin(),
     [
       "api", "graphql", "-f", `query=${THREAD_PAGE_QUERY}`, "-F", `owner=${owner}`,
       "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `after=${after}`,
@@ -697,7 +698,7 @@ export async function fetchDiff(
   maxBytes: number,
 ): Promise<GhResult<{ diff: string; truncated: boolean }>> {
   const res = await run(
-    "gh",
+    ghBin(),
     ["api", `repos/${owner}/${repo}/pulls/${number}`, "-H", "Accept: application/vnd.github.v3.diff"],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: MAX_DIFF_BUFFER_BYTES },
   );
@@ -743,7 +744,7 @@ export async function postReview(
     comments: comments.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", body: c.body })),
   });
   const res = await run(
-    "gh",
+    ghBin(),
     ["api", "--method", "POST", `repos/${owner}/${repo}/pulls/${number}/reviews`, "--input", "-"],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, input: payload },
   );
@@ -766,7 +767,7 @@ export async function replyToComment(
   body: string,
 ): Promise<GhResult<void>> {
   const res = await run(
-    "gh",
+    ghBin(),
     [
       "api",
       "--method",
@@ -802,7 +803,7 @@ export async function resolveThread(
   threadId: string,
 ): Promise<GhResult<void>> {
   const res = await run(
-    "gh",
+    ghBin(),
     ["api", "graphql", "-f", `query=${RESOLVE_MUTATION}`, "-F", `threadId=${threadId}`],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
@@ -847,7 +848,7 @@ export async function mergePr(
   method: "squash" | "merge" | "rebase",
 ): Promise<GhResult<void>> {
   const res = await run(
-    "gh",
+    ghBin(),
     ["api", "--method", "PUT", `repos/${owner}/${repo}/pulls/${number}/merge`, "--input", "-"],
     {
       cwd: cwd ?? undefined,

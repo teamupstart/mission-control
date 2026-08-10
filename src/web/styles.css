@@ -5559,9 +5559,15 @@ mark.find-hit.is-current {
   overflow-wrap: anywhere;
   white-space: normal;
 }
+/* `min-width` is the alignment COLUMN - it lines the commands up under each other for the
+   common short names - and `padding-right` is the gap that survives a name wider than the
+   column (`notebookedit`, `chrome-devtools:click`), which the column alone could not give.
+   Neither is what separates the words: the markup carries a literal space, because a line
+   in this record is meant to be copied. */
 .turn-tools-lines .tool-chip-name {
   display: inline-block;
   min-width: 54px;
+  padding-right: 8px;
   color: color-mix(in oklab, var(--agent-accent, var(--muted)) 60%, var(--muted));
 }
 .turn-tools-lines .tool-chip-detail {

@@ -132,6 +132,18 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   await expect(record.getByText("rg PersonaDirective src test")).toBeVisible();
   await expect(record.getByText("git status --short")).toBeVisible();
 
+  // And each line reads as one command, tool name included, because copying a line out of
+  // this record is the point of opening it. Asserted as the row's whole TEXT rather than by
+  // its parts: the parts are separate spans, and a layout gap between them is not a space
+  // in what lands on the clipboard. `toHaveText` normalises runs of whitespace, so this
+  // passes on the gap being present and fails on it being absent.
+  const lines = record.locator(".tool-line");
+  await expect(lines).toHaveText([
+    "bash rg PersonaDirective src test",
+    "bash git status --short",
+    "read src/server/registry.ts",
+  ]);
+
   // Nothing in the record claims a result: the transcript records none, and the sideband's
   // honesty contract holds here too. These words failing to appear is meaningful because
   // the commands above are proven present.

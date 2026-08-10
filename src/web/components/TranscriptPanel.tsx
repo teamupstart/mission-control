@@ -1477,6 +1477,13 @@ function ToolChips({
                 chip.name
               )}
             </span>
+            {/* A real space, and only on a line. The chat chip separates its two spans with
+                flex `gap`, which is a gap in the LAYOUT and not in the text - fine for a
+                pill you read, wrong for a line you copy, which is the whole point of this
+                record: `bash` and `git status --short` would come off the clipboard as
+                `bashgit status --short`. Adding it in both variants would instead give the
+                chip an anonymous flex item and a second gap. */}
+            {lines && " "}
             {around && <span className="tool-chip-pre">{around.before}</span>}
             {chip.detail &&
               (detailHits.length && matcher ? (

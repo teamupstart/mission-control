@@ -139,6 +139,30 @@ function sourceName(source: TaskSourceInstance): string {
 }
 
 /**
+ * The push surface's state, tagged with the task it belongs to.
+ *
+ * The tag is the whole point of the type: see the state's declaration in `DispatchModal`.
+ * Every field here answers a question about ONE task, and a reader that forgets which task
+ * shows another one's issue as this one's.
+ */
+type PushState = {
+  taskId: string;
+  /** Which eligible source the operator picked. Null takes the first. */
+  sourceId: string | null;
+  /** What the push created, read off the route's own 200 body. */
+  ref: TaskSourceRef | null;
+  /** The daemon's own refusal, kept verbatim. */
+  error: string | null;
+  /** The 504: the item MAY exist, so the action is withdrawn rather than offered again. */
+  outcomeUnknown: boolean;
+};
+
+/** Nothing asked yet, for this task. */
+function freshPushState(taskId: string): PushState {
+  return { taskId, sourceId: null, ref: null, error: null, outcomeUnknown: false };
+}
+
+/**
  * Which task the modal is over, when it is over one. `new` writes a task that does
  * not exist yet; `edit` rewrites one that is waiting in the backlog.
  */
@@ -607,25 +631,44 @@ function DispatchModal({
    */
   const [envWarnings, setEnvWarnings] = useState<EnvironmentCheckView[]>([]);
   /**
-   * What this task could be filed into, and what came of asking - the whole push surface's
-   * state, which is local to one opening on purpose.
+   * The configured sources, or null while the read is out - and if it never landed.
    *
-   * `pushedRef` is held even though the daemon emits `task_upsert` for the same fact, because
-   * the two arrive on different clocks: the route's own reply carries the updated `Task`, and
-   * reading the ref off it means the link is drawn in the tick the button was pressed rather
-   * than whenever the event loop delivers the frame. The event still lands and still updates
+   * Not tagged with a task the way `pushState` below is, because it is not about one: the
+   * source list is global, and the eligibility filter is applied against whichever task the
+   * form is over at render time. A list fetched for one task is therefore correct for the
+   * next; it is re-read per opening only so a source added in Settings a moment ago is usable
+   * without a reload.
+   */
+  const [taskSources, setTaskSources] = useState<TaskSourceInstance[] | null>(null);
+  /**
+   * What has been asked of the push surface, and what came back - CARRYING THE TASK IT IS
+   * ABOUT.
+   *
+   * One tagged object rather than four loose pieces of state, because every one of them is
+   * meaningful only about the task that produced it, and the cost of that going wrong is the
+   * worst kind: a `ref` left over from task A renders as task B's link, telling an operator
+   * that a task they have not filed anywhere is already upstream. An `outcomeUnknown` left
+   * over withdraws B's button for a failure that was not B's.
+   *
+   * `DispatchLayer` keys this component on the task id, so today a different task remounts it
+   * and the whole question is moot. That is exactly why the tag is here: the invariant this
+   * state depends on lives in another component, three hundred lines away, in a prop that is
+   * easy to drop in a refactor and whose loss would show up as a wrong ISSUE LINK rather than
+   * as anything that looks like a missing key. Reading it through `editing.id` makes the
+   * staleness unrepresentable instead of merely unlikely.
+   *
+   * `ref` is held even though the daemon emits `task_upsert` for the same fact, because the
+   * two arrive on different clocks: the route's own reply carries the updated `Task`, so
+   * reading the ref off it draws the link in the tick the button was pressed rather than
+   * whenever the event loop delivers the frame. The event still lands and still updates
    * `editing`; this just refuses to race it.
    *
-   * `pushOutcomeUnknown` is scoped to the opening for the reason the 504 exists: the item may
-   * be upstream already, and the operator's next move is to go and look, not to press again.
+   * `outcomeUnknown` is scoped to the opening for the reason the 504 exists: the item may be
+   * upstream already, and the operator's next move is to go and look, not to press again.
    * Reopening the form is a deliberate second act, and by then the row itself will say whether
    * the sweep found it.
    */
-  const [taskSources, setTaskSources] = useState<TaskSourceInstance[] | null>(null);
-  const [pushSourceId, setPushSourceId] = useState<string | null>(null);
-  const [pushedRef, setPushedRef] = useState<TaskSourceRef | null>(null);
-  const [pushError, setPushError] = useState<string | null>(null);
-  const [pushOutcomeUnknown, setPushOutcomeUnknown] = useState(false);
+  const [pushState, setPushState] = useState<PushState | null>(null);
   // Which action is in flight, not merely whether one is: every footer button reaches the
   // daemon, and only the one that was pressed should say so.
   const [pending, setPending] = useState<null | "shelve" | "dispatch" | "delete" | "push">(null);
@@ -865,7 +908,13 @@ function DispatchModal({
    * answer is only ever rendered inside this dialog, it changes when the operator edits
    * Settings (which no server event announces), and asking on each open is what makes a source
    * added five seconds ago usable without a reload.
+   *
+   * Keyed on the task's id as well as on whether it needs asking, so that a form which shows a
+   * DIFFERENT task without remounting still re-reads. Nothing stale can be rendered in the
+   * meantime - the list is global and the filter is applied per render - but a list read for
+   * yesterday's opening should not be the last word on today's.
    */
+  const editingId = editing?.id ?? null;
   const unlinkedEdit = editing !== null && editing.source === null;
   useEffect(() => {
     if (!unlinkedEdit) return;
@@ -876,10 +925,18 @@ function DispatchModal({
     return () => {
       alive = false;
     };
-  }, [unlinkedEdit]);
+  }, [editingId, unlinkedEdit]);
 
+  /**
+   * The push state, but only if it is THIS task's.
+   *
+   * The read that makes the tag worth carrying. Everything below - the link, the picker's
+   * selection, the error, the withdrawn button - comes through here, so a state object left
+   * over from another task is not merely unlikely to be rendered, it cannot be.
+   */
+  const push = editing && pushState?.taskId === editing.id ? pushState : null;
   // The link this form should draw: the row's own, or the one this opening just created.
-  const taskLink = editing?.source ?? pushedRef;
+  const taskLink = editing?.source ?? push?.ref ?? null;
   /**
    * The form holds edits the daemon has not been told about.
    *
@@ -905,26 +962,32 @@ function DispatchModal({
   async function pushToSource(): Promise<void> {
     if (!editing || busy) return;
     const eligible = eligiblePushSources(taskSources ?? [], editing.repoRoot);
-    const chosen = eligible.find((s) => s.id === pushSourceId) ?? eligible[0];
+    const chosen = eligible.find((s) => s.id === push?.sourceId) ?? eligible[0];
     if (!chosen) return;
+    // Captured, not re-read after the await. Every write below is tagged with the task this
+    // push was FOR, so an answer that arrives late lands on that task or on nothing - the same
+    // reconciliation `onSubmitted` does against the draft, for the same reason.
+    const taskId = editing.id;
+    const answered = (patch: Partial<PushState>): void =>
+      setPushState({ ...freshPushState(taskId), sourceId: chosen.id, ...patch });
     setPending("push");
-    setPushError(null);
-    const r = await api.pushTaskToSource(editing.id, chosen.id);
+    answered({});
+    const r = await api.pushTaskToSource(taskId, chosen.id);
     setPending(null);
     if (r.ok && r.source) {
-      setPushedRef(r.source);
+      answered({ ref: r.source });
       return;
     }
     // An accepted push that names nothing cannot be told from a created issue we failed to
     // read, so it takes the cautious reading rather than the convenient one. This is the
     // route's contract being violated, not a state it can reach - and the direction to fail in
     // is the one where nobody files a duplicate.
-    setPushOutcomeUnknown(r.ok || Boolean(r.outcomeUnknown));
-    setPushError(
-      r.ok
+    answered({
+      outcomeUnknown: r.ok || Boolean(r.outcomeUnknown),
+      error: r.ok
         ? "the push was accepted but the daemon did not name the issue it created - check GitHub before retrying"
         : r.error ?? "could not create the issue",
-    );
+    });
   }
 
   // Put the form back where it started without closing: every close path preserves
@@ -1225,8 +1288,14 @@ function DispatchModal({
                   because the only way a task could carry both was a bug - a schedule created
                   it, and a sweep somehow claimed it too. Now a scheduled task can be filed
                   upstream on purpose, so the second line is where it came to be, not evidence
-                  that something went wrong. */}
-              {editing.source && " This task is also linked to an external item below."}
+                  that something went wrong.
+
+                  Read from `taskLink`, the same value the block below draws, rather than from
+                  `editing.source` directly: a scheduled task pushed in this opening gets its
+                  link from the route's own reply, and `editing.source` does not catch up until
+                  the `task_upsert` frame lands. Sourced separately, the two banners disagree
+                  about the same fact for as long as that takes. */}
+              {taskLink && " This task is also linked to an external item below."}
             </span>
             <Tooltip label="Open this task's recurring mission and its run history">
               <button
@@ -1257,13 +1326,15 @@ function DispatchModal({
                this task is not based on yet - and the push would be refused with a sentence
                about a mismatch the operator cannot see. */
             repoRoot={editing.repoRoot}
-            selectedSourceId={pushSourceId}
-            onSelectSource={setPushSourceId}
+            selectedSourceId={push?.sourceId ?? null}
+            onSelectSource={(id) =>
+              setPushState({ ...(push ?? freshPushState(editing.id)), sourceId: id })
+            }
             onPush={() => void pushToSource()}
             pushing={pending === "push"}
             dirty={editDirty}
-            error={pushError}
-            outcomeUnknown={pushOutcomeUnknown}
+            error={push?.error ?? null}
+            outcomeUnknown={push?.outcomeUnknown ?? false}
           />
         )}
         {/* The brief leads: repo and task are the dispatch, everything below them is a

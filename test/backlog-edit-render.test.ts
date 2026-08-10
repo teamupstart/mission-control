@@ -206,6 +206,21 @@ test("a swept-in task shows what it came from, without asking the daemon anythin
   assert.doesNotMatch(html, /Create GitHub issue/);
 });
 
+test("a scheduled task that is also filed upstream reads as two origins, not a conflict", () => {
+  // Both banners at once, which used to be impossible on purpose: a task could only carry a
+  // schedule AND a source through a bug, so the schedule note called it a "(conflict)". Filing
+  // a scheduled task upstream is now something an operator does deliberately, and the note has
+  // to say where the second origin is rather than accuse it of being one.
+  const html = editor(mkTask({ scheduleId: "sched-1", source: REF }));
+  assert.match(html, /Scheduled by a recurring mission/);
+  assert.match(html, /This task is also linked to an external item below\./);
+  assert.doesNotMatch(html, /conflict/);
+  // And the thing it points at is really below it.
+  const noteAt = html.indexOf("also linked to an external item");
+  const linkAt = html.indexOf("Filed upstream as");
+  assert.ok(noteAt >= 0 && linkAt > noteAt, "the note must precede the link it refers to");
+});
+
 test("the editor offers no push at all until it knows what sources exist", () => {
   // The pre-fetch state, which is what a static render IS. A button drawn now and corrected a
   // beat later is a button the cursor is already moving toward - and the Settings hint printed

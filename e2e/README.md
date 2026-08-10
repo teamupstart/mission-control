@@ -709,7 +709,7 @@ Attach the generated frames to the pull request; they are never committed.
 
 ### A backlog task filed as a GitHub issue
 
-`e2e/.artifacts/push-task-to-github/` carries five frames from
+`e2e/.artifacts/push-task-to-github/` carries seven frames from
 `specs/push-task-to-github.spec.ts`, the pair either side of the push being the ones the change
 exists for. `01-task-not-yet-filed.png` is the editor with **Create GitHub issue** in the
 provenance strip above the fields; `02-task-linked-to-issue.png` is the same strip after the
@@ -722,6 +722,12 @@ was published) keeps a live button, and an unknown outcome (`gh` never reported 
 may exist) takes the button away rather than disabling it. That difference is a safety property
 and it is visible only as a picture of two banners. `05-no-eligible-source.png` is the hint that
 stands in for the action when no GitHub source is configured for the task's repo.
+
+The last two are the strip's two shapes when the action IS offered, which differ by how many
+sources cover the repo: `06-one-eligible-source.png` is a button on its own, because a picker
+of one is a control nobody can use, and `07-two-eligible-sources.png` adds the picker naming
+both - the choice matters, since two sources can sweep different labels and the issue carries
+the labels of whichever files it.
 
 The daemon in this spec runs against a faked `gh` (`MISSION_GH_BIN`), so no issue is ever
 created anywhere; the fake records the argv, which is where the `--label` per swept label and

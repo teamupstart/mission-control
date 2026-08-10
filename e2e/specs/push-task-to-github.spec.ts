@@ -208,6 +208,82 @@ test("pushing a backlog task creates the issue, links the task, and records it a
     .toBe(1);
 });
 
+test("an unknown outcome is withdrawn for that opening and that task, and no further", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Withdrawing the button is the strongest thing this feature does to an operator, so where
+  // the withdrawal ENDS is as load-bearing as where it starts. Two boundaries, both reachable
+  // by clicking, both silent if they break:
+  //
+  //  1. Reopening the same task brings the action back. That is the documented recovery: go
+  //     and look at GitHub, come back, decide. A withdrawal that outlived the opening would
+  //     leave a task that can never be filed again and never say why - and the push surface
+  //     sits inside a form whose DRAFT is deliberately kept across closes, so "this state
+  //     survives a close" is a plausible thing for a later change to make true of all of it.
+  //  2. A different task never inherits it, nor the issue link from a push that worked. A ref
+  //     from another task would tell an operator that work they have not filed anywhere is
+  //     already upstream.
+  //
+  // Today the second boundary holds twice over - `DispatchLayer` unmounts the dialog on close
+  // and keys it on the task id - and the push state is additionally tagged with the task it
+  // belongs to, so no arrangement of those can render one task's answer against another. This
+  // asserts the operator-visible consequence, which is the thing that must stay true however
+  // that is arranged.
+  await putSources(dashboard, daemon, [githubSource("gh-scope", daemon.repo)]);
+  await seedTask(daemon, "Filed first", "The one that really gets pushed.");
+  await seedTask(daemon, "Fails once", "The one whose push does not report back.");
+  await seedTask(daemon, "Never asked", "The one that must inherit nothing at all.");
+  await useBoardLayout(dashboard, daemon);
+
+  // A real push, which really links its own task.
+  const first = await openEditor(dashboard, "Filed first");
+  await first.getByRole("button", { name: "Create GitHub issue" }).click();
+  await expect(first.getByRole("link", { name: FAKE_GH_ISSUE_ID })).toBeVisible();
+  await first.getByRole("button", { name: "Cancel" }).click();
+  await expect(first).toBeHidden();
+
+  // The next task is untouched by it: its own action, and no link to somebody else's issue.
+  const second = await openEditor(dashboard, "Fails once");
+  await expect(second.getByRole("button", { name: "Create GitHub issue" })).toBeEnabled();
+  await expect(second.getByText(/Filed upstream as/)).toHaveCount(0);
+
+  // Now the failure that takes the button away.
+  await dashboard.route("**/api/tasks/*/push", (route) =>
+    route.fulfill({
+      status: 504,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "gh issue create did not report back - the issue may exist; check GitHub before retrying",
+        outcomeUnknown: true,
+      }),
+    }),
+  );
+  await second.getByRole("button", { name: "Create GitHub issue" }).click();
+  await expect(second.locator(".source-provenance-warn")).toBeVisible();
+  await expect(second.getByRole("button", { name: "Create GitHub issue" })).toHaveCount(0);
+  await second.getByRole("button", { name: "Cancel" }).click();
+  await expect(second).toBeHidden();
+
+  // Boundary 1: the same task, reopened, can be filed again - the operator has been to look.
+  const reopened = await openEditor(dashboard, "Fails once");
+  await expect(reopened.getByRole("button", { name: "Create GitHub issue" })).toBeEnabled();
+  await expect(reopened.locator(".source-provenance-warn")).toHaveCount(0);
+  await reopened.getByRole("button", { name: "Cancel" }).click();
+  await expect(reopened).toBeHidden();
+
+  // Boundary 2: a task that was never pushed carries neither the warning nor the link.
+  const third = await openEditor(dashboard, "Never asked");
+  await expect(third.getByRole("button", { name: "Create GitHub issue" })).toBeEnabled();
+  await expect(third.locator(".source-provenance-warn")).toHaveCount(0);
+  await expect(third.getByText(/Filed upstream as/)).toHaveCount(0);
+
+  // And exactly one issue was ever created, by the one task whose push reached the daemon.
+  await expect
+    .poll(() => ghCalls(daemon).filter((c) => c.argv[1] === "create").length)
+    .toBe(1);
+});
+
 test("a refused push keeps the button, and an unknown outcome takes it away", async ({
   dashboard,
   daemon,

@@ -1289,7 +1289,15 @@ export class ForemanClient implements ForemanActions {
     // `submit: false` is intentionally different: it is a draft the model asked to leave
     // in the composer, so it keeps the literal `/send` path and spends no Enter.
     if (submit) return this.inject(id, text);
-    const res = await send("POST", `/api/sessions/${enc(id)}/send`, { text, submit });
+    // `origin` declared on this arm too, for the same reason `inject` declares it: the
+    // daemon cannot tell who is typing once the text is keystrokes, and it refuses a
+    // Foreman write into a session that never invited Foreman. Under-declaring here would
+    // route Foreman's own drafts around the backstop that exists to stop them.
+    const res = await send("POST", `/api/sessions/${enc(id)}/send`, {
+      text,
+      submit,
+      origin: "foreman",
+    });
     if (!res.ok) throw new Error(`sendText ${id} -> ${res.status}`);
     return res.json();
   }

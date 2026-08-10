@@ -485,6 +485,20 @@ test("the guard catches A HUMAN TYPING IN THE PANE via lastActivity", async () =
   assert.match(r.ok === false ? r.why : "", /did something since/);
 });
 
+test("the guard refuses when the invite was WITHDRAWN mid-verify", async () => {
+  // The invite is the one clause here that a human can change while the verify is running -
+  // Withdraw is a click, and the click's whole meaning is "stop typing in here". A verify
+  // takes minutes, so re-asking on the fresh snapshot rather than the observed one is what
+  // makes the click take effect on the send already in flight instead of the one after it.
+  const session = mkSession();
+  const item = mkItem();
+  const obs = observe(session, item);
+  const withdrawn = mkSession({ foremanInvite: null, lastActivity: session.lastActivity });
+  const r = await queueSendStillValid(mkFake({ session: withdrawn, items: [item] }), obs, CFG, NOW);
+  assert.equal(r.ok, false);
+  assert.match(r.ok === false ? r.why : "", /not invited/);
+});
+
 test("the guard refuses when the session left for needs-you", async () => {
   const session = mkSession();
   const item = mkItem();

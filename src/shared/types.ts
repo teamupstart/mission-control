@@ -401,8 +401,17 @@ export interface Session {
    * `foreman_invites` resolves to `null` (the tombstone beats even the implicit SDK
    * grant); otherwise a stored `'dispatch'` or `'operator'` row resolves to its own
    * value; otherwise an SDK-runtime session resolves to `"sdk"` and everything else to
-   * `null`. Nothing reads this field yet - the Foreman worker gating and the UI land in
-   * later phases of `docs/plans/foreman-invite/phased-plan.md`.
+   * `null`.
+   *
+   * READ AS POLICY by the Foreman worker's selection sites - `foremanTriageAuthorized`,
+   * `tickTargets`, `decideReviewFollowup`, `agentIsFree` - and enforced a second time by
+   * the daemon, which refuses a Foreman-marked write into a session resolving to `null`.
+   * Two of those read more than null-ness: `agentIsFree` requires `"sdk"` or `"dispatch"`
+   * specifically, because an `"operator"` invite is help with the work already in the
+   * session and not consent to be handed a new task.
+   *
+   * NOT an authorization field for anything a HUMAN does. Manual sends, drag-assign and
+   * human review resolution never consult it; it governs the background loop only.
    */
   foremanInvite: ForemanInvite | null;
   /**

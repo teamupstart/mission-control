@@ -140,9 +140,18 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     return skip("PR follow-through is off");
   }
 
-  // 2. Only a harness Foreman can actually drive, and only a live one. No `workQueue`
-  //    capability means no hooks and no reliable state to read; an exited session has
-  //    nothing left to type into.
+  // 2. Only a session Foreman was invited into, and only one it can actually drive, and
+  //    only a live one.
+  //
+  //    The invite comes FIRST of the three, above even the capability check, because it is
+  //    the refusal that matters most here and the one a reader needs to see reported
+  //    plainly: this path is the one that typed "create a PR" into personal Claude chats,
+  //    and it did so because it iterated every session with an open PR. A hand-started
+  //    session with a PR on its branch is capable, hooked, live, and still none of
+  //    Foreman's business.
+  if (s.foremanInvite === null) return skip("Foreman is not invited into this session");
+  // No `workQueue` capability means no hooks and no reliable state to read; an exited
+  // session has nothing left to type into.
   // `workQueue` is the reliable-idle/drivable proxy for this automation.
   if (!capabilitiesFor(s.agent).workQueue) {
     return skip(`${AGENT_IDENTITY[s.agent].label} sessions can't be followed up`);

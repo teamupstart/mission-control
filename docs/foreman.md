@@ -2,9 +2,9 @@
 
 The dashboard tells you *who needs you*; **Foreman** can start draining that queue for
 you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
-Claude Code session or Mission Control-launched Codex session that has reported a hook,
-reads the transcript to understand the goal **and the session's terminal screen to see
-the ask itself**. Foreman then:
+Claude Code or Codex session it has both [been invited
+into](#which-sessions-foreman-may-act-in) and can drive, reads the transcript to understand
+the goal **and the session's terminal screen to see the ask itself**. Foreman then:
 
 - **auto-answers** the routine calls - implementation trade-offs (defaulting to the most
   correct, secure, non-duplicative option) and non-destructive access requests;
@@ -37,6 +37,44 @@ straight back to you as "no reply channel", with an answer Foreman had already w
 menu's own rows identify the ask, so one question costs one review however the hooks land.
 Codex hooks are launch-scoped instead: an operator-started Codex menu remains available as
 clickable rows for you, but is explicitly excluded from Foreman automation.
+
+### Which sessions Foreman may act in
+
+**Foreman only participates in sessions it was invited into.** Hooks answer whether Foreman
+*can* drive a session; the invite answers whether it *may*, and the two are not the same
+question. Claude installs its hooks machine-wide, so every personal Claude chat on your
+machine reports one - which is not consent, and used to be read as consent.
+
+A session is invited when any of these is true:
+
+| Invite | Which sessions |
+|--------|----------------|
+| `sdk` | **Embedded** sessions. Mission Control runs them, so they are invited by definition. |
+| `dispatch` | **Dispatched** terminal sessions. Recorded automatically once the spawn is confirmed. |
+| `operator` | Sessions **you** invited, explicitly. |
+| *(none)* | Everything else - every session merely discovered on your machine, and any session whose invite you withdrew. |
+
+In an uninvited session Foreman does nothing at all: no Purpose note, no decision brief, no
+queue tick, no wrap-up prompt, no pull-request follow-through, and no backlog assignment. It
+does not appear in the top bar's queue-depth count either, so the badge only ever counts work
+Foreman will actually pick up. The daemon enforces this a second time at the boundary it
+owns: a Foreman-marked write into an uninvited session is refused outright, so a stale or
+misbehaving worker cannot reach a pane it was never invited to.
+
+None of this touches what **you** can do. Messaging a session by hand, dragging a task onto
+it, and answering its reviews yourself are unchanged and are never invite-gated - an invite
+governs the background loop, not your own hands.
+
+An **operator invite grants everything except backlog assignment**: triage, wrap-up, and
+pull-request follow-through, but the autopilot still hands whole new tasks only to `sdk` and
+`dispatch` sessions. Inviting Foreman to help with what a session is *already doing* must not
+read as permission to start something else in it.
+
+> **On upgrade:** invites begin empty, so terminal sessions already running when you upgrade -
+> including ones Mission Control dispatched earlier - start **uninvited**, and Foreman goes
+> quiet on them. Re-dispatching restores the invite automatically; embedded sessions are
+> unaffected. Until the invite control lands in the detail rail, inviting an existing session
+> is an API call: `POST /api/sessions/:id/foreman-invite` (and `DELETE` to withdraw).
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **enabled but inert**, and the distinction is the whole point:

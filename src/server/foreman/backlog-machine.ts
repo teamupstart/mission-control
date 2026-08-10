@@ -173,6 +173,16 @@ export function activeAgentCount(sessions: Session[], tasks: Task[]): number {
  *    lifecycle evidence may place a Codex session in the board's Idle column, but it
  *    cannot prove that a later prompt was accepted or completed. That is enough for a
  *    readout and not enough for an autopilot handing the session new work.
+ *  - a `"sdk"` or `"dispatch"` invite - a STRICTER bar than the rest of Foreman applies,
+ *    and the one clause here that is about CONSENT rather than readiness. Everywhere else
+ *    a non-null `foremanInvite` is enough, because everything else Foreman does is help
+ *    with the work the session is already doing: triage its question, wrap up its prompt,
+ *    relay its PR feedback. Assignment is different in kind - it hands the session a whole
+ *    new task nobody in that conversation asked for - so an `"operator"` invite
+ *    deliberately does not grant it (approved decision 2). Inviting Foreman to help with
+ *    what you are doing must never read as consent for the autopilot to start something
+ *    else in your pane. `"sdk"` and `"dispatch"` sessions exist BECAUSE Mission Control
+ *    wanted work done in them, so for those the two questions have the same answer.
  *  - a pane: there is nowhere to type otherwise.
  *  - an empty work queue: Foreman is already feeding this session, one item at a time.
  *  - no OPEN PR on its branch. The one clause here that is about the WORK rather than
@@ -205,6 +215,11 @@ export function agentIsFree(
   if (reportBucket(s, sessions) !== "idle") return false;
   if (!settledIdle(s, now, cfg.settleMs)) return false;
   if (!s.hooksSeen) return false;
+  // Only sessions Mission Control created. Note this is the SELECTION side only: the
+  // board's drag gesture stays deliberately asymmetric and is never invite-gated (see the
+  // note above and `TaskManager.assign`), because a human dropping a task on a pane has
+  // already said "yes, that one" about the exact session this loop has to guess at.
+  if (s.foremanInvite !== "sdk" && s.foremanInvite !== "dispatch") return false;
   if (!hasPane(s)) return false;
   if (s.queue && s.queue.openCount > 0) return false;
   if (cfg.respectOpenPrs && s.prState === "open") return false;

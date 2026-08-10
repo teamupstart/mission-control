@@ -237,11 +237,30 @@ export const TRANSCRIPT_HEAD_TURNS = 12;
 /** The tail half of the same window - see `TRANSCRIPT_HEAD_TURNS` for how the two compose. */
 export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
 
+/**
+ * Who is typing, on the two routes that put a caller's own text into a session.
+ *
+ * ONE schema across `/send` and `/inject` rather than a copy each, because the daemon
+ * makes one decision from it - may this actor write here - and two enums would let the
+ * twin routes drift into disagreeing about the answer. Defaults to the human for the
+ * reason `InjectPromptSchema.origin` states at length: a caller that forgets the field
+ * should under-claim, never over-claim, and almost every caller IS a human.
+ */
+const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("human");
+
 /** A message the user sends into a session from the dashboard. */
 export const SendTextSchema = z.object({
   text: z.string().min(1),
   /** Whether to submit (press Enter) after typing. Default true. */
   submit: z.boolean().optional().default(true),
+  /**
+   * See `PromptOriginSchema`. Carried here as well as on `/inject` because this is the
+   * OTHER end of one delivery the Foreman worker splits across two routes: a submitted
+   * answer goes through `/inject`, while an unsubmitted one - a draft the model asked to
+   * leave in the composer - keeps this path deliberately, to spend no Enter. Both type
+   * into somebody's pane, so both have to be able to say whose text it is.
+   */
+  origin: PromptOriginSchema,
 });
 export type SendText = z.infer<typeof SendTextSchema>;
 
@@ -2204,8 +2223,10 @@ export const InjectPromptSchema = z.object({
    * the pane it's just keystrokes, and the transcript records it as a plain user turn
    * indistinguishable from one a person typed. Round 0 of a work item is the human's
    * intent delivered VERBATIM, so no marker can be added to the text itself.
+   *
+   * Shared with `SendTextSchema` - see `PromptOriginSchema`.
    */
-  origin: z.enum(["human", "foreman", "workflow"]).default("human"),
+  origin: PromptOriginSchema,
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
 

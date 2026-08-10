@@ -100,7 +100,12 @@ test("submitted Foreman replies use settled prompt injection; unsubmitted drafts
   assert.match(calls[0]!.url, /\/api\/sessions\/session%2F1\/inject$/);
   assert.deepEqual(calls[0]!.body, { text: "Fix both findings.", origin: "foreman" });
   assert.match(calls[1]!.url, /\/api\/sessions\/session%2F1\/send$/);
-  assert.deepEqual(calls[1]!.body, { text: "Draft only.", submit: false });
+  // BOTH halves declare `origin: "foreman"`, and that is the load-bearing part of this
+  // assertion rather than incidental body shape. The two routes are one delivery split by
+  // whether an Enter is spent, so a draft that under-declared itself would route Foreman's
+  // own text around the daemon's invite backstop - reaching the composer of a session that
+  // never invited Foreman, which is the intrusion arriving one keystroke short.
+  assert.deepEqual(calls[1]!.body, { text: "Draft only.", submit: false, origin: "foreman" });
 });
 
 test("Foreman backlog actions never override a disabled task", async () => {

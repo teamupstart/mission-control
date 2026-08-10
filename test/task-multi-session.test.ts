@@ -124,6 +124,15 @@ function fleet(prefix: string) {
     env: {},
   });
   assert.equal(registry.getSession(sessionId)?.state, "idle", "fixture must actually be idle");
+  // Mission Control dispatched this agent for task A, so Foreman is invited into it - the
+  // row the real dispatcher writes once discovery confirms the spawn. Stated explicitly
+  // because these sessions come from the REAL registry rather than a `mkSession` literal,
+  // and a registry-minted terminal session resolves `foremanInvite: null` by default. That
+  // default is correct (a bare `ps` sweep cannot tell whose session it found) and it is
+  // exactly what `agentIsFree` now refuses, so without this the serial-execution cases
+  // below would pass for the wrong reason: "not free" because nobody invited Foreman,
+  // rather than because a task is already running on it.
+  registry.setForemanInvite(sessionId, "dispatch");
 
   registry.upsertTask(baseTask({
     id: taskA,

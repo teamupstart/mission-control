@@ -161,9 +161,30 @@ test("the Conversation rendering is reachable by the words someone would half-re
   const searchable = [control.label, control.description, ...control.keywords]
     .join(" ")
     .toLowerCase();
-  for (const term of ["terminal", "pty", "shell", "stdout", "prompt", "transcript", "chat"]) {
+  // Spelled out rather than looped from `control.keywords`, which would pass whatever that
+  // array happened to hold - the keywords ARE most of the haystack, so reading them back
+  // out of it asserts nothing.
+  //
+  // What this loop guards is that each word REACHES the control, by whichever field carries
+  // it. That is the operator-facing property, and it is narrower than "the keywords contain
+  // these": `pty`, `shell`, `stdout`, `prompt` and `transcript` live only in the keywords,
+  // so dropping one of those fails here - but `terminal`, `chat` and `stream` also appear in
+  // the description ("a chat log or as a terminal stream"), so removing those from the
+  // keywords leaves the loop green. The check below is what catches that, and is NOT
+  // redundant with this one.
+  const TERMS = ["terminal", "pty", "shell", "stdout", "prompt", "transcript", "chat", "stream"];
+  for (const term of TERMS) {
     assert.ok(searchable.includes(term), `"${term}" reaches nothing in the settings index`);
   }
+  // The literal list held to the entry itself. Two failures live here and nowhere else: a
+  // keyword leaving `control.keywords` while the description still happens to carry the
+  // word, and a hand-written subset falling behind the entry - the first version of this
+  // test pinned seven of the eight words declared, and nothing said so.
+  assert.deepEqual(
+    [...control.keywords].sort(),
+    [...TERMS].sort(),
+    "the entry's keywords and the vocabulary this test pins have drifted apart",
+  );
   // And it is not findable only as a synonym of another control: the label is its own.
   const labels = SETTINGS_CONTROLS.filter((c) => c.id !== control.id).map((c) => c.label);
   assert.ok(!labels.includes(control.label), "two controls answer to the same name");

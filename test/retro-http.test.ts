@@ -68,16 +68,17 @@ function gitRepo(name: string): string {
   return realpathSync(dir);
 }
 
-function fixture() {
+function fixture(over: { send?: () => Promise<never> } = {}) {
   serial += 1;
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const typed: string[] = [];
   const supervisor = {
-    send: async (_id: string, turn: { text: string }) => {
-      typed.push(turn.text);
-      return "started" as const;
-    },
+    send: over.send
+      ?? (async (_id: string, turn: { text: string }) => {
+        typed.push(turn.text);
+        return "started" as const;
+      }),
   } as unknown as SdkSupervisor;
   const app = buildApp(
     registry,
@@ -232,6 +233,26 @@ test("a disabled retro skill refuses the dead-session fallback too, filing nothi
   assert.match(body.error, /cannot load the procedure/);
   assert.equal(f.tasks.list().length, before, "a refused retro files nothing");
   enableSkills(true);
+});
+
+/**
+ * A live session is not a promise of delivery, which `docs/repository-memory.md` now states as
+ * its own row. The status is 503 and the body carries `pasted`, because a caller that retried a
+ * refusal whose text is already in the composer would type a second retro under the first.
+ */
+test("a live session whose driver rejects the turn answers 503, saying nothing was pasted", async () => {
+  installRetroSkill();
+  enableSkills(true);
+  const f = fixture({ send: () => Promise.reject(new Error("driver said no")) });
+  const session = liveSession(f, "/repo/refused");
+
+  const response = await retro(f.app, session.id);
+  assert.equal(response.status, 503);
+  const body = (await response.json()) as { error: string; pasted: boolean };
+  assert.match(body.error, /driver said no/);
+  // An embedded session's send is one acked call, so a rejection is positive evidence that
+  // nothing was appended to any composer - the state a caller may safely retry from.
+  assert.equal(body.pasted, false);
 });
 
 test("a session the registry has never heard of is a 404, not a task", async () => {

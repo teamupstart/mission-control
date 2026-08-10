@@ -109,14 +109,33 @@ Mission Control's half is one route:
 curl -X POST http://127.0.0.1:7317/api/sessions/<session-id>/retro
 ```
 
-What it does depends on whether that session can still be typed into, and the response says
-which happened:
+Whether it types into that session or files a task depends on whether the session can still be
+typed into, and the response says which happened. Every status the route can answer with:
 
 | Response | When | What happened |
 |---|---|---|
-| `{"kind":"delivered", ...}` | the session is live | The shipped **Retro** session action was rendered and typed into it. The session that did the work runs its own retrospective, because it already holds the context a fresh one would have to reconstruct from transcript bytes. |
-| `{"kind":"dispatched","task":{...}}` | the session cannot receive a turn | A retro task is filed in the backlog against that session's repository, naming the session, its branch and its pull request. Dispatch it when you want it. |
+| `200 {"kind":"delivered", ...}` | the session is live and the write landed | The shipped **Retro** session action was rendered and typed into it. The session that did the work runs its own retrospective, because it already holds the context a fresh one would have to reconstruct from transcript bytes. |
+| `200 {"kind":"dispatched","task":{...}}` | the session cannot receive a turn | A retro task is filed in the backlog against that session's repository, naming the session, its branch and its pull request. Dispatch it when you want it. |
+| `404` | no session by that id | The registry has no row at all. An *exited* session is not this: it is the dispatch row above, and it is the only place the branch and pull request a retro task must name are still readable. |
 | `409` | the retro skill is off, or there is no repository to file against | The refusal names the reason. Nothing is typed and nothing is filed. |
+| `503` | the session is live but the write did not land | A pane busy with another write, a multiplexer in copy mode, a session mid-reset, an embedded session whose driver rejected the turn, or the skill going stale between rendering the packet and writing it. The error carries what the delivery layer said, and the body also carries `pasted` - see below. |
+| `500` | this build cannot produce the packet | Either it ships no retro action at all, or the rendered packet exceeds what one delivery can carry. Both are build-integrity failures rather than anything an operator did, and a shipped action cannot reach the second. |
+
+**A live session is not a promise of delivery**, which is why `503` is its own row: the write
+goes through the same pane or driver every other turn does, and that can refuse.
+
+When it does, read `pasted` before retrying. Delivery is not atomic - it is a paste followed by
+a submit - so the two failures are opposite problems:
+
+- `"pasted": false` - nothing reached the composer. Safe to retry once the named condition
+  clears.
+- `"pasted": true` - the packet **is** in the composer and the submit is what failed. Retrying
+  appends a second retro instruction under the first; press Enter in the session, or clear it,
+  rather than re-sending.
+
+That is the same contract [`/inject`](sessions.md) holds, for the same reason: absence of
+evidence is not evidence, so a route that can know this says it rather than letting a caller
+assume.
 
 **Both arms fail closed on the skill**, including the one that types nothing. The skill is where
 the human-approval ceremony lives, so a task filed while it is switched off would reach an agent

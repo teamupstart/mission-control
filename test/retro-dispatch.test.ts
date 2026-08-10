@@ -23,6 +23,8 @@ function deps(over: Partial<RetroDeps> = {}): RetroDeps & { filed: CreateTaskInp
     promptBlocker: () => null,
     resolveRepoRoot: async () => ({ ok: true as const, repoRoot: "/repo" }),
     skillForAgent: () => ({ ok: true as const, command: "/retro" }),
+    requireSkill: () => ({ ok: true as const, command: "/retro" }),
+    remember: () => {},
     ...over,
   };
 }
@@ -33,6 +35,18 @@ function dead(agent: AgentType) {
     agent,
     runtime: "terminal",
     terminals: [],
+    cwd: "/repo/wt",
+    repoRoot: "/repo",
+    gitBranch: "feature/x",
+  });
+}
+
+/** A session a turn CAN reach, so the live arm runs and its delivery is what decides. */
+function live(agent: AgentType) {
+  return mkSession({
+    agent,
+    runtime: "sdk",
+    state: "idle",
     cwd: "/repo/wt",
     repoRoot: "/repo",
     gitBranch: "feature/x",
@@ -118,6 +132,53 @@ test("a refusal is reported only after every harness has been asked", async () =
   assert.equal(result.kind, "refused");
   assert.deepEqual(asked, ["claude", "codex", "pi"], "the session's own harness first");
   assert.equal(d.filed.length, 0);
+});
+
+/**
+ * A live session is not a promise of delivery, and the two ways the write fails are opposite
+ * problems. Delivery is a paste followed by a submit, so a submit that fails leaves the packet
+ * in the composer (`pasted: true`) and retrying appends a second retro under the first.
+ *
+ * Documented in `docs/repository-memory.md`, so these pin the sentence rather than leaving it
+ * as prose that could quietly stop being true.
+ */
+test("a delivery that never reached the composer is reported as retryable", async () => {
+  const d = deps({
+    inject: async () => ({ ok: false, error: "pane is busy", pasted: false, submitVerified: false }),
+  });
+  const result = await runRetro(live("claude"), d);
+
+  assert.equal(result.kind, "refused");
+  if (result.kind !== "refused") return;
+  assert.equal(result.status, 503);
+  assert.equal(result.pasted, false);
+  assert.match(result.error, /pane is busy/);
+});
+
+test("a delivery whose SUBMIT failed says the text is already in the composer", async () => {
+  const d = deps({
+    // The one refusal that must not be retried from the top: `injectPromptLocked` returns
+    // `pasted: true` whatever the submit did, because the bytes are in the composer.
+    inject: async () => ({ ok: false, error: "submit not verified", pasted: true, submitVerified: false }),
+  });
+  const result = await runRetro(live("claude"), d);
+
+  assert.equal(result.kind, "refused");
+  if (result.kind !== "refused") return;
+  assert.equal(result.status, 503);
+  assert.equal(result.pasted, true, "a caller that retried this would type a second retro");
+});
+
+test("a refusal that attempted no write carries no pasted claim at all", async () => {
+  const d = deps({
+    skillForAgent: (): RequiredSkillCommand => ({ ok: false, message: "skills are off" }),
+  });
+  const result = await runRetro(dead("claude"), d);
+
+  assert.equal(result.kind, "refused");
+  if (result.kind !== "refused") return;
+  // Absent, not `false`: the field is a report about a write, and no write was attempted.
+  assert.equal(result.pasted, undefined);
 });
 
 test("the repository is resolved to a main checkout, and a refusal files nothing", async () => {

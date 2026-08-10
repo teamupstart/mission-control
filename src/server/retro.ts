@@ -50,7 +50,24 @@ import type { TaskManager } from "./tasks.ts";
  */
 export type RetroResult =
   | RetroResponse
-  | { kind: "refused"; status: 409 | 500 | 503; error: string };
+  | {
+    kind: "refused";
+    status: 409 | 500 | 503;
+    error: string;
+    /**
+     * Whether text reached the session's composer, on a refusal that ATTEMPTED a write.
+     *
+     * Present only for a delivery failure, and it is the difference between a refusal a
+     * caller may retry and one it must not. Delivery is a non-atomic sequence (paste, then
+     * submit), and a submit that fails leaves the packet sitting in the composer unsent -
+     * `pasted: true`. Retrying that appends a second retro instruction under the first.
+     *
+     * Absent means no write was attempted at all, which every other refusal here is. The
+     * same rule `/inject` holds, for the same reason: absence of evidence is not evidence,
+     * so a route that can know this has to say it rather than let a caller assume.
+     */
+    pasted?: boolean;
+  };
 
 export interface RetroDeps {
   tasks: TaskManager;
@@ -147,6 +164,10 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
       kind: "refused",
       status: 503,
       error: result.error ?? "The retro instruction could not be delivered to this session.",
+      // Reported rather than inferred. A live session is not a promise of delivery, and the
+      // two ways it fails are opposite problems: nothing reached the pane (retry it), or the
+      // packet is sitting in the composer with the submit refused (do not retype over it).
+      pasted: result.pasted,
     };
   }
   // Only once it landed, exactly as `/inject` does: attributing a turn that was never typed

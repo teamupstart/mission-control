@@ -2463,7 +2463,17 @@ export function buildApp(
       sdkSessions,
       promptBlocker: (id) => registry.promptResourceBlockerForSession(id),
     });
-    if (result.kind === "refused") return c.json({ error: result.error }, result.status);
+    // `pasted` rides along on a refusal that attempted a write, exactly as `/inject`'s
+    // contract requires: a caller that retries a 503 whose text is already in the composer
+    // appends a second retro instruction under the first.
+    if (result.kind === "refused") {
+      return c.json(
+        result.pasted === undefined
+          ? { error: result.error }
+          : { error: result.error, pasted: result.pasted },
+        result.status,
+      );
+    }
     return c.json(result);
   });
 

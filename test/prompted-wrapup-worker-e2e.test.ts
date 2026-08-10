@@ -168,6 +168,8 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "work",
     runtime: "terminal",
+    // A dispatched worktree session, as participate-always semantics modeled it.
+    foremanInvite: "dispatch",
     nameSource: "tmux",
     state: "idle",
     cwd,

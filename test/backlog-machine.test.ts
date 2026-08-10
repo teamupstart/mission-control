@@ -57,6 +57,9 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: `agent-${n}`,
     runtime: "terminal",
+    // The assignment targets these tests model are Mission Control's own dispatched
+    // agents - which is also what keeps their meaning when phase 2 gates `agentIsFree`.
+    foremanInvite: "dispatch",
     nameSource: "tmux",
     state: "idle",
     cwd: "/repo",

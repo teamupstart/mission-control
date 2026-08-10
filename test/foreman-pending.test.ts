@@ -13,6 +13,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "sess",
     runtime: "terminal",
+    // A session Foreman is triaging - invited, as participate-always semantics had it.
+    foremanInvite: "dispatch",
     nameSource: "process",
     state: "working" as SessionState,
     cwd: null,

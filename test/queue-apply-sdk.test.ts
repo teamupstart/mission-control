@@ -75,6 +75,8 @@ function mkSdkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "embedded work",
     runtime: "sdk",
+    // The implicit grant an SDK runtime resolves to - no stored row behind it.
+    foremanInvite: "sdk",
     nameSource: "sdk",
     state: "idle",
     cwd: "/repo",

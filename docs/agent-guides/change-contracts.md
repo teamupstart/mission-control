@@ -59,6 +59,17 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   both directions - a driven session's datapoints are deliberately dropped, so a healthy exporter
   may write none, and rows outlive an exporter that stopped by up to the 180-day retention
 - Schedule enum values
+- Foreman invite sources (`FOREMAN_INVITES` in `src/shared/types.ts`, plus the persisted
+  `foreman_invites.source` domain, which additionally contains `'withdrawn'`) - the stored
+  values are read back by exact value and checked by the table's `CHECK` constraint, so
+  extending the domain means appending to the tuple, the constraint, AND the
+  `KNOWN_FOREMAN_INVITE_SOURCES` set beside `readForemanInviteRow` in `src/server/db.ts`.
+  That reader is the existing guard for values this build cannot read (a newer build
+  widened the constraint and wrote one; this build's `CREATE` is a no-op on the existing
+  table): it reports the drop and reads the row as absent, so the session resolves from
+  its runtime alone and the raw string never reaches `Session.foremanInvite`; the row
+  stays in place for the build that understands it. `'withdrawn'` is a tombstone and
+  never surfaces on `Session.foremanInvite`; the registry resolves it to `null`
 - Ensemble strategy, driver, artifact, source, run, and member values
 - Inspector marker versions
 - Workflow graph node kinds, source and target ports, and SessionAction completion kinds

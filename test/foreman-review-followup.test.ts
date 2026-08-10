@@ -76,6 +76,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "atlas",
     runtime: "terminal",
+    // A dispatched worktree session parked on its PR - the base case a nudge fires on.
+    foremanInvite: "dispatch",
     nameSource: "process",
     state: "idle",
     cwd: "/work/alpha",

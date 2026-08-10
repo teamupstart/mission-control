@@ -35,7 +35,7 @@ process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, getForemanInvite } = await import("../src/server/db.ts");
 const { setHarnessesConfig, resolveDispatchRuntime } = await import("../src/server/harnesses.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
@@ -176,6 +176,11 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
     assert.equal(task.homeName, null);
     assert.equal(task.terminalResourceId, null);
     assert.ok(task.worktreePath, "provisioning is identical on both paths");
+    // An embedded dispatch stores NO Foreman-invite row: the "sdk" grant is implied by
+    // the runtime itself, and the dispatcher's terminal-path invite write is never
+    // reached (the embedded branch returns before `waitForSessionAtCwd`).
+    assert.equal(registry.getSession(task.sessionId!)?.foremanInvite, "sdk");
+    assert.equal(getForemanInvite(task.sessionId!), undefined);
   }
 });
 

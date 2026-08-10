@@ -120,6 +120,12 @@ export async function resetSession(
         if (currentPendingTurnKey !== pendingTurnKey) {
           registry.clearPendingTurns(currentPendingTurnKey, preservePendingTurnIds);
         }
+        // The Foreman invite MOVES to the post-reset key rather than being cleared with
+        // the work above: the reset discards the conversation, and an invite belongs to
+        // the pane, not the conversation. Usually a no-op - a rebind that already landed
+        // carried the invite through the registry's own rotation move - but a rotation
+        // this call observes that the registry's sites did not would otherwise strand it.
+        registry.moveForemanInviteKey(pendingTurnKey, currentPendingTurnKey);
         registry.clearQueue(noteKeyFor(session));
         registry.clearWorkflowState(noteKeyFor(session));
       }

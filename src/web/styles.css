@@ -3572,6 +3572,20 @@ a.btn {
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+/* The card variant's Retro. Same reasoning as `.act-retro`: an offer, not a consequence. */
+.btn-retro {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 40%, var(--border));
+}
+.btn-retro:hover:not(:disabled) {
+  color: var(--purple) !important;
+  border-color: color-mix(in oklab, var(--purple) 60%, var(--border)) !important;
+  background: color-mix(in oklab, var(--purple) 12%, var(--panel-2)) !important;
+}
+.btn-retro:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 /* The foot variant's Complete. Same green-against-red reasoning as `.act-complete`. */
 .btn-complete {
   color: var(--idle);
@@ -7290,6 +7304,19 @@ select:not([multiple]) option:focus-visible {
 .kill-error {
   margin: 8px 0 0;
   color: #e5877f;
+}
+/* A settled OUTCOME, not a failure - the retro that became a backlog task because the
+   session could not be typed into. It sits where the error does and must not read like
+   one, which is the whole reason it is a separate node rather than reused copy. */
+.complete-notice {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+/* Left of the footer's spacer, so it reads as "before you answer this dialog" rather than
+   as a third answer to it. */
+.complete-retro {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 40%, var(--border));
 }
 /* Killing a session that carries a task strands everything declared behind it, and
    that is the one thing this dialog exists to say out loud. */
@@ -18429,6 +18456,19 @@ span.line-run-prov {
   outline: 2px solid var(--working);
   outline-offset: 2px;
 }
+/* The ladder's counterpart to `.complete-notice`: what the retro actually did, in the same
+   slot the failure would have used and deliberately not in its colours. */
+.wf-ladder-action-notice {
+  flex: none;
+  margin: -5px 0 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
 .wf-ladder-action-error {
   flex: none;
   margin: -5px 0 0;
@@ -18544,6 +18584,23 @@ span.line-run-prov {
   background: color-mix(in oklab, var(--idle) 13%, var(--panel-2));
 }
 .act-complete:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* Retro is an OFFER rather than a standing control: it appears at one moment and is gone
+   the rest of the time, so it takes the neutral-informative purple Focus uses and NOT a
+   consequence colour. Nothing here is destructive and nothing here is the end of the
+   session - it asks the agent a question. */
+.act-retro {
+  color: color-mix(in oklab, var(--purple) 82%, var(--fg));
+  border-color: color-mix(in oklab, var(--purple) 36%, var(--border));
+}
+.act-retro:hover:not(:disabled) {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 60%, var(--border));
+  background: color-mix(in oklab, var(--purple) 13%, var(--panel-2));
+}
+.act-retro:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -20224,7 +20281,15 @@ span.line-run-prov {
   font-weight: 620;
   color: var(--fg);
 }
+/* Sized here as well as on the element, and that redundancy is the point. An inline `<svg>`
+   with a viewBox and no width/height resolves its width to 100% of the line and scales its
+   height by the aspect ratio - a 16px icon becomes a 900px drawing, which is exactly how the
+   conversation picker shipped. The attributes on the glyph are the primary statement; this
+   is the floor under the next one that forgets them. */
 .layout-glyph {
+  flex: none;
+  width: 16px;
+  height: 13px;
   color: var(--dim);
 }
 .layout-option.is-on .layout-glyph {
@@ -20234,6 +20299,29 @@ span.line-run-prov {
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--muted);
+}
+
+/* ---- settings: conversation rendering ----
+   The same row as `.layout-option`, carrying a thumbnail instead of a glyph. These two
+   options differ in the SHAPE of what you get - bubbles down a page, or a framed stream
+   between a titlebar and a status line - and that is not a difference a 16px icon can
+   draw. Centred rather than top-aligned, because a 32px picture beside two lines of text
+   hangs off the top of the row otherwise. */
+.view-option {
+  align-items: center;
+  gap: 12px;
+}
+.view-option input {
+  margin: 0;
+}
+.view-thumb {
+  flex: none;
+  width: 44px;
+  height: 32px;
+  color: var(--dim);
+}
+.layout-option.is-on .view-thumb {
+  color: var(--working);
 }
 
 /* ---- settings: toggle row ----

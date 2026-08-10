@@ -51,6 +51,7 @@ mode, see [docs/setup.md](docs/setup.md).
 | `npm run smoke` | Boots built bundles after `npm run build`. |
 | `npm run package` | Builds the macOS application package. |
 | `npm run demo` | Starts a token-free demo. Build first. |
+| `npm run docs:screenshots` | Regenerates the committed README screenshots from the token-free demo. Build first. |
 
 `make build`, `make check`, `make test`, `make lint`, and `make smoke` install or
 refresh dependencies through the repository's stamp file. On macOS, `npm test`

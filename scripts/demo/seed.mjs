@@ -579,7 +579,32 @@ export function workflowDraft({ customPersonaId = null } = {}) {
  * to exercise every MECHANISM (dispatch, suspend, restore, review, telemetry) while staying
  * fast enough to be a smoke test, so it trims breadth rather than depth.
  */
-export function seedPlan({ reduced = false } = {}) {
+export function seedPlan({ reduced = false, readme = false, capture = false } = {}) {
+  if (capture) {
+    return {
+      // Dashboard surfaces that do not read fleet state use this fast, token-free setup. The
+      // screenshot tool pairs it with the README fleet seed only when a shot needs a session.
+      sessionTasks: [],
+      backlogTasks: [],
+      schedules: [],
+      persona: SEED_PERSONA,
+      workflow: false,
+      ledgerDays: 0,
+    };
+  }
+  if (readme) {
+    return {
+      // The shortest seed that still gives the README a real fleet, a pending human review,
+      // a custom Persona. It is intentionally narrower than the persistent
+      // demo so a documentation capture remains practical in CI and on laptops.
+      sessionTasks: SEED_SESSION_TASKS.filter((t) => t.key === "pagination"),
+      backlogTasks: SEED_BACKLOG_TASKS.filter((t) => t.key === "ingest" || t.key === "pool-docs"),
+      schedules: [],
+      persona: SEED_PERSONA,
+      workflow: false,
+      ledgerDays: 1,
+    };
+  }
   if (!reduced) {
     return {
       sessionTasks: SEED_SESSION_TASKS,
@@ -847,9 +872,17 @@ export async function readSnapshot(baseURL) {
  * Telemetry is posted before the shutdown, because the ingest routes are the daemon's, and
  * the daemon is the only writer.
  */
-export async function seedDemoFleet({ root, port, reduced = false, log = console.log }) {
+export async function seedDemoFleet({
+  root,
+  port,
+  reduced = false,
+  readme = false,
+  capture = false,
+  keepDaemonAlive = false,
+  log = console.log,
+}) {
   assertDemoRoot(root);
-  const plan = seedPlan({ reduced });
+  const plan = seedPlan({ reduced, readme, capture });
   const workspace = join(root, "workspace");
   const repoRoot = (name) => join(workspace, name);
   const bins = {
@@ -879,6 +912,13 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
   const releaseSignals = holdSignals(() => daemon.stop());
 
   try {
+    // The screenshot-only profiles do not start a worker. Leaving Foreman enabled therefore
+    // renders a warning about a failed setup instead of showing its intentional, safe default.
+    // Keep the persistent demo unchanged, but make these disposable captures explicitly idle.
+    if (readme || capture) {
+      await api.put("/api/foreman/config", { enabled: false });
+    }
+
     // --- backlog first, so a dependency edge exists before the task that needs it ---------
     const byKey = new Map();
     for (const spec of plan.backlogTasks) {
@@ -1067,7 +1107,7 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
     }
 
     const resolvedHost = sessionFor("token") ?? seeded.sessions[0];
-    if (resolvedHost && !reduced) {
+    if (resolvedHost && !reduced && !readme) {
       const planReview = await raise(resolvedHost, {
         kind: "plan",
         title: "Collapse concurrent refreshes onto one in-flight promise",
@@ -1229,8 +1269,10 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
     // Cleanly, and waited for: this shutdown is what turns the live sessions above into the
     // `suspended` rows the next daemon restores as cards. A hard kill here would leave the
     // seed with no fleet in it at all.
-    log("[seed] stopping the daemon so its sessions suspend...");
-    await daemon.stop();
+    if (!keepDaemonAlive) {
+      log("[seed] stopping the daemon so its sessions suspend...");
+      await daemon.stop();
+    }
     releaseSignals();
   }
 
@@ -1246,7 +1288,10 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
     `${seeded.schedules} schedule(s)`,
     seeded.fleetCost != null ? `$${seeded.fleetCost.toFixed(2)} today` : "no priced spend",
   ].join(", ");
-  return seeded;
+  // Documentation capture reads the already-seeded live daemon directly. The normal demo path
+  // still shuts down here, because its deliberate suspend-and-restore cycle is what gives the
+  // persistent demo its resumed session cards.
+  return keepDaemonAlive ? { ...seeded, daemon } : seeded;
 }
 
 /** The operator's timezone, so a seeded schedule's next-fire time reads like a local one. */

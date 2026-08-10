@@ -4,6 +4,7 @@ import test from "node:test";
 import { LAYOUT_MODES, UI_CONFIG_DEFAULTS, UiConfigPatchSchema } from "../src/shared/protocol.ts";
 import {
   DEMO_LAYOUT,
+  buildDaemonEnv,
   createShutdownGate,
   demoLayoutAccepted,
   demoUiConfigBody,
@@ -62,6 +63,15 @@ test("the demo layout is a deliberate override, not the shipped default restated
     DEMO_LAYOUT,
     "the app default now matches the demo's; the launcher's PUT is redundant and should be revisited",
   );
+});
+
+test("the demo pins Claude's print transport to its local one-shot player", () => {
+  const env = buildDaemonEnv("/tmp/demo", 7417, {
+    claude: "/tmp/demo/bin/claude",
+    codex: "/tmp/demo/bin/codex",
+    pi: "/tmp/demo/bin/pi",
+  });
+  assert.equal(env.MISSION_CLAUDE_TRANSPORT, "print");
 });
 
 test("only an echo of the stored layout counts as accepted", () => {

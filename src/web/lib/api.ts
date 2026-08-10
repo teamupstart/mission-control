@@ -40,6 +40,7 @@ import type {
   LlmConfig,
   LlmConfigPatch,
   ResolveEpisode,
+  RetroResponse,
   ShippingConfig,
   ShippingConfigPatch,
   SetNote,
@@ -889,6 +890,20 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/effort`, { effort }),
   reset: (id: string, clear = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/reset`, { clear }),
+  /**
+   * Ask a session to run its own retrospective, or file one when it can no longer be typed
+   * into. The daemon decides which; there is nothing to send and nothing to choose.
+   *
+   * The two success arms are worth distinguishing to the person who clicked, which is why the
+   * response body is kept rather than reduced to `ok`: `delivered` means their session now has
+   * an instruction in it, `dispatched` means a task is sitting in the backlog waiting to be
+   * started. Telling them "done" for both would leave the second one waiting for a turn that
+   * is never going to happen.
+   */
+  runRetro: (id: string) =>
+    post<ActionResult & Partial<RetroResponse>>(
+      `/api/sessions/${encodeURIComponent(id)}/retro`,
+    ),
   /**
    * Answer the option menu a session is showing by selecting one of its rows.
    *

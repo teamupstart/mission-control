@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import type { Session } from "@shared/types.ts";
 import type { WorkflowRunDetail, WorkflowRunSummary } from "@shared/workflow.ts";
 import {
   nodeLabel,
@@ -10,6 +11,13 @@ import {
 } from "@shared/workflow-stages.ts";
 import { duration } from "../lib/format.ts";
 import { copyText } from "../lib/clipboard.ts";
+import { api } from "../lib/api.ts";
+import {
+  retroCallView,
+  retroOffer,
+  retroOutcome,
+  type RetroCall,
+} from "../lib/retro-offer.ts";
 import {
   WorkflowChip,
   workflowRunTone,
@@ -87,6 +95,19 @@ interface WorkflowLadderProps {
   ) => void;
   feedbackCopied?: boolean;
   actionError?: string | null;
+  /** A settled outcome worth stating - today, a retro that became a backlog task. */
+  actionNotice?: string | null;
+  /**
+   * The retro offer for the session this run is reviewing, or null when it is not offered.
+   *
+   * Handed DOWN rather than derived here, and that is the point of the prop: the condition is
+   * a fact about the SESSION (has anyone corrected it, has its review finished) and this
+   * component holds a run. Deriving it from run detail alone would make the ladder disagree
+   * with the console footer beside it about the same session.
+   */
+  retro?: RunActionDescriptor | null;
+  /** Deliver the retro. Absent means the host cannot, so nothing is drawn. */
+  onRetro?: () => void;
   /** `detail.binding.sessionId !== null`; never inferred from the viewed Session. */
   sessionBound: boolean;
   isPending?: (id: RunActionId) => boolean;
@@ -204,9 +225,19 @@ export function WorkflowLadder({
   onResolveDelivery,
   feedbackCopied = false,
   actionError = null,
+  actionNotice = null,
+  retro = null,
+  onRetro,
   sessionBound,
   isPending = () => false,
 }: WorkflowLadderProps): React.JSX.Element {
+  // `pending` is false on purpose, and it is not an oversight. That flag is the shared
+  // run-action store's, keyed by RUN, and this request has no run - the descriptor carries
+  // its own `disabled` while the POST is in flight and its label says "Sending…". Reading the
+  // store here would ask a question about a different action and answer this one with it.
+  const retroAction = retro && onRetro
+    ? <LadderAction descriptor={retro} pending={false} onClick={onRetro} />
+    : null;
   const submission = selectedSubmission(detail, null);
   const attempts = latestAttemptsFor(detail, submission?.id ?? null);
   const statuses = nodeStatusesForSubmission(detail, submission?.id ?? null);
@@ -216,6 +247,11 @@ export function WorkflowLadder({
     return (
       <section className="wf-ladder-fallback" aria-label="Workflow run">
         <WorkflowChip run={summary} onOpen={onOpenRun} />
+        {/* Offered here too. A run whose version cannot be projected still belongs to a
+            session that was corrected and reviewed, and the offer is about that session -
+            withholding it because this component could not draw a graph would hide the
+            prompt on exactly the runs an operator is already unhappy with. */}
+        {retroAction}
         <Tooltip label="Open this workflow in Runs">
           <button className="wf-ladder-open" type="button" onClick={onOpenRun}>
             Open run
@@ -548,8 +584,17 @@ export function WorkflowLadder({
       {actionError && (
         <p className="wf-ladder-action-error" role="alert">{actionError}</p>
       )}
+      {actionNotice && (
+        <p className="wf-ladder-action-notice" role="status">{actionNotice}</p>
+      )}
 
       <div className="wf-ladder-actrow">
+        {/* In the ladder's own action row rather than inside the Inspector rung, even though
+            the Inspector finishing is what makes the moment. A rung is a stage of the graph
+            and this acts on no stage - it types into the session - and the rung is drawn only
+            for an inspector-policy version, which would have hidden the offer on every other
+            kind of workflow the same session could be bound to. */}
+        {retroAction}
         <Tooltip label="Open this workflow in Runs">
           <button className="wf-ladder-open" type="button" onClick={onOpenRun}>
             Open run
@@ -623,15 +668,41 @@ export function WorkflowLadderPanel({
   run,
   onOpenRun,
   tileDisclosure = null,
+  session = null,
 }: {
   run: WorkflowRunSummary;
   onOpenRun: () => void;
   tileDisclosure?: WorkflowTileDisclosureState | null;
+  /**
+   * The session this run is reviewing, when the host already renders it.
+   *
+   * Only the retro offer reads it, and only because that offer is conditioned on facts this
+   * run does not carry - whether a human corrected the session, and what its own Inspector
+   * chip says. Both hosts of this panel draw the session anyway, so nothing is fetched for it;
+   * null simply means no offer, which is what a surface with no session can honestly say.
+   */
+  session?: Session | null;
 }): React.JSX.Element {
   const disclosureRegionId = useId();
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [feedbackCopied, setFeedbackCopied] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  /**
+   * The retro request, keyed by the SESSION it is about rather than by the run.
+   *
+   * Every other transient here belongs to the run and is cleared when `run.id` changes. This
+   * one does not: `api.runRetro` takes a session id, is offered on sessions with no run at
+   * all, and a new round starting in the background changes nothing about a request already
+   * in flight to that session's pane.
+   *
+   * That distinction is the whole reason it is a keyed record and not a boolean. A bare
+   * `retroBusy` sat in the run-scoped reset regime and belonged to neither: left out of the
+   * reset it outlived what the panel was showing, and put INTO the reset it would re-enable
+   * the button mid-flight and let a second click type a second retro packet into the same
+   * session. Keying it by session makes both questions answerable - "is one in flight FOR
+   * THIS SESSION", and "is this outcome about the session I am looking at".
+   */
+  const [retroCall, setRetroCall] = useState<RetroCall | null>(null);
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const copyReset = useRef<number | null>(null);
   const mounted = useRef(false);
@@ -675,6 +746,11 @@ export function WorkflowLadderPanel({
     setFeedbackCopied(false);
     setLocalError(null);
     setConfirm(null);
+    // `retroCall` is deliberately NOT reset here. It is about the session, which has not
+    // changed - this panel is mounted under a session-keyed parent - so clearing it would
+    // either drop the answer to a click the operator just made, or, mid-flight, re-enable a
+    // button whose second press sends a second retro. It is filtered by session id at the
+    // render site instead, which is the honest form of the same intent.
   }, [run.id]);
 
   if (state.state === "loading") {
@@ -785,11 +861,55 @@ export function WorkflowLadderPanel({
     });
   };
   const prUrl = detail.inspectorGate?.state.prUrl ?? null;
+  /**
+   * The retro offer as a ladder control, or null.
+   *
+   * `id` is a `RunActionId` only so `LadderAction` can share the shared pending helper's
+   * shape; it is deliberately NOT registered with the run-action store. That store keys
+   * in-flight state and request ids by RUN, and this request carries no run at all - it POSTs
+   * to a session route that takes no body and no `requestId`, and it is offered on sessions
+   * with no run. Borrowing the store would have filed a session's action under a run's key
+   * and made a second surface's identical offer look already-pending.
+   */
+  const offer = session ? retroOffer(session, run) : null;
+  // Only this session's own call is ever read, so a record left over from a session this
+  // panel is no longer showing can neither disable its button nor claim its outcome.
+  const call = retroCallView(retroCall, session?.id);
+  const sending = call.sending;
+  const retro = offer
+    ? {
+        id: "retro",
+        label: sending ? "Sending…" : offer.label,
+        tooltip: offer.tooltip,
+        disabled: sending,
+      }
+    : null;
+  const runRetro = (): void => {
+    if (!session || sending) return;
+    const sessionId = session.id;
+    setRetroCall({ sessionId, status: "sending", message: null });
+    setLocalError(null);
+    // `sessionId` is captured rather than re-read off `session` in the callback: the props
+    // may have moved on by the time this settles, and an outcome has to be filed under the
+    // session it was actually requested for.
+    void api.runRetro(sessionId).then((result) => {
+      setRetroCall(result.ok
+        ? { sessionId, status: "sent", message: retroOutcome(result) }
+        : {
+            sessionId,
+            status: "failed",
+            message: result.error ?? "Could not start a retro for this session",
+          });
+    });
+  };
   const ladder = (
     <WorkflowLadder
       summary={run}
       detail={detail}
       onOpenRun={onOpenRun}
+      retro={retro}
+      onRetro={session ? runRetro : undefined}
+      actionNotice={call.notice}
       onCopyFeedback={copyFeedback}
       onPreparePr={() => runPost(
         "prepare-pr",
@@ -806,7 +926,7 @@ export function WorkflowLadderPanel({
       }}
       onResolveDelivery={resolveDelivery}
       feedbackCopied={feedbackCopied}
-      actionError={localError ?? controller.error}
+      actionError={localError ?? call.error ?? controller.error}
       sessionBound={sessionBound}
       isPending={controller.isPending}
     />

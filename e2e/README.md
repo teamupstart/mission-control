@@ -244,8 +244,8 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### Run-scoped critical Persona feedback
 
-[`evidence/workflow-persona-directive.png`](evidence/workflow-persona-directive.png) shows the
-drawer opened directly from a Persona row. The locked run and Persona scope, future-round
+The `workflow-persona-directive.png` evidence capture shows the drawer opened directly from a
+Persona row. The locked run and Persona scope, future-round
 persistence, critical priority, byte limit, and editable instruction are all visible in the
 built dashboard. The same browser regression saves the instruction, proves it changes only
 that Persona in rounds 2 and 3, and checks the directive snapshots stored on both attempts.
@@ -552,6 +552,52 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 `--workers=1` keeps the seven tests' output from interleaving, and the `tee` is the only thing
 that produces `transcript.txt`.
 
+### The conversation rendering picker, at its own size
+
+`e2e/.artifacts/settings-conversation-picker/` holds the before/after pair for the
+Conversation section of **Settings → Display**. `02-after.png` is captured by
+`specs/settings-conversation-picker.spec.ts` on a run whose measurements passed.
+
+The bug it closes: `ViewGlyph` drew an inline `<svg>` carrying a viewBox and neither `width`
+nor `height`. That is not a small icon - a replaced element with an intrinsic ratio and no
+intrinsic size takes 100% of the line and scales its height by the ratio, so each glyph drew
+at the width of its row. Its rects also set no `fill`, so they painted SVG-default black
+instead of the row's `currentColor` tint.
+
+The sizes it laid out at are recorded in the spec's header comment, which is the one place
+this repository states them: they are a browser's answer, and the spec is what asked. Note
+that the two rows did not match each other - a glyph took the flex line minus its label, so
+the longer word left a smaller picture.
+
+The spec measures rather than matches, because used height is exactly what a markup
+assertion cannot produce - `test/settings-sidebar-render.test.ts` pins the attributes across
+every settings category, and this pins what the attributes were for. Reintroducing the bug
+in the fixed component, by dropping the sizing from its 44x32 thumbnail, fails it with
+`Received: {"height": 634, "width": 872}` against the expected `44x32`. That figure is the
+reintroduction's, not the original's - a different drawing at a different ratio - and it is
+quoted here only because it is this spec's literal failure output.
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/settings-conversation-picker.spec.ts \
+  -g 'sized thumbnails' \
+  --workers=1 --reporter=list
+```
+
+`01-before.png` is the same section on the pre-fix build, and no spec regenerates it: a
+passing suite cannot photograph a bug it has removed. Reproduce it by reverting
+`src/web/components/ConversationViewPanel.tsx`, `src/web/styles.css` and
+`src/web/lib/conversation-view.ts` to the commit before the fix, rebuilding, and pointing a
+capture at `[data-anchor="display/conversation-view"]`. It is kept because the fix is a
+visual one, and a reviewer comparing a 749px row against a 61px row learns in one look what
+two numbers in a passing assertion do not show.
+
+`00-before-after.png` is the two stacked into one frame with their measurements, composed by
+`compare.html` in the same directory - the file to attach when one image has to carry the
+review. Rebuild it by serving the repository root and screenshotting that page; it reads the
+two PNGs beside it, so it is only as fresh as they are.
+
 ### A Jira task source in Settings
 
 `e2e/.artifacts/jira-task-source/` carries three frames
@@ -703,6 +749,39 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/backlog-task-delete.spec.ts \
   --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
+### The retro offer appearing, and being taken
+
+`e2e/.artifacts/retro-offer/` carries five frames and the run's own stdout from
+`specs/retro-offer.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The change is a control
+that **appears**, so the pair either side of that is the point: `01-no-offer-yet.png` is a
+fresh session's action row, and `02-offer-on-the-card.png` is the same row once a human has
+corrected the session and its review has come back clean - `Run retro` between Reset and
+Complete, with the Inspector's `⌕ ✓` beside the pull request chip that earned it.
+
+`03-delivered-into-the-conversation.png` is what one click does: the flash reading
+`Retro sent - the session will propose memories for you to approve.` under the row, and the
+instruction itself in the conversation below. `05-complete-offers-a-retro-first.png` and
+`04-complete-without-a-backstop.png` are the Complete dialog's two shapes, which differ only
+by whether the session earned the offer - the backstop sits on the dialog's own side of the
+footer, away from Cancel and Complete & close, because it is not a third answer to the
+dialog's question.
+
+That the offer is **absent** the rest of the time is checkable in the DOM as a count; that it
+reads as an offer rather than as a permanently disabled control is legible only here.
+
+Regenerate all six with:
+
+```sh
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/retro-offer.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/retro-offer/transcript.txt
 ```
 
 Attach the generated frames to the pull request; they are never committed.

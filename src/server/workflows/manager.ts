@@ -483,7 +483,12 @@ export class WorkflowManager {
     this.registry.initializeWorkflowBindings(this.bindingSummaries());
     this.registry.registerWorkflowReset((noteKey) => {
       const removed = this.store.resetForNoteKey(noteKey);
-      for (const id of removed) this.registry.removeWorkflowRun(id);
+      for (const id of removed.runIds) this.registry.removeWorkflowRun(id);
+      // The bindings too. A reset deletes them in the same transaction as the runs, and
+      // retiring only the runs left the stream publishing a binding whose row was gone - so a
+      // reset session's chip kept naming a workflow that no longer existed and could never
+      // run. Every other path that ends a binding retires it here as well.
+      for (const id of removed.bindingIds) this.registry.removeWorkflowBinding(id);
     });
   }
 

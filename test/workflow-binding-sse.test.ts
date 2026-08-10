@@ -151,6 +151,31 @@ test("an orphaned or paused binding stays on the stream, carrying its state", ()
   assert.deepEqual(streamed(), [], "archived is the only state that leaves the stream");
 });
 
+test("a session reset takes its binding off the stream, not just its runs", () => {
+  // What is at stake: reset deletes the note key's runs AND its bindings in one transaction,
+  // but only the runs were retired from the registry. The binding row was gone while the
+  // stream went on publishing it, so a reset session's chip kept naming a workflow that no
+  // longer existed and could never run - a promise about a review, made out of a deleted row.
+  clearWorkflowTables(db);
+  seedOperatorWorkflow();
+  const store = new WorkflowStore(db);
+  insertBinding(store, "v");
+  const registry = new Registry();
+  new PersonaManager(registry, store);
+  new WorkflowManager(registry, store);
+  assert.equal(registry.snapshot().workflowBindingSummaries.length, 1, "armed before the reset");
+
+  // The same entry point a session reset uses; the manager registers its cleanup here.
+  registry.clearWorkflowState("note");
+
+  assert.deepEqual(
+    registry.snapshot().workflowBindingSummaries,
+    [],
+    "the stream stops naming a binding whose row was deleted",
+  );
+  assert.equal(store.getBinding("b"), null, "and the row really is gone");
+});
+
 test("a built-in binding names its workflow, which no SQL join can reach", () => {
   clearWorkflowTables(db);
   const store = new WorkflowStore(db);

@@ -5551,7 +5551,16 @@ export class WorkflowStore {
     }
   }
 
-  resetForNoteKey(noteKey: string): string[] {
+  /**
+   * Everything a reset removed, so the caller can retire it from the fleet stream too.
+   *
+   * Both lists, not just the runs. This used to return run ids alone while deleting the
+   * bindings in the same transaction, so the registry kept publishing a binding whose row was
+   * gone and a reset session's chip went on naming a workflow that could never run. Returning
+   * what was deleted is what makes the SQL and the stream describe the same world; a caller
+   * that forgets one of them now has to do so on purpose.
+   */
+  resetForNoteKey(noteKey: string): { runIds: string[]; bindingIds: string[] } {
     return transaction(this.db, () => {
       const runRows = this.db.prepare(
         `SELECT r.id FROM workflow_runs r
@@ -5559,6 +5568,11 @@ export class WorkflowStore {
          WHERE b.note_key = ?`,
       ).all(noteKey) as unknown as Array<{ id: string }>;
       const runIds = runRows.map((row) => row.id);
+      // Collected BEFORE the delete below, for the obvious reason: afterwards there is nothing
+      // left to select, and the stream would never learn which entries to drop.
+      const bindingIds = (this.db.prepare(
+        `SELECT id FROM workflow_bindings WHERE note_key = ?`,
+      ).all(noteKey) as unknown as Array<{ id: string }>).map((row) => row.id);
       for (const runId of runIds) {
         this.db.prepare(
           `DELETE FROM workflow_llm_calls WHERE run_id = ?`,
@@ -5587,7 +5601,7 @@ export class WorkflowStore {
           WHERE binding_id IN (SELECT id FROM workflow_bindings WHERE note_key = ?)`,
       ).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_bindings WHERE note_key = ?`).run(noteKey);
-      return runIds;
+      return { runIds, bindingIds };
     });
   }
 

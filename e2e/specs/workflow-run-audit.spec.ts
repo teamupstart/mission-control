@@ -297,18 +297,18 @@ test("an opened disclosure survives the run's own live updates", async ({ dashbo
   await audit.getByText("Audit and bug reports").click();
   await expect(runHistory).toBeVisible();
 
-  // A real update for the run being read: clicking the reviewer off travels
+  // A real update for the run being read: disabling through the reviewer's actions menu travels
   // POST -> SQLite -> SSE summary bump -> detail refetch -> repaint. That last step used to
   // null the detail and rebuild the whole reader, which shut every disclosure on the page and
   // sent a scrubbed round back to the newest.
   const reviewer = dashboard.locator(".wf-pipeline-strip li.wf-pipeline-reviewer")
     .filter({ hasText: "Audit reviewer" });
-  await reviewer.getByRole("button").click();
+  await reviewer.getByRole("button", { name: "Actions for Audit reviewer" }).click();
+  await reviewer.getByRole("menuitem", { name: "Disable for this run" }).click();
 
-  // The update landed - the row goes red and its toggle reads pressed. Its chip still says
+  // The update landed and the row goes red. Its chip still says
   // `Changes requested`, because switching a reviewer off is a promise about the next round
   // rather than an eraser for the verdict it already gave.
-  await expect(reviewer.getByRole("button")).toHaveAttribute("aria-pressed", "true");
   await expect(reviewer).toHaveClass(/is-disabled/);
   // ...and it landed in place, with the reader's own state intact.
   await expect(runHistory).toBeVisible();

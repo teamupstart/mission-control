@@ -22,6 +22,7 @@ import type {
   WorkflowVersion,
 } from "../src/shared/workflow.ts";
 import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
+import { PersonaDirectiveEditor } from "../src/web/workflows/PersonaDirectiveEditor.tsx";
 import { WorkflowRunView, WorkflowRunsEmpty } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   inspectorOnlySkipStatus,
@@ -31,6 +32,7 @@ import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
 import { workflowBindingSelection } from "../src/web/workflows/WorkflowBindingDialog.tsx";
 import type { Session } from "../src/shared/types.ts";
 import { hasTooltip, tooltipLabels } from "./helpers/markup.ts";
+import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 /**
  * Graph identities are real UUIDs on purpose: the leak this file guards against is a node
@@ -1533,7 +1535,7 @@ test("the three passing check statuses each say something different about why", 
   assert.match(passed, /ran in this repository and exited zero/);
 });
 
-test("a disabled reviewer renders red with the Disabled chip and a whole-row toggle", () => {
+test("a disabled reviewer renders red and keeps disable in its actions menu", () => {
   const detail = runningDetail();
   detail.run.disabledNodeIds = [NODE.security];
   const html = render(detail, { onToggleNodesDisabled: () => {} });
@@ -1541,13 +1543,11 @@ test("a disabled reviewer renders red with the Disabled chip and a whole-row tog
   assert.match(html, /is-disabled/);
   assert.match(html, /⊘/);
   assert.match(html, />Disabled</);
-  // The whole row is a real button, pressed for the disabled member.
-  assert.match(html, /wf-pipeline-toggle/);
-  assert.match(html, /aria-pressed="true"/);
-  assert.match(html, /Enable Security reviewer for this run/);
-  assert.match(html, /Disable Quality reviewer for this run/);
-  // A stage disables member-by-member from its header too.
-  assert.match(html, /wf-pipeline-stage-hit/);
+  // The row's primary click is reserved for Persona feedback. Disable remains explicit in
+  // the trailing menu, where it cannot be confused with opening the feedback editor.
+  assert.match(html, /Actions for Security reviewer/);
+  assert.match(html, /Enable for this run/);
+  assert.match(html, /Disable for this run/);
   // The disabled member's red chip must not fold its stage to Failed: with its sibling
   // still reviewing, the stage reads Running - the toggle changed one member, not the gate.
   assert.doesNotMatch(html, />Failed</);
@@ -1566,7 +1566,7 @@ test("an outcome the viewed round already reached keeps its real chip under the 
   const latest = render(detail, { onToggleNodesDisabled: () => {} });
   assert.match(latest, /is-disabled/);
   assert.match(latest, /⊘/);
-  assert.match(latest, /aria-pressed="true"/);
+  assert.match(latest, /Enable for this run/);
   assert.match(latest, /Reviewing/);
   assert.doesNotMatch(latest, />Disabled</);
 
@@ -1597,6 +1597,62 @@ test("a finished run withholds the toggle even when the host supplies one", () =
   const html = render(detail, { onToggleNodesDisabled: () => {} });
   assert.match(html, /is-disabled/);
   assert.doesNotMatch(html, /wf-pipeline-toggle/);
+});
+
+test("active Persona feedback marks only its target and opens from the row", () => {
+  const detail = runningDetail();
+  detail.run.personaDirectives = [{
+    nodeId: NODE.security,
+    feedback: "Treat missing rollback proof as blocking.",
+    revision: 2,
+    createdAt: 4,
+    updatedAt: 8,
+  }];
+  const html = render(detail, {
+    onSetPersonaDirective: () => {},
+    onRemovePersonaDirective: () => {},
+    onToggleNodesDisabled: () => {},
+  });
+
+  assert.equal((html.match(/Critical feedback active/g) ?? []).length, 1);
+  assert.match(html, /has-directive/);
+  assert.match(html, /Edit critical feedback for Security reviewer/);
+  assert.match(html, /Add critical feedback for Quality reviewer/);
+  assert.match(html, /Edit critical feedback/);
+  assert.match(html, /Disable for this run/);
+  assertNoGraphIds(html);
+});
+
+test("Persona feedback click targets require both mutation handlers", () => {
+  const detail = runningDetail();
+  const setOnly = render(detail, { onSetPersonaDirective: () => {} });
+  const removeOnly = render(detail, { onRemovePersonaDirective: () => {} });
+
+  assert.doesNotMatch(setOnly, /Add critical feedback for/);
+  assert.doesNotMatch(removeOnly, /Add critical feedback for/);
+});
+
+test("Persona feedback byte count matches the trimmed text Save persists", () => {
+  const html = renderToStaticMarkup(withOverlayHost(createElement(PersonaDirectiveEditor, {
+    workflowName: "Review",
+    runId: "12345678-0000-4000-8000-000000000000",
+    round: 2,
+    personaName: "Security reviewer",
+    directive: {
+      nodeId: NODE.security,
+      feedback: "  🚀  ",
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    pendingFor: () => false,
+    error: null,
+    onSave: () => {},
+    onRemove: () => {},
+    onClose: () => {},
+  })));
+
+  assert.match(html, /4 \/ 8,000 UTF-8 bytes/);
 });
 
 /** An attempt on a node that holds no opinion: Session, an all-pass join, End. */

@@ -41,6 +41,7 @@ test("workflow limits are finite front-door contracts", () => {
     personaName: 100,
     personaDescription: 500,
     personaGuidanceBytes: 100_000,
+    personaDirectiveBytes: 8_000,
     // A READ ceiling on the stored import-provenance blob rather than a budget anyone spends:
     // generous against the sum of its own bounded fields, so one malformed write cannot make
     // every later read of that Persona expensive.

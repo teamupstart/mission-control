@@ -494,7 +494,8 @@ export function openDb(): DatabaseSync {
       updated_at            INTEGER NOT NULL,
       completed_at          INTEGER,
       evidence_pruned_at    INTEGER,
-      disabled_nodes_json   TEXT
+      disabled_nodes_json   TEXT,
+      persona_directives_json TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_trigger
       ON workflow_runs(trigger_key);
@@ -558,6 +559,9 @@ export function openDb(): DatabaseSync {
       -- column rather than a reuse of persona_snapshot_json: every reader of that column
       -- treats the record as something that produces a verdict, and an action produces none.
       session_action_snapshot_json TEXT,
+      -- Exact run-scoped feedback this Persona attempt claimed. NULL for every non-Persona
+      -- attempt and for a Persona that started while no directive was active.
+      operator_directive_json TEXT,
       runner_id             TEXT,
       model_id              TEXT,
       verdict_json          TEXT,
@@ -1496,6 +1500,10 @@ function migrate(d: DatabaseSync): void {
   // that. It lives on the run rather than the immutable version because the disable is
   // scoped to one run and must never leak into other runs of the same published workflow.
   addColumn(d, "workflow_runs", "disabled_nodes_json", "TEXT");
+  // Persistent operator feedback for Persona nodes is run-scoped and editable. Historical
+  // attempts snapshot the bytes they used separately, so changing this active set never
+  // rewrites a completed review.
+  addColumn(d, "workflow_runs", "persona_directives_json", "TEXT");
 
   // ---- SessionAction continuation segments -------------------------------------------
   //
@@ -1527,6 +1535,9 @@ function migrate(d: DatabaseSync): void {
 
   // The action a waiting attempt is executing, frozen from the run's immutable version.
   addColumn(d, "workflow_node_attempts", "session_action_snapshot_json", "TEXT");
+  // The exact active directive a Persona attempt claimed. Nullable means no feedback was
+  // active at claim time; retries of the same attempt retain a non-null snapshot.
+  addColumn(d, "workflow_node_attempts", "operator_directive_json", "TEXT");
 
   // Where an imported Persona was read from, so an upstream edit can be SEEN rather than
   // silently adopted. Nullable with no default because a Persona authored in the editor

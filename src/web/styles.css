@@ -480,6 +480,213 @@ button.wf-run-version:focus-visible {
   min-width: 0;
 }
 
+/* Run-scoped Persona feedback. The amber rail is the one signature mark: it means an
+   operator instruction is attached, never a review outcome or a session state. */
+.modal-backdrop:has(.wf-persona-directive-drawer) {
+  z-index: 70;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 0;
+  background: rgb(0 0 0 / 44%);
+}
+.wf-persona-directive-drawer {
+  width: min(460px, 100vw);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--fg);
+  border-left: 1px solid var(--border);
+  background: var(--bg-2);
+  box-shadow: -24px 0 70px rgb(0 0 0 / 42%);
+}
+.wf-persona-directive-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.wf-persona-directive-head .workflow-eyebrow {
+  margin: 0 0 6px;
+  color: var(--attention);
+}
+.wf-persona-directive-head h3 { margin: 0; font-size: 19px; line-height: 1.2; }
+.wf-persona-directive-close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  cursor: pointer;
+}
+.wf-persona-directive-body {
+  min-height: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 17px;
+  overflow-y: auto;
+  padding: 20px 22px 22px;
+}
+.wf-persona-directive-scope {
+  position: relative;
+  display: grid;
+  gap: 11px;
+  padding: 14px 14px 14px 17px;
+  border: 1px solid color-mix(in srgb, var(--attention) 42%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--attention) 7%, var(--panel));
+}
+.wf-persona-directive-scope::before {
+  content: "";
+  position: absolute;
+  top: 13px;
+  bottom: 13px;
+  left: -1px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--attention);
+}
+.wf-persona-directive-scope-title {
+  color: var(--attention);
+  font: 700 9.5px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.wf-persona-directive-scope dl { display: grid; gap: 8px; margin: 0; }
+.wf-persona-directive-scope dl > div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+}
+.wf-persona-directive-scope dt {
+  color: var(--dim);
+  font: 9px/1.4 var(--mono);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.wf-persona-directive-scope dd {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.wf-persona-directive-persistence {
+  padding: 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.wf-persona-directive-persistence h4 { margin: 0; font-size: 12px; }
+.wf-persona-directive-persistence > p {
+  margin: 5px 0 12px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.wf-persona-directive-rounds {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.wf-persona-directive-rounds > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--panel-2);
+}
+.wf-persona-directive-rounds small {
+  color: var(--dim);
+  font: 8px/1 var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.wf-persona-directive-rounds strong { font-size: 9.5px; line-height: 1.3; }
+.wf-persona-directive-rounds .is-next {
+  border-color: color-mix(in srgb, var(--attention) 45%, var(--border));
+  background: color-mix(in srgb, var(--attention) 6%, var(--panel-2));
+}
+.wf-persona-directive-rounds .is-next strong { color: var(--attention); }
+.wf-persona-directive-field { display: grid; gap: 7px; }
+.wf-persona-directive-field > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 11px;
+}
+.wf-persona-directive-field em {
+  color: var(--attention);
+  font: normal 700 8.5px/1 var(--mono);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.wf-persona-directive-field textarea {
+  min-height: 150px;
+  resize: vertical;
+  padding: 11px 12px;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+  font: 11.5px/1.55 var(--sans);
+}
+.wf-persona-directive-field textarea:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--attention) 65%, var(--border));
+}
+.wf-persona-directive-field > small {
+  color: var(--dim);
+  font: 8.5px/1 var(--mono);
+  text-align: right;
+}
+.wf-persona-directive-field > small.is-over { color: var(--danger); }
+.wf-persona-directive-priority {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  margin: 0;
+  padding: 10px 11px;
+  color: color-mix(in srgb, var(--attention) 62%, var(--fg));
+  border-left: 2px solid var(--attention);
+  background: color-mix(in srgb, var(--attention) 6%, var(--panel));
+  font-size: 10px;
+  line-height: 1.5;
+}
+.wf-persona-directive-priority strong { color: var(--attention); }
+.wf-persona-directive-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 5px;
+}
+.wf-persona-directive-actions .btn-ghost { margin-left: auto; }
+.wf-persona-directive-actions .btn-danger-ghost + .btn-ghost { margin-left: 0; }
+.wf-persona-directive-save {
+  color: #1d1305;
+  border-color: var(--attention);
+  background: var(--attention);
+  font-weight: 700;
+}
+
+@media (max-width: 700px) {
+  .modal-backdrop:has(.wf-persona-directive-drawer) { align-items: flex-end; }
+  .wf-persona-directive-drawer {
+    width: 100%;
+    max-height: 92vh;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+  .wf-persona-directive-rounds { grid-template-columns: 1fr; }
+}
+
 .wf-run-head {
   display: flex;
   align-items: flex-start;
@@ -1186,6 +1393,7 @@ body {
 .is-desktop .file-window,
 .is-desktop .workflow-library-sidebar,
 .is-desktop .workflow-builder-right,
+.is-desktop .wf-pipeline-item-menu-pop,
 /* The "Open in" popover is only ever anchored under a files toolbar, which sounds like it
    could never reach the bar - but `.file-window` above is a window the human DRAGS, and it
    can be parked with its toolbar at y=0. */
@@ -11688,6 +11896,15 @@ select.ensemble-judge-persona {
 .wf-pipeline-reviewer.is-dragging { opacity: 0.45; }
 .wf-pipeline-stage.is-drop-target,
 .wf-pipeline-reviewer.is-drop-target { border-color: var(--working); }
+.wf-pipeline-stage.has-directive,
+.wf-pipeline-reviewer.has-directive {
+  border-color: color-mix(in srgb, var(--attention) 58%, var(--border));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--attention) 8%, var(--panel-2)),
+    var(--panel-2) 56%
+  );
+}
 .wf-pipeline-members { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 /* Laid out like the terminus, and for the same reason: the chip is `flex: none`, so beside the
    name it takes its width out of the name. A member's name is the longest text in the pipeline
@@ -11719,6 +11936,13 @@ select.ensemble-judge-persona {
   font-weight: 600;
   overflow-wrap: break-word;
 }
+.wf-pipeline-directive-mark {
+  margin-top: 4px;
+  color: var(--attention);
+  font: 700 8.5px/1.25 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 /* A check is a PEER of a reviewer in a stage, so it keeps the same row shape and differs by
    a chip and a cooler edge. Drawing it as another kind of card would say the two take
    different routes, which is exactly what the compiler guarantees they do not. */
@@ -11747,6 +11971,51 @@ select.ensemble-judge-persona {
 }
 .wf-pipeline-reviewer-actions button,
 .wf-pipeline-stage-actions button { padding: 4px 7px; font-size: 10px; }
+.wf-pipeline-item-menu { position: relative; }
+.wf-pipeline-item-menu > summary {
+  min-width: 28px;
+  min-height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0 5px;
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--panel-2);
+  cursor: pointer;
+  list-style: none;
+}
+.wf-pipeline-item-menu > summary::-webkit-details-marker { display: none; }
+.wf-pipeline-item-menu > summary:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.wf-pipeline-item-menu > .wf-pipeline-item-menu-pop {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 20;
+  width: 176px;
+  display: grid;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+}
+.wf-pipeline-item-menu > div button {
+  width: 100%;
+  padding: 7px 8px;
+  color: var(--fg);
+  text-align: left;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.wf-pipeline-item-menu > div button:hover,
+.wf-pipeline-item-menu > div button:focus-visible { background: var(--panel-2); }
 /* The runs monitor's per-run disable toggle: the whole row (or the stage header's title
    block) is a real <button>. It occupies the parent grid's first column and reproduces the
    same single-column, two-row internal layout, so a clickable row and the editor's plain

@@ -24,6 +24,7 @@ import {
   type PipelineStatus,
 } from "./pipeline-bits.tsx";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
+import { Tooltip } from "../components/Tooltip.tsx";
 import {
   canShowInspectorOnlySkip,
   checkStatus,
@@ -32,6 +33,52 @@ import {
   sessionActionStatus,
   stageStatus,
 } from "./run-model.ts";
+
+function PipelineActionsMenu({
+  label,
+  onFeedback = null,
+  feedbackActive = false,
+  onToggleDisabled = null,
+  disabled = false,
+}: {
+  label: string;
+  onFeedback?: (() => void) | null;
+  feedbackActive?: boolean;
+  onToggleDisabled?: (() => void) | null;
+  disabled?: boolean;
+}): React.JSX.Element | null {
+  if (!onFeedback && !onToggleDisabled) return null;
+  const close = (target: HTMLElement): void => {
+    target.closest("details")?.removeAttribute("open");
+  };
+  return (
+    <details className="wf-pipeline-item-menu">
+      <Tooltip label={`Actions for ${label}`}>
+        <summary
+          role="button"
+          aria-haspopup="menu"
+          aria-label={`Actions for ${label}`}
+        >•••</summary>
+      </Tooltip>
+      <div className="wf-pipeline-item-menu-pop" role="menu" aria-label={`Actions for ${label}`}>
+        {onFeedback && (
+          <Tooltip label={`${feedbackActive ? "Edit" : "Add"} run-specific critical feedback for ${label}`}>
+            <button type="button" role="menuitem" onClick={(event) => { close(event.currentTarget); onFeedback(); }}>
+              {feedbackActive ? "Edit critical feedback" : "Add critical feedback"}
+            </button>
+          </Tooltip>
+        )}
+        {onToggleDisabled && (
+          <Tooltip label={`${disabled ? "Enable" : "Disable"} ${label} for this workflow run`}>
+            <button type="button" role="menuitem" onClick={(event) => { close(event.currentTarget); onToggleDisabled(); }}>
+              {disabled ? "Enable for this run" : "Disable for this run"}
+            </button>
+          </Tooltip>
+        )}
+      </div>
+    </details>
+  );
+}
 
 /**
  * The run, drawn on the pipeline its author drew.
@@ -63,6 +110,8 @@ export function RunPipeline({
   disabledNodeIds,
   disabledChipFor,
   onToggleNodes,
+  directiveFor,
+  onOpenPersonaDirective,
 }: {
   version: WorkflowVersion;
   /** Node id -> runtime status, scoped to the round being viewed. */
@@ -110,12 +159,12 @@ export function RunPipeline({
    * round's attempts, which this component deliberately never holds.
    */
   disabledChipFor?: (nodeId: string) => PipelineStatus | null;
-  /**
-   * Toggle the per-run auto-pass on one member (a row click) or a whole stage (a header
-   * click). Supplied only while the run can still be affected; when absent the rows are
-   * plain and the disabled set renders read-only, which is what a finished run shows.
-   */
+  /** Toggle the per-run auto-pass from a member or stage actions menu. */
   onToggleNodes?: (nodeIds: string[], disabled: boolean) => void;
+  /** Active persistent feedback for one Persona node of this run. */
+  directiveFor?: (nodeId: string) => boolean;
+  /** Open the run-scoped feedback editor. Supplied only while the run is live. */
+  onOpenPersonaDirective?: (nodeId: string) => void;
 }): React.JSX.Element {
   const graph = version.graph;
   const pipeline = useMemo(() => projectStages(graph), [graph]);
@@ -196,6 +245,9 @@ export function RunPipeline({
           // refuses, on a node that has no verdict to force in the first place.
           const togglable = member.kind !== "session_action";
           const disabled = togglable && member.nodeId ? disabledSet.has(member.nodeId) : false;
+          const directiveActive = member.kind === "persona" && Boolean(
+            member.nodeId && directiveFor?.(member.nodeId),
+          );
           return {
             key: member.nodeId ?? `${index}:${stageMemberKey(member)}`,
             nodeId: member.nodeId,
@@ -203,6 +255,7 @@ export function RunPipeline({
             name,
             togglable,
             disabled,
+            directiveActive,
             meta: member.nodeId ? metaFor(member.nodeId) : null,
             status: canShowInspectorOnlySkip(
               inspectorOnly,
@@ -243,6 +296,14 @@ export function RunPipeline({
           member.togglable && member.nodeId ? [member.nodeId] : []);
         const stageDisabled = members.length > 0 && members.every((member) => member.disabled);
         const stageTitle = stageName(stage, index, personaNames, actionNames);
+        const stagePersonaNodeIds = members.flatMap((member) =>
+          member.kind === "persona" && member.nodeId ? [member.nodeId] : []);
+        const stageFeedbackNodeId = stagePersonaNodeIds.length === 1
+          ? stagePersonaNodeIds[0]!
+          : null;
+        const openStageFeedback = stageFeedbackNodeId && onOpenPersonaDirective
+          ? () => onOpenPersonaDirective(stageFeedbackNodeId)
+          : null;
         return (
           <div className="wf-pipeline-slot" key={`stage:${index}`}>
             <StageCard
@@ -254,12 +315,20 @@ export function RunPipeline({
                 ? inspectorOnlySkipStatus()
                 : stageStatus(members.map((member) => member.status), stage.kind)}
               disabled={stageDisabled}
-              onToggleDisabled={onToggleNodes && stageNodeIds.length === members.length
-                ? () => onToggleNodes(stageNodeIds, !stageDisabled)
+              hasDirective={members.some((member) => member.directiveActive)}
+              onOpen={openStageFeedback}
+              openLabel={openStageFeedback
+                ? `${members.some((member) => member.directiveActive) ? "Edit" : "Add"} critical feedback for ${stageTitle}`
                 : null}
-              toggleLabel={stageDisabled
-                ? `Enable the ${stageTitle} stage for this run`
-                : `Disable the ${stageTitle} stage for this run - every member auto-passes instead of running`}
+              actions={<PipelineActionsMenu
+                label={stageTitle}
+                onFeedback={openStageFeedback}
+                feedbackActive={members.some((member) => member.directiveActive)}
+                disabled={stageDisabled}
+                onToggleDisabled={onToggleNodes && stageNodeIds.length === members.length
+                  ? () => onToggleNodes(stageNodeIds, !stageDisabled)
+                  : null}
+              />}
             >
               <ul className="wf-pipeline-members">
                 {members.map((member) => (
@@ -270,12 +339,27 @@ export function RunPipeline({
                     meta={member.meta}
                     status={member.status}
                     disabled={member.disabled}
-                    onToggleDisabled={onToggleNodes && member.togglable && member.nodeId
-                      ? () => onToggleNodes([member.nodeId!], !member.disabled)
+                    hasDirective={member.directiveActive}
+                    notice={member.directiveActive
+                      ? <span className="wf-pipeline-directive-mark">● Critical feedback active</span>
                       : null}
-                    toggleLabel={member.disabled
-                      ? `Enable ${member.name} for this run`
-                      : `Disable ${member.name} for this run - it auto-passes instead of running`}
+                    onOpen={member.kind === "persona" && member.nodeId && onOpenPersonaDirective
+                      ? () => onOpenPersonaDirective(member.nodeId!)
+                      : null}
+                    openLabel={member.kind === "persona"
+                      ? `${member.directiveActive ? "Edit" : "Add"} critical feedback for ${member.name}`
+                      : null}
+                    actions={<PipelineActionsMenu
+                      label={member.name}
+                      onFeedback={member.kind === "persona" && member.nodeId && onOpenPersonaDirective
+                        ? () => onOpenPersonaDirective(member.nodeId!)
+                        : null}
+                      feedbackActive={member.directiveActive}
+                      disabled={member.disabled}
+                      onToggleDisabled={onToggleNodes && member.togglable && member.nodeId
+                        ? () => onToggleNodes([member.nodeId!], !member.disabled)
+                        : null}
+                    />}
                   />
                 ))}
               </ul>

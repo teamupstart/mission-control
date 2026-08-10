@@ -703,9 +703,19 @@ round with a single segment is just `Round 1`, because there is no distinction t
 action that authorized a segment is shown *with* that segment even though its attempt belongs
 to the parent, so a continuation never reads as evidence that arrived from nowhere.
 
-On a run that has not finished, **clicking a reviewer or check disables it for that run** -
-the row turns red with a ⊘ mark - and clicking it again re-enables it. Clicking a stage
-header switches every member of the stage at once. A disabled gate auto-passes instead of
+On a run that has not finished, click a Persona row, or the header of a stage containing one
+Persona, to attach **Critical Persona feedback**. The editor locks the scope to that Persona
+node and that workflow run. Once saved, the instruction appears first in the Persona prompt
+on its next execution and every later round until it is removed or the run ends. It takes
+priority over the run's original intent, the published Persona guidance, prior reviewer
+feedback and evidence text; safety requirements and the required verdict format still apply.
+The published Persona, sibling Personas and every other run remain unchanged. An amber mark
+on the Persona says feedback is active, while each attempt snapshots the exact revision it
+used so later edits do not rewrite history.
+
+The Persona or stage **•••** menu owns the separate run override. Choose **Disable for this
+run** and the row turns red with a ⊘ mark; choose **Enable for this run** to restore it. The
+stage menu switches every eligible member at once. A disabled gate auto-passes instead of
 running: any round that has not reached it yet, the current one included, records a pass
 verdict that says plainly the gate was disabled, stamps no provider, and appears in the
 timeline as `Disabled node auto passed`. A gate already running or already finished this

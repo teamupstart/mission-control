@@ -30,6 +30,8 @@ export const WORKFLOW_LIMITS = {
   personaName: 100,
   personaDescription: 500,
   personaGuidanceBytes: 100_000,
+  /** One run-scoped instruction placed ahead of a Persona's published guidance. */
+  personaDirectiveBytes: 8_000,
   /**
    * The stored `PersonaProvenance` blob, in UTF-8 bytes.
    *
@@ -1943,6 +1945,14 @@ export interface WorkflowRun {
    * written by an older daemon still parses; absent reads as "nothing disabled".
    */
   disabledNodeIds?: string[];
+  /**
+   * Active operator directives, scoped by this run and the pinned graph's Persona node id.
+   *
+   * These are deliberately not part of the immutable workflow version or the shared
+   * submission context. A directive follows one Persona through later repair rounds of one
+   * run, and no sibling Persona or other run may inherit it.
+   */
+  personaDirectives?: WorkflowPersonaDirective[];
   startedAt: number;
   updatedAt: number;
   completedAt: number | null;
@@ -2048,6 +2058,8 @@ export interface WorkflowNodeAttempt {
    * without re-resolving a live library entity, exactly as the Persona snapshot does.
    */
   sessionAction: SessionActionSnapshot | null;
+  /** Exact run-scoped directive this Persona attempt claimed, if any. */
+  operatorDirective?: WorkflowPersonaDirectiveSnapshot | null;
   /** Actual provider/model resolved at attempt start. */
   runner: LlmRunnerId | null;
   model: string | null;
@@ -2139,6 +2151,23 @@ export interface PersonaFeedbackSummary {
   personaName: string;
   summary: string;
   requestedChanges: string[];
+}
+
+/** The active, editable directive attached to one Persona node of one workflow run. */
+export interface WorkflowPersonaDirective {
+  nodeId: string;
+  feedback: string;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Immutable copy written onto each Persona attempt when that attempt is first claimed. */
+export interface WorkflowPersonaDirectiveSnapshot {
+  feedback: string;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface WorkflowStandardsDocument {

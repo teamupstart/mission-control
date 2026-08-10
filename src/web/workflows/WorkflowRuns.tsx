@@ -21,6 +21,7 @@ import {
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
+import { PersonaDirectiveEditor } from "./PersonaDirectiveEditor.tsx";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import type { SessionActionProgress } from "./run-model.ts";
 import {
@@ -436,6 +437,9 @@ export function WorkflowRunView({
   onLoadEvents = async () => {},
   onLoadCalls = async () => {},
   onToggleNodesDisabled,
+  onSetPersonaDirective,
+  onRemovePersonaDirective,
+  actionError = null,
   isActionPending = () => false,
 }: {
   detail: WorkflowRunDetail;
@@ -480,6 +484,9 @@ export function WorkflowRunView({
    * terminal, because a finished run can no longer be affected.
    */
   onToggleNodesDisabled?: (nodeIds: string[], disabled: boolean) => void;
+  onSetPersonaDirective?: (nodeId: string, feedback: string, intentKey: string) => void;
+  onRemovePersonaDirective?: (nodeId: string, revision: number) => void;
+  actionError?: string | null;
   isActionPending?: (id: RunActionId) => boolean;
 }): React.JSX.Element {
   const version = detail.version;
@@ -488,6 +495,13 @@ export function WorkflowRunView({
   // name - so the resolver is the one thing standing between "evidence 2" and "evidence 2,
   // after Open the pull request".
   const nodeById = new Map((version?.graph.nodes ?? []).map((node) => [node.id, node]));
+  const [directiveNodeId, setDirectiveNodeId] = useState<string | null>(null);
+  useEffect(() => setDirectiveNodeId(null), [detail.run.id]);
+  const directiveNode = directiveNodeId ? nodeById.get(directiveNodeId) : null;
+  const directiveTarget = directiveNode?.kind === "persona" ? directiveNode : null;
+  const activeDirective = directiveTarget
+    ? (detail.run.personaDirectives ?? []).find((item) => item.nodeId === directiveTarget.id) ?? null
+    : null;
   const nameOfNode = (nodeId: string): string | null => {
     const node = nodeById.get(nodeId);
     return node && version ? nodeLabel(version.graph, node, []) : null;
@@ -890,6 +904,13 @@ export function WorkflowRunView({
           onToggleNodes={onToggleNodesDisabled
             && !["completed", "cancelled", "failed"].includes(detail.run.status)
             ? onToggleNodesDisabled
+            : undefined}
+          directiveFor={(nodeId) => (detail.run.personaDirectives ?? [])
+            .some((directive) => directive.nodeId === nodeId)}
+          onOpenPersonaDirective={onSetPersonaDirective
+            && onRemovePersonaDirective
+            && !["completed", "cancelled", "failed"].includes(detail.run.status)
+            ? setDirectiveNodeId
             : undefined}
         />
       ) : (
@@ -1355,6 +1376,30 @@ export function WorkflowRunView({
           </Tooltip>
         )}
       </section>
+
+      {directiveTarget && onSetPersonaDirective && onRemovePersonaDirective && (
+        <PersonaDirectiveEditor
+          workflowName={detail.summary.workflowName}
+          runId={detail.run.id}
+          round={detail.summary.round}
+          personaName={directiveTarget.persona.name}
+          directive={activeDirective}
+          pendingFor={(intentKey) =>
+            isActionPending(`set-persona-directive:${directiveTarget.id}:${intentKey}`)
+            || isActionPending(`remove-persona-directive:${directiveTarget.id}:${activeDirective?.revision ?? 0}`)}
+          error={actionError}
+          onSave={(feedback, intentKey) => onSetPersonaDirective(
+            directiveTarget.id,
+            feedback,
+            intentKey,
+          )}
+          onRemove={() => onRemovePersonaDirective(
+            directiveTarget.id,
+            activeDirective?.revision ?? 0,
+          )}
+          onClose={() => setDirectiveNodeId(null)}
+        />
+      )}
 
       {/*
         Developer material, named for who it is for.
@@ -2050,6 +2095,31 @@ export function WorkflowRuns({
                   }),
               );
             }}
+            onSetPersonaDirective={(nodeId, feedback, intentKey) => {
+              actionController.run(
+                `set-persona-directive:${nodeId}:${intentKey}`,
+                (requestId) => workflowRequest(
+                  `/api/workflow-runs/${detail.run.id}/set-persona-directive`,
+                  {
+                    method: "POST",
+                    body: JSON.stringify({ requestId, nodeId, feedback }),
+                  },
+                ),
+              );
+            }}
+            onRemovePersonaDirective={(nodeId, revision) => {
+              actionController.run(
+                `remove-persona-directive:${nodeId}:${revision}`,
+                (requestId) => workflowRequest(
+                  `/api/workflow-runs/${detail.run.id}/remove-persona-directive`,
+                  {
+                    method: "POST",
+                    body: JSON.stringify({ requestId, nodeId }),
+                  },
+                ),
+              );
+            }}
+            actionError={error ?? actionController.error}
             isActionPending={actionController.isPending}
             onOpenSession={() => {
               // The BINDING's session, which is the one that goes null when a session

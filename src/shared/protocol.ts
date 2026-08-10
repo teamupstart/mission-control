@@ -2386,6 +2386,23 @@ export const PersonaSnapshotSchema = z.object({
   model: ModelIdSchema.nullable(),
 });
 
+export const WorkflowPersonaDirectiveFeedbackSchema = z.string().trim().min(1)
+  .refine((value) => utf8AtMost(value, WORKFLOW_LIMITS.personaDirectiveBytes), {
+    message: `Persona feedback exceeds ${WORKFLOW_LIMITS.personaDirectiveBytes} UTF-8 bytes`,
+  });
+
+export const WorkflowPersonaDirectiveSchema = z.object({
+  nodeId: WorkflowNodeIdSchema,
+  feedback: WorkflowPersonaDirectiveFeedbackSchema,
+  revision: z.number().int().positive(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export const WorkflowPersonaDirectiveSnapshotSchema = WorkflowPersonaDirectiveSchema.omit({
+  nodeId: true,
+});
+
 // ---- SessionActions ----
 
 const SessionActionNameSchema = z.string().trim().min(1).max(WORKFLOW_LIMITS.sessionActionName);
@@ -2960,6 +2977,19 @@ export const SetWorkflowNodesDisabledSchema = WorkflowRunActionSchema.extend({
   disabled: z.boolean(),
 });
 export type SetWorkflowNodesDisabled = z.infer<typeof SetWorkflowNodesDisabledSchema>;
+
+/** Set or replace persistent feedback for one Persona node of one live workflow run. */
+export const SetWorkflowPersonaDirectiveSchema = WorkflowRunActionSchema.extend({
+  nodeId: WorkflowIdSchema,
+  feedback: WorkflowPersonaDirectiveFeedbackSchema,
+});
+export type SetWorkflowPersonaDirective = z.infer<typeof SetWorkflowPersonaDirectiveSchema>;
+
+/** Remove the active persistent feedback without rewriting attempts that already used it. */
+export const RemoveWorkflowPersonaDirectiveSchema = WorkflowRunActionSchema.extend({
+  nodeId: WorkflowIdSchema,
+});
+export type RemoveWorkflowPersonaDirective = z.infer<typeof RemoveWorkflowPersonaDirectiveSchema>;
 
 export const WorkflowInspectorGateStateSchema = z.object({
   prKey: z.string().min(1).max(1_000).nullable(),

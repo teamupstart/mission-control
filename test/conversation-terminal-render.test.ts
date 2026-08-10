@@ -5,10 +5,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   TerminalStatusLine,
   TerminalTitlebar,
+  terminalLegend,
 } from "../src/web/components/ConversationTerminal.tsx";
 import type { TerminalAttach } from "../src/web/components/ConversationTerminal.tsx";
 import type { Session } from "../src/shared/types.ts";
-import { meta, mkSession } from "./helpers/session-fixture.ts";
+import { meta, mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 /**
  * The terminal frame's chrome, which is where this rendering makes CLAIMS about a session
@@ -98,12 +99,60 @@ test("the status line offers the chords, and no second button to kill a session 
   // Deliberate divergence from the mockup, which drew four buttons. Each of these actions
   // has exactly one control in this app; a second `kill` in a status bar would be a second
   // path to the most destructive thing here. The row teaches the chord instead.
-  const html = status();
+  const html = status({ runtime: "sdk", terminals: [], task: mkTaskSummary() });
   assert.match(html, /terminal/);
   assert.match(html, /diff/);
   assert.match(html, /complete/);
   assert.match(html, /kill/);
   assert.doesNotMatch(html, /<button/, "the status line grew a button");
+});
+
+// ---- the legend teaches only chords that do something here ----
+//
+// A legend is a promise that a key works. The first slot is the one that bit: `handoff`
+// (Shift+T, "Continue in terminal") returns immediately unless the session is SDK-driven,
+// so on a pane-backed session - the ordinary tmux/wezterm shape - a hardcoded `handoff`
+// entry taught a documented no-op while hiding `focus`, the chord that actually reaches
+// that session's terminal. `ActionBar`'s footer has always switched the two; these pin that
+// this row switches with it.
+
+test("a pane-backed session is taught focus, not the SDK-only handoff", () => {
+  const legend = terminalLegend(mkSession({ runtime: "terminal" }));
+  assert.deepEqual(legend[0], { action: "focus", label: "focus" });
+  assert.ok(
+    !legend.some((e) => e.action === "handoff"),
+    "a paned session was taught Shift+T, which its handler refuses",
+  );
+});
+
+test("an SDK session is taught handoff, which is the one that works there", () => {
+  const legend = terminalLegend(mkSession({ runtime: "sdk", terminals: [] }));
+  assert.deepEqual(legend[0], { action: "handoff", label: "terminal" });
+});
+
+test("a session with no checkout is not taught diff, and no task is not taught complete", () => {
+  // The footer draws neither button in these states - `diff` needs a checkout to compare
+  // and `complete` completes a task - so neither chord is promised here either.
+  const bare = terminalLegend(mkSession({ cwd: null, task: null }));
+  const actions = bare.map((e) => e.action);
+  assert.ok(!actions.includes("diff"), "a session off a checkout was taught diff");
+  assert.ok(!actions.includes("complete"), "a session with no task was taught complete");
+  // Kill still applies to any live session, and is what stops this from degrading to an
+  // empty row that never says anything.
+  assert.ok(actions.includes("kill"));
+
+  const full = terminalLegend(mkSession({ cwd: "/wt/x", task: mkTaskSummary() })).map((e) => e.action);
+  assert.deepEqual(full, ["focus", "diff", "complete", "kill"]);
+});
+
+test("a finished session is taught nothing, because it has no action bar either", () => {
+  // Both hosts gate the whole action row on the session being live, so there is no button
+  // for any of these on an exited card - and therefore nothing to teach.
+  assert.deepEqual(terminalLegend(mkSession({ state: "exited" })), []);
+  assert.deepEqual(terminalLegend(mkSession({ state: "stopping" })), []);
+  // The rest of the line still reports: an exited session's state is exactly what a reader
+  // has come to the status line for.
+  assert.match(status({ state: "exited" }), /claude: exited/);
 });
 
 test("the status line is addressable as the region it is", () => {

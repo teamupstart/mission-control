@@ -83,32 +83,64 @@ export function TerminalTitlebar({
   );
 }
 
-/** The four actions the mockup's status line offers, in its order. */
-const LEGEND: readonly { action: ActionId; label: string }[] = [
-  { action: "handoff", label: "terminal" },
-  { action: "diff", label: "diff" },
-  { action: "complete", label: "complete" },
-  { action: "kill", label: "kill" },
-];
+/** One taught shortcut: the action whose chord to print, and the word beside it. */
+export interface LegendEntry {
+  action: ActionId;
+  label: string;
+}
+
+/**
+ * The shortcuts this session actually has, in the mockup's order.
+ *
+ * Derived rather than a constant list, because a legend that teaches a chord which does
+ * nothing here is worse than teaching nothing: the reader tries it, gets silence, and
+ * learns to distrust the row. Every entry below is drawn only where the action bar draws
+ * its own button for the same thing, and this function mirrors those conditions exactly
+ * (`ActionBar`'s `variant="foot"`, plus the `live` gate both hosts put around it).
+ *
+ * The first entry is the one the mockup got wrong for most sessions. `handoff` (Shift+T,
+ * "Continue in terminal") is an SDK-only action - its handler returns immediately unless
+ * `session.runtime === "sdk"` - so on any pane-backed session the chord that actually
+ * reaches the terminal is `focus`. Same slot, same place in the row, different action and
+ * different word, exactly as the footer already switches them.
+ */
+export function terminalLegend(session: Session): readonly LegendEntry[] {
+  // A finished session has no action bar in either host, so it has nothing to teach.
+  if (session.state === "exited" || session.state === "stopping") return [];
+  const rows: LegendEntry[] = [
+    session.runtime === "sdk"
+      ? { action: "handoff", label: "terminal" }
+      : { action: "focus", label: "focus" },
+  ];
+  // No checkout, no diff to open.
+  if (session.cwd) rows.push({ action: "diff", label: "diff" });
+  // Completing is completing a TASK; the footer's button is disabled without one.
+  if (session.task) rows.push({ action: "complete", label: "complete" });
+  rows.push({ action: "kill", label: "kill" });
+  return rows;
+}
 
 /**
  * The chord legend, in the operator's own bindings.
  *
  * A LEGEND, not a second row of buttons, and that is a deliberate refusal of the mockup's
- * shape. Each of these four actions has exactly one control in this app (the action bar)
- * and exactly one chord; a second `kill` button living in a status bar would be a second
- * path to the most destructive thing here, kept in step with the first by hand. The row
- * teaches the chords instead - which is the one thing a status bar is actually for - and
- * hides entirely when the operator has turned chord hints off, because teaching is all it
- * was doing.
+ * shape. Each of these actions has exactly one control in this app (the action bar) and
+ * exactly one chord; a second `kill` button living in a status bar would be a second path
+ * to the most destructive thing here, kept in step with the first by hand. The row teaches
+ * the chords instead - which is the one thing a status bar is actually for - and hides
+ * entirely when the operator has turned chord hints off, because teaching is all it was
+ * doing.
+ *
+ * A chord an operator has unbound is dropped for the same reason `terminalLegend` drops an
+ * action this session cannot take: the row only ever prints keys that do something.
  */
-function TerminalKeyLegend(): React.JSX.Element | null {
+function TerminalKeyLegend({ session }: { session: Session }): React.JSX.Element | null {
   const { bindings } = useKeybindings();
   const [hints] = useKeybindingHints();
   if (!hints) return null;
-  const rows = LEGEND.map((entry) => ({ ...entry, chord: formatChord(bindings[entry.action]) })).filter(
-    (entry) => entry.chord,
-  );
+  const rows = terminalLegend(session)
+    .map((entry) => ({ ...entry, chord: formatChord(bindings[entry.action]) }))
+    .filter((entry) => entry.chord);
   if (rows.length === 0) return null;
   return (
     <span className="pty-keys">
@@ -155,7 +187,7 @@ export function TerminalStatusLine({ session }: { session: Session }): React.JSX
         </Tooltip>
       )}
       <span className="pty-status-sp" />
-      <TerminalKeyLegend />
+      <TerminalKeyLegend session={session} />
     </section>
   );
 }

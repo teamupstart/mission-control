@@ -809,7 +809,15 @@ stream, the way the session actually ran:
   runtime, for a session with no terminal), with an indicator that says whether the
   dashboard is attached to the transcript right now;
 - below it a status line carries the session's run state, its pid, its branch, how much of
-  the context window it has used, and the shortcuts for terminal, diff, complete and kill.
+  the context window it has used, and the shortcuts for reaching its terminal, its diff,
+  and completing or killing it.
+
+The shortcut row prints only keys that do something on **this** session, in your own
+bindings: a session running in a pane is offered `focus`, a driver-run one `terminal`
+(Shift+T), and a session with no checkout or no task is not offered `diff` or `complete` -
+the same conditions under which the action bar draws each button. A finished session is
+offered none, because there is nothing left to do to it. The row disappears entirely if you
+have turned keyboard hints off, since teaching the chords is all it does.
 
 Everything else is unchanged, because it is the same panel: the same box replies, the same
 attachments drop onto it, find works the same way, the Observed activity rail is still

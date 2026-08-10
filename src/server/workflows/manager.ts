@@ -3560,9 +3560,12 @@ export class WorkflowManager {
     }
 
     const rendered = renderSessionAction({
-      workflowName: this.store.runSummary(run.id)?.workflowName ?? "Workflow",
-      workflowVersion: version.version,
-      runId: run.id,
+      origin: {
+        kind: "run",
+        workflowName: this.store.runSummary(run.id)?.workflowName ?? "Workflow",
+        workflowVersion: version.version,
+        runId: run.id,
+      },
       actionName: snapshot.name,
       promptMarkdown: snapshot.promptMarkdown,
       skillCommand,

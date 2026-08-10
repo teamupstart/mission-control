@@ -73,9 +73,12 @@ test("every durable tuple this phase touches is APPENDED, never reordered", () =
 
 // ---- the completion adapter registry ------------------------------------------------------
 
-test("the registry answers for every completion kind, and both are available", () => {
+test("the registry answers for every completion kind, and each one is available", () => {
   const capabilities = sessionActionCapabilities();
-  assert.deepEqual(capabilities.map((item) => item.kind), ["session_turn", "pull_request"]);
+  assert.deepEqual(
+    capabilities.map((item) => item.kind),
+    ["session_turn", "pull_request", "repo_commit"],
+  );
 
   const turn = sessionActionAdapter("session_turn");
   assert.equal(turn.available, true);
@@ -117,7 +120,13 @@ test("a session_turn action completes on the turn boundary and constrains nothin
     now: 4,
     // Supplied and pointedly IGNORED. A session turn completes on the turn, so a repository
     // it could have read and a pull request it could have matched change nothing here.
-    repository: { repositoryId: "/repo/.git", root: "/repo", branch: "feature", headOid: "a".repeat(40) },
+    repository: {
+      repositoryId: "/repo/.git",
+      root: "/repo",
+      branch: "feature",
+      headOid: "a".repeat(40),
+      headCommittedAt: 3,
+    },
     adoptedPullRequests: [],
     capturedHeadOid: null,
   });
@@ -627,9 +636,7 @@ test("an over-long prompt is refused at authoring and at the published snapshot"
 
 test("a packet that cannot be sent whole is REFUSED, never truncated to a prefix", () => {
   const packet = renderSessionAction({
-    workflowName: "Review",
-    workflowVersion: 3,
-    runId: "run-1",
+    origin: { kind: "run", workflowName: "Review", workflowVersion: 3, runId: "run-1" },
     actionName: "Tidy",
     promptMarkdown: "# Tidy\n\nRemove the scratch file.\n",
     skillCommand: null,
@@ -644,9 +651,7 @@ test("a packet that cannot be sent whole is REFUSED, never truncated to a prefix
 
   // A version minted by some other build, carrying a prompt this one cannot send whole.
   const oversize = renderSessionAction({
-    workflowName: "Review",
-    workflowVersion: 3,
-    runId: "run-1",
+    origin: { kind: "run", workflowName: "Review", workflowVersion: 3, runId: "run-1" },
     actionName: "Tidy",
     promptMarkdown: "y".repeat(WORKFLOW_LIMITS.sessionActionPacketBytes + 1),
     skillCommand: null,

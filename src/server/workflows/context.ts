@@ -564,6 +564,21 @@ export interface WorkflowRepositoryHead {
   root: string;
   branch: string | null;
   headOid: string | null;
+  /**
+   * When HEAD was COMMITTED, in epoch milliseconds, or null when there is no commit to ask
+   * about.
+   *
+   * Read because "a commit landed during this action's turn" has no other honest answer. An
+   * object id alone cannot say WHEN it arrived, and the adapter that needs to know has no
+   * baseline of its own: nothing durable records the head at delivery, so comparing an id
+   * against a null baseline would complete on the first settled turn whether or not anything
+   * was committed.
+   *
+   * Committer time, not author time. A rebase, a cherry-pick and a `--amend` all preserve
+   * author time and reset committer time, so author time would report work the session merely
+   * MOVED as work it did during this turn.
+   */
+  headCommittedAt: number | null;
 }
 
 export async function readWorkflowRepositoryHead(
@@ -595,7 +610,20 @@ export async function readWorkflowRepositoryHead(
   const headOid = headResult.code === 0 && FULL_SHA.test(headResult.stdout.trim())
     ? headResult.stdout.trim()
     : null;
-  return { repositoryId, root, branch, headOid };
+  // Only when there is a commit to ask about, so an unborn branch still costs one `rev-parse`
+  // rather than two. `%ct` is committer time in epoch SECONDS; the whole daemon speaks
+  // milliseconds, so it is converted here rather than at each comparison.
+  let headCommittedAt: number | null = null;
+  if (headOid) {
+    const committed = await run(
+      "git",
+      ["-C", cwd, "show", "-s", "--format=%ct", headOid],
+      { timeoutMs: 15_000 },
+    );
+    const seconds = committed.code === 0 ? Number(committed.stdout.trim()) : Number.NaN;
+    headCommittedAt = Number.isSafeInteger(seconds) && seconds > 0 ? seconds * 1000 : null;
+  }
+  return { repositoryId, root, branch, headOid, headCommittedAt };
 }
 
 /**

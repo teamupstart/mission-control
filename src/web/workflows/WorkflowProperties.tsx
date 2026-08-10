@@ -14,6 +14,7 @@ import {
   personaChoicesForDisplay,
   sessionActionChoiceLabel,
   sessionActionChoicesForDisplay,
+  sessionActionCompletionLabel,
 } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 
@@ -32,9 +33,11 @@ function selectedActionSummary(
     action.requiredSkillId
       ? `Requires the ${action.requiredSkillId} skill.`
       : "Requires no skill.",
-    action.completion.kind === "pull_request"
-      ? "Completes only once a matching pull request is open and verified."
-      : "Completes once the session's turn finishes.",
+    // Derived from the capability table rather than from a ternary over the kind. The kinds
+    // are append-only, so a two-armed conditional does not merely go out of date when a third
+    // adapter ships - its `else` silently ABSORBS the new kind and states the wrong proof
+    // confidently, which is worse than saying nothing.
+    `Completes when ${sessionActionCompletionLabel(action.completion).toLocaleLowerCase("en-US")}.`,
     ...(action.archivedAt === null
       ? []
       : ["Its source is archived, so this draft cannot be published until it is replaced."]),

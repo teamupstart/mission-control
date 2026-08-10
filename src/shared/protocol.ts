@@ -9,6 +9,7 @@ import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, THINKING_LEVELS } from "./types.ts";
+import type { Task } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
@@ -2293,6 +2294,33 @@ export const InjectPromptSchema = z.object({
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
 
+/**
+ * What `POST /api/sessions/:id/retro` did, discriminated because the two arms are different
+ * events with different follow-ups.
+ *
+ * `delivered` is the source plan's R1: the session that did the work was asked to run its own
+ * retrospective, and the next thing a human sees is that session talking to them. `dispatched`
+ * is R3, taken when the session can no longer be typed into: a retro task is filed against the
+ * repository, and the next thing a human sees is a backlog card.
+ *
+ * A `kind` field rather than a shape test, so a caller never has to infer which happened from
+ * which fields are present. The union may GAIN arms and fields; a published arm keeps its
+ * spelling, because the dashboard's retro affordances are built against these names.
+ */
+export type RetroResponse =
+  | {
+    kind: "delivered";
+    sessionId: string;
+    /** The delivered packet's SHA-256, correlating this call with the turn it produced. */
+    payloadSha256: string;
+    /**
+     * Whether the submit was OBSERVED. False is "no news" and never "it failed" - the text
+     * may be sitting in the composer - so it must not drive a retry.
+     */
+    submitVerified: boolean;
+  }
+  | { kind: "dispatched"; task: Task };
+
 /** CAS guard for a pending-turn action selected from the current session projection. */
 export const PendingTurnRevisionSchema = z.object({
   revision: z.number().int().min(0),
@@ -2530,6 +2558,7 @@ export const SessionActionSkillIdSchema = z
 export const SessionActionCompletionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("session_turn") }),
   z.object({ kind: z.literal("pull_request") }),
+  z.object({ kind: z.literal("repo_commit") }),
 ]);
 
 export const CreateSessionActionSchema = z.object({

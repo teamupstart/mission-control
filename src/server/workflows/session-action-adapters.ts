@@ -76,6 +76,15 @@ export interface SessionActionRepositoryFacts {
   branch: string | null;
   /** HEAD as a FULL object id, or null on an unborn branch. Never an abbreviation. */
   headOid: string | null;
+  /**
+   * When HEAD was committed, in epoch milliseconds, or null when there is no commit.
+   *
+   * The only fact here that is about TIME rather than identity, and `repo_commit` is why: an
+   * adapter asked "did a commit land during this turn" has an object id and no baseline to
+   * compare it against, because nothing durable records the head at delivery. An instant does
+   * not need one.
+   */
+  headCommittedAt: number | null;
 }
 
 /**
@@ -393,9 +402,74 @@ const pullRequest: SessionActionAdapter = {
   },
 };
 
+/**
+ * The completion that requires a COMMIT in the bound checkout, made during this turn.
+ *
+ * The proof an instruction whose whole product is a commit needs, and the retro is the first
+ * of them: a retrospective that proposes three memories, is approved, and then fails to write
+ * the files has settled a turn and produced nothing. `session_turn` would call that finished.
+ *
+ * What "during this turn" rests on, and why it is a time rather than an id: an object id can
+ * only prove a commit landed by being compared against the head at delivery, and nothing
+ * durable records that. The delivery ledger stores a transcript offset, not a head, so a
+ * restart between delivery and settle would leave the comparison with no baseline - and a
+ * null baseline reads as "the head advanced" for every action, which is not a proof, it is
+ * `session_turn` wearing a different label. HEAD's committer time needs no baseline, survives
+ * a restart because it is a fact about the repository rather than about this process, and is
+ * exactly the question being asked.
+ *
+ * Anchored on PICKUP rather than delivery. Pickup is the moment the generic observer PROVED
+ * the session read the packet; the window between send and pickup can be minutes if the
+ * session was mid-turn on something else, and a commit made in that window belongs to that
+ * other work.
+ *
+ * What it never does:
+ *
+ *  - inspect WHICH paths the commit touched. Whether the right files changed is a review
+ *    question, and the commit is on a branch a human reads. An adapter that judged content
+ *    would be a second, weaker reviewer whose verdict nobody sees;
+ *  - complete on a dirty working tree, an added file, or a staged change. Uncommitted work
+ *    disappears with the worktree, and every consumer downstream reads commits;
+ *  - block. A commit that has not happened yet is indistinguishable from one that never
+ *    will, and the session is still there to make it. (The generic observer blocks the
+ *    attempt on its own when the session goes away, before this is ever asked.)
+ */
+const repoCommit: SessionActionAdapter = {
+  ...SESSION_ACTION_COMPLETION_CAPABILITIES.repo_commit,
+  // Any snapshot is deliverable: this proof is about the checkout, not about the instruction.
+  validateSnapshot: () => null,
+
+  decide: (context) => {
+    const repository = context.repository;
+    // Cannot look is not an answer, exactly as for `pull_request`. A reaped worktree or a
+    // failed git call is evidence about our reach, not about the session's commit.
+    if (!repository) return { kind: "waiting", reason: "awaiting_proof" };
+    // No commit at all (unborn branch), or a head whose commit time could not be read. Both
+    // are "we have not been shown a commit", which is a wait.
+    if (!repository.headOid || repository.headCommittedAt === null) {
+      return { kind: "waiting", reason: "awaiting_proof" };
+    }
+    // Second resolution, so a commit made in the same second as pickup satisfies this. That
+    // rounding is in the session's favour by at most a second, and it cannot manufacture a
+    // pass: pickup is already proven to be after the packet was read.
+    if (repository.headCommittedAt < context.pickedUpAt - 1000) {
+      return { kind: "waiting", reason: "awaiting_proof" };
+    }
+    // Nothing further is expected of the repository. The commit IS the product, so a
+    // continuation captures whatever the checkout says, the same way `session_turn` does.
+    return { kind: "complete", continuationExpectation: { kind: "none" } };
+  },
+
+  validateCapture: (expectation) =>
+    expectation.kind === "none"
+      ? null
+      : "A repository commit action does not constrain the continuation capture",
+};
+
 export const SESSION_ACTION_ADAPTERS: Record<SessionActionCompletionKind, SessionActionAdapter> = {
   session_turn: sessionTurn,
   pull_request: pullRequest,
+  repo_commit: repoCommit,
 };
 
 export function sessionActionAdapter(kind: SessionActionCompletionKind): SessionActionAdapter {

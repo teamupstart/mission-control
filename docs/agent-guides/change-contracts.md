@@ -148,9 +148,9 @@ A SessionAction is a durable side effect, not an evaluator:
   boundary. It must not reach for a provider directly - see the pull request adapter below for
   why the one poller that does is the one that keeps doing it.
 - Adapters are PURE decisions over stated evidence. Everything they need - the checkout's root,
-  branch and full HEAD oid, the adoption ledger, the commit a reserved child already captured -
-  is supplied on `SessionActionAdapterContext` by the manager, which is where git and SQLite
-  live. An adapter that fetched its own facts could not be tested without arranging them on a
+  branch, full HEAD oid and HEAD's committer time, the adoption ledger, the commit a reserved
+  child already captured - is supplied on `SessionActionAdapterContext` by the manager, which is
+  where git and SQLite live. An adapter that fetched its own facts could not be tested without arranging them on a
   real machine, and "we could not look" would stop being distinguishable from "the answer is
   no". Null means unknown, and unknown always means wait.
 
@@ -208,6 +208,28 @@ A SessionAction is a durable side effect, not an evaluator:
   looks safe and silently loses it: the continuation seeds the child segment with only the
   completed action's routes, so the held sibling's activating receipt stays behind in the
   parent. A chain (`A -> B`) is supported and is the shape a pipeline authors.
+
+### The `repo_commit` adapter
+
+- Its proof is: the bound checkout's HEAD is a commit whose COMMITTER time is at or after the
+  instant the generic observer proved the session picked the packet up. Nothing else - not an
+  edited file, not a staged change, not the agent's account of what it did.
+- It is a time and not an object id on purpose. Proving "the head advanced" needs the head at
+  delivery, and nothing durable records one: the delivery ledger stores a transcript offset, so
+  a restart between delivery and settle would leave that comparison with a null baseline, which
+  reads as "advanced" for every action. Committer time needs no baseline and is a fact about
+  the repository rather than about this process.
+- Committer time, never author time. A rebase, a cherry-pick and an `--amend` all preserve
+  author time and reset committer time, so author time would report work the session merely
+  MOVED as work it did during this turn.
+- Anchored on PICKUP, not delivery. A packet can sit unread while the session finishes
+  something else, and a commit made in that window belongs to that other work.
+- It never inspects which paths the commit touched. Whether the right files changed is a review
+  question, and the commit is on a branch a human reads; an adapter that judged content would
+  be a second, weaker reviewer whose verdict nobody sees.
+- It never blocks. A commit that has not happened yet is indistinguishable from one that never
+  will, and the session is still there to make it - the observer blocks the attempt on its own
+  when the session goes away, before the adapter is asked.
 
 ### What the browser may and may not decide about one
 

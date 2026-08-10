@@ -400,7 +400,10 @@ test("the Graph rail lets a selected action be repointed and removed", () => {
   }));
   assert.match(html, /Pull Request/);
   assert.match(html, /Requires the pull-request skill/);
-  assert.match(html, /Completes only once a matching pull request is open and verified/);
+  // The capability table's own sentence, lowercased into the rail's prose. Asserted as the
+  // derived wording rather than as a hand-written one so a copy change in the table shows up
+  // here as a failure instead of as two surfaces quietly disagreeing.
+  assert.match(html, /Completes when pull request is opened and verified/);
   assert.match(html, /Every stage after it reviews evidence captured once it has/);
   // The two halves of the authoring loop the previous phase deliberately withheld.
   assert.match(html, /<select[^>]*>[\s\S]*Tidy the workspace[\s\S]*<\/select>/);

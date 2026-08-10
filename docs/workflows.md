@@ -324,6 +324,7 @@ from the browser's own copy of the list:
 |---|---|
 | Session turn finishes | The session verifiably picked the instruction up, then settled. A pre-existing idle never counts. |
 | Pull request is opened and verified | The same turn boundary, plus an **open pull request Mission Control adopted, on this repository and this branch, observed at the exact commit the continuation captured**. See [Pull request actions](#pull-request-actions). |
+| A commit lands in the checkout | The same turn boundary, plus a **commit in the bound checkout made after the session picked the instruction up** - HEAD's committer time is what proves it, because nothing durable records the head at delivery. Uncommitted edits do not count, and what the commit touched is a review question rather than this adapter's. The shipped [Retro](repository-memory.md#the-retro) action uses it: a retrospective that discussed three memories and wrote none of them has not finished. |
 
 A completion is **code with proof and recovery tests**, not a string you type or a skill you
 name. That is why the list comes from the daemon: a build that cannot prove a completion

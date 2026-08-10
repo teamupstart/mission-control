@@ -119,6 +119,7 @@ import { TaskDependencyError, TaskStatusConflictError, type TaskManager } from "
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { recordInjection } from "./injections.ts";
+import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog } from "@shared/session.ts";
@@ -2441,6 +2442,39 @@ export function buildApp(
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
     return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // Ask a session to run its own retrospective, or file one when it cannot.
+  //
+  // No request body, deliberately: there is exactly one retro and nothing about it is a
+  // parameter. What the daemon does is decided by the session's own state - a live session is
+  // typed into, a dead one gets a task filed against its repository - and neither is a choice a
+  // caller may override, because "type into that session" is not a request a caller can make
+  // true. See `runRetro` for the delivery composition and the R3 fallback.
+  //
+  // 404 is the session, and it means the registry has no row at all: an EXITED session is not a
+  // 404 here, it is the fallback's ordinary input, and it is the only place the branch and pull
+  // request the retro task must name are still readable.
+  app.post("/api/sessions/:id/retro", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const result = await runRetro(session, {
+      tasks,
+      sdkSessions,
+      promptBlocker: (id) => registry.promptResourceBlockerForSession(id),
+    });
+    // `pasted` rides along on a refusal that attempted a write, exactly as `/inject`'s
+    // contract requires: a caller that retries a 503 whose text is already in the composer
+    // appends a second retro instruction under the first.
+    if (result.kind === "refused") {
+      return c.json(
+        result.pasted === undefined
+          ? { error: result.error }
+          : { error: result.error, pasted: result.pasted },
+        result.status,
+      );
+    }
+    return c.json(result);
   });
 
   app.post("/api/sessions/:id/pending-turns/:turnId/recall", async (c) => {

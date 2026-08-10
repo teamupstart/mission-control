@@ -72,6 +72,16 @@ evidence and the recommended follow-ups, and **For Agents** for the design decis
 implementation detail - lives in
 [`skills/pull-request/SKILL.md`](../skills/pull-request/SKILL.md).
 
+The opt-in **Retro** row carries the retrospective procedure: read a finished session back
+from its transcript, propose at most three durable memories, have each one approved, edited,
+or rejected, and commit the approved ones into the target repository's
+[`.agents/memory`](repository-memory.md). It is what the retro request delivers into a session,
+and the retro **fails closed while it is switched off** - `POST /api/sessions/:id/retro` answers
+409 with the sentence that names this toggle, whether it would have typed the instruction into a
+live session or filed a retro task for a dead one. Neither happens, because this skill carries
+the human-approval step rather than merely describing it. Switch it on before running a retro.
+The procedure lives in [`skills/retro/SKILL.md`](../skills/retro/SKILL.md).
+
 The opt-in **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
 phase. The HTML Plans review always offers this as its final selectable follow-up; choosing it

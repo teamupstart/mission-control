@@ -196,6 +196,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       root: repository.root,
       branch: repository.branch,
       headOid: full(head.sha),
+      headCommittedAt: null,
     }),
     adoptedPullRequests: () => adopted,
     resolveCommit: async (_root, headSha) => full(headSha),

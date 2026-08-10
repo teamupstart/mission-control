@@ -71,7 +71,7 @@ const snapshot = (patch: Partial<SessionActionSnapshot> = {}): SessionActionSnap
 test("the durable spellings are exactly the ones later phases were promised", () => {
   // APPEND-ONLY. A rename here does not migrate an operator's rows or an immutable published
   // version - it makes them unreadable, and Phase 2 consumes these literal strings.
-  assert.deepEqual(SESSION_ACTION_COMPLETION_KINDS, ["session_turn", "pull_request"]);
+  assert.deepEqual(SESSION_ACTION_COMPLETION_KINDS, ["session_turn", "pull_request", "repo_commit"]);
   assert.deepEqual(WORKFLOW_SOURCE_PORTS, ["submitted", "pass", "fail", "complete"]);
   assert.equal(WORKFLOW_LIMITS.sessionActionSkillId, 200);
   // The prompt CEILING is deliberately not pinned here any more, and the distinction is the

@@ -93,7 +93,68 @@ A session working on some unrelated feature never touches any of this: the refer
 would be an unrelated edit in its diff, and a repo without the line is not broken, it is a
 repo with no memories yet.
 
-> The retro itself, the dashboard offer that invites it, and the writing half of this
-> convention arrive with the retro feature; see
-> [the plan](plans/retro-repo-memory/plan.md). What ships today is the reading half - MC
-> understands the convention, loads the index into its review prompts, and points pi at it.
+## The retro
+
+The procedure is the [**retro** skill](skills-and-settings.md#skills-every-session-mixed-reload-behavior)
+(`skills/retro/SKILL.md`), which is opt-in and **must be switched on** before a retro can run.
+It tells the session to read itself back from
+`GET /api/sessions/:id/transcript` rather than from recollection, to look for the corrections
+a human had to type and the wrong paths a single fact would have prevented, to propose at most
+three memories through the `request_plan_decisions` MCP tool, and to commit only what came
+back approved. A dismissal writes nothing at all.
+
+Mission Control's half is one route:
+
+```sh
+curl -X POST http://127.0.0.1:7317/api/sessions/<session-id>/retro
+```
+
+Whether it types into that session or files a task depends on whether the session can still be
+typed into, and the response says which happened. Every status the route can answer with:
+
+| Response | When | What happened |
+|---|---|---|
+| `200 {"kind":"delivered", ...}` | the session is live and the write landed | The shipped **Retro** session action was rendered and typed into it. The session that did the work runs its own retrospective, because it already holds the context a fresh one would have to reconstruct from transcript bytes. |
+| `200 {"kind":"dispatched","task":{...}}` | the session cannot receive a turn | A retro task is filed in the backlog against that session's repository, naming the session, its branch and its pull request. Dispatch it when you want it. |
+| `404` | no session by that id | The registry has no row at all. An *exited* session is not this: it is the dispatch row above, and it is the only place the branch and pull request a retro task must name are still readable. |
+| `409` | the retro skill is off, or there is no repository to file against | The refusal names the reason. Nothing is typed and nothing is filed. |
+| `503` | the session is live but the write did not land | A pane busy with another write, a multiplexer in copy mode, a session mid-reset, an embedded session whose driver rejected the turn, or the skill going stale between rendering the packet and writing it. The error carries what the delivery layer said, and the body also carries `pasted` - see below. |
+| `500` | this build cannot produce the packet | Either it ships no retro action at all, or the rendered packet exceeds what one delivery can carry. Both are build-integrity failures rather than anything an operator did, and a shipped action cannot reach the second. |
+
+**A live session is not a promise of delivery**, which is why `503` is its own row: the write
+goes through the same pane or driver every other turn does, and that can refuse.
+
+When it does, read `pasted` before retrying. Delivery is not atomic - it is a paste followed by
+a submit - so the two failures are opposite problems:
+
+- `"pasted": false` - nothing reached the composer. Safe to retry once the named condition
+  clears.
+- `"pasted": true` - the packet **is** in the composer and the submit is what failed. Retrying
+  appends a second retro instruction under the first; press Enter in the session, or clear it,
+  rather than re-sending.
+
+That is the same contract [`/inject`](sessions.md) holds, for the same reason: absence of
+evidence is not evidence, so a route that can know this says it rather than letting a caller
+assume.
+
+**Both arms fail closed on the skill**, including the one that types nothing. The skill is where
+the human-approval ceremony lives, so a task filed while it is switched off would reach an agent
+holding an intent that names a procedure it cannot load - and the retro's one hard rule, that
+nothing is written a human did not approve, would survive only as prose. The two arms ask the
+question of different agents at different times: the live arm asks whether *this* session can
+run the skill now, reload watermark included; the dispatch arm asks whether the harness it is
+about to pick could run it at launch, where a watermark about some other session's history is
+not evidence.
+
+The delivered packet carries the receiving session's own id, which is how the skill knows
+which transcript to read - the action's prompt is frozen bytes and cannot carry a per-delivery
+fact.
+
+Two properties hold on both paths. **The daemon never commits**: the commit is an agent turn,
+on a branch a human reviews. And **nothing is ever typed autonomously** - the route is a
+request, and phase 3's dashboard affordances are what make it a click.
+
+Where a workflow stage runs the Retro action rather than a human asking for one, its
+completion is `repo_commit`: the action is finished when the checkout's HEAD is a commit made
+after the session picked the packet up. A retrospective that discussed three memories and
+wrote none of them does not complete.

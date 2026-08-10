@@ -968,21 +968,28 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
           ...(permissionMode ? { permissionMode } : {}),
-          // `bypassPermissions` alone is not a launchable state: the SDK requires this flag
-          // alongside it and says so twice, calling it "a safety measure to ensure
-          // intentional bypassing of permissions". Without it the mode was accepted by our
-          // own narrowing gate and then refused further down, which is the worst place for a
-          // mode to fail - the operator picked "bypass" from a list this app offers
-          // (`harness-capabilities.ts` has it in `pickable`), so the failure looked like the
-          // session, not the flag.
+          // Makes `bypassPermissions` REACHABLE for this session. It does not enter it, and
+          // reading it as "skip permissions" is the mistake to avoid: the CLI has two
+          // separate flags, and this option compiles to the weaker one.
           //
-          // Derived from the mode rather than carried on `SdkLaunchOptions`, because there is
-          // no second answer: every caller that asks for this mode means it, and a launch
-          // option would only create a way to ask for the mode and decline the flag - which
-          // is precisely the unlaunchable combination this line exists to remove.
-          ...(permissionMode === "bypassPermissions"
-            ? { allowDangerouslySkipPermissions: true }
-            : {}),
+          //   --allow-dangerously-skip-permissions  Enable bypassing all permission checks
+          //                                         as an option, WITHOUT it being enabled
+          //                                         by default.
+          //   --dangerously-skip-permissions        Bypass all permission checks.
+          //
+          // The vendor bundle emits the first (`if(b)H.push("--allow-dangerously-skip-permissions")`)
+          // and emits `--permission-mode` separately, so what the operator picked still decides
+          // what happens. Unconditional here for the same reason it is safe: the mode is the
+          // gate, this is only the permission to reach it.
+          //
+          // Unconditional is also the only thing that WORKS, which is the part worth keeping.
+          // `bypassPermissions` is not just a launch choice - `harness-capabilities.ts` lists
+          // it in `pickable` with `liveControl: { kind: "cycle" }`, so the chip can switch a
+          // running session into it through `setPermissionMode`. The vendor's live setter takes
+          // the mode ALONE (`sdk.d.ts:2300`), with nowhere to carry this flag, so launch is the
+          // only moment it can ever be declared. Deriving it from the launch mode would leave
+          // every session that started in any other mode unable to reach bypass at all.
+          allowDangerouslySkipPermissions: true,
           ...(opts.resume ? { resume: opts.resume } : {}),
           ...(opts.mcp
             ? {

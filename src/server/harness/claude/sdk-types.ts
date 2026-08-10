@@ -121,13 +121,16 @@ export interface ClaudeSdkQueryOptions {
   effort?: ThinkingLevel;
   permissionMode?: ClaudeSdkPermissionMode;
   /**
-   * The vendor's confirmation that `permissionMode: "bypassPermissions"` was meant.
+   * Whether `bypassPermissions` may be REACHED by this session - not whether it is entered.
    *
-   * Required rather than optional when that mode is used - the SDK documents it as "a safety
-   * measure to ensure intentional bypassing of permissions" - and it is set nowhere else. The
-   * intent it is asking about is the operator picking "bypass" for this session, which has
-   * already happened by the time the driver builds these options; this flag says so to the
-   * vendor rather than deciding anything itself.
+   * Compiles to `--allow-dangerously-skip-permissions` ("enable bypassing all permission
+   * checks as an option, without it being enabled by default"), which is a different flag
+   * from `--dangerously-skip-permissions` ("bypass all permission checks"). `permissionMode`
+   * still decides what the session actually does.
+   *
+   * Not optional in practice: the driver always sends it, because the live mode chip can
+   * switch a running session into bypass and the vendor's `setPermissionMode` has no
+   * parameter for this. Launch is the only moment it can be declared.
    */
   allowDangerouslySkipPermissions?: boolean;
   resume?: string;

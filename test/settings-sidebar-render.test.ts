@@ -245,6 +245,29 @@ test("the conversation picker offers both renderings, with chat the shipped defa
   }
 });
 
+test("every glyph in Settings declares its own size", () => {
+  // The bug this pins: `ViewGlyph` shipped as an inline `<svg>` carrying a viewBox and
+  // neither `width` nor `height`. That is not a small icon - a replaced element with an
+  // intrinsic ratio and no intrinsic size resolves its width to 100% of the line and scales
+  // its height by the ratio, so each glyph drew at the width of its row and the Conversation
+  // section became taller than the window. What it actually measured is in
+  // `e2e/specs/settings-conversation-picker.spec.ts`, which is the layer that can measure;
+  // this one asserts the attribute that prevents it.
+  //
+  // Across every category rather than the one that broke, because the failure is a property
+  // of the markup and not of this picker, and it is invisible in review: the offending tag
+  // reads as an ordinary icon. CSS carries the same sizes (`.layout-glyph`, `.view-thumb`),
+  // so a glyph that forgets them still lays out - this is the assertion that stops the
+  // stylesheet from being the only thing standing between a picture and the whole pane.
+  for (const category of SETTINGS_CATEGORIES) {
+    const svgs = render(category.id).match(/<svg[^>]*>/g) ?? [];
+    for (const svg of svgs) {
+      assert.match(svg, /\swidth="/, `unsized glyph in ${category.id}: ${svg}`);
+      assert.match(svg, /\sheight="/, `unsized glyph in ${category.id}: ${svg}`);
+    }
+  }
+});
+
 test("the layout picker offers every layout, with the live one checked", () => {
   const html = render("display");
   assert.deepEqual(

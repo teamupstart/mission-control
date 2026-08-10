@@ -30,7 +30,7 @@ export const CONVERSATION_VIEW_OPTIONS: readonly ConversationViewOption[] = [
     id: "terminal",
     label: "Terminal",
     description:
-      "Turns as a terminal stream: your messages as prompt lines, the agent's as stdout, tool runs folded into one record, with a status line carrying the session's state.",
+      "Turns as a terminal stream: your prompts, the agent's stdout, tool runs folded into one record.",
   },
 ];
 

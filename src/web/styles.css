@@ -20251,7 +20251,15 @@ span.line-run-prov {
   font-weight: 620;
   color: var(--fg);
 }
+/* Sized here as well as on the element, and that redundancy is the point. An inline `<svg>`
+   with a viewBox and no width/height resolves its width to 100% of the line and scales its
+   height by the aspect ratio - a 16px icon becomes a 900px drawing, which is exactly how the
+   conversation picker shipped. The attributes on the glyph are the primary statement; this
+   is the floor under the next one that forgets them. */
 .layout-glyph {
+  flex: none;
+  width: 16px;
+  height: 13px;
   color: var(--dim);
 }
 .layout-option.is-on .layout-glyph {
@@ -20261,6 +20269,29 @@ span.line-run-prov {
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--muted);
+}
+
+/* ---- settings: conversation rendering ----
+   The same row as `.layout-option`, carrying a thumbnail instead of a glyph. These two
+   options differ in the SHAPE of what you get - bubbles down a page, or a framed stream
+   between a titlebar and a status line - and that is not a difference a 16px icon can
+   draw. Centred rather than top-aligned, because a 32px picture beside two lines of text
+   hangs off the top of the row otherwise. */
+.view-option {
+  align-items: center;
+  gap: 12px;
+}
+.view-option input {
+  margin: 0;
+}
+.view-thumb {
+  flex: none;
+  width: 44px;
+  height: 32px;
+  color: var(--dim);
+}
+.layout-option.is-on .view-thumb {
+  color: var(--working);
 }
 
 /* ---- settings: toggle row ----

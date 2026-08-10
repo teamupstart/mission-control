@@ -176,6 +176,50 @@ test("a session reset takes its binding off the stream, not just its runs", () =
   assert.equal(store.getBinding("b"), null, "and the row really is gone");
 });
 
+test("a publish failure is not reported as a UNIQUE conflict", () => {
+  // The insert's try/catch exists to translate one SQLite failure - the UNIQUE constraint on an
+  // active note key - into a typed conflict. Publishing inside it meant any throw from the
+  // stream was read through that lens: the caller would be told "this conversation already has
+  // an active workflow binding" while the row was durably committed, and the retry that advice
+  // invites would then hit the very conflict the response invented.
+  clearWorkflowTables(db);
+  seedOperatorWorkflow();
+  const store = new WorkflowStore(db);
+  const registry = new Registry();
+  new PersonaManager(registry, store);
+  const manager = new WorkflowManager(registry, store);
+  registry.applyDiscovery([discovered(9)]);
+  const liveSessionId = registry.snapshot().sessions.find((s) => s.state !== "exited")?.id;
+  assert.ok(liveSessionId, "discovery produced a live session");
+
+  // A stream that throws. The message deliberately contains UNIQUE, which is the exact way a
+  // shared catch would misclassify it.
+  registry.upsertWorkflowBinding = () => {
+    throw new Error("stream exploded: UNIQUE something");
+  };
+
+  assert.throws(
+    () => manager.createBinding({
+      workflowVersionId: "v",
+      sessionId: liveSessionId,
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 5,
+    }),
+    /stream exploded/,
+    "the publish failure surfaces as itself rather than as a conflict result",
+  );
+  // And the row is really there, which is what made the old lie unsafe: it reported a failure
+  // over a committed binding, and the retry it invited would have hit a real conflict.
+  const committed = store.listBindings()
+    .filter((binding) => binding.sessionId === liveSessionId && binding.state === "active");
+  assert.deepEqual(
+    committed.map((binding) => binding.workflowVersionId),
+    ["v"],
+    "the binding was committed even though the publish threw",
+  );
+});
+
 test("a built-in binding names its workflow, which no SQL join can reach", () => {
   clearWorkflowTables(db);
   const store = new WorkflowStore(db);

@@ -927,8 +927,21 @@ export class WorkflowManager {
         current,
       };
     }
+    let created: WorkflowBinding;
+    /*
+     * This try covers the INSERT and nothing else. It exists to translate one specific SQLite
+     * failure - the UNIQUE constraint on an active note key, lost to a concurrent caller - into
+     * a typed conflict, and anything else inside it gets read through that lens.
+     *
+     * Publishing sits outside for exactly that reason. It runs after the row is durably
+     * committed, so a throw from it is not a failed bind: caught here it would either be
+     * mislabelled "this conversation already has an active workflow binding" (if the message
+     * happened to contain UNIQUE) or rethrown raw, and either way the caller would be told the
+     * bind failed while the binding exists - with a retry then hitting the very conflict the
+     * response invented.
+     */
     try {
-      const created = this.store.insertBinding({
+      created = this.store.insertBinding({
         id: randomUUID(),
         workflowVersionId: input.workflowVersionId,
         noteKey,
@@ -942,13 +955,6 @@ export class WorkflowManager {
         maxRepairRounds,
         now,
       });
-      // Every arm lands here - the dispatch one included, since `bindDispatchedTaskWorkflow`
-      // creates its binding through this method. Publishing HERE rather than at each caller is
-      // what makes a dispatched session show its workflow from the moment it is armed, which
-      // for the `foreman_complete` trigger is the entire working life of the session before
-      // any run exists to speak for it.
-      this.publishBinding(created.id);
-      return { ok: true, value: created };
     } catch (error) {
       if (String(error).includes("UNIQUE")) {
         return {
@@ -960,6 +966,14 @@ export class WorkflowManager {
       }
       throw error;
     }
+    // Every arm lands here - the dispatch one included, since `bindDispatchedTaskWorkflow`
+    // creates its binding through this method. Publishing HERE rather than at each caller is
+    // what makes a dispatched session show its workflow from the moment it is armed, which for
+    // the `foreman_complete` trigger is the entire working life of the session before any run
+    // exists to speak for it. Unguarded, like every other publish site in this file: a stream
+    // failure is worth surfacing, and it must not be dressed up as a constraint violation.
+    this.publishBinding(created.id);
+    return { ok: true, value: created };
   }
 
   updateBinding(

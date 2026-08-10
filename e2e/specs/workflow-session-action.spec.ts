@@ -315,10 +315,11 @@ test("an authored action becomes a pipeline stage, publishes, and freezes its in
   const picker = pipeline.getByLabel("Add the first stage");
   // Three groups, and the third is the one the session action phase added. Asserted as a group
   // rather than as a bare option so a Persona that happened to share the name could not satisfy
-  // it, and exhaustively so the shipped Pull Request built-in - addable since its adapter
-  // shipped - has to be accounted for rather than silently tolerated.
+  // it, and exhaustively so every shipped built-in whose adapter this build can prove - Pull
+  // Request, and Retro since `repo_commit` shipped - has to be accounted for rather than
+  // silently tolerated.
   await expect(picker.locator('optgroup[label="Session actions"] option'))
-    .toHaveText(["Pull Request", "Tidy the workspace"]);
+    .toHaveText(["Pull Request", "Retro", "Tidy the workspace"]);
   await picker.selectOption({ label: "Tidy the workspace" });
 
   // It lands as a singleton stage that names itself and says what happens after it.

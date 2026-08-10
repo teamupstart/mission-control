@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Push a backlog task to a task source (GitHub issue from a task)</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1e24;
+    --muted: #5b6470;
+    --line: #d9dee5;
+    --accent: #0b62c4;
+    --accent-soft: #e8f1fb;
+    --code-bg: #f4f6f8;
+    --warn: #8a5a00;
+    --warn-bg: #fdf3dd;
+    --ok: #1d6b3a;
+    --box: #f8fafc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c;
+      --fg: #e6e9ee;
+      --muted: #9aa4b1;
+      --line: #333b46;
+      --accent: #5aa2ec;
+      --accent-soft: #1a2836;
+      --code-bg: #1d2229;
+      --warn: #e3b45c;
+      --warn-bg: #2a2415;
+      --ok: #6fbf8d;
+      --box: #191e25;
+    }
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    max-width: 60rem; margin: 0 auto; padding: 2.5rem 1.25rem 5rem;
+  }
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 .5rem; }
+  h2 { font-size: 1.25rem; margin: 2.2rem 0 .6rem; padding-top: .8rem; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.02rem; margin: 1.5rem 0 .4rem; }
+  p, li { max-width: 100%; }
+  a { color: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 1.6rem; }
+  code {
+    font: .86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg); border-radius: 4px; padding: .12em .35em;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: .8rem 1rem; overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+  th, td { border: 1px solid var(--line); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--box); }
+  .pill {
+    display: inline-block; font-size: .78rem; font-weight: 600; border-radius: 999px;
+    padding: .1rem .6rem; background: var(--accent-soft); color: var(--accent);
+    margin-right: .4rem; vertical-align: middle;
+  }
+  .note {
+    border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    background: var(--box); border-radius: 6px; padding: .7rem .9rem; margin: 1rem 0;
+  }
+  .warn {
+    border-left-color: var(--warn); background: var(--warn-bg); color: inherit;
+  }
+  figure { margin: 1.4rem 0; }
+  figcaption { color: var(--muted); font-size: .88rem; margin-top: .4rem; }
+  .diagram { border: 1px solid var(--line); border-radius: 8px; background: var(--box); padding: .6rem; overflow-x: auto; }
+  .diagram svg { display: block; min-width: 860px; width: 100%; height: auto; }
+  ol li, ul li { margin: .25rem 0; }
+  .filelist { font-size: .92rem; }
+</style>
+</head>
+<body>
+
+<h1>Push a backlog task to a task source</h1>
+<p class="sub">Create a GitHub issue from an existing backlog task, through an already-configured <code>github-issues</code> task source. GitHub only; Jira out of scope. Source of truth: <code>docs/plans/push-task-to-source/plan.md</code>.</p>
+
+<h2>Context</h2>
+<p>Task sources today are strictly inbound: a configured <code>github-issues</code> source sweeps open issues into the backlog (<code>sweep</code> + <code>preflight</code> are the entire <code>TaskSourceImpl</code> contract, and <code>ingest.ts</code> is the only writer). There is no way to go the other direction - to take a task that was born in Mission Control and file it as a GitHub issue so it is tracked upstream and visible to teammates sweeping the same repo. This feature adds that one outward verb, GitHub only (Jira explicitly out of scope and not forced to implement it).</p>
+
+<p><span class="pill">Decided</span>Decisions locked with the operator:</p>
+<ul>
+  <li>Push targets a <strong>configured github-issues source</strong> whose <code>repoRoot</code> matches the task's. No sourceless fallback; no matching source means the action is hidden with a hint.</li>
+  <li>UI surface is the <strong>edit-backlog-task modal only</strong> (DispatchModal edit mode). After a push, and for swept-in tasks, the same spot renders a link to the issue (this makes <code>Task.source</code> visible in the UI for the first time).</li>
+  <li>The issue carries <strong>title = task title, body = task intent, labels = the source's <code>labelsAny</code> filter labels</strong> (one <code>--label</code> each), so the pushed issue matches the filter the source sweeps.</li>
+  <li>The local task <strong>stays in the backlog</strong>, now linked via <code>task.source</code>; the seen row (<code>task_source_seen</code>) stops the source's next sweep from re-filing it as a duplicate.</li>
+  <li>The new <code>ghBin()</code> override converts <strong>every</strong> <code>gh</code> call site in this change: the three <code>github-issues.ts</code> sites plus <code>src/server/pr.ts</code> and <code>src/server/inspector/github.ts</code> - one consistent seam immediately (resolved in plan review).</li>
+</ul>
+
+<div class="note warn"><strong>Safety property that shapes everything:</strong> a retried <code>gh issue create</code> that actually landed the first time double-creates an issue. So refusal (nothing published, retry safe) and unknown outcome (may have landed, do NOT blindly retry) must stay distinct end to end. Reuse the existing vocabulary: <code>RunResult.outcomeUnknown</code> from <code>src/server/util/exec.ts</code>, the <code>wasRefused</code> reading in <code>src/server/inspector/github.ts</code>, and the 200/409/502/504 status split already used by <code>src/server/open-targets/index.ts:87-122</code>.</div>
+
+<h2>The flow this adds</h2>
+<p>One new outward path from the daemon to GitHub, on explicit operator action only. The inbound sweep path is unchanged.</p>
+
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 960 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Push flow: dashboard modal to daemon route to push chokepoint to gh CLI to GitHub, then one SQLite transaction and an SSE task_upsert back to the modal. The existing inbound sweep path is shown unchanged below.">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arrdim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" opacity="0.45"/>
+    </marker>
+  </defs>
+  <g font-family="-apple-system, Segoe UI, Roboto, sans-serif" font-size="13" fill="currentColor">
+    <text x="20" y="28" font-weight="700" font-size="14">NEW: push (outward, explicit operator action)</text>
+
+    <!-- boxes -->
+    <g stroke="currentColor" fill="none" stroke-width="1.3">
+      <rect x="20"  y="60"  width="150" height="58" rx="8"/>
+      <rect x="225" y="60"  width="180" height="58" rx="8"/>
+      <rect x="460" y="60"  width="160" height="58" rx="8"/>
+      <rect x="675" y="60"  width="140" height="58" rx="8"/>
+      <rect x="860" y="60"  width="80"  height="58" rx="8" stroke-dasharray="5 3"/>
+      <rect x="460" y="185" width="240" height="66" rx="8"/>
+    </g>
+    <text x="95"  y="84"  text-anchor="middle" font-weight="600">DispatchModal</text>
+    <text x="95"  y="102" text-anchor="middle" opacity="0.7" font-size="11.5">dashboard, edit mode</text>
+    <text x="315" y="84"  text-anchor="middle" font-weight="600">POST /api/tasks/:id/push</text>
+    <text x="315" y="102" text-anchor="middle" opacity="0.7" font-size="11.5">routes.ts, {sourceId}</text>
+    <text x="540" y="84"  text-anchor="middle" font-weight="600">push.ts</text>
+    <text x="540" y="102" text-anchor="middle" opacity="0.7" font-size="11.5">chokepoint, guards</text>
+    <text x="745" y="84"  text-anchor="middle" font-weight="600">gh issue create</text>
+    <text x="745" y="102" text-anchor="middle" opacity="0.7" font-size="11.5">gh CLI, cwd = repo</text>
+    <text x="900" y="84"  text-anchor="middle" font-weight="600">GitHub</text>
+    <text x="900" y="102" text-anchor="middle" opacity="0.7" font-size="11.5">external</text>
+    <text x="580" y="209" text-anchor="middle" font-weight="600">SQLite - one transaction</text>
+    <text x="580" y="227" text-anchor="middle" opacity="0.7" font-size="11.5">task_source_seen + attachSource</text>
+    <text x="580" y="243" text-anchor="middle" opacity="0.7" font-size="11.5">daemon is the only writer</text>
+
+    <!-- forward arrows -->
+    <g stroke="currentColor" stroke-width="1.3" fill="none">
+      <line x1="170" y1="89" x2="222" y2="89" marker-end="url(#arr)"/>
+      <line x1="405" y1="89" x2="457" y2="89" marker-end="url(#arr)"/>
+      <line x1="620" y1="89" x2="672" y2="89" marker-end="url(#arr)"/>
+      <line x1="815" y1="80" x2="857" y2="80" marker-end="url(#arr)"/>
+      <line x1="857" y1="99" x2="815" y2="99" marker-end="url(#arr)"/>
+      <!-- push.ts down to txn -->
+      <line x1="540" y1="118" x2="540" y2="182" marker-end="url(#arr)"/>
+      <!-- SSE back to modal -->
+      <path d="M 457 218 L 95 218 L 95 121" marker-end="url(#arr)"/>
+    </g>
+    <text x="196" y="80" text-anchor="middle" font-size="11">1</text>
+    <text x="431" y="80" text-anchor="middle" font-size="11">2</text>
+    <text x="646" y="80" text-anchor="middle" font-size="11">3</text>
+    <text x="836" y="72" text-anchor="middle" font-size="11">4</text>
+    <text x="836" y="113" text-anchor="middle" font-size="11">url</text>
+    <text x="553" y="155" font-size="11">5 on success</text>
+    <text x="270" y="211" font-size="11">6 task_upsert (SSE) - button becomes the issue link</text>
+
+    <!-- dimmed existing inbound path -->
+    <g opacity="0.5">
+      <text x="20" y="308" font-weight="700" font-size="14">EXISTING: sweep (inward, unchanged)</text>
+      <g stroke="currentColor" fill="none" stroke-width="1.2">
+        <rect x="20"  y="330" width="150" height="46" rx="8"/>
+        <rect x="285" y="330" width="170" height="46" rx="8"/>
+        <rect x="570" y="330" width="150" height="46" rx="8"/>
+      </g>
+      <text x="95"  y="357" text-anchor="middle" font-weight="600">sweeper.ts</text>
+      <text x="370" y="350" text-anchor="middle" font-weight="600">gh issue list</text>
+      <text x="370" y="366" text-anchor="middle" font-size="11.5">GitHub, read-only</text>
+      <text x="645" y="350" text-anchor="middle" font-weight="600">ingest.ts</text>
+      <text x="645" y="366" text-anchor="middle" font-size="11.5">dedupe + backlog rows</text>
+      <g stroke="currentColor" stroke-width="1.2" fill="none">
+        <line x1="170" y1="353" x2="282" y2="353" marker-end="url(#arrdim)"/>
+        <line x1="455" y1="353" x2="567" y2="353" marker-end="url(#arrdim)"/>
+      </g>
+      <text x="770" y="357" font-size="12">the pushed issue is pre-recorded in task_source_seen,</text>
+      <text x="770" y="373" font-size="12">so this path never re-files it</text>
+    </g>
+  </g>
+</svg>
+</div>
+<figcaption>The one new outward arrow, and why the existing inward path cannot double-file what it pushed: the seen row is written in the same transaction as the task link.</figcaption>
+</figure>
+
+<h2>Implementation steps</h2>
+
+<h3>1. Shared contract - <code>src/shared/task-source.ts</code> (pure, browser-safe)</h3>
+<ul>
+  <li><code>TaskSourceKindInfo</code> gains <code>canPush: boolean</code>; <code>TASK_SOURCE_KIND_INFO</code> sets <code>"github-issues": true</code>, <code>jira: false</code> (the Record makes every kind declare it).</li>
+  <li>New types: <code>PushDraft { title; intent }</code>, <code>PushResult { ref: TaskSourceRef | null; error: string | null; outcomeUnknown: boolean }</code>, <code>type PushContext = SweepContext</code>.</li>
+  <li><code>TaskSourceImpl</code> gains optional <code>push?(config, draft, ctx)</code> - present exactly when <code>canPush</code>, fires only on explicit operator action, never from the sweep loop.</li>
+  <li>Rewrite the header contract comment honestly: sweeps stay read-only; a kind may declare <code>push</code>, which writes to the EXTERNAL system and still never writes our DB - <code>push.ts</code> is the one DB writer on this path, exactly as <code>ingest.ts</code> is for sweeps.</li>
+</ul>
+
+<h3>2. Registry - <code>src/server/task-sources/index.ts</code></h3>
+<ul>
+  <li><code>ErasedTaskSource</code> gains <code>canPush</code> and <code>push: (fn | null)</code>; <code>erase()</code> wires it, parsing config at the boundary like <code>sweep</code>.</li>
+  <li>New exports so call sites never test <code>inst.kind</code>: <code>canPushTo(inst)</code> and <code>pushToSource(inst, draft, ctx)</code>; a null push returns <code>{ref: null, error: "&lt;kind&gt; cannot receive pushed tasks", outcomeUnknown: false}</code>; throws are caught as refusals.</li>
+</ul>
+
+<h3>3. gh bin override - <code>src/server/config.ts</code> + <code>github-issues.ts</code></h3>
+<ul>
+  <li><code>ghBin()</code> returning <code>envVar("GH_BIN") || "gh"</code> so <code>MISSION_GH_BIN</code> overrides for e2e fakes.</li>
+  <li>Replace <code>run("gh", ...)</code> with <code>run(ghBin(), ...)</code> at <strong>every</strong> call site: the three github-issues.ts sites (sweep, preflight, new push), the two in <code>src/server/pr.ts</code>, and all sites in <code>src/server/inspector/github.ts</code>. Mechanical substitution; no behavior change when the env var is unset.</li>
+  <li>Consequence for e2e: once <code>daemon.ts</code> sets <code>MISSION_GH_BIN</code>, the PR poller's <code>gh pr list</code> also reaches the fake - so <code>FAKE_GH</code> must answer <code>pr list</code> with <code>[]</code> (see step 9), keeping existing e2e specs quiet.</li>
+</ul>
+
+<h3>4. GitHub push impl - <code>src/server/task-sources/github-issues.ts</code></h3>
+<ul>
+  <li>Exported pure halves: <code>ghIssueCreateArgs(cfg, draft)</code> (title, body, optional <code>--repo</code>, one <code>--label</code> per <code>labelsAny</code> entry) and <code>pushResultFrom(res, ctx)</code>.</li>
+  <li><code>pushResultFrom</code> rules, in order: <code>outcomeUnknown</code> propagates with the "may exist; check GitHub before retrying" message; non-zero exit is a refusal carrying gh's first stderr line (a nonexistent <code>--label</code> surfaces here, loudly); exit 0 reads the issue URL from the last non-empty stdout line into a ref via the existing <code>externalIdFor</code>; exit 0 with no parseable URL is <code>outcomeUnknown</code>, never success and never a retryable refusal.</li>
+</ul>
+
+<h3>5. TaskManager - <code>src/server/tasks.ts</code></h3>
+<ul>
+  <li>New synchronous <code>attachSource(id, ref)</code> so it can run inside <code>inTransaction</code>. Guards re-checked under the transaction: exists, <code>status === "backlog"</code>, <code>source === null</code>; refusals returned, not thrown.</li>
+  <li>Persists + emits via <code>registry.upsertTask</code> - the db upsert already writes the source columns and emits <code>task_upsert</code>, so no new SSE event type and <code>useEventStream.ts</code> is untouched.</li>
+</ul>
+
+<h3>6. Push chokepoint - NEW <code>src/server/task-sources/push.ts</code></h3>
+<p>Mirror of <code>ingest.ts</code>, with dep seams. <code>pushTask(inst, task, tasks, deps)</code> returns <code>{ok: true, task}</code> or <code>{ok: false, kind: "unpushable" | "conflict" | "upstream" | "unknown-outcome", error}</code>. Order:</p>
+<ol>
+  <li><code>canPushTo(inst)</code> false: <code>unpushable</code>.</li>
+  <li>Not backlog / already linked / <code>inst.repoRoot !== task.repoRoot</code> (string compare, both stored resolved): <code>conflict</code>.</li>
+  <li>Module-level in-flight <code>Set&lt;taskId&gt;</code> guard (mirrors the sweeper's <code>entry.sweeping</code>), held in try/finally.</li>
+  <li><code>pushToSource(inst, {title, intent}, {sourceId, repoRoot: inst.repoRoot, signal})</code>.</li>
+  <li><code>outcomeUnknown</code>: <code>unknown-outcome</code>; error or no ref: <code>upstream</code>.</li>
+  <li>One transaction, <strong>remember first</strong>: seen row, then <code>attachSource</code>. If attach is refused because the task moved mid-push, the seen row still commits and the result is a <code>conflict</code> naming the created issue - the issue exists and must not be re-swept as a duplicate.</li>
+</ol>
+
+<h3>7. Protocol + route - <code>src/shared/protocol.ts</code>, <code>src/server/routes.ts</code></h3>
+<p><code>PushTaskSchema = z.object({ sourceId: z.string().min(1) })</code>; <code>POST /api/tasks/:id/push</code> beside the sibling task routes, <code>parseBody</code> pattern. Contract:</p>
+<div class="scroll">
+<table>
+  <tr><th>Case</th><th>Status</th><th>Body</th></tr>
+  <tr><td>success</td><td>200</td><td>updated <code>Task</code> (like dispatch/complete siblings; the modal reads <code>source</code> from the body, no SSE race)</td></tr>
+  <tr><td>bad body</td><td>400</td><td><code>{error}</code> via parseBody</td></tr>
+  <tr><td>kind cannot receive pushes</td><td>400</td><td><code>{error}</code></td></tr>
+  <tr><td>no such task / task source</td><td>404</td><td><code>{error}</code> (existing wording "no such task source")</td></tr>
+  <tr><td>not backlog / already linked / repoRoot mismatch / push in flight / attach refused post-create</td><td>409</td><td><code>{error}</code></td></tr>
+  <tr><td>gh refused (<code>outcomeUnknown</code> false)</td><td>502</td><td><code>{error}</code> - nothing published, retry safe</td></tr>
+  <tr><td>outcome unknown</td><td>504</td><td><code>{error: "...the issue may already exist - check GitHub before retrying", outcomeUnknown: true}</code></td></tr>
+</table>
+</div>
+<p>Also update the routes.ts task-sources comment block: sources pull work inward; the one outward write is this route, an explicit per-task operator action; still nothing dispatches, provisions, or types into a pane.</p>
+
+<h3>8. Web - <code>src/web/lib/api.ts</code>, <code>src/web/components/DispatchModal.tsx</code></h3>
+<ul>
+  <li><code>api.pushTaskToSource(id, sourceId)</code>; result carries <code>outcomeUnknown?</code> and the task's <code>source</code> on success.</li>
+  <li>One-shot <code>fetchTaskSources()</code> in the modal's existing on-open effect cluster, gated on edit mode with no <code>source</code>. Eligibility: <code>TASK_SOURCE_KIND_INFO[s.kind].canPush &amp;&amp; s.repoRoot === editing.repoRoot</code>. Not lifted to App.</li>
+  <li>New exported pure component <code>PushToSourceBlock</code>, a sibling of the schedule provenance block, reusing <code>rm-provenance-note</code> styling. Exactly one state renders:</li>
+</ul>
+<div class="scroll">
+<table>
+  <tr><th>State</th><th>Render</th></tr>
+  <tr><td>task has <code>source</code> (or push-response ref)</td><td>"Linked to GitHub issue" + <code>&lt;a href&gt;owner/repo#123&lt;/a&gt;</code> (plain text when url null); pure from <code>task.source</code>, swept-in tasks show it with no fetch</td></tr>
+  <tr><td>sources not yet fetched</td><td>nothing (no button flash)</td></tr>
+  <tr><td>none eligible</td><td>muted hint: add a GitHub Issues task source for this repo in Settings</td></tr>
+  <tr><td>one eligible</td><td>button <code>Create GitHub issue</code> (visible text = accessible name; Tooltip describes, naming the source)</td></tr>
+  <tr><td>many eligible</td><td><code>&lt;select aria-label="GitHub issue source"&gt;</code> + the button; defaults to first</td></tr>
+  <tr><td>unsaved edits</td><td>button disabled: "Save your changes first - the issue carries the task's saved title and intent"</td></tr>
+  <tr><td>busy</td><td>button disabled, "Creating issue..."; folded into modal <code>busy</code> so the dialog is sealed mid-push</td></tr>
+  <tr><td>failed, refused</td><td>inline error, button stays (retry is safe)</td></tr>
+  <tr><td>failed, outcomeUnknown</td><td>warning "...the issue may already exist - check GitHub before retrying", button removed for this opening</td></tr>
+</table>
+</div>
+<ul>
+  <li>Reword DispatchModal.tsx:1046: a schedule-created task carrying a source is no longer a "(conflict)" once push exists.</li>
+  <li>Wording sweep in <code>TaskSourcesPanel.tsx</code>: soften "files backlog rows and nothing else"; keep the pinned "never dispatches an agent" sentence verbatim so the pinned tests stay green.</li>
+</ul>
+
+<h3>9. E2E - fixtures + NEW <code>e2e/specs/push-task-to-github.spec.ts</code></h3>
+<ul>
+  <li><code>FAKE_GH</code> in <code>fake-agents.ts</code> (model: FAKE_CMUX): records <code>{argv, cwd}</code>; <code>issue create</code> prints <code>https://github.com/acme/demo-repo/issues/123</code>; <code>issue list</code> and <code>pr list</code> print <code>[]</code> (the PR poller now reaches the fake too). <code>daemon.ts</code> sets <code>MISSION_GH_BIN</code>. No model tokens are ever spent.</li>
+  <li>Spec 1 "pushing a backlog task creates the issue, links the task, and records it as seen": seed a github-issues source (<code>labelsAny: ["mission","triage"]</code>) and a backlog task; click through the board into the edit modal; assert the modal link, the <code>GET /api/tasks</code> read-back (<code>source.externalId === "acme/demo-repo#123"</code>), the recorded gh argv (<code>issue create --title ... --body ... --label mission --label triage</code>, cwd = repo), and <code>seenCount === 1</code>.</li>
+  <li>Spec 2 "no eligible source hides the action": source on a different repo; button absent; hint renders.</li>
+</ul>
+
+<h3>10. Unit tests (node:test + node:assert/strict)</h3>
+<ul>
+  <li><code>test/task-source-contract.test.ts</code>: <code>canPush</code> matches impl push presence for every kind; pushToSource on jira is an error, never silent; push parses config at the boundary.</li>
+  <li><code>test/github-issues-map.test.ts</code>: <code>ghIssueCreateArgs</code> full/minimal argv; <code>pushResultFrom</code> URL-to-ref, refusal, outcomeUnknown propagation, exit-0-no-URL is outcomeUnknown.</li>
+  <li>NEW <code>test/task-source-push.test.ts</code> (dep-seam style of task-source-ingest.test.ts): guards refuse before the push spy runs; upstream refusal and unknown outcome write nothing; success writes seen row + link in one transaction; task-moved-mid-push keeps the seen row and names the issue; concurrent second push refused; <code>attachSource</code> round-trip against a real db.</li>
+  <li><code>test/backlog-edit-render.test.ts</code>: swept-in task shows its link statically; no button before sources land; <code>PushToSourceBlock</code> per-state renders.</li>
+</ul>
+
+<h3>11. Docs</h3>
+<ul>
+  <li><code>docs/dispatch-and-backlog.md</code>: name the one outward verb; a "Push a task to GitHub" paragraph (issue contents, labelsAny behavior and the missing-label hard failure, seen-row guarantee, the 504 "check GitHub" rule); Jira does not accept pushes.</li>
+</ul>
+
+<h2>Files touched</h2>
+<p class="filelist"><code>src/shared/task-source.ts</code>, <code>src/shared/protocol.ts</code>, <code>src/server/task-sources/{index,github-issues,push(new)}.ts</code>, <code>src/server/config.ts</code>, <code>src/server/tasks.ts</code>, <code>src/server/routes.ts</code>, <code>src/server/pr.ts</code> + <code>src/server/inspector/github.ts</code> (ghBin substitution), <code>src/web/lib/api.ts</code>, <code>src/web/components/DispatchModal.tsx</code>, <code>src/web/components/TaskSourcesPanel.tsx</code> (wording), <code>e2e/fixtures/{fake-agents,daemon}.ts</code>, <code>e2e/specs/push-task-to-github.spec.ts</code> (new), tests as listed, <code>docs/dispatch-and-backlog.md</code>.</p>
+
+<h2>Resolved plan-review decisions</h2>
+<ol>
+  <li><strong>gh bin override scope</strong>: convert every <code>gh</code> call site now (<code>github-issues.ts</code>, <code>pr.ts</code>, <code>inspector/github.ts</code>) - one consistent seam immediately.</li>
+  <li><strong>Follow-up</strong>: the dashboard review initially selected "stop after this plan"; the operator later explicitly requested phasing, so the work is decomposed in <a href="phased-plan.html">phased-plan.html</a> and scheduled as dependency-linked backlog tasks.</li>
+</ol>
+
+<h2>Verification</h2>
+<ol>
+  <li><code>npm run typecheck &amp;&amp; npm run lint &amp;&amp; npm test</code> (includes the new unit tests; the exhaustive ServerEvent switch and <code>Record&lt;TaskSourceKind, ...&gt;</code> enforcements prove the contract changes compile everywhere).</li>
+  <li><code>npm run build &amp;&amp; npm run smoke</code>, then <code>npm run test:e2e</code> for the new spec.</li>
+  <li>Manual E2E on a real repo: configure a github-issues source for this repo, create a backlog task, push it, confirm the issue on GitHub carries title/body/labels, the modal link opens it, and a manual "Sweep now" files <strong>zero</strong> new tasks (seen-row proof). Run a dedicated vite port + daemon (the shared :5173 serves the main checkout).</li>
+  <li>Failure paths manually: a labelsAny label that does not exist on the repo (inline gh error, button retained); a forced timeout (504 wording, button removed).</li>
+</ol>
+
+<h2>Risks</h2>
+<ul>
+  <li>The 502/504 split is the load-bearing safety property; <code>pushResultFrom</code> tests pin all three exit readings. Any path mapping a dead gh to 502 invites a double-created issue.</li>
+  <li><code>--label</code> hard failure on a missing repo label is accepted by design; gh's own stderr names the label.</li>
+  <li>The whole-codebase <code>ghBin()</code> substitution reaches the PR poller and the Inspector: with <code>MISSION_GH_BIN</code> set in e2e, <code>FAKE_GH</code> must answer <code>pr list</code> with <code>[]</code> or existing specs would see gh errors where they previously saw a missing binary.</li>
+</ul>
+
+</body>
+</html>

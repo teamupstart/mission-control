@@ -81,7 +81,7 @@
     <table>
       <thead><tr><th>#</th><th>File</th><th>Delivers</th><th>Direct prerequisites</th></tr></thead>
       <tbody>
-        <tr><td>1</td><td><a href="phase-1-multi-repo-dispatch.md"><code>phase-1-multi-repo-dispatch.md</code></a></td><td><code>task_repos</code> schema, contracts, per-repo provisioning with pins and rollback, capability flag, Claude/Codex write access, intent manifest, dispatch modal chips, allowlist AND rule, assignment refusal</td><td>-</td></tr>
+        <tr><td>1</td><td><a href="phase-1-multi-repo-dispatch.md"><code>phase-1-multi-repo-dispatch.md</code></a></td><td><code>task_repos</code> schema and the additive <code>tasks.base_sha</code> primary baseline, contracts, per-repo provisioning with pins and rollback, capability flag, Claude/Codex write access, intent manifest, dispatch modal chips, allowlist AND rule, assignment refusal</td><td>-</td></tr>
         <tr><td>2</td><td><a href="phase-2-multi-pr-tracking.md"><code>phase-2-multi-pr-tracking.md</code></a></td><td>Multi-URL sniffing, poller fan-out, <code>work_episode_prs</code>, all-merged completion quorum, per-repo PR projection and UI</td><td>Phase 1</td></tr>
         <tr><td>3</td><td><a href="phase-3-per-repo-workflow-runs.md"><code>phase-3-per-repo-workflow-runs.md</code></a></td><td>Binding repository dimension, lazy per-changed-repo run creation, per-repo evidence scoping, submission routing, cross-run delivery serialization, merge-veto membership, workflow chip fan-out</td><td>Phase 2</td></tr>
         <tr><td>4</td><td><a href="phase-4-policy-and-prose.md"><code>phase-4-policy-and-prose.md</code></a></td><td>Per-PR review follow-up marks, skills and session-action prompt updates, agent-guide and <code>docs/*.md</code> sweep</td><td>Phase 3</td></tr>
@@ -121,9 +121,9 @@
 
   <h2>Cross-phase contracts</h2>
   <ul>
-    <li><code>task_repos</code> columns and PK; <code>base_sha</code> is a full oid recorded at cut time (phase 1, consumed by 2 and 3).</li>
+    <li><code>task_repos</code> columns and PK, plus the additive <code>tasks.base_sha</code> column holding the primary's baseline; <code>base_sha</code> is a full oid recorded at cut time for every repo including the primary (phase 1, consumed by 2 and 3). The primary has no <code>task_repos</code> row, so its baseline must be read from <code>tasks</code>.</li>
     <li><code>TaskRepoEntry</code> declares <code>prUrl</code>/<code>prState</code>/<code>mergedAt</code> in phase 1 (null); phase 2 populates them - the wire shape never changes after phase 1.</li>
-    <li>The changed-set predicate (episode PR present, or head differs from <code>base_sha</code>) lives in <code>src/shared</code>, introduced in phase 2, imported by phase 3's run creation - one definition of "changed".</li>
+    <li>The changed-set predicate (episode PR present, or head differs from <code>base_sha</code>) lives in <code>src/shared</code>, introduced in phase 2, imported by phase 3's run creation - one definition of "changed". It covers the primary as well as the secondaries; a version that iterates <code>task_repos</code> rows alone silently excludes the primary and makes both the quorum and run creation unsound.</li>
     <li>Session cwd is always the primary worktree; multi-repo tasks are dispatch-only (phase 1, relied on by everything).</li>
     <li>One workflow run = one repository; binding uniqueness <code>(note_key, repo_root)</code> with the primary stored explicitly; one outstanding delivery per session (phase 3, relied on by phase 4's nudging).</li>
     <li><code>Session.prUrl</code> stays the scalar current-branch PR everywhere.</li>

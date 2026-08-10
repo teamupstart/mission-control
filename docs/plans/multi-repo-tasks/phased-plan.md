@@ -30,7 +30,7 @@ Submitted by the operator on 2026-08-05 (recorded in the source plan and treated
 
 | # | File | Delivers | Direct prerequisites |
 |---|---|---|---|
-| 1 | [phase-1-multi-repo-dispatch.md](phase-1-multi-repo-dispatch.md) | `task_repos` schema, contracts, per-repo provisioning with pins and rollback, capability flag, Claude/Codex write access, intent manifest, dispatch modal chips, allowlist AND rule, assignment refusal | - |
+| 1 | [phase-1-multi-repo-dispatch.md](phase-1-multi-repo-dispatch.md) | `task_repos` schema and the additive `tasks.base_sha` primary baseline, contracts, per-repo provisioning with pins and rollback, capability flag, Claude/Codex write access, intent manifest, dispatch modal chips, allowlist AND rule, assignment refusal | - |
 | 2 | [phase-2-multi-pr-tracking.md](phase-2-multi-pr-tracking.md) | Multi-URL sniffing, poller fan-out, `work_episode_prs`, all-merged completion quorum, per-repo PR projection and UI | Phase 1 |
 | 3 | [phase-3-per-repo-workflow-runs.md](phase-3-per-repo-workflow-runs.md) | Binding repository dimension, lazy per-changed-repo run creation, per-repo evidence scoping, submission routing, cross-run delivery serialization, merge-veto membership, workflow chip fan-out | Phase 2 |
 | 4 | [phase-4-policy-and-prose.md](phase-4-policy-and-prose.md) | Per-PR review follow-up marks, skills and session-action prompt updates, agent-guide and `docs/*.md` sweep | Phase 3 |
@@ -45,9 +45,9 @@ Serial; merge order equals numbering. No concurrency groups: the audit found eac
 
 ## Cross-phase contracts
 
-- `task_repos` columns and PK; `base_sha` is a full oid recorded at cut time (phase 1, consumed by 2 and 3).
+- `task_repos` columns and PK, plus the additive `tasks.base_sha` column holding the primary's baseline; `base_sha` is a full oid recorded at cut time for every repo including the primary (phase 1, consumed by 2 and 3). The primary has no `task_repos` row, so its baseline must be read from `tasks`.
 - `TaskRepoEntry` declares `prUrl`/`prState`/`mergedAt` in phase 1 (null); phase 2 populates them - the wire shape never changes after phase 1.
-- The changed-set predicate (episode PR present, or head differs from `base_sha`) lives in `src/shared`, introduced in phase 2, imported by phase 3's run creation - one definition of "changed".
+- The changed-set predicate (episode PR present, or head differs from `base_sha`) lives in `src/shared`, introduced in phase 2, imported by phase 3's run creation - one definition of "changed". It covers the primary as well as the secondaries; a version that iterates `task_repos` rows alone silently excludes the primary and makes both the quorum and run creation unsound.
 - Session cwd is always the primary worktree; multi-repo tasks are dispatch-only (phase 1, relied on by everything).
 - One workflow run = one repository; binding uniqueness `(note_key, repo_root)` with the primary stored explicitly; one outstanding delivery per session (phase 3, relied on by phase 4's nudging).
 - `Session.prUrl` stays the scalar current-branch PR everywhere.

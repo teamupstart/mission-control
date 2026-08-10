@@ -53,15 +53,16 @@ CREATE TABLE IF NOT EXISTS task_repos (
 ```
 
 - `tasks.repo_root` / `worktree_path` / `branch` / `provider` remain the primary repo, untouched. Every existing single-repo consumer (Foreman prompts, report panel, drag payloads, assignment gates) keeps a meaningful value. A single-repo task has zero `task_repos` rows; old databases open unchanged.
-- `base_sha` records the commit each secondary branch was cut at. It powers two later rules: the changed-repo set (a repo whose head still equals its base is exempt from the PR requirement and gets no workflow run) and the completion quorum.
-- Wire shape: `Task` gains `extraRepos: TaskRepoEntry[]` (`{ repoRoot, worktreePath, branch, provider, baseSha, prUrl, prState, mergedAt }`, PR fields derived by the registry when emitting). It rides the existing whole-`Task` `task_upsert` event - no new `ServerEvent`, no `MissionState` change beyond the type.
+- `tasks` gains one additive column, `base_sha TEXT`, holding the primary repo's baseline. The primary's other provisioning facts already live on `tasks`, so its baseline belongs beside them rather than forcing a `task_repos` row for the primary and breaking the "a single-repo task has zero `task_repos` rows" rule.
+- `base_sha` records the commit each branch was cut at, for every repo including the primary: `tasks.base_sha` for the primary, `task_repos.base_sha` for each secondary. It powers two later rules: the changed-repo set (a repo whose head still equals its base is exempt from the PR requirement and gets no workflow run) and the completion quorum. **Both rules are unsound without a primary baseline.** If the primary appears in neither the episode-PR set nor the head-differs-from-base set, an agent that changes the primary without opening a primary PR leaves the primary invisible to the changed set: the quorum would complete the task on a merged secondary PR alone while primary work sat unmerged, and phase 3 would never create a workflow run for the primary, so its changes would ship unreviewed.
+- Wire shape: `Task` gains `extraRepos: TaskRepoEntry[]` (`{ repoRoot, worktreePath, branch, provider, baseSha, prUrl, prState, mergedAt }`, PR fields derived by the registry when emitting) and `baseSha: string | null` for the primary, so a consumer of the changed-set rule sees every repo's baseline through one shape. It rides the existing whole-`Task` `task_upsert` event - no new `ServerEvent`, no `MissionState` change beyond the type.
 - `DispatchSchema` gains `extraRepoRoots: string[]` (default `[]`). Each entry passes `resolveTaskRepoRoot`, is deduped, and must not equal the primary. `UpdateTaskSchema` mirrors it; `isAnnotationOnlyUpdate` counts keys, so a repo-set edit is automatically a provisioning change and stays refused after the task leaves the backlog - the desired behavior for free.
 - Work episodes: new `work_episode_prs (episode_id, repo_root, pr_url, pr_head_sha, merged_at, UNIQUE(episode_id, repo_root))`. The existing scalar episode PR columns remain the primary repo's entry for back-compat. The `acceptPrForEpisode` refusal guard survives per repo: a repo that already holds a different PR on this episode still refuses a replacement.
 - `TaskDependency` edges stay scalar in v1 and bind to the primary repo's PR; actual downstream release is governed by the task's completion (all-merged), which is the stronger condition.
 
 ### Dispatch and provisioning
 
-- The dispatcher loops `provisionWorktree` over `[primary, ...extras]` with the same slug and short id; provider resolves per repo (a treehouse repo takes a pool lease, others use the git fallback - mixed providers are fine since provider is per entry). Each secondary records its `base_sha` at cut time.
+- The dispatcher loops `provisionWorktree` over `[primary, ...extras]` with the same slug and short id; provider resolves per repo (a treehouse repo takes a pool lease, others use the git fallback - mixed providers are fine since provider is per entry). Every repo records its `base_sha` at cut time - the primary's onto `tasks.base_sha`, each secondary's onto its `task_repos` row - so the changed-set rule can evaluate the primary on the same footing as the secondaries.
 - All-or-nothing: a failure mid-loop tears down already-provisioned entries (provider-aware: leases are returned, never git-removed) and fails the dispatch.
 - Pool pins: the task pin set extends from `t.worktreePath` to also include every `extraRepos[].worktreePath`. This lands in the same change as provisioning - without it the reaper can `reset --hard` a secondary worktree under a live agent.
 - Teardown (`teardownWorktree`, `teardownTaskResources`, startup reconciliation) loops the collection and nulls it alongside the existing scalars.
@@ -81,7 +82,7 @@ CREATE TABLE IF NOT EXISTS task_repos (
 - The branch poller's targets extend: for each session owning a multi-repo task, add one `(secondary worktree cwd, branch)` pair per entry - still one `gh pr list` per distinct cwd, as today.
 - `Session.prUrl` stays the scalar "current branch's PR" (card semantics unchanged). Multi-PR truth lives in the adoption ledger and `work_episode_prs`; the registry projects per-repo PR state onto `Task.extraRepos` when emitting.
 - Merge reconciliation marks merges per `(episode, repo)`; `task_pr_merged` fires per PR as today.
-- Completion quorum: `reconcileMergedTasks` completes a multi-repo task only when every repo in its changed set has a merged PR. The changed set is: repos with an episode PR, plus repos whose head differs from `base_sha`. A closed-unmerged PR does not satisfy the quorum; the task stays visible for the operator. `outcome` lists all merged PRs; `outcomeUrl` keeps the primary repo's PR for back-compat.
+- Completion quorum: `reconcileMergedTasks` completes a multi-repo task only when every repo in its changed set has a merged PR. The changed set is: repos with an episode PR, plus repos whose head differs from `base_sha` - evaluated over the primary and every secondary alike, reading the primary's baseline from `tasks.base_sha`. A closed-unmerged PR does not satisfy the quorum; the task stays visible for the operator. `outcome` lists all merged PRs; `outcomeUrl` keeps the primary repo's PR for back-compat.
 - Auto-merge is unchanged: each PR merges independently under today's per-PR verdict (review clean, CI green, soak elapsed). The residual inconsistency window between sibling merges is accepted by decision 4 and noted under Risks.
 
 ### Per-repo workflow runs
@@ -89,7 +90,7 @@ CREATE TABLE IF NOT EXISTS task_repos (
 One session supports N concurrent workflow runs, one per changed repo. The single-repo contracts that make the workflow subsystem safe - the `pull_request` adapter's proof rules, evidence identity `(round, segment)`, the gate's wait/block vocabulary - stay closed; each run is a textbook single-repo review scoped to one of the task's repo entries.
 
 - **Bindings gain a repository dimension.** The active-binding uniqueness becomes per `(note_key, repo)`; each binding/run carries the repo entry it reviews.
-- **Lazy run creation.** Runs are created at trigger time, not binding time: when the session's turn settles, each repo whose worktree head differs from its `base_sha` gets a run; unchanged repos are skipped and never appear.
+- **Lazy run creation.** Runs are created at trigger time, not binding time: when the session's turn settles, each repo whose worktree head differs from its `base_sha` gets a run - the primary included, on its `tasks.base_sha` baseline; unchanged repos are skipped and never appear.
 - **Per-repo evidence capture.** Context snapshots and evidence capture execute against the run's repo worktree, not `session.cwd`. Adapters stay pure: the manager supplies that repo's facts on `SessionActionAdapterContext` exactly as it does today for one repo.
 - **Submission routing.** With N active runs, an evidence submission must name its run. The submit surface gains a repo discriminator, with daemon-side routing by which repo's head moved since capture as the fallback.
 - **Cross-run delivery serialization.** N runs share one pane. At most one run's delivery (repair packet or session action) may be outstanding per session; other runs wait in an explicit queued state. Within a run, the existing two-actions-ready-refuse contract is unchanged.
@@ -99,7 +100,7 @@ One session supports N concurrent workflow runs, one per changed repo. The singl
 
 ### Policy gates
 
-- Foreman schedulability and live-session gating require every attached repo to pass the allowlist (AND rule). The Trust matrix needs no change - grants are already per repo.
+- Foreman schedulability and live-session gating require every attached repo to pass the allowlist (AND rule). This ships in phase 1 alongside provisioning, not as later polish: without it Foreman could auto-dispatch an agent into a secondary repo the operator never allowlisted. The Trust matrix needs no change - grants are already per repo.
 - Review follow-through (`FollowupMark`) keys per PR instead of per session, so a nudge on repo A's PR does not erase repo B's history.
 - Inspector needs no structural change: it is already per adopted PR with per-row `repo_root`, and standards resolution follows each PR's own checkout.
 
@@ -159,10 +160,10 @@ flowchart LR
 
 Each phase ships independently and leaves the product consistent.
 
-1. **Multi-repo dispatch.** `task_repos` schema and migration with pre-feature upgrade test, shared contracts, per-repo provisioning/teardown with rollback, pool pins for extras (same change), the capability flag, Claude additional directories, Codex writable roots, intent manifest, dispatch modal chips, e2e spec proving one dispatch yields N worktrees. PR behavior still today's (first PR wins).
+1. **Multi-repo dispatch.** `task_repos` schema plus the additive `tasks.base_sha` column and migration with pre-feature upgrade test, shared contracts, per-repo provisioning/teardown with rollback recording every repo's baseline, pool pins for extras (same change), the capability flag, Claude additional directories, Codex writable roots, intent manifest, dispatch modal chips, the Foreman allowlist AND rule over the whole repo set (the consent gate ships with the capability that needs it, not later), e2e spec proving one dispatch yields N worktrees. PR behavior still today's (first PR wins).
 2. **Multi-PR tracking and completion.** `work_episode_prs`, all-URL sniffing, poller fan-out, per-repo acceptance and merge reconciliation, all-merged completion quorum, per-repo PR rendering on cards and report, e2e.
 3. **Per-repo workflow runs.** Binding repository dimension, lazy run creation from `base_sha` diffs, per-repo evidence capture, submission routing, cross-run delivery serialization, workflow chip fan-out, e2e.
-4. **Policy and prose.** Allowlist AND rule, per-PR follow-up marks, `pull-request` and `phased-plan` skill updates ("one PR per repository you changed"), session-action prompt, README and agent-guide updates.
+4. **Policy and prose.** Per-PR follow-up marks, `pull-request` and `phased-plan` skill updates ("one PR per repository you changed"), session-action prompt, agent-guide and `docs/*.md` updates. The allowlist AND rule is deliberately not here - it ships in phase 1 with the capability it gates.
 
 ## Out of scope for v1
 

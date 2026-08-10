@@ -15,9 +15,9 @@ An operator can attach secondary repositories to a task in the dispatch modal an
 
 In scope:
 
-- `task_repos` table, migration, and upgrade test.
+- `task_repos` table plus the additive `tasks.base_sha` column, migration, and upgrade test.
 - Shared contracts: `TaskRepoEntry`, `Task.extraRepos`, `DispatchSchema.extraRepoRoots`, `UpdateTaskSchema.extraRepoRoots`.
-- Per-repo provisioning and teardown with all-or-nothing rollback; `base_sha` recorded per secondary.
+- Per-repo provisioning and teardown with all-or-nothing rollback; `base_sha` recorded for every repo, primary included.
 - Pool pins covering secondary worktrees (same change as provisioning - destructive if split).
 - `HARNESS_CAPABILITIES` flag `multiRepoDispatch`; Claude additional directories; Codex sandbox writable roots.
 - Intent manifest prepended to the dispatched intent.
@@ -72,12 +72,20 @@ Execution order; adjust where the repository disagrees and record the deviation 
    CREATE INDEX IF NOT EXISTS idx_task_repos_worktree ON task_repos(worktree_path);
    ```
 
+   Also add the primary's baseline as an additive column on `tasks`, in the same migration step and per the same contract (`addColumn(d, "tasks", "base_sha", "TEXT")`, nullable so existing rows upgrade cleanly):
+
+   ```ts
+   addColumn(d, "tasks", "base_sha", "TEXT");
+   ```
+
+   The primary's baseline lives on `tasks` rather than in a `task_repos` row so that "a single-repo task has zero `task_repos` rows" stays true and no existing single-repo consumer changes shape. Without it the phase 2 quorum and the phase 3 run-creation predicate cannot see primary changes at all - see section 10.
+
    Add load/replace helpers beside the task row functions; `upsertTask` callers write the collection in the same transaction. Delete rows with the task.
-2. **Shared types** (`src/shared/types.ts`): `TaskRepoEntry { repoRoot, worktreePath, branch, provider, baseSha, prUrl, prState, mergedAt }` (PR fields null until phase 2 populates them; declaring them now keeps the wire shape stable across phases). `Task.extraRepos: TaskRepoEntry[]`. No new `ServerEvent`.
+2. **Shared types** (`src/shared/types.ts`): `TaskRepoEntry { repoRoot, worktreePath, branch, provider, baseSha, prUrl, prState, mergedAt }` (PR fields null until phase 2 populates them; declaring them now keeps the wire shape stable across phases). `Task.extraRepos: TaskRepoEntry[]` and `Task.baseSha: string | null` for the primary, so every repo's baseline reaches consumers through one shape. No new `ServerEvent`.
 3. **Protocol** (`src/shared/protocol.ts`): `extraRepoRoots: z.array(z.string().min(1)).max(8).default([])` on `DispatchSchema` and `UpdateTaskSchema`. Cap of 8 is a sanity bound, not a product limit; state it in a comment.
 4. **Routes and manager** (`src/server/routes.ts`, `src/server/tasks.ts`): resolve every entry through `resolveTaskRepoRoot`, dedupe, refuse an entry equal to the primary, 400 on any refusal. `CreateTaskInput.extraRepoRoots`. `TaskManager.assign` refuses tasks with a non-empty repo set (clear error naming the reason). Task update follows the existing repo-move resolution pattern at routes.ts:3539-3547.
 5. **Capability** (`src/shared/harness-capabilities.ts`, `src/server/harness/index.ts`): add `multiRepoDispatch` to the capabilities type; the compiler enumerates the records to fill. Claude: verified value. Codex: true only after the writable-roots key is verified live; otherwise null and the modal simply never offers multi-repo for Codex (ship the phase either way; flipping the value later is a one-line follow-up with its measurement). Pi: null.
-6. **Provisioning** (`src/server/dispatcher.ts`): loop `[primary, ...extras]` through `provisionWorktree` with the same slug/shortId; record each secondary's cut commit as `base_sha` (`git -C <wt> rev-parse HEAD` right after provisioning; full 40-char oid). On mid-loop failure, tear down already-provisioned entries provider-aware and fail the dispatch through the existing error path. Patch the task with the primary triple plus the collection. `teardownWorktree`/`teardownTaskResources` and startup reconciliation loop the collection and null it with the scalars.
+6. **Provisioning** (`src/server/dispatcher.ts`): loop `[primary, ...extras]` through `provisionWorktree` with the same slug/shortId; record every repo's cut commit as `base_sha` (`git -C <wt> rev-parse HEAD` right after provisioning; full 40-char oid) - the primary's onto `tasks.base_sha`, each secondary's onto its `task_repos` row. Record the primary's on single-repo dispatches too: it costs one column write, keeps one code path, and gives phase 3 a baseline for the ordinary case. On mid-loop failure, tear down already-provisioned entries provider-aware and fail the dispatch through the existing error path. Patch the task with the primary triple plus the collection. `teardownWorktree`/`teardownTaskResources` and startup reconciliation loop the collection and null it with the scalars.
 7. **Pool pins** (`src/server/pool.ts`): `taskWorktrees` in `poolPins` unions `extraRepos[].worktreePath`. Same commit as step 6.
 8. **Agent handoff** (`src/server/dispatcher.ts`, `src/server/harness/claude/sdk.ts`, `src/server/harness/codex/launch.ts`, `src/server/harness/types.ts`): `SdkLaunchOptions` gains `extraDirs: string[]`; the Claude driver maps it to the verified SDK option, the terminal argv builder to `--add-dir` per entry, Codex to its verified writable-roots config. Prepend the intent manifest (repo table: path, branch, primary marker; instructions: read each repo's AGENTS.md/CLAUDE.md before touching it, commit and push per repo, one PR per repo actually changed). The manifest is part of the delivered intent on both runtime paths.
 9. **Foreman consent** (`src/server/foreman/backlog-machine.ts`): schedulability requires `cwdAllowlisted` for the primary and every extra root (AND). Agent matching at 246 is untouched - multi-repo tasks are dispatch-only, and free-agent assignment already can't reach them after step 4.
@@ -92,7 +100,7 @@ Execution order; adjust where the repository disagrees and record the deviation 
 
 ## 7. Tests and verification
 
-- Unit (`test/`): migration upgrade from pre-feature DB; create/update validation (dedupe, primary-collision, resolve refusal); provisioning rollback on mid-loop failure (inject a failing provider); pins include extras (extend the reap-planning test); assignment refusal; manifest content; capability record completeness (compiler does most of it).
+- Unit (`test/`): migration upgrade from pre-feature DB; create/update validation (dedupe, primary-collision, resolve refusal); provisioning rollback on mid-loop failure (inject a failing provider); pins include extras (extend the reap-planning test); assignment refusal; manifest content; capability record completeness (compiler does most of it); `base_sha` recorded as a full 40-char oid for the primary on `tasks` and for every secondary on its row, on both single-repo and multi-repo dispatch, since phases 2 and 3 are unsound if the primary baseline is missing.
 - e2e (`e2e/`): add a second `seedRepo` to the daemon fixture; new spec: open dispatch, add two repos via the chips UI, dispatch, assert the session card appears and both worktrees exist under the state dir; assert the fake agent's recorded launch got both directories. Update the shared `dispatch()` helper only if the chips change its selector dance; keep other specs passing.
 - Commands: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build && npm run smoke`, `npm run test:e2e`.
 
@@ -107,7 +115,7 @@ Execution order; adjust where the repository disagrees and record the deviation 
 
 Later phases may rely on, and must not change:
 
-- `task_repos` columns and primary key as written above; `base_sha` is a full oid recorded at cut time.
+- `task_repos` columns and primary key as written above; `base_sha` is a full oid recorded at cut time, on `tasks.base_sha` for the primary and on the `task_repos` row for each secondary. Later phases must read the primary's baseline from `tasks.base_sha` and must not assume the primary has a `task_repos` row.
 - `TaskRepoEntry` field names including the reserved `prUrl`/`prState`/`mergedAt` (null in this phase).
 - `Task.extraRepos` riding `task_upsert`; order is `position`.
 - The session's cwd is always the primary worktree; secondary worktree paths come only from `task_repos`.
@@ -122,3 +130,4 @@ Later phases may rely on, and must not change:
 - 2026-08-10 (citation re-verification): the Claude Agent SDK unknown is **closed in the plan's favor** - `additionalDirectories` exists at the pinned SDK version, so step 8 needs no fallback. The Codex writable-roots key remains the one genuine unknown, and the capability still ships as `null` for Codex if it cannot be measured.
 - 2026-08-10 (citation re-verification): three original citations pointed at unrelated code rather than merely drifting - `routes.ts:3131-3138` (the "existing repo-move resolution pattern") pointed at the `/api/inspector/prs` route, `pool.ts:208/223` pointed at JSDoc lines, and `db.ts:1929` pointed at a blank line. Locate constructs by symbol name, not by trusting a number.
 - 2026-08-10 (citation re-verification): `seedRepo` is now exported from `e2e/fixtures/daemon.ts:121` (it was module-private at scoping time), which makes step 7's second-repo fixture work easier than planned.
+- 2026-08-10 (review): added the primary baseline (`tasks.base_sha`) to this phase. As originally written, `base_sha` was recorded for secondaries only, and since the primary has no `task_repos` row the changed-set rule could never see primary changes. Two downstream consequences, both unsound: phase 2's quorum could complete a task on a merged secondary PR while changed primary work sat unmerged, and phase 3 would never create a workflow run for the primary, so primary changes would ship unreviewed. Recording the primary's baseline on `tasks` fixes both without giving the primary a `task_repos` row, which would have broken the zero-rows-for-single-repo invariant.

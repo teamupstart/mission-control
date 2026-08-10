@@ -2,7 +2,7 @@
 
 **Source plan:** [plan.md](plan.md) ([rendered](plan.html))
 **Rendered index:** [phased-plan.html](phased-plan.html)
-**Status:** Phases written 2026-08-05; tasks scheduled on creation of this document's PR.
+**Status:** Phases written 2026-08-05; citations re-verified against `main` 2026-08-10. No tasks are scheduled - this PR publishes the phase documents only. Scheduling one dependency-linked task per phase remains a separate, deliberate step.
 
 ## Incorporated decisions
 
@@ -21,8 +21,10 @@ Submitted by the operator on 2026-08-05 (recorded in the source plan and treated
 - The Foreman allowlist AND rule moved from the polish phase into phase 1: without it, Foreman could auto-dispatch an agent into a secondary repo the operator never allowlisted. Consent ships with capability.
 - Secondary-repo PRs are only reliably *adopted* once multi-URL sniffing and poller fan-out exist (phase 2), and per-repo workflow runs prove their PRs against the adoption ledger - so phase 3 depends on phase 2, and the graph is serial. An earlier concurrency claim was withdrawn during the audit.
 - The workflow subsystem's single-repo contracts (the `pull_request` adapter, evidence identity, wait/block vocabulary) are never widened; phase 3 moves concurrency to the binding/run layer instead, per decision 2.
-- `provisionWorktree`/`teardownWorktree` live in `src/server/dispatcher.ts` (739/899), pins in `src/server/pool.ts` (208/223) - one scoping report misattributed the file; phase files carry the verified locations.
+- `provisionWorktree`/`teardownWorktree` live in `src/server/dispatcher.ts` (760/925), pins in `src/server/pool.ts` (242/257) - one scoping report misattributed the file; phase files carry the verified locations.
 - The exact Claude Agent SDK additional-directories option and the Codex writable-roots config key could not be verified at scoping time (no `node_modules` in the planning worktree; Codex needs a live installation). Phase 1 names both as verify-first steps, and the Codex capability ships as `null` if unverified rather than guessed.
+- Re-verification on 2026-08-10 closed the SDK half of that unknown in the plan's favor: `Options.additionalDirectories` exists at the pinned `@anthropic-ai/claude-agent-sdk@0.3.220`, so phase 1 needs no permission-mode fallback. The Codex writable-roots key is still the one genuine unknown in the feature.
+- Re-verification also found that a number of the original `file:line` citations were wrong when written, not merely drifted: several cited files are byte-identical to the scoping-time tree yet carried numbers off by as much as 95 lines, and real per-file drift ranged from 0 to +480 lines. Citations are corrected throughout, and each phase's audit record now says to locate constructs by symbol name rather than trusting an unverified number.
 
 ## Phases
 
@@ -31,7 +33,7 @@ Submitted by the operator on 2026-08-05 (recorded in the source plan and treated
 | 1 | [phase-1-multi-repo-dispatch.md](phase-1-multi-repo-dispatch.md) | `task_repos` schema, contracts, per-repo provisioning with pins and rollback, capability flag, Claude/Codex write access, intent manifest, dispatch modal chips, allowlist AND rule, assignment refusal | - |
 | 2 | [phase-2-multi-pr-tracking.md](phase-2-multi-pr-tracking.md) | Multi-URL sniffing, poller fan-out, `work_episode_prs`, all-merged completion quorum, per-repo PR projection and UI | Phase 1 |
 | 3 | [phase-3-per-repo-workflow-runs.md](phase-3-per-repo-workflow-runs.md) | Binding repository dimension, lazy per-changed-repo run creation, per-repo evidence scoping, submission routing, cross-run delivery serialization, merge-veto membership, workflow chip fan-out | Phase 2 |
-| 4 | [phase-4-policy-and-prose.md](phase-4-policy-and-prose.md) | Per-PR review follow-up marks, skills and session-action prompt updates, agent-guide and README sweep | Phase 3 |
+| 4 | [phase-4-policy-and-prose.md](phase-4-policy-and-prose.md) | Per-PR review follow-up marks, skills and session-action prompt updates, agent-guide and `docs/*.md` sweep | Phase 3 |
 
 ## Dependency graph and merge order
 

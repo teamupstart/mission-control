@@ -1,6 +1,6 @@
 # Multi-repo tasks
 
-**Status:** Scoped. Decisions adopted 2026-08-05. Awaiting phasing.
+**Status:** Scoped. Decisions adopted 2026-08-05. Phased into four serial phases - see [phased-plan.md](phased-plan.md) ([rendered](phased-plan.html)). Implementation not started; no tasks scheduled.
 **Rendered page:** [plan.html](plan.html)
 
 ## Goal

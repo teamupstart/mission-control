@@ -149,6 +149,19 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   // the commands above are proven present.
   await expect(record).not.toContainText(/done|exit|succeeded|failed|passed/i);
 
+  // Find counts what this rendering SHOWS. `--short` is only ever visible inside an opened
+  // record - the chat log keeps it in a hover tooltip - so a search for it must both count
+  // and mark it here. A hit find can see but not highlight, or text on screen find reports
+  // zero of, are the two ways this feature lies about a number.
+  await reopened.locator(".card-meta").click();
+  await dashboard.keyboard.press("Meta+f");
+  const findBox = reopened.getByRole("searchbox", { name: "Find in conversation" });
+  await findBox.fill("--short");
+  await expect(reopened.locator(".transcript-log mark.find-hit")).toHaveCount(1);
+  await expect(reopened.locator(".transcript-log mark.find-hit")).toHaveText("--short");
+  await dashboard.keyboard.press("Escape");
+  await expect(findBox).toHaveCount(0);
+
   // The composer keeps the prompt metaphor, and keeps working.
   await expect(reopened.getByText("mission ❯")).toBeVisible();
   const reply = reopened.getByPlaceholder(/^Send the next instruction/);

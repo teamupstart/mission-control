@@ -5573,11 +5573,6 @@ mark.find-hit.is-current {
 .turn-tools-lines .tool-chip-detail {
   color: var(--fg);
 }
-.turn-tools-lines .tool-chip-pre,
-.turn-tools-lines .tool-chip-rest {
-  color: var(--muted);
-}
-
 /* The composer keeps its own element and every behaviour attached to it; the prompt and
    the hint are added around the box, and the box loses the panel styling that would look
    like a form field inside a terminal. */

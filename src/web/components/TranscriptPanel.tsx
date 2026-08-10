@@ -31,7 +31,7 @@ import {
   resumeTail,
   seedTail,
 } from "../lib/transcript-history.ts";
-import { toolChip, transcriptRows } from "../lib/tools.ts";
+import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeConversation } from "../lib/episodes.ts";
 import {
@@ -41,6 +41,7 @@ import {
   buildMatcher,
   splitForHighlight,
   stepIndex,
+  toolLineText,
   toolSearchText,
   turnWho,
   type FindHit,
@@ -303,7 +304,19 @@ export function TranscriptPanel({
 
   // Derived, never stored. A streamed turn arriving re-runs the search, which is what
   // keeps the count honest as the conversation grows underneath an open find.
-  const allHits = find ? collectHits(rows, find.query, { caseSensitive: find.caseSensitive }, agentLabel) : [];
+  // Searched with the text the CURRENT rendering puts on screen. The terminal record
+  // shows a call's literal input where a chat chip shows the capped summary, so the two
+  // renderings have different visible text for the same call - and this module's whole
+  // contract is that what is counted is what can be seen.
+  const allHits = find
+    ? collectHits(
+        rows,
+        find.query,
+        { caseSensitive: find.caseSensitive },
+        agentLabel,
+        terminal ? toolLineText : toolSearchText,
+      )
+    : [];
   const hits = find ? hitsInScope(allHits, find.scope) : [];
   // Clamped on read rather than stored clamped: the hit list changes shape as the
   // query, the scope, and the transcript itself move, and a stored index that outlived
@@ -1334,7 +1347,7 @@ function TerminalTurn({
           </span>
           <ConversationTimestamp at={m.ts} className="pty-time" />
         </p>
-        {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
+        {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} lines />}
       </article>
     );
   }
@@ -1361,7 +1374,11 @@ function TerminalTurn({
           />
         </div>
       )}
-      {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
+      {/* Lines, like the folded record's - so EVERY tool call in this rendering is drawn
+          the same way. Not a nicety: the panel searches this rendering with
+          `toolLineText`, and a call drawn as a chip here would be searched over text it
+          does not show. */}
+      {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} lines />}
     </article>
   );
 }
@@ -1441,33 +1458,34 @@ function ToolChips({
   find?: RowFind | null;
   lines?: boolean;
 }): React.JSX.Element {
-  // Tool chips are searchable because this is where the file paths are, and a path is
-  // the single most likely thing to be looking for in an agent's transcript. The
-  // searched string is the chip as rendered ("read registry.ts"), so what matches is
-  // what the reader can see - matching the untruncated tool input would highlight
-  // nothing and count things that are not on screen.
+  // Tool calls are searchable because this is where the file paths are, and a path is
+  // the single most likely thing to be looking for in an agent's transcript. The searched
+  // string is the call AS RENDERED, so what matches is what the reader can see - which is
+  // why the two variants search different strings: a chip shows the capped summary, a line
+  // shows the literal input. `toolLineText`/`toolSearchText` are the same two projections
+  // the panel hands `collectHits`, so a hit's offsets and these windows always agree.
   const matcher = find ? buildMatcher(find.query, { caseSensitive: find.caseSensitive }) : null;
   return (
     <div className={lines ? "turn-tools turn-tools-lines" : "turn-tools"}>
       {tools.map((t, i) => {
         // The name alone ("Bash", nine times over) is frame without content; the chip
-        // carries what the call actually touched, and the title the literal input.
+        // carries what the call actually touched, and the line the literal input.
         const chip = toolChip(t);
         const chipHits = find ? find.hits.filter((h) => h.toolIndex === i) : [];
-        const searchText = toolSearchText(t);
-        const detailOffset = searchText.length - (chip.detail?.length ?? 0);
-        // Hits are collected over "<name> <detail>" but rendered as two spans, so each
+        // The one span after the name, and the ONE string it draws. Deliberately not the
+        // chip's detail spliced into its own title: that split put text on screen which
+        // no offset addressed, so `status --short` was readable in an opened record and
+        // uncountable by find - the exact "a wrong number looks like a right one" failure
+        // the find model exists to prevent.
+        const target = lines ? toolLineTarget(t) : chip.detail;
+        const searchText = lines ? toolLineText(t) : toolSearchText(t);
+        const targetOffset = searchText.length - (target?.length ?? 0);
+        // Hits are collected over "<name> <target>" but rendered as two spans, so each
         // is re-expressed in its own span's coordinates. `hitsInWindow` clips rather
         // than filters, which is what lets a match spanning the two - "read prompt" -
         // mark both halves instead of neither.
         const nameHits = hitsInWindow(chipHits, 0, chip.name.length);
-        const detailHits = hitsInWindow(chipHits, detailOffset, searchText.length);
-        // The literal input, split around the target the chip named, so a line can show
-        // `ls -la e2e` while the searched, highlightable span inside it is still exactly
-        // the `ls` the hit offsets were computed against. When the target is not a
-        // substring of the input - a capped detail, a derived description - there is no
-        // safe split and the line falls back to the chip's own two spans.
-        const around = lines ? splitAroundDetail(chip.title, chip.detail) : null;
+        const targetHits = hitsInWindow(chipHits, targetOffset, searchText.length);
         const body = (
           <span className={`tool-chip${chipHits.length ? " has-find-hit" : ""}`}>
             <span className="tool-chip-name">
@@ -1483,21 +1501,19 @@ function ToolChips({
                 record: `bash` and `git status --short` would come off the clipboard as
                 `bashgit status --short`. Adding it in both variants would instead give the
                 chip an anonymous flex item and a second gap. */}
-            {lines && " "}
-            {around && <span className="tool-chip-pre">{around.before}</span>}
-            {chip.detail &&
-              (detailHits.length && matcher ? (
+            {lines && target && " "}
+            {target &&
+              (targetHits.length && matcher ? (
                 <span className="tool-chip-detail">
                   <Highlighted
-                    text={chip.detail}
-                    hits={detailHits}
+                    text={target}
+                    hits={targetHits}
                     currentKey={find?.currentKey ?? null}
                   />
                 </span>
               ) : (
-                <span className="tool-chip-detail">{chip.detail}</span>
+                <span className="tool-chip-detail">{target}</span>
               ))}
-            {around && <span className="tool-chip-rest">{around.after}</span>}
           </span>
         );
         // No tooltip on a line: the line already shows what the chip's tooltip was for.
@@ -1515,19 +1531,6 @@ function ToolChips({
   );
 }
 
-/**
- * The literal input either side of the target the chip named, or null when it cannot be
- * split there. Pure, and exported nowhere: the only caller is the line variant above.
- */
-function splitAroundDetail(
-  title: string,
-  detail: string | null,
-): { before: string; after: string } | null {
-  if (!detail || title === detail) return null;
-  const at = title.indexOf(detail);
-  if (at < 0) return null;
-  return { before: title.slice(0, at), after: title.slice(at + detail.length) };
-}
 
 /** Append only turns we haven't already shown (init and append can overlap). */
 function mergeById(prev: TranscriptMessage[], next: TranscriptMessage[]): TranscriptMessage[] {

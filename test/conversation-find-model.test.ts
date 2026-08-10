@@ -8,6 +8,7 @@ import {
   buildMatcher,
   splitForHighlight,
   stepIndex,
+  toolLineText,
   toolSearchText,
   turnWho,
 } from "../src/web/lib/find.ts";
@@ -237,4 +238,67 @@ test("a rail snippet carries context either side and marks where it was cut", ()
 test("text with no matches returns one unmatched segment, not an empty render", () => {
   assert.deepEqual(splitForHighlight("hello", []), [{ text: "hello", start: 0, isMatch: false }]);
   assert.deepEqual(splitForHighlight("", []), []);
+});
+
+// ---- searching a tool call in each of the two renderings ----
+//
+// The chat log draws a tool call as a chip carrying the capped summary; the terminal
+// rendering draws it as a line carrying the literal input. Different text on screen for
+// the same call, so `collectHits` takes the projection to search with. What these pin is
+// the module's founding rule under that split: what is COUNTED is what is SHOWN, in
+// whichever rendering is up - never more (a hit nobody can see or jump to) and never less
+// (text plainly on screen that find reports zero of).
+
+const RUN: ToolCall = { name: "Bash", input: JSON.stringify({ command: "git status --short" }) };
+
+test("a chat chip is searched over the summary it draws, and no further", () => {
+  const rows = [tools("r", [RUN])];
+  // `bash git` is what the chip shows, and both halves match.
+  assert.equal(collectHits(rows, "bash", { caseSensitive: false }, "claude").length, 1);
+  assert.equal(collectHits(rows, "git", { caseSensitive: false }, "claude").length, 1);
+  // The rest of the command lives only in the chip's hover tooltip. Counting it would
+  // promise a jump to a highlight that cannot exist on screen.
+  assert.equal(collectHits(rows, "--short", { caseSensitive: false }, "claude").length, 0);
+  assert.equal(collectHits(rows, "status", { caseSensitive: false }, "claude").length, 0);
+});
+
+test("a terminal line is searched over the whole command it draws", () => {
+  const rows = [tools("r", [RUN])];
+  const hits = collectHits(rows, "--short", { caseSensitive: false }, "claude", toolLineText);
+  assert.equal(hits.length, 1, "text plainly on screen in an opened record was uncountable");
+  // Addressed inside the rendered string, so the renderer's window arithmetic can place it.
+  const text = toolLineText(RUN);
+  assert.equal(text, "bash git status --short");
+  assert.equal(text.slice(hits[0]!.start, hits[0]!.end), "--short");
+  assert.equal(
+    collectHits(rows, "status", { caseSensitive: false }, "claude", toolLineText).length,
+    1,
+  );
+});
+
+test("every hit in a line lands inside one of the two spans that draw it", () => {
+  // The renderer splits the searched string into a name span and a target span, and
+  // re-expresses each hit into those coordinates. A hit outside both windows would be
+  // counted with nothing to mark, which is the failure this whole module is shaped to
+  // make impossible.
+  const text = toolLineText(RUN);
+  const name = "bash";
+  const target = text.slice(name.length + 1);
+  for (const query of ["bash", "git", "status", "--short", "sh"]) {
+    const hits = collectHits([tools("r", [RUN])], query, { caseSensitive: false }, "claude", toolLineText);
+    for (const h of hits) {
+      const inName = hitsInWindow([h], 0, name.length).length > 0;
+      const inTarget = hitsInWindow([h], name.length + 1, text.length).length > 0;
+      assert.ok(inName || inTarget, `"${query}" matched at ${h.start} with no span to mark it`);
+    }
+  }
+  // And the two spans reassemble into exactly the string that was searched, so the line a
+  // reader copies is the line find walked.
+  assert.equal(`${name} ${target}`, text);
+});
+
+test("a call with no readable input is its bare name in both renderings", () => {
+  const bare: ToolCall = { name: "Bash" };
+  assert.equal(toolLineText(bare), "bash");
+  assert.equal(toolSearchText(bare), "bash");
 });

@@ -259,6 +259,23 @@ export function toolChip(t: ToolCall): ToolChip {
   return { name, detail: detail ? cap(detail) : null, title: source };
 }
 
+/**
+ * What a terminal record's LINE shows after the tool name: the literal input, uncapped -
+ * `ls -la e2e`, `src/server/registry.ts` - or null when the call carried none to show.
+ *
+ * A line is not a chip. A chip is a glance and shows the 40-char summary `toolChip`
+ * derives; a line is opened on purpose and is meant to be read and copied, so it shows
+ * what actually ran. `title` is the uncapped source the chip already carries for its
+ * tooltip, so this exposes no input the chip did not already consider displayable.
+ *
+ * Null when the chip found no detail, because `title` degrades to the bare tool name there
+ * and a line reading `bash bash` says less than `bash` alone.
+ */
+export function toolLineTarget(t: ToolCall): string | null {
+  const chip = toolChip(t);
+  return chip.detail ? chip.title : null;
+}
+
 /** A transcript row: a real turn, or a run of tool-only turns folded into one line. */
 export type TranscriptRow =
   | { kind: "turn"; id: string; ts: number; message: TranscriptMessage }

@@ -7,7 +7,6 @@ import {
   foremanClaudeTransportFallback,
   flushPendingSpend,
   loadSpendOutbox,
-  pendingSpendReports,
   sweepSpendOutbox,
 } from "./client.ts";
 import { setLlmSpendSink } from "../llm/spend.ts";
@@ -68,9 +67,10 @@ import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem, verifyModel } from "./queue-verify.ts";
 import type { StandardsBundle } from "../standards.ts";
-import { DEFAULT_LLM_RUNNER_ID, killLiveLlmRuns, llmRunner } from "../llm/index.ts";
+import { DEFAULT_LLM_RUNNER_ID, llmRunner } from "../llm/index.ts";
 import { configureClaudeRunnerTransport } from "../llm/claude.ts";
 import type { ClaudeTransport, LlmRunnerId } from "@shared/llm.ts";
+import { installForemanShutdown } from "./shutdown.ts";
 import {
   drainCompletionClaim,
   promptedCompletionClaim,
@@ -238,36 +238,6 @@ function startLeaseRenewal(client: ForemanClient): void {
   setInterval(() => void beat(), LEASE_RENEW_MS).unref?.();
 }
 
-/**
- * Tear down on an ordinary exit signal. Two things must happen:
- *  - Cancel our reviewers. Print-mode children are detached, so they would survive us;
- *    SDK queries need their AbortControllers fired. A SIGKILL of this process still
- *    cannot run cleanup, but every ordinary path is covered.
- *  - Release the lease, so a standby takes over at once instead of waiting out the
- *    90s TTL.
- */
-function installShutdown(client: ForemanClient): void {
-  let closing = false;
-  for (const sig of ["SIGINT", "SIGTERM"] as const) {
-    process.on(sig, () => {
-      if (closing) process.exit(1); // a second Ctrl-C means "now"
-      closing = true;
-      log("shutting down…");
-      // Every runner and transport: print children need signals and SDK calls need aborts.
-      killLiveLlmRuns();
-      // One last attempt to deliver accounting for runs that already happened. Best-effort
-      // rather than load-bearing now that the outbox is durable: anything this does not
-      // manage to send stays on disk and the next worker picks it up. It still runs first,
-      // because delivering now is better than delivering after the next restart.
-      if (pendingSpendReports() > 0) log(`flushing ${pendingSpendReports()} spend report(s)…`);
-      void flushPendingSpend()
-        .catch(() => {})
-        .then(() => client.releaseLease(WORKER_ID))
-        .finally(() => process.exit(0));
-    });
-  }
-}
-
 async function main(): Promise<void> {
   const client = new ForemanClient();
   // The daemon installs the same runner with a DB-backed resolver. This separate process
@@ -289,7 +259,7 @@ async function main(): Promise<void> {
     log(`recovered ${recovered} undelivered spend report(s) from a previous run`);
     void flushPendingSpend();
   }
-  installShutdown(client);
+  installForemanShutdown(client, WORKER_ID, log);
   startLeaseRenewal(client);
   log(`Foreman worker started (${WORKER_ID}); watching the needs-you queue + session work queues.`);
 

@@ -5,6 +5,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import type {
+  ClaudeSdkMessage,
+  ClaudeSdkOneShotDeps,
+} from "../src/server/harness/claude/sdk-types.ts";
 
 // The process boundary is the feature here. Foreman cannot read the app_config row that
 // selects Claude's transport, and importing the daemon's config module would open SQLite as
@@ -19,6 +23,11 @@ const {
   ForemanClient,
   foremanClaudeTransportFallback,
 } = await import("../src/server/foreman/client.ts");
+const { installForemanShutdown } = await import("../src/server/foreman/shutdown.ts");
+const {
+  claudeRunner,
+  configureClaudeRunnerTransport,
+} = await import("../src/server/llm/claude.ts");
 
 after(() => {
   globalThis.fetch = originalFetch;
@@ -109,10 +118,57 @@ test("the Foreman worker's transitive module graph opens no database", () => {
   }
 });
 
-test("the worker's ordinary shutdown still cancels every live runner", () => {
-  const source = readFileSync(resolve(REPO, "src/server/foreman/worker.ts"), "utf8");
-  const start = source.indexOf("function installShutdown");
-  const end = source.indexOf("async function main", start);
-  assert.ok(start >= 0 && end > start, "could not isolate the worker shutdown path");
-  assert.match(source.slice(start, end), /killLiveLlmRuns\(\)/);
+test("the worker's ordinary shutdown aborts an in-flight SDK query", async () => {
+  let controller: AbortController | undefined;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const deps: ClaudeSdkOneShotDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ options }) => {
+      controller = options.abortController;
+      markStarted();
+      return {
+        [Symbol.asyncIterator](): AsyncIterator<ClaudeSdkMessage> {
+          return {
+            next: () => new Promise<IteratorResult<ClaudeSdkMessage>>(() => {}),
+          };
+        },
+      };
+    },
+  };
+  const restore = configureClaudeRunnerTransport(() => "sdk", deps);
+  try {
+    const pending = claudeRunner.run("stay in flight", { timeoutMs: 60_000 });
+    await started;
+
+    const listeners = new Map<string, () => void>();
+    let finishExit!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      finishExit = resolve;
+    });
+    installForemanShutdown(
+      { releaseLease: async () => {} },
+      "worker-under-test",
+      () => {},
+      {
+        on(signal, listener) {
+          listeners.set(signal, listener);
+        },
+        exit(code) {
+          finishExit(code);
+          return undefined as never;
+        },
+      },
+    );
+
+    listeners.get("SIGTERM")!();
+    await assert.rejects(pending, /aborted/);
+    assert.equal(controller?.signal.aborted, true);
+    assert.equal(await exited, 0);
+  } finally {
+    restore();
+  }
 });

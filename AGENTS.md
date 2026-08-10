@@ -4,12 +4,12 @@
 
 Mission Control is a local control plane for Claude Code, Codex, and Pi sessions, built with Node.js 24+, TypeScript 5.7, React 19, Vite 6, Electron 43, Hono 4, Zod 3, and SQLite.
 
-Read [README.md](README.md) for product behavior and setup. Before changing a subsystem, read:
+Read the [documentation index](docs/README.md) for product behavior and setup. Before changing a subsystem, read:
 
 - [Architecture and lifecycle](docs/agent-guides/architecture.md)
 - [Change contracts](docs/agent-guides/change-contracts.md)
 - [Ensemble extension guide](docs/ensembles.md)
-- [Original agent guide backup](docs/backups/AGENTS.old) for historical detail
+- [Original agent guide backup](docs/archive/backups/AGENTS.old) for historical detail
 
 ## Commands
 
@@ -174,6 +174,7 @@ Two standing constraints:
 ## Boundaries
 
 - Never commit secrets, tokens, credentials, local state, or operator data.
+- Never commit evidence artifacts. Proof-of-work screenshots and transcripts attach to the pull request. Evidence produced for or submitted to workflow personas is also never committed: produce it in a gitignored location and attach it to the pull request. Committed documentation imagery in `docs/images/` is documentation, not evidence.
 - Never modify production, signing, release, CI, or deployment configuration unless the task explicitly requires it.
 - Never let the Foreman worker touch SQLite. The daemon is the only database writer.
 - Never add a second session-eviction path. Terminal and SDK sessions leave through `Registry.beginEviction`.

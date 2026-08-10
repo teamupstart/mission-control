@@ -18,6 +18,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "sess",
     runtime: "terminal",
+    // A session Foreman tracked closely enough to write notes for - invited.
+    foremanInvite: "dispatch",
     nameSource: "process",
     state: "working" as SessionState,
     cwd: null,

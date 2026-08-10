@@ -99,6 +99,25 @@ export const SESSION_RUNTIMES = ["terminal", "sdk"] as const;
 export type SessionRuntime = (typeof SESSION_RUNTIMES)[number];
 
 /**
+ * How Foreman came to be invited into a session - the value of `Session.foremanInvite`
+ * when it is invited at all.
+ *
+ * - `"sdk"`: an embedded session Mission Control runs by definition; invited implicitly,
+ *   with no stored row.
+ * - `"dispatch"`: Mission Control dispatched this terminal session for a task; the
+ *   dispatcher records the invite once discovery confirms the spawn.
+ * - `"operator"`: a human invited Foreman explicitly.
+ *
+ * APPEND-ONLY, and a tuple rather than a bare union because the values are persisted in
+ * `foreman_invites.source`. That persisted domain additionally contains `'withdrawn'` -
+ * the tombstone an operator's withdrawal writes, which beats even the implicit SDK grant -
+ * and it NEVER surfaces here: the registry resolves a withdrawn row to `null`, the same
+ * value an ordinary discovered session carries.
+ */
+export const FOREMAN_INVITES = ["sdk", "dispatch", "operator"] as const;
+export type ForemanInvite = (typeof FOREMAN_INVITES)[number];
+
+/**
  * What an embedded driver's acknowledgement means for the submitted message.
  *
  * Both current drivers fold a message sent mid-turn into the turn already running, and both
@@ -373,6 +392,19 @@ export interface Session {
    * by the supervisor, but nothing outside it may key behaviour on the spelling.
    */
   runtime: SessionRuntime;
+  /**
+   * Whether Foreman is invited to act in this session, and on whose word - see
+   * `FOREMAN_INVITES`. `null` means uninvited: every plainly discovered session, and any
+   * session whose invite was withdrawn.
+   *
+   * RESOLVED by the registry, never stored on the session: a `'withdrawn'` row in
+   * `foreman_invites` resolves to `null` (the tombstone beats even the implicit SDK
+   * grant); otherwise a stored `'dispatch'` or `'operator'` row resolves to its own
+   * value; otherwise an SDK-runtime session resolves to `"sdk"` and everything else to
+   * `null`. Nothing reads this field yet - the Foreman worker gating and the UI land in
+   * later phases of `docs/plans/foreman-invite/phased-plan.md`.
+   */
+  foremanInvite: ForemanInvite | null;
   /**
    * Display name. A terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an
@@ -2081,6 +2113,35 @@ export interface SettingsStatus {
   taskSources: { failing: number };
 }
 
+// ---- Keep Awake (transient idle-sleep inhibition) ----
+
+/**
+ * The daemon's observed Keep Awake state - never a saved preference. There is nothing
+ * durable behind this on purpose: the mode applies only to the current daemon run, so a
+ * quit, crash, or restart returns the next snapshot to `off` and nothing reacquires the
+ * assertion. The one writer is the daemon's `KeepAwakeManager`; the browser's one source
+ * is the snapshot plus `keep_awake_status` below.
+ *
+ * `state` reports what was OBSERVED of the OS child, not what was requested: `on` is
+ * reachable only after the inhibitor process actually spawned, and an unexpected exit
+ * lands on `error` rather than quietly restarting. That is what lets the live indicator
+ * promise it never claims `awake` before the assertion exists or after it is gone.
+ */
+export interface KeepAwakeStatus {
+  /** Whether this host has an idle-sleep inhibitor to offer (macOS, or a test override). */
+  supported: boolean;
+  /** Why the mode is unavailable, bounded for the wire; null when `supported`. */
+  unavailableReason: string | null;
+  /** Observed lifecycle of the OS assertion child. Exhaustive - reducers must switch it. */
+  state: "off" | "starting" | "on" | "stopping" | "error";
+  /** Which inhibitor implementation this daemon would run; null when unsupported. */
+  provider: "caffeinate" | null;
+  /** Epoch ms at which the active assertion was confirmed (child spawned); else null. */
+  since: number | null;
+  /** Bounded runtime failure from the last transition or an unexpected exit; else null. */
+  error: string | null;
+}
+
 // ---- SSE events (daemon -> UI) ----
 
 export type ServerEvent =
@@ -2133,6 +2194,13 @@ export type ServerEvent =
        * change something. Composed fresh on every snapshot (see `Registry.snapshot`).
        */
       settingsStatus: SettingsStatus;
+      /**
+       * The transient Keep Awake state at connect time, so a reconnect converges on the
+       * daemon's truth immediately - which is what makes restart-resets visible: a daemon
+       * that just started always reports `off` here, and the browser must adopt that over
+       * any stale `on` it was drawing before the drop.
+       */
+      keepAwake: KeepAwakeStatus;
     }
   | { type: "session_upsert"; session: Session }
   | { type: "session_remove"; id: string }
@@ -2194,7 +2262,14 @@ export type ServerEvent =
    * poll and an already-open dispatch modal never did, so both could name a model that had
    * been retired - which reads as a saved change being ignored.
    */
-  | { type: "harnesses_config_changed" };
+  | { type: "harnesses_config_changed" }
+  /**
+   * The Keep Awake observation moved - a transition was requested, the OS child spawned
+   * or exited, or a transition failed. Carries the whole status so every open dashboard
+   * converges without a fetch; emitted only when an observable field changed (see
+   * `Registry.setKeepAwakeStatus`).
+   */
+  | { type: "keep_awake_status"; status: KeepAwakeStatus };
 
 // ---- session transcript (expanded card) ----
 

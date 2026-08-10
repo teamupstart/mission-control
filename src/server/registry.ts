@@ -4,6 +4,7 @@ import { PERMISSION_MODES } from "@shared/types.ts";
 import type {
   AgentType,
   ForemanEpisode,
+  ForemanInvite,
   MetaSource,
   FleetCost,
   OrphanedQueueHint,
@@ -34,6 +35,7 @@ import type {
   InspectorInspection,
   InspectorSummary,
   InspectionUpdated,
+  KeepAwakeStatus,
   SettingsStatus,
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
@@ -107,6 +109,11 @@ import {
   loadSessionGoals,
   pruneSessionGoals,
   loadSessionNotes,
+  loadForemanInvites,
+  upsertForemanInvite,
+  deleteForemanInvite,
+  moveForemanInvite as moveForemanInviteDb,
+  pruneForemanInvites as pruneForemanInvitesDb,
   hooksEverSeen,
   lastAgentBinding,
   logEvent,
@@ -160,7 +167,7 @@ import {
   recordWorkEpisodePrompt,
   workEpisodePromptIdentities,
 } from "./db.ts";
-import type { SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
+import type { ForemanInviteRow, SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
@@ -477,6 +484,13 @@ export class Registry extends EventEmitter {
   private notes = new Map<string, SessionNote>();
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
   private goals = new Map<string, SessionGoal>();
+  /**
+   * Foreman invites, keyed by the SAME note key. In memory like notes/goals because
+   * `foremanInviteFor` runs per session per ~1.5s sweep, and a per-sweep SELECT is the
+   * exact cost the note cache exists to avoid. Holds every row, the `'withdrawn'`
+   * tombstones included - resolution, not storage, is where the tombstone becomes null.
+   */
+  private invites = new Map<string, ForemanInviteRow>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private driverDialogs = new Map<string, PaneDialog[]>();
   /** overlay keyed by pane token ("tmux:%12" | "wezterm:12") - see `@shared/pane.ts`. */
@@ -550,6 +564,25 @@ export class Registry extends EventEmitter {
   private lastFleetCostAt = 0;
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
+  /**
+   * The current Keep Awake observation, held for the snapshot and emitted on change.
+   *
+   * Held rather than computed: the manager owns the child process and pushes every
+   * transition through `setKeepAwakeStatus`, so this cache IS the daemon's answer. The
+   * default is a truthful placeholder for a registry no manager has seeded yet (the
+   * ~20 hand-built route-test registries): unsupported and off, which a browser renders
+   * as unavailable rather than as a claim about host power state. `src/server/index.ts`
+   * seeds the real status before the server accepts traffic. Deliberately TRANSIENT -
+   * a new daemon always snapshots `off`, which is the approved restart-reset behavior.
+   */
+  private keepAwake: KeepAwakeStatus = {
+    supported: false,
+    unavailableReason: "this daemon did not initialize a keep-awake provider",
+    state: "off",
+    provider: null,
+    since: null,
+    error: null,
+  };
   /** Last Line fold emitted, for the same reason as the two above. */
   private lastLineSummary: LineSummary | null = null;
   private lastLineSummaryAt = 0;
@@ -574,6 +607,7 @@ export class Registry extends EventEmitter {
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);
     for (const g of loadSessionGoals()) this.goals.set(g.noteKey, g);
+    for (const i of loadForemanInvites()) this.invites.set(i.noteKey, i);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
     // Always load terminal tasks that still hold resources so they get reconciled, even if newer
@@ -604,6 +638,7 @@ export class Registry extends EventEmitter {
     fleetCost: FleetCost | null;
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
+    keepAwake: KeepAwakeStatus;
   } {
     return {
       sessions: [...this.sessions.values()],
@@ -626,7 +661,31 @@ export class Registry extends EventEmitter {
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
+      // The held observation, not a recompute: the manager pushes every transition here,
+      // and a daemon that just started holds the seeded `off` - which is exactly the
+      // restart-reset a reconnecting dashboard must converge on.
+      keepAwake: this.keepAwake,
     };
+  }
+
+  /**
+   * Adopt the manager's Keep Awake observation, dropping a frame that restates the last
+   * one. The suppression mirrors `emitSettingsStatus`: the manager publishes on every
+   * transition attempt, and an idempotent re-request (double-enable from two windows)
+   * must not wake every browser with a status none of them can see move.
+   */
+  setKeepAwakeStatus(status: KeepAwakeStatus): void {
+    const prev = this.keepAwake;
+    const same =
+      prev.supported === status.supported &&
+      prev.unavailableReason === status.unavailableReason &&
+      prev.state === status.state &&
+      prev.provider === status.provider &&
+      prev.since === status.since &&
+      prev.error === status.error;
+    this.keepAwake = status;
+    if (same) return;
+    this.emitEvent({ type: "keep_awake_status", status });
   }
 
   /**
@@ -1128,6 +1187,9 @@ export class Registry extends EventEmitter {
       // definition. An SDK session never passes through here at all - it arrives through
       // `registerSdkSession`, which is the only other door into this map.
       runtime: "terminal",
+      // Resolved below with note/goal, once the overlay may have supplied the binding
+      // that decides the key.
+      foremanInvite: null,
       name: d.name,
       nameSource: d.nameSource,
       state: "working",
@@ -1237,10 +1299,18 @@ export class Registry extends EventEmitter {
     // written at all - its live-session branch writes on CHANGE, and by the time it
     // runs the overlay has already put the same id on the card.
     this.rememberAgentSession(base, known);
+    // A sweep can itself be what rotates the note key - a Codex rollout annotation or a
+    // hook overlay supplying the first agentSessionId - so carry the invite across the
+    // rotation BEFORE resolving off the new key, or a freshly dispatched session's
+    // `'dispatch'` row strands under the synthetic key and Foreman silently loses the
+    // session it just launched. Notes and goals accept that stranding; an invite is
+    // policy, not prose, so it may not.
+    if (prev) this.moveForemanInviteKey(noteKeyFor(prev), noteKeyFor(base));
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
     base.goal = this.goalSummaryFor(base);
+    base.foremanInvite = this.foremanInviteFor(base);
     // Read the ledger on FIRST SIGHT and on a key rotation, and carry the figure the rest
     // of the time. First sight is the case that matters: the ledger outlives the daemon,
     // so a session rebuilt after a restart has usage recorded by a previous process and
@@ -1319,6 +1389,10 @@ export class Registry extends EventEmitter {
       id: input.id,
       agent: input.agent,
       runtime: "sdk",
+      // Resolved below with note/goal. Ordinarily `"sdk"` with no stored row - Mission
+      // Control runs this session by definition - unless a `'withdrawn'` tombstone says
+      // the operator kicked Foreman out.
+      foremanInvite: null,
       name: input.name,
       // Nothing holds a pane to name this session, so the supervisor that launched it said
       // what it is called - which is what this `NameSource` value records.
@@ -1369,6 +1443,7 @@ export class Registry extends EventEmitter {
     s.task = this.taskSummaryFor(s.id, s.cwd);
     s.note = this.noteSummaryFor(s);
     s.goal = this.goalSummaryFor(s);
+    s.foremanInvite = this.foremanInviteFor(s);
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
     s.pendingTurns = this.pendingTurnsFor(s);
@@ -1546,8 +1621,13 @@ export class Registry extends EventEmitter {
         : { kind: "driver_identity" },
     );
     next.task = this.taskSummaryFor(next.id, next.cwd);
+    // The invite MOVES with the rotation rather than merely re-resolving, unlike the
+    // note and goal: stranding those costs stale prose, stranding this un-invites
+    // Foreman from a session Mission Control launched. Move first, resolve after.
+    this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
+    next.foremanInvite = this.foremanInviteFor(next);
     if (noteKeyFor(next) !== noteKeyFor(s)) next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
     next.pendingTurns = this.pendingTurnsFor(next);
@@ -1772,8 +1852,12 @@ export class Registry extends EventEmitter {
       // re-resolves the card would keep showing the PREVIOUS key's queue while its
       // real one sits orphaned and unoffered - stale in the exact moment the human
       // is looking, since a /clear is something they just did.
+      // The invite moves with the rotation - see `applyDriverBound` for why it may not
+      // strand the way the note and goal below are allowed to.
+      this.moveForemanInviteKey(noteKeyFor(target), noteKeyFor(next));
       next.note = this.noteSummaryFor(next);
       next.goal = this.goalSummaryFor(next);
+      next.foremanInvite = this.foremanInviteFor(next);
       // On a key ROTATION only, exactly as `applyRuntimeMeta` and `mergeDiscovered`
       // decide it. The ledger is not the only writer of this field - `applyPassiveUsage`
       // puts an unpriced token count straight onto the session for a harness that reports
@@ -1901,8 +1985,14 @@ export class Registry extends EventEmitter {
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
     }
+    // The Pi-dispatch rebind: the dispatcher wrote the `'dispatch'` invite under the
+    // pre-rebind synthetic key moments ago, and Pi's runtime is `terminal`, so no
+    // implicit grant catches a stranded row - missing this move silently un-invites
+    // Foreman from a session Mission Control just dispatched.
+    this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
+    next.foremanInvite = this.foremanInviteFor(next);
     next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
     next.pendingTurns = this.pendingTurnsFor(next);
@@ -3415,6 +3505,12 @@ export class Registry extends EventEmitter {
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
     }
+    if (noteKeyFor(next) !== noteKeyFor(s)) {
+      // `report_status` can carry the first (or a new) agent session id, which rotates
+      // the note key like any other binding - and the invite moves with the key.
+      this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+      next.foremanInvite = this.foremanInviteFor(next);
+    }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(next.id, next);
     this.emitSession(next);
@@ -3503,7 +3599,13 @@ export class Registry extends EventEmitter {
     // else here can move the figure: the ledger's own writer re-denormalizes through
     // `syncSessionsForCost` the moment it changes.
     const key = noteKeyFor(next);
-    if (key !== noteKeyFor(s)) next.cost = sessionCostFor(key);
+    if (key !== noteKeyFor(s)) {
+      next.cost = sessionCostFor(key);
+      // Same rotation, same rule as `applyDriverBound`: the invite moves with the key.
+      // Inside the rotation guard for the same per-render economy the cost re-read is.
+      this.moveForemanInviteKey(noteKeyFor(s), key);
+      next.foremanInvite = this.foremanInviteFor(next);
+    }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
     if (!sessionEqual(s, next)) this.emitSession(next);
@@ -5003,6 +5105,157 @@ export class Registry extends EventEmitter {
     }
   }
 
+  // ---- Foreman invites ----
+  //
+  // Whether Foreman may act in a session. One resolution rule, three write doors, and a
+  // key-move that rides every noteKey rotation. The registry is the ONLY writer of the
+  // `foreman_invites` table (through `setForemanInvite` / `inviteForeman` /
+  // `withdrawForemanInvite`); the dispatcher and the Foreman worker reach it through
+  // these methods and HTTP respectively, never through SQLite. Nothing reads the
+  // resolved field yet - worker gating is phase 2 of docs/plans/foreman-invite.
+
+  /**
+   * Resolve a session's invite state: a `'withdrawn'` row means `null` (the tombstone
+   * beats even the implicit grant); any other row speaks for itself; no row means the
+   * runtime decides - an SDK session is invited by construction, everything else is not.
+   */
+  private foremanInviteFor(s: Session): ForemanInvite | null {
+    const row = this.invites.get(noteKeyFor(s));
+    if (row) return row.source === "withdrawn" ? null : row.source;
+    return s.runtime === "sdk" ? "sdk" : null;
+  }
+
+  /**
+   * Carry an invite (tombstones included - a withdrawal belongs to the pane as much as a
+   * grant does) across a note-key rotation or a session reset. A no-op when the keys
+   * match or nothing is stored under `fromKey`; when a row already sits under `toKey`,
+   * the moved row wins - it followed the pane, and the resident row is the same pane's
+   * earlier state (see `moveForemanInvite` in db.ts).
+   *
+   * Public for `resetSession` (src/server/reset.ts), which moves the invite to the
+   * post-reset key beside its `clearPendingTurns` pair. Not a write door: it changes
+   * which key holds the state, never what the state is.
+   *
+   * Only the DESTINATION key re-syncs. The rotation call sites re-resolve their own
+   * `next` before emitting, and syncing `fromKey` here would emit the mid-rotation
+   * session they are about to replace with a momentarily-stranded (null) invite - a
+   * false frame on every /clear. A session left holding `fromKey` in some path this
+   * reasoning misses is corrected by the next discovery sweep's re-resolution.
+   */
+  moveForemanInviteKey(fromKey: string, toKey: string): void {
+    if (fromKey === toKey) return;
+    const row = this.invites.get(fromKey);
+    if (!row) return;
+    moveForemanInviteDb(fromKey, toKey);
+    this.invites.delete(fromKey);
+    this.invites.set(toKey, { ...row, noteKey: toKey });
+    this.syncSessionsForInvite(toKey);
+  }
+
+  /**
+   * The dispatcher's door: record that Mission Control launched this terminal session
+   * for a task, the moment discovery confirms the spawn. A plain upsert - a dispatch
+   * into a pane whose key holds an old tombstone is a fresh grant, and `'dispatch'`
+   * replacing `'withdrawn'` is exactly the restore the phased plan documents.
+   *
+   * Returns the resolved state, or undefined when the session is unknown.
+   */
+  setForemanInvite(sessionId: string, source: "dispatch"): ForemanInvite | null | undefined {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
+    const key = noteKeyFor(s);
+    const row: ForemanInviteRow = { noteKey: key, source, createdAt: Date.now() };
+    upsertForemanInvite(key, source, row.createdAt);
+    this.invites.set(key, row);
+    this.syncSessionsForInvite(key);
+    return this.foremanInviteFor(this.sessions.get(sessionId) ?? s);
+  }
+
+  /**
+   * The operator's door - restore-then-elevate, never a blind `'operator'` upsert:
+   *
+   * 1. Already invited: a no-op. This is also what keeps the API from downgrading a
+   *    live `'dispatch'` row to `'operator'`.
+   * 2. A `'withdrawn'` tombstone exists: delete it and re-resolve, so runtime-implied
+   *    grants resume - a withdrawn SDK session gets `"sdk"` back (backlog eligibility
+   *    included, once phase 2 reads the field) rather than a permanent, invisible
+   *    `"operator"` downgrade.
+   * 3. Still `null` after that: write `'operator'`. One documented residue: a
+   *    withdrawn, previously dispatched terminal re-invites as `"operator"` (its
+   *    `'dispatch'` row was replaced by the tombstone) until a fresh dispatch restores
+   *    `"dispatch"`.
+   *
+   * Returns the resolved state, or undefined when the session is unknown.
+   */
+  inviteForeman(sessionId: string): ForemanInvite | null | undefined {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
+    const key = noteKeyFor(s);
+    if (this.foremanInviteFor(s) !== null) return this.foremanInviteFor(s);
+    if (this.invites.get(key)?.source === "withdrawn") {
+      deleteForemanInvite(key);
+      this.invites.delete(key);
+    }
+    if (this.foremanInviteFor(s) === null) {
+      const row: ForemanInviteRow = { noteKey: key, source: "operator", createdAt: Date.now() };
+      upsertForemanInvite(key, "operator", row.createdAt);
+      this.invites.set(key, row);
+    }
+    this.syncSessionsForInvite(key);
+    return this.foremanInviteFor(s);
+  }
+
+  /**
+   * Withdraw Foreman from a session: upsert the `'withdrawn'` tombstone. A stored fact
+   * rather than a deleted row because the withdrawal must beat the implicit SDK grant -
+   * which no absence of a row can do - and must survive a restart. Authoritative for
+   * every session, embedded ones included.
+   *
+   * Returns the resolved state (always `null` for a live session), or undefined when
+   * the session is unknown.
+   */
+  withdrawForemanInvite(sessionId: string): ForemanInvite | null | undefined {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
+    const key = noteKeyFor(s);
+    const row: ForemanInviteRow = { noteKey: key, source: "withdrawn", createdAt: Date.now() };
+    upsertForemanInvite(key, "withdrawn", row.createdAt);
+    this.invites.set(key, row);
+    this.syncSessionsForInvite(key);
+    return this.foremanInviteFor(s);
+  }
+
+  /**
+   * Drop invites belonging to no live session and older than `olderThan`. Returns how
+   * many. `pruneGoals`' twin, for `pruneGoals`' reasons: the map holds every row read at
+   * boot, the table gains a row per key a dispatch or an operator ever touched, and
+   * every rotation the move above could not see (a daemon that was down when the key
+   * changed) strands one for good. Same protected set (`sessions`, not `liveSessions()` -
+   * an exited card's key stays protected until eviction), same `sweptSessions` gate.
+   */
+  pruneForemanInvites(olderThan: number): number {
+    if (!this.sweptSessions) return 0;
+    const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    const removed = pruneForemanInvitesDb(liveKeys, olderThan);
+    if (!removed) return 0;
+    for (const [key, row] of this.invites) {
+      if (liveKeys.has(key) || row.createdAt >= olderThan) continue;
+      this.invites.delete(key);
+    }
+    return removed;
+  }
+
+  private syncSessionsForInvite(key: string): void {
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      const resolved = this.foremanInviteFor(s);
+      if (s.foremanInvite === resolved) continue;
+      const next = { ...s, foremanInvite: resolved };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
   // ---- Foreman work queues ----
 
   /** Re-read pending turns after the outbox manager commits a lifecycle transition. */
@@ -5778,6 +6031,10 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // could only ever waste work; this one would be a silent lie if the invariant ever
   // loosened.
   runtime: byValue,
+  // Scalar, and it moves: an invite, a withdrawal, or a rotation-carried row landing
+  // resolves to a new value with often nothing else on the session changing - left out,
+  // the phase 3 rail control would swap only when something unrelated shook the card.
+  foremanInvite: byValue,
   name: byValue,
   nameSource: byValue,
   state: byValue,

@@ -1,10 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -36,7 +36,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * No model tokens: nothing here dispatches an agent at all.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/settings-ledger/", import.meta.url));
+const EVIDENCE = artifactsDir("settings-ledger");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -62,7 +62,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   // full-page capture paints them again halfway down the image.
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/settings-ledger/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/settings-ledger/${name}.png`);
 }
 
 /** How many rows a page holds. Mirrors `CONSOLE_PAGE_SIZE`, which the browser cannot import. */

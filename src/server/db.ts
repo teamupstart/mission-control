@@ -343,6 +343,21 @@ export function openDb(): DatabaseSync {
       updated_at              INTEGER NOT NULL
     );
 
+    -- Whether Foreman is invited to act in a session. Keyed like session_notes so the
+    -- invite shares that lifecycle (rotation, reset, prune), and one row per key holds
+    -- the latest explicit state: 'dispatch' (Mission Control launched this terminal
+    -- session for a task), 'operator' (a human invited Foreman), or 'withdrawn' - the
+    -- tombstone an operator's withdrawal writes. The tombstone is a stored fact rather
+    -- than a deleted row because withdrawal must beat the IMPLICIT grant an SDK-runtime
+    -- session re-derives on every resolution, and must survive a restart. SDK sessions
+    -- otherwise store nothing: their invite is implied by the runtime. The source domain
+    -- is append-only from the moment it shipped - see docs/agent-guides/change-contracts.md.
+    CREATE TABLE IF NOT EXISTS foreman_invites (
+      note_key   TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
+      source     TEXT NOT NULL CHECK (source IN ('dispatch','operator','withdrawn')),
+      created_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS app_config (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -350,6 +365,12 @@ export function openDb(): DatabaseSync {
 
     -- Reusable workflow judges. guidance_md is exact operator-authored Markdown: no
     -- normalized copy exists and every write names this column directly.
+    --
+    -- import_provenance_json records where an IMPORTED Persona's guidance was read from
+    -- (PersonaProvenance: path, repo, plugin version, content hash, imported-at). NULL is the
+    -- ordinary case and means "authored here", which is also what every row written before the
+    -- column existed genuinely was - hence nullable with no default. It is live-catalog data
+    -- only: published versions carry their own guidance copy and never consult this.
     CREATE TABLE IF NOT EXISTS personas (
       id              TEXT PRIMARY KEY,
       name            TEXT NOT NULL,
@@ -361,7 +382,8 @@ export function openDb(): DatabaseSync {
       revision        INTEGER NOT NULL DEFAULT 1,
       archived_at     INTEGER,
       created_at      INTEGER NOT NULL,
-      updated_at      INTEGER NOT NULL
+      updated_at      INTEGER NOT NULL,
+      import_provenance_json TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_personas_normalized_name
       ON personas(normalized_name);
@@ -1516,6 +1538,12 @@ function migrate(d: DatabaseSync): void {
   // The exact active directive a Persona attempt claimed. Nullable means no feedback was
   // active at claim time; retries of the same attempt retain a non-null snapshot.
   addColumn(d, "workflow_node_attempts", "operator_directive_json", "TEXT");
+
+  // Where an imported Persona was read from, so an upstream edit can be SEEN rather than
+  // silently adopted. Nullable with no default because a Persona authored in the editor
+  // genuinely has no source file, and that is exactly what every pre-feature row is. No index:
+  // provenance is read with the row it belongs to and never searched by.
+  addColumn(d, "personas", "import_provenance_json", "TEXT");
 
   // The delivery-to-attempt link. Nullable with no default so every historical row - every
   // persona_feedback, inspector_feedback, unchanged_evidence_nudge and pr_handoff ever
@@ -3923,6 +3951,134 @@ export function pruneSessionGoals(liveKeys: Iterable<string>, olderThan: number)
   const r = openDb()
     .prepare(
       `DELETE FROM session_goals WHERE updated_at < ? AND note_key NOT IN (${placeholders})`,
+    )
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
+// ---- foreman invites (whether Foreman may act in a session) ----
+
+/**
+ * The persisted invite domain. `'withdrawn'` is the tombstone and never surfaces on
+ * `Session.foremanInvite` - the registry resolves it to `null`. Append-only, like the
+ * shared `FOREMAN_INVITES` tuple it extends.
+ */
+export type ForemanInviteSource = "dispatch" | "operator" | "withdrawn";
+
+export interface ForemanInviteRow {
+  noteKey: string;
+  source: ForemanInviteSource;
+  createdAt: number;
+}
+
+export function upsertForemanInvite(
+  noteKey: string,
+  source: ForemanInviteSource,
+  now = Date.now(),
+): void {
+  openDb()
+    .prepare(
+      `INSERT INTO foreman_invites (note_key, source, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET source=excluded.source, created_at=excluded.created_at`,
+    )
+    .run(noteKey, source, now);
+}
+
+/** Every source this build can read. See the change-contracts entry before extending. */
+const KNOWN_FOREMAN_INVITE_SOURCES = new Set<string>(["dispatch", "operator", "withdrawn"]);
+
+/**
+ * Narrow a stored row to one this build can read, or undefined - REPORTING the drop
+ * rather than guessing, the same rule `resolveDispatchRuntime` holds for a persisted
+ * runtime. An unreadable source exists after a downgrade: a newer build widened the
+ * CHECK (this build's own CREATE is a no-op on an existing table) and wrote a value
+ * these types never named. Passing it through would put a raw string on
+ * `Session.foremanInvite` and out over SSE as if it were a valid `ForemanInvite`;
+ * narrowing to "no row" means the session resolves from its runtime alone. The row
+ * itself is deliberately left in place - it belongs to the build that understands it.
+ */
+function readForemanInviteRow(r: {
+  note_key: string;
+  source: string;
+  created_at: number;
+}): ForemanInviteRow | undefined {
+  if (!KNOWN_FOREMAN_INVITE_SOURCES.has(r.source)) {
+    console.warn(
+      `[db] ignoring the foreman invite for ${r.note_key}: ` +
+        `unreadable source "${r.source}" (written by a newer build?)`,
+    );
+    return undefined;
+  }
+  return { noteKey: r.note_key, source: r.source as ForemanInviteSource, createdAt: r.created_at };
+}
+
+export function getForemanInvite(noteKey: string): ForemanInviteRow | undefined {
+  const r = openDb()
+    .prepare(`SELECT note_key, source, created_at FROM foreman_invites WHERE note_key = ?`)
+    .get(noteKey) as unknown as
+    | { note_key: string; source: string; created_at: number }
+    | undefined;
+  return r ? readForemanInviteRow(r) : undefined;
+}
+
+/** Restore-then-elevate's first half: dropping a tombstone lets implicit grants resume. */
+export function deleteForemanInvite(noteKey: string): void {
+  openDb().prepare(`DELETE FROM foreman_invites WHERE note_key = ?`).run(noteKey);
+}
+
+/** All READABLE invites, reloaded into the registry on start - the notes/goals boot pattern. */
+export function loadForemanInvites(): ForemanInviteRow[] {
+  const rows = openDb()
+    .prepare(`SELECT note_key, source, created_at FROM foreman_invites`)
+    .all() as unknown as Array<{ note_key: string; source: string; created_at: number }>;
+  return rows.flatMap((r) => {
+    const row = readForemanInviteRow(r);
+    return row ? [row] : [];
+  });
+}
+
+/**
+ * Carry an invite across a note-key rotation - the binding of an agent session id, a
+ * Pi launch rebind, or a reset - so a dispatched session does not silently lose Foreman
+ * the moment its hooks land. `session_notes` and `session_goals` strand their rows on
+ * rotation and live with it; an invite stranding is a policy change, not stale prose.
+ *
+ * Last-write-wins with the moved row's own `created_at`: the row followed the pane, and
+ * a row already sitting under the target key is the same pane's earlier state.
+ */
+export function moveForemanInvite(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  const row = getForemanInvite(fromKey);
+  if (!row) return;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(
+      `INSERT INTO foreman_invites (note_key, source, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET source=excluded.source, created_at=excluded.created_at`,
+    ).run(toKey, row.source, row.createdAt);
+    d.prepare(`DELETE FROM foreman_invites WHERE note_key = ?`).run(fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * Delete invites that belong to no live session and have gone stale. Returns how many.
+ *
+ * The same shape and the same safety property as `pruneSessionGoals` above: a row whose
+ * key still belongs to a session is never touched no matter how old, and an EMPTY
+ * `liveKeys` means "liveness unknown", never "nothing is live", and so deletes nothing.
+ */
+export function pruneForemanInvites(liveKeys: Iterable<string>, olderThan: number): number {
+  const keys = [...new Set(liveKeys)];
+  if (!keys.length) return 0;
+  const placeholders = keys.map(() => "?").join(",");
+  const r = openDb()
+    .prepare(
+      `DELETE FROM foreman_invites WHERE created_at < ? AND note_key NOT IN (${placeholders})`,
     )
     .run(olderThan, ...keys);
   return Number(r.changes);

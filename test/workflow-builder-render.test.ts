@@ -328,7 +328,10 @@ test("last workflow restoration excludes archived history unless a version link 
   );
 });
 
-test("Open version carries one bounded request across the Runs-to-builder route", () => {
+// The run page's version BADGE is what carries this now - it absorbed the `Open version`
+// button, whose handler moved onto it unchanged. What the route needs is the same either way:
+// one bounded request, readable once, keyed by workflow.
+test("the version badge carries one bounded request across the Runs-to-builder route", () => {
   const values = new Map<string, string>();
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,

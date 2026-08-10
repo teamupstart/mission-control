@@ -36,7 +36,7 @@ test("the scout and review-artifact safeguards can be disabled independently", (
   assert.equal(
     block({
       objective: "Output: mockups",
-      changedPaths: ["docs/mockups/uploader.html"],
+      changedPaths: ["docs/archive/mockups/uploader.html"],
       skipReviewArtifactWrapup: false,
     }),
     null,
@@ -130,15 +130,15 @@ test("mockup context does not block a task that also asks for implementation", (
 
 test("an artifact-only diff is blocked, while a mixed implementation stays eligible", () => {
   assert.equal(
-    block({ changedPaths: ["docs/mockups/session/a.html", "docs/mockups/session/b.html"] })?.kind,
+    block({ changedPaths: ["docs/archive/mockups/session/a.html", "docs/archive/mockups/session/b.html"] })?.kind,
     "review_artifact",
   );
   assert.equal(
-    block({ changedPaths: ["docs/plans/session/plan.md", "docs/mockups/session/a.html"] })?.kind,
+    block({ changedPaths: ["docs/plans/session/plan.md", "docs/archive/mockups/session/a.html"] })?.kind,
     "review_artifact",
   );
   assert.equal(
-    block({ changedPaths: ["docs/mockups/session/a.html", "src/web/Session.tsx"] }),
+    block({ changedPaths: ["docs/archive/mockups/session/a.html", "src/web/Session.tsx"] }),
     null,
   );
 });

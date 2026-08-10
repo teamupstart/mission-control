@@ -32,6 +32,14 @@ export const WORKFLOW_LIMITS = {
   personaGuidanceBytes: 100_000,
   /** One run-scoped instruction placed ahead of a Persona's published guidance. */
   personaDirectiveBytes: 8_000,
+  /**
+   * The stored `PersonaProvenance` blob, in UTF-8 bytes.
+   *
+   * Generous against the sum of its own bounded fields (two 4096-byte paths, a short version,
+   * a 64-character hash) because it is a read ceiling rather than a budget: its job is to stop
+   * one malformed write from making every later read of that row expensive.
+   */
+  personaProvenanceJsonBytes: 16_000,
   sessionActionName: 100,
   sessionActionDescription: 500,
   /**
@@ -135,6 +143,67 @@ export const WORKFLOW_PERSONA_MODEL_SPEC: ModelChoiceSpec = {
   blurb: "Reviews workflow evidence with this Persona. An individual Persona override wins.",
 };
 
+/**
+ * Where an imported Persona's guidance came from, so drift against it can be SEEN.
+ *
+ * Recorded once, at import, and rewritten only by a re-import. It is a fact about a live
+ * catalog row and deliberately NOT part of `PersonaSnapshot`: a published version carries its
+ * own copy of the guidance, and that copy's authority comes from the publish, not from a file
+ * that may since have changed. Drift is therefore a diff a human adopts by re-importing and
+ * republishing - never something applied to a version behind their back.
+ *
+ * Field names are persisted inside `personas.import_provenance_json`, so they are
+ * additive-only. A blob this build cannot read degrades to null rather than failing the row:
+ * an unreadable provenance record must not hide a working reviewer.
+ */
+export interface PersonaProvenance {
+  /**
+   * The absolute path the operator named, resolved for `.` and `..` but NOT through symlinks.
+   *
+   * The link is deliberately left unresolved because it is part of what the operator pointed
+   * at: a plugin install whose `references/` is a symlink is re-read through that link on
+   * every drift check, so a plugin upgrade that re-points it is upstream CHANGE rather than a
+   * provenance record silently pinned to a stale target. Containment and file-type checks run
+   * again on each read, on the resolved path, for exactly that reason.
+   */
+  sourcePath: string;
+  /**
+   * The enclosing git worktree root, when one was found by walking up from the file.
+   *
+   * Discovered from the RESOLVED path, unlike `sourcePath` beside it, so these two can disagree
+   * about their prefix for a document reached through a link - which is correct rather than
+   * sloppy. What owns a file is a property of where its bytes live; where to re-read it is a
+   * property of what the operator pointed at.
+   */
+  sourceRepo: string | null;
+  /**
+   * `version` from the nearest `.claude-plugin/plugin.json` above the file, when readable.
+   *
+   * Found from the resolved path too, for the same reason - a role file symlinked out of an
+   * installed plugin still belongs to that plugin's version.
+   */
+  pluginVersion: string | null;
+  /** sha256 of the exact bytes read, hex. The one thing a drift check compares. */
+  contentSha256: string;
+  importedAt: number;
+}
+
+/**
+ * What a re-read of an imported Persona's source found.
+ *
+ * `missing` is "the path no longer yields a readable document" and covers more than absence -
+ * a directory in its place, a file grown past the guidance ceiling, bytes that stopped being
+ * valid UTF-8. All of them mean the same thing to an operator: the upstream this Persona
+ * claims cannot be compared right now, so no badge may claim it is current.
+ */
+export type PersonaUpstreamState = "current" | "changed" | "missing";
+
+/** One imported Persona's upstream verdict, fetched on request rather than streamed. */
+export interface PersonaDriftView {
+  id: PersonaId;
+  upstream: PersonaUpstreamState;
+}
+
 export interface Persona {
   id: PersonaId;
   name: string;
@@ -148,6 +217,8 @@ export interface Persona {
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  /** Set only for a Persona imported from a file on the daemon's machine; null otherwise. */
+  provenance: PersonaProvenance | null;
   /**
    * Shipped with the application rather than authored here.
    *
@@ -283,6 +354,34 @@ export function personaDescriptionFromMarkdown(
   const cut = collapsed.slice(0, maxLength - 1);
   const lastSpace = cut.lastIndexOf(" ");
   return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/**
+ * One upstream verdict, from a stored hash and whatever a fresh read of the path found.
+ *
+ * Here rather than in the daemon that reads the file so the comparison has exactly one
+ * spelling: the route derives it, the badge renders it, and a unit test exercises it without
+ * a filesystem. Comparing HASHES rather than text keeps the whole document out of the reply.
+ */
+export function personaUpstreamState(
+  provenance: Pick<PersonaProvenance, "contentSha256">,
+  observed: { contentSha256: string } | null,
+): PersonaUpstreamState {
+  if (observed === null) return "missing";
+  return observed.contentSha256 === provenance.contentSha256 ? "current" : "changed";
+}
+
+/**
+ * The words every surface uses for an upstream state, or null when there is nothing to say.
+ *
+ * `current` renders no badge at all - "up to date with a file on this machine" is the ordinary
+ * case, and a chip for it would put a tag on most of the library and teach the eye to skip
+ * the two that matter.
+ */
+export function personaUpstreamLabel(state: PersonaUpstreamState): string | null {
+  if (state === "changed") return "upstream changed";
+  if (state === "missing") return "source missing";
+  return null;
 }
 
 // ---- SessionActions ---------------------------------------------------------
@@ -1893,6 +1992,10 @@ export interface WorkflowSubmission {
   continuationNodeAttemptId: WorkflowNodeAttemptId | null;
   mode: WorkflowSubmissionMode;
   triggerSource: WorkflowTriggerSource;
+  /**
+   * The idempotency key the submission was created under. Composed for a manual submission by
+   * `manualWorkflowTriggerKey` below, which is also the only thing that reads one back apart.
+   */
   triggerKey: string;
   evidenceFingerprint: string;
   context: WorkflowJson;
@@ -1902,6 +2005,41 @@ export interface WorkflowSubmission {
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;
+}
+
+/**
+ * The idempotency key a MANUAL submission is filed under, composed in one place.
+ *
+ * It lives here, beside the field it is written into, because both sides of the wire need it and
+ * for opposite reasons. The daemon composes it to find a prior submission by trigger and replay
+ * it instead of creating a second; the browser reads one back to recover the request id of a
+ * submission the daemon REFUSED, which is the only way to ask for that exact submission again
+ * rather than a new round. A format spelled twice is a format that drifts, and the failure it
+ * drifts into is silent - a key that matches nothing looks exactly like a first attempt.
+ *
+ * Deliberately NOT the shape used by `restart-full` or `delivery-resolution`, which namespace a
+ * second segment inside this same prefix. `manualWorkflowTriggerRequestId` rejects those rather
+ * than returning their request id, because replaying one against `resubmit` would find a
+ * submission that is not the refused one.
+ */
+export function manualWorkflowTriggerKey(
+  bindingId: WorkflowBindingId,
+  requestId: string,
+): string {
+  return `manual:${bindingId}:${requestId}`;
+}
+
+/** The request id inside a manual submission key, or `null` when it is not one. */
+export function manualWorkflowTriggerRequestId(
+  bindingId: WorkflowBindingId,
+  triggerKey: string,
+): string | null {
+  const prefix = `manual:${bindingId}:`;
+  if (!triggerKey.startsWith(prefix)) return null;
+  const requestId = triggerKey.slice(prefix.length);
+  // A remaining separator means a namespaced sibling (`restart-full:`, `delivery-resolution:`),
+  // not a request id. Request ids are `crypto.randomUUID()` values and carry none.
+  return requestId.length > 0 && !requestId.includes(":") ? requestId : null;
 }
 
 export interface WorkflowNodeAttempt {

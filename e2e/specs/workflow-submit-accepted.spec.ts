@@ -1,8 +1,11 @@
-import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
+
+const EVIDENCE = artifactsDir("workflow-submit-accepted");
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
@@ -97,6 +100,7 @@ test("Bind and submit opens the durable capturing run before compaction finishes
   const accepted = await response.json() as { run: { id: string; status: string } };
   expect(accepted.run.status).toBe("capturing");
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
     // eslint-disable-next-line no-console
     console.log("OBSERVED bind-and-submit returned 202 with a durable capturing run");
   }
@@ -120,11 +124,11 @@ test("Bind and submit opens the durable capturing run before compaction finishes
     // eslint-disable-next-line no-console
     console.log('OBSERVED the accepted run detail page says "Capturing evidence"');
     await dashboard.screenshot({
-      path: fileURLToPath(new URL("../evidence/workflow-submit-accepted.png", import.meta.url)),
+      path: `${EVIDENCE}workflow-submit-accepted.png`,
       fullPage: true,
     });
     // eslint-disable-next-line no-console
-    console.log("CAPTURED e2e/evidence/workflow-submit-accepted.png");
+    console.log("CAPTURED e2e/.artifacts/workflow-submit-accepted/workflow-submit-accepted.png");
   }
 });
 
@@ -170,8 +174,9 @@ test("binding overrides survive unrelated live workflow updates", async ({ dashb
     .toHaveCount(1);
   await expect(repairRounds).toHaveValue("8");
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.screenshot({
-      path: fileURLToPath(new URL("../evidence/workflow-binding-repair-rounds.png", import.meta.url)),
+      path: `${EVIDENCE}workflow-binding-repair-rounds.png`,
       fullPage: true,
     });
   }

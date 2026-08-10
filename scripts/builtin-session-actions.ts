@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// Regenerate `src/server/workflows/builtin-session-actions.generated.ts` from
-// `docs/session-actions/*.md`.
+// Regenerate `src/server/workflows/builtin-session-actions.generated.ts` from `actions/*.md`.
 //
 //   npm run session-actions
 //
@@ -19,12 +18,31 @@ import { fileURLToPath } from "node:url";
 import { builtinMarkdownSources, renderBuiltinMarkdownModule } from "./builtin-markdown.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const sourceDir = join(root, "docs", "session-actions");
+const sourceDir = join(root, "actions");
 const outFile = join(root, "src", "server", "workflows", "builtin-session-actions.generated.ts");
+
+/**
+ * The documents in `actions/` that are NOT session actions, so this generator skips them.
+ *
+ * Only `README.md`, which explains what the directory is - a root `actions/` reads as GitHub
+ * Actions at first glance, so that prose is load-bearing rather than decorative. Because this
+ * generator globs the whole directory, the explanation itself needs an exclusion: without it
+ * an upgrade would add `builtin:README` to the catalog as a session action that would type the
+ * directory's own documentation into an operator's conversation.
+ *
+ * A list of filenames rather than a naming heuristic, for the reason `builtinMarkdownSources`
+ * gives: a name that is not on the list shows up in the generated module and in the drift
+ * test, where a heuristic would silently misclassify a new document.
+ *
+ * Exported so `test/builtin-session-actions.test.ts` can hold the same list against the
+ * directory rather than restating it: a second copy would agree with itself while the
+ * generator shipped something else.
+ */
+export const NON_SESSION_ACTION_DOCUMENTS = ["README.md"] as const;
 
 const SPEC = {
   script: "scripts/builtin-session-actions.ts",
-  sourceGlob: "docs/session-actions/*.md",
+  sourceGlob: "actions/*.md",
   command: "npm run session-actions",
   constName: "BUILTIN_SESSION_ACTION_SOURCES",
   field: "promptMarkdown",
@@ -38,7 +56,7 @@ export interface BuiltinSessionActionSource {
 
 /** The slug is the filename, and it is the durable half of the built-in's id. */
 export function builtinSessionActionSources(dir = sourceDir): BuiltinSessionActionSource[] {
-  return builtinMarkdownSources(dir)
+  return builtinMarkdownSources(dir, NON_SESSION_ACTION_DOCUMENTS)
     .map((source) => ({ slug: source.slug, promptMarkdown: source.markdown }));
 }
 

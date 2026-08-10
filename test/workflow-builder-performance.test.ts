@@ -18,6 +18,7 @@ function capGraph(): { graph: WorkflowDraftGraph; personas: PersonaView[] } {
     archivedAt: null,
     createdAt: 1,
     updatedAt: 1,
+    provenance: null,
     builtin: false,
     execution: {
       runner: { id: "codex", source: "config", unknown: null },
@@ -92,6 +93,7 @@ test("the Persona catalog stays linear and bounded at 300 rows", () => {
     archivedAt: index % 10 === 0 ? 1 : null,
     createdAt: 1,
     updatedAt: 1,
+    provenance: null,
     builtin: false,
     execution: {
       runner: { id: "codex", source: "config", unknown: null },

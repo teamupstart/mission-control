@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ForemanState } from "../useForeman.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
@@ -15,6 +15,12 @@ import type { ForemanEpisode, ForemanEpisodeSummary, NoteDisposition } from "@sh
 import type { ModelChoiceSpec } from "@shared/model-choice.ts";
 import { FOREMAN_EPISODE_LEDGER, episodeOutcome } from "@shared/foreman.ts";
 import type { EpisodeOutcome } from "@shared/foreman.ts";
+import {
+  FOREMAN_DEFAULT_TAB,
+  FOREMAN_SETTINGS_TABS,
+  foremanTabForAnchor,
+  type ForemanSettingsTabId,
+} from "../lib/foreman-settings-tabs.ts";
 import { ago } from "./InspectorSettingsPanel.tsx";
 import {
   ConsoleCard,
@@ -396,9 +402,14 @@ function tierLabel(tier: number | null): string {
 export function ForemanSettingsPanel({
   state,
   onNavigate,
+  jumpAnchor,
+  jumpRequestId,
 }: {
   state: ForemanState;
   onNavigate: SettingsNavigate;
+  jumpAnchor?: string | null;
+  /** Distinguishes repeated requests for the same anchor after the operator changes tabs. */
+  jumpRequestId?: number | null;
 }): React.JSX.Element {
   const { config, status, episodes, update, error } = state;
   // The provider actually in force, not `config.runner ?? "claude"`. An unset `runner`
@@ -415,6 +426,18 @@ export function ForemanSettingsPanel({
   const skipScoutWrapup = config?.skipScoutWrapup !== false;
   const skipReviewArtifactWrapup = config?.skipReviewArtifactWrapup !== false;
   const now = Date.now();
+  const [tab, setTab] = useState<ForemanSettingsTabId>(FOREMAN_DEFAULT_TAB);
+  const tabRefs = useRef(new Map<ForemanSettingsTabId, HTMLButtonElement>());
+  // Select a deep link's owning tab DURING render. SettingsPage owns the later effect that
+  // scrolls and flashes the anchor; choosing here means React commits a visible target before
+  // that parent effect runs. An effect here would lose the race and flash a hidden panel.
+  const jumpToken = jumpRequestId ?? jumpAnchor ?? null;
+  const lastJump = useRef<string | number | null>(null);
+  if (jumpToken !== lastJump.current) {
+    lastJump.current = jumpToken;
+    const owner = jumpAnchor ? foremanTabForAnchor(jumpAnchor) : null;
+    if (owner && owner !== tab) setTab(owner);
+  }
   const [filter, setFilter] = useState<string | null>(null);
   // Which decision is open, by episode id, and only ever one. An accordion rather than
   // independent toggles because the detail card is tall - it carries the captured screen -
@@ -437,6 +460,34 @@ export function ForemanSettingsPanel({
   // `on` both record null because neither has a second opinion to compare against.
   const showShadow = triage === "shadow";
 
+  function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
+    const last = FOREMAN_SETTINGS_TABS.length - 1;
+    const idx = FOREMAN_SETTINGS_TABS.findIndex((candidate) => candidate.id === tab);
+    let next: number;
+    switch (e.key) {
+      case "ArrowLeft":
+        next = idx <= 0 ? last : idx - 1;
+        break;
+      case "ArrowRight":
+        next = idx >= last ? 0 : idx + 1;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = last;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    const nextId = FOREMAN_SETTINGS_TABS[next]?.id;
+    if (!nextId) return;
+    setTab(nextId);
+    tabRefs.current.get(nextId)?.focus();
+  }
+
   return (
     <section className="settings-section sc-section">
       <p className="settings-hint sc-lede">
@@ -448,211 +499,260 @@ export function ForemanSettingsPanel({
 
       <div className="sc-split">
         <div className="sc-controls">
-          <ConsoleCard title="Foreman">
-            {/* No switch in this card's action slot, unlike Inspector and Shipping. The
-                enable toggle lives in the topbar popover and stays there: that is the
-                in-the-moment control, and this panel is the durable posture. What the card
-                carries instead is the posture line, which is the half the popover cannot
-                show you - and which nothing in the app showed at all before this. */}
-            {!config ? (
-              <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
-            ) : !enabled ? (
-              <ConsoleState tone="off">Off - nothing is being answered</ConsoleState>
-            ) : status && !status.running ? (
-              /* This OUTRANKS the mode, and it is the reading this panel exists to
-                 surface. `ForemanStatus.running` means a worker holds the lease and
-                 renewed it recently; when it is false, Foreman is enabled and set to
-                 whatever mode you chose and NOTHING IS EXECUTING IT. A dead worker and an
-                 idle one look identical everywhere else in the app - same config, same
-                 quiet fleet - so a panel that led with "Live" here would be confidently
-                 describing a posture nothing is in. */
-              <ConsoleState tone="danger">
-                Enabled, but no worker is running - nothing is being answered
-              </ConsoleState>
-            ) : mode === "live" ? (
-              <ConsoleState tone="danger">Live - replying in sessions on your behalf</ConsoleState>
-            ) : mode === "semi-auto" ? (
-              <ConsoleState tone="attention">
-                Semi-auto - drafting replies for you to confirm
-              </ConsoleState>
-            ) : (
-              <ConsoleState tone="attention">Dry run - deciding, sending nothing</ConsoleState>
-            )}
+          {/* Always visible: this is a reading, not a setting. In particular, a dead worker
+              must never disappear behind whichever configuration group was open last. */}
+          {!config ? (
+            <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
+          ) : !enabled ? (
+            <ConsoleState tone="off">Off - nothing is being answered</ConsoleState>
+          ) : status && !status.running ? (
+            <ConsoleState tone="danger">
+              Enabled, but no worker is running - nothing is being answered
+            </ConsoleState>
+          ) : mode === "live" ? (
+            <ConsoleState tone="danger">Live - replying in sessions on your behalf</ConsoleState>
+          ) : mode === "semi-auto" ? (
+            <ConsoleState tone="attention">Semi-auto - drafting replies for you to confirm</ConsoleState>
+          ) : (
+            <ConsoleState tone="attention">Dry run - deciding, sending nothing</ConsoleState>
+          )}
 
-            {/* Said out loud, for the reason the Inspector's equivalent is: every control
-                below falls back to a default when the daemon is unreachable, and a
-                disabled input showing `shadow` is not a claim that shadow is what is
-                stored. */}
-            {!config && (
-              <p className="settings-warn foreman-unknown">
-                Can't reach the daemon, so what Foreman is actually set to is unknown. The
-                controls below are showing defaults, not its current state.
-              </p>
-            )}
+          {/* Every control below falls back to a default while the daemon is unreachable, so
+              the warning stays beside the posture line rather than vanishing with a tab. */}
+          {!config && (
+            <p className="settings-warn foreman-unknown">
+              Can't reach the daemon, so what Foreman is actually set to is unknown. The
+              controls below are showing defaults, not its current state.
+            </p>
+          )}
 
-            <fieldset className="sc-field sc-seg" data-anchor="foreman/cheap-tier">
-              <legend className="sc-field-label">Cheap tier</legend>
-              <div className="sc-seg-row">
-                {(["off", "shadow", "on"] as const).map((t) => (
-                  <Tooltip key={t} label={TIER_LABEL[t]}>
-                    <label className={`sc-seg-opt${triage === t ? " is-on" : ""}`}>
-                      <input
-                        type="radio"
-                        name="foreman-triage-settings"
-                        checked={triage === t}
-                        disabled={!config}
-                        onChange={() => void update({ triage: t })}
-                      />
-                      <span>{TIER_SHORT[t]}</span>
-                    </label>
-                  </Tooltip>
+          <div
+            className="sc-tabs"
+            role="tablist"
+            aria-label="Foreman configuration groups"
+            onKeyDown={onTablistKey}
+          >
+            {FOREMAN_SETTINGS_TABS.map((group) => {
+              const selected = tab === group.id;
+              const count =
+                group.anchors.length === 1 ? "1 setting" : `${group.anchors.length} settings`;
+              return (
+                <Tooltip key={group.id} label={`Show Foreman ${group.label} settings - ${count}`}>
+                  <button
+                    id={`foreman-settings-tab-${group.id}`}
+                    type="button"
+                    className={`sc-tab${selected ? " is-active" : ""}`}
+                    role="tab"
+                    aria-selected={selected}
+                    aria-controls={`foreman-settings-panel-${group.id}`}
+                    tabIndex={selected ? 0 : -1}
+                    ref={(el) => {
+                      if (el) tabRefs.current.set(group.id, el);
+                      else tabRefs.current.delete(group.id);
+                    }}
+                    onClick={() => setTab(group.id)}
+                  >
+                    {group.label}
+                    {/* Out of the accessible name - "Models 5" announces as a nonsense
+                        label. The count still reaches assistive tech through the tab's
+                        tooltip description, which spells out "5 settings". */}
+                    <span className="sc-tab-count" aria-hidden="true">
+                      {group.anchors.length}
+                    </span>
+                  </button>
+                </Tooltip>
+              );
+            })}
+          </div>
+
+          <div
+            id="foreman-settings-panel-posture"
+            role="tabpanel"
+            aria-labelledby="foreman-settings-tab-posture"
+            hidden={tab !== "posture"}
+          >
+            <ConsoleCard title="Posture">
+              <fieldset className="sc-field sc-seg" data-anchor="foreman/cheap-tier">
+                <legend className="sc-field-label">Cheap tier</legend>
+                <div className="sc-seg-row">
+                  {(["off", "shadow", "on"] as const).map((t) => (
+                    <Tooltip key={t} label={TIER_LABEL[t]}>
+                      <label className={`sc-seg-opt${triage === t ? " is-on" : ""}`}>
+                        <input
+                          type="radio"
+                          name="foreman-triage-settings"
+                          checked={triage === t}
+                          disabled={!config}
+                          onChange={() => void update({ triage: t })}
+                        />
+                        <span>{TIER_SHORT[t]}</span>
+                      </label>
+                    </Tooltip>
+                  ))}
+                </div>
+                <p className="settings-hint">{TIER_LABEL[triage]}.</p>
+                {triage === "shadow" && (
+                  <p className="settings-hint">
+                    Every decision below carries what the cheap tier would have done. Promote
+                    it to On once <b>over-eager</b> has stayed at zero for a while.
+                  </p>
+                )}
+              </fieldset>
+            </ConsoleCard>
+          </div>
+
+          <div
+            id="foreman-settings-panel-models"
+            role="tabpanel"
+            aria-labelledby="foreman-settings-tab-models"
+            hidden={tab !== "models"}
+          >
+            <ConsoleCard title="Models">
+              <div className="sc-field" data-anchor="foreman/provider">
+                <label className="sc-field-label" htmlFor="foreman-provider">
+                  Provider
+                </label>
+                <Tooltip label="Runs every Foreman model role through this provider. Foreman spawns a fresh, isolated call for each. Review and Verify are the expensive ones; Triage and Backlog are deliberately cheaper.">
+                  <select
+                    id="foreman-provider"
+                    className="field-input sc-input"
+                    value={runner}
+                    disabled={!config}
+                    onChange={(e) => {
+                      const next = e.target.value as (typeof LLM_RUNNER_IDS)[number];
+                      void update({
+                        runner: next,
+                        reviewModel: "",
+                        verifyModel: "",
+                        triageModel: "",
+                        backlogModel: "",
+                      });
+                    }}
+                  >
+                    {LLM_RUNNER_IDS.map((r) => (
+                      <option key={r} value={r}>
+                        {AGENT_IDENTITY[r].label}
+                      </option>
+                    ))}
+                  </select>
+                </Tooltip>
+              </div>
+
+              <div className="sc-field sc-model">
+                <ModelSuggestions providerLabel={AGENT_IDENTITY[runner].label} />
+                {FOREMAN_MODEL_ROLES.map((role) => (
+                  <ModelField
+                    key={role}
+                    anchor={`foreman/model-${role}`}
+                    id={`foreman-model-${role}`}
+                    spec={FOREMAN_MODEL_SPECS[role]}
+                    value={config?.[FOREMAN_MODEL_SPECS[role].configKey] ?? ""}
+                    resolved={status?.models?.[role]}
+                    runner={runner}
+                    disabled={!config}
+                    blurb="hover"
+                    onCommit={(next) =>
+                      // An empty box is a cleared override, and must be STORED as empty so
+                      // the env/default ladder takes over again - not dropped from the patch,
+                      // which would leave the old value in place and look like the edit
+                      // didn't stick.
+                      void update({
+                        [FOREMAN_MODEL_SPECS[role].configKey]: next,
+                      } as ForemanConfigPatch)
+                    }
+                  />
                 ))}
               </div>
-              <p className="settings-hint">{TIER_LABEL[triage]}.</p>
-              {triage === "shadow" && (
-                <p className="settings-hint">
-                  Every decision below carries what the cheap tier would have done. Promote
-                  it to On once <b>over-eager</b> has stayed at zero for a while.
-                </p>
-              )}
-            </fieldset>
+            </ConsoleCard>
+          </div>
 
-            <div className="sc-field" data-anchor="foreman/provider">
-              <label className="sc-field-label" htmlFor="foreman-provider">
-                Provider
-              </label>
-              <Tooltip label="Which model provider Foreman's own calls are spawned with">
-                <select
-                  id="foreman-provider"
-                  className="field-input sc-input"
-                  value={runner}
-                  disabled={!config}
-                  onChange={(e) => {
-                    const next = e.target.value as (typeof LLM_RUNNER_IDS)[number];
-                    void update({
-                      runner: next,
-                      reviewModel: "",
-                      verifyModel: "",
-                      triageModel: "",
-                      backlogModel: "",
-                    });
-                  }}
-                >
-                  {LLM_RUNNER_IDS.map((r) => (
-                    <option key={r} value={r}>
-                      {AGENT_IDENTITY[r].label}
-                    </option>
-                  ))}
-                </select>
-              </Tooltip>
+          <div
+            id="foreman-settings-panel-launches"
+            role="tabpanel"
+            aria-labelledby="foreman-settings-tab-launches"
+            hidden={tab !== "launches"}
+          >
+            <ConsoleCard title="Launches">
               <p className="settings-hint">
-                Runs every Foreman model role through this provider. Foreman spawns a fresh,
-                isolated call for each. Review and Verify are the expensive ones; Triage and
-                Backlog are deliberately cheaper.
+                When Foreman starts a fresh backlog task, this selects its model unless the
+                task already names one. Handing work to an existing session leaves that
+                session's model unchanged.
               </p>
-            </div>
-
-            <div className="sc-field sc-model">
-              <ModelSuggestions providerLabel={AGENT_IDENTITY[runner].label} />
-              {FOREMAN_MODEL_ROLES.map((role) => (
+              {AGENT_TYPES.map((agent) => (
                 <ModelField
-                  key={role}
-                  anchor={`foreman/model-${role}`}
-                  id={`foreman-model-${role}`}
-                  spec={FOREMAN_MODEL_SPECS[role]}
-                  value={config?.[FOREMAN_MODEL_SPECS[role].configKey] ?? ""}
-                  resolved={status?.models?.[role]}
-                  runner={runner}
+                  key={agent}
+                  anchor={`foreman/backlog-model-${agent}`}
+                  id={`foreman-backlog-task-model-${agent}`}
+                  spec={BACKLOG_TASK_MODEL_SPECS[agent]}
+                  value={config?.backlogDefaultModel?.[agent] ?? ""}
+                  resolved={undefined}
+                  runner={agent}
                   disabled={!config}
+                  blurb="hover"
                   onCommit={(next) =>
-                    // An empty box is a cleared override, and must be STORED as empty so
-                    // the env/default ladder takes over again - not dropped from the patch,
-                    // which would leave the old value in place and look like the edit
-                    // didn't stick.
-                    void update({ [FOREMAN_MODEL_SPECS[role].configKey]: next } as ForemanConfigPatch)
+                    void update({ backlogDefaultModel: { [agent]: next || null } })
                   }
                 />
               ))}
-            </div>
-          </ConsoleCard>
+            </ConsoleCard>
+          </div>
 
-          <ConsoleCard title="Completion safeguards">
-            <p className="settings-hint">
-              Choose which finished work Foreman retires without showing Ship it, running
-              No-Mistakes Review, or typing Straight to PR. A task matching either enabled
-              safeguard is kept out of every automatic completion action.
-            </p>
+          <div
+            id="foreman-settings-panel-safety"
+            role="tabpanel"
+            aria-labelledby="foreman-settings-tab-safety"
+            hidden={tab !== "safety"}
+          >
+            <ConsoleCard title="Safety">
+              <p className="settings-hint">
+                Choose which finished work Foreman retires without showing Ship it, running
+                No-Mistakes Review, or typing Straight to PR. A task matching either enabled
+                safeguard is kept out of every automatic completion action.
+              </p>
 
-            <div className="kb-row" data-anchor="foreman/skip-scout-wrapup">
-              <div className="kb-row-text">
-                <span className="kb-row-label">Skip automatic completion for Scout tasks</span>
-                <span className="kb-row-desc">
-                  Uses the task's durable Kind. The scout's findings remain the finished output.
-                </span>
+              <div className="kb-row" data-anchor="foreman/skip-scout-wrapup">
+                <div className="kb-row-text">
+                  <span className="kb-row-label">Skip automatic completion for Scout tasks</span>
+                </div>
+                <div className="kb-row-controls">
+                  <Tooltip label="Keeps Scout tasks out of Ship it, No-Mistakes Review, and Straight to PR. Uses the task's durable Kind. The scout's findings remain the finished output.">
+                    <label className="skill-switch">
+                      <input
+                        type="checkbox"
+                        checked={skipScoutWrapup}
+                        disabled={!config}
+                        aria-label="Skip automatic completion for Scout tasks"
+                        onChange={(e) => void update({ skipScoutWrapup: e.target.checked })}
+                      />
+                    </label>
+                  </Tooltip>
+                </div>
               </div>
-              <div className="kb-row-controls">
-                <Tooltip label="Keep Scout tasks out of Ship it, No-Mistakes Review, and Straight to PR">
-                  <label className="skill-switch">
-                    <input
-                      type="checkbox"
-                      checked={skipScoutWrapup}
-                      disabled={!config}
-                      aria-label="Skip automatic completion for Scout tasks"
-                      onChange={(e) => void update({ skipScoutWrapup: e.target.checked })}
-                    />
-                  </label>
-                </Tooltip>
-              </div>
-            </div>
 
-            <div className="kb-row" data-anchor="foreman/skip-review-artifact-wrapup">
-              <div className="kb-row-text">
-                <span className="kb-row-label">
-                  Skip automatic completion for mockups and review artifacts
-                </span>
-                <span className="kb-row-desc">
-                  Reads the resolved objective and artifact-only changed paths. Mixed work that
-                  also requests implementation still follows the normal completion action.
-                </span>
+              <div className="kb-row" data-anchor="foreman/skip-review-artifact-wrapup">
+                <div className="kb-row-text">
+                  <span className="kb-row-label">
+                    Skip automatic completion for mockups and review artifacts
+                  </span>
+                </div>
+                <div className="kb-row-controls">
+                  <Tooltip label="Keeps mockups and review-only artifacts out of automatic completion actions. Reads the resolved objective and artifact-only changed paths. Mixed work that also requests implementation still follows the normal completion action.">
+                    <label className="skill-switch">
+                      <input
+                        type="checkbox"
+                        checked={skipReviewArtifactWrapup}
+                        disabled={!config}
+                        aria-label="Skip automatic completion for mockups and review artifacts"
+                        onChange={(e) =>
+                          void update({ skipReviewArtifactWrapup: e.target.checked })
+                        }
+                      />
+                    </label>
+                  </Tooltip>
+                </div>
               </div>
-              <div className="kb-row-controls">
-                <Tooltip label="Keep mockups and review-only artifacts out of automatic completion actions">
-                  <label className="skill-switch">
-                    <input
-                      type="checkbox"
-                      checked={skipReviewArtifactWrapup}
-                      disabled={!config}
-                      aria-label="Skip automatic completion for mockups and review artifacts"
-                      onChange={(e) =>
-                        void update({ skipReviewArtifactWrapup: e.target.checked })
-                      }
-                    />
-                  </label>
-                </Tooltip>
-              </div>
-            </div>
-          </ConsoleCard>
-
-          <ConsoleCard title="Backlog launch models">
-            <p className="settings-hint">
-              When Foreman starts a fresh backlog task, this selects its model unless the
-              task already names one. Handing work to an existing session leaves that
-              session's model unchanged.
-            </p>
-            {AGENT_TYPES.map((agent) => (
-              <ModelField
-                key={agent}
-                anchor={`foreman/backlog-model-${agent}`}
-                id={`foreman-backlog-task-model-${agent}`}
-                spec={BACKLOG_TASK_MODEL_SPECS[agent]}
-                value={config?.backlogDefaultModel?.[agent] ?? ""}
-                resolved={undefined}
-                runner={agent}
-                disabled={!config}
-                onCommit={(next) => void update({ backlogDefaultModel: { [agent]: next || null } })}
-              />
-            ))}
-          </ConsoleCard>
+            </ConsoleCard>
+          </div>
 
           <ConsoleCard title="Live repositories" anchor="foreman/live-repos">
             {/* The scope-of-consent sentence stays here beside the count even though

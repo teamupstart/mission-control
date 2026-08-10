@@ -125,6 +125,7 @@ function persona(over: Partial<PersonaView> = {}): PersonaView {
     archivedAt: null,
     createdAt: NOW,
     updatedAt: NOW,
+    provenance: null,
     builtin: true,
     execution: {
       runner: { id: "claude", source: "default", unknown: null },

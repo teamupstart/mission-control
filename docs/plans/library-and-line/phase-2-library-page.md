@@ -11,7 +11,7 @@ approach?" - strategy launchers only), and Missions · Sources ("Where does work
 Workflows page's three authoring tabs redirect here; its `runs` and `ensembles` tabs remain, as a
 two-tab execution page, until phase 4 re-homes them.
 
-Visual reference: `docs/mockups/automation-prominence-2/1-library-line.html`, Frame B.
+Visual reference: `docs/archive/mockups/automation-prominence-2/1-library-line.html`, Frame B.
 
 ## 2. Entry criteria and dependencies
 

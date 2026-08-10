@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const HELD_TURN = "hold the current turn open";
@@ -10,7 +10,7 @@ const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only 
 const QUEUED_TURN = "deliver this queued turn when the agent goes idle";
 const MID_TURN_INJECTION = "a repair round that arrived while the agent was working";
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/queued-turn-delivery/", import.meta.url));
+const EVIDENCE = artifactsDir("queued-turn-delivery");
 
 /**
  * Photograph the surface this spec is already asserting on.

@@ -59,6 +59,17 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   both directions - a driven session's datapoints are deliberately dropped, so a healthy exporter
   may write none, and rows outlive an exporter that stopped by up to the 180-day retention
 - Schedule enum values
+- Foreman invite sources (`FOREMAN_INVITES` in `src/shared/types.ts`, plus the persisted
+  `foreman_invites.source` domain, which additionally contains `'withdrawn'`) - the stored
+  values are read back by exact value and checked by the table's `CHECK` constraint, so
+  extending the domain means appending to the tuple, the constraint, AND the
+  `KNOWN_FOREMAN_INVITE_SOURCES` set beside `readForemanInviteRow` in `src/server/db.ts`.
+  That reader is the existing guard for values this build cannot read (a newer build
+  widened the constraint and wrote one; this build's `CREATE` is a no-op on the existing
+  table): it reports the drop and reads the row as absent, so the session resolves from
+  its runtime alone and the raw string never reaches `Session.foremanInvite`; the row
+  stays in place for the build that understands it. `'withdrawn'` is a tombstone and
+  never surfaces on `Session.foremanInvite`; the registry resolves it to `null`
 - Ensemble strategy, driver, artifact, source, run, and member values
 - Inspector marker versions
 - Workflow graph node kinds, source and target ports, and SessionAction completion kinds
@@ -381,7 +392,7 @@ Update README in the same change:
 - New shortcut: Keyboard table
 
 Built-in personas are generated from `personas/*.md`, and built-in session actions from
-`docs/session-actions/*.md`. Edit the Markdown and run the generator (`npm run personas`,
+`actions/*.md`. Edit the Markdown and run the generator (`npm run personas`,
 `npm run session-actions`) instead of editing the `.generated.ts` module. Both share the
 reader and renderer in `scripts/builtin-markdown.ts`, and both have a drift test that
 imports the generator rather than re-implementing it.
@@ -393,5 +404,12 @@ those three are excluded by name in `NON_PERSONA_DOCUMENTS`; anything else added
 a built-in Persona. A persona filename is the durable `builtin:<slug>` id that published
 workflow versions reference, so adding and removing documents is safe and renaming one is a
 migration.
+
+`actions/` is the same shape with one exclusion, `README.md`, named in
+`NON_SESSION_ACTION_DOCUMENTS` - it states that the directory holds Mission Control session
+actions and not GitHub Actions, which is prose worth keeping and therefore prose worth
+excluding. Action filenames are durable ids on the same terms; `pull-request` additionally
+keys the enforced contract table in `src/server/workflows/builtin-session-actions.ts`, which
+is where a built-in's required skill and completion live rather than in its Markdown.
 
 Plans live at `docs/plans/<name>/plan.md` with a self-contained HTML companion when the planning workflow requires it.

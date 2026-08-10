@@ -10,6 +10,7 @@ import type {
   UpdateWorkflow,
 } from "@shared/protocol.ts";
 import {
+  PersonaProvenanceSchema,
   PersonaSnapshotSchema,
   SessionActionAttemptStateSchema,
   SessionActionSkillIdSchema,
@@ -59,6 +60,7 @@ import {
 import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "@shared/workflow.ts";
 import type {
   Persona,
+  PersonaProvenance,
   SessionAction,
   WorkflowBinding,
   WorkflowBindingClaim,
@@ -335,7 +337,60 @@ const PersonaRowSchema = z.object({
   archived_at: nullableInteger,
   created_at: integer,
   updated_at: integer,
+  /**
+   * Optional on the SHAPE, unlike every other column, because a database written by a build
+   * that predates the column has no key here at all - `SELECT *` simply does not return one.
+   * The blob's own contents are validated separately, and tolerantly.
+   */
+  import_provenance_json: nullableText.optional(),
 });
+
+/**
+ * The provenance blob, or null - and null for a blob this build cannot read.
+ *
+ * The `runner_id` discipline rather than the `completion_kind` one, and for the same reason
+ * spelled the other way round: an unreadable provenance record costs an operator a badge,
+ * while failing the row over it would remove a working reviewer from the catalog, from every
+ * draft that names it, and from Publish. Reported so a malformed write is not silent, and the
+ * Persona is served either way.
+ */
+function readPersonaProvenance(id: string, raw: string | null | undefined): PersonaProvenance | null {
+  if (raw === null || raw === undefined) return null;
+  if (utf8.encode(raw).byteLength > WORKFLOW_LIMITS.personaProvenanceJsonBytes) {
+    diagnose(new WorkflowRowError("personas", id, "import_provenance_json exceeds its byte limit"));
+    return null;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    diagnose(new WorkflowRowError("personas", id, "import_provenance_json is not valid JSON"));
+    return null;
+  }
+  const parsed = PersonaProvenanceSchema.safeParse(value);
+  if (!parsed.success) {
+    diagnose(new WorkflowRowError("personas", id, "import_provenance_json is not a provenance record"));
+    return null;
+  }
+  return parsed.data;
+}
+
+/**
+ * The blob as it is written, validated on the way OUT as well as on the way in.
+ *
+ * A write that cannot be read back is the one failure mode this column has: the row would keep
+ * a working Persona and silently lose its badge, and the reader above - which degrades rather
+ * than throws - would never say why. So the writer refuses instead, and the caller's request
+ * fails while the stored row is still whatever it was.
+ */
+function serializePersonaProvenance(provenance: PersonaProvenance | null): string | null {
+  if (provenance === null) return null;
+  const raw = JSON.stringify(PersonaProvenanceSchema.parse(provenance));
+  if (utf8.encode(raw).byteLength > WORKFLOW_LIMITS.personaProvenanceJsonBytes) {
+    throw new Error("Persona provenance exceeds its stored byte limit");
+  }
+  return raw;
+}
 
 export function parsePersonaRow(value: unknown): Persona {
   const row = parseShape("personas", PersonaRowSchema, value);
@@ -359,6 +414,7 @@ export function parsePersonaRow(value: unknown): Persona {
     archivedAt: row.archived_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    provenance: readPersonaProvenance(row.id, row.import_provenance_json),
     // A row is operator data by construction: built-ins are never written to this table.
     builtin: false,
   };
@@ -1122,11 +1178,26 @@ export interface PersonaInsert extends CreatePersona {
   normalizedName: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Absent for the ordinary authored Persona, which is why this is optional rather than
+   * `| null` at every call site: "created in the editor" is the common case and stating it
+   * would be noise on every caller but one.
+   */
+  provenance?: PersonaProvenance | null;
 }
 
+/**
+ * `provenance` is here and NOT on `UpdatePersona`, which is the point.
+ *
+ * A patch reaches this type from two directions: the browser's PATCH body, parsed by
+ * `UpdatePersonaSchema`, and the manager's own re-import. Only the second may write
+ * provenance - a browser that could put a path and a hash in a Persona edit could claim any
+ * file as any Persona's upstream, and every later drift check would agree with it.
+ */
 export type PersonaPatch = Omit<UpdatePersona, "expectedRevision" | "name"> & {
   name?: string;
   normalizedName?: string;
+  provenance?: PersonaProvenance | null;
 };
 
 type WorkflowDeliveryInsert = Pick<
@@ -1555,8 +1626,8 @@ export class WorkflowStore {
         .prepare(
           `INSERT INTO personas (
              id, name, normalized_name, description, guidance_md, runner_id, model_id,
-             revision, archived_at, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?)`,
+             revision, archived_at, created_at, updated_at, import_provenance_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -1568,6 +1639,7 @@ export class WorkflowStore {
           input.model,
           input.createdAt,
           input.updatedAt,
+          serializePersonaProvenance(input.provenance ?? null),
         );
       return { ok: true, persona: this.mustPersona(input.id) };
     });
@@ -1611,6 +1683,11 @@ export class WorkflowStore {
       if (patch.guidanceMarkdown !== undefined) add("guidance_md", patch.guidanceMarkdown);
       if ("runner" in patch) add("runner_id", patch.runner ?? null);
       if ("model" in patch) add("model_id", patch.model ?? null);
+      // Presence, not truthiness, exactly like the two above: a re-import always names its new
+      // provenance, and "no key" is how every other write says it is not touching this column.
+      if ("provenance" in patch) {
+        add("import_provenance_json", serializePersonaProvenance(patch.provenance ?? null));
+      }
       assignments.push("revision = revision + 1", "updated_at = ?");
       values.push(updatedAt, id, expectedRevision);
       const result = this.db

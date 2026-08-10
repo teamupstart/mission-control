@@ -10,7 +10,7 @@ const { buildSync } = require("esbuild");
 const { app, BrowserWindow } = require("electron");
 
 const repo = resolve(__dirname, "..");
-const outDir = join(repo, "docs", "evidence", "workflow-skipped-status");
+const outDir = join(repo, "e2e", ".artifacts", "workflow-skipped-status");
 const buildDir = mkdtempSync(join(tmpdir(), "workflow-skipped-status-evidence-"));
 
 const scenarios = [

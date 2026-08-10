@@ -1,9 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -31,7 +31,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * and the conversation read back off the real SSE stream.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/driver-question-in-conversation/", import.meta.url));
+const EVIDENCE = artifactsDir("driver-question-in-conversation");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -48,7 +48,7 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/driver-question-in-conversation/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/driver-question-in-conversation/${name}.png`);
 }
 
 const TASK = "pick the toolchain";

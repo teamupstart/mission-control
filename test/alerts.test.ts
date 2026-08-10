@@ -29,6 +29,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "sess",
     runtime: "terminal",
+    // Alerts are the operator's, not Foreman's: a plainly discovered session raises them too.
+    foremanInvite: null,
     nameSource: "process",
     state: "working" as SessionState,
     cwd: null,

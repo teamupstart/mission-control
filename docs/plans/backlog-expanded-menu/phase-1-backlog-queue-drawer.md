@@ -134,7 +134,7 @@ plan poll. No schema, storage, or protocol change. No migration.
   geometry suites, and the backlog suites green.
 - `npm run build && npm run test:e2e` - the updated `line-drawers.spec.ts` plus the
   existing specs.
-- Runtime visual pass against mockup A (`docs/mockups/backlog-expanded-menu.html`) for
+- Runtime visual pass against mockup A (`docs/archive/mockups/backlog-expanded-menu.html`) for
   spacing, tones, and cap behavior with more than three rows.
 
 ## Merge and exit criteria

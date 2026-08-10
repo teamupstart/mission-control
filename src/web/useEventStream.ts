@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import type { FleetCost, ReviewItem, ServerEvent, Session, SettingsStatus, Task } from "@shared/types.ts";
+import type {
+  FleetCost,
+  KeepAwakeStatus,
+  ReviewItem,
+  ServerEvent,
+  Session,
+  SettingsStatus,
+  Task,
+} from "@shared/types.ts";
 import type { LineSummary } from "@shared/line.ts";
 import type {
   PersonaView,
@@ -71,6 +79,15 @@ export interface MissionState {
    */
   settingsStatus: SettingsStatus | null;
   /**
+   * The daemon's Keep Awake observation, or null while it is UNKNOWN - before the first
+   * snapshot, and again whenever the stream drops. Null is never "off": while the channel
+   * is down the OS child may exit or the daemon may restart and we would not hear it, so
+   * the control must disable rather than keep asserting the pre-drop state. The reconnect
+   * snapshot restores the truth - which, after a daemon restart, is `off` by design. The
+   * ONE client-side source of this fact: no surface polls the keep-awake route for state.
+   */
+  keepAwakeStatus: KeepAwakeStatus | null;
+  /**
    * How many times the per-harness dispatch defaults have changed since this stream opened,
    * plus one per (re)connect. A COUNTER, not the config: `harnesses_config_changed` carries
    * no body, so surfaces that name those defaults - the Harnesses panel and the dispatch
@@ -107,6 +124,7 @@ export function useEventStream(): MissionState {
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
+  const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
@@ -134,6 +152,11 @@ export function useEventStream(): MissionState {
       // dot claims a subsystem posture that may no longer hold, where a stale cost figure is
       // just a few-second-old estimate.
       setSettingsStatus(null);
+      // And the keep-awake status, under the same contract with a sharper edge: `on` is a
+      // claim about a live OS power assertion, and the daemon restarting - the one event
+      // most likely to have severed this stream - is exactly what resets that assertion
+      // to off. Unknown disables the toggle; the reconnect snapshot restores the truth.
+      setKeepAwakeStatus(null);
     };
 
     es.onmessage = (ev) => {
@@ -166,6 +189,11 @@ export function useEventStream(): MissionState {
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(msg.settingsStatus);
+          // Seeded from the snapshot so the live indicator is truthful from the first
+          // frame. The `?? null` is a runtime guard the type system cannot see: during
+          // development this build can connect to an older daemon whose snapshot has no
+          // such field, and `undefined` must read as unknown - never as on.
+          setKeepAwakeStatus(msg.keepAwake ?? null);
           setConnected(true);
           setHasSnapshot(true);
           break;
@@ -280,6 +308,12 @@ export function useEventStream(): MissionState {
         case "settings_status":
           setSettingsStatus(msg.status);
           break;
+        // Replaced whole: the status is one observation of one OS child, and every open
+        // window must converge on the same one - this event is how a second dashboard
+        // sees a toggle it did not click.
+        case "keep_awake_status":
+          setKeepAwakeStatus(msg.status);
+          break;
         // Counted, not stored: the event carries no config (see its declaration), so the
         // number is the whole signal - it tells the harness pickers to re-read the route.
         case "harnesses_config_changed":
@@ -324,6 +358,7 @@ export function useEventStream(): MissionState {
     fleetCost,
     lineSummary,
     settingsStatus,
+    keepAwakeStatus,
     harnessesRevision,
     connected,
     hasSnapshot,

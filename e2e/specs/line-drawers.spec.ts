@@ -1,9 +1,9 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -21,7 +21,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * routes; the one dispatched session runs against the fake agent like every other spec here.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/line-drawers/", import.meta.url));
+const EVIDENCE = artifactsDir("line-drawers");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -39,7 +39,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/line-drawers/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/line-drawers/${name}.png`);
 }
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {

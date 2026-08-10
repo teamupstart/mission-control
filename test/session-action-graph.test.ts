@@ -19,7 +19,7 @@ import {
 const personas: Persona[] = [{
   id: "intent", name: "intent", normalizedName: "intent", description: "",
   guidanceMarkdown: "# Judge", runner: null, model: null, revision: 1,
-  archivedAt: null, createdAt: 1, updatedAt: 1, builtin: false,
+  archivedAt: null, createdAt: 1, updatedAt: 1, provenance: null, builtin: false,
 }];
 
 const actions: SessionAction[] = [{

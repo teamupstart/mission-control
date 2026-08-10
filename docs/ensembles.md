@@ -1,4 +1,227 @@
-# Multi-agent ensembles: operator and extension guide
+# Multi-agent ensembles
+
+An **ensemble** is a group of ordinary [dispatched tasks](dispatch-and-backlog.md#dispatch-an-agent) run together
+under one versioned *strategy*, plus the group-level facts a single task cannot express: one
+pinned base commit, member roles, immutable submitted artifacts, evaluations, a human
+decision, and a terminal outcome. Three strategies ship: **Best of N** - two to five agents
+implement the same task alone from the same commit, one tool-less comparison ranks what they
+submitted, and you confirm the winner; **Consensus**, which ends in questions rather than a
+winner; and **Panel vote**, the Best-of-N roster judged by independent single-lens judges whose
+disagreement is shown rather than averaged away. See [Additional strategies](#additional-strategies)
+below and the [operator guide](ensembles.md) for the full strategy, judging, and quorum
+semantics.
+
+**Start one from Dispatch, watch it under Workflows.** Open the dispatch modal and flip the
+header's launch mode from **Single agent** to **Ensemble** (the modal widens so a candidate
+lane holds one line). The same title/repo/intent/attachment compose area serves both; below
+it, a descriptor-driven segmented **Strategy** control renders the chosen strategy's own
+form - candidate lanes choosing their own agent, model, effort and optional approach hint,
+steppers for the tuning knobs, the strategy's judging Persona or panel, and an optional
+[workflow](workflows.md#workflows-and-personas) where the strategy supports one. A **Launch plan** strip
+draws what pressing Launch starts - the pinned base, the isolated lanes, the evaluation, and
+the human gate - with the estimate figures beside it. **Review launch** sits in the footer's
+primary slot and posts a side-effect-free preview (member count, concurrency, waves,
+evaluation calls, and whether the chosen workflow mode is executable); once it verifies, a
+green **Reviewed** chip appears and **Launch N agents** takes the slot. Any edit after that
+invalidates the review, so the launch always confirms exactly what you reviewed. The launch is idempotent on a stable request id: a lost
+response and a retry return the same run, never a second fleet. Every candidate wears a distinct
+**E** mark (separate from a workflow's **W**) that opens the run and says what the member's own
+standing is - `E 3/5 · working`, or an attention-toned **needs an answer** the moment that
+candidate is waiting on you. Siblings are drawn *together*: Cards sorts them adjacent, and the
+Board and the Console rail group them under a header carrying the run's title, its stage word,
+one dot per member of the roster and an **N needs you** rollup - see
+[Layout](ui.md#layout-cards-console-or-board). The **Ensembles** tab beside Workflows, Personas and
+Runs is the monitoring, evidence, decision, recovery and history surface: it wears a badge
+counting the runs the daemon marks as needing attention, and lists runs attention-first from the
+one live SSE stream with their shared progress dots and `submitted/roster` counts (plus the
+launched count while a wave is still opening),
+and fetches a selected run's bounded detail. A **Launch -> Work -> Review -> Decide -> Promote**
+pipeline names the active stage in operator words and explains a waiting barrier (“waiting for 1
+more submission” or “waiting on you”). Live members render as lanes with session tone, activity,
+goal, elapsed time, last-event age and live cost; a blocked member's review form and verified
+pane/driver dialog are answerable there without leaving the run, while attempt and artifact
+histories fold behind a disclosure. The rest of the bounded detail carries immutable artifacts and
+their on-demand diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's candidate columns,
+Consensus's agreements and divergence cards, Panel vote's rank matrix and ballots), and the decision
+that strategy asks for - over HTTP, refetching when that run's summary revises rather than polling.
+The strategy-neutral runtime pins one base commit, launches
+bounded *waves* of ordinary member tasks (creating every task in a wave before dispatching the
+first, and never launching past the concurrency the plan authorizes), accepts an explicit
+submission from each member, captures its working tree as an immutable private Git commit, advances
+barriers off ready artifacts rather than off a task going idle, and resumes safely after a daemon
+restart. A member submits through a dedicated `submit_ensemble_result` MCP tool (with a manual
+operator fallback), and the daemon decides *which* member from the calling session, its task and its
+worktree - a member never names itself, so a guessed id reaches nothing.
+
+**Best of N evaluation.** When every live member has submitted or terminated and at least two
+produced a snapshot, the daemon runs one tool-less, provider-neutral **comparison** of the immutable
+submissions and parks the run at a durable human-decision boundary. The judge is deliberately
+blind: it is handed the task, bounded base-to-snapshot diffs, per-file statistics and each member's
+own reported claims (labelled as claims), but every agent name, model, member ordinal, ref name,
+snapshot commit id and worktree path is stripped and each submission is relabelled anonymously, so
+brand and order cannot bias the ranking. Truncated diff evidence is disclosed in the result. Every
+candidate-authored section is fenced as untrusted data. The reply is validated strictly - exactly
+the eligible submissions once each, integer scores, contiguous ranks, a recommendation that holds
+rank 1 - and a malformed, incomplete, or injected reply is a *failed attempt*, never a low score or
+a fallback winner. The comparison shares the one daemon review-call ceiling with Workflow review,
+resolves its runner and model per call (a judging Persona's own overrides, else the
+`ensemble-comparison` job model), records every call on a durable ledger, and recovers a call
+interrupted by a restart by retrying it against the exact same evidence. It **recommends** a winner;
+it cannot promote one.
+
+**The decision is made from a dossier, not from three sections of the page.** When a run parks at
+`awaiting_decision` its Result section leads with **At stake** - the run's own intent, the one
+commit every candidate started from, the elapsed time and what the fleet has spent (unknown stays
+unknown, never `$0.00`) - and then draws one column per candidate composing what that candidate
+*reported*, what Mission Control *observed* (diffstat), what it cost, and how it was ranked, with
+**Evidence** opening its diff. Panel vote adds a judges x candidates **rank matrix** marking every
+cell where a judge broke with the panel, and quotes the ballot that ranked the winner worst in that
+judge's own words. The decision form sits at the bottom, after the evidence, and says before the
+click that a decision is recorded **once**. Afterwards the dossier persists read-only as the
+durable "why we picked B" record - what was promoted, the operator's rationale, and a **Restore**
+beside each losing column, which is where the fact that every loser's snapshot was *kept* finally
+becomes discoverable. The run's decision is also one click from the
+[attention inbox](attention-and-alerts.md#attention-inbox-one-place-to-drain-what-needs-you).
+
+Below the live Members lanes, **Compare** opens when two ready snapshots exist. Pick two or three
+candidates to get a churn-sorted file-touch matrix with rename/binary/“only #N” marks, an aligned
+claims strip (summary, checks, frozen cost and any score/rank/confidence), and synchronized
+side-by-side panes for one exact file. Scorecard rationale paths open the matching matrix row; if
+the selected candidates did not touch that path, Compare says so explicitly. See
+[Comparing snapshots file by file](ensembles.md#comparing-snapshots-file-by-file) for the
+selection, evidence and truncation behavior.
+
+**Finalization begins from a durable human decision and nothing else.** You confirm one eligible
+submission (or an explicit *no consensus*) through `POST /api/ensembles/:id/actions`; the decision
+carries a stable request id, the run state it expects, and an explicit destructive confirmation, so
+a lost response returns the same decision and a wrong-state or ineligible pick is refused rather
+than acted on. For a selected result, only then does anything destructive run, and it runs
+restart-safe in this order:
+re-verify the winner's private ref still resolves to its snapshot (a missing ref blocks *all*
+cleanup); make one exact winner available - either the original member's checkout reset to the
+snapshot through the same session-reset that clears its queue, drafts and context, or, if that
+session is gone or busy, exactly one replacement task launched at the snapshot (never two, across
+any restart); reap every loser through the normal task cancellation that reclaims its worktree;
+reconcile a superseded original winner as described in
+[Where the selected result lands](ensembles.md#where-the-selected-result-lands); then either
+hand the winner to a workflow or type it one continuation - never both. A step that cannot finish
+leaves the run *finalizing* with an actionable error and is resumed by
+`resolve_finalization`; the run reaches *completed* only once the winner is exact, every loser is
+reconciled, and any workflow submission is captured. Every loser's private snapshot survives.
+
+**The optional Workflow handoff is the N-to-one boundary.** If a run pins a published
+[workflow](workflows.md#workflows-and-personas) version at creation, finalization binds that exact version to
+the winning session and submits its clean snapshot through the same server-owned external boundary
+any other source uses - idempotent on a stable source key, so a restart returns the same binding
+and run. It requires the winner's HEAD to equal the chosen snapshot and its tree to be clean; a
+drift is healed by restoring the winner and resuming the *same* submission. A note-key conflict, an
+unavailable mode, or a Live/Foreman selection (only Preview is executable today) blocks visibly and
+is never downgraded or adopted - you retry after resolving it or explicitly skip the handoff and
+finish with the normal continuation. A session cannot be bound to a workflow manually while its
+ensemble member is active; finalization marks the selected member retained before it uses the same
+binding boundary for the handoff. Ensemble and Workflow lifecycles stay separate: a workflow reset
+removes its binding but never an ensemble ref, and a completed ensemble never recreates a reset run.
+
+### Additional strategies
+
+Every strategy runs on the unchanged engine above - the same pinned base, the same member waves,
+the same immutable artifacts, the same durable human-decision boundary. What a strategy chooses is
+which question its evaluation asks, what the person is asked to decide, and what the terminal
+outcome does.
+
+**Consensus** turns three to five independent attempts into *questions instead of a winner*. The
+members work exactly as Best-of-N's do; the difference is what happens next. One tool-less,
+anonymous, provider-neutral pass compares what the submissions **decided** rather than how good
+they are: what all of them did the same way is filed as an **agreement**, and each thing they did
+differently becomes an open **question** with one option per position actually taken, attributed to
+the attempts that took it. The pass may not rank, score or recommend, and the reply is validated as
+strictly as a comparison is - a pass that reported nothing at all, named a submission the packet
+never contained, put one submission on two sides of the same question, or silently ignored one of
+the attempts is a *failed attempt*, never a question set. Question and option ids are assigned by
+the daemon after validation, so your recorded answer names an id no candidate's diff could have
+influenced.
+
+You then answer the questions: pick the position you want, or write your own. Nothing is promoted
+and **nothing is reaped** - every attempt's snapshot is kept and restorable, the run terminates
+*retained*, and the answers are recorded with the decision. The questions you are asked are
+persisted when the decision stage opens and your answers are validated against exactly those, so a
+re-run evaluation can never turn a recorded answer into an answer to a question you never saw. Use
+it when the disagreement is the point - an unfamiliar area, a design with real forks in it, a task
+where you want to know what the choices are before you pick one. Its evaluation shares the one
+daemon review-call ceiling and the same **Settings → Models → Ensemble evaluation** job as the
+Best-of-N comparison.
+
+The public API is one localhost surface: `GET /api/ensembles` (compact summaries),
+`POST /api/ensembles/preview` (a side-effect-free launch/budget/handoff estimate that shares
+create's exact validation), `POST /api/ensembles` (idempotent create and launch on a stable request
+id), `GET /api/ensembles/:id` (bounded detail), `POST /api/ensembles/:id/actions` (one discriminated
+action covering decide, resolve-finalization, retry, withdraw, cancel and restore), the bounded
+artifact evidence/patch and manual-member-submission routes under that run, and
+`DELETE /api/ensembles/:id` (explicit terminal-history-and-ref deletion, confirmed by echoing the
+run id, which never deletes a task or linked workflow state and resumes the same remaining refs
+after a crash). The dashboard drives all of it from that one surface; on a machine that never
+starts an ensemble the tables stay empty and the product behaves exactly as before. The operator
+and extension reference is [`docs/ensembles.md`](ensembles.md) (states, private refs,
+retention and deletion, costs, restart, recovery, security limits, and how a new strategy composes);
+the design plan is
+[`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-swarm-dispatch/plan.md).
+
+<a id="ensemble-strategies"></a>
+### Strategies
+
+A strategy is a versioned recipe, not a fork of the runtime: it validates a configuration,
+compiles it once into a plan of generic stages, and contributes a result view. Everything below
+runs on the same engine, tables, routes and layout marks described above.
+
+**Best of N** (`best_of_n`) - two to five candidates, one comparison, one winner. Described in
+full above; it is the default the dispatch modal opens on.
+
+**Panel vote** (`panel_vote`) - the same two-to-five roster, judged by a **panel** of two to five
+independent single-lens judges instead of one comparison. The dashboard shows their aggregate,
+their individual ballots, and how far their rankings disagreed; at least two usable ballots are
+required, and the human still confirms the outcome. The
+[ensemble operator guide](ensembles.md#what-panel-vote-does) owns the detailed lens,
+aggregation, failure, quorum and recovery contracts.
+
+**Attention and cost are honest.** Ensemble transitions feed the same
+[alert engine](attention-and-alerts.md#alerts--away-mode) every other "needs you" flows through - a run reaching its
+decision, turning unreadable, or stuck finalizing interrupts you; completion, cancellation and
+failure land in the Away digest - with no separate notifier. Each candidate's agent cost is summed
+from its session telemetry at submission and frozen into its immutable artifact, so the run detail
+shows an aggregate attributed per member; a runner that reports no cost is shown as *unreported*,
+never `$0.00`, and the evaluator's own model cost and any linked workflow review cost are reported
+separately rather than folded in. Hard ceilings no strategy can exceed - 16 members, 8 concurrent, 8
+waves, 5 stage attempts - sit above each strategy's own 2-5 candidates, and the preview shows the
+exact figures before you launch.
+
+Four decisions are worth knowing now, because everything later is built on them:
+
+- **Every member is an ordinary task.** Ensembles add no second dispatcher, worktree
+  provisioner or cancellation path; the group owns what a task cannot own, and nothing else.
+  The member link nests inside the task summary a session already carries instead of adding
+  another field to the session itself, which is what the **E** mark on every layout reads to
+  say which candidate a card is and how the group ranked it.
+- **Evaluators recommend; they never promote.** Every evaluation is advisory and runs without
+  tools. Anything destructive - resetting a branch to a chosen snapshot, reaping the losing
+  worktrees - waits for an explicit human confirmation, and the compiled plan carries that
+  requirement as a type the schema will not let a strategy opt out of.
+- **A run executes the plan it was created with.** Its strategy, version and compiled plan
+  are snapshotted at creation, so a strategy whose defaults change later cannot silently
+  re-aim work that is already running. A run written by a *newer* build still loads and
+  remains covered by the generic cancel and delete contracts. It reports which piece this
+  build does not have and refuses to run rather than substituting something adjacent.
+- **Members will not push or open pull requests.** Publishing happens after a winner is
+  chosen, through the normal [shipping](inspector-and-shipping.md#shipping-yolo-mode) flow, so an ensemble never
+  leaves N branches and N pull requests behind. Note the isolation between members is
+  behavioural, not a sandbox: they share one Git repository and a local agent can find its
+  siblings if it goes looking.
+
+Ensembles are deliberately separate from [Workflows](workflows.md#workflows-and-personas). A workflow
+reviews exactly one session; an ensemble is the selection stage over several. They compose
+at promotion - a confirmed winner can be handed to a published workflow version - and that
+handoff crosses the same server-owned boundary any external result does.
+
+## Multi-agent ensembles: operator and extension guide
 
 An **ensemble** runs a group of ordinary dispatched tasks under one versioned *strategy* and owns
 the group-level facts a single task cannot: one pinned base commit, member roles, immutable
@@ -9,7 +232,7 @@ single-lens ballots and surfaces their disagreement. This document is the operat
 what an ensemble does, how to recover one, what it keeps and what it costs, and the contract a future
 strategy extends.
 
-The product overview lives in the [README](../README.md#multi-agent-ensembles); the design
+The product reference is [above](#multi-agent-ensembles); the design
 rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-swarm-dispatch/plan.md).
 
 ## What Best of N does
@@ -17,7 +240,7 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
 1. From **Dispatch**, switch the header's launch mode from *Single agent* to *Ensemble* and pick
    **Best of N** in the strategy control. Configure two to five candidate lanes (agent, model,
    effort, optional approach hint; repeats are allowed), an optional evaluator Persona, and an
-   optional [workflow](../README.md#workflows-and-personas) to hand the winner to. The **Launch
+   optional [workflow](workflows.md#workflows-and-personas) to hand the winner to. The **Launch
    plan** strip shows the pinned base, the lanes, the comparison and the human gate before you
    commit.
 2. **Review launch** posts a side-effect-free preview (member count, concurrency, waves, comparison

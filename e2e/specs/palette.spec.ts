@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Page } from "@playwright/test";
 
@@ -20,7 +20,7 @@ import type { Page } from "@playwright/test";
  * same seeding `line-drawers.spec.ts` and `workflow-run-disable.spec.ts` use.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/palette/", import.meta.url));
+const EVIDENCE = artifactsDir("palette");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -38,7 +38,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/palette/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/palette/${name}.png`);
 }
 
 /**

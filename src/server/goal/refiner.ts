@@ -107,6 +107,11 @@ export function startGoalRefiner(registry: Registry): () => void {
         lastPrune = now;
         const n = registry.pruneGoals(now - GOAL_PRUNE_AGE_MS);
         if (n > 0) console.log(`[goal] pruned ${n} orphaned goal(s)`);
+        // The invite table shares the goal table's accumulation shape (a row per key a
+        // dispatch ever touched, stranded for good by any rotation the daemon missed),
+        // so it prunes on the same tick, window, and live-key safety property.
+        const invites = registry.pruneForemanInvites(now - GOAL_PRUNE_AGE_MS);
+        if (invites > 0) console.log(`[goal] pruned ${invites} orphaned foreman invite(s)`);
       }
     } catch (err) {
       console.error("[goal] poll failed:", err);

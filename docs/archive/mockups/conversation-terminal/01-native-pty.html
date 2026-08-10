@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>01 Native PTY | Conversation terminal concepts</title>
+    <link rel="stylesheet" href="shell.css" />
+  </head>
+  <body class="concept-pty">
+    <nav class="mockbar" aria-label="Mockup navigation">
+      <b>Conversation study</b>
+      <a href="index.html">All options</a>
+      <span class="spacer"></span>
+      <a href="01-native-pty.html" aria-current="page">1 Native PTY</a>
+      <a href="02-duplex-console.html">2 Duplex</a>
+      <a href="03-operator-log.html">3 Operator Log</a>
+    </nav>
+
+    <header class="concept-note">
+      <div>
+        <h1>01 · Native PTY</h1>
+        <p>
+          The conversation becomes one terminal stream. Requests are prompt lines, responses are
+          stdout, and tool runs disclose below the output without becoming chat messages.
+        </p>
+      </div>
+      <span class="terminal-tag">◉ Direct terminal feel</span>
+    </header>
+
+    <nav class="app-tabs" aria-label="Session sections">
+      <button class="app-tab active" type="button"><kbd>g</kbd>Conversation</button>
+      <button class="app-tab" type="button"><kbd>q</kbd>Work queue</button>
+      <button class="app-tab" type="button"><kbd>y</kbd>Workflows</button>
+      <button class="app-tab" type="button"><kbd>d</kbd>Diff</button>
+      <button class="app-tab" type="button"><kbd>⇧F</kbd>Files</button>
+    </nav>
+
+    <main class="pty-window">
+      <div class="session-context">
+        <span class="label">Worktree</span>
+        <span class="path">/Users/jordanmance/.treehouse/ai-harness-c7356c/32/ai-harness</span>
+        <span class="spacer"></span>
+        <button class="quiet-btn" type="button" data-action="Opening a shell in Ghostty">
+          <span class="glyph">❯_</span> Terminal <span aria-hidden="true">⌄</span>
+        </button>
+        <button class="quiet-btn" type="button" data-action="Focusing the live Codex session">
+          <span class="glyph">◆</span> Codex <span aria-hidden="true">⌄</span>
+        </button>
+      </div>
+
+      <section class="pty-frame" aria-label="Native PTY conversation mockup">
+        <header class="pty-titlebar">
+          <span class="pty-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="pty-title">mission-control: conversation · codex · zsh</span>
+          <span class="pty-connection">● attached</span>
+        </header>
+
+        <div class="pty-scroll" id="pty-log" aria-live="polite">
+          <span class="pty-history">··· 18 earlier turns · press ⌘F to search ···</span>
+
+          <article class="pty-entry agent">
+            <header class="pty-speaker">codex / stdout <time datetime="2026-08-06T07:29:00-04:00">07:29:00</time></header>
+            <p class="pty-copy">
+              The interaction contract is ready for implementation. The persistent directive stays
+              scoped to the workflow run and Persona node, then each claimed Persona attempt records
+              the exact directive it received.
+            </p>
+            <ul class="pty-bullets">
+              <li>Click either the stage header or Persona row to open the editor.</li>
+              <li>Keep the amber marker separate from Passed or Failed status.</li>
+              <li>Support save, remove, cancel, close, and character count controls.</li>
+            </ul>
+          </article>
+
+          <article class="pty-entry user">
+            <p class="pty-commandline">
+              <span class="host">you@mission</span><span class="cwd">~/ai-harness</span><span class="prompt">❯</span>
+              <span>looks good, go ahead and implement it</span>
+              <time datetime="2026-08-06T07:31:00-04:00">07:31:00</time>
+            </p>
+          </article>
+
+          <article class="pty-entry agent">
+            <header class="pty-speaker">codex / stdout <time datetime="2026-08-06T07:31:08-04:00">07:31:08</time></header>
+            <p class="pty-copy">
+              I’m implementing the approved interaction and persistence contract now. I’ll keep the
+              feedback scoped to <code>(workflow run, Persona node)</code>, apply it to the next
+              eligible Persona execution and every later round until removed, and preserve it in run
+              history.
+            </p>
+            <p class="pty-copy">
+              Because this changes visible workflow behavior, I’m using the approved mockup and will
+              add Playwright coverage alongside focused server and prompt tests.
+            </p>
+          </article>
+
+          <details class="pty-toolrun">
+            <summary><b>codex executed 3 commands</b> · 1.8s</summary>
+            <div class="pty-tools">
+              <span>rg PersonaDirective src test</span>
+              <span>sed -n 1,240p src/server/workflows/runner.ts</span>
+              <span>git status --short</span>
+            </div>
+          </details>
+
+          <article class="pty-entry agent">
+            <header class="pty-speaker">codex / stdout <time datetime="2026-08-06T07:32:11-04:00">07:32:11</time></header>
+            <p class="pty-copy">
+              I’ve settled the storage model: active directives live on the run, keyed by Persona
+              node, while every claimed Persona attempt receives an immutable snapshot of the
+              directive it actually used. That preserves both later rounds and accurate history if
+              the feedback is edited or removed.
+            </p>
+          </article>
+
+          <details class="pty-toolrun">
+            <summary><b>codex executed 8 commands</b> · 7.4s</summary>
+            <div class="pty-tools">
+              <span>apply_patch src/server/db.ts</span>
+              <span>apply_patch src/shared/protocol.ts</span>
+              <span>apply_patch src/web/workflows/ExecutionPage.tsx</span>
+              <span>node --test test/workflow-run-actions.test.ts</span>
+            </div>
+          </details>
+        </div>
+
+        <form class="pty-compose" data-composer>
+          <label for="pty-input">mission ❯</label>
+          <input
+            id="pty-input"
+            name="instruction"
+            autocomplete="off"
+            placeholder="Send the next instruction to this process…"
+          />
+          <span class="send-key">enter sends</span>
+        </form>
+
+        <footer class="pty-status">
+          <span class="live">● codex: working</span>
+          <span>pid 97533</span>
+          <span class="branch">⌁ feat/persona-directives</span>
+          <span class="optional">ctx 48%</span>
+          <span class="status-spacer"></span>
+          <button type="button" data-action="Opening the live terminal">⇧T terminal</button>
+          <button type="button" data-action="Opening the current diff">D diff</button>
+          <button type="button" data-action="Session marked complete">C complete</button>
+          <button type="button" data-action="Kill confirmation would open">K kill</button>
+        </footer>
+      </section>
+    </main>
+
+    <output class="toast" data-toast aria-live="polite"></output>
+    <script src="mockups.js"></script>
+  </body>
+</html>

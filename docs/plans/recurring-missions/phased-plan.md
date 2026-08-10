@@ -2,7 +2,7 @@
 
 Status: ready to schedule  
 Source plan: [`plan.md`](plan.md)  
-Approved mockups: [`../../mockups/recurring-missions/index.html`](../../mockups/recurring-missions/index.html)  
+Approved mockups: [`../../mockups/recurring-missions/index.html`](../../archive/mockups/recurring-missions/index.html)
 Scheduling receipt: [`scheduled-tasks.md`](scheduled-tasks.md)  
 Investigated baseline: planning checkout `35807b9`; implementation target `origin/main`
 `a4b9fce` as observed on 2026-07-23
@@ -259,7 +259,7 @@ without redefining them.
   numbering convenience, and that every task will also carry the direct planning-session
   dependency required by the phased-plan workflow.
 - 2026-07-23: The approved mockups referenced
-  `docs/mockups/feature-lab/theme.css`, which is absent from implementation baseline
+  `docs/archive/mockups/feature-lab/theme.css`, which is absent from implementation baseline
   `a4b9fce` and outside this artifact-only handoff. Embedded the required base theme into
   `scheduled-catalog.css` and removed that missing dependency without changing a screen or
   copying the unrelated feature-lab mockups.

@@ -28,6 +28,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "sess",
     runtime: "terminal",
+    // Kill is pane mechanics; a discovered session is the honest shape here.
+    foremanInvite: null,
     nameSource: "process",
     state: "working" as SessionState,
     cwd: null,

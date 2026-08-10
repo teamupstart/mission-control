@@ -1,11 +1,11 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/trust-workflows-grant/", import.meta.url));
+const EVIDENCE = artifactsDir("trust-workflows-grant");
 
 /**
  * The Workflows grant, as a Trust column.
@@ -53,7 +53,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.setViewportSize(original);
   await page.waitForTimeout(150);
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/trust-workflows-grant/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/trust-workflows-grant/${name}.png`);
 }
 
 /** The stored Workflow config, read straight from the daemon rather than off the screen. */

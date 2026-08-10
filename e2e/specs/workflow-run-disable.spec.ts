@@ -125,6 +125,17 @@ async function seedFailedRun(page: Page, daemon: DaemonHandle): Promise<string> 
   return runId;
 }
 
+async function previewUnchanged(page: Page): Promise<void> {
+  // The first press asks for fresh evidence. Its expected refusal changes the one primary
+  // action into the explicit unchanged-evidence recovery, which then requires confirmation.
+  const primary = page.locator("header.wf-run-head button.btn-primary");
+  await expect(primary).toHaveText("Preview fresh evidence");
+  await primary.click();
+  await expect(primary).toHaveText("Preview unchanged", { timeout: 40_000 });
+  await primary.click();
+  await page.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
+}
+
 test("critical feedback follows one Persona through every later round of this run", async ({
   dashboard,
   daemon,
@@ -166,8 +177,7 @@ test("critical feedback follows one Persona through every later round of this ru
 
   // Round 2 proves the directive beats the target Persona's still-failing published guidance,
   // while the sibling Persona receives no directive and keeps its original fail behavior.
-  await dashboard.getByRole("button", { name: "Preview unchanged" }).click();
-  await dashboard.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
+  await previewUnchanged(dashboard);
 
   await expect(row("Blocking reviewer")).toContainText("Passed", { timeout: 40_000 });
   await expect(row("Docs steward")).toContainText("Changes requested", { timeout: 40_000 });
@@ -175,8 +185,7 @@ test("critical feedback follows one Persona through every later round of this ru
 
   // It remains active without another save. Round 3 makes the same target pass again and
   // reaches the same unmodified sibling failure.
-  await dashboard.getByRole("button", { name: "Preview unchanged" }).click();
-  await dashboard.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
+  await previewUnchanged(dashboard);
   await expect(dashboard.locator(".wf-run-scrubber")).toContainText("Round 3", { timeout: 40_000 });
   await expect(row("Blocking reviewer")).toContainText("Passed", { timeout: 40_000 });
   await expect(row("Docs steward")).toContainText("Changes requested", { timeout: 40_000 });

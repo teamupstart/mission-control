@@ -64,6 +64,7 @@ import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
   isSessionActionNode,
   isVerdictNode,
+  manualWorkflowTriggerKey,
   normalizeWorkflowName,
   verdictAuthor,
 } from "@shared/workflow.ts";
@@ -1034,7 +1035,7 @@ export class WorkflowManager {
     if (binding.state !== "active") {
       return { ok: false, reason: "inactive_binding", message: "The workflow binding is not active" };
     }
-    const key = `manual:${binding.id}:${input.requestId}`;
+    const key = manualWorkflowTriggerKey(binding.id, input.requestId);
     const existing = this.store.submissionByTrigger(key);
     if (existing) {
       const run = this.store.getRun(existing.runId);
@@ -1153,7 +1154,7 @@ export class WorkflowManager {
     if (externallySourced(run)) {
       return { ok: false, reason: "unsupported_mode", message: EXTERNAL_MANUAL_ROUND_REFUSAL };
     }
-    const key = `manual:${binding.id}:${input.requestId}`;
+    const key = manualWorkflowTriggerKey(binding.id, input.requestId);
     const existing = this.store.submissionByTrigger(key);
     if (existing) {
       const existingRun = this.store.getRun(existing.runId) ?? run;

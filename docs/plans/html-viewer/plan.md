@@ -38,7 +38,7 @@ visual behavior, IME, and a live simultaneous agent edit; it is not unimplemente
 
 Review the selected-direction mockup:
 
-- `docs/mockups/html-viewer/04-hybrid-editor.html`
+- `docs/archive/mockups/html-viewer/04-hybrid-editor.html`
 
 The earlier placement studies remain useful context:
 

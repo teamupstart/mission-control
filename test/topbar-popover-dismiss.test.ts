@@ -33,7 +33,7 @@ function escapeHandler(source: string): string {
   return source.slice(start, end);
 }
 
-for (const file of ["ForemanBar.tsx", "AlertBar.tsx", "SpendChip.tsx"]) {
+for (const file of ["ForemanBar.tsx", "AlertBar.tsx", "SpendChip.tsx", "KeepAwakeControl.tsx"]) {
   test(`${file}: the popover closes on Escape and keeps it from App's global Escape`, () => {
     const source = src(file);
 

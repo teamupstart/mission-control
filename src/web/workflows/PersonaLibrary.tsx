@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LlmProviderView } from "@shared/types.ts";
-import { personasForDisplay, WORKFLOW_LIMITS } from "@shared/workflow.ts";
-import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
+import { personaUpstreamLabel, personasForDisplay, WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import type {
+  PersonaDefaultsView,
+  PersonaUpstreamState,
+  PersonaView,
+} from "@shared/workflow.ts";
 import { PersonaEditor } from "./PersonaEditor.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
-import { deriveImportedPersonaName, personaRequest } from "./personaApi.ts";
+import {
+  deriveImportedPersonaName,
+  importPersonaFromPath,
+  personaRequest,
+  reimportPersona,
+} from "./personaApi.ts";
 import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
@@ -39,6 +48,17 @@ export function importMayReplaceEditor(
   return startedAtGeneration === currentGeneration;
 }
 
+/**
+ * The sidebar tag for one upstream state, or null when the row wears none.
+ *
+ * Through the shared label so the sidebar, the Library card and the editor's status line all
+ * say the same words about the same fact. `undefined` - not imported, or not checked yet -
+ * reaches the same answer as `current`: nothing.
+ */
+export function driftTag(state: PersonaUpstreamState | undefined): string | null {
+  return state === undefined ? null : personaUpstreamLabel(state);
+}
+
 export function filterPersonas(
   personas: readonly PersonaView[],
   state: "active" | "archived",
@@ -61,6 +81,8 @@ export function PersonaLibrary({
   personas,
   providers,
   defaults,
+  upstream,
+  onCheckUpstream,
   initialPersonaId = null,
   startNew = false,
   isOverlayOpen,
@@ -70,6 +92,13 @@ export function PersonaLibrary({
   personas: PersonaView[];
   providers: readonly LlmProviderView[];
   defaults: PersonaDefaultsView | null;
+  /**
+   * What the last upstream check found, per Persona id. Absent for a Persona with no source
+   * file and for one nothing has checked yet, which render identically: no badge.
+   */
+  upstream?: ReadonlyMap<string, PersonaUpstreamState>;
+  /** Ask for a fresh check. Called by the affordance, and after an import or a re-import. */
+  onCheckUpstream?: () => void;
   /**
    * The Persona the ROUTE asked for, read once as this surface mounts.
    *
@@ -106,6 +135,8 @@ export function PersonaLibrary({
   const [editorKey, setEditorKey] = useState(0);
   const editorGeneration = useRef(0);
   const importRef = useRef<HTMLInputElement>(null);
+  const [importPath, setImportPath] = useState("");
+  const [importing, setImporting] = useState(false);
 
   const listed = useMemo(
     () => filterPersonas(ordered, personaState, search),
@@ -202,6 +233,42 @@ export function PersonaLibrary({
     guardDiscard(`Importing ${file.name}`, () => void readImport(file));
   }
 
+  /** Open whatever the daemon just wrote or rewrote, and re-ask about every source file. */
+  function adopt(persona: PersonaView): void {
+    editorGeneration.current += 1;
+    setLocalPersona(persona);
+    setSelectedId(persona.id);
+    setSeed(null);
+    setEditorKey((key) => key + 1);
+    setDirty(false);
+    setError(null);
+    onCheckUpstream?.();
+  }
+
+  async function importFromPath(): Promise<void> {
+    const path = importPath.trim();
+    if (!path || importing) return;
+    setImporting(true);
+    try {
+      adopt(await importPersonaFromPath(path));
+      setImportPath("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not import that path");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function reimport(persona: PersonaView): Promise<void> {
+    try {
+      // Adopted the same way a save is: the editor's own revision effect takes the new
+      // guidance when the draft is clean, and raises its ordinary conflict when it is not.
+      adopt(await reimportPersona(persona.id, persona.revision));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not re-import from the source file");
+    }
+  }
+
   async function archive(persona: PersonaView): Promise<void> {
     try {
       const archived = await personaRequest<PersonaView>(`/api/personas/${persona.id}`, {
@@ -230,13 +297,7 @@ export function PersonaLibrary({
         }),
       });
       if (!importMayReplaceEditor(startedAtGeneration, editorGeneration.current)) return;
-      editorGeneration.current += 1;
-      setLocalPersona(persona);
-      setSelectedId(persona.id);
-      setSeed(null);
-      setEditorKey((key) => key + 1);
-      setDirty(false);
-      setError(null);
+      adopt(persona);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not import Markdown");
     }
@@ -282,6 +343,40 @@ export function PersonaLibrary({
             }}
           />
         </div>
+        {/* Importing BY PATH, which is a different thing from the file picker above and not a
+            second way to do it: the daemon reads the file, so the Persona remembers where its
+            guidance came from and can be told when that file changes. */}
+        <div className="persona-import-source">
+          <label className="persona-import-path">
+            <span className="sr-only">Absolute path of a Markdown file on this machine</span>
+            <input
+              type="text"
+              value={importPath}
+              spellCheck={false}
+              placeholder="/path/to/role.md"
+              onChange={(event) => setImportPath(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                guardDiscard(`Importing ${importPath.trim()}`, () => void importFromPath());
+              }}
+            />
+          </label>
+          <Tooltip label="Import a Markdown role the daemon can read, recording where it came from">
+            <button
+              className="btn btn-ghost"
+              disabled={importing || importPath.trim().length === 0}
+              onClick={() => guardDiscard(`Importing ${importPath.trim()}`, () => void importFromPath())}
+            >
+              {importing ? "Importing…" : "Import from path"}
+            </button>
+          </Tooltip>
+          <Tooltip label="Re-read every imported Persona's source file and update its badge">
+            <button className="btn btn-ghost" onClick={() => onCheckUpstream?.()}>
+              Check upstream
+            </button>
+          </Tooltip>
+        </div>
         <label className="persona-search">
           <span className="sr-only">Search Personas by name or description</span>
           <input
@@ -301,25 +396,32 @@ export function PersonaLibrary({
                   : "No saved Personas yet."}
             </p>
           )}
-          {listed.map((persona) => (
-            <Tooltip
-              key={persona.id}
-              label={persona.builtin
-                ? `Open the built-in ${persona.name} - read-only, Duplicate to customize`
-                : `Open ${persona.name} in the editor`}
-            >
-              <button
-                className={`persona-list-item${selectedId === persona.id ? " active" : ""}`}
-                onClick={() => select(persona.id)}
+          {listed.map((persona) => {
+            const drift = driftTag(upstream?.get(persona.id));
+            return (
+              <Tooltip
+                key={persona.id}
+                label={persona.builtin
+                  ? `Open the built-in ${persona.name} - read-only, Duplicate to customize`
+                  : `Open ${persona.name} in the editor`}
               >
-                <span className="persona-list-name">
-                  <span>{persona.name}</span>
-                  {persona.builtin && <em className="persona-list-tag">Built-in</em>}
-                </span>
-                <small>{persona.archivedAt === null ? persona.description || "No description" : "Archived"}</small>
-              </button>
-            </Tooltip>
-          ))}
+                <button
+                  className={`persona-list-item${selectedId === persona.id ? " active" : ""}`}
+                  onClick={() => select(persona.id)}
+                >
+                  <span className="persona-list-name">
+                    <span>{persona.name}</span>
+                    {persona.builtin && <em className="persona-list-tag">Built-in</em>}
+                    {/* Provenance beside provenance: `Built-in` says this came with the app, this
+                        says the file it came from has moved on. Toned rather than muted, because
+                        unlike `Built-in` it is something to act on. */}
+                    {drift && <em className="persona-list-tag is-attention">{drift}</em>}
+                  </span>
+                  <small>{persona.archivedAt === null ? persona.description || "No description" : "Archived"}</small>
+                </button>
+              </Tooltip>
+            );
+          })}
         </div>
       </aside>
 
@@ -338,6 +440,7 @@ export function PersonaLibrary({
             seed={seed ?? undefined}
             providers={providers}
             defaults={defaults}
+            upstream={selected ? upstream?.get(selected.id) : undefined}
             isOverlayOpen={isOverlayOpen}
             onDirtyChange={setDirty}
             onDraftEdit={() => {
@@ -350,6 +453,26 @@ export function PersonaLibrary({
               setError(null);
             }}
             onDuplicate={(draft) => start(draft)}
+            onReimport={(persona) => {
+              // Confirm-guarded like Archive, and for the same reason: it replaces text the
+              // operator may be reading. The body states the invariant that makes it safe -
+              // this is a new revision, and no published version moves.
+              setConfirm({
+                title: `Re-import ${persona.name}`,
+                body: dirty
+                  ? "Unsaved changes in the editor are discarded. This Persona's guidance is "
+                    + `replaced with the current contents of ${persona.provenance?.sourcePath ?? "its source file"} `
+                    + "as a new revision; every published workflow version keeps the guidance it "
+                    + "was published with."
+                  : "This Persona's guidance is replaced with the current contents of "
+                    + `${persona.provenance?.sourcePath ?? "its source file"} as a new revision. `
+                    + "Every published workflow version keeps the guidance it was published with.",
+                confirmLabel: "Re-import guidance",
+                confirmHint: "Adopt the source file's current text as a new revision",
+                danger: true,
+                onConfirm: () => void reimport(persona),
+              });
+            }}
             onArchive={(persona) => {
               // One dialog, not the two stacked native prompts this replaced: the unsaved
               // changes and the archive are a single decision, and asking twice for it

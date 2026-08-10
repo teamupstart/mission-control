@@ -1,14 +1,14 @@
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
- * The committed screenshots under `docs/evidence/workflow-session-action-authoring/`.
+ * The pull-request screenshots under `e2e/.artifacts/workflow-session-action-authoring/`.
  *
- * Behind `MC_E2E_EVIDENCE`, and committed, for `dispatch-and-converse.spec.ts`' reason: every
+ * Behind `MC_E2E_EVIDENCE`, and gitignored, for `dispatch-and-converse.spec.ts`' reason: every
  * capture here carries a fresh worktree uuid and a relative timestamp, so an unconditional
  * run would rewrite five binaries on every `npm run test:e2e` for no added signal.
  *
@@ -23,9 +23,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * editor and a three-pane builder have to stay reachable rather than merely not crash.
  */
 
-const EVIDENCE = fileURLToPath(
-  new URL("../../docs/evidence/workflow-session-action-authoring/", import.meta.url),
-);
+const EVIDENCE = artifactsDir("workflow-session-action-authoring");
 const PROMPT = "# Tidy the workspace\n\nRemove the stray scratch file and say so.\n";
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method?: string): Promise<T> {

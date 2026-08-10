@@ -4,6 +4,7 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
+import { sessionCanBindWorkflow } from "../../lib/held.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -283,14 +284,16 @@ export function ConsoleDetail({
           summary={ensembleSummaryFor(view, session)}
           onOpen={ensembleLink ? () => view.onOpenEnsemble?.(ensembleLink.runId) : undefined}
         />
-        {!workflowRun && view.onBindWorkflow && (
+        {/* The card's gate, read from the same helper: a terminal run releases the offer here
+            too, and stands its outcome chip next to it rather than instead of it. */}
+        {sessionCanBindWorkflow(workflowRun) && view.onBindWorkflow && (
           <Tooltip label="Bind a published workflow version">
-          <button
-            className="workflow-bind-chip"
-            onClick={() => view.onBindWorkflow?.(session.id)}
-          >
-            ＋ workflow
-          </button>
+            <button
+              className="workflow-bind-chip"
+              onClick={() => view.onBindWorkflow?.(session.id)}
+            >
+              ＋ workflow
+            </button>
           </Tooltip>
         )}
         <StateBadge

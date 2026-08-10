@@ -19,7 +19,7 @@ import {
   sessionActionSkillLabel,
 } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
-import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
+import { workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
 import { PersonaDirectiveEditor } from "./PersonaDirectiveEditor.tsx";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
@@ -76,9 +76,12 @@ import {
   copyFeedbackAction,
   deliveryResolutionActions,
   inspectorGateActions,
-  resubmitAvailability,
+  refusedUnchangedRequestId,
   runActionTooltip,
+  runNextMove,
+  runNoMoveReason,
   type RunActionId,
+  type RunNextMove,
 } from "./run-actions.ts";
 import { useRunActions } from "./run-action-store.ts";
 import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
@@ -421,15 +424,13 @@ export function WorkflowRunView({
   detail,
   roundId = null,
   onRound = () => {},
-  onResubmit,
-  onRetry,
+  onNextMove = () => {},
   onCancel,
   onConfirm = () => {},
   onCopyFeedback = async () => {},
+  onCopyRunId = async () => {},
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
-  onPreparePr = async () => {},
-  onRecheckInspector = async () => {},
   onRestartFull = async () => {},
   onRetryDelivery = async () => {},
   onResolveDelivery = async () => {},
@@ -445,16 +446,29 @@ export function WorkflowRunView({
   /** The submission being read. `null` means the newest one. */
   roundId?: string | null;
   onRound?: (submissionId: string) => void;
-  onResubmit: (unchanged: boolean) => Promise<void>;
-  onRetry: (attemptId?: string) => Promise<void>;
+  /**
+   * Dispatch the ONE move `runNextMove` derived for this run - the only run-advancing intent
+   * this header offers, so the host wires one callback rather than one per control.
+   *
+   * The descriptor carries its own `path` and `body`, so the host sends it uniformly through the
+   * shared action store. Two arms need more than that and the host owns both: the resubmission
+   * family, because the page resolves the request id that keeps an unchanged resubmit inside its
+   * round, and `run-again`, because the run it creates is a different one to route to.
+   */
+  onNextMove?: (move: RunNextMove) => void;
   onCancel: () => Promise<void>;
   /** Destructive confirmations, hosted by the overlay registry rather than `window.confirm`. */
   onConfirm?: (request: WorkflowConfirmRequest) => void;
   onCopyFeedback?: () => Promise<void>;
+  /**
+   * Copy the durable run id. A callback rather than a `copyText()` call in here for the same
+   * reason `onCopyFeedback` is one: the clipboard can refuse, and the sentence saying so
+   * belongs on the page's own error surface, which the host owns. It must REJECT on failure -
+   * that is what keeps the `Copied` flip honest.
+   */
+  onCopyRunId?: () => Promise<void>;
   onOpenSession?: () => void;
   onOpenInspectorSettings?: () => void;
-  onPreparePr?: () => Promise<void>;
-  onRecheckInspector?: () => Promise<void>;
   onRestartFull?: (confirmation?: string) => Promise<void>;
   onRetryDelivery?: (deliveryId: string) => Promise<void>;
   onResolveDelivery?: (
@@ -529,7 +543,6 @@ export function WorkflowRunView({
     && detail.contextState === "captured"
     && context === null;
   const inspectorGate = detail.inspectorGate;
-  const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
   // Split by what the attempt IS, read off the durable snapshot column the runtime writes for
   // exactly this kind - never guessed from the absence of a verdict, which is also what an
@@ -583,12 +596,20 @@ export function WorkflowRunView({
     return [{ id: event.id, completionKind, marker, summary, state }];
   });
   const [feedbackCopied, setFeedbackCopied] = useState(false);
+  const [runIdCopied, setRunIdCopied] = useState(false);
   const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
-  const resubmit = resubmitAvailability(detail, liveInspectorRepair);
-  const gateActions = inspectorGateActions(detail);
-  const preparePrAction = gateActions.find((action) => action.kind === "prepare-pr");
-  const recheckAction = gateActions.find((action) => action.kind === "recheck-inspector");
-  const openPrAction = gateActions.find((action) => action.kind === "open-pr")!;
+  /**
+   * The one thing to do about this run, and the sentence for when there is nothing.
+   *
+   * Exactly one of the two is ever non-null - `runNoMoveReason` returns `null` whenever a move
+   * exists - so the header cannot show a primary and an excuse for not having one at once.
+   */
+  const nextMove = runNextMove(detail);
+  const noMoveReason = runNoMoveReason(detail);
+  // No `!`: `inspectorGateActions` pushes `open-pr` only when there is a pull request to open,
+  // so this is `undefined` on every run with no adopted one - which is most of them.
+  const openPrAction = inspectorGateActions(detail)
+    .find((action) => action.kind === "open-pr");
   const totalCost = workflowCallCost(
     calls,
     detail.llmCallCount ?? calls.length,
@@ -629,7 +650,29 @@ export function WorkflowRunView({
           </p>
           <h3>{detail.summary.workflowName}</h3>
           <p className="wf-run-facts">
-            <span className="wf-run-version">v{detail.summary.workflowVersion}</span>
+            {/* The badge IS the link to the composer. It already displayed the version, so a
+                separate `Open version` button in the action row was a second control for the
+                same fact, competing with the ones that change the run. */}
+            <Tooltip label={version
+              ? `Open workflow version ${version.version} in the composer`
+              : "The immutable published version is missing or corrupt"}>
+              <button
+                className="wf-run-version"
+                aria-label={`Open workflow version ${detail.summary.workflowVersion} in the composer`}
+                disabled={!version}
+                onClick={() => {
+                  if (!version) return;
+                  // The version to reveal is handed over in session storage (the builder reads
+                  // it as it mounts); the hash names the WORKFLOW, so the link is a real deep
+                  // link rather than "the builder, on whatever it had open last".
+                  requestWorkflowVersionOpen(version.workflowId, version.version);
+                  window.location.hash =
+                    `#/library/workflows/${encodeURIComponent(version.workflowId)}`;
+                }}
+              >
+                v{detail.summary.workflowVersion}
+              </button>
+            </Tooltip>
             <span className={`workflow-chip workflow-${workflowRunTone(detail.summary)}`}>
               {runStatusLabel(detail.run.status)}
             </span>
@@ -645,74 +688,44 @@ export function WorkflowRunView({
               </button>
             </Tooltip>
           </p>
+          {/* The sentence that replaces a disabled button.
+              A stopped run's reason belongs in the page, not in a tooltip on a control that
+              refuses - and naming where the decision lives is what keeps the header from
+              pretending one button settles an Inspector finding or an uncertain delivery. It
+              renders only when `runNextMove` found nothing, so it never argues with a primary. */}
+          {noMoveReason && (
+            <p className="wf-run-why">
+              <b>{noMoveReason.cause}</b> {noMoveReason.consequence}
+            </p>
+          )}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
         </div>
 
         <div className="wf-run-actions">
-          {resubmit && (
-            <>
-              <Tooltip label={resubmit.refusal
-                ?? (resubmit.resuming
-                  ? "Re-read the session's current diff and resume this run where it stalled"
-                  : "Re-read the session's current diff and run the review again")}>
-                <button
-                  className="btn"
-                  disabled={resubmit.refusal !== null}
-                  onClick={() => void onResubmit(false)}
-                >
-                  {preview ? "Preview fresh evidence" : "Submit fresh evidence"}
-                </button>
-              </Tooltip>
-              <Tooltip label={resubmit.refusal
-                ?? "Run the review again against the evidence snapshot already taken"}>
-                <button
-                  className="btn btn-ghost"
-                  disabled={resubmit.refusal !== null}
-                  onClick={() => onConfirm({
-                    title: preview ? "Preview unchanged evidence" : "Submit unchanged evidence",
-                    body: "This runs every reviewer again against the snapshot already taken, so"
-                      + " nothing about the work under review has changed since the last round.",
-                    confirmLabel: preview ? "Preview unchanged" : "Submit unchanged",
-                    confirmHint: "Starts a new round against the existing evidence snapshot",
-                    onConfirm: () => void onResubmit(true),
-                  })}
-                >
-                  {preview ? "Preview unchanged" : "Submit unchanged"}
-                </button>
-              </Tooltip>
-            </>
-          )}
-          {preparePrAction && (
-            <Tooltip label={runActionTooltip(
-              preparePrAction,
-              isActionPending(preparePrAction.id),
-            )}>
+          {/* ONE next move, derived rather than assembled.
+              This row used to offer every control the run might accept - five conditional
+              blocks, all `btn` and `btn-ghost` peers, with the one that resolved the run last
+              and furthest right. `runNextMove` answers the question the reader actually has, and
+              because it returns at most one descriptor there is no arrangement of state in which
+              two primaries can appear. */}
+          {nextMove && (
+            <Tooltip label={runActionTooltip(nextMove, isActionPending(nextMove.id))}>
               <button
-                className="btn"
-                disabled={preparePrAction.disabled || isActionPending(preparePrAction.id)}
-                onClick={() => void onPreparePr()}
+                className="btn btn-primary"
+                disabled={isActionPending(nextMove.id)}
+                onClick={() => {
+                  if (!nextMove.confirm) {
+                    onNextMove(nextMove);
+                    return;
+                  }
+                  onConfirm({
+                    ...nextMove.confirm,
+                    onConfirm: () => onNextMove(nextMove),
+                  });
+                }}
               >
-                {preparePrAction.label}
-              </button>
-            </Tooltip>
-          )}
-          {detail.run.status === "blocked" && detail.run.currentPhase === "infrastructure_error" && (
-            <Tooltip label="The provider call failed rather than the review - try it again">
-              <button className="btn" onClick={() => void onRetry(failedAttempt?.id)}>Retry provider call</button>
-            </Tooltip>
-          )}
-          {recheckAction && (
-            <Tooltip label={runActionTooltip(
-              recheckAction,
-              isActionPending(recheckAction.id),
-            )}>
-              <button
-                className="btn btn-ghost"
-                disabled={recheckAction.disabled || isActionPending(recheckAction.id)}
-                onClick={() => void onRecheckInspector()}
-              >
-                {recheckAction.label}
+                {nextMove.label}
               </button>
             </Tooltip>
           )}
@@ -733,7 +746,12 @@ export function WorkflowRunView({
               {feedbackAction.label}
             </button>
           </Tooltip>
-          {openPrAction.href ? (
+          {/* Absent, not disabled, when there is no pull request to open - which is what the
+              descriptor's own existence now means. A greyed-out `Open PR` was the header
+              repeating a fact the Inspector gate section states properly a few sections down,
+              and it stood on the `waiting_for_pr` runs that are parked precisely BECAUSE no
+              pull request is adopted yet. */}
+          {openPrAction && (
             <Tooltip label={openPrAction.tooltip}>
               <a
                 className="btn btn-ghost"
@@ -744,62 +762,10 @@ export function WorkflowRunView({
                 {openPrAction.label}
               </a>
             </Tooltip>
-          ) : (
-            <Tooltip label={openPrAction.tooltip}>
-              <button className="btn btn-ghost" disabled>{openPrAction.label}</button>
-            </Tooltip>
           )}
-          <Tooltip label={version
-            ? `Open immutable workflow version ${version.version}`
-            : "The immutable published version is missing or corrupt"}>
-            <button
-              className="btn btn-ghost"
-              disabled={!version}
-              onClick={() => {
-                if (!version) return;
-                // The version to reveal is handed over in session storage (the builder reads
-                // it as it mounts); the hash names the WORKFLOW, so the link is a real deep
-                // link rather than "the builder, on whatever it had open last".
-                requestWorkflowVersionOpen(version.workflowId, version.version);
-                window.location.hash =
-                  `#/library/workflows/${encodeURIComponent(version.workflowId)}`;
-              }}
-            >
-              Open version
-            </button>
-          </Tooltip>
-          <Tooltip label="Download this run's complete retained audit history as JSON">
-            <a
-              className="btn btn-ghost"
-              href={`/api/workflow-runs/${encodeURIComponent(detail.run.id)}/export`}
-              download={`workflow-run-${detail.run.id}.json`}
-            >
-              Export run
-            </a>
-          </Tooltip>
-          {version ? (
-            <Tooltip label={`Download immutable workflow version ${version.version} as JSON`}>
-              <a
-                className="btn btn-ghost"
-                href={`/api/workflows/${encodeURIComponent(version.workflowId)}/versions/${version.version}/export`}
-                download={`workflow-version-${version.version}.json`}
-              >
-                Export version
-              </a>
-            </Tooltip>
-          ) : (
-            <Tooltip label="The immutable published version is missing or corrupt">
-              <button className="btn btn-ghost" disabled>Export version</button>
-            </Tooltip>
-          )}
-          <Tooltip label="Copy this durable workflow run id">
-            <button
-              className="btn btn-ghost"
-              onClick={() => void navigator.clipboard.writeText(detail.run.id)}
-            >
-              Copy run id
-            </button>
-          </Tooltip>
+          {/* The run id and both JSON downloads are NOT here: they answer nobody reading a run,
+              so they sit in `.wf-run-audit` at the foot of the page beside the Timeline. This
+              row is for controls that change the run, plus the two links that reach the work. */}
         </div>
 
         {/* The two that cannot be undone, kept apart from the rest and never filled red:
@@ -1433,6 +1399,102 @@ export function WorkflowRunView({
           onClose={() => setDirectiveNodeId(null)}
         />
       )}
+
+      {/*
+        Developer material, named for who it is for.
+
+        None of these three answers any question a person reading a run has - is it moving, why
+        did it stop, what do I do, where is the work. The id has no filter to be pasted into
+        (the rail filters by state, workflow and session) and the route already carries it; the
+        two exports have no importer anywhere in the product by deliberate design, so both are
+        bug-report attachments. Attachments do not belong beside `Cancel run`, and they are not
+        worth deleting either - hence a disclosure, collapsed, beside the Timeline, where the
+        rest of the audit material already lives.
+      */}
+      <details className="wf-run-audit">
+        <Tooltip label="The run id and the JSON a bug report needs, out of the way of the run's own controls">
+          <summary>
+            Audit and bug reports
+            <span> - the run id and the complete JSON records</span>
+          </summary>
+        </Tooltip>
+        <dl className="wf-run-audit-body">
+          <div className="wf-run-audit-row">
+            <dt>Run id</dt>
+            <dd className="wf-run-audit-id">{detail.run.id}</dd>
+            <dd className="wf-run-audit-act">
+              <Tooltip label="Copy this durable workflow run id">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => void (async () => {
+                    try {
+                      await onCopyRunId();
+                      setRunIdCopied(true);
+                      window.setTimeout(() => setRunIdCopied(false), 1600);
+                    } catch {
+                      setRunIdCopied(false);
+                    }
+                  })()}
+                >
+                  {runIdCopied ? "Copied" : "Copy"}
+                </button>
+              </Tooltip>
+            </dd>
+          </div>
+          <div className="wf-run-audit-row">
+            <dt>Run history</dt>
+            <dd>Every retained event, verdict, delivery and model call</dd>
+            <dd className="wf-run-audit-act">
+              <Tooltip label="Download this run's complete retained audit history as JSON">
+                {/* Two things this anchor carries beyond its href. The `download` name matches
+                    the route's own `Content-Disposition`, which `test/workflows-http.test.ts`
+                    pins - a file must not be named two ways. And the `aria-label` names it
+                    apart from the version download below, which reads identically on screen:
+                    two controls called only "Download JSON" are one control to anybody
+                    listening to the page rather than looking at it. */}
+                <a
+                  className="btn btn-ghost"
+                  aria-label="Download the run history as JSON"
+                  href={`/api/workflow-runs/${encodeURIComponent(detail.run.id)}/export`}
+                  download={`workflow-run-${detail.run.id}.json`}
+                >
+                  Download JSON
+                </a>
+              </Tooltip>
+            </dd>
+          </div>
+          <div className="wf-run-audit-row">
+            <dt>Workflow v{detail.summary.workflowVersion}</dt>
+            <dd>The immutable published definition this run was pinned to</dd>
+            <dd className="wf-run-audit-act">
+              {version ? (
+                <Tooltip label={`Download immutable workflow version ${version.version} as JSON`}>
+                  <a
+                    className="btn btn-ghost"
+                    aria-label={`Download workflow version ${version.version} as JSON`}
+                    href={`/api/workflows/${encodeURIComponent(version.workflowId)}/versions/${version.version}/export`}
+                    download={`workflow-version-${version.version}.json`}
+                  >
+                    Download JSON
+                  </a>
+                </Tooltip>
+              ) : (
+                /* Disabled rather than absent: the row is what says this run HAS a pinned
+                   version, and a missing definition is a fault to see, not to hide. */
+                <Tooltip label="The immutable published version is missing or corrupt">
+                  <button
+                    className="btn btn-ghost"
+                    aria-label={`Download workflow version ${detail.summary.workflowVersion} as JSON`}
+                    disabled
+                  >
+                    Download JSON
+                  </button>
+                </Tooltip>
+              )}
+            </dd>
+          </div>
+        </dl>
+      </details>
     </section>
   );
 }
@@ -1506,8 +1568,6 @@ export function WorkflowRuns({
   const mounted = useRef(false);
   const listGeneration = useRef(0);
   const selectedIndex = useRef(0);
-  const loadedSelection = useRef<string | null | undefined>(undefined);
-  const unchangedRequest = useRef<{ runId: string; requestId: string } | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const listPage = async (cursor: string | null, append: boolean): Promise<void> => {
@@ -1628,20 +1688,33 @@ export function WorkflowRuns({
       });
     return committed;
   };
+  // A DIFFERENT run is being read: drop the previous one's detail and round in the same commit,
+  // because a submission id from the old run must not survive one render into the new one.
   useEffect(() => {
-    const selectionChanged = loadedSelection.current !== selected;
-    loadedSelection.current = selected;
-    if (selectionChanged) {
-      setRoundId(null);
-      setConfirm(null);
-    }
-    // Summary upserts must refresh detail even if two durable changes share a millisecond,
-    // so the event's new object identity remains the revision signal. Keep the existing
-    // detail mounted for same-run refreshes: clearing it would close any run-owned overlay
-    // the operator is using while ordinary workflow activity arrives over SSE.
-    void load(selectionChanged);
+    setRoundId(null);
+    setConfirm(null);
+    void load(true);
     return () => { loadGeneration.current++; };
-  }, [selected, selectedSummary]);
+  }, [selected]);
+  /**
+   * The SAME run's summary moved. Refresh IN PLACE.
+   *
+   * This shared the effect above until the audit disclosure made it visible, and sharing it
+   * meant every summary bump ran `load(true)` - which nulls the detail, and the view is
+   * rendered under `{detail && …}`, so the whole reader was destroyed and rebuilt. Everything
+   * the reader had opened closed: the audit disclosure, the evidence and gate-packet
+   * disclosures, and the scrubbed round, which snapped back to the newest. On a live run that
+   * happens on every SSE bump, and even on a finished one it happens about a second after
+   * arrival, when the first list page lands and gives the selected run a summary at last.
+   *
+   * News about the run is not a new run. The guard is what keeps them apart: it fires only for
+   * the run already on screen, so first mount (no detail yet) is left to the effect above and
+   * does not fetch twice.
+   */
+  useEffect(() => {
+    if (!selectedSummary || selectedSummary.id !== detail?.run.id) return;
+    void load();
+  }, [selectedSummary]);
   const actionController = useRunActions(selected ?? "", () => load());
 
   const mutate = async (path: string, body: object): Promise<boolean> => {
@@ -1659,25 +1732,31 @@ export function WorkflowRuns({
 
   const resubmit = async (unchanged: boolean): Promise<void> => {
     if (!detail) return;
-    const remembered = unchangedRequest.current?.runId === detail.run.id
-      ? unchangedRequest.current.requestId
-      : null;
-    const requestId = unchanged && remembered ? remembered : crypto.randomUUID();
+    /*
+     * Replaying the refused submission's own request id is what keeps an unchanged resubmission
+     * INSIDE its round - the daemon finds that submission by trigger key and revives it, where a
+     * fresh id opens a repair round and spends one of the binding's.
+     *
+     * That id is DERIVED from the run rather than remembered from the request that earned the
+     * refusal. A `useRef` here was empty after any reload, and the header went on offering to
+     * review "this snapshot" while the daemon quietly opened a new round instead - a promise the
+     * label made and the mechanism could not keep. `refusedUnchangedRequestId` reads it off the
+     * refused submission's trigger key, so it survives a remount, a new tab, and a second
+     * operator arriving at the same run.
+     *
+     * `null` means no revivable submission, which is a correct answer rather than a failure: a
+     * fresh id is what the daemon accepts there.
+     */
+    const replay = unchanged ? refusedUnchangedRequestId(detail) : null;
+    const requestId = replay ?? crypto.randomUUID();
     setError(null);
     try {
       await workflowRequest(`/api/workflow-runs/${detail.run.id}/resubmit`, {
         method: "POST",
         body: JSON.stringify({ requestId, resubmitUnchanged: unchanged }),
       });
-      unchangedRequest.current = null;
       void load();
     } catch (caught) {
-      if (
-        caught instanceof WorkflowApiError
-        && caught.body?.code === "workflow_unchanged_evidence"
-      ) {
-        unchangedRequest.current = { runId: detail.run.id, requestId };
-      }
       setError(caught instanceof Error ? caught.message : "Workflow resubmission failed");
       void load(false, true);
     }
@@ -1689,6 +1768,24 @@ export function WorkflowRuns({
       await copyText(workflowFeedbackText(detail));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not copy workflow feedback");
+      throw caught;
+    }
+  };
+
+  /**
+   * The audit disclosure's run-id copy.
+   *
+   * Through `copyText()` like every other clipboard control on this page. The button it
+   * replaced called `navigator.clipboard.writeText` behind a `void`, so in the Electron
+   * renderer - where the async Clipboard API can be permission-blocked even after a direct
+   * click - it copied nothing and said nothing.
+   */
+  const copyRunId = async (): Promise<void> => {
+    if (!detail) return;
+    try {
+      await copyText(detail.run.id);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not copy the run id");
       throw caught;
     }
   };
@@ -1877,12 +1974,61 @@ export function WorkflowRuns({
             roundId={roundId}
             onRound={setRoundId}
             onConfirm={setConfirm}
-            onResubmit={resubmit}
-            onRetry={async (nodeAttemptId) => {
-              await mutate(`/api/workflow-runs/${detail.run.id}/retry`, {
-                requestId: crypto.randomUUID(),
-                ...(nodeAttemptId ? { nodeAttemptId } : {}),
-              });
+            /*
+             * One dispatch for the one derived move.
+             *
+             * Every arm but the resubmissions goes through the shared action store from the
+             * descriptor's own `path` and `body`, which is what keeps `RunNextMove` POST-only:
+             * there is no kind this site special-cases, so a new row in `runNextMove` needs no
+             * new wiring here.
+             *
+             * The resubmission family is routed to the page's own handler rather than sent from
+             * here, and NOT for tidiness: that handler resolves the request id that keeps an
+             * unchanged resubmission inside the round it is repairing. Sending it generically
+             * would mint a fresh id and burn a repair round every time.
+             */
+            onNextMove={(move) => {
+              if (move.kind === "resubmit" || move.kind === "resubmit-unchanged") {
+                void resubmit(move.kind === "resubmit-unchanged");
+                return;
+              }
+              /*
+               * The only move whose success lands on a DIFFERENT run.
+               *
+               * Every other arm advances the run being read, so settling it means reloading this
+               * page. This one asks the BINDING for a new run, so the run it returns is the one
+               * the reader now wants: staying put would leave them on the finished run they just
+               * asked to repeat, watching nothing happen.
+               *
+               * Through the shared store like every other arm, and not for symmetry - it is what
+               * retains the request id across a failed response. A network error here with a
+               * fresh id per click is how one intent becomes two runs and two rounds of model
+               * spend; replaying the same id is answered idempotently with the run already made.
+               * `run_active` and `inactive_binding` cannot be ruled out from run detail alone
+               * (it carries no sibling runs), and they surface as the daemon's own sentence on
+               * the page's error line.
+               *
+               * `onSelectRun` rather than a hash write: it is the router's own entry point, so
+               * this leaves a history step back to the finished run and honours the same
+               * navigation gate every other move on this page does.
+               */
+              if (move.kind === "run-again") {
+                actionController.run(move.id, async (requestId) => {
+                  // `idempotent: true` arrives on a replay and is not an error - the run in the
+                  // body is the one this intent made, so it is the one to open.
+                  const started = await workflowRequest<{ run: { id: string } }>(move.path, {
+                    method: "POST",
+                    body: JSON.stringify({ requestId, ...move.body }),
+                  });
+                  onSelectRun(started.run.id);
+                });
+                return;
+              }
+              actionController.run(move.id, (requestId) =>
+                workflowRequest(move.path, {
+                  method: "POST",
+                  body: JSON.stringify({ requestId, ...move.body }),
+                }));
             }}
             onCancel={async () => {
               await mutate(`/api/workflow-runs/${detail.run.id}/cancel`, {
@@ -1890,28 +2036,9 @@ export function WorkflowRuns({
               });
             }}
             onCopyFeedback={copyFeedback}
+            onCopyRunId={copyRunId}
             onLoadEvents={loadMoreEvents}
             onLoadCalls={loadMoreCalls}
-            onPreparePr={async () => {
-              const action = inspectorGateActions(detail)
-                .find((candidate) => candidate.kind === "prepare-pr");
-              if (!action) return;
-              actionController.run(action.id, (requestId) =>
-                workflowRequest(`/api/workflow-runs/${detail.run.id}/prepare-pr`, {
-                  method: "POST",
-                  body: JSON.stringify({ requestId }),
-                }));
-            }}
-            onRecheckInspector={async () => {
-              const action = inspectorGateActions(detail)
-                .find((candidate) => candidate.kind === "recheck-inspector");
-              if (!action) return;
-              actionController.run(action.id, (requestId) =>
-                workflowRequest(`/api/workflow-runs/${detail.run.id}/recheck-inspector`, {
-                  method: "POST",
-                  body: JSON.stringify({ requestId }),
-                }));
-            }}
             onRestartFull={async (confirmation) => {
               await mutate(`/api/workflow-runs/${detail.run.id}/restart-full`, {
                 requestId: crypto.randomUUID(),

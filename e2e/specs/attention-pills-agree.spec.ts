@@ -1,8 +1,8 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
 import type { Locator, Page } from "@playwright/test";
@@ -30,7 +30,7 @@ import type { Locator, Page } from "@playwright/test";
 
 const TASK = "check the linter config";
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/attention-pills-agree/", import.meta.url));
+const EVIDENCE = artifactsDir("attention-pills-agree");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -46,7 +46,7 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/attention-pills-agree/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/attention-pills-agree/${name}.png`);
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {

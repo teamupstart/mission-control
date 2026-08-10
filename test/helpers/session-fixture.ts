@@ -72,6 +72,11 @@ export function mkSession(over: Partial<Session> = {}): Session {
     // Pane-backed, which is what every fixture here describes: it carries a tmux handle and
     // a tty. A test about a driver-run session overrides both this and `terminals`.
     runtime: "terminal",
+    // A dispatched worktree session, which is what this fixture models (the cwd and branch
+    // above say so) - and the default that preserves the meaning of every test written
+    // under participate-always semantics. Tests exercising uninvited behavior declare
+    // `foremanInvite: null` explicitly.
+    foremanInvite: "dispatch",
     name: "App Bugfixes",
     nameSource: "tmux",
     state: "working",

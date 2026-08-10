@@ -95,7 +95,7 @@ ship twice (see `scripts/builtin-markdown.ts` header).
    personas` command line), `README.md:3674`/`:3707`/`:5706` (Foreman seed location and
    the `MISSION_FOREMAN_INSTRUCTIONS` row - keep the anchor it links to resolving),
    `README.md:5120`/`:5199`/`:5203` (Inspector brief location, including the
-   `[INSPECTOR.md](INSPECTOR.md)` link), `docs/agent-guides/change-contracts.md:370`.
+   `[INSPECTOR.md](../../../personas/INSPECTOR.md)` link), `docs/agent-guides/change-contracts.md:370`.
    Historical plans and `docs/backups/AGENTS.old` keep their old paths.
 
 ## Compatibility

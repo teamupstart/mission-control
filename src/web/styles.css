@@ -22105,14 +22105,29 @@ span.line-run-prov {
   font-size: 11px;
 }
 /* Both refusals land under the sentence they refuse, inside the flex row's text column, so the
-   banner grows downward instead of squeezing the button off the end. */
+   banner grows downward instead of squeezing the button off the end.
+
+   The refusal declares no colour of its own: it is rendered with `dispatch-error` as well, so it
+   takes that rule's red and cannot drift from the save refusal printed a few hundred pixels
+   below it in the same dialog. Two different reds for two refusals in one form is the failure
+   worth designing against here, and restating the literal is how that happens.
+
+   Deliberately NOT `var(--danger)`, which is the harder red the destructive CONTROLS wear
+   (Delete, Clean up, Kill). Inline failure PROSE in this app is the softer tone `.dispatch-error`
+   has always used - `.kill-error`, `.reset-error`, `.status-failed` and `.task-failed` are the
+   same literal. That the tone is a repeated literal rather than a token of its own predates this
+   change and is worth a sweep; a ninth copy of it here would not have been the way to start
+   one. */
 .source-provenance-error,
 .source-provenance-warn {
   display: block;
   margin-top: 4px;
 }
+/* Takes `dispatch-error`'s colour but not its size: that rule is written for a paragraph
+   standing on its own above the footer, and 12.5px inside an 11px banner reads as a different
+   component that happens to be nearby. Declared after it, so this wins on order. */
 .source-provenance-error {
-  color: #e5877f;
+  font-size: inherit;
 }
 .source-provenance-warn {
   color: var(--attention);

@@ -315,7 +315,10 @@ test("a refusal keeps the button, because nothing was published", () => {
     repoRoot: "/Users/dev/work/harness",
     error: "could not add label: 'triage' not found",
   });
-  assert.match(html, /class="source-provenance-error"/);
+  // `dispatch-error` beside its own layout class, pinned rather than matched loosely: the red a
+  // failed push is printed in is the red a failed SAVE is printed in, and the two live in the
+  // same dialog. Restating the colour instead of sharing the class is how they drift apart.
+  assert.match(html, /class="dispatch-error source-provenance-error"/);
   assert.match(html, /could not add label: &#x27;triage&#x27; not found/);
   assert.match(html, /<button class="btn"[^>]*>Create GitHub issue<\/button>/);
   assert.doesNotMatch(html, /<button class="btn"[^>]*disabled=""/);

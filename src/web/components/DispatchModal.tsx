@@ -1946,9 +1946,14 @@ export function PushToSourceBlock({
         <span aria-hidden>↗</span> Not filed in an external tracker. The issue carries this
         task's saved title and text, plus any labels &ldquo;{name}&rdquo; filters on.
         {failure && (
+          // The refusal wears `dispatch-error` as well as its own layout class, so the two
+          // refusals this form can print - a failed save at the foot of the body, a failed push
+          // here - are the same red by construction rather than by two rules agreeing.
           <span
             className={
-              outcomeUnknown ? "source-provenance-warn" : "source-provenance-error"
+              outcomeUnknown
+                ? "source-provenance-warn"
+                : "dispatch-error source-provenance-error"
             }
           >
             <span aria-hidden>{outcomeUnknown ? "⚠" : "✕"}</span> {failure}

@@ -74,13 +74,23 @@ async function putSources(
   expect(res.ok(), await res.text()).toBe(true);
 }
 
-/** A github-issues source over `repoRoot`, sweeping on this spec's two labels. */
-const githubSource = (id: string, repoRoot: string, label = "mission-control bugs") => ({
+/**
+ * A github-issues source over `repoRoot`, sweeping on this spec's two labels.
+ *
+ * `config` is overridable so a test can seed two sources that are eligible for the SAME task and
+ * yet would file visibly different issues - which is the only way to prove which one was used.
+ */
+const githubSource = (
+  id: string,
+  repoRoot: string,
+  label = "mission-control bugs",
+  config: Record<string, unknown> = { labelsAny: LABELS },
+) => ({
   id,
   kind: "github-issues",
   label,
   repoRoot,
-  config: { labelsAny: LABELS },
+  config,
 });
 
 /** Seed a backlog task and hand back its id. */
@@ -206,6 +216,83 @@ test("pushing a backlog task creates the issue, links the task, and records it a
       return body.status?.find((s) => s.sourceId === "gh-e2e")?.seenCount ?? 0;
     }, { message: "the created issue must be remembered as already filed" })
     .toBe(1);
+});
+
+test("the picker decides which source files the issue, not just which name is shown", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The picker is the one control here whose whole job is to change what gets PUBLISHED, and
+  // reading its options proves nothing about that. `pushToSource` resolves the chosen source as
+  // `eligible.find((s) => s.id === push?.sourceId) ?? eligible[0]`, so a broken selection
+  // handler - or a selection that never reaches the state the push reads - falls back to the
+  // first source silently, and the issue lands with another source's labels in another repo.
+  // Nothing about the DOM would look wrong afterwards.
+  //
+  // So the two sources here are deliberately distinguishable in the argv rather than only in the
+  // picker: different labels AND a different `--repo`. The docs promise that a pushed issue
+  // "matches the filter that would find it"; this is the case that holds the promise to the
+  // source the operator actually chose.
+  const title = "Filed through the second source";
+  const intent = "It must carry the labels of the source that was picked.";
+  await putSources(dashboard, daemon, [
+    githubSource("gh-first", daemon.repo),
+    githubSource("gh-second", daemon.repo, "triage inbox", {
+      labelsAny: ["chore", "backlog"],
+      repo: "acme/other-repo",
+    }),
+  ]);
+  await seedTask(daemon, title, intent);
+  await useBoardLayout(dashboard, daemon);
+
+  const dialog = await openEditor(dashboard, title);
+  const picker = dialog.getByRole("combobox", { name: "GitHub issue source" });
+  // It opens on the first, which is what makes choosing the second a real choice - a test that
+  // selected the default would pass against a picker wired to nothing at all.
+  await expect(picker).toHaveValue("gh-first");
+  await picker.selectOption({ label: "triage inbox" });
+  await expect(picker).toHaveValue("gh-second");
+
+  const pushed = dashboard.waitForResponse(
+    (r) => r.request().method() === "POST" && /\/api\/tasks\/[^/]+\/push$/.test(r.url()),
+  );
+  await dialog.getByRole("button", { name: "Create GitHub issue" }).click();
+  expect((await pushed).status(), "the daemon accepted the push").toBe(200);
+  await expect(dialog.getByRole("link", { name: FAKE_GH_ISSUE_ID })).toBeVisible();
+
+  // What `gh` was handed, in full: the SECOND source's repo and labels, and one issue only.
+  await expect
+    .poll(() => ghCalls(daemon).filter((c) => c.argv[1] === "create").length)
+    .toBe(1);
+  const create = ghCalls(daemon).find((c) => c.argv[1] === "create")!;
+  expect(create.argv).toEqual([
+    "issue",
+    "create",
+    "--title",
+    title,
+    "--body",
+    intent,
+    "--repo",
+    "acme/other-repo",
+    "--label",
+    "chore",
+    "--label",
+    "backlog",
+  ]);
+  // Stated from the other side too, because `toEqual` on a wrongly-ordered argv could in
+  // principle still contain these: the default source's filter is nowhere in this request.
+  expect(create.argv).not.toContain("mission");
+  expect(create.argv).not.toContain("triage");
+
+  // And the ledger followed the same choice. A seen row on the wrong source would let the next
+  // sweep of the RIGHT one file this very issue back as a new task.
+  await expect
+    .poll(async () => {
+      const res = await dashboard.request.get(`${daemon.baseURL}/api/task-sources/config`);
+      const body = (await res.json()) as { status?: Array<{ sourceId: string; seenCount: number }> };
+      return Object.fromEntries((body.status ?? []).map((s) => [s.sourceId, s.seenCount]));
+    }, { message: "only the chosen source should have remembered filing this" })
+    .toMatchObject({ "gh-first": 0, "gh-second": 1 });
 });
 
 test("an unknown outcome is withdrawn for that opening and that task, and no further", async ({

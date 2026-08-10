@@ -150,6 +150,10 @@ Then obey what comes back, literally:
 - **Dismissed:** write nothing at all, commit nothing, and stop. A dismissal is not a
   deferral, and it is never an approval of the ones they did not get to.
 
+If the tool is not available at all - the Mission Control MCP server is not connected - ask the
+same questions in the conversation, showing each memory in full, and wait for a real answer. The
+approval is the ceremony; losing the form is not permission to skip it.
+
 ## 4. Write the approved memories
 
 One file per memory, at `.agents/memory/<slug>.md`, with front matter:

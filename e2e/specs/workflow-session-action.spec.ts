@@ -75,13 +75,15 @@ test("an operator authors a session action in the library, and the daemon stores
   await dashboard.keyboard.press("Enter");
   await promptEditor.pressSequentially("Remove the stray scratch file and say so.");
 
-  // Only what this build can PROVE is offered, and it now proves both. The list is asserted
-  // exhaustively rather than by membership: a completion the daemon cannot run appearing here
-  // is how an operator authors a workflow that then refuses to publish.
+  // Only what this build can PROVE is offered, and it now proves all three. The list is
+  // asserted exhaustively rather than by membership, and in the append-only tuple's order: a
+  // completion the daemon cannot run appearing here is how an operator authors a workflow that
+  // then refuses to publish.
   const completion = fields.getByLabel("Completes when");
   await expect(completion.locator("option")).toHaveText([
     "Session turn finishes",
     "Pull request is opened and verified",
+    "A commit lands in the checkout",
   ]);
 
   await dashboard.getByRole("button", { name: "Save" }).click();

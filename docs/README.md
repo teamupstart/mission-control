@@ -16,6 +16,7 @@ Mission Control's product reference is organized by feature below.
 - [Foreman](foreman.md)
 - [Work queues and backlog autopilot](work-queues.md)
 - [Skills and settings](skills-and-settings.md)
+- [Repository memory](repository-memory.md)
 - [User interface](ui.md)
 - [Inspector and shipping](inspector-and-shipping.md)
 - [Worktrees and checks](worktrees-and-checks.md)

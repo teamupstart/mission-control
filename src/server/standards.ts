@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { MEMORY_INDEX_PATH } from "@shared/memory.ts";
 import { readRepoDoc, realpathOr } from "./util/repo-doc.ts";
 import type { RepoDoc } from "./util/repo-doc.ts";
 import { utf8Bytes } from "./util/utf8.ts";
@@ -46,6 +47,33 @@ const MAX_WALKED_DIRS = 4000;
 const NESTED_NAMES = ["CLAUDE.md", "AGENTS.md"];
 /** Repo-root docs that always apply. */
 const ROOT_NAMES = ["AGENTS.md", "CLAUDE.md"];
+/**
+ * Root-relative docs that always apply but are not root-level FILES.
+ *
+ * The repository's committed agent memory index. It belongs in this bundle for the same
+ * reason AGENTS.md does - it is a contract the repo asserts about working in it, written
+ * down where every consumer can find it - and MC's reviewers are exactly the consumers
+ * that cannot pick it up any other way: a session loads it through its harness's own
+ * instruction-file loading, while the Inspector and the workflow personas read whatever
+ * this function returns and nothing else.
+ *
+ * Pushed LAST, after the nested-doc climb, because push order IS budget priority and this
+ * is the least load-bearing document in the bundle. Root docs first (the contract the repo
+ * asserts everywhere), then the nested docs governing the directories the diff actually
+ * touched (the contract for this change specifically), then memory - which is advisory
+ * knowledge, the newest and most disposable half of what a repo knows about itself. Any
+ * earlier and an established 24KB index could push out the `packages/app/AGENTS.md`
+ * governing the very code under review, inverting the specificity order nested docs
+ * already had. Being last also means a repo that symlinks its index at another doc is
+ * cited by that doc's name, since the identity dedupe keeps the first name pushed.
+ *
+ * The INDEX only, never the topic files beside it. The index is bounded by convention and
+ * the directory is not, so pulling the whole thing in would let one repo's memory crowd
+ * every other standards doc out of a 64KB bundle. It is also why the retro (later phases)
+ * writes index lines that say what a memory IS: these consumers run tool-less, so a line
+ * that is only a link is a line they cannot follow.
+ */
+const ROOT_EXTRA_PATHS = [MEMORY_INDEX_PATH];
 
 /**
  * One standards doc. Structurally a `RepoDoc` - the shape the shared reader returns -
@@ -66,8 +94,9 @@ export interface StandardsBundle {
 
 /**
  * Read the standards that apply to a diff touching `changedPaths` in `repoRoot`:
- * the repo-root AGENTS.md + CLAUDE.md, plus any nested CLAUDE.md/AGENTS.md under a
- * directory the diff actually touched.
+ * the repo-root AGENTS.md + CLAUDE.md, then any nested CLAUDE.md/AGENTS.md under a
+ * directory the diff actually touched, then the committed agent-memory index when the
+ * repo carries one. That is also the order they claim the byte budget in.
  *
  * The operator's global ~/.claude/CLAUDE.md is deliberately EXCLUDED. It is
  * personal preference (one machine's "no em dash" rule), not a contract the repo
@@ -121,6 +150,11 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
       dir = parent;
     }
   }
+
+  // Last, so the budget reaches it only after every doc the repo asserts as a rule - the
+  // root contract, then whatever governs the directories this diff touched. See
+  // `ROOT_EXTRA_PATHS`.
+  for (const subpath of ROOT_EXTRA_PATHS) wanted.push(join(root, subpath));
 
   const docs: StandardsDoc[] = [];
   // Two sets, because "did we already ASK for this path" and "is this the same

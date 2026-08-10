@@ -17,7 +17,11 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    generated session ID and the task through its native positional launch message, which Pi
    submits after initializing its TUI. Mission Control binds that generated ID for later
    transcript attribution without waiting for Pi's lazily-created session file or injecting
-   the prompt into the pane a second time. **Agent SDK** (Claude and Codex today) instead
+   the prompt into the pane a second time. Because that launch message is Pi's only channel,
+   it is also where Pi is told about [repository memory](repository-memory.md): when the
+   worktree carries a `.agents/memory/MEMORY.md`, one pointer line is composed ahead of your
+   task. Claude and Codex need no such thing - they load the repo's root doc, and the
+   reference line in it, themselves. **Agent SDK** (Claude and Codex today) instead
    starts the embedded driver with the task as turn one. It creates no terminal home and
    needs no discovery, readiness wait, paste, or delivery retry; the driver's binding is the
    readiness signal.

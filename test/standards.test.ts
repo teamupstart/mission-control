@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readStandards } from "../src/server/standards.ts";
+import { MEMORY_DIR, MEMORY_INDEX_PATH } from "../src/shared/memory.ts";
 import { StandardsRequestSchema } from "../src/shared/protocol.ts";
 
 // What the queue verifier is handed as "this repo's bar". Getting the file set wrong
@@ -207,6 +208,136 @@ test("past the changed-path cap the bundle SAYS docs may be missing", () => {
 test("a missing root, or a root that isn't there, is simply no standards", () => {
   assert.deepEqual(readStandards(null, ["a.ts"]), { docs: [], truncated: false });
   assert.deepEqual(readStandards("/nope/not/here", ["a.ts"]), { docs: [], truncated: false });
+});
+
+// ---- the repository's committed agent memory ----
+//
+// `.agents/memory/MEMORY.md` is the index half of the memory convention, and this bundle is
+// the ONLY way MC's own reviewers can see it: a dispatched session loads it through its
+// harness's instruction-file loading, while the Inspector and the workflow personas read
+// what this function returns and nothing else. A repo that has none is the normal case and
+// must be affected in no way at all.
+
+function writeMemoryIndex(root: string, body: string): void {
+  mkdirSync(join(root, MEMORY_DIR), { recursive: true });
+  writeFileSync(join(root, MEMORY_INDEX_PATH), body);
+}
+
+test("the committed memory index loads alongside the root contract", () => {
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# the contract");
+  writeMemoryIndex(root, "- [grep-wrapper-lies](grep-wrapper-lies.md) - negatives need `command grep`\n");
+
+  const out = readStandards(root, ["packages/app/src/a.ts"]);
+  assert.deepEqual(paths(out), [".agents/memory/MEMORY.md", "AGENTS.md"]);
+  assert.match(out.docs.find((d) => d.path === MEMORY_INDEX_PATH)!.text, /grep-wrapper-lies/);
+  // Cited by its repo-relative path, so a finding can name the file the repo knows.
+  assert.equal(out.docs.some((d) => d.path === MEMORY_INDEX_PATH), true);
+});
+
+test("a repo with no memory is exactly the repo it was", () => {
+  // The convention is opt-in and arrives with a repo's first retro. Until then nothing
+  // about the bundle may change - not its contents, not its `truncated` flag.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# the contract");
+
+  const out = readStandards(root, ["packages/app/src/a.ts"]);
+  assert.deepEqual(paths(out), ["AGENTS.md"]);
+  assert.equal(out.truncated, false);
+});
+
+test("the bundle is ordered by how binding a document is: root, then nested, then memory", () => {
+  // Push order IS budget priority in this function, so the order is the policy. The repo's
+  // rule for everywhere comes first, then the rule for the directories this diff actually
+  // touched, then memory - which is advisory knowledge rather than a rule.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# the contract");
+  writeFileSync(join(root, "packages", "app", "AGENTS.md"), "# the package's own");
+  writeMemoryIndex(root, "- [a-trap](a-trap.md)\n");
+
+  const out = readStandards(root, ["packages/app/src/a.ts"]);
+  assert.deepEqual(
+    out.docs.map((d) => d.path),
+    ["AGENTS.md", "packages/app/AGENTS.md", MEMORY_INDEX_PATH],
+  );
+});
+
+test("at the total cap the memory index is dropped, and the root docs are not", () => {
+  // Memory is the newer, cheaper, more disposable half of what a repo knows about itself,
+  // so a repo whose root docs already fill the 64KB bundle keeps them. The drop is still
+  // REPORTED - a reviewer judging against a contract it silently didn't read invents gaps.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), `# agents\n${"x".repeat(24 * 1024)}`);
+  writeFileSync(join(root, "CLAUDE.md"), `# claude\n${"y".repeat(24 * 1024)}`);
+  writeMemoryIndex(root, `# memory\n${"z".repeat(24 * 1024)}`);
+
+  const out = readStandards(root, []);
+  assert.deepEqual(paths(out), ["AGENTS.md", "CLAUDE.md"], "the repo's own contract survives");
+  assert.equal(out.truncated, true, "and the prompt must print its omitted-docs line");
+});
+
+test("at the cap memory yields to the nested doc governing the changed directory", () => {
+  // The reversal this ordering exists to prevent, and the review finding that caught it:
+  // with the index pushed before the climb, an established 24KB memory index evicted the
+  // `packages/app/AGENTS.md` that governs the very code under review - so the Inspector
+  // reviewed a monorepo package against everything except that package's own contract.
+  // Nested docs already outranked "nothing" by specificity; memory must not jump them.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), `# agents\n${"x".repeat(24 * 1024)}`);
+  writeFileSync(join(root, "packages", "app", "AGENTS.md"), `# the package's own\n${"y".repeat(24 * 1024)}`);
+  writeMemoryIndex(root, `# memory\n${"z".repeat(24 * 1024)}`);
+
+  const out = readStandards(root, ["packages/app/src/a.ts"]);
+  assert.deepEqual(paths(out), ["AGENTS.md", "packages/app/AGENTS.md"]);
+  assert.equal(
+    out.docs.some((d) => d.text.includes("the package's own")),
+    true,
+    "the contract for the code under review is the last thing that may be evicted",
+  );
+  assert.equal(out.truncated, true);
+});
+
+test("an oversized memory index is capped like any other doc, and says so", () => {
+  // The retro caps entry length so this never fires in practice; when it does, the index
+  // must arrive short and honest rather than push the root contract out.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# the contract");
+  writeMemoryIndex(root, "m".repeat(30 * 1024));
+
+  const out = readStandards(root, []);
+  assert.deepEqual(paths(out), [".agents/memory/MEMORY.md", "AGENTS.md"]);
+  const memory = out.docs.find((d) => d.path === MEMORY_INDEX_PATH)!;
+  assert.equal(memory.truncated, true);
+  assert.equal(memory.text.length, 24 * 1024);
+});
+
+test("a memory index symlinked OUTSIDE the repo is never read", () => {
+  // Memory is repo content, so it is untrusted input like every other file here, and this
+  // path is newly readable by the daemon: a repo can ship `.agents/memory/MEMORY.md` as a
+  // link to anything and the bytes would go straight into a review prompt.
+  const root = mkRepo();
+  const secrets = mkdtempSync(join(tmpdir(), "secrets-"));
+  writeFileSync(join(secrets, "id_rsa"), "PRIVATE KEY MATERIAL");
+  mkdirSync(join(root, MEMORY_DIR), { recursive: true });
+  symlinkSync(join(secrets, "id_rsa"), join(root, MEMORY_INDEX_PATH));
+
+  const out = readStandards(root, []);
+  assert.deepEqual(out.docs, []);
+  assert.equal(JSON.stringify(out).includes("PRIVATE KEY MATERIAL"), false);
+});
+
+test("a memory index symlinked to the root doc is ONE document", () => {
+  // The degenerate repo that keeps everything in AGENTS.md and links the index at it. The
+  // resolved-path dedupe already covers it; this pins that the new entry joined the list
+  // that dedupe sees, and that ROOT_NAMES order keeps AGENTS.md as the citation.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# the one contract");
+  mkdirSync(join(root, MEMORY_DIR), { recursive: true });
+  symlinkSync(join(root, "AGENTS.md"), join(root, MEMORY_INDEX_PATH));
+
+  const out = readStandards(root, []);
+  assert.deepEqual(out.docs.map((d) => d.path), ["AGENTS.md"]);
+  assert.equal(out.truncated, false);
 });
 
 // ---- the request boundary ----

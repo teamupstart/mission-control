@@ -35,6 +35,7 @@ import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from ".
 import type { Registry } from "./registry.ts";
 import { resetWorktreeToCommit, verifyHeadIs } from "./git/ensemble-snapshot.ts";
 import { missionMcpDescriptor, type MissionMcpRequirement } from "./mission-mcp.ts";
+import { withRepoMemoryPointer } from "./memory.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
 import { sleep } from "./util/timers.ts";
@@ -229,8 +230,21 @@ export class Dispatcher {
       const codexLaunch = task.agent === "codex"
         ? await prepareCodexLaunch(getHarnessesConfig().autoModeOnDispatch, missionMcp)
         : { args: [] as string[], instrumented: true, missionMcp: false };
+      // Pi is the one harness with no file channel: Claude and Codex load the worktree's
+      // root doc themselves, and the committed `.agents/memory` reference line rides in
+      // on it, but Pi's only channel is turn one. So the pointer is composed INTO the
+      // intent here, at the call site, rather than in `preparePiLaunch` - that function
+      // is pure argv construction and turn one is not always a dispatch. The pointer is
+      // added only when the worktree actually carries an index, and it lands in front of
+      // the task, which also means `preparePiLaunch`'s leading `-`/`@` guard sees the
+      // pointer's first character; an intent that opens with either one is then
+      // unambiguously positional anyway, mid-string.
+      //
+      // Pi is terminal-only today (`HARNESS_CAPABILITIES.pi.runtimes`), so this is its one
+      // launch seam. Whoever gives it an SDK runtime composes the same pointer into turn
+      // one on the embedded path, which returns above this line.
       const piLaunch = task.agent === "pi"
-        ? preparePiLaunch(task.intent)
+        ? preparePiLaunch(withRepoMemoryPointer(wt.path, task.intent))
         : { args: [] as string[], sessionId: null };
       const askArgs = await askChannelArgs(task.agent, missionMcp);
       const agentArgs = [

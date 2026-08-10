@@ -6,7 +6,7 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
-import { sessionCanBindWorkflow, sessionIsHeld } from "../lib/held.ts";
+import { sessionCanBindWorkflow, sessionIsHeld, workflowBindChipTitle } from "../lib/held.ts";
 import { queueChipVisible, queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { Keycap } from "./Keycap.tsx";
@@ -289,11 +289,7 @@ export function SessionCard({
             unarmed for the whole of its working life, because the only thing consulted here
             was the RUN, and a `foreman_complete` binding has no run until the work is done. */}
         {sessionCanBindWorkflow(workflowRun) && onBindWorkflow && (
-          <Tooltip
-            label={workflowBinding
-              ? `${workflowBinding.workflowName} v${workflowBinding.workflowVersion} runs when this session's work is complete - click to change it`
-              : "Bind a published workflow version"}
-          >
+          <Tooltip label={workflowBindChipTitle(workflowBinding)}>
             <button
               className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
               onClick={(event) => {

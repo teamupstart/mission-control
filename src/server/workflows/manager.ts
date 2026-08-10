@@ -2290,6 +2290,16 @@ export class WorkflowManager {
           }
         : { ok: false, reason: "not_found", message: "The claimed workflow binding is missing" };
     }
+    // An Ensemble hand-off arms a session exactly as the dispatch and manual paths do, so it
+    // owes the fleet stream the same event. Missing it left the winner's session genuinely
+    // bound - an `active` row, a claim, a runnable workflow - while every card and console
+    // header went on offering to attach one, until some unrelated mutation happened to touch
+    // the binding and publish it late. That is the same wrong reading this whole change exists
+    // to end, reached by a different door.
+    //
+    // Published whether or not the claim was `created`: a concurrent caller may have won the
+    // insert, and an upsert of the state that is already true costs one idempotent frame.
+    this.publishBinding(resolved.binding.id);
     return {
       ok: true,
       value: { binding: resolved.binding, claim: resolved.claim, created: resolved.created },

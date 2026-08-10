@@ -1,4 +1,4 @@
-import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import { workflowRunIsOpen } from "@shared/workflow.ts";
 import type { Tone } from "./format.ts";
 
@@ -72,4 +72,31 @@ export function sessionIsHeld(
  */
 export function sessionCanBindWorkflow(run: WorkflowRunSummary | null | undefined): boolean {
   return run == null || !workflowRunIsOpen(run.status);
+}
+
+/**
+ * What the bind chip's tooltip says, for the binding a session is armed with or for none.
+ *
+ * Here rather than in the two components that draw the chip, because it was written twice and
+ * both copies said the same wrong thing: that the workflow "runs when this session's work is
+ * complete" whatever the binding's trigger. That is only true of `foreman_complete`. A `manual`
+ * binding - the dialog's own default, and an option every operator can pick - runs nothing at
+ * completion and waits for an explicit submit, so the sentence promised an automatic review
+ * that was never coming. One copy is the only way two surfaces cannot drift apart again.
+ *
+ * Switched on the trigger rather than defaulted, so a third member of the append-only
+ * `WORKFLOW_TRIGGER_MODES` has to be given words here instead of silently inheriting a claim
+ * that may not hold for it.
+ */
+export function workflowBindChipTitle(
+  binding: Pick<WorkflowBindingSummary, "workflowName" | "workflowVersion" | "triggerMode"> | null | undefined,
+): string {
+  if (!binding) return "Bind a published workflow version";
+  const armed = `${binding.workflowName} v${binding.workflowVersion}`;
+  switch (binding.triggerMode) {
+    case "foreman_complete":
+      return `${armed} runs when this session's work is complete - click to change it`;
+    case "manual":
+      return `${armed} is armed and waits for you to submit it - click to change it`;
+  }
 }

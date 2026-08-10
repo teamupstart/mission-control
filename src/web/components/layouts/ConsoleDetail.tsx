@@ -4,7 +4,7 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
-import { sessionCanBindWorkflow } from "../../lib/held.ts";
+import { sessionCanBindWorkflow, workflowBindChipTitle } from "../../lib/held.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -379,11 +379,7 @@ export function ConsoleDetail({
         {/* The card's gate, read from the same helper: a terminal run releases the offer here
             too, and stands its outcome chip next to it rather than instead of it. */}
         {sessionCanBindWorkflow(workflowRun) && view.onBindWorkflow && (
-          <Tooltip
-            label={workflowBinding
-              ? `${workflowBinding.workflowName} v${workflowBinding.workflowVersion} runs when this session's work is complete - click to change it`
-              : "Bind a published workflow version"}
-          >
+          <Tooltip label={workflowBindChipTitle(workflowBinding)}>
             <button
               className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
               onClick={() => view.onBindWorkflow?.(session.id)}

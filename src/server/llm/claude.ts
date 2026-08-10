@@ -1,11 +1,15 @@
 import { HEADLESS_CWD, killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 import { killLiveClaudeSdkRuns, runClaudeSdkOneShot } from "./claude-sdk.ts";
+import {
+  CLAUDE_SANDBOX,
+  claudeGrantSettings,
+} from "./claude-grant.ts";
 import { unwrapEnvelope } from "./structured.ts";
 import { headlessTranscriptDir } from "../goal/prune.ts";
 import { grantRefusal } from "@shared/llm.ts";
 import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { claudeEnvelopeModels } from "../harness/claude/envelope.ts";
-import type { ClaudeTransport, LlmRunOptions, LlmRunner, LlmToolGrant } from "@shared/llm.ts";
+import type { ClaudeTransport, LlmRunOptions, LlmRunner } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 import type { ClaudeSdkOneShotDeps } from "../harness/claude/sdk-types.ts";
 
@@ -22,36 +26,10 @@ import type { ClaudeSdkOneShotDeps } from "../harness/claude/sdk-types.ts";
 // derivation. They disagree silently if they are ever computed twice - the sweep cleans an
 // empty directory while the real one grows forever.
 
-/**
- * The tools a caller may be granted, and nothing else.
- *
- * Read-only by construction. Today exactly one caller holds any tools at all - the
- * Inspector, which needs to read source to review a diff honestly and carries four other
- * defence layers because of it - and this is the same three it holds. A caller wanting
- * `Bash` or `Write` has to edit this line, which is where that argument should have to be
- * made rather than in a call site's options object.
- */
-export const CLAUDE_GRANTABLE_TOOLS = ["Read", "Grep", "Glob"] as const;
-
-/**
- * Render a grant's deny globs into a `--settings` payload.
- *
- * Every path is denied for EVERY tool the run holds, not just `Read`. That is not padding:
- * `Grep` takes an absolute path and prints the matching lines, so a `Read(...)`-only list
- * protects nothing it names, and `Glob` confirms the files exist. The grant is what pays
- * for the tool access, so the denial has to cover the whole grant.
- *
- * Path-major, tool-minor, to reproduce byte-for-byte what the Inspector builds today.
- * `llm-runner-contract.test.ts` asserts that equality against the Inspector's own
- * constants, so the item that migrates it is provably a no-op rather than hopefully one.
- */
-export function claudeGrantSettings(grant: LlmToolGrant): string {
-  return JSON.stringify({
-    permissions: {
-      deny: grant.denyPaths.flatMap((p) => grant.tools.map((t) => `${t}(${p})`)),
-    },
-  });
-}
+// Preserve the runner module's public contract while the pure grant policy lives outside
+// either transport. Both print and SDK import the same renderer, so there is still exactly
+// one derivation of Claude's permission payload and no circular transport dependency.
+export { CLAUDE_GRANTABLE_TOOLS, claudeGrantSettings } from "./claude-grant.ts";
 
 /**
  * The cwd a run without a grant spawns in.
@@ -141,10 +119,7 @@ export const claudeRunner: LlmRunner = {
       // one cannot tell the difference until something it named leaks into a prompt.
       if (refusal) throw new Error(`claude runner refused the tool grant: ${refusal}`);
     }
-    // Phase 2 adopts only tool-less daemon work. A granted Inspector review stays on its
-    // proven print sandbox until Phase 3 implements the same grant in SDK options. The SDK
-    // adapter also refuses a grant directly, so bypassing this routing guard fails loudly.
-    const transport = grant ? "print" : resolveTransport();
+    const transport = resolveTransport();
     if (transport === "sdk") {
       const result = await runClaudeSdkOneShot(prompt, opts, sdkDeps);
       if (opts.role) {
@@ -207,7 +182,7 @@ export const claudeRunner: LlmRunner = {
 
   structuredOutput: { guaranteesInputShape: true },
 
-  sandbox: { tools: CLAUDE_GRANTABLE_TOOLS, enforcesDenyPaths: true },
+  sandbox: CLAUDE_SANDBOX,
 
   /**
    * Every run mints a session id and writes a real transcript, exactly as an interactive

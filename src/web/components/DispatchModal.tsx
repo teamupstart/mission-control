@@ -1831,10 +1831,10 @@ function DispatchModal({
  * daemon would refuse the second push and the operator should not have to learn that by
  * pressing it.
  *
- * Deliberately pure and exported: it renders from props alone, so `test/backlog-edit-render.ts`
- * can put it in each of its states without a daemon, and a later surface that wants to show a
- * task's source (a board card, a Sitrep row) reuses this rendering rather than inventing a
- * second one that drifts.
+ * Deliberately pure and exported: it renders from props alone, so
+ * `test/backlog-edit-render.test.ts` can put it in each of its states without a daemon, and a
+ * later surface that wants to show a task's source (a board card, a Sitrep row) reuses this
+ * rendering rather than inventing a second one that drifts.
  *
  * The wording of the linked state names no tracker, and that is not vagueness - `Task.source`
  * is also what a JIRA sweep writes, and this block is the first place any of them is drawn.

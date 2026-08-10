@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-repo tasks - plan</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1f27;
+    --muted: #5a6472;
+    --line: #d9dee5;
+    --accent: #2563eb;
+    --accent-soft: #eaf1fe;
+    --code-bg: #f4f6f9;
+    --table-head: #f0f3f7;
+    --warn: #b45309;
+    --box: #ffffff;
+    --box-line: #94a3b8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1319;
+      --fg: #e4e9f0;
+      --muted: #98a3b3;
+      --line: #2a323e;
+      --accent: #7aa7ff;
+      --accent-soft: #16233c;
+      --code-bg: #171d26;
+      --table-head: #1a212c;
+      --warn: #f0a44c;
+      --box: #141a23;
+      --box-line: #4a5768;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 6px; }
+  h2 { font-size: 1.35rem; margin: 2.4em 0 0.6em; padding-top: 0.6em; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.08rem; margin: 1.8em 0 0.5em; }
+  p, li { max-width: 74ch; }
+  .meta { color: var(--muted); margin: 0 0 28px; }
+  a { color: var(--accent); }
+  code {
+    font: 0.875em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: 0.1em 0.35em;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  .scroll { overflow-x: auto; margin: 1em 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; }
+  th, td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--table-head); }
+  ul { padding-left: 1.3em; }
+  li { margin: 0.35em 0; }
+  strong { font-weight: 650; }
+  .decision-note { color: var(--muted); font-size: 0.92em; }
+  figure { margin: 1.6em 0; }
+  figure .scroll { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  figcaption { color: var(--muted); font-size: 0.9em; margin-top: 6px; }
+  svg { display: block; min-width: 640px; width: 100%; height: auto; }
+  svg text { font: 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: var(--fg); }
+  svg .lbl { fill: var(--muted); font-size: 11px; }
+  svg .box { fill: var(--box); stroke: var(--box-line); stroke-width: 1.2; rx: 6; }
+  svg .hub { fill: var(--accent-soft); stroke: var(--accent); }
+  svg .arrow { stroke: var(--box-line); stroke-width: 1.4; fill: none; }
+  svg .dashed { stroke-dasharray: 5 4; }
+  svg .panel { fill: none; stroke: var(--line); stroke-dasharray: 3 4; rx: 10; }
+  svg .panel-title { fill: var(--muted); font-weight: 600; font-size: 12px; letter-spacing: 0.04em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Multi-repo tasks</h1>
+  <p class="meta"><strong>Status:</strong> Scoped. Decisions adopted 2026-08-05. Phased into four serial phases - see <a href="phased-plan.html">phased-plan.html</a>. Implementation not started; no tasks scheduled.<br>
+  <strong>Source of truth:</strong> <code>docs/plans/multi-repo-tasks/plan.md</code></p>
+
+  <h2 id="goal">Goal</h2>
+  <p>Attach multiple repositories to a single task so one agent session makes coordinated changes across several repos in shared context - cross-cutting integrations, contract changes that must land with their consumers, lockstep API migrations. One task produces up to one pull request per attached repository, and each changed repository gets its own full review workflow run.</p>
+
+  <h2 id="decisions">Adopted decisions</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>#</th><th>Decision</th><th>Choice</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Completion</td><td>A multi-repo task auto-completes only when every changed repo's PR has merged (all-merged quorum)</td></tr>
+        <tr><td>2</td><td>Review workflows</td><td>Per-repo workflow runs: one session supports N concurrent runs, one full no-mistakes-review per repo with changes; unchanged repos are skipped</td></tr>
+        <tr><td>3</td><td>Harnesses</td><td>Claude and Codex in v1, behind a new <code>HARNESS_CAPABILITIES</code> flag; Codex gains sandbox writable roots for secondary worktrees</td></tr>
+        <tr><td>4</td><td>Auto-merge</td><td>Independent merges: each PR merges when it alone is eligible, exactly today's per-PR verdict; no coordinated-merge mechanism</td></tr>
+        <tr><td>5</td><td>Session layout</td><td>One session; cwd is the primary repo's worktree; secondary repos are additional worktrees the agent is granted access to</td></tr>
+        <tr><td>6</td><td>Data shape</td><td>Existing <code>tasks</code> columns stay authoritative for the primary repo; secondaries live in a new <code>task_repos</code> child table (additive, back-compatible)</td></tr>
+        <tr><td>7</td><td>v1 entry points</td><td>Dashboard dispatch modal only; schedules, task sources, and MCP <code>create_task</code> stay single-repo for now</td></tr>
+        <tr><td>8</td><td>Assignment</td><td>Multi-repo tasks are dispatch-only in v1; assigning one to an existing session is refused</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="decision-note">Decisions 5-8 are defaults recommended by this scoping and are adjustable at review.</p>
+
+  <h2 id="current-state">Current state (what the feature has to move)</h2>
+  <ul>
+    <li><strong>There is no repos table.</strong> A repository is a scanned directory under the workspace roots (<code>src/server/repos.ts</code>); a task's repo is one <code>NOT NULL</code> scalar, <code>tasks.repo_root</code>, validated at a single chokepoint (<code>resolveTaskRepoRoot</code>), written through one statement (<code>upsertTask</code>), read through one function (<code>rowToTask</code>), and shipped whole over the <code>task_upsert</code> SSE event.</li>
+    <li><strong>One session = one cwd is the task/session correlation key</strong>, not a convention. Dispatched tasks correlate by exact <code>task.worktreePath === session.cwd</code>; hook and MCP ingest fall back to cwd uniqueness (<code>registry.ts</code> <code>activeTaskForCwd</code>, <code>findSessionByEnv</code>).</li>
+    <li><strong>Dispatch provisions exactly one worktree per task</strong> (<code>provisionWorktree</code>): a treehouse pool lease when available, else <code>git worktree add</code> at <code>WORKTREES_DIR/&lt;taskId&gt;</code> on branch <code>harness/&lt;slug&gt;-&lt;shortId&gt;</code>. Teardown is provider-aware and singular.</li>
+    <li><strong>The pool reaper spares only pinned trees.</strong> Pins come from live session cwds plus each task's single <code>worktreePath</code>. An unpinned worktree is eligible for <code>reset --hard</code> and return-to-pool - this is the one destructive edge in the feature.</li>
+    <li><strong>PR association is inferred, never reported by the agent.</strong> Hooks sniff <code>gh pr create</code> output, and <code>pullRequestUrlIn</code> returns only the first URL in a command's output. <code>Session.prUrl</code> is a scalar that overwrites. The work-episode binding (one per task, one per session, enforced by primary keys and a <code>pr_url IS NULL OR pr_url = ?</code> guard) refuses a second concurrent PR. Task completion today is "newest merged PR wins".</li>
+    <li><strong>The adoption ledger is already multi-PR.</strong> <code>inspector_prs</code> is keyed <code>owner/repo#number</code> with per-row <code>repo_root</code>, and the Inspector poller iterates PRs, not tasks - every PR a session opens, in any repo, is adopted, observed, and reviewed independently. <code>announcePrOpened</code> deliberately allows a session to announce a second PR.</li>
+    <li><strong>The workflow layer is one run per session.</strong> <code>workflow_bindings</code> enforces one active binding per session note (<code>UNIQUE(note_key) WHERE state='active'</code>) and carries scalar <code>session_cwd</code>/<code>session_repo_root</code>. A run's Inspector gate pins exactly one PR (<code>workflow_runs.inspector_pr_key</code>), evidence capture records one checkout head, and the <code>pull_request</code> session-action adapter proves one open PR at one repo, branch, and head. A second PR triggers <code>inspector_pr_switch_refused</code>.</li>
+    <li><strong>Harness write scope is rooted at cwd.</strong> Codex launches with <code>--sandbox workspace-write</code> scoped to its workspace; Claude's <code>settingSources: ["user","project","local"]</code> loads only the primary checkout's CLAUDE.md and settings. Claude has an additional-directories seam; Codex sandbox writable roots are configurable at launch.</li>
+  </ul>
+
+  <h2 id="design">Design</h2>
+
+  <h3>Data model</h3>
+  <p>New child table, following the additive column contract in <code>docs/agent-guides/change-contracts.md</code>:</p>
+  <pre><code>CREATE TABLE IF NOT EXISTS task_repos (
+  task_id       TEXT NOT NULL,
+  repo_root     TEXT NOT NULL,
+  worktree_path TEXT,
+  branch        TEXT,
+  provider      TEXT,
+  base_sha      TEXT,
+  position      INTEGER NOT NULL,
+  PRIMARY KEY (task_id, repo_root)
+);</code></pre>
+  <ul>
+    <li><code>tasks.repo_root</code> / <code>worktree_path</code> / <code>branch</code> / <code>provider</code> remain the primary repo, untouched. Every existing single-repo consumer (Foreman prompts, report panel, drag payloads, assignment gates) keeps a meaningful value. A single-repo task has zero <code>task_repos</code> rows; old databases open unchanged.</li>
+    <li><code>tasks</code> gains one additive column, <code>base_sha TEXT</code>, holding the primary repo's baseline. The primary's other provisioning facts already live on <code>tasks</code>, so its baseline belongs beside them rather than forcing a <code>task_repos</code> row for the primary and breaking the "a single-repo task has zero <code>task_repos</code> rows" rule.</li>
+    <li><code>base_sha</code> records the commit each branch was cut at, for every repo including the primary: <code>tasks.base_sha</code> for the primary, <code>task_repos.base_sha</code> for each secondary. It powers two later rules: the changed-repo set (a repo whose head still equals its base is exempt from the PR requirement and gets no workflow run) and the completion quorum. <strong>Both rules are unsound without a primary baseline.</strong> If the primary appears in neither the episode-PR set nor the head-differs-from-base set, an agent that changes the primary without opening a primary PR leaves the primary invisible to the changed set: the quorum would complete the task on a merged secondary PR alone while primary work sat unmerged, and phase 3 would never create a workflow run for the primary, so its changes would ship unreviewed.</li>
+    <li>Wire shape: <code>Task</code> gains <code>extraRepos: TaskRepoEntry[]</code> (<code>{ repoRoot, worktreePath, branch, provider, baseSha, prUrl, prState, mergedAt }</code>, PR fields derived by the registry when emitting) and <code>baseSha: string | null</code> for the primary, so a consumer of the changed-set rule sees every repo's baseline through one shape. It rides the existing whole-<code>Task</code> <code>task_upsert</code> event - no new <code>ServerEvent</code>, no <code>MissionState</code> change beyond the type.</li>
+    <li><code>DispatchSchema</code> gains <code>extraRepoRoots: string[]</code> (default <code>[]</code>). Each entry passes <code>resolveTaskRepoRoot</code>, is deduped, and must not equal the primary. <code>UpdateTaskSchema</code> mirrors it; <code>isAnnotationOnlyUpdate</code> counts keys, so a repo-set edit is automatically a provisioning change and stays refused after the task leaves the backlog - the desired behavior for free.</li>
+    <li>Work episodes: new <code>work_episode_prs (episode_id, repo_root, pr_url, pr_head_sha, merged_at, UNIQUE(episode_id, repo_root))</code>. The existing scalar episode PR columns remain the primary repo's entry for back-compat. The <code>acceptPrForEpisode</code> refusal guard survives per repo: a repo that already holds a different PR on this episode still refuses a replacement.</li>
+    <li><code>TaskDependency</code> edges stay scalar in v1 and bind to the primary repo's PR; actual downstream release is governed by the task's completion (all-merged), which is the stronger condition.</li>
+  </ul>
+
+  <h3>Dispatch and provisioning</h3>
+  <ul>
+    <li>The dispatcher loops <code>provisionWorktree</code> over <code>[primary, ...extras]</code> with the same slug and short id; provider resolves per repo (a treehouse repo takes a pool lease, others use the git fallback - mixed providers are fine since provider is per entry). The git fallback needs a per-repo destination: its path is keyed on the task alone today (<code>WORKTREES_DIR/&lt;taskId&gt;</code>), so two non-pool repos on one task would collide on <code>git worktree add</code>. Each entry's slot, which is its <code>position</code>, discriminates the path, and slot 0 keeps today's exact path so single-repo dispatch is unchanged. Pool paths are already distinct because each repo has its own pool. The branch name is deliberately the same across repos. Every repo records its <code>base_sha</code> at cut time - the primary's onto <code>tasks.base_sha</code>, each secondary's onto its <code>task_repos</code> row - so the changed-set rule can evaluate the primary on the same footing as the secondaries.</li>
+    <li>All-or-nothing: a failure mid-loop tears down already-provisioned entries (provider-aware: leases are returned, never git-removed) and fails the dispatch.</li>
+    <li>Pool pins: the task pin set extends from <code>t.worktreePath</code> to also include every <code>extraRepos[].worktreePath</code>. This lands in the same change as provisioning - without it the reaper can <code>reset --hard</code> a secondary worktree under a live agent.</li>
+    <li>Teardown (<code>teardownWorktree</code>, <code>teardownTaskResources</code>, startup reconciliation) loops the collection and nulls it alongside the existing scalars.</li>
+    <li>Multi-repo tasks are dispatch-only: <code>TaskManager.assign</code> refuses them with a clear error, <code>canAcceptTask</code> returns false, and the board tile never shows a drop target for them.</li>
+  </ul>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 780 330" role="img" aria-label="Dispatch flow before and after: one worktree becomes one worktree per repo feeding a single agent session">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--box-line)"/>
+          </marker>
+        </defs>
+        <!-- Before panel -->
+        <rect class="panel" x="10" y="10" width="240" height="310"/>
+        <text class="panel-title" x="24" y="34">BEFORE</text>
+        <rect class="box" x="40" y="60" width="130" height="40" rx="6"/>
+        <text x="105" y="85" text-anchor="middle">Dispatcher</text>
+        <rect class="box" x="40" y="150" width="130" height="40" rx="6"/>
+        <text x="105" y="175" text-anchor="middle">worktree A</text>
+        <rect class="box hub" x="40" y="245" width="130" height="40" rx="6"/>
+        <text x="105" y="270" text-anchor="middle">Agent session</text>
+        <line class="arrow" x1="105" y1="100" x2="105" y2="148" marker-end="url(#arr)"/>
+        <text class="lbl" x="115" y="128">provision one</text>
+        <line class="arrow" x1="105" y1="190" x2="105" y2="243" marker-end="url(#arr)"/>
+        <text class="lbl" x="115" y="222">cwd</text>
+        <!-- After panel -->
+        <rect class="panel" x="280" y="10" width="490" height="310"/>
+        <text class="panel-title" x="294" y="34">AFTER</text>
+        <rect class="box" x="450" y="52" width="150" height="40" rx="6"/>
+        <text x="525" y="77" text-anchor="middle">Dispatcher</text>
+        <rect class="box" x="310" y="150" width="130" height="40" rx="6"/>
+        <text x="375" y="169" text-anchor="middle">worktree A</text>
+        <text class="lbl" x="375" y="184" text-anchor="middle">primary</text>
+        <rect class="box" x="460" y="150" width="130" height="40" rx="6"/>
+        <text x="525" y="175" text-anchor="middle">worktree B</text>
+        <rect class="box" x="610" y="150" width="130" height="40" rx="6"/>
+        <text x="675" y="175" text-anchor="middle">worktree C</text>
+        <rect class="box hub" x="450" y="255" width="150" height="42" rx="6"/>
+        <text x="525" y="281" text-anchor="middle">Agent session</text>
+        <line class="arrow" x1="490" y1="92" x2="385" y2="148" marker-end="url(#arr)"/>
+        <line class="arrow" x1="525" y1="92" x2="525" y2="148" marker-end="url(#arr)"/>
+        <line class="arrow" x1="560" y1="92" x2="665" y2="148" marker-end="url(#arr)"/>
+        <text class="lbl" x="533" y="122">provision per repo, all-or-nothing</text>
+        <line class="arrow" x1="385" y1="190" x2="490" y2="253" marker-end="url(#arr)"/>
+        <text class="lbl" x="380" y="228">cwd</text>
+        <line class="arrow" x1="525" y1="190" x2="525" y2="253" marker-end="url(#arr)"/>
+        <line class="arrow" x1="665" y1="190" x2="560" y2="253" marker-end="url(#arr)"/>
+        <text class="lbl" x="577" y="228">additional dir / writable root</text>
+      </svg>
+    </div>
+    <figcaption>Dispatch: one provisioned worktree becomes one per attached repo; the session's cwd stays the primary worktree so all correlation machinery is untouched.</figcaption>
+  </figure>
+
+  <h3>Agent handoff</h3>
+  <ul>
+    <li>The session's cwd is the primary worktree; all correlation machinery is untouched.</li>
+    <li>Claude: the SDK launch passes the secondary worktree paths as additional directories (verify the exact SDK option during implementation); the terminal path passes the equivalent <code>--add-dir</code> flags.</li>
+    <li>Codex: the launch adds sandbox writable roots for each secondary worktree (verify the exact config key against a real installation; <code>HARNESS_CAPABILITIES</code> values must be measured, per the harness contract).</li>
+    <li>A new capability flag (for example <code>multiRepoDispatch</code>) is added to <code>AGENT_TYPES</code>-keyed records; the compiler forces a measured value per harness. Claude and Codex: supported. Pi: null until verified.</li>
+    <li>The dispatcher prepends a repo manifest to the intent: each repo's path, branch, and role, plus standing instructions - read each repo's AGENTS.md/CLAUDE.md before touching it (only the primary's loads automatically via <code>settingSources</code>), commit and push per repo, and open one PR per repo actually changed.</li>
+  </ul>
+
+  <h3>PR tracking and completion</h3>
+  <ul>
+    <li><code>pullRequestUrlIn</code> returns all URLs in a command's output instead of the first; hook ingest carries the list. <code>announcePrOpened</code> already tolerates a sequence.</li>
+    <li>The branch poller's targets extend: for each session owning a multi-repo task, add one <code>(secondary worktree cwd, branch)</code> pair per entry - still one <code>gh pr list</code> per distinct cwd, as today.</li>
+    <li><code>Session.prUrl</code> stays the scalar "current branch's PR" (card semantics unchanged). Multi-PR truth lives in the adoption ledger and <code>work_episode_prs</code>; the registry projects per-repo PR state onto <code>Task.extraRepos</code> when emitting.</li>
+    <li>Merge reconciliation marks merges per <code>(episode, repo)</code>; <code>task_pr_merged</code> fires per PR as today.</li>
+    <li>Completion quorum: <code>reconcileMergedTasks</code> completes a multi-repo task only when every repo in its changed set has a merged PR. The changed set is: repos with an episode PR, plus repos whose head differs from <code>base_sha</code> - evaluated over the primary and every secondary alike, reading the primary's baseline from <code>tasks.base_sha</code>. A closed-unmerged PR does not satisfy the quorum; the task stays visible for the operator. <code>outcome</code> lists all merged PRs; <code>outcomeUrl</code> keeps the primary repo's PR for back-compat.</li>
+    <li>Auto-merge is unchanged: each PR merges independently under today's per-PR verdict (review clean, CI green, soak elapsed). The residual inconsistency window between sibling merges is accepted by decision 4 and noted under Risks.</li>
+  </ul>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 780 320" role="img" aria-label="PR tracking after: session opens one PR per changed repo, hooks and pollers feed the ledger, episode PRs per repo, completion when every changed repo merged">
+        <rect class="box hub" x="20" y="40" width="150" height="42" rx="6"/>
+        <text x="95" y="66" text-anchor="middle">Agent session</text>
+        <rect class="box" x="300" y="20" width="140" height="42" rx="6"/>
+        <text x="370" y="46" text-anchor="middle">GitHub</text>
+        <rect class="box" x="300" y="130" width="140" height="42" rx="6"/>
+        <text x="370" y="156" text-anchor="middle">Registry</text>
+        <rect class="box" x="20" y="130" width="150" height="54" rx="6"/>
+        <text x="95" y="152" text-anchor="middle">Branch poller</text>
+        <text class="lbl" x="95" y="168" text-anchor="middle">one gh call per cwd</text>
+        <rect class="box" x="20" y="220" width="150" height="54" rx="6"/>
+        <text x="95" y="242" text-anchor="middle">Inspector poller</text>
+        <text class="lbl" x="95" y="258" text-anchor="middle">per adopted PR</text>
+        <rect class="box" x="510" y="130" width="180" height="42" rx="6"/>
+        <text x="600" y="156" text-anchor="middle">inspector_prs ledger</text>
+        <rect class="box" x="510" y="215" width="180" height="54" rx="6"/>
+        <text x="600" y="237" text-anchor="middle">work_episode_prs</text>
+        <text class="lbl" x="600" y="253" text-anchor="middle">one row per repo</text>
+        <rect class="box hub" x="270" y="245" width="170" height="42" rx="6"/>
+        <text x="355" y="271" text-anchor="middle">Task completes</text>
+        <line class="arrow" x1="170" y1="50" x2="298" y2="41" marker-end="url(#arr)"/>
+        <text class="lbl" x="180" y="34">gh pr create, one per changed repo</text>
+        <line class="arrow" x1="140" y1="82" x2="310" y2="130" marker-end="url(#arr)"/>
+        <text class="lbl" x="176" y="112">hooks sniff all PR URLs</text>
+        <line class="arrow" x1="130" y1="130" x2="320" y2="62" marker-end="url(#arr)"/>
+        <line class="arrow" x1="170" y1="235" x2="330" y2="65" marker-end="url(#arr)"/>
+        <line class="arrow" x1="440" y1="151" x2="508" y2="151" marker-end="url(#arr)"/>
+        <line class="arrow" x1="600" y1="172" x2="600" y2="213" marker-end="url(#arr)"/>
+        <line class="arrow" x1="508" y1="255" x2="442" y2="263" marker-end="url(#arr)"/>
+        <text class="lbl" x="448" y="296">every changed repo merged</text>
+      </svg>
+    </div>
+    <figcaption>PR tracking: the adoption ledger (already keyed per PR) becomes the truth; episode PRs gain one row per repo; the completion quorum requires every changed repo's PR to merge.</figcaption>
+  </figure>
+
+  <h3>Per-repo workflow runs</h3>
+  <p>One session supports N concurrent workflow runs, one per changed repo. The single-repo contracts that make the workflow subsystem safe - the <code>pull_request</code> adapter's proof rules, evidence identity <code>(round, segment)</code>, the gate's wait/block vocabulary - stay closed; each run is a textbook single-repo review scoped to one of the task's repo entries.</p>
+  <ul>
+    <li><strong>Bindings gain a repository dimension.</strong> The active-binding uniqueness becomes per <code>(note_key, repo)</code>; each binding/run carries the repo entry it reviews.</li>
+    <li><strong>Lazy run creation.</strong> Runs are created at trigger time, not binding time: when the session's turn settles, each repo whose worktree head differs from its <code>base_sha</code> gets a run - the primary included, on its <code>tasks.base_sha</code> baseline; unchanged repos are skipped and never appear.</li>
+    <li><strong>Per-repo evidence capture.</strong> Context snapshots and evidence capture execute against the run's repo worktree, not <code>session.cwd</code>. Adapters stay pure: the manager supplies that repo's facts on <code>SessionActionAdapterContext</code> exactly as it does today for one repo.</li>
+    <li><strong>Submission routing.</strong> With N active runs, an evidence submission must name its run. The submit surface gains a repo discriminator, with daemon-side routing by which repo's head moved since capture as the fallback.</li>
+    <li><strong>Cross-run delivery serialization.</strong> N runs share one pane. At most one run's delivery (repair packet or session action) may be outstanding per session; other runs wait in an explicit queued state. Within a run, the existing two-actions-ready-refuse contract is unchanged.</li>
+    <li><strong>Cross-repo repair staleness.</strong> A repair for repo A that also touches repo B invalidates B's captured evidence. B's own head-mismatch/fresh-observation machinery catches it and requires resubmission. The per-PR merge verdict (<code>reviewedSha === headSha</code>) is the backstop that keeps anything stale from auto-merging.</li>
+    <li><strong>Independent repair budgets.</strong> Each run keeps its own <code>maxRepairRounds</code>; a finding in one repo restarts only that repo's graph.</li>
+    <li>Persisted vocabularies touched (all append-only per the change contracts): any new wait reasons or block codes get their <code>Record</code> entries and human sentences in <code>run-model.ts</code>; no existing IDs are renamed.</li>
+  </ul>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 780 330" role="img" aria-label="Per-repo workflow runs: when a turn settles, each repo whose head moved from base gets its own no-mistakes-review run; unchanged repos are skipped; deliveries to the shared pane are serialized">
+        <rect class="box hub" x="20" y="130" width="160" height="54" rx="6"/>
+        <text x="100" y="152" text-anchor="middle">Agent session</text>
+        <text class="lbl" x="100" y="168" text-anchor="middle">one pane</text>
+        <rect class="box" x="250" y="134" width="130" height="46" rx="6"/>
+        <text x="315" y="161" text-anchor="middle">Turn settles</text>
+        <rect class="box" x="450" y="30" width="200" height="54" rx="6"/>
+        <text x="550" y="52" text-anchor="middle">Run A: no-mistakes-review</text>
+        <text class="lbl" x="550" y="68" text-anchor="middle">repo A head moved from base</text>
+        <rect class="box" x="450" y="134" width="200" height="54" rx="6"/>
+        <text x="550" y="156" text-anchor="middle">Run B: no-mistakes-review</text>
+        <text class="lbl" x="550" y="172" text-anchor="middle">repo B head moved from base</text>
+        <rect class="box" x="450" y="240" width="200" height="54" rx="6"/>
+        <text x="550" y="262" text-anchor="middle">Skipped - no run</text>
+        <text class="lbl" x="550" y="278" text-anchor="middle">repo C head == base_sha</text>
+        <rect class="box hub" x="690" y="36" width="76" height="42" rx="6"/>
+        <text x="728" y="54" text-anchor="middle">PR A</text>
+        <text class="lbl" x="728" y="69" text-anchor="middle">merges</text>
+        <rect class="box hub" x="690" y="140" width="76" height="42" rx="6"/>
+        <text x="728" y="158" text-anchor="middle">PR B</text>
+        <text class="lbl" x="728" y="173" text-anchor="middle">merges</text>
+        <line class="arrow" x1="180" y1="157" x2="248" y2="157" marker-end="url(#arr)"/>
+        <line class="arrow" x1="380" y1="142" x2="448" y2="66" marker-end="url(#arr)"/>
+        <line class="arrow" x1="380" y1="157" x2="448" y2="157" marker-end="url(#arr)"/>
+        <line class="arrow" x1="380" y1="172" x2="448" y2="258" marker-end="url(#arr)"/>
+        <line class="arrow" x1="650" y1="57" x2="688" y2="57" marker-end="url(#arr)"/>
+        <line class="arrow" x1="650" y1="161" x2="688" y2="161" marker-end="url(#arr)"/>
+        <line class="arrow dashed" x1="550" y1="84" x2="550" y2="132"/>
+        <text class="lbl" x="560" y="112">one outstanding delivery per session</text>
+      </svg>
+    </div>
+    <figcaption>Per-repo workflow runs: gate and adapter contracts stay single-repo; concurrency moves to the binding/run layer with serialized deliveries into the shared pane.</figcaption>
+  </figure>
+
+  <h3>Policy gates</h3>
+  <ul>
+    <li>Foreman schedulability and live-session gating require every attached repo to pass the allowlist (AND rule). This ships in phase 1 alongside provisioning, not as later polish: without it Foreman could auto-dispatch an agent into a secondary repo the operator never allowlisted. The Trust matrix needs no change - grants are already per repo.</li>
+    <li>Review follow-through (<code>FollowupMark</code>) keys per PR instead of per session, so a nudge on repo A's PR does not erase repo B's history.</li>
+    <li>Inspector needs no structural change: it is already per adopted PR with per-row <code>repo_root</code>, and standards resolution follows each PR's own checkout.</li>
+  </ul>
+
+  <h3>UI</h3>
+  <ul>
+    <li>Dispatch modal: the single repo field becomes chips plus the existing <code>RepoCombobox</code> as the adder (the Dependencies field pattern already in the modal). The first chip is the primary and is visually marked. Multi-repo entry is offered only when the selected harness has the capability. Draft/lastRepo storage becomes a list.</li>
+    <li>Session and task surfaces: <code>prChipView</code> keeps the session's scalar chip; the task chip area on <code>SessionCard</code> and <code>ConsoleDetail</code> renders a per-repo PR list from <code>Task.extraRepos</code>. <code>WorkflowChip</code> fans out to one chip per run. Backlog cards and the report panel show the repo set with the existing chips-with-overflow pattern.</li>
+    <li>Board drag: multi-repo tasks are never droppable in v1 (dispatch-only).</li>
+  </ul>
+
+  <h2 id="phasing">Phasing</h2>
+  <p>Each phase ships independently and leaves the product consistent.</p>
+  <ol>
+    <li><strong>Multi-repo dispatch.</strong> <code>task_repos</code> schema plus the additive <code>tasks.base_sha</code> column and migration with pre-feature upgrade test, shared contracts, per-repo provisioning/teardown with rollback recording every repo's baseline, pool pins for extras (same change), the capability flag, Claude additional directories, Codex writable roots, intent manifest, dispatch modal chips, the Foreman allowlist AND rule over the whole repo set (the consent gate ships with the capability that needs it, not later), e2e spec proving one dispatch yields N worktrees. PR behavior still today's (first PR wins).</li>
+    <li><strong>Multi-PR tracking and completion.</strong> <code>work_episode_prs</code>, all-URL sniffing, poller fan-out, per-repo acceptance and merge reconciliation, all-merged completion quorum, per-repo PR rendering on cards and report, e2e.</li>
+    <li><strong>Per-repo workflow runs.</strong> Binding repository dimension, lazy run creation from <code>base_sha</code> diffs, per-repo evidence capture, submission routing, cross-run delivery serialization, workflow chip fan-out, e2e.</li>
+    <li><strong>Policy and prose.</strong> Per-PR follow-up marks, <code>pull-request</code> and <code>phased-plan</code> skill updates ("one PR per repository you changed"), session-action prompt, agent-guide and <code>docs/*.md</code> updates. The allowlist AND rule is deliberately not here - it ships in phase 1 with the capability it gates.</li>
+  </ol>
+
+  <h2 id="out-of-scope">Out of scope for v1</h2>
+  <ul>
+    <li>Ensembles over multiple repos (N sessions x M repos)</li>
+    <li>Schedule templates, task-source sweeps, and MCP <code>create_task</code> with multiple repos</li>
+    <li>Assigning a multi-repo task to an existing session; board drag-to-assign</li>
+    <li>Coordinated cross-repo merge ordering (decision 4 chose independent merges)</li>
+    <li>Pi harness support (capability stays null until measured)</li>
+  </ul>
+
+  <h2 id="risks">Risks</h2>
+  <ul>
+    <li><strong>Pool reaper eviction of secondary worktrees</strong> is destructive. Mitigation: pins ship in the same change as provisioning; a test covers a live multi-repo task surviving a reap.</li>
+    <li><strong>Independent merges leave an inconsistency window</strong> between sibling PRs landing. Accepted by decision 4; the report and cards make partially-merged state visible via the completion quorum.</li>
+    <li><strong>Cross-repo repair ping-pong</strong>: tightly coupled changes can repeatedly stale each other's run evidence. Bounded by per-run repair budgets and the head-match merge verdict; called out in run surfaces so an operator can see it.</li>
+    <li><strong>Codex writable-roots behavior</strong> must be verified against a real installation before the capability is declared; if it cannot be verified, Codex falls back to null (unsupported) without blocking the Claude path.</li>
+    <li><strong>Secondary repos' CLAUDE.md is not auto-loaded</strong> (<code>settingSources</code> is cwd-rooted). Mitigated by the intent manifest instruction; verify whether additional directories load their own instructions and drop the workaround if they do.</li>
+    <li><strong>Migration safety</strong>: old databases must keep opening; the upgrade test seeds a pre-feature database per the change contract.</li>
+  </ul>
+
+  <h2 id="test-plan">Test plan</h2>
+  <ul>
+    <li><strong>Unit:</strong> schema upgrade from a pre-feature database; provisioning rollback; pin coverage under reap; multi-URL sniffing; per-repo episode acceptance and refusal; completion quorum incl. closed-unmerged; run creation skipping unchanged repos; delivery serialization; the ~25 existing tests that pin single-PR semantics updated deliberately.</li>
+    <li><strong>e2e (<code>e2e/</code>):</strong> second <code>seedRepo</code> in the daemon fixture (helper already parameterized); dispatch spec proving N worktrees and the repo chips UI; fake-agent flow opening two PRs and the card showing both; completion quorum over seeded <code>inspector_prs</code> rows; per-repo workflow run chips. Fake agents throughout - no model tokens.</li>
+  </ul>
+</main>
+</body>
+</html>

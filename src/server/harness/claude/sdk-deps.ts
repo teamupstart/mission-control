@@ -76,9 +76,10 @@ async function startQuery(params: Parameters<ClaudeSdkDeps["query"]>[0]): Promis
 
   // Spread-and-assign rather than one blanket cast, so this line is what actually checks
   // the vendor's surface: `cwd`, `pathToClaudeCodeExecutable`, `env`, `model`, `effort`,
-  // `permissionMode`, `resume`, `settingSources` and `includePartialMessages` all have to
-  // still exist upstream, with types ours satisfy, or this fails to compile - which is what
-  // makes this module, and not the driver, the place an SDK bump lands.
+  // `permissionMode`, `allowDangerouslySkipPermissions`, `resume`, `settingSources` and
+  // `includePartialMessages` all have to still exist upstream, with types ours satisfy, or
+  // this fails to compile - which is what makes this module, and not the driver, the place
+  // an SDK bump lands.
   //
   // Four fields ARE cast, and each is a place we deliberately declined to re-declare a
   // vendor type. `hooks` and `mcpServers` are `Record<string, unknown>` in our shape so a

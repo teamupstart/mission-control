@@ -968,6 +968,28 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
           ...(permissionMode ? { permissionMode } : {}),
+          // Makes `bypassPermissions` REACHABLE for this session. It does not enter it, and
+          // reading it as "skip permissions" is the mistake to avoid: the CLI has two
+          // separate flags, and this option compiles to the weaker one.
+          //
+          //   --allow-dangerously-skip-permissions  Enable bypassing all permission checks
+          //                                         as an option, WITHOUT it being enabled
+          //                                         by default.
+          //   --dangerously-skip-permissions        Bypass all permission checks.
+          //
+          // The vendor bundle emits the first (`if(b)H.push("--allow-dangerously-skip-permissions")`)
+          // and emits `--permission-mode` separately, so what the operator picked still decides
+          // what happens. Unconditional here for the same reason it is safe: the mode is the
+          // gate, this is only the permission to reach it.
+          //
+          // Unconditional is also the only thing that WORKS, which is the part worth keeping.
+          // `bypassPermissions` is not just a launch choice - `harness-capabilities.ts` lists
+          // it in `pickable` with `liveControl: { kind: "cycle" }`, so the chip can switch a
+          // running session into it through `setPermissionMode`. The vendor's live setter takes
+          // the mode ALONE (`sdk.d.ts:2300`), with nowhere to carry this flag, so launch is the
+          // only moment it can ever be declared. Deriving it from the launch mode would leave
+          // every session that started in any other mode unable to reach bypass at all.
+          allowDangerouslySkipPermissions: true,
           ...(opts.resume ? { resume: opts.resume } : {}),
           ...(opts.mcp
             ? {

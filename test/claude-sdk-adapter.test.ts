@@ -705,6 +705,40 @@ test("live controls delegate, and a mode this CLI has never heard of is refused"
   await assert.rejects(() => handle.setPermissionMode!("askForApproval"), /no permission mode/);
 });
 
+test("every session may REACH bypass, and only the mode decides whether it is in it", async () => {
+  // Two different things, and conflating them is the bug this pins from both sides.
+  //
+  // `allowDangerouslySkipPermissions` compiles to `--allow-dangerously-skip-permissions`
+  // ("enable bypassing as an option, WITHOUT it being enabled by default"), not to
+  // `--dangerously-skip-permissions` ("bypass all permission checks"). So it is sent
+  // unconditionally: `bypassPermissions` is live-pickable through the mode chip, and the
+  // vendor's `setPermissionMode` takes the mode alone, so launch is the only moment this can
+  // be declared. Deriving it from the launch mode would leave a session dispatched in
+  // `default` permanently unable to cycle into bypass.
+  //
+  // The safety property therefore moved to `permissionMode`, and that is the half asserted
+  // hardest: a session launched in `acceptEdits` must still be IN `acceptEdits`.
+  const bypass = fakeDeps();
+  await claudeSdkSpec(bypass.deps).launch(launchOpts({ permissionMode: "bypassPermissions" }));
+  const bypassOptions = (await bypass.started).options;
+  assert.equal(bypassOptions.permissionMode, "bypassPermissions");
+  assert.equal(bypassOptions.allowDangerouslySkipPermissions, true);
+
+  const plain = fakeDeps();
+  await claudeSdkSpec(plain.deps).launch(launchOpts({ permissionMode: "acceptEdits" }));
+  const plainOptions = (await plain.started).options;
+  assert.equal(plainOptions.permissionMode, "acceptEdits");
+  assert.equal(plainOptions.allowDangerouslySkipPermissions, true);
+
+  // A mode this CLI does not have is dropped by `sdkPermissionMode`, and dropping it must not
+  // silently leave the session bypass-capable AND modeless in one step.
+  const foreign = fakeDeps();
+  await claudeSdkSpec(foreign.deps).launch(launchOpts({ permissionMode: "askForApproval" }));
+  const foreignOptions = (await foreign.started).options;
+  assert.equal(foreignOptions.permissionMode, undefined);
+  assert.equal(foreignOptions.allowDangerouslySkipPermissions, true);
+});
+
 // The resume argv used to be asserted here, because it used to live on `SdkSpec`. It is a
 // harness capability now (every harness has one; only Claude has a driver), so it is pinned
 // in `harness-resume.test.ts` for all three rather than under this one adapter's tests.

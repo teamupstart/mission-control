@@ -5,6 +5,12 @@
 // the path in place (matched by the "harness-hook.mjs" marker) without touching
 // any of the user's other hooks. `--uninstall` removes only our entries.
 //
+// The paths it bakes are absolute and must outlive the install: the node binary is
+// a stable PATH alias rather than the versioned dir `process.execPath` resolves to,
+// and an install from a transient treehouse pool checkout is refused outright
+// (`--force` overrides). Both preflights live in install-checks.mjs, with the
+// outage that motivated them.
+//
 // Uninstall also clears our `mission-*` and `fleet-*` skill symlinks out of
 // ~/.claude/skills - as TEARDOWN, not as the off-switch. They are the most invasive
 // thing the harness puts in a home directory (Claude loads them into every session on
@@ -29,6 +35,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, modify, applyEdits } from "jsonc-parser";
+import { stableNodePath, transientCheckoutRoot } from "./install-checks.mjs";
 import { stateDir } from "../src/shared/harness-runtime.mjs";
 // TypeScript, and reachable because this script's entry point is `tsx hooks/install.mjs`
 // (see package.json) - unlike harness-hook.mjs, which bare `node` runs at hook time and
@@ -56,8 +63,15 @@ const MATCHER_EVENTS = new Set(claudeHooks.matcherEvents);
 
 const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "harness-hook.mjs");
 const statuslineScriptPath = join(dirname(fileURLToPath(import.meta.url)), "harness-statusline.mjs");
+// Not `process.execPath`: that resolves symlinks, and under Homebrew reads
+// /opt/homebrew/Cellar/node/<version>/bin/node - a directory `brew upgrade node`
+// deletes, stranding every baked hook command at once. See install-checks.mjs.
+const nodeBin = stableNodePath();
 const settingsPath = process.env.CLAUDE_SETTINGS_PATH ?? join(homedir(), ".claude", "settings.json");
 const uninstall = process.argv.includes("--uninstall");
+// Override for the transient-checkout refusal below. Never implied, never remembered:
+// forcing one install does not make the path it bakes any more durable.
+const force = process.argv.includes("--force");
 // Opt-in: also wrap the terminal status line so Claude's live model / thinking /
 // context % reaches the daemon. Off by default - we never touch statusLine unless
 // asked (uninstall still unwraps ours, so an install never leaves a dangling one).
@@ -79,12 +93,43 @@ const doTelemetry = process.argv.includes("--telemetry");
 const TELEMETRY_INTERVAL_MS = 15000;
 
 function command(event) {
-  return `"${process.execPath}" "${scriptPath}" ${event}`;
+  return `"${nodeBin}" "${scriptPath}" ${event}`;
 }
 
 /** Our statusLine wrapper command (delegates to the user's real status line). */
 function statuslineCommand() {
-  return `"${process.execPath}" "${statuslineScriptPath}"`;
+  return `"${nodeBin}" "${statuslineScriptPath}"`;
+}
+
+// --- refuse to bake a doomed path -------------------------------------------
+// A treehouse pool slot is a transient worktree: the daemon leases, returns, and
+// reclaims them. An install run from one wires every Claude session on the machine
+// to a script the pool will delete, and when it does, every hook event everywhere
+// fails with MODULE_NOT_FOUND and nothing points back at the install that did it.
+// Uninstall is exempt on purpose - cleaning up FROM the doomed checkout is exactly
+// what someone abandoning it should be able to run.
+if (!uninstall && !force) {
+  const poolRoot = transientCheckoutRoot(dirname(fileURLToPath(import.meta.url)));
+  if (poolRoot) {
+    console.error(
+      [
+        `Refusing to install: this checkout lives inside a treehouse worktree pool.`,
+        ``,
+        `  checkout: ${dirname(dirname(fileURLToPath(import.meta.url)))}`,
+        `  pool:     ${poolRoot}`,
+        ``,
+        `Pool slots are reclaimed; when this one goes, every hook baked into`,
+        `~/.claude/settings.json points at a script that no longer exists, and every`,
+        `Claude session on the machine fails each event with MODULE_NOT_FOUND.`,
+        ``,
+        `Run the installer from a durable clone instead:`,
+        `  cd <your main checkout> && npm run install-hooks`,
+        ``,
+        `(--uninstall is always allowed; --force overrides this check.)`,
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
 }
 
 /** Sidecar recording the user's pre-wrap status line so the forwarder delegates to it. */
@@ -127,7 +172,7 @@ const currentHooks = hooksIsObject ? hooksVal : {};
 // Match the file's own formatting so anything we insert blends in.
 const formattingOptions = {
   insertSpaces: !/^\t/m.test(original),
-  tabSize: (original.match(/\n( +)\S/) ?? [, "  "])[1].length,
+  tabSize: (original.match(/\n( +)\S/) ?? [undefined, "  "])[1].length,
   eol: original.includes("\r\n") ? "\r\n" : "\n",
 };
 const edit = (text, path, value) => applyEdits(text, modify(text, path, value, { formattingOptions }));
@@ -347,7 +392,7 @@ if (uninstall) {
 
   console.log(`\nTo enable the review channel (agents push diffs/plans for you to review),`);
   console.log(`register the MCP server once (needs \`npm run build\` first):\n`);
-  console.log(`  claude mcp add -s user mission-control -- "${process.execPath}" "${mcpPath}"\n`);
+  console.log(`  claude mcp add -s user mission-control -- "${nodeBin}" "${mcpPath}"\n`);
   if (!existsSync(mcpPath)) {
     console.log(`  (not built yet - run \`npm run build\`, or \`npm run setup\` to do both)`);
   }

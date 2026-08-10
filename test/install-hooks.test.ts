@@ -16,7 +16,12 @@ const STATUSLINE_MARKER = "harness-statusline.mjs";
 // Under tsx, because that is the installer's real entry point (`npm run install-hooks`)
 // and it imports the TypeScript reconciler to unwind the skill links. Running it under
 // bare node here would test a way nobody invokes it.
-const RUN = ["--import", "tsx", INSTALLER];
+//
+// `--force`, because dev checkouts of this repo routinely ARE treehouse pool slots,
+// where the installer now refuses outright - and these tests pin the merge contract,
+// not the refusal. The guard has its own tests against a fake pool below, where the
+// flag's absence is the point.
+const RUN = ["--import", "tsx", INSTALLER, "--force"];
 
 /**
  * The throwaway `~/.claude/skills` for a settings file, kept beside it so it is torn
@@ -353,5 +358,84 @@ test("an install leaves the skills directory exactly as it found it", () => {
     // would switch skills on across every session because someone wired up hooks, and one that
     // removed them would switch them off for the same reason.
     assert.deepEqual(readdirSync(dir).sort(), ["fleet-alpha", "fleet-handmade", "handmade-skill"]);
+  });
+});
+
+// ---- the transient-checkout guard ----
+// An install run from a treehouse pool slot bakes a path the pool will reclaim, and
+// when it does, every Claude session on the machine fails every hook event with
+// MODULE_NOT_FOUND. That outage is why the guard exists; these tests are its repro.
+
+/**
+ * A fake pool slot holding this repo's installer, reached through symlinks.
+ *
+ * `--preserve-symlinks-main` (see `runFromFakePool`) keeps `import.meta.url` on the
+ * symlinked path, so the installer sees itself inside the pool - the exact condition
+ * under which the real outage installed - while every one of its imports still
+ * resolves into this checkout. Only directory-level links for src/ and node_modules/:
+ * child modules load by their realpaths, which is fine, because only the entry
+ * point's own location feeds the guard and the baked script path.
+ */
+function fakePoolInstaller(dir: string): string {
+  const repo = join(dir, "pool", "7", "repo");
+  mkdirSync(join(repo, "hooks"), { recursive: true });
+  writeFileSync(join(dir, "pool", "treehouse-state.json"), "{}\n");
+  const checkout = join(import.meta.dirname, "..");
+  for (const f of ["install.mjs", "install-checks.mjs"]) {
+    symlinkSync(join(checkout, "hooks", f), join(repo, "hooks", f), "file");
+  }
+  symlinkSync(join(checkout, "src"), join(repo, "src"), "dir");
+  symlinkSync(join(checkout, "node_modules"), join(repo, "node_modules"), "dir");
+  return join(repo, "hooks", "install.mjs");
+}
+
+/** Run the fake-pool installer, capturing stderr; throws with status on refusal. */
+function runFromFakePool(settingsPath: string, installer: string, args: string[] = []): string {
+  const home = homeDirFor(settingsPath);
+  mkdirSync(home, { recursive: true });
+  return execFileSync(process.execPath, ["--preserve-symlinks-main", "--import", "tsx", installer, ...args], {
+    env: {
+      ...process.env,
+      CLAUDE_SETTINGS_PATH: settingsPath,
+      CLAUDE_SKILLS_DIR: skillsDirFor(settingsPath),
+      MISSION_HOME: home,
+    },
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+test("refuses to install from a checkout inside a treehouse pool", () => {
+  withTempSettings(USER_SETTINGS, (path) => {
+    const installer = fakePoolInstaller(join(path, ".."));
+    const before = readFileSync(path, "utf8");
+    let refusal: (Error & { status?: number; stderr?: string }) | null = null;
+    try {
+      runFromFakePool(path, installer);
+    } catch (err) {
+      refusal = err as Error & { status?: number; stderr?: string };
+    }
+    assert.ok(refusal, "installer must exit non-zero from a pool checkout");
+    assert.equal(refusal.status, 1);
+    assert.match(String(refusal.stderr), /treehouse worktree pool/);
+    assert.match(String(refusal.stderr), /--force/, "the refusal names its own override");
+    assert.equal(readFileSync(path, "utf8"), before, "a refused install writes nothing");
+  });
+});
+
+test("--force overrides the guard, and --uninstall never needs it", () => {
+  withTempSettings(USER_SETTINGS, (path) => {
+    const installer = fakePoolInstaller(join(path, ".."));
+    runFromFakePool(path, installer, ["--force"]);
+    const s = parse(readFileSync(path, "utf8")) as any;
+    const cmds = s.hooks.Stop.flatMap((g: any) => g.hooks.map((h: any) => h.command));
+    assert.ok(
+      cmds.some((c: string) => c.includes(join("pool", "7", "repo"))),
+      "a forced install bakes exactly the pool path it was warned about",
+    );
+    // Uninstalling FROM the doomed checkout is what someone abandoning it runs; a
+    // guard in the way there would strand the hooks it exists to protect.
+    runFromFakePool(path, installer, ["--uninstall"]);
+    assert.ok(!readFileSync(path, "utf8").includes(MARKER), "uninstall runs unguarded");
   });
 });

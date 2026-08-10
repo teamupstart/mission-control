@@ -8,6 +8,7 @@ import {
   type PersonaView,
   type SessionAction,
   type WorkflowCheckSlot,
+  type WorkflowDefinition,
   type WorkflowDraftNode,
   type WorkflowEdge,
   type WorkflowSourcePort,
@@ -233,8 +234,16 @@ export function WorkflowLibrary({
   onDirtyChange: (dirty: boolean) => void;
   onSelectionChange?: (workflowId: string | null) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
-  /** Opens the binding dialog with no session pinned. Absent in surfaces App does not host. */
-  onBindWorkflow?: () => void;
+  /**
+   * Opens the binding dialog with no session pinned, for the workflow the operator is READING.
+   *
+   * Takes the workflow rather than nothing, because the button that reaches this sits inside
+   * one workflow's pipeline and its label promises to bind THAT one. Handing over `{}` left the
+   * dialog to guess, and its guess was catalog position - so an operator reading No-Mistakes
+   * Review was offered whichever workflow sorted first by name. Absent in surfaces App does
+   * not host.
+   */
+  onBindWorkflow?: (workflow: WorkflowDefinition) => void;
 }): React.JSX.Element {
   const ordered = useMemo(() => [...summaries].sort((a, b) => a.name.localeCompare(b.name)), [summaries]);
   const active = ordered.filter((workflow) => workflow.archivedAt === null);
@@ -1187,11 +1196,22 @@ export function WorkflowLibrary({
           {/* Archived is checked here as well as on the version-history binding above,
               because these are two independent doors into the same bind flow and the server
               refuses both. Offering one of them would start a flow whose only ending is a
-              409 the operator did not ask for. */}
-          {mode === "pipeline" && onBindWorkflow && workflow.archivedAt === null && (
+              409 the operator did not ask for.
+
+              `currentVersionId` is the same rule for the same reason, and it is not
+              hypothetical: a brand-new workflow is the stage-expressible session+end graph, so
+              it opens in Pipeline mode before its first publish. There is no immutable version
+              to bind, and a dialog handed a workflow with none falls through to answering a
+              DIFFERENT question - what is the target session already bound to - and opens
+              unlocked on that unrelated binding, one click from reattaching it. Publish first,
+              then bind. */}
+          {mode === "pipeline"
+            && onBindWorkflow
+            && workflow.archivedAt === null
+            && workflow.currentVersionId !== null && (
             <section className="wf-pipeline-bind">
-              <Tooltip label="Pick a session and a published version to run this workflow against">
-                <button className="btn" onClick={onBindWorkflow}>
+              <Tooltip label={`Pick a session to run ${workflow.name} against`}>
+                <button className="btn" onClick={() => onBindWorkflow(workflow)}>
                   Bind to a session…
                 </button>
               </Tooltip>

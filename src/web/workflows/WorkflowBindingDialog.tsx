@@ -9,6 +9,8 @@ import {
   type WorkflowDetail,
   type WorkflowSummary,
   type WorkflowConfig,
+  workflowIdForVersion,
+  workflowVersionLabel,
 } from "@shared/workflow.ts";
 import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -18,7 +20,6 @@ export interface WorkflowBindingTarget {
   sessionId?: string;
   workflowVersionId?: string;
   workflowId?: string;
-  workflowVersion?: number;
   bindingDefaults?: WorkflowBindingDefaults;
 }
 
@@ -28,6 +29,16 @@ export function workflowBindingSelection(
   versionId: string,
 ): { existing: WorkflowBinding | undefined; conflict: WorkflowBinding | undefined } {
   if (!session) return { existing: undefined, conflict: undefined };
+  /*
+   * An empty selection is not a conflict. Every comparison below is against `versionId`, and
+   * `active.workflowVersionId === ""` is false for any real binding, so clearing the select on
+   * an already-bound session reported the binding as a CONFLICT and told the operator to
+   * "Archive that binding before selecting another version". They had not selected another
+   * one; they had selected nothing, and the way forward is to pick a version, not to archive
+   * anything. Answering "no opinion" for an empty selection keeps the notices about versions
+   * the operator actually chose.
+   */
+  if (!versionId) return { existing: undefined, conflict: undefined };
   const compatible = bindings.filter((binding) =>
     binding.state !== "archived"
     && (
@@ -79,16 +90,52 @@ export function WorkflowBindingDialog({
     [workflows],
   );
   const [sessionId, setSessionId] = useState(target.sessionId ?? live[0]?.id ?? "");
-  const [versionId, setVersionId] = useState(target.workflowVersionId ?? publishable[0]?.currentVersionId ?? "");
-  const [defaults, setDefaults] = useState<WorkflowBindingDefaults>(
-    target.bindingDefaults ?? DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+  /**
+   * Empty until the caller pins a version or this conversation's own binding is known.
+   *
+   * It used to fall back to `publishable[0]` - the catalog's first entry BY NAME. With one
+   * published workflow that is always the right answer, which is why it survived; with two it
+   * silently offers whichever sorts first, so an operator opening this on a session already
+   * bound to No-Mistakes Review was shown a different workflow, pre-armed, one click from
+   * replacing the binding they came here to confirm. There is no defensible guess to make
+   * here, so the select opens on "Choose a published version" and the effect below fills in
+   * the only answer that is not a guess: what this session is actually bound to.
+   */
+  const [versionId, setVersionId] = useState(target.workflowVersionId ?? "");
+  /**
+   * What the selected IMMUTABLE VERSION declares, or null while that is not yet known.
+   *
+   * Nullable on purpose, and separate from the control values below. This drives one
+   * sentence - "This version defaults to …" - which is a claim about the published version
+   * and nothing else. It used to be seeded with the application-wide placeholder, so before
+   * any version was resolved the dialog asserted `foreman_complete` and `preview` as though
+   * it had read them off the version. On a conversation already bound to No-Mistakes Review
+   * v8 that produced a flat contradiction: the sentence said "preview" directly above a
+   * Delivery field correctly showing Live. Null renders no sentence, which is the honest
+   * answer to a question nothing has answered yet.
+   */
+  const [defaults, setDefaults] = useState<WorkflowBindingDefaults | null>(
+    target.bindingDefaults ?? null,
   );
-  const [versionNumber, setVersionNumber] = useState<number | null>(target.workflowVersion ?? null);
-  const [maxRepairRounds, setMaxRepairRounds] = useState(defaults.maxRepairRounds);
-  const [triggerMode, setTriggerMode] = useState(defaults.triggerMode);
-  const [deliveryMode, setDeliveryMode] = useState(defaults.deliveryMode);
+  // The editable values still need something to open on before anything is resolved, and the
+  // placeholder is the right seed for THAT - it is a starting position the operator can change,
+  // not a claim about a version.
+  const seed = target.bindingDefaults ?? DEFAULT_WORKFLOW_BINDING_DEFAULTS;
+  const [maxRepairRounds, setMaxRepairRounds] = useState(seed.maxRepairRounds);
+  const [triggerMode, setTriggerMode] = useState(seed.triggerMode);
+  const [deliveryMode, setDeliveryMode] = useState(seed.deliveryMode);
   const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   const [bindings, setBindings] = useState<WorkflowBinding[]>([]);
+  /**
+   * Whether the binding fetch has SETTLED, as distinct from having returned rows.
+   *
+   * The hydration effect below must not mistake "not loaded yet" for "this session is
+   * unbound" - it runs once per session, so reading the initial empty array would spend that
+   * one chance before the answer existed and leave the dialog permanently blank on a session
+   * that is in fact bound. Set on the failure path too: a fetch that failed has also stopped
+   * being pending, and re-arming forever on an error would be a spinner with no spinner.
+   */
+  const [bindingsSettled, setBindingsSettled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const overridesTouchedRef = useRef({
@@ -104,26 +151,134 @@ export function WorkflowBindingDialog({
     };
   };
   useEffect(() => {
-    void workflowRequest<WorkflowBinding[]>("/api/workflow-bindings").then(setBindings).catch(() => {});
+    void workflowRequest<WorkflowBinding[]>("/api/workflow-bindings")
+      .then(setBindings)
+      .catch(() => {})
+      .finally(() => setBindingsSettled(true));
     void workflowRequest<WorkflowConfig>("/api/workflows/config").then(setWorkflowConfig).catch(() => {});
   }, []);
   const session = live.find((item) => item.id === sessionId) ?? null;
+  /**
+   * Which session's binding has already been offered to the empty selection, so that answering
+   * "what is bound here" happens once per session rather than fighting the operator's own
+   * choice on every re-render. Switching the Session select re-arms it deliberately: the
+   * question "what is bound" has a new answer, and the stale selection belongs to a
+   * conversation no longer on screen.
+   */
+  const hydratedForSession = useRef<string | null>(null);
+  /**
+   * Whether the operator has picked a version BY HAND for the session now on screen.
+   *
+   * The version select's counterpart to `overridesTouchedRef`, which guards the other three
+   * editable fields against exactly this: an async seed landing on top of a manual edit. The
+   * version had no such guard, and its seed is the slowest of them - it waits on
+   * `GET /api/workflow-bindings` - while the select is live the whole time that request is in
+   * flight. A pick inside that window was reverted to whatever was actually bound, silently,
+   * which is the same wrong-selection failure this dialog was changed to end.
+   *
+   * A separate ref rather than a fourth key on `overridesTouchedRef`, because that one is
+   * CLEARED by the version select's own `onChange` - a new version re-seeds trigger, delivery
+   * and repair rounds from its published defaults. Folding this in would have the pick clear
+   * the very flag that records it.
+   *
+   * Cleared when the SESSION changes, on the same reasoning `hydratedForSession` re-arms
+   * there: "what is bound" has a new answer, and a pick made about a conversation no longer on
+   * screen should not suppress it.
+   */
+  const versionPickedByHand = useRef(false);
+  useEffect(() => {
+    /*
+     * A caller that named WHAT TO BIND asked for that, and hydration answers a different
+     * question: what is this session already bound to. Overriding a named request with the
+     * session's own binding is how the Library's "Bind to a session…" could open on an
+     * unrelated workflow and sit one click from reattaching it.
+     *
+     * Both fields are checked, not just the version. A caller with a published workflow pins
+     * `workflowVersionId`, but one naming only `workflowId` has still named a workflow, and
+     * treating that as "no request" is what made the field decorative. Whether such a caller
+     * can produce a bindable selection is a separate question the surrounding UI answers -
+     * the Library no longer offers the button for an unpublished draft - and it is not a
+     * reason to overwrite what was asked for.
+     */
+    if (target.workflowVersionId || target.workflowId) return;
+    // Deliberately before the latch below, and not latching: a hand-picked version means this
+    // effect has nothing left to say about this session, so there is no state to record.
+    if (versionPickedByHand.current) return;
+    if (!bindingsSettled) return;
+    if (hydratedForSession.current === sessionId) return;
+    hydratedForSession.current = sessionId;
+    const active = bindings.find(
+      (binding) => binding.state === "active" && binding.sessionId === sessionId,
+    );
+    /*
+     * Assigned unconditionally, empty included. Only setting it when a binding was FOUND left
+     * the previous session's answer standing over the new one: open the dialog with no session
+     * pinned, let it settle on a bound session, then switch to an unbound one, and the
+     * Published workflow select still showed the first session's workflow - with no existing or
+     * conflict notice to flag it, because the new session genuinely has no binding to conflict
+     * with. Binding from there attached a workflow the operator never chose for that
+     * conversation, which is the failure this dialog was changed to end.
+     *
+     * "What is this session bound to" has an answer for an unbound session too, and it is
+     * nothing. Saying nothing is what the empty selection means.
+     */
+    setVersionId(active?.workflowVersionId ?? "");
+  }, [bindings, bindingsSettled, sessionId, target.workflowId, target.workflowVersionId]);
   const { existing, conflict } = useMemo(
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],
   );
-  const selectedWorkflowId = publishable.find((item) => item.currentVersionId === versionId)?.id ?? null;
+  /*
+   * Resolved the same way the version is NAMED, rather than by `currentVersionId` equality.
+   *
+   * That equality only holds while a version is the newest one, so a session bound to a
+   * superseded built-in - `@7` after `@8` ships - resolved to null, the detail fetch below
+   * never fired, and "This version defaults to …" silently never rendered for it. Hydration
+   * makes that reachable by design: it selects whatever the session is actually bound to,
+   * superseded versions included, and the select already renders an option for exactly that
+   * case. Naming and lookup have to recognise the same set of versions.
+   */
+  const selectedWorkflowId = workflowIdForVersion(versionId, publishable);
   useEffect(() => {
-    if (!versionId) return;
-    // A binding stores its own overrides. Once it is known, its values have precedence over
-    // the immutable version defaults and the existing-binding effect below owns hydration.
-    if (existing) return;
+    /*
+     * No version selected, no claim to make about one. Returning early instead left `defaults`
+     * describing whatever was selected before, so the sentence outlived its subject: pick a
+     * bound session, read "This version defaults to foreman complete and live", switch to an
+     * unbound one, and the Published workflow field correctly empties while that sentence
+     * keeps asserting the defaults of a workflow no longer on screen.
+     *
+     * Cleared HERE rather than beside the `setVersionId` that empties it, because this effect
+     * owns `defaults` and this covers every route to an empty selection - hydration landing on
+     * an unbound session, and an operator choosing "Choose a published version" by hand. A
+     * reset at one call site would have fixed the route that was reported and left the other.
+     */
+    if (!versionId) {
+      setDefaults(null);
+      return;
+    }
+    /*
+     * Two different questions, which this effect used to answer with one early return.
+     *
+     * What the VERSION declares is worth resolving either way - it is the sentence below the
+     * controls, and a binding does not change what a published version says. What the CONTROLS
+     * should show is a separate question, and there a binding's own overrides win: the effect
+     * after this one hydrates them from the binding, so seeding them from the version here
+     * would fight it and quietly revert an operator's stored choice.
+     *
+     * Returning early on `existing` conflated the two, so a conversation that WAS bound - the
+     * case this dialog exists to show, and the one hydration now reaches on open - never
+     * resolved the version and left the sentence asserting the placeholder.
+     */
+    const seedControls = !existing;
+    const apply = (resolved: WorkflowBindingDefaults): void => {
+      setDefaults(resolved);
+      if (!seedControls) return;
+      if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(resolved.maxRepairRounds);
+      if (!overridesTouchedRef.current.triggerMode) setTriggerMode(resolved.triggerMode);
+      if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(resolved.deliveryMode);
+    };
     if (versionId === target.workflowVersionId && target.bindingDefaults) {
-      setDefaults(target.bindingDefaults);
-      if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(target.bindingDefaults.maxRepairRounds);
-      if (!overridesTouchedRef.current.triggerMode) setTriggerMode(target.bindingDefaults.triggerMode);
-      if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(target.bindingDefaults.deliveryMode);
-      setVersionNumber(target.workflowVersion ?? null);
+      apply(target.bindingDefaults);
       return;
     }
     if (!selectedWorkflowId) return;
@@ -132,11 +287,7 @@ export function WorkflowBindingDialog({
       if (!current) return;
       const version = detail.versions.find((item) => item.id === versionId);
       if (!version) return;
-      setDefaults(version.bindingDefaults);
-      if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(version.bindingDefaults.maxRepairRounds);
-      if (!overridesTouchedRef.current.triggerMode) setTriggerMode(version.bindingDefaults.triggerMode);
-      if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(version.bindingDefaults.deliveryMode);
-      setVersionNumber(version.version);
+      apply(version.bindingDefaults);
     }).catch(() => {});
     return () => { current = false; };
   }, [
@@ -144,7 +295,6 @@ export function WorkflowBindingDialog({
     selectedWorkflowId,
     sessionId,
     target.bindingDefaults,
-    target.workflowVersion,
     target.workflowVersionId,
     versionId,
   ]);
@@ -274,6 +424,9 @@ export function WorkflowBindingDialog({
             disabled={busy || Boolean(target.sessionId)}
             onChange={(event) => {
               resetTouchedOverrides();
+              // A different conversation has a different answer to "what is bound here", so the
+              // previous session's hand-pick stops standing in the way of hydrating this one.
+              versionPickedByHand.current = false;
               setSessionId(event.target.value);
             }}
           >
@@ -290,15 +443,21 @@ export function WorkflowBindingDialog({
             disabled={busy || Boolean(target.workflowVersionId)}
             onChange={(event) => {
               resetTouchedOverrides();
+              // Recorded before the state write, so a binding fetch settling on the very next
+              // tick finds the pick already registered rather than racing it.
+              versionPickedByHand.current = true;
               setVersionId(event.target.value);
             }}
           >
             <option value="">Choose a published version</option>
-          {target.workflowVersionId &&
-            !publishable.some((workflow) => workflow.currentVersionId === target.workflowVersionId) && (
-              <option value={target.workflowVersionId}>
-                Published version {target.workflowVersionId.slice(0, 8)}
-              </option>
+          {/* The selection is not always in the list below, which offers each workflow's
+              CURRENT version only. Version history can pin an older one, and a session bound
+              before a new version shipped still holds the version it was bound to - the case
+              this dialog exists to show. Naming it keeps that binding readable instead of
+              rendering a select with nothing chosen over a conversation that is armed. */}
+          {versionId
+            && !publishable.some((workflow) => workflow.currentVersionId === versionId) && (
+              <option value={versionId}>{workflowVersionLabel(versionId, workflows)}</option>
             )}
             {publishable.map((workflow) => (
               <option key={workflow.currentVersionId!} value={workflow.currentVersionId!}>
@@ -356,7 +515,7 @@ export function WorkflowBindingDialog({
           />
         </label>
       </div>
-      {(defaults.triggerMode !== "manual" || defaults.deliveryMode !== "preview") && (
+      {defaults && (defaults.triggerMode !== "manual" || defaults.deliveryMode !== "preview") && (
         <p className="workflow-binding-existing">
           This version defaults to {defaults.triggerMode.replaceAll("_", " ")} and {defaults.deliveryMode}.
         </p>
@@ -379,12 +538,13 @@ export function WorkflowBindingDialog({
       {existing && (
         <p className="workflow-binding-existing">
           {existing.state === "active" ? "Already bound" : `Ready to reattach (${existing.state})`}
-          {" "}to version {existing.workflowVersionId.slice(0, 8)}.
+          {" "}to {workflowVersionLabel(existing.workflowVersionId, workflows)}.
         </p>
       )}
       {conflict && (
         <p className="wf-error" role="alert">
-          This conversation is already bound to immutable version {conflict.workflowVersionId.slice(0, 8)}.
+          This conversation is already bound to{" "}
+          {workflowVersionLabel(conflict.workflowVersionId, workflows)}.
           Archive that binding before selecting another version.
         </p>
       )}
@@ -395,7 +555,10 @@ export function WorkflowBindingDialog({
           <div><dt>Checkout</dt><dd>{session.cwd ?? "unavailable"}</dd></div>
           <div><dt>Branch</dt><dd>{session.gitBranch ?? "unavailable"}</dd></div>
           <div><dt>Conversation</dt><dd>{session.agentSessionId ?? session.id}</dd></div>
-          <div><dt>Version</dt><dd>{versionNumber === null ? versionId.slice(0, 8) : `v${versionNumber}`}</dd></div>
+          <div>
+            <dt>Workflow</dt>
+            <dd>{versionId ? workflowVersionLabel(versionId, workflows) : "none selected"}</dd>
+          </div>
         </dl>
       )}
       {error && <p className="wf-error" role="alert">{error}</p>}

@@ -4,7 +4,7 @@ import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "../TranscriptPanel.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkspaceLinkHandler } from "../Markdown.tsx";
-import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
@@ -144,6 +144,8 @@ export interface SessionViewProps {
   reviews: ReviewItem[];
   /** App-owned join from compact run SSE summaries to each live session. */
   workflowRunBySession?: ReadonlyMap<string, WorkflowRunSummary>;
+  /** App-owned join from compact binding SSE summaries to each live session. */
+  workflowBindingBySession?: ReadonlyMap<string, WorkflowBindingSummary>;
   onOpenWorkflowRun?: (runId: string) => void;
   onBindWorkflow?: (sessionId: string) => void;
   /**
@@ -215,6 +217,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     pendingReviewIds: p.pendingReviewIds,
     reviews: p.reviews,
     workflowRun: p.workflowRunBySession?.get(s.id) ?? null,
+    workflowBinding: p.workflowBindingBySession?.get(s.id) ?? null,
     onOpenWorkflowRun: p.onOpenWorkflowRun,
     onBindWorkflow: p.onBindWorkflow ? () => p.onBindWorkflow?.(s.id) : undefined,
     onOpenSchedule: p.onOpenSchedule,

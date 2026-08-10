@@ -4,7 +4,7 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
-import { sessionCanBindWorkflow } from "../../lib/held.ts";
+import { sessionCanBindWorkflow, workflowBindChipTitle } from "../../lib/held.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -161,6 +161,7 @@ export function ConsoleDetail({
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
   const workflowRun = view.workflowRunBySession?.get(session.id) ?? null;
+  const workflowBinding = view.workflowBindingBySession?.get(session.id) ?? null;
   const ensembleLink = session.task?.ensemble ?? null;
   const [diffSelection, setDiffSelection] = useState<DiffSelection>({
     sessionId: session.id,
@@ -378,12 +379,20 @@ export function ConsoleDetail({
         {/* The card's gate, read from the same helper: a terminal run releases the offer here
             too, and stands its outcome chip next to it rather than instead of it. */}
         {sessionCanBindWorkflow(workflowRun) && view.onBindWorkflow && (
-          <Tooltip label="Bind a published workflow version">
+          <Tooltip label={workflowBindChipTitle(workflowBinding)}>
             <button
-              className="workflow-bind-chip"
+              className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
               onClick={() => view.onBindWorkflow?.(session.id)}
             >
-              ＋ workflow
+              {workflowBinding
+                ? (
+                  <>
+                    <span aria-hidden>⌘ </span>
+                    <span className="wbc-name">{workflowBinding.workflowName}</span>
+                    <span className="wbc-version">{` v${workflowBinding.workflowVersion}`}</span>
+                  </>
+                )
+                : "＋ workflow"}
             </button>
           </Tooltip>
         )}

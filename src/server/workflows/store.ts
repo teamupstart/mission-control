@@ -63,6 +63,7 @@ import type {
   PersonaProvenance,
   SessionAction,
   WorkflowBinding,
+  WorkflowBindingSummary,
   WorkflowBindingClaim,
   WorkflowCaptureExpectation,
   WorkflowDefinition,
@@ -2450,6 +2451,53 @@ export class WorkflowStore {
     const row = this.db.prepare(`SELECT * FROM workflow_bindings WHERE id = ?`).get(id);
     if (!row) return null;
     try { return parseWorkflowBindingRow(row); } catch (error) { diagnose(error); return null; }
+  }
+
+  /**
+   * The armed-workflow projection for one binding, or null when there is no such row.
+   *
+   * Archived bindings resolve too. The caller decides what an archived one means - the
+   * registry drops it from the fleet stream, while a route asking about a specific id wants
+   * the answer rather than silence.
+   */
+  bindingSummary(id: string): WorkflowBindingSummary | null {
+    const binding = this.getBinding(id);
+    return binding ? this.toBindingSummary(binding) : null;
+  }
+
+  /** Every non-archived binding as a summary, for the boot-time stream seed. */
+  listBindingSummaries(): WorkflowBindingSummary[] {
+    return this.listBindings().map((binding) => this.toBindingSummary(binding));
+  }
+
+  /**
+   * Resolve a binding's workflow identity for display.
+   *
+   * Two lookups rather than a SQL join, and deliberately so: `getWorkflowVersionById` already
+   * falls back to the built-in catalog, which is the case a join CANNOT reach - a shipped
+   * workflow has no `workflow_versions` row, so joining alone reports the No-Mistakes Review
+   * every dispatch arms as a deleted version. `getWorkflow` resolves built-ins by id for the
+   * same reason. Bindings are counted in the dozens and this runs on binding change, not per
+   * frame, so the clarity is worth more than folding it into `WORKFLOW_RUN_SUMMARY_SELECT`'s
+   * shape. A version that truly no longer resolves keeps the id visible rather than inventing
+   * a name: an operator can paste it into a bug report.
+   */
+  private toBindingSummary(binding: WorkflowBinding): WorkflowBindingSummary {
+    const version = this.getWorkflowVersionById(binding.workflowVersionId);
+    const workflow = version ? this.getWorkflow(version.workflowId) : null;
+    return {
+      id: binding.id,
+      workflowVersionId: binding.workflowVersionId,
+      workflowId: version?.workflowId ?? `missing:${binding.workflowVersionId}`,
+      workflowName: workflow?.name ?? "Missing workflow version",
+      workflowVersion: version?.version ?? 0,
+      noteKey: binding.noteKey,
+      sessionId: binding.sessionId,
+      triggerMode: binding.triggerMode,
+      deliveryMode: binding.deliveryMode,
+      state: binding.state,
+      updatedAt: binding.updatedAt,
+    };
   }
 
   activeBindingForNote(noteKey: string): WorkflowBinding | null {
@@ -5503,7 +5551,16 @@ export class WorkflowStore {
     }
   }
 
-  resetForNoteKey(noteKey: string): string[] {
+  /**
+   * Everything a reset removed, so the caller can retire it from the fleet stream too.
+   *
+   * Both lists, not just the runs. This used to return run ids alone while deleting the
+   * bindings in the same transaction, so the registry kept publishing a binding whose row was
+   * gone and a reset session's chip went on naming a workflow that could never run. Returning
+   * what was deleted is what makes the SQL and the stream describe the same world; a caller
+   * that forgets one of them now has to do so on purpose.
+   */
+  resetForNoteKey(noteKey: string): { runIds: string[]; bindingIds: string[] } {
     return transaction(this.db, () => {
       const runRows = this.db.prepare(
         `SELECT r.id FROM workflow_runs r
@@ -5511,6 +5568,11 @@ export class WorkflowStore {
          WHERE b.note_key = ?`,
       ).all(noteKey) as unknown as Array<{ id: string }>;
       const runIds = runRows.map((row) => row.id);
+      // Collected BEFORE the delete below, for the obvious reason: afterwards there is nothing
+      // left to select, and the stream would never learn which entries to drop.
+      const bindingIds = (this.db.prepare(
+        `SELECT id FROM workflow_bindings WHERE note_key = ?`,
+      ).all(noteKey) as unknown as Array<{ id: string }>).map((row) => row.id);
       for (const runId of runIds) {
         this.db.prepare(
           `DELETE FROM workflow_llm_calls WHERE run_id = ?`,
@@ -5539,7 +5601,7 @@ export class WorkflowStore {
           WHERE binding_id IN (SELECT id FROM workflow_bindings WHERE note_key = ?)`,
       ).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_bindings WHERE note_key = ?`).run(noteKey);
-      return runIds;
+      return { runIds, bindingIds };
     });
   }
 

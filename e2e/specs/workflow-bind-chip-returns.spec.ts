@@ -21,6 +21,14 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * fix would have traded one wrong reading for another; a COMPLETED run must offer it again beside
  * the `Approved` chip, because the outcome is history and the chip is the next move.
  *
+ * What the chip SAYS moved after this was written. It now names the workflow a session is armed
+ * with, and falls back to `＋ workflow` both when nothing is bound and when the binding that
+ * exists is no longer `active` - orphaned or paused, which will not run at completion and so
+ * must not be named as though they will. The completed-run test below reads `armedChip` rather
+ * than the offer because completion retires neither the binding nor its `active` state. The
+ * claim under test is unchanged and is still the point: the button is present, and it opens the
+ * bind dialog rather than dead-ending.
+ *
  * The run is real: dispatched agent, published workflow, bound, submitted, and polled until the
  * daemon settles it. Nothing is stubbed into the browser.
  *
@@ -43,6 +51,21 @@ const BIND_CHIP = "＋ workflow";
 
 /** The published workflow each test seeds, named per test so the bind dialog can pick it out. */
 const workflowName = (label: string): string => `E2E bind chip ${label}`;
+
+/**
+ * The same chip's accessible name once a workflow IS bound.
+ *
+ * It names the binding rather than offering to add one, so an armed session stops reading as
+ * unarmed - which under the Foreman-complete trigger it did for its whole working life, since
+ * no run exists until the work is finished. Completion does not retire a binding, so the
+ * session in the second test below is still armed when its run reaches `Approved`: the chip
+ * there is this one, not the offer. Same button, same dialog, honest label.
+ *
+ * No `⌘` in the pattern, deliberately: the glyph is decoration and is `aria-hidden`, so the
+ * accessible name a screen reader announces is the workflow and its version and nothing else.
+ * Matching the glyph here would pin a mark no assistive technology ever reads.
+ */
+const armedChip = (label: string): RegExp => new RegExp(`^${workflowName(label)} v\\d+$`);
 
 async function shoot(page: Page, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
@@ -216,7 +239,7 @@ test("a COMPLETED run gives the bind chip back, beside its outcome, on both surf
   // would have deleted the history to restore the affordance. Both are here.
   const card = dashboard.getByRole("article");
   await expect(card.getByRole("button", { name: "Approved" })).toBeVisible();
-  await expect(card.getByRole("button", { name: BIND_CHIP })).toBeVisible();
+  await expect(card.getByRole("button", { name: armedChip("done") })).toBeVisible();
   await shoot(dashboard, "card-approved-and-bind-chip");
 
   // The restored chip must not COST anything. This head now carries an outcome chip, a bind chip
@@ -234,7 +257,7 @@ test("a COMPLETED run gives the bind chip back, beside its outcome, on both surf
 
   // Reachable, not merely present: the chip opens the bind dialog, pinned to this session, so
   // the offer leads somewhere rather than being a decorative dead end of its own.
-  await card.getByRole("button", { name: BIND_CHIP }).click();
+  await card.getByRole("button", { name: armedChip("done") }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Bind workflow" });
   await expect(dialog).toBeVisible();
   const picker = dialog.getByRole("combobox", { name: "Session", exact: true });
@@ -257,10 +280,10 @@ test("a COMPLETED run gives the bind chip back, beside its outcome, on both surf
   await openConsoleDetail(dashboard, daemon);
   const head = dashboard.locator("header.detail-head");
   await expect(head.getByRole("button", { name: "Approved" })).toBeVisible();
-  await expect(head.getByRole("button", { name: BIND_CHIP })).toBeVisible();
+  await expect(head.getByRole("button", { name: armedChip("done") })).toBeVisible();
   // Captured before the click, because the modal covers the header it is evidence of.
   await shoot(dashboard, "console-detail-approved-and-bind-chip");
-  await head.getByRole("button", { name: BIND_CHIP }).click();
+  await head.getByRole("button", { name: armedChip("done") }).click();
   await expect(dashboard.getByRole("dialog", { name: "Bind workflow" })).toBeVisible();
   await shoot(dashboard, "console-detail-bind-dialog");
 });

@@ -24,6 +24,8 @@ import type {
   PersonaView,
   SessionAction,
   SessionActionId,
+  WorkflowBindingId,
+  WorkflowBindingSummary,
   WorkflowId,
   WorkflowRunId,
   WorkflowRunSummary,
@@ -2209,6 +2211,7 @@ export type ServerEvent =
       sessionActions: SessionAction[];
       workflowSummaries: WorkflowSummary[];
       workflowRunSummaries: WorkflowRunSummary[];
+      workflowBindingSummaries: WorkflowBindingSummary[];
       /**
        * Compact ensemble projections only. Members, artifacts, evaluations, stage output and
        * patches stay on HTTP: this collection must stay bounded when a later strategy runs
@@ -2267,6 +2270,8 @@ export type ServerEvent =
   | { type: "workflow_remove"; id: WorkflowId }
   | { type: "workflow_run_upsert"; run: WorkflowRunSummary }
   | { type: "workflow_run_remove"; id: WorkflowRunId }
+  | { type: "workflow_binding_upsert"; binding: WorkflowBindingSummary }
+  | { type: "workflow_binding_remove"; id: WorkflowBindingId }
   | { type: "ensemble_upsert"; ensemble: EnsembleSummary }
   | { type: "ensemble_remove"; id: string }
   /**

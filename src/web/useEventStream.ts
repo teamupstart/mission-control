@@ -12,6 +12,7 @@ import type { LineSummary } from "@shared/line.ts";
 import type {
   PersonaView,
   SessionAction,
+  WorkflowBindingSummary,
   WorkflowRunSummary,
   WorkflowSummary,
 } from "@shared/workflow.ts";
@@ -39,6 +40,8 @@ export interface MissionState {
   sessionActions: SessionAction[];
   workflowSummaries: WorkflowSummary[];
   workflowRunSummaries: WorkflowRunSummary[];
+  /** What each conversation is ARMED with, which precedes and outlives its runs. */
+  workflowBindingSummaries: WorkflowBindingSummary[];
   /**
    * Compact ensemble projections. Members, artifacts, evaluations and patches are fetched
    * over HTTP when a detail view asks for them, so this collection stays bounded however
@@ -120,6 +123,7 @@ export function useEventStream(): MissionState {
   const [sessionActions, setSessionActions] = useState<Map<string, SessionAction>>(new Map());
   const [workflowSummaries, setWorkflowSummaries] = useState<Map<string, WorkflowSummary>>(new Map());
   const [workflowRuns, setWorkflowRuns] = useState<Map<string, WorkflowRunSummary>>(new Map());
+  const [workflowBindings, setWorkflowBindings] = useState<Map<string, WorkflowBindingSummary>>(new Map());
   const [ensembles, setEnsembles] = useState<Map<string, EnsembleSummary>>(new Map());
   const [schedules, setSchedules] = useState<Map<string, MissionSchedule>>(new Map());
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
@@ -176,6 +180,7 @@ export function useEventStream(): MissionState {
           setSessionActions(new Map(msg.sessionActions.map((action) => [action.id, action])));
           setWorkflowSummaries(new Map(msg.workflowSummaries.map((workflow) => [workflow.id, workflow])));
           setWorkflowRuns(new Map(msg.workflowRunSummaries.map((run) => [run.id, run])));
+          setWorkflowBindings(new Map(msg.workflowBindingSummaries.map((b) => [b.id, b])));
           setEnsembles(new Map(msg.ensembleSummaries.map((ensemble) => [ensemble.id, ensemble])));
           // Replaced wholesale from the snapshot, like every other collection here: a
           // reconnect after a gap must drop schedules archived while we were away, not merge
@@ -280,6 +285,16 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        case "workflow_binding_upsert":
+          setWorkflowBindings((prev) => new Map(prev).set(msg.binding.id, msg.binding));
+          break;
+        case "workflow_binding_remove":
+          setWorkflowBindings((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
         case "ensemble_upsert":
           setEnsembles((prev) => new Map(prev).set(msg.ensemble.id, msg.ensemble));
           break;
@@ -356,6 +371,7 @@ export function useEventStream(): MissionState {
     sessionActions: [...sessionActions.values()],
     workflowSummaries: [...workflowSummaries.values()],
     workflowRunSummaries: [...workflowRuns.values()],
+    workflowBindingSummaries: [...workflowBindings.values()],
     ensembleSummaries: [...ensembles.values()],
     schedules: [...schedules.values()],
     fleetCost,

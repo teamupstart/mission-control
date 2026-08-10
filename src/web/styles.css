@@ -117,6 +117,36 @@
   white-space: nowrap;
 }
 
+/* Armed reads as a STATEMENT rather than an offer: the unarmed chip is an invitation to act
+   and wears the dashed-ish low-contrast treatment of one, while this one is reporting a fact
+   the operator relies on. Same pill, more ink - it has to survive a glance across a full
+   grid, because "is a review going to run on this" is the question this chip now answers. */
+.workflow-bind-chip.armed {
+  border-color: color-mix(in srgb, var(--working) 55%, var(--border));
+  background: color-mix(in srgb, var(--working) 18%, var(--panel));
+  color: var(--working);
+  font-weight: 600;
+}
+
+/*
+ * Only the NAME is allowed to give way, and it stays INLINE to do it.
+ *
+ * Deliberately not a flex row: a flex container drops the whitespace between its items, which
+ * silently welded the chip into "⌘E2E bind chip donev1" - the layout eating the spaces out of
+ * the accessible name a screen reader reads. Inline-block keeps ordinary text flow, so the
+ * spaces are real characters, and still gives the span the box that `text-overflow` needs.
+ * The version follows as plain text and can therefore never be the part that truncates: "v8"
+ * is two characters and half of what an operator opened the card to check.
+ */
+.workflow-bind-chip.armed .wbc-name {
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
 .workflow-chip:hover,
 .workflow-bind-chip:hover {
   border-color: var(--working);

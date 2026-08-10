@@ -363,6 +363,58 @@ test("the ＋ New cards open a blank draft, and creating a workflow lands on the
     .toBe(1);
 });
 
+test("an unpublished workflow does not offer to bind, and does once it is published", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The Library's "Bind to a session…" sits inside one workflow's pipeline and promises to
+   * bind THAT workflow. It was gated on archived-ness only, so a draft that had never been
+   * published still offered it - and a brand-new workflow is the stage-expressible session+end
+   * graph, which opens in Pipeline mode before its first publish. There is no immutable version
+   * to bind, so the dialog fell through to answering a different question, "what is the target
+   * session already bound to", and opened unlocked on that unrelated binding. One click from
+   * reattaching a workflow the operator never chose.
+   *
+   * Only a browser can see this: the button's markup is correct, the handler is correct, the
+   * dialog is correct. It is the COMBINATION - an offer for a workflow that has no version -
+   * that produces the wrong surface, and the second half below is what stops the gate from
+   * being fixed by simply never offering the button at all.
+   */
+  const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E publish gate",
+    draft: {
+      nodes: [
+        { id: "session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "end", kind: "end", outcome: "Approved", position: { x: 220, y: 0 } },
+      ],
+      edges: [
+        {
+          id: "done",
+          source: "session",
+          sourcePort: "submitted",
+          target: "end",
+          targetPort: "terminal",
+        },
+      ],
+    },
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/library/workflows/${created.workflow.id}`);
+  const bind = dashboard.getByRole("button", { name: "Bind to a session…" });
+  // Present enough to be sure the pipeline actually rendered, so the absence below is the gate
+  // rather than a page that never arrived.
+  await expect(dashboard.getByRole("complementary", { name: "Workflow library and node palette" }))
+    .toBeVisible();
+  await expect(bind).toHaveCount(0);
+
+  // Publishing is the whole difference. The summary reaches the browser over SSE, so the offer
+  // appears without a reload - which is also what proves the gate reads live state rather than
+  // whatever the page happened to mount with.
+  await api(daemon, `/api/workflows/${created.workflow.id}/publish`, { expectedDraftRevision: 1 });
+  await expect(bind).toBeVisible();
+});
+
 test("an ensemble strategy card opens Dispatch already in Ensemble mode on that strategy", async ({
   dashboard,
   daemon,

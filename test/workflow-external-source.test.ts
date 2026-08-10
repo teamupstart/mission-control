@@ -211,6 +211,45 @@ test("repeated and concurrent claims resolve to one binding, one run, and one fi
   await workflows.stop();
 });
 
+test("an Ensemble hand-off puts its binding on the fleet stream", async () => {
+  // What is at stake: this is a THIRD door onto arming a session, beside dispatch and the bind
+  // dialog, and it was the one that did not publish. The row was `active` and the workflow was
+  // runnable, but `registry.workflowBindings` never heard about it - so the winner's card went
+  // on offering to attach a workflow it already had, until some unrelated mutation (archive,
+  // reattach, orphan, pause) happened to touch that binding and publish it late.
+  seedVersion("stream");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("stream-session")]);
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  // A DELTA rather than an empty-then-one, because this file shares one database across its
+  // tests and a fresh Registry is seeded from it at construction. Asserting emptiness here
+  // would be asserting test order.
+  const before = new Set(
+    registry.snapshot().workflowBindingSummaries.map((summary) => summary.id),
+  );
+
+  const created = workflows.ensureExternalBinding({
+    source: { kind: "ensemble" as const, sourceId: "ens-stream", resultId: "member-1" },
+    workflowVersionId: "v-stream",
+    sessionId: "stream-session",
+  });
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+
+  const armed = registry.snapshot().workflowBindingSummaries
+    .filter((summary) => !before.has(summary.id));
+  assert.deepEqual(
+    armed.map((summary) => [summary.id, summary.state, summary.sessionId]),
+    [[created.value.binding.id, "active", "stream-session"]],
+    "the hand-off's binding reaches the browser like every other arm does",
+  );
+  // Named, not just present: a chip drawn from this has to have something to say.
+  assert.equal(armed[0]?.workflowName, "W stream");
+  assert.equal(armed[0]?.workflowVersion, 1);
+  await workflows.stop();
+});
+
 test("archived workflows refuse new external bindings without invalidating existing claims", async () => {
   seedVersion("archived");
   const registry = new Registry();

@@ -42,6 +42,7 @@ import type {
   WorkflowJson,
   WorkflowRun,
   WorkflowRunDetail,
+  WorkflowBindingSummary,
   WorkflowRunSummary,
   WorkflowRunPage,
   WorkflowEventPage,
@@ -479,9 +480,15 @@ export class WorkflowManager {
       },
     );
     this.registry.initializeWorkflowRuns(this.runs());
+    this.registry.initializeWorkflowBindings(this.bindingSummaries());
     this.registry.registerWorkflowReset((noteKey) => {
       const removed = this.store.resetForNoteKey(noteKey);
-      for (const id of removed) this.registry.removeWorkflowRun(id);
+      for (const id of removed.runIds) this.registry.removeWorkflowRun(id);
+      // The bindings too. A reset deletes them in the same transaction as the runs, and
+      // retiring only the runs left the stream publishing a binding whose row was gone - so a
+      // reset session's chip kept naming a workflow that no longer existed and could never
+      // run. Every other path that ends a binding retires it here as well.
+      for (const id of removed.bindingIds) this.registry.removeWorkflowBinding(id);
     });
   }
 
@@ -515,6 +522,7 @@ export class WorkflowManager {
             if (binding.sessionId !== event.id || binding.state === "archived") continue;
             const active = this.store.orphanBinding(binding.id, "session_disappeared");
             if (active) {
+              this.publishBinding(active.id);
               const run = this.store.activeRunForBinding(active.id);
               if (run) this.publishRun(run.id);
             }
@@ -537,6 +545,7 @@ export class WorkflowManager {
           }
           const paused = this.store.pauseBinding(binding.id, "conversation_changed");
           if (paused) {
+            this.publishBinding(paused.id);
             const run = this.store.activeRunForBinding(paused.id);
             if (run) this.publishRun(run.id);
           }
@@ -798,6 +807,11 @@ export class WorkflowManager {
     return this.store.listBindings();
   }
 
+  /** The armed-workflow projections the fleet stream is seeded from at boot. */
+  bindingSummaries(): WorkflowBindingSummary[] {
+    return this.store.listBindingSummaries();
+  }
+
   runs(): WorkflowRunSummary[] {
     return this.store.listRunSummaries();
   }
@@ -913,24 +927,34 @@ export class WorkflowManager {
         current,
       };
     }
+    let created: WorkflowBinding;
+    /*
+     * This try covers the INSERT and nothing else. It exists to translate one specific SQLite
+     * failure - the UNIQUE constraint on an active note key, lost to a concurrent caller - into
+     * a typed conflict, and anything else inside it gets read through that lens.
+     *
+     * Publishing sits outside for exactly that reason. It runs after the row is durably
+     * committed, so a throw from it is not a failed bind: caught here it would either be
+     * mislabelled "this conversation already has an active workflow binding" (if the message
+     * happened to contain UNIQUE) or rethrown raw, and either way the caller would be told the
+     * bind failed while the binding exists - with a retry then hitting the very conflict the
+     * response invented.
+     */
     try {
-      return {
-        ok: true,
-        value: this.store.insertBinding({
-          id: randomUUID(),
-          workflowVersionId: input.workflowVersionId,
-          noteKey,
-          sessionId: session.id,
-          sessionAgent: session.agent,
-          sessionName: session.name,
-          sessionCwd: session.cwd,
-          sessionRepoRoot: session.repoRoot,
-          triggerMode,
-          deliveryMode,
-          maxRepairRounds,
-          now,
-        }),
-      };
+      created = this.store.insertBinding({
+        id: randomUUID(),
+        workflowVersionId: input.workflowVersionId,
+        noteKey,
+        sessionId: session.id,
+        sessionAgent: session.agent,
+        sessionName: session.name,
+        sessionCwd: session.cwd,
+        sessionRepoRoot: session.repoRoot,
+        triggerMode,
+        deliveryMode,
+        maxRepairRounds,
+        now,
+      });
     } catch (error) {
       if (String(error).includes("UNIQUE")) {
         return {
@@ -942,6 +966,14 @@ export class WorkflowManager {
       }
       throw error;
     }
+    // Every arm lands here - the dispatch one included, since `bindDispatchedTaskWorkflow`
+    // creates its binding through this method. Publishing HERE rather than at each caller is
+    // what makes a dispatched session show its workflow from the moment it is armed, which for
+    // the `foreman_complete` trigger is the entire working life of the session before any run
+    // exists to speak for it. Unguarded, like every other publish site in this file: a stream
+    // failure is worth surfacing, and it must not be dressed up as a constraint violation.
+    this.publishBinding(created.id);
+    return { ok: true, value: created };
   }
 
   updateBinding(
@@ -979,6 +1011,7 @@ export class WorkflowManager {
       if (prerequisite) return prerequisite;
     }
     const updated = this.store.updateBinding(id, input, now);
+    if (updated) this.publishBinding(updated.id);
     return updated
       ? { ok: true, value: updated }
       : { ok: false, reason: "not_found", message: "No such workflow binding" };
@@ -987,6 +1020,7 @@ export class WorkflowManager {
   archiveBinding(id: string, now = Date.now()): WorkflowRuntimeMutation<WorkflowBinding> {
     const archived = this.store.archiveBindingAndCancel(id, now);
     if (archived?.cancelledRunId) this.publishRun(archived.cancelledRunId);
+    if (archived) this.publishBinding(archived.binding.id);
     return archived
       ? { ok: true, value: archived.binding }
       : { ok: false, reason: "not_found", message: "No such workflow binding" };
@@ -1298,6 +1332,7 @@ export class WorkflowManager {
       sessionRepoRoot: session.repoRoot,
     }, now);
     if (!updated) return { ok: false, reason: "not_found", message: "No such workflow binding" };
+    this.publishBinding(updated.id);
     const active = this.store.activeRunForBinding(binding.id);
     if (active) {
       for (const delivery of this.store.listDeliveries(active.id)) {
@@ -2274,6 +2309,16 @@ export class WorkflowManager {
           }
         : { ok: false, reason: "not_found", message: "The claimed workflow binding is missing" };
     }
+    // An Ensemble hand-off arms a session exactly as the dispatch and manual paths do, so it
+    // owes the fleet stream the same event. Missing it left the winner's session genuinely
+    // bound - an `active` row, a claim, a runnable workflow - while every card and console
+    // header went on offering to attach one, until some unrelated mutation happened to touch
+    // the binding and publish it late. That is the same wrong reading this whole change exists
+    // to end, reached by a different door.
+    //
+    // Published whether or not the claim was `created`: a concurrent caller may have won the
+    // insert, and an upsert of the state that is already true costs one idempotent frame.
+    this.publishBinding(resolved.binding.id);
     return {
       ok: true,
       value: { binding: resolved.binding, claim: resolved.claim, created: resolved.created },
@@ -4645,6 +4690,7 @@ export class WorkflowManager {
           ? this.store.pauseBinding(binding.id, "conversation_changed")
           : null;
       if (!updated) continue;
+      this.publishBinding(updated.id);
       const run = this.store.activeRunForBinding(updated.id);
       if (run) this.publishRun(run.id);
     }
@@ -5087,6 +5133,25 @@ export class WorkflowManager {
   private publishRun(runId: string): void {
     const summary = this.store.runSummary(runId);
     if (summary) this.registry.upsertWorkflowRun(summary);
+  }
+
+  /**
+   * Push a binding's current state onto the fleet stream, or retire it from the stream.
+   *
+   * Archived is a REMOVAL rather than an upsert carrying `state: "archived"`, because every
+   * consumer asks the same question - what is this conversation armed with - and an archived
+   * binding is not an answer to it. Keeping it would make each surface re-filter, and one that
+   * forgot would name a workflow that will never run. Orphaned and paused DO stay: they are
+   * still the conversation's binding, and a surface that hid them would go back to claiming
+   * an armed session is unarmed, which is the bug this stream exists to end.
+   */
+  private publishBinding(bindingId: string): void {
+    const summary = this.store.bindingSummary(bindingId);
+    if (!summary || summary.state === "archived") {
+      this.registry.removeWorkflowBinding(bindingId);
+      return;
+    }
+    this.registry.upsertWorkflowBinding(summary);
   }
 
   private finish(result: WorkflowStoreWrite): WorkflowMutation {

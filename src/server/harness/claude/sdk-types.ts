@@ -159,6 +159,8 @@ export interface ClaudeSdkOneShotQueryOptions {
   env: Record<string, string | undefined>;
   abortController: AbortController;
   tools: string[];
+  /** Inline flag settings, used only when a validated grant carries deny rules. */
+  settings?: string;
   settingSources: ("user" | "project" | "local")[];
   maxTurns: number;
   model?: string;

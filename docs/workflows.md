@@ -769,12 +769,20 @@ further down.
 **A run that spent its repair budget is the exception, and it gets a button.** It used to get
 the sentence too, and that was the one dead end on the page: the run had stopped, nothing on
 the dashboard could restart it, and its Inspector gate went on vetoing its pull request
-forever. Its primary is now **Grant 2 more rounds**. The grant raises *this run's* budget and
-nothing else - no round, no capture - because every way a blocked run comes back refuses on
-the same `round > maxRepairRounds` comparison, so moving the number hands the run straight
-back to the ordinary resume move. The sentence that used to stand there named the binding's
-`Max repair rounds` as the fix, which was wrong: a run snapshots its budget when its row is
-created, and editing the binding changes what the *next* run may spend. Beside the primary sit at most
+forever. Its primary is now **Grant 2 more rounds**. The sentence that used to stand there
+named the binding's `Max repair rounds` as the fix, which was wrong: a run snapshots its
+budget when its row is created, and editing the binding changes what the *next* run may
+spend.
+
+What the grant does depends on what stopped the run, and the difference is not cosmetic. A
+**parked repair round** needs only the number: the resume move refuses on
+`round > maxRepairRounds`, so raising the budget hands the run straight back to it, and the
+header repaints from the grant to **Preview fresh evidence**. An **Inspector-only gate run**
+needs its status back as well, because nothing polls a blocked run - the gate evaluator
+returns early on one - so the grant restores `waiting_for_new_head` and the gate re-enters
+on the next observation, picking up the very head it refused. Without that second half the
+grant would flip the merge block from "gave up" to "still working" while nothing was working,
+which is worse than the dead end it replaced. Beside the primary sit at most
 **Copy feedback** and **Open PR**, and **Open PR** appears only when there is an adopted pull
 request to open.
 

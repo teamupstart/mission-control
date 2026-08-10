@@ -1098,6 +1098,58 @@ test("a spent repair budget vetoes under its own reason, survives new heads, and
     1,
     "the grant left no audit trail",
   );
+
+  /*
+   * 5. And the run is actually GOING again, which the budget alone does not achieve here.
+   *
+   * Nothing polls a blocked run - `evaluateInspectorGate` returns early on one - so a grant
+   * that moved only the number would leave this gate exactly as stopped as it was while
+   * reporting `pending` to Shipping. That trade, a true "gave up" for a false "still
+   * working", is worse than the dead end. So the grant restores the state its own gate
+   * re-enters, and the proof is that the next head opens a round instead of being ignored.
+   */
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_new_head");
+  signal(seeded, `head-${serial}-five`);
+  await waitFor(
+    () => seeded.store.latestSubmission(seeded.ids.run)?.round === 3,
+    "the granted gate ignored the next head, so the grant revived nothing",
+  );
+
+  /*
+   * 6. And a replay of the same intent is that grant, not a second one.
+   *
+   * The run-action store retains its request id across a failed response, so a network error
+   * on a grant that actually committed comes back with the same id. Answered as the refusal
+   * below it, that would tell the operator their run could not be granted rounds it already
+   * holds - and the budget would read one grant short of what the timeline says.
+   */
+  const replay = seeded.manager.grantRepairRounds(seeded.ids.run, {
+    requestId: `grant-${serial}`,
+    rounds: 2,
+  });
+  assert.equal(replay.ok, true, "a retried grant was refused as a new one");
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.maxRepairRounds, 3, "the replay granted twice");
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "repair_rounds_granted").length,
+    1,
+    "the replay wrote a second grant into the run's history",
+  );
+  await seeded.manager.stop();
+});
+
+/*
+ * The grant refuses a run that is not stuck, which is what keeps it from becoming a general
+ * "raise the budget" control. The budget is a BINDING setting; this route exists only to
+ * open the one dead end the binding cannot reach, so a run with rounds left is told no.
+ */
+test("a grant is refused for a run that has not spent its budget", async () => {
+  const seeded = await seed({ policy: "inspector_only" });
+  const refused = seeded.manager.grantRepairRounds(seeded.ids.run, {
+    requestId: `grant-live-${serial}`,
+    rounds: 2,
+  });
+  assert.equal(refused.ok, false);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.maxRepairRounds, 3, "a live run took a grant");
   await seeded.manager.stop();
 });
 

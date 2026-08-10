@@ -561,6 +561,21 @@ test("a granted budget hands the run back to the ordinary resume move", () => {
   assert.notEqual(move?.kind, "grant-rounds", "the grant outstayed the shortage it answers");
 });
 
+/*
+ * The ceiling. `grantRepairRounds` clamps at `repairRoundsMax` and refuses a grant that
+ * would not move the number, so offering the button at the maximum would render a control
+ * whose only possible answer is a 409.
+ */
+test("a run already at the repair ceiling is not offered a grant it cannot take", () => {
+  const move = runNextMove(detailFor({
+    status: "blocked",
+    phase: "round_limit",
+    round: 21,
+    maxRepairRounds: 20,
+  }));
+  assert.notEqual(move?.kind, "grant-rounds", "a button that can only answer 409");
+});
+
 /** The stale remedy, pinned as gone: it named the one fix guaranteed not to reach this run. */
 test("no run-detail sentence sends the operator to the binding for a spent budget", () => {
   const spent = runNoMoveReason(detailFor({

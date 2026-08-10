@@ -3317,6 +3317,18 @@ export class WorkflowStore {
   grantRunRepairRounds(
     id: string,
     maxRepairRounds: number,
+    /**
+     * The status to put the run back into, for the runs a budget alone does not revive.
+     *
+     * `null` leaves the run blocked, which is right for a parked repair round: the resume
+     * move accepts a blocked run and the resumption observer is not involved. An
+     * Inspector-only gate run is the opposite case - its gate is what drives it, and
+     * `evaluateInspectorGate` returns early on a blocked run, so a grant that moved only
+     * the number would leave it stopped forever while telling Shipping it was working
+     * again. Carried in the same transaction as the budget because a run restored without
+     * its new budget re-blocks on the very next head.
+     */
+    restore: { status: WorkflowRun["status"]; phase: string; gateState: WorkflowJson | null } | null,
     event: { kind: string; payload: WorkflowJson },
     now = Date.now(),
   ): WorkflowRun | null {
@@ -3327,6 +3339,19 @@ export class WorkflowStore {
           WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
       ).run(maxRepairRounds, now, id);
       if (Number(result.changes) !== 1) return null;
+      if (restore) {
+        this.db.prepare(
+          `UPDATE workflow_runs
+              SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?
+            WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+        ).run(
+          restore.status,
+          restore.phase,
+          restore.gateState === null ? null : JSON.stringify(restore.gateState),
+          now,
+          id,
+        );
+      }
       this.appendEvent(id, event.kind, event.payload, now);
       return this.mustRun(id);
     });

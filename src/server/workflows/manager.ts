@@ -1782,18 +1782,25 @@ export class WorkflowManager {
   /**
    * Give a run that spent its repair budget more rounds, so it stops being a dead end.
    *
-   * This raises the budget and NOTHING else - no status change, no submission, no capture.
-   * That is the point. Every existing way a blocked run comes back (the resume move, the
-   * confirmed full restart, the resumption observer) already refuses on exactly one
-   * inequality, `round > maxRepairRounds`, so moving the right-hand side is enough to hand
-   * the run back to the machinery that already knows how to revive it. A grant that also
-   * resubmitted would be a second revival path to keep in step with those three, and the
-   * Inspector-only gate does not resume the same way a parked repair round does - picking
-   * one here would have been wrong for the other.
+   * It raises the budget and, for one class of run, puts the status back.
    *
-   * The same inequality is what `workflowRunGaveUp` reads, so the Shipping veto downgrades
-   * from `workflow-gate-spent` to `workflow-gate-pending` on the next sweep without this
-   * method knowing Shipping exists.
+   * A PARKED REPAIR ROUND needs only the number. The resume move and the confirmed full
+   * restart both accept a blocked run and refuse on exactly one inequality,
+   * `round > maxRepairRounds`, so moving the right-hand side hands it straight back to the
+   * machinery that already knows how to revive it - no second revival path to keep in step.
+   *
+   * AN INSPECTOR-ONLY GATE RUN needs the status too, and this is not symmetry for its own
+   * sake. Nothing polls a blocked run: `evaluateInspectorGate` returns early on one, and
+   * the resumption observer only looks at `waiting_for_session`. So a grant that moved only
+   * the number would leave the gate run exactly as stopped as it was while flipping the
+   * Shipping veto from `workflow-gate-spent` to `workflow-gate-pending` - trading a true
+   * "this gave up" for a false "this is still working", which is worse than the dead end
+   * this method exists to open. Restoring `waiting_for_new_head` puts it back where its own
+   * gate re-enters it, and the head that was refused has not been recorded as a prior
+   * submission head, so the next observation picks that very head up.
+   *
+   * `workflowRunGaveUp` reads the same inequality, so the veto downgrades to `pending` -
+   * now truthfully - without this method knowing Shipping exists.
    */
   grantRepairRounds(
     runId: string,
@@ -1802,6 +1809,23 @@ export class WorkflowManager {
   ): WorkflowRuntimeMutation<WorkflowRun> {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    /*
+     * A replay of a grant that already landed is that grant, not a second one.
+     *
+     * The action store deliberately RETAINS its request id across a failed response, so a
+     * network error on a grant that actually committed comes back with the same id. Without
+     * this the replay would hit the `run_not_waiting` refusal below - the run is no longer
+     * spent, precisely because the first attempt worked - and tell the operator their run
+     * could not be granted rounds it already has. Every sibling action keys idempotency the
+     * same way; this one has an event rather than a trigger key to key off.
+     */
+    const replay = this.store.listEvents(run.id).find((event) =>
+      event.kind === "repair_rounds_granted"
+      && event.payload
+      && !Array.isArray(event.payload)
+      && typeof event.payload === "object"
+      && event.payload.requestId === input.requestId);
+    if (replay) return { ok: true, value: run, idempotent: true };
     const latest = this.store.latestSubmission(run.id);
     if (!latest) return { ok: false, reason: "not_found", message: "The run has no submission" };
     if (!workflowRunGaveUp({
@@ -1826,13 +1850,25 @@ export class WorkflowManager {
         message: `A run may not exceed ${WORKFLOW_LIMITS.repairRoundsMax} repair rounds`,
       };
     }
-    const updated = this.store.grantRunRepairRounds(run.id, granted, {
+    // The same discriminator `resubmit` uses to refuse an Inspector-only repair, and it has
+    // to be the submission MODE rather than the status: the status is `blocked` here, which
+    // is exactly what the gate arm has in common with the parked arm.
+    const gate = this.gateState(run);
+    const restore = gate && latest.mode === "inspector_only"
+      ? {
+          status: "waiting_for_new_head" as const,
+          phase: "inspector_findings",
+          gateState: gate as unknown as WorkflowJson,
+        }
+      : null;
+    const updated = this.store.grantRunRepairRounds(run.id, granted, restore, {
       kind: "repair_rounds_granted",
       payload: {
         requestId: input.requestId,
         from: run.maxRepairRounds,
         to: granted,
         round: latest.round,
+        resumed: restore?.status ?? null,
       },
     }, now);
     if (!updated) {

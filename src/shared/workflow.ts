@@ -1257,7 +1257,8 @@ export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
  * So the veto stays, and the fix for a run that will never clear on its own is to say so
  * and offer a way out, not to stop vetoing: `workflowRunGaveUp` below separates "still
  * working" from "gave up", Shipping reports the two as different blocks, and run detail
- * carries the controls that clear it. See `docs/agent-guides/architecture.md`.
+ * carries the controls that clear it. See "Blocked runs are recoverable, not terminal" in
+ * `docs/workflows.md`.
  *
  * Worth knowing before acting on this list: it is NOT the only place the three terminal
  * statuses are written down. `workflow_runs` queries in the store spell the same set as a
@@ -1283,11 +1284,13 @@ export function workflowRunIsOpen(status: WorkflowRunStatus): boolean {
 /**
  * The phases in which a run has spent its repair budget and cannot open another round.
  *
- * Both spellings are here because the gate writes the phase and the EVENT KIND from two
- * different vocabularies: every round-limit writer sets the phase `round_limit`, while
- * the Inspector gate's new-head re-test additionally appends an `inspector_round_limit`
- * event. A reader that matched only the event kind, or only one of the two strings, would
- * classify half the ways a run runs out as "still working".
+ * Every writer sets the phase `round_limit` today, so that is the only live entry.
+ * `inspector_round_limit` is DEFENSIVE, not a second live spelling: the Inspector gate's
+ * new-head re-test writes `round_limit` as the phase and `inspector_round_limit` only as
+ * the event kind, and run detail already carries a phase label for it on the same "this
+ * costs one line and removes a class of bug" reasoning. It is listed so that a future
+ * writer which does set it as a phase is classified as spent rather than as still working,
+ * which is the failure this predicate exists to prevent.
  */
 export const WORKFLOW_RUN_SPENT_PHASES = ["round_limit", "inspector_round_limit"] as const;
 

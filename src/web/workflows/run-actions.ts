@@ -4,6 +4,7 @@ import type {
   WorkflowRunDetail,
 } from "@shared/workflow.ts";
 import {
+  WORKFLOW_LIMITS,
   manualWorkflowTriggerRequestId,
   workflowRunGaveUp,
   workflowRunIsOpen,
@@ -564,27 +565,50 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     maxRepairRounds: detail.summary.maxRepairRounds,
   });
   /*
-   * Offered only when the BUDGET is the only thing stopping this run. `resubmitAvailability`
-   * refuses on three grounds and the grant answers exactly one of them, so a run whose
-   * session is gone or whose work came from an ensemble gets the refusal sentence instead:
-   * granting rounds there would raise a number nothing goes on to spend, which is a button
-   * that succeeds and changes nothing an operator can see. Those runs also hold no Shipping
-   * veto to release - `mergeGate` skips a binding that is not active - so the dead end this
-   * move exists to open is not one they are in.
+   * Offered only where it REVIVES something, which is two different conditions.
+   *
+   * An Inspector-only gate run is revived by the grant itself: the daemon restores
+   * `waiting_for_new_head` so the gate re-enters, and that works whoever started the run.
+   * Externally sourced runs are included for exactly this arm - an ensemble handoff binds
+   * a published version and its binding stays active, so its gate DOES hold the Shipping
+   * veto and can go spent. Withholding the button there would leave the Merge queue telling
+   * an operator to open a run that offers nothing.
+   *
+   * Every other spent run is revived by the resume move instead, so it inherits that move's
+   * preconditions: a manual round is what it will go on to take, and `resubmitAvailability`
+   * refuses one for a gone session or an external source. Granting rounds there would raise
+   * a number nothing goes on to spend - a button that succeeds and changes nothing.
    */
-  if (spent && detail.binding.state === "active" && !detail.externalSource) {
+  const gateRepair = liveInspectorRepair(detail);
+  if (
+    spent
+    && detail.binding.state === "active"
+    && (gateRepair || !detail.externalSource)
+    // And only while there is headroom to grant. `grantRepairRounds` clamps the sum at the
+    // same ceiling and REFUSES a grant that would not move the number, so a run already at
+    // the maximum would otherwise render a button whose only possible answer is a 409.
+    && detail.summary.maxRepairRounds < WORKFLOW_LIMITS.repairRoundsMax
+  ) {
+    // The number the daemon will actually add, not the number we asked for. The clamp bites
+    // within `GRANT_ROUNDS` of the ceiling, and a button that promises two and delivers one
+    // is a small lie told at the exact moment an operator is counting rounds.
+    const rounds = Math.min(
+      detail.summary.maxRepairRounds + GRANT_ROUNDS,
+      WORKFLOW_LIMITS.repairRoundsMax,
+    ) - detail.summary.maxRepairRounds;
     return {
       id: "grant-rounds",
       kind: "grant-rounds",
-      label: `Grant ${GRANT_ROUNDS} more rounds`,
+      label: rounds === 1 ? "Grant one more round" : `Grant ${rounds} more rounds`,
       tooltip: "Raise this run's repair budget so the review can continue",
       path: runPath(detail, "grant-rounds"),
-      body: { rounds: GRANT_ROUNDS },
+      body: { rounds },
       confirm: {
-        title: `Grant ${GRANT_ROUNDS} more repair rounds`,
+        title: rounds === 1 ? "Grant one more repair round" : `Grant ${rounds} more repair rounds`,
         body: "This run used every repair round its budget allowed, so it stopped and will"
           + " not restart on its own - and while it is stopped its pull request cannot merge."
-          + ` Granting ${GRANT_ROUNDS} more lets the review carry on from where it left off.`,
+          + ` Granting ${rounds === 1 ? "one" : rounds} more lets the review carry on from`
+          + " where it left off.",
         confirmLabel: "Grant the rounds",
         confirmHint: "Raises this run's budget only",
         danger: false,

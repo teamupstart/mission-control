@@ -217,9 +217,12 @@ test("a run out of repair rounds offers the grant, and the grant revives it", as
   await expect(grant).toBeEnabled();
   await expect(primary).toHaveCount(1);
 
-  // The remedy the page used to name, pinned as gone: it pointed at the binding, and a
-  // binding edit cannot reach the budget snapshot this run actually compares against.
-  await expect(header).not.toContainText("A larger repair budget is a change to the binding");
+  /*
+   * And no dead-end paragraph beside it. Asserted as the ABSENCE OF THE ELEMENT the header
+   * uses for "there is no move here" - not as the absence of the old copy, which would be a
+   * vacuous assertion the moment that string left the bundle, and it has.
+   */
+  await expect(header.locator("p.wf-run-why")).toHaveCount(0);
   // Off every control first: `Tooltip` portals a bubble under a resting pointer.
   await dashboard.mouse.move(0, 0);
   await shoot(header, "01-out-of-rounds-offers-the-grant");

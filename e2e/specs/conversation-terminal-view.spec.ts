@@ -126,7 +126,7 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   // The run of three tool-only turns is ONE record, closed, counting what it holds.
   const record = terminal.locator(".pty-toolrun").filter({ hasText: "executed 3 commands" });
   await expect(record).toBeVisible();
-  await expect(record.locator(".pty-tools, .turn-tools-lines")).toBeHidden();
+  await expect(record.locator(".turn-tools-lines")).toBeHidden();
   await record.locator("summary").click();
   // Open, it lists the literal command - not the chip's 40-character summary.
   await expect(record.getByText("rg PersonaDirective src test")).toBeVisible();
@@ -209,9 +209,12 @@ test("one session reads as a terminal while the rest stay on the chat log", asyn
   await openConversation(first);
   const toggle = first.getByRole("button", { name: "Terminal view" });
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  // Nothing to mark yet: this session reads exactly like the rest of the fleet.
+  await expect(toggle).not.toHaveClass(/is-overridden/);
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect(first.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
+  await expect(toggle).toHaveClass(/is-overridden/);
 
   await shoot(dashboard, first, "02-per-session-override");
 
@@ -316,6 +319,10 @@ test("a session's own choice beats the dashboard default, and the tab forgets it
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await expect(card.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
   await expect(card.getByPlaceholder(/^Reply to this session/)).toBeVisible();
+  // And NOW the session differs from a terminal default, so the mark is on. The reverse of
+  // the other test's case, and the pair is the point: the mark tracks the comparison, not
+  // the existence of a choice.
+  await expect(toggle).toHaveClass(/is-overridden/);
 
   // The override is honestly scoped to the tab: a reload starts over from the daemon's
   // default. Nothing persists it, and this is the assertion that keeps it that way.

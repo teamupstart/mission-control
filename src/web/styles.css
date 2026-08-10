@@ -5303,7 +5303,11 @@ mark.find-hit.is-current {
 }
 /* The mark that says this session is being read differently from the rest of the fleet -
    a choice that lives in this tab only. Without it, an operator who flipped one session a
-   while ago has no way to tell that from having changed the global default. */
+   while ago has no way to tell that from having changed the global default.
+   Driven by a COMPARISON against the current default (`differsFromDefault`), not by the
+   existence of an override: flipping a session out and back leaves an explicit choice
+   behind, and while that choice agrees with the default this session reads like every
+   other one and the mark must be off. */
 .conv-view-btn.is-overridden::after {
   content: "";
   width: 4px;

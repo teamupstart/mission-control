@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { UI_CONFIG_DEFAULTS } from "../src/shared/protocol.ts";
 import {
   CONVERSATION_VIEW_OPTIONS,
+  differsFromDefault,
   dropSessionView,
   readSessionView,
   resetSessionViews,
@@ -63,6 +64,44 @@ test("a departed session's override is collected, so a reused id starts clean", 
   dropSessionView("s1");
   assert.equal(readSessionView("s1"), null, "the departed session kept its override");
   assert.equal(readSessionView("s2"), "terminal", "collecting one dropped another");
+});
+
+// ---- the mark that says "this one reads differently" ----
+//
+// It is a COMPARISON, not the existence of an override, and the difference is a state an
+// operator reaches in two clicks: flip a session to the terminal, flip it back. The second
+// flip writes an explicit `chat` rather than clearing the entry, so "has an override" stays
+// true while the session reads exactly like every other one - and a mark claiming otherwise
+// has stopped tracking what it says.
+
+test("no override, no mark - the session reads like the rest of the fleet", () => {
+  assert.equal(differsFromDefault(null, "chat"), false);
+  assert.equal(differsFromDefault(null, "terminal"), false);
+});
+
+test("an override that disagrees with the default is marked, in both directions", () => {
+  assert.equal(differsFromDefault("terminal", "chat"), true);
+  assert.equal(differsFromDefault("chat", "terminal"), true);
+});
+
+test("flipping a session out and back clears the mark without clearing the choice", () => {
+  // The choice survives - this session stays pinned to chat and will not follow a later
+  // change to the default - but while the two agree there is nothing to mark.
+  writeSessionView("s1", "terminal");
+  assert.equal(differsFromDefault(readSessionView("s1"), "chat"), true);
+  writeSessionView("s1", "chat");
+  assert.equal(readSessionView("s1"), "chat", "the explicit choice was thrown away");
+  assert.equal(differsFromDefault(readSessionView("s1"), "chat"), false);
+});
+
+test("the mark returns on its own when the default moves away from a pinned session", () => {
+  // Derived every render from the two values, so a change to the dashboard default relights
+  // it with no event to wire up - which is what makes the pin visible rather than silent.
+  writeSessionView("s1", "chat");
+  assert.equal(differsFromDefault(readSessionView("s1"), "chat"), false);
+  assert.equal(differsFromDefault(readSessionView("s1"), "terminal"), true);
+  // And the pinned session keeps reading the way it was told to.
+  assert.equal(resolveConversationView(readSessionView("s1"), "terminal"), "chat");
 });
 
 test("every shipped rendering is offered by the settings picker, exactly once", () => {

@@ -108,11 +108,38 @@ export function resolveConversationView(
   return override ?? global;
 }
 
+/**
+ * Whether this session is being read differently from the rest of the fleet - which is a
+ * COMPARISON, not the mere existence of an override.
+ *
+ * Flipping a session to the terminal and back leaves an explicit `chat` override behind,
+ * because a choice made twice is still a choice: this session stays pinned to chat, and if
+ * the dashboard default later moves to terminal it will not follow. But at the moment the
+ * two agree, the session reads exactly like every other one, and a mark claiming otherwise
+ * is a mark that has stopped tracking what it says.
+ *
+ * Which also means the mark comes BACK on its own if the default moves away later, with no
+ * event to wire up: it is derived from the two values every render.
+ */
+export function differsFromDefault(
+  override: ConversationView | null,
+  global: ConversationView,
+): boolean {
+  return override !== null && override !== global;
+}
+
 /** What one conversation pane needs to draw itself and to offer the switch. */
 export interface SessionConversationView {
   /** The rendering to draw: the override if this session has one, else the default. */
   view: ConversationView;
-  /** Whether that came from this session's own choice rather than from settings. */
+  /**
+   * Whether this session is being read differently from the rest of the fleet right now.
+   *
+   * A comparison against the current default, not "has an override" - see
+   * `differsFromDefault`. What it drives is a mark on the control, and a mark that stays
+   * lit while the session reads exactly like every other one is telling the operator
+   * something untrue.
+   */
   overridden: boolean;
   /** Read this session in that rendering, for this tab. */
   setView: (next: ConversationView) => void;
@@ -137,5 +164,9 @@ export function useSessionConversationView(sessionId: string): SessionConversati
     },
     [sessionId],
   );
-  return { view: resolveConversationView(override, globalView), overridden: override !== null, setView };
+  return {
+    view: resolveConversationView(override, globalView),
+    overridden: differsFromDefault(override, globalView),
+    setView,
+  };
 }

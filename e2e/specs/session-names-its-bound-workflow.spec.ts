@@ -52,6 +52,28 @@ async function shoot(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/session-bound-workflow/${name}.png`);
 }
 
+/**
+ * Print a string this run actually READ off the rendered page.
+ *
+ * A screenshot is the right artifact for a person and the wrong one for anything that consumes
+ * a text log - a reviewer reading run output cannot open a PNG, and a prose retelling of what
+ * the PNG showed is exactly the unverifiable claim it was meant to replace. So the values the
+ * assertions match are also emitted verbatim: what is printed here came out of the DOM on the
+ * same run that passed, and can be compared against the assertions beside it.
+ */
+function seen(label: string, value: string): void {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  // eslint-disable-next-line no-console
+  console.log(`SEEN  ${label}: ${JSON.stringify(value)}`);
+}
+
+/** The accessible name a screen reader announces for a locator. */
+async function accessibleName(locator: Locator): Promise<string> {
+  return (await locator.getAttribute("aria-label"))
+    ?? (await locator.textContent())?.replace(/\s+/g, " ").trim()
+    ?? "";
+}
+
 async function api<T>(
   daemon: DaemonHandle,
   path: string,
@@ -192,6 +214,8 @@ test("a dispatched session names its armed workflow, and the bind dialog opens o
   const chip = page.getByRole("button", { name: /No-Mistakes Review v\d+/ }).first();
   await expect(chip).toBeVisible();
   await expect(page.getByRole("button", { name: "＋ workflow" })).toHaveCount(0);
+  seen("session chip", await accessibleName(chip));
+  seen("session chip tooltip", (await chip.getAttribute("title")) ?? "(via Tooltip wrapper)");
   await shoot(page, "card-names-bound-workflow");
 
   // 2. The dialog opens on what is actually bound - not on the workflow that merely sorts
@@ -202,11 +226,35 @@ test("a dispatched session names its armed workflow, and the bind dialog opens o
   const published = bind.getByRole("combobox", { name: "Published workflow", exact: true });
   await expect.poll(() => selectedLabel(published)).toContain("No-Mistakes Review");
   await expect.poll(() => selectedLabel(published)).not.toContain("Aardvark");
+  seen("dialog > Published workflow (selected)", await selectedLabel(published));
+  seen(
+    "dialog > Published workflow (all options)",
+    (await published.evaluate((el) =>
+      [...(el as HTMLSelectElement).options].map((o) => o.textContent?.trim() ?? "").join(" | "))),
+  );
 
   // 3. The dialog says what it is bound to in words. The truncated id used to read "builtin-",
   //    which is the failure that let a correct binding look like a wrong one.
   await expect(bind.getByText(/Already bound to No-Mistakes Review · v\d+/)).toBeVisible();
   await expect(bind.getByText("builtin-", { exact: false })).toHaveCount(0);
+
+  // 4. The sentence describing the version must not contradict the field beside it. `defaults`
+  //    was seeded with the application-wide placeholder - foreman_complete and PREVIEW - and
+  //    the effect that resolves it returned early once a binding existed, which is precisely
+  //    the state opening on a real binding puts this dialog in. So the sentence claimed
+  //    "preview" directly above a Delivery field correctly reading Live. Asserted as an
+  //    agreement rather than a fixed string, so it keeps holding if v8's published defaults
+  //    ever change, plus the concrete value that makes the agreement meaningful today.
+  const delivery = bind.getByRole("combobox", { name: "Delivery", exact: true });
+  await expect.poll(() => selectedLabel(delivery)).toBe("Live");
+  const hint = bind.getByText(/^This version defaults to /);
+  await expect(hint).toBeVisible();
+  await expect(hint).toContainText((await selectedLabel(delivery)).toLowerCase());
+  await expect(hint).toHaveText(/This version defaults to foreman complete and live\./);
+  seen("dialog > bound notice", await accessibleName(bind.getByText(/^Already bound to /)));
+  seen("dialog > Delivery (selected)", await selectedLabel(delivery));
+  seen("dialog > version hint", await accessibleName(hint));
+
   await shoot(page, "bind-dialog-opens-on-real-binding");
 });
 
@@ -226,8 +274,8 @@ test("a session with no workflow still offers to attach one", async ({ page, dae
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  await expect(page.getByRole("button", { name: "＋ workflow" }).first()).toBeVisible({
-    timeout: 60_000,
-  });
+  const offer = page.getByRole("button", { name: "＋ workflow" }).first();
+  await expect(offer).toBeVisible({ timeout: 60_000 });
+  seen("session chip (nothing bound)", await accessibleName(offer));
   await shoot(page, "card-unbound-still-offers");
 });

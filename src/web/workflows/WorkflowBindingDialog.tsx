@@ -91,12 +91,28 @@ export function WorkflowBindingDialog({
    * the only answer that is not a guess: what this session is actually bound to.
    */
   const [versionId, setVersionId] = useState(target.workflowVersionId ?? "");
-  const [defaults, setDefaults] = useState<WorkflowBindingDefaults>(
-    target.bindingDefaults ?? DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+  /**
+   * What the selected IMMUTABLE VERSION declares, or null while that is not yet known.
+   *
+   * Nullable on purpose, and separate from the control values below. This drives one
+   * sentence - "This version defaults to …" - which is a claim about the published version
+   * and nothing else. It used to be seeded with the application-wide placeholder, so before
+   * any version was resolved the dialog asserted `foreman_complete` and `preview` as though
+   * it had read them off the version. On a conversation already bound to No-Mistakes Review
+   * v8 that produced a flat contradiction: the sentence said "preview" directly above a
+   * Delivery field correctly showing Live. Null renders no sentence, which is the honest
+   * answer to a question nothing has answered yet.
+   */
+  const [defaults, setDefaults] = useState<WorkflowBindingDefaults | null>(
+    target.bindingDefaults ?? null,
   );
-  const [maxRepairRounds, setMaxRepairRounds] = useState(defaults.maxRepairRounds);
-  const [triggerMode, setTriggerMode] = useState(defaults.triggerMode);
-  const [deliveryMode, setDeliveryMode] = useState(defaults.deliveryMode);
+  // The editable values still need something to open on before anything is resolved, and the
+  // placeholder is the right seed for THAT - it is a starting position the operator can change,
+  // not a claim about a version.
+  const seed = target.bindingDefaults ?? DEFAULT_WORKFLOW_BINDING_DEFAULTS;
+  const [maxRepairRounds, setMaxRepairRounds] = useState(seed.maxRepairRounds);
+  const [triggerMode, setTriggerMode] = useState(seed.triggerMode);
+  const [deliveryMode, setDeliveryMode] = useState(seed.deliveryMode);
   const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   const [bindings, setBindings] = useState<WorkflowBinding[]>([]);
   /**
@@ -158,14 +174,29 @@ export function WorkflowBindingDialog({
   const selectedWorkflowId = publishable.find((item) => item.currentVersionId === versionId)?.id ?? null;
   useEffect(() => {
     if (!versionId) return;
-    // A binding stores its own overrides. Once it is known, its values have precedence over
-    // the immutable version defaults and the existing-binding effect below owns hydration.
-    if (existing) return;
+    /*
+     * Two different questions, which this effect used to answer with one early return.
+     *
+     * What the VERSION declares is worth resolving either way - it is the sentence below the
+     * controls, and a binding does not change what a published version says. What the CONTROLS
+     * should show is a separate question, and there a binding's own overrides win: the effect
+     * after this one hydrates them from the binding, so seeding them from the version here
+     * would fight it and quietly revert an operator's stored choice.
+     *
+     * Returning early on `existing` conflated the two, so a conversation that WAS bound - the
+     * case this dialog exists to show, and the one hydration now reaches on open - never
+     * resolved the version and left the sentence asserting the placeholder.
+     */
+    const seedControls = !existing;
+    const apply = (resolved: WorkflowBindingDefaults): void => {
+      setDefaults(resolved);
+      if (!seedControls) return;
+      if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(resolved.maxRepairRounds);
+      if (!overridesTouchedRef.current.triggerMode) setTriggerMode(resolved.triggerMode);
+      if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(resolved.deliveryMode);
+    };
     if (versionId === target.workflowVersionId && target.bindingDefaults) {
-      setDefaults(target.bindingDefaults);
-      if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(target.bindingDefaults.maxRepairRounds);
-      if (!overridesTouchedRef.current.triggerMode) setTriggerMode(target.bindingDefaults.triggerMode);
-      if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(target.bindingDefaults.deliveryMode);
+      apply(target.bindingDefaults);
       return;
     }
     if (!selectedWorkflowId) return;
@@ -174,10 +205,7 @@ export function WorkflowBindingDialog({
       if (!current) return;
       const version = detail.versions.find((item) => item.id === versionId);
       if (!version) return;
-      setDefaults(version.bindingDefaults);
-      if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(version.bindingDefaults.maxRepairRounds);
-      if (!overridesTouchedRef.current.triggerMode) setTriggerMode(version.bindingDefaults.triggerMode);
-      if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(version.bindingDefaults.deliveryMode);
+      apply(version.bindingDefaults);
     }).catch(() => {});
     return () => { current = false; };
   }, [
@@ -399,7 +427,7 @@ export function WorkflowBindingDialog({
           />
         </label>
       </div>
-      {(defaults.triggerMode !== "manual" || defaults.deliveryMode !== "preview") && (
+      {defaults && (defaults.triggerMode !== "manual" || defaults.deliveryMode !== "preview") && (
         <p className="workflow-binding-existing">
           This version defaults to {defaults.triggerMode.replaceAll("_", " ")} and {defaults.deliveryMode}.
         </p>

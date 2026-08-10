@@ -8,7 +8,7 @@ import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { buildBacklogPrompt } from "./backlog-prompt.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 
-// The backlog dependency read: one fresh, tool-less `claude -p` over every backlog
+// The backlog dependency read: one fresh, tool-less model call over every backlog
 // item, returning an order and a `dependsOn` list per item.
 //
 // Tool-less for the reason the reviewer is: the prompt embeds task text a human typed
@@ -24,7 +24,7 @@ import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models
 export const DEFAULT_BACKLOG_MODEL = FOREMAN_MODEL_SPECS.backlog.fallback;
 
 /**
- * Fixed part of the planner's budget: spawning `claude -p` and reading the prompt.
+ * Fixed part of the planner's budget: starting the headless call and reading the prompt.
  * Independent of the backlog's length, which is what the per-item term is for.
  */
 export const BACKLOG_BASE_MS = 60_000;

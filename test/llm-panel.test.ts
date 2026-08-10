@@ -32,6 +32,7 @@ const CONFIG: LlmConfig = { runner: "", claudeTransport: "", models: {} };
 function status(over: Partial<LlmStatus> = {}): LlmStatus {
   return {
     runner: { id: "claude", source: "default", unknown: null },
+    claudeTransport: "print",
     models: Object.fromEntries(
       LLM_JOB_IDS.map((job) => [
         job,

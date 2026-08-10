@@ -12,7 +12,7 @@ import type { Pending } from "./pending.ts";
 import type { CheapAction, Divergence } from "@shared/foreman.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 
-// The cheap tier that sits in front of Foreman's full `claude -p` reviewer (see
+// The cheap tier that sits in front of Foreman's full headless reviewer (see
 // docs/plans/foreman-watcher/plan.md). It disposes the structurally-determined and
 // the easy cases without an Opus call, and routes only the genuine judgment calls
 // up to the full reviewer. Its guarantee is asymmetric: it may route DOWN to skip
@@ -533,8 +533,8 @@ export function triageModel(cfg: ForemanConfig): string {
 
 /**
  * Run the cheap tier for one session: Tier 0 first (pure), then - only for an answerable
- * surface - the Tier 1 router in a fresh cheap-model subprocess on a trimmed window.
- * Never throws: any router spawn/parse failure routes up to the full reviewer (fail-safe).
+ * surface - the Tier 1 router in a fresh cheap-model call on a trimmed window.
+ * Never throws: any provider or parse failure routes up to the full reviewer (fail-safe).
  */
 export async function triageSession(
   deps: TriageDeps,

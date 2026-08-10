@@ -9,9 +9,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { BASE_URL, stateDir } from "@shared/harness-runtime.mjs";
-import { DEFAULT_LLM_RUNNER_ID, isLlmRunnerId } from "@shared/llm.ts";
-import type { LlmRunnerId } from "@shared/llm.ts";
+import { BASE_URL, envVar, stateDir } from "@shared/harness-runtime.mjs";
+import {
+  CLAUDE_TRANSPORT_ENV,
+  DEFAULT_LLM_RUNNER_ID,
+  isClaudeTransport,
+  isLlmRunnerId,
+} from "@shared/llm.ts";
+import type { ClaudeTransport, LlmRunnerId } from "@shared/llm.ts";
 import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/protocol.ts";
 import type {
   BacklogPlanInput,
@@ -72,6 +77,18 @@ export interface TaskActionResult {
    * where that absence is given a meaning, once.
    */
   scope?: AssignRefusalScope;
+}
+
+/** The app-wide model-call choices the worker learns from the daemon once per pass. */
+export interface ForemanLlmSelection {
+  runner: LlmRunnerId;
+  claudeTransport: ClaudeTransport;
+}
+
+/** Compatibility answer when the daemon predates the transport field or status route. */
+export function foremanClaudeTransportFallback(): ClaudeTransport {
+  const configured = envVar(CLAUDE_TRANSPORT_ENV)?.trim() ?? "";
+  return isClaudeTransport(configured) ? configured : "print";
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -897,7 +914,7 @@ export class ForemanClient implements ForemanActions {
   }
 
   /**
-   * Which provider the app's offline work spawns through, resolved by the DAEMON.
+   * Which provider and Claude transport the app's offline work uses, resolved by the DAEMON.
    *
    * Over a route rather than off the DB, because the Foreman worker is a separate process
    * and never touches it - and off the daemon rather than re-derived here, because the
@@ -905,14 +922,23 @@ export class ForemanClient implements ForemanActions {
    * that can see the config layer at all. A worker resolving it from its own environment
    * would answer differently from the panel that printed it.
    *
-   * Falls back rather than throwing on anything it cannot read - an id this build does not
-   * have, a daemon too old to serve the route. The runner is a preference; a review loop
-   * that idled over one would be a worse failure than running on the default.
+   * Falls back rather than throwing on fields it cannot read. A newer worker paired with an
+   * older daemon takes its own environment transport and then `print`; it never guesses
+   * `sdk`. The caller handles a failed request separately by retaining its last known answer.
    */
-  async llmRunner(): Promise<LlmRunnerId> {
-    const status = await get<{ runner?: { id?: string } }>("/api/llm/status");
+  async llmSelection(): Promise<ForemanLlmSelection> {
+    const status = await get<{
+      runner?: { id?: string };
+      claudeTransport?: string;
+    }>("/api/llm/status");
     const id = status?.runner?.id;
-    return id && isLlmRunnerId(id) ? id : DEFAULT_LLM_RUNNER_ID;
+    const transport = status?.claudeTransport;
+    return {
+      runner: id && isLlmRunnerId(id) ? id : DEFAULT_LLM_RUNNER_ID,
+      claudeTransport: transport && isClaudeTransport(transport)
+        ? transport
+        : foremanClaudeTransportFallback(),
+    };
   }
 
   /**

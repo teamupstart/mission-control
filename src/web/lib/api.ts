@@ -76,7 +76,7 @@ import type {
   ScheduleTemplate,
   ScheduleValidationField,
 } from "@shared/schedules.ts";
-import type { SweepReport, TaskSourcesView } from "@shared/task-source.ts";
+import type { SweepReport, TaskSourceRef, TaskSourcesView } from "@shared/task-source.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
@@ -788,6 +788,23 @@ export async function setKeepAwake(
   }
 }
 
+/**
+ * What `POST /api/tasks/:id/push` answers, in the two readings a caller must tell apart.
+ *
+ * A 200 returns the updated `Task`, so `source` is the ref of the item that was just created -
+ * read off the reply rather than waited for over SSE, which is what lets the modal draw the
+ * link in the same tick the button was pressed.
+ *
+ * `outcomeUnknown` is the 504, and it is the one failure a caller must NOT offer to retry:
+ * the item may already exist upstream, and a second attempt files a duplicate into a tracker
+ * other people are reading. A refusal without it (the 502) published nothing, so retrying is
+ * safe. Flagged rather than only worded, so this decision is never a sentence match.
+ */
+export interface PushTaskResult extends ActionResult {
+  source?: TaskSourceRef | null;
+  outcomeUnknown?: boolean;
+}
+
 export interface DispatchInput {
   repoRoot: string;
   intent: string;
@@ -1000,6 +1017,16 @@ export const api = {
       ...(requireStopped ? { requireStopped: true } : {}),
     }),
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
+  /**
+   * File this backlog task as an item in the tracker a configured source points at - the one
+   * outward write in the task-sources feature, and the only call here that PUBLISHES.
+   *
+   * The task stays in the backlog; what changes is that its row now carries the ref of the
+   * item created for it. See `PushTaskResult` for why the two failure readings are not
+   * interchangeable, and never retry one carrying `outcomeUnknown`.
+   */
+  pushTaskToSource: (id: string, sourceId: string) =>
+    post<PushTaskResult>(`/api/tasks/${encodeURIComponent(id)}/push`, { sourceId }),
 
   // --- Foreman (auto-responder) ---
   setForemanConfig: (cfg: ForemanConfigPatch) => put(`/api/foreman/config`, cfg),

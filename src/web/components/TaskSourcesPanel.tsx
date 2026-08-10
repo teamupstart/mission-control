@@ -25,11 +25,18 @@ import { Tooltip } from "./Tooltip.tsx";
 // The Task sources settings category: what pulls work INTO the backlog from systems that
 // already hold it.
 //
-// The copy here carries one claim the controls cannot: a source files backlog rows and
-// NOTHING else. It never dispatches an agent, never cuts a worktree and never types into
-// a pane, which is what makes turning one on a much smaller decision than turning on the
+// The copy here carries one claim the controls cannot: what a SWEEP does is file backlog
+// rows and nothing else. It never dispatches an agent, never cuts a worktree and never types
+// into a pane, which is what makes turning one on a much smaller decision than turning on the
 // Inspector or Shipping. Said out loud, because "a background thing that watches GitHub
 // and creates work" reads as far more alarming than it is.
+//
+// The claim is about the sweep rather than about the source because there is now one outward
+// verb too: a backlog task can be filed upstream as an issue from its own editor. That does
+// not weaken anything said above - it is per-task, it is a click a human makes, and it never
+// runs from the loop this panel switches on - but it does mean the copy cannot say a source
+// only ever reads. What it can say, and what matters for the consent this panel is asking
+// for, is that nothing here is unattended except the sweep.
 
 /** A source with no label of its own still needs something to be called. */
 function nameOf(src: TaskSourceInstance, kindLabel: string): string {
@@ -976,9 +983,11 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
     <section className="settings-section ts-panel" data-anchor="task-sources/sources">
       <p className="settings-hint settings-blurb">
         Pulls work <strong>into</strong> the backlog from systems that already hold it. A
-        source files backlog tasks and nothing else: <strong>it never dispatches an agent,
+        sweep files backlog tasks and nothing else: <strong>it never dispatches an agent,
         never cuts a worktree and never types into a session</strong>. What it files is a
-        list you read and delete from, and a task you delete stays deleted.
+        list you read and delete from, and a task you delete stays deleted. Work goes the
+        other way only when you send it: <strong>Create GitHub issue</strong>, in a backlog
+        task's own editor, files that one task upstream and links it here.
       </p>
       {/* The daemon has not answered. Said out loud rather than drawing an empty list,
           which is indistinguishable from "no sources are configured" - and would tell an

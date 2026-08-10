@@ -707,6 +707,37 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### A backlog task filed as a GitHub issue
+
+`e2e/.artifacts/push-task-to-github/` carries five frames from
+`specs/push-task-to-github.spec.ts`, the pair either side of the push being the ones the change
+exists for. `01-task-not-yet-filed.png` is the editor with **Create GitHub issue** in the
+provenance strip above the fields; `02-task-linked-to-issue.png` is the same strip after the
+click, now reading `Filed upstream as acme/demo-repo#123` - the first time `Task.source` is
+drawn anywhere in the dashboard, and the same rendering a swept-in task gets for free.
+
+`03-refusal-keeps-the-button.png` and `04-unknown-outcome-withdraws-it.png` are the two
+failures side by side, which is the point of capturing them: a refusal (`gh` said no, nothing
+was published) keeps a live button, and an unknown outcome (`gh` never reported back, the issue
+may exist) takes the button away rather than disabling it. That difference is a safety property
+and it is visible only as a picture of two banners. `05-no-eligible-source.png` is the hint that
+stands in for the action when no GitHub source is configured for the task's repo.
+
+The daemon in this spec runs against a faked `gh` (`MISSION_GH_BIN`), so no issue is ever
+created anywhere; the fake records the argv, which is where the `--label` per swept label and
+the repo the create ran in are asserted.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/push-task-to-github.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and
@@ -780,6 +811,7 @@ on the fake so that regression is caught rather than invoiced.
 | `HOME` | Claude transcripts derive from `homedir()`; without this the fake writes into the operator's real `~/.claude` |
 | `MISSION_WORKSPACE_DIRS` | repo discovery sees only the seeded fixture repo |
 | `MISSION_CLAUDE_BIN` / `CODEX` / `PI` | every agent launch hits a fake |
+| `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec |
 | `MISSION_POOL_REAP_MS=0` | the pool sweep is **not** scoped by `MISSION_HOME` - it reaps the shared treehouse worktree pool and will delete a sibling checkout's work |
 | `MISSION_POLL_MS=0` | terminal discovery is **not** scoped either - it walks every process on the machine and cards anything that looks like an agent |
 

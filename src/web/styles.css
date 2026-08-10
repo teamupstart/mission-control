@@ -22073,6 +22073,51 @@ span.line-run-prov {
   white-space: nowrap;
 }
 
+/* The task's link to an external tracker, in the same editor and the same banner shape as the
+   schedule provenance above it - but in the working blue rather than the schedule's purple. A
+   scheduled task that has also been filed upstream shows both at once, and two identical purple
+   banners stacked read as one thing said twice. */
+.source-provenance-note {
+  border-color: color-mix(in oklab, var(--working) 26%, var(--border));
+  background: color-mix(in oklab, var(--working) 6%, var(--panel-2));
+}
+.source-provenance-link {
+  color: var(--working);
+  text-decoration: none;
+}
+.source-provenance-link:hover {
+  text-decoration: underline;
+}
+/* The "no source can take this" state, which is where every task sits on a machine that has
+   never configured one - so it is a muted line rather than a second banner, and reads as a
+   footnote instead of as chrome the operator has to dismiss with their eyes on every open. */
+.source-provenance-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+/* The picker only exists with two or more sources for this repo, so it is sized to name one
+   rather than to fill the row the button needs. */
+.source-provenance-pick {
+  width: auto;
+  max-width: 190px;
+  font-size: 11px;
+}
+/* Both refusals land under the sentence they refuse, inside the flex row's text column, so the
+   banner grows downward instead of squeezing the button off the end. */
+.source-provenance-error,
+.source-provenance-warn {
+  display: block;
+  margin-top: 4px;
+}
+.source-provenance-error {
+  color: #e5877f;
+}
+.source-provenance-warn {
+  color: var(--attention);
+}
+
 @media (max-width: 1080px) {
   .rm-catalog-layout {
     grid-template-columns: 1fr;

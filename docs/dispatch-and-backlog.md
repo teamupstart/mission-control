@@ -245,6 +245,11 @@ daemon refuses (a task that is running, or one whose worktree will not reclaim) 
 form open with the reason in it.
 Clear the **Title** and it's derived afresh from the task text as you've now written it.
 
+Above the fields, the form also says where this task stands in relation to the world outside
+Mission Control: the issue it was [swept in from](#task-sources-pulling-work-into-the-backlog)
+if it came from a task source, or - for a task you wrote here - the one action that files it
+upstream as a [GitHub issue](#push-a-task-to-github).
+
 **A save writes only the fields you changed**, so it can't undo work you didn't touch: set a
 priority on the card while this form sits open on the same task and your save carries the
 title alone, leaving the priority where the card put it. And a kept edit is only kept while
@@ -508,13 +513,17 @@ Meanwhile work already exists somewhere: open issues, a triage board, an on-call
 **task source** reads one of those on a schedule and files what it finds into the
 [backlog](#dispatch-an-agent).
 
-**A source files backlog rows and nothing else.** It never dispatches an agent, never cuts
+**A sweep files backlog rows and nothing else.** It never dispatches an agent, never cuts
 a worktree, never resets a checkout and never types into a session. That is what makes
 turning one on a much smaller decision than [Inspector](inspector-and-shipping.md#inspector-automated-pr-review) or
 [Shipping](inspector-and-shipping.md#shipping-yolo-mode): the worst a broken source can do is put junk in a list you
 then read and delete. Auto-dispatching swept work is deliberately **not** a feature - it is
 a different risk class, and it would need its own gate (an allowlist, a rate limit, a dry
 run) of exactly the kind Foreman carries.
+
+Work goes the other way exactly once, and only when you send it: **[Push a task to
+GitHub](#push-a-task-to-github)**, from a backlog task's own editor. That is a per-task
+click, never something the sweep loop does - see there for why the asymmetry is deliberate.
 
 **[Settings](skills-and-settings.md#settings) → Task sources** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) configures
 them, as master-detail: a directory summarizing which sources are healthy, awaiting a current
@@ -562,6 +571,47 @@ so the agent's first prompt has the actual text rather than a number to go and l
 abandoned sweep is reported as an error on the source and shown in the panel - because an
 empty sweep and a broken one are otherwise indistinguishable, and the difference is a week
 of silence.
+
+### Push a task to GitHub
+
+The one thing that goes **outward**. Open a shelved task in [its own
+editor](#edit-a-shelved-task) and, above the fields, **Create GitHub issue** files it as an
+issue in the repo a configured GitHub source points at. The task **stays in the backlog**;
+what changes is that it now carries a link to the issue, shown in that same spot - which is
+also where a task that was *swept in* shows the issue it came from.
+
+The issue carries the task's **title**, its **text** as the body, and one label for each of
+the source's **Labels (any of)** filter labels - so the issue this files matches the filter
+that would find it, rather than creating work its own source cannot see. Nothing else about
+the task goes upstream: not its priority, not its repo path, not its status.
+
+The action appears only when a **GitHub Issues source is configured for that task's repo**;
+otherwise the spot says so, and names what to add. There is no sourceless fallback, because
+"which repository, with which credential" is exactly what a source already answers. Jira
+sources do **not** accept pushes - creating a Jira issue means a project key, an issue type
+and whatever fields that project marks required, which is a configuration surface of its own
+- so a Jira source is never offered here rather than failing when pressed.
+
+Three rules worth knowing before you press it:
+
+- **A label that does not exist on the repo is a hard failure.** `gh` refuses the whole
+  create, and its own message - naming the label - is printed beside the button, which stays
+  live. Nothing was published, so fixing the label or the filter and pressing again cannot
+  duplicate anything.
+- **The issue is never filed twice by the sweep that could see it.** The push writes the
+  source's [seen ledger](#a-task-you-delete-stays-deleted) row and the task's link in one
+  transaction, so the next sweep of that source skips the issue it just created. As with
+  everything in that ledger it outlives the task: push a task, delete it, and no sweep files
+  it back.
+- **"Check GitHub before retrying" means check GitHub before retrying.** If `gh` never
+  reports back - a timeout, a killed process - the issue may exist and there is no way to
+  tell from here. That answer says so and **removes** the button rather than disabling it,
+  because the only safe next move is to look. A press that was merely *refused* is the
+  opposite case and keeps its button. The two are told apart by the daemon, not by reading
+  the sentence.
+
+Save your edits first: the issue is composed from the task **as the daemon holds it**, so
+the button is disabled (and says why) while the form has unsaved changes.
 
 ### Jira
 
@@ -679,7 +729,9 @@ The way back is deliberate: **Forget seen items** on that source clears its ledg
 next sweep files everything again. Removing a source clears it too, so re-adding one
 doesn't leave it permanently silent.
 
-Two things v1 deliberately does not do: it does not **re-sync** an item that changes
-upstream (a sweep files new work; it does not reconcile old work, which has to decide what
-happens when a human has edited the task since), and it never **writes back** to the
-external system.
+One thing a source deliberately does not do: it does not **re-sync** an item that changes
+upstream. A sweep files new work; it does not reconcile old work, which would have to decide
+what happens when a human has edited the task since. The only write that leaves this machine
+is the one you ask for by name - [Push a task to GitHub](#push-a-task-to-github) - and it
+creates an item, once, and then leaves it alone. Closing an issue when its task is marked
+done is the same reconciliation problem in the other direction, and is not a feature.

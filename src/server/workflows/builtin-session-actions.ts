@@ -4,7 +4,7 @@ import {
   sessionActionNameFromMarkdown,
 } from "@shared/workflow.ts";
 import type { SessionAction, SessionActionCompletion } from "@shared/workflow.ts";
-import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
+import { PULL_REQUEST_SKILL, RETRO_SKILL } from "@shared/skills.ts";
 import { BUILTIN_SESSION_ACTION_SOURCES } from "./builtin-session-actions.generated.ts";
 
 /**
@@ -44,6 +44,14 @@ const BUILTIN_SESSION_ACTION_CONTRACTS: Record<
     requiredSkillId: PULL_REQUEST_SKILL,
     completion: { kind: "pull_request" },
   },
+  // The retro's product is a commit under `.agents/memory`, so `repo_commit` is the proof.
+  // `session_turn` would report a retrospective that talked about three memories and wrote
+  // none of them as finished, which is the exact failure the completion contract exists to
+  // catch.
+  retro: {
+    requiredSkillId: RETRO_SKILL,
+    completion: { kind: "repo_commit" },
+  },
 };
 
 function builtinSessionAction(source: { slug: string; promptMarkdown: string }): SessionAction {
@@ -75,3 +83,12 @@ export const BUILTIN_SESSION_ACTIONS: readonly SessionAction[] =
 
 /** The shipped Pull Request action, by the id Phase 4's built-in workflow will name. */
 export const PULL_REQUEST_SESSION_ACTION_ID = builtinSessionActionId("pull-request");
+
+/**
+ * The shipped Retro action, by the id the retro delivery route resolves.
+ *
+ * Named here rather than spelled at the call site because the route delivers this ONE action
+ * on request - there is no operator selection in front of it - so a typo would be a route
+ * that 404s at runtime rather than a build that fails.
+ */
+export const RETRO_SESSION_ACTION_ID = builtinSessionActionId("retro");

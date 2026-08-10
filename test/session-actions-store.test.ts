@@ -273,6 +273,7 @@ function draftWithAction(sessionActionId: string): string {
 const unrunnable = new WorkflowStore(db, [], [], [], {
   session_turn: { available: true, unavailableReason: null },
   pull_request: { available: false, unavailableReason: "not in this build" },
+  repo_commit: { available: true, unavailableReason: null },
 });
 
 test("publishing an action graph is refused while its ADAPTER has no runtime here", () => {
@@ -339,6 +340,7 @@ test("an action whose adapter IS available publishes, and freezes its snapshot",
 const runnable = new WorkflowStore(db, [], [], [], {
   session_turn: { available: true, unavailableReason: null },
   pull_request: { available: true, unavailableReason: null },
+  repo_commit: { available: true, unavailableReason: null },
 });
 
 test("Publish replaces the live reference with a complete, exact snapshot", () => {

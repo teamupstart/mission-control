@@ -77,10 +77,27 @@ export type RenderedSessionAction =
   | { ok: true; payload: string; payloadSha256: string }
   | { ok: false; bytes: number; limit: number };
 
+/**
+ * Who asked for this action, as the envelope will say it.
+ *
+ * A discriminated union rather than three optional fields, because the two callers have
+ * genuinely different provenance and the envelope must not invent the half it lacks. A run
+ * delivers on behalf of a published version and names it; the retro route delivers because a
+ * human clicked, and there is no workflow, no version and no run to name. Printing
+ * `Run: unknown` there would be a fact the packet asserts and nothing backs.
+ *
+ * The `session` arm names the RECEIVING session's own id, which is not decoration: an action
+ * whose instructions send the session back through its own transcript
+ * (`GET /api/sessions/:id/transcript`) has no other way to learn that id. The prompt Markdown
+ * cannot carry it - it is frozen bytes, never a template - so the envelope is the only place
+ * a per-delivery fact can live.
+ */
+export type SessionActionPacketOrigin =
+  | { kind: "run"; workflowName: string; workflowVersion: number; runId: string }
+  | { kind: "session"; sessionId: string };
+
 export interface SessionActionPacketInput {
-  workflowName: string;
-  workflowVersion: number;
-  runId: string;
+  origin: SessionActionPacketOrigin;
   /** The snapshot's name, for the envelope. Never re-read from the live library. */
   actionName: string;
   /** The snapshot's exact prompt Markdown. */
@@ -383,8 +400,12 @@ export function renderUnchangedEvidenceNudge(
 export function renderSessionAction(input: SessionActionPacketInput): RenderedSessionAction {
   const header = [
     `Mission Control session action: ${sanitizeWorkflowFeedback(input.actionName)}`,
-    `Workflow: ${sanitizeWorkflowFeedback(input.workflowName)} v${input.workflowVersion}`,
-    `Run: ${input.runId}`,
+    ...(input.origin.kind === "run"
+      ? [
+        `Workflow: ${sanitizeWorkflowFeedback(input.origin.workflowName)} v${input.origin.workflowVersion}`,
+        `Run: ${input.origin.runId}`,
+      ]
+      : [`Session: ${sanitizeWorkflowFeedback(input.origin.sessionId)}`]),
     "",
   ];
   // The skill invocation leads, exactly as the PR handoff's does, so the harness resolves it

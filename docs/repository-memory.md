@@ -93,7 +93,40 @@ A session working on some unrelated feature never touches any of this: the refer
 would be an unrelated edit in its diff, and a repo without the line is not broken, it is a
 repo with no memories yet.
 
-> The retro itself, the dashboard offer that invites it, and the writing half of this
-> convention arrive with the retro feature; see
-> [the plan](plans/retro-repo-memory/plan.md). What ships today is the reading half - MC
-> understands the convention, loads the index into its review prompts, and points pi at it.
+## The retro
+
+The procedure is the [**retro** skill](skills-and-settings.md#skills-every-session-mixed-reload-behavior)
+(`skills/retro/SKILL.md`), which is opt-in and **must be switched on** before a retro can run.
+It tells the session to read itself back from
+`GET /api/sessions/:id/transcript` rather than from recollection, to look for the corrections
+a human had to type and the wrong paths a single fact would have prevented, to propose at most
+three memories through the `request_plan_decisions` MCP tool, and to commit only what came
+back approved. A dismissal writes nothing at all.
+
+Mission Control's half is one route:
+
+```sh
+curl -X POST http://127.0.0.1:7317/api/sessions/<session-id>/retro
+```
+
+What it does depends on whether that session can still be typed into, and the response says
+which happened:
+
+| Response | When | What happened |
+|---|---|---|
+| `{"kind":"delivered", ...}` | the session is live | The shipped **Retro** session action was rendered and typed into it. The session that did the work runs its own retrospective, because it already holds the context a fresh one would have to reconstruct from transcript bytes. |
+| `{"kind":"dispatched","task":{...}}` | the session cannot receive a turn | A retro task is filed in the backlog against that session's repository, naming the session, its branch and its pull request. Dispatch it when you want it. |
+| `409` | the retro skill is off, or nothing types | The refusal names the reason. Nothing is written into any session. |
+
+The delivered packet carries the receiving session's own id, which is how the skill knows
+which transcript to read - the action's prompt is frozen bytes and cannot carry a per-delivery
+fact.
+
+Two properties hold on both paths. **The daemon never commits**: the commit is an agent turn,
+on a branch a human reviews. And **nothing is ever typed autonomously** - the route is a
+request, and phase 3's dashboard affordances are what make it a click.
+
+Where a workflow stage runs the Retro action rather than a human asking for one, its
+completion is `repo_commit`: the action is finished when the checkout's HEAD is a commit made
+after the session picked the packet up. A retrospective that discussed three memories and
+wrote none of them does not complete.

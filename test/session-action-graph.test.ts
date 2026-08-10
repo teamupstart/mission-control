@@ -229,6 +229,7 @@ test("the publish gate is per ADAPTER, and says why on the node", () => {
     sessionActionCompletionCapabilities: {
       session_turn: { available: true, unavailableReason: null },
       pull_request: { available: false, unavailableReason: "This build cannot be published." },
+      repo_commit: { available: true, unavailableReason: null },
     },
   });
   assert.equal(result.valid, false);

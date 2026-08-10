@@ -60,7 +60,7 @@ const decide = (
     pickedUpAt: 2,
     settledAt: 3,
     now: 5_000,
-    repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: HEAD },
+    repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: HEAD, headCommittedAt: 4_000 },
     adoptedPullRequests: adopted,
     capturedHeadOid: null,
     ...patch,
@@ -205,6 +205,7 @@ test("a linked worktree and its main checkout are ONE repository", () => {
       root: "/worktrees/abc",
       branch: BRANCH,
       headOid: HEAD,
+      headCommittedAt: 4_000,
     },
   });
   assert.equal(decision.kind, "complete", "a worktree's pull request must be its repository's");
@@ -245,14 +246,14 @@ test("a repository that could not be read waits rather than deciding anything", 
 
 test("a detached HEAD has no branch to match a pull request against", () => {
   assert.deepEqual(
-    decide([pr()], { repository: { repositoryId: REPO, root: REPO, branch: null, headOid: HEAD } }),
+    decide([pr()], { repository: { repositoryId: REPO, root: REPO, branch: null, headOid: HEAD, headCommittedAt: 4_000 } }),
     { kind: "waiting", reason: "awaiting_proof" },
   );
 });
 
 test("an unborn branch has no commit to prove", () => {
   assert.deepEqual(
-    decide([pr()], { repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: null } }),
+    decide([pr()], { repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: null, headCommittedAt: null } }),
     { kind: "waiting", reason: "awaiting_proof" },
   );
 });
@@ -291,7 +292,16 @@ test("a captured head, not the moving local head, is what a re-check proves", ()
   // action would wait forever while the head kept moving.
   const decision = decide(
     [pr({ observedHeadOid: OTHER_HEAD })],
-    { capturedHeadOid: OTHER_HEAD, repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: HEAD } },
+    {
+      capturedHeadOid: OTHER_HEAD,
+      repository: {
+        repositoryId: REPO,
+        root: REPO,
+        branch: BRANCH,
+        headOid: HEAD,
+        headCommittedAt: 4_000,
+      },
+    },
   );
   assert.equal(decision.kind, "complete");
   if (decision.kind !== "complete") return;

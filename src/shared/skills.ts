@@ -50,6 +50,17 @@ export const SKILL_DIR_PREFIX = SKILL_DIR_PREFIXES[0];
 /** The shipping skill an Inspector-gated workflow requires for its PR handoff. */
 export const PULL_REQUEST_SKILL = "pull-request";
 
+/**
+ * The skill the retro session action requires: the retrospective procedure itself.
+ *
+ * The id is the SKILL DIRECTORY name (`skills/retro`), which is what the catalog keys on
+ * and what the reconciler links as `mission-retro`. Durable for the same reason
+ * `PULL_REQUEST_SKILL` is: a required-skill id reaches the session-action contract table
+ * and gates delivery, so renaming the directory silently stops the action from ever
+ * sending.
+ */
+export const RETRO_SKILL = "retro";
+
 /** The directory name a catalog id gets when we install it fresh. */
 export function missionSkillDirName(id: string): string {
   return `${SKILL_DIR_PREFIX}${id}`;

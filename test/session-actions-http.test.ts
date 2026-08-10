@@ -224,11 +224,14 @@ test("the capabilities route serves the daemon's OWN registry, before the id rou
   if (!parsed.success) return;
   // The client never invents support: whatever this says is what the runtime will do, and a
   // published version naming an unavailable adapter is refused at Publish for the same reason.
-  // Both adapters ship now, and the shape that carries a refusal is still here rather than
-  // deleted - it is what a future adapter arrives unavailable through.
+  // Every shipped adapter runs now, and the shape that carries a refusal is still here rather
+  // than deleted - it is what a future adapter arrives unavailable through.
+  //
+  // The ORDER is asserted too, and it is the append-only tuple's: a capability list served in
+  // some other order would let a browser that reads it positionally offer the wrong proof.
   assert.deepEqual(
     parsed.data.completions.map((item) => [item.kind, item.available]),
-    [["session_turn", true], ["pull_request", true]],
+    [["session_turn", true], ["pull_request", true], ["repo_commit", true]],
   );
   for (const completion of parsed.data.completions) {
     assert.equal(

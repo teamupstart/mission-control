@@ -404,8 +404,14 @@ export function personaUpstreamLabel(state: PersonaUpstreamState): string | null
  * A completion kind names a CLOSED, server-owned adapter and never a script:
  *  - `session_turn`  - verified pickup followed by a settled idle turn.
  *  - `pull_request`  - the same turn boundary plus durable matching PR provenance.
+ *  - `repo_commit`   - the same turn boundary plus a commit in the bound checkout, made after
+ *                      the session was proven to have read the instruction.
  */
-export const SESSION_ACTION_COMPLETION_KINDS = ["session_turn", "pull_request"] as const;
+export const SESSION_ACTION_COMPLETION_KINDS = [
+  "session_turn",
+  "pull_request",
+  "repo_commit",
+] as const;
 export type SessionActionCompletionKind = (typeof SESSION_ACTION_COMPLETION_KINDS)[number];
 
 /**
@@ -414,7 +420,8 @@ export type SessionActionCompletionKind = (typeof SESSION_ACTION_COMPLETION_KIND
  */
 export type SessionActionCompletion =
   | { kind: "session_turn" }
-  | { kind: "pull_request" };
+  | { kind: "pull_request" }
+  | { kind: "repo_commit" };
 
 export interface SessionAction {
   id: SessionActionId;
@@ -607,6 +614,12 @@ export const SESSION_ACTION_COMPLETION_CAPABILITIES: Record<
     kind: "pull_request",
     available: true,
     label: "Pull request is opened and verified",
+    unavailableReason: null,
+  },
+  repo_commit: {
+    kind: "repo_commit",
+    available: true,
+    label: "A commit lands in the checkout",
     unavailableReason: null,
   },
 };

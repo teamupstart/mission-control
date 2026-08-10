@@ -56,7 +56,11 @@ export function requiredSkillCommand(
   if (!config.enabled || config.skills[id] !== true) {
     return {
       ok: false,
-      message: `Enable Skills and the ${id} skill before preparing this pull request.`,
+      // "this instruction", not "this pull request". This function gates every skill-backed
+      // thing the daemon types into a session - the PR handoff was merely the first - and a
+      // retro refused because its skill is off would otherwise tell an operator to enable it
+      // "before preparing this pull request", which names work nobody asked for.
+      message: `Enable Skills and the ${id} skill before sending this instruction.`,
     };
   }
 
@@ -92,7 +96,7 @@ export function requiredSkillCommand(
     if (ack < config.generation && !startedCurrent) {
       return {
         ok: false,
-        message: `Wait for ${AGENT_IDENTITY[session.agent].label} to reload its skills before preparing this pull request.`,
+        message: `Wait for ${AGENT_IDENTITY[session.agent].label} to reload its skills before sending this instruction.`,
       };
     }
   }

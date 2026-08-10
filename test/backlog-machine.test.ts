@@ -458,6 +458,55 @@ test("a pane-less agent has nowhere to be typed at", () => {
   assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
 });
 
+// ---- who consented to be given a whole task ------------------------------------------
+//
+// The strictest clause, and the only one that is about CONSENT rather than readiness.
+// Everywhere else in Foreman a non-null invite is enough, because everything else is help
+// with work the session is already doing. Assignment starts something new, so approved
+// decision 2 reserves it for the sessions Mission Control created.
+
+test("the autopilot only assigns into sessions Mission Control created", () => {
+  // One table, because the interesting fact is the BOUNDARY between "operator" and the
+  // other two non-null values - a matrix is the only shape that shows it.
+  const table = [
+    { invite: "sdk", free: true },
+    { invite: "dispatch", free: true },
+    { invite: "operator", free: false },
+    { invite: null, free: false },
+  ] as const;
+  for (const { invite, free } of table) {
+    const s = mkSession({ foremanInvite: invite });
+    assert.equal(
+      agentIsFree(s, [s], [], CFG, NOW),
+      free,
+      `foremanInvite ${String(invite)} should ${free ? "" : "not "}be assignable`,
+    );
+  }
+});
+
+test("an operator invite is help with current work, not consent to a new task", () => {
+  // The distinction is invisible in `agentIsFree` alone, so it is stated where it bites:
+  // the same session that Foreman WILL triage and follow PRs in is one the autopilot must
+  // still refuse. Inviting Foreman to help must never drop a fresh task into your pane.
+  const helped = mkSession({ foremanInvite: "operator" });
+  assert.equal(agentIsFree(helped, [helped], [], CFG, NOW), false);
+  const a = decide({
+    tasks: [mkTask()],
+    sessions: [helped],
+    plan: mkPlan([[mkTask().id, []]]),
+  });
+  assert.notEqual(a.kind, "assign", "an operator-invited session is never selected for a task");
+});
+
+test("an uninvited session still counts toward the ceiling", () => {
+  // `activeAgentCount` deliberately keeps counting it: the cap is a claim about machine
+  // load, not about participation. A personal Claude chat is still a Claude chat burning
+  // this laptop's CPU, so it occupies a slot even though nothing may be assigned into it.
+  const personal = mkSession({ id: "personal", foremanInvite: null });
+  const ours = mkSession({ id: "ours", state: "working" });
+  assert.equal(activeAgentCount([personal, ours], []), 2);
+});
+
 // ---- work still out for review -------------------------------------------------------
 //
 // The gap this closes is the one every other clause above misses by design. An agent

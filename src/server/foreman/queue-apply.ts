@@ -200,6 +200,15 @@ export async function queueSendStillValid(
     const sessions = await actions.sessions();
     const fresh = resolveLiveSession(sessions, obs.noteKey);
     if (!fresh) return { ok: false, why: "the session is gone" };
+    // Two separate claims, re-asked on the FRESHEST snapshot rather than on the one the
+    // decision was made from: capability (can we drive it) and consent (were we invited).
+    // The invite half matters here specifically because it can be revoked mid-verify - a
+    // human hitting Withdraw while a send is being checked is exactly the moment the send
+    // must not land - and because a noteKey re-resolve can hand back a DIFFERENT session
+    // than the one the decision saw.
+    if (fresh.foremanInvite === null) {
+      return { ok: false, why: "Foreman is not invited into this session" };
+    }
     if (!foremanAutomationAuthorized(fresh)) {
       return { ok: false, why: "the session is not authorized for Foreman automation" };
     }

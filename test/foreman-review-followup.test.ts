@@ -158,6 +158,46 @@ test("findings and a red CI together are reported together", () => {
 
 // ---- what stays quiet ----
 
+test("an UNINVITED session is never followed up - the personal-chat regression", () => {
+  // THE bug this whole plan exists for. This path iterated every session with an open PR
+  // and typed "create a PR" / "CI is red" into personal Claude chats, because a
+  // machine-scoped hook made them look like sessions Mission Control had launched. The
+  // subject below is otherwise a perfect nudge candidate - open findings, red CI, idle,
+  // hooked, a pane - and the invite is the only thing standing between it and a nudge.
+  const personal = mkSession({
+    foremanInvite: null,
+    inspector: inspector({ open: 2 }),
+    prChecks: "failing",
+  });
+  const d = decide({ session: personal });
+  assert.equal(d.kind, "skip");
+  // C7: phase 3 reads this concept, so the reason names it.
+  if (d.kind === "skip") assert.match(d.why, /not invited/);
+
+  // The same session, invited, IS nudged - so the refusal above is the invite talking and
+  // not some other gate quietly holding.
+  assert.equal(decide({ session: { ...personal, foremanInvite: "operator" } }).kind, "nudge");
+});
+
+test("an operator invite is enough for PR follow-through", () => {
+  // Approved decision 2: an operator invite grants triage, wrapup and PR follow-through.
+  // Only the backlog autopilot demands more (see backlog-machine.test.ts).
+  for (const invite of ["sdk", "dispatch", "operator"] as const) {
+    const d = decide({ session: mkSession({ foremanInvite: invite, prChecks: "failing" }) });
+    assert.equal(d.kind, "nudge", `${invite} should be followed up`);
+  }
+});
+
+test("the invite refusal outranks every other reason a session cannot be nudged", () => {
+  // Ordered first among the gates, above even the capability check, so the log says the
+  // true thing about the session that matters most. A hookless, incapable (pi declares no
+  // work queue), uninvited session reports the invite.
+  const d = decide({
+    session: mkSession({ foremanInvite: null, agent: "pi", hooksSeen: false }),
+  });
+  assert.deepEqual(d, { kind: "skip", why: "Foreman is not invited into this session" });
+});
+
 test("the trigger off is the first and cheapest skip", () => {
   const d = decide({
     session: mkSession({ inspector: inspector({ open: 3 }) }),

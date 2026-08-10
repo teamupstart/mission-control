@@ -2212,6 +2212,11 @@ async function pendingStillLive(
     const [sessions, reviews] = await Promise.all([client.sessions(), client.reviews()]);
     const fresh = sessions.find((s) => s.id === sessionId);
     if (!fresh || reportBucket(fresh, sessions) !== "needs-you") return false;
+    // The triage twin of `queueSendStillValid`'s invite re-check, and it belongs on the
+    // same reasoning: the selection gate ran minutes ago, a review is slow, and Withdraw
+    // is one click whose entire meaning is "stop acting in here". Re-asked on the fresh
+    // snapshot so the click lands on the act already in flight, not merely the next one.
+    if (fresh.foremanInvite === null) return false;
     if (classifyPending(fresh, reviews).marker !== pending.marker) return false;
     const note = await client.note(sessionId).catch(() => null);
     if (note?.handledMarker === pending.marker) return false;

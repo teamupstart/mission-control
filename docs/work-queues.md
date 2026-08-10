@@ -223,9 +223,18 @@ the dispatch model order, which [Settings → Harnesses](dispatch-and-backlog.md
 full - including what this field does and does not persist. If an autopilot-launched agent
 isn't on the model you expected, that list is where to start.
 
+**The autopilot only assigns into sessions Mission Control created** - embedded ones and
+ones it dispatched. That is a stricter bar than the rest of Foreman applies: everything else
+Foreman does needs only [an invite](foreman.md#which-sessions-foreman-may-act-in), while
+assignment hands a session a whole new task nobody in it asked for, so an *operator* invite
+deliberately does not grant it. Dragging a card onto an agent yourself is unaffected, as
+always - you picked that pane, and this loop has to guess.
+
 **Max agents counts every live agent on the machine**, not just the ones Mission launched -
 it's a statement about your machine's load, and a count that ignored the six sessions you
-started by hand wouldn't be one. It bounds *autopilot* only: it never refuses a dispatch
+started by hand wouldn't be one. Uninvited sessions are counted here too, for the same
+reason: a personal chat still burns the machine's CPU even though nothing may be assigned
+into it. It bounds *autopilot* only: it never refuses a dispatch
 **you** clicked, because blocking a button you pressed to protect a background scheduler's
 budget is the worse surprise. A backlog item's
 [on/off switch](dispatch-and-backlog.md#hold-a-backlog-item-back) is scoped the same way - it holds the machine

@@ -447,6 +447,83 @@ test("tickTargets ignores exited sessions and includes a Codex queue", () => {
   );
 });
 
+// ---- the invite gate: both halves of the selector, and the badge that must agree ----
+
+test("tickTargets skips an UNINVITED session on both halves", () => {
+  // The whole point of the invite model, at the selector that decides what the worker is
+  // even asked about. Both halves, because they gate separately and a session that slips
+  // through either one is a personal chat Foreman is about to type into.
+  //
+  // Each uninvited session is paired with its invited twin, identical but for the invite,
+  // so a green assertion cannot come from the shape being unselectable for some other
+  // reason - the twin proves the shape reaches the selector.
+  const needsYou = mkSession({
+    id: "personal-needs-you",
+    foremanInvite: null,
+    pendingReviews: 1,
+  });
+  const needsYouTwin = mkSession({ id: "ours-needs-you", pendingReviews: 1 });
+  const openWork = mkSession({
+    id: "personal-open-work",
+    foremanInvite: null,
+    queue: mkSummary({ openCount: 1 }),
+  });
+  const openWorkTwin = mkSession({ id: "ours-open-work", queue: mkSummary({ openCount: 1 }) });
+
+  assert.deepEqual(
+    tickTargets([needsYou, needsYouTwin, openWork, openWorkTwin], ["drain"]).map((s) => s.id),
+    ["ours-needs-you", "ours-open-work"],
+  );
+});
+
+test("tickTargets skips an uninvited HOOKLESS queue - the one shape the rest half exists for", () => {
+  // The rest half deliberately does not call `foremanTriageAuthorized`, so that hookless
+  // sessions with open work stay reachable for escalation. That exemption is exactly where
+  // an invite check could have been forgotten, and this pins that it was not: the same
+  // session the hookless test above selects is dropped once its invite goes.
+  const s = mkSession({
+    id: "hookless",
+    foremanInvite: null,
+    instrumented: false,
+    hooksSeen: false,
+    queue: mkSummary({ openCount: 1 }),
+  });
+  assert.deepEqual(tickTargets([s], ["drain"]), []);
+});
+
+test("tickTargets skips an uninvited PROMPTED wrap-up candidate", () => {
+  // The third way into the rest half, and the one that reaches a session with NO work
+  // queue at all - which is exactly the shape of a personal chat. Without this the
+  // prompted trigger alone would keep waking Foreman for every hooked, idle session on
+  // the machine that ever took a prompt.
+  const s = mkSession({
+    id: "personal-prompted",
+    foremanInvite: null,
+    queue: null,
+    goal: mkIntent(),
+  });
+  const twin = mkSession({ id: "ours-prompted", queue: null, goal: mkIntent() });
+  assert.deepEqual(
+    tickTargets([s, twin], ["prompted"]).map((t) => t.id),
+    ["ours-prompted"],
+  );
+});
+
+test("decideQueueTick will not triage an uninvited session's question", () => {
+  // The machine's own copy of the gate, independent of the selector that feeds it: an
+  // unanswered question on an uninvited session is not Foreman's to answer. Both call
+  // sites go through `foremanTriageAuthorized`, so this is what pins that they agree.
+  assert.notEqual(
+    tick({ session: { foremanInvite: null }, bucket: "needs-you", items: [mkItem()] }).kind,
+    "triage",
+  );
+  assert.equal(
+    tick({ bucket: "needs-you", items: [mkItem()] }).kind,
+    "triage",
+    "the same shape, invited, is the triage this refusal is withholding",
+  );
+});
+
 // ---- decideQueueTick: the precedence, in order ----
 
 function exitedTick(items: WorkItem[]) {

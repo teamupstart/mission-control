@@ -314,6 +314,31 @@ async function parseBody<S extends ZodTypeAny>(
   return { ok: true, data: parsed.data };
 }
 
+/** What a refused Foreman write says, on every route that refuses one. */
+const FOREMAN_UNINVITED = "Foreman is not invited into this session";
+
+/**
+ * The daemon's half of the Foreman invite rule: may this actor type into this session?
+ *
+ * A BACKSTOP, deliberately redundant with the worker's own selection gates. The worker
+ * decides what to act on from a `/api/sessions` snapshot, so a stale snapshot, an invite
+ * withdrawn mid-pass, or simply a worker built before this rule existed can all produce a
+ * request the worker itself would no longer make. Those all end at the same place - text
+ * in somebody's pane - and that is the failure this whole plan exists to prevent, so the
+ * daemon re-asks the question at the boundary it owns rather than trusting the caller to
+ * have asked it. The worker never reads SQLite; the daemon always does.
+ *
+ * Only the actor-marked routes can be gated, and only `"foreman"` is gated on them.
+ * `"human"` and `"workflow"` are other writers with their own authorization, and a human
+ * typing into their own session is the case this must never touch. Routes carrying no
+ * actor marker at all - the note write, the queue-state writes - stay ungated on purpose:
+ * they are shared with the dashboard and are bookkeeping downstream of a typing act these
+ * gates already refused, so widening their schemas would buy nothing.
+ */
+function foremanWriteRefused(session: Session, by: "human" | "foreman" | "workflow"): boolean {
+  return by === "foreman" && session.foremanInvite === null;
+}
+
 /**
  * Resolve an item-scoped queue route: the `:id` session must exist, and `:itemId`
  * must belong to ITS queue.
@@ -2137,6 +2162,19 @@ export function buildApp(
   app.post("/api/reviews/:id/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
+    // The fourth Foreman-marked write, and the one the phase plan left as a judgment call
+    // on whether its session could be resolved cheaply. It can: a review record names its
+    // `sessionId`, so this is two map lookups and no I/O.
+    //
+    // Refused only on a POSITIVE answer - the session is here and uninvited. A review
+    // whose session has been evicted resolves normally: there is no pane left to type
+    // into, so this stops being a typing act and becomes the bookkeeping that settles a
+    // dangling row, and refusing it would strand the review instead of protecting anyone.
+    const owner = registry.getReview(c.req.param("id"))?.sessionId;
+    const ownerSession = owner ? registry.getSession(owner) : undefined;
+    if (ownerSession && foremanWriteRefused(ownerSession, parsed.data.by)) {
+      return c.json({ error: FOREMAN_UNINVITED }, 403);
+    }
     try {
       const updated = reviews.resolve(
         c.req.param("id"),
@@ -2159,6 +2197,15 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
+    // The twin of /inject's backstop, and the reason `origin` exists on this schema at
+    // all: the Foreman worker splits one delivery across the two routes, sending a
+    // SUBMITTED answer through /inject and an unsubmitted one - a draft the model asked to
+    // leave in the composer - through here. Gating only the submitted half would leave
+    // text appearing in an uninvited session's composer, which is the same intrusion
+    // arriving one Enter short.
+    if (foremanWriteRefused(session, parsed.data.origin)) {
+      return c.json({ error: FOREMAN_UNINVITED }, 403);
+    }
     if (parsed.data.submit && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       return c.json(result, result.ok ? 200 : 409);
@@ -2199,6 +2246,12 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SelectOptionSchema);
     if (!parsed.ok) return parsed.res;
+    // 403 rather than this route's usual 409: a 409 says the pane declined and invites a
+    // retry when the screen settles, and this refusal is neither about the pane nor going
+    // to change on one. Nothing is typed and no ask is retired.
+    if (foremanWriteRefused(session, parsed.data.by)) {
+      return c.json({ ok: false as const, error: FOREMAN_UNINVITED }, 403);
+    }
     // Held before either branch delivers, because both clear the ask they answered - see
     // `retireForemanNoteForDialog`.
     const asked = activePaneDialog(session);
@@ -2233,6 +2286,10 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SubmitOptionsSchema);
     if (!parsed.ok) return parsed.res;
+    // See `/select-option`: 403, before the shape check, before anything is ticked.
+    if (foremanWriteRefused(session, parsed.data.by)) {
+      return c.json({ ok: false as const, error: FOREMAN_UNINVITED }, 403);
+    }
     const { options, answers } = parsed.data;
     // See the same line in `/select-option`: the ask is gone once it has been answered.
     const asked = activePaneDialog(session);
@@ -2335,6 +2392,12 @@ export function buildApp(
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
+    // Before any delivery path, and carrying `pasted` for the same reason the 400 above
+    // does: a refusal here is positive evidence that nothing reached the pane, which is
+    // the one state the worker may cleanly re-queue from rather than escalate.
+    if (foremanWriteRefused(session, parsed.data.origin)) {
+      return c.json({ error: FOREMAN_UNINVITED, pasted: false }, 403);
+    }
     if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       return c.json(result, result.ok ? 200 : 409);

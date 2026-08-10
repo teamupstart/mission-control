@@ -205,8 +205,10 @@ export function tickTargets(
    */
   triggers: readonly WrapupTrigger[],
 ): Session[] {
-  // Both halves gate on the `workQueue` capability rather than on an agent id. Needs-you
-  // additionally requires the authorization promised by that harness's hook scope.
+  // Both halves gate on the `workQueue` capability rather than on an agent id, and both
+  // require an invite - Foreman only looks at sessions it was asked into. Needs-you
+  // additionally requires the authorization promised by that harness's hook scope, which
+  // `foremanTriageAuthorized` folds together with the invite check.
   const needsYou = sessions
     .filter((s) => foremanTriageAuthorized(s, sessions) && reportBucket(s, sessions) === "needs-you")
     .sort((a, b) => waitedSince(a) - waitedSince(b));
@@ -214,6 +216,13 @@ export function tickTargets(
   const rest = sessions.filter(
     (s) =>
       capabilitiesFor(s.agent).workQueue &&
+      // The invite conjunct is spelled out here rather than shared with the half above,
+      // because the two halves cannot share one call site: this half must stay reachable
+      // for HOOKLESS sessions with open work (pinned by "hookless sessions with open work
+      // are still selected"), and `foremanTriageAuthorized` refuses exactly those. Same
+      // question, different authorization bar - so the invite half is duplicated and the
+      // hook half is not.
+      s.foremanInvite !== null &&
       s.state !== "exited" &&
       !seen.has(s.id) &&
       (queueWantsATick(s, triggers) || promptedWantsATick(s, triggers)),

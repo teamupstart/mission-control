@@ -24,6 +24,7 @@ import {
   isVerdictNode,
   verdictAuthor,
 } from "@shared/workflow.ts";
+import { envVar } from "../config.ts";
 import { llmRunner } from "../llm/index.ts";
 import { runStructured } from "../llm/structured.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
@@ -47,7 +48,24 @@ import { killLiveCheckGroups } from "./check-group.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
-const PERSONA_TIMEOUT_MS = 120_000;
+/**
+ * How long ONE Persona call may run before the runner kills it and the attempt is recorded
+ * as an infrastructure failure.
+ *
+ * Ten minutes, matching the Inspector's `INSPECTOR_TIMEOUT_MS`, because the two do the same
+ * shape of work: read a context packet built from a diff and a transcript window, and answer
+ * with a structured verdict. The two minutes this used to allow were sized for a much smaller
+ * prompt, and a Persona reading a real submission routinely ran past it - the run then burned
+ * `MAX_INFRA_ATTEMPTS` full-length calls before failing the submission, so the cost of the
+ * budget being too SMALL is three timeouts rather than one.
+ *
+ * Passed explicitly rather than inherited, so `claude-cli.ts`'s own default never applies
+ * here; `envVar` is what an operator turns when a model or a packet size moves, following the
+ * `INSPECTOR_TIMEOUT_MS` precedent. The ceiling is real and not just a formality: the shared
+ * review budget is three slots wide (`llm/review-scheduler.ts`), so a wedged call holds one
+ * of them for the whole duration and everything queued behind it waits.
+ */
+const PERSONA_TIMEOUT_MS = Number(envVar("WORKFLOW_PERSONA_TIMEOUT_MS") ?? 600_000);
 const RETRY_BASE_MS = 1_000;
 
 /**

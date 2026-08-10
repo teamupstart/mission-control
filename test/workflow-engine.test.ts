@@ -325,6 +325,59 @@ test("one submission fans out to every submitted route and replay adds no duplic
   store.cancelRun("run-fan-out", "test_cleanup", 30);
 });
 
+test("a Persona call carries its own timeout rather than inheriting the runner's default", async () => {
+  const budgetGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p", kind: "persona", persona: persona("budget", "Budget", "claude", "review"), position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("budget", budgetGraph);
+  const budgets: Array<number | undefined> = [];
+  const fake: LlmRunner = {
+    id: "claude",
+    label: "budget",
+    runInThread: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run(_prompt, opts) {
+      budgets.push(opts?.timeoutMs);
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  };
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => fake,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-budget");
+  await waitFor(() => store.getRun("run-budget")?.status === "completed");
+  await engine.stop();
+
+  // Asserted as a VALUE, not merely as "defined". The number is what decides whether a
+  // Persona reading a real submission finishes or is killed mid-answer, and the failure it
+  // guards against is silent: an omitted `timeoutMs` falls back to the runner's own default
+  // (two minutes in `claude-cli.ts`), which reads as a model that cannot answer rather than
+  // as a budget that was never passed.
+  assert.deepEqual(budgets, [600_000]);
+});
+
 test("each structured provider attempt has its own durable LLM call receipt", async () => {
   const retryParseGraph: PublishedWorkflowGraph = {
     nodes: [

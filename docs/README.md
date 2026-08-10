@@ -44,4 +44,6 @@ Mission Control's product reference is organized by feature below.
 
 ## Support
 
-Reserved for support documentation.
+- [Troubleshooting](troubleshooting.md)
+- [Glossary](glossary.md)
+- [Security policy and reporting](../SECURITY.md)

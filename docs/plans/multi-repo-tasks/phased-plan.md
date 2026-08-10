@@ -49,6 +49,7 @@ Serial; merge order equals numbering. No concurrency groups: the audit found eac
 - `TaskRepoEntry` declares `prUrl`/`prState`/`mergedAt` in phase 1 (null); phase 2 populates them - the wire shape never changes after phase 1.
 - The changed-set predicate (episode PR present, or head differs from `base_sha`) lives in `src/shared`, introduced in phase 2, imported by phase 3's run creation - one definition of "changed". It covers the primary as well as the secondaries; a version that iterates `task_repos` rows alone silently excludes the primary and makes both the quorum and run creation unsound.
 - Session cwd is always the primary worktree; multi-repo tasks are dispatch-only (phase 1, relied on by everything).
+- Every attached repo gets a distinct, stable worktree path. The git fallback derives it from the entry's `position` (slot 0 keeps the legacy `WORKTREES_DIR/<taskId>`), pool paths come from each repo's own pool. Phase 3 reads per-repo worktrees for evidence capture, so nothing may renumber a provisioned entry's `position` without moving its tree.
 - One workflow run = one repository; binding uniqueness `(note_key, repo_root)` with the primary stored explicitly; one outstanding delivery per session (phase 3, relied on by phase 4's nudging).
 - `Session.prUrl` stays the scalar current-branch PR everywhere.
 

@@ -125,6 +125,7 @@
     <li><code>TaskRepoEntry</code> declares <code>prUrl</code>/<code>prState</code>/<code>mergedAt</code> in phase 1 (null); phase 2 populates them - the wire shape never changes after phase 1.</li>
     <li>The changed-set predicate (episode PR present, or head differs from <code>base_sha</code>) lives in <code>src/shared</code>, introduced in phase 2, imported by phase 3's run creation - one definition of "changed". It covers the primary as well as the secondaries; a version that iterates <code>task_repos</code> rows alone silently excludes the primary and makes both the quorum and run creation unsound.</li>
     <li>Session cwd is always the primary worktree; multi-repo tasks are dispatch-only (phase 1, relied on by everything).</li>
+    <li>Every attached repo gets a distinct, stable worktree path. The git fallback derives it from the entry's <code>position</code> (slot 0 keeps the legacy <code>WORKTREES_DIR/&lt;taskId&gt;</code>), pool paths come from each repo's own pool. Phase 3 reads per-repo worktrees for evidence capture, so nothing may renumber a provisioned entry's <code>position</code> without moving its tree.</li>
     <li>One workflow run = one repository; binding uniqueness <code>(note_key, repo_root)</code> with the primary stored explicitly; one outstanding delivery per session (phase 3, relied on by phase 4's nudging).</li>
     <li><code>Session.prUrl</code> stays the scalar current-branch PR everywhere.</li>
   </ul>

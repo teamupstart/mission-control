@@ -188,6 +188,36 @@ async function dispatchWithNoMistakes(page: Page, daemon: DaemonHandle): Promise
   return sessionId;
 }
 
+/** Dispatch one agent with the after-work Workflow explicitly set to None, and settle it. */
+async function dispatchWithoutWorkflow(
+  page: Page,
+  daemon: DaemonHandle,
+  goal: string,
+): Promise<string> {
+  const before = new Set(
+    (await api<Array<{ id: string }>>(daemon, "/api/sessions")).map((s) => s.id),
+  );
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill(goal);
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  await expect.poll(() => selectedLabel(afterWork)).not.toContain("loading");
+  await afterWork.selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  let sessionId = "";
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
+    const fresh = sessions.find((s) => !before.has(s.id) && s.state !== "exited");
+    sessionId = fresh?.id ?? "";
+    return fresh?.state ?? "";
+  }, { timeout: 60_000 }).toBe("idle");
+  return sessionId;
+}
+
 test("a dispatched session names its armed workflow, and the bind dialog opens on it", async ({
   page,
   daemon,
@@ -305,6 +335,51 @@ test("a version picked while bindings are still loading is not reverted", async 
   seen("dialog > selection after the fetch settled", await selectedLabel(published));
   await expect.poll(() => selectedLabel(published)).toContain("Aardvark");
   await expect.poll(() => selectedLabel(published)).not.toContain("No-Mistakes");
+});
+
+test("switching to an unbound session clears the previous session's workflow", async ({
+  page,
+  daemon,
+}) => {
+  /*
+   * Hydration answers "what is this session bound to". For an unbound session the answer is
+   * nothing, and it used to say nothing at all instead - it only assigned when a binding was
+   * FOUND, so the previous session's answer stayed on screen.
+   *
+   * Reached from a caller that pins no session (the Runs page CTA, the palette, the Line's
+   * Review drawer all pass `{}`): settle on a bound session, switch to an unbound one, and the
+   * Published workflow select still named the first session's workflow - with no existing or
+   * conflict notice to flag it, because the new session genuinely has nothing to conflict with.
+   * Binding from there attaches a workflow the operator never chose for that conversation.
+   */
+  await armWorkflowPrerequisites(daemon);
+  await publishAardvark(daemon);
+  await page.goto(daemon.baseURL);
+
+  const boundSession = await dispatchWithNoMistakes(page, daemon);
+  const unboundSession = await dispatchWithoutWorkflow(page, daemon, "no workflow here");
+  expect(unboundSession).not.toBe(boundSession);
+
+  // The Runs page CTA is one of the callers that pins no session, which is what makes the
+  // Session select live and this whole sequence reachable.
+  await page.goto(`${daemon.baseURL}/#/runs`);
+  await page.getByRole("button", { name: "Bind to a session…" }).click();
+  const bind = page.getByRole("dialog", { name: "Bind workflow" });
+  await expect(bind).toBeVisible();
+
+  const sessionSelect = bind.getByRole("combobox", { name: "Session", exact: true });
+  const published = bind.getByRole("combobox", { name: "Published workflow", exact: true });
+
+  // Land on the BOUND session first and let hydration fill the version in.
+  await sessionSelect.selectOption(boundSession);
+  await expect.poll(() => selectedLabel(published)).toContain("No-Mistakes Review");
+  seen("dialog > version on the bound session", await selectedLabel(published));
+
+  // Now the unbound one. Its answer is nothing, and nothing is what it has to show.
+  await sessionSelect.selectOption(unboundSession);
+  await expect.poll(() => selectedLabel(published)).toBe("Choose a published version");
+  seen("dialog > version after switching to an unbound session", await selectedLabel(published));
+  await expect(bind.getByText(/^Already bound to /)).toHaveCount(0);
 });
 
 test("a session with no workflow still offers to attach one", async ({ page, daemon }) => {

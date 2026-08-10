@@ -199,7 +199,19 @@ export function WorkflowBindingDialog({
     const active = bindings.find(
       (binding) => binding.state === "active" && binding.sessionId === sessionId,
     );
-    if (active) setVersionId(active.workflowVersionId);
+    /*
+     * Assigned unconditionally, empty included. Only setting it when a binding was FOUND left
+     * the previous session's answer standing over the new one: open the dialog with no session
+     * pinned, let it settle on a bound session, then switch to an unbound one, and the
+     * Published workflow select still showed the first session's workflow - with no existing or
+     * conflict notice to flag it, because the new session genuinely has no binding to conflict
+     * with. Binding from there attached a workflow the operator never chose for that
+     * conversation, which is the failure this dialog was changed to end.
+     *
+     * "What is this session bound to" has an answer for an unbound session too, and it is
+     * nothing. Saying nothing is what the empty selection means.
+     */
+    setVersionId(active?.workflowVersionId ?? "");
   }, [bindings, bindingsSettled, sessionId, target.workflowId, target.workflowVersionId]);
   const { existing, conflict } = useMemo(
     () => workflowBindingSelection(bindings, session, versionId),

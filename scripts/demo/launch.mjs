@@ -344,6 +344,8 @@ function installScenarios(root) {
 
 /** The one name for the demo state root, so no caller can invent a second one. */
 export const DEMO_ROOT_NAME = ".mission-control-demo";
+/** A disposable demo root used only while regenerating committed documentation imagery. */
+export const DEMO_SCREENSHOTS_ROOT_NAME = ".mission-control-demo-screenshots";
 /**
  * `--check`'s own throwaway root, beside the real one rather than inside it.
  *
@@ -355,7 +357,7 @@ export const DEMO_ROOT_NAME = ".mission-control-demo";
 export const DEMO_CHECK_ROOT_NAME = ".mission-control-demo-check";
 
 /** The roots anything under `scripts/demo/` is allowed to create, write, and delete. */
-const WRITABLE_ROOT_NAMES = [DEMO_ROOT_NAME, DEMO_CHECK_ROOT_NAME];
+const WRITABLE_ROOT_NAMES = [DEMO_ROOT_NAME, DEMO_CHECK_ROOT_NAME, DEMO_SCREENSHOTS_ROOT_NAME];
 
 /** Resolve (and, on `--fresh`, rebuild) the persistent demo state root. */
 function resolveRoot(fresh, name = DEMO_ROOT_NAME) {
@@ -369,6 +371,17 @@ function resolveRoot(fresh, name = DEMO_ROOT_NAME) {
   // transcript path from the resolved cwd - an unresolved root here and the daemon's own
   // view of it would disagree by a prefix, and conversations would never be found.
   return realpathSync(root);
+}
+
+/**
+ * Rebuild the isolated root used by `scripts/docs-screenshots.mjs`.
+ *
+ * Documentation captures must be repeatable, but they must not reset the persistent demo an
+ * operator may be using. Keeping this root in the same allowlist as the other demo roots means
+ * the seeder retains its refusal to write to ordinary Mission Control state.
+ */
+export function resetDocsScreenshotRoot() {
+  return resolveRoot(true, DEMO_SCREENSHOTS_ROOT_NAME);
 }
 
 /**
@@ -426,6 +439,10 @@ export function buildDaemonEnv(root, port, bins) {
     MISSION_CLAUDE_BIN: bins.claude,
     MISSION_CODEX_BIN: bins.codex,
     MISSION_PI_BIN: bins.pi,
+    // The demo's Claude one-shot player implements `claude -p`, not the Agent SDK's wire
+    // protocol. Pin print transport so Persona reviews, goal refinement, and titles stay on the
+    // local fake binary even though the product default is SDK transport.
+    MISSION_CLAUDE_TRANSPORT: "print",
     MISSION_DEMO_SCENARIO_DIR: join(root, "scenarios"),
     // Neither sweep below is scoped to MISSION_HOME - left on, this daemon would walk
     // every process on the machine and adopt the operator's real sessions (POLL_MS), or

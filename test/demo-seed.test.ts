@@ -773,6 +773,25 @@ test("the reduced seed is a strict subset that still exercises suspend and resto
   assert.ok(reduced.ledgerDays >= 1, "even the reduced seed needs a priced ledger row");
 });
 
+test("the README seed keeps a real fleet tour without the full demo's breadth", () => {
+  const readme = seedPlan({ readme: true });
+
+  assert.deepEqual(readme.sessionTasks.map((task) => task.key), ["pagination"]);
+  assert.deepEqual(readme.backlogTasks.map((task) => task.key), ["ingest", "pool-docs"]);
+  assert.equal(readme.persona?.name, "Demo test-first reviewer");
+  assert.equal(readme.workflow, false);
+  assert.equal(readme.ledgerDays, 1);
+});
+
+test("the non-fleet screenshot seed does not spend time creating sessions", () => {
+  const capture = seedPlan({ capture: true });
+
+  assert.deepEqual(capture.sessionTasks, []);
+  assert.deepEqual(capture.backlogTasks, []);
+  assert.equal(capture.persona?.name, "Demo test-first reviewer");
+  assert.equal(capture.workflow, false);
+});
+
 test("the full seed covers every settle mode, so the fleet shows mixed states", () => {
   const settles = new Set(seedPlan().sessionTasks.map((t) => t.settle));
   assert.deepEqual(

@@ -134,6 +134,16 @@ export function DraftHint({
           Foreman is off, so it won&apos;t send this - Approve to send it yourself.
         </p>
       );
+    // A note left behind by a participation that has since been withdrawn. The draft is
+    // still the human's to approve - nothing about an invite invalidates words already
+    // written - but nothing further is coming, and pointing at the mode or the allowlist
+    // here would send them to fix a switch that is not what stopped this.
+    case "not-invited":
+      return (
+        <p className="fn-hint dim">
+          Foreman is not in this session. Invite it from the rail above.
+        </p>
+      );
     case "not-allowlisted":
       return (
         <p className="fn-hint dim">

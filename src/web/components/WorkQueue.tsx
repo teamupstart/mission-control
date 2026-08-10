@@ -180,6 +180,22 @@ export function WorkQueue({
           attachments={attachments}
           drop={imageDrop}
         />
+        {/*
+          "Nothing to explain" is true of every reason this hint can give EXCEPT one:
+          the rest describe what will happen to queued items, so with none there is no
+          claim to make, and `QueueHint` says nothing. An uninvited session is the
+          exception because it is the only reason about the panel rather than about its
+          contents - the add box above is offering to queue work for a worker that will
+          not come for it. Which of those this is, is `QueueHint`'s call and not this
+          branch's; it gets the count and decides.
+        */}
+        <QueueHint
+          enabled={foremanEnabled}
+          mode={foremanMode}
+          allowlisted={allowlisted}
+          session={session}
+          queued={0}
+        />
         {error && <p className="wq-error">{error}</p>}
       </section>
     );
@@ -590,13 +606,18 @@ export function WorkQueue({
         drop={imageDrop}
       />
 
-      {/*
-        What will happen to the items that are waiting - or why nothing will. Only
-        when something IS waiting: with nothing pending there's nothing to explain.
-      */}
-      {open.length > 0 && (
-        <QueueHint enabled={foremanEnabled} mode={foremanMode} allowlisted={allowlisted} session={session} />
-      )}
+      {/* What will happen to the items that are waiting - or why nothing will. The
+          "is anything owed here at all" question moved inside `QueueHint` when the
+          uninvited reason arrived, because that one is owed over an empty queue and the
+          rest are not - and the empty queue leaves through a different branch above, so
+          a gate written out here would have had to be written out twice and agree. */}
+      <QueueHint
+        enabled={foremanEnabled}
+        mode={foremanMode}
+        allowlisted={allowlisted}
+        session={session}
+        queued={open.length}
+      />
 
       {queue && queue.wrapupAskedAt !== null && (
         <Wrapup sessionId={sessionId} queue={queue} onDone={() => void refresh()} />
@@ -608,29 +629,56 @@ export function WorkQueue({
 }
 
 /**
- * The one line explaining what Foreman will do with the waiting items. Which line is
- * owed is `foremanSendBlock`'s call (it's a rule, and rules are tested without a DOM);
- * this renders it.
+ * The one line explaining what Foreman will do with the waiting items - or why it will
+ * not be here at all. Which line is owed is `foremanSendBlock`'s call (it's a rule, and
+ * rules are tested without a DOM); this renders it, and decides when one is owed.
+ *
+ * Every reason but `not-invited` is a claim ABOUT the waiting items, so an empty queue
+ * silences them: there is nothing for "it will draft each of these" to be true of, and a
+ * panel that explains items it does not have reads as a panel that has lost them. The
+ * uninvited line is the one claim about the panel itself - the add box above it is
+ * offering to queue work for a worker that will not come - so it survives the emptiness
+ * that retires the others, and words itself for it.
  */
 function QueueHint(props: {
   enabled: boolean;
   mode: string;
   allowlisted: boolean;
   session: Session;
+  /** How many items are still waiting. Zero retires every line except the uninvited one. */
+  queued: number;
 }): React.JSX.Element | null {
-  switch (
-    foremanSendBlock({
-      enabled: props.enabled,
-      mode: props.mode,
-      allowlisted: props.allowlisted,
-      cwd: props.session.cwd,
-    })
-  ) {
+  const block = foremanSendBlock({
+    enabled: props.enabled,
+    invited: props.session.foremanInvite !== null,
+    mode: props.mode,
+    allowlisted: props.allowlisted,
+    cwd: props.session.cwd,
+  });
+  if (props.queued === 0 && block !== "not-invited") return null;
+
+  switch (block) {
     case "foreman-off":
       return (
         <p className="wq-hint dim">
           Foreman is off, so nothing here will be drafted or sent. These items keep their order and
           wait - turn Foreman on from the toolbar to start working through them.
+        </p>
+      );
+    // The only reason with two wordings, because it is the only one that renders over an
+    // empty queue: with items waiting the sentence is about them, and with none it is
+    // about the panel itself, which would otherwise be a blank box with an add form and
+    // no hint that what you type into it has nobody to pick it up.
+    case "not-invited":
+      return props.queued > 0 ? (
+        <p className="wq-hint dim">
+          Foreman is not in this session, so nothing here will be drafted or sent. Invite it from
+          the rail above to let it work through these.
+        </p>
+      ) : (
+        <p className="wq-hint dim">
+          Nothing queued. Foreman is not in this session - invite it from the rail above to let it
+          triage and wrap up here.
         </p>
       );
     // Allowlist honesty. An off-allowlist queue silently never goes live and every

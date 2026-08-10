@@ -111,9 +111,16 @@ test("moveTarget returns -1 for an item that isn't in the list", () => {
 // ---- the hint: what the panel owes you about items that aren't moving ----
 
 const hint = (over: Partial<Parameters<typeof foremanSendBlock>[0]> = {}): ForemanSendBlock =>
-  foremanSendBlock({ enabled: true, mode: "live", allowlisted: true, cwd: "/repo", ...over });
+  foremanSendBlock({
+    enabled: true,
+    invited: true,
+    mode: "live",
+    allowlisted: true,
+    cwd: "/repo",
+    ...over,
+  });
 
-test("a live, allowlisted, enabled queue says nothing - the panel already shows it", () => {
+test("a live, allowlisted, enabled, invited queue says nothing - the panel already shows it", () => {
   assert.equal(hint(), null);
 });
 
@@ -125,6 +132,21 @@ test("Foreman being off outranks whatever the mode and allowlist would say", () 
   assert.equal(hint({ enabled: false }), "foreman-off");
   assert.equal(hint({ enabled: false, mode: "dry-run" }), "foreman-off");
   assert.equal(hint({ enabled: false, allowlisted: false, cwd: null }), "foreman-off");
+  // ...including over the invite. Inviting Foreman into a session while Foreman is off
+  // changes nothing on screen, so it is the wrong first move to recommend.
+  assert.equal(hint({ enabled: false, invited: false }), "foreman-off");
+});
+
+test("an uninvited session outranks the mode and the allowlist, and loses only to the switch", () => {
+  // The worker skips an uninvited session in EVERY mode, so "it will draft each item and
+  // wait for your Approve" is a sentence about a draft that is never coming - the same
+  // failure `foreman-off` sits first to prevent, one level down. The allowlist and the cwd
+  // are questions about a live send that is not being attempted here at all.
+  assert.equal(hint({ invited: false }), "not-invited");
+  assert.equal(hint({ invited: false, mode: "dry-run" }), "not-invited");
+  assert.equal(hint({ invited: false, allowlisted: false }), "not-invited");
+  assert.equal(hint({ invited: false, cwd: null }), "not-invited");
+  assert.equal(hint({ invited: false, enabled: false }), "foreman-off");
 });
 
 test("a session with NO cwd is told why it only ever gets drafts", () => {

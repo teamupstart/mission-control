@@ -24,6 +24,14 @@ import type { ResolveEpisode, SetNote } from "@shared/protocol.ts";
  * a perfectly natural order of work - the UI just has to be honest about which one
  * you're in.
  *
+ * `not-invited` sits second, directly under `foreman-off` and above the mode, for the
+ * same reason `foreman-off` sits first: Foreman skips an uninvited session in EVERY
+ * mode, so "it will draft each item and wait for your Approve" describes a draft that
+ * is never coming. Mode would be a true sentence about a fleet-wide switch and a lie
+ * about this session. It loses only to `foreman-off`, which stops the worker's loop
+ * before it reads any session at all - turning Foreman on would still leave this one
+ * untouched, so the switch is the first thing to say.
+ *
  * `no-cwd` is a separate answer from `not-allowlisted` rather than folded into it:
  * `foremanMayActLive` returns false on a null cwd, so the OUTCOME is the same, but the
  * allowlist sentence names the repo to add and here there isn't one. The case is
@@ -31,19 +39,28 @@ import type { ResolveEpisode, SetNote } from "@shared/protocol.ts";
  * fully working - and it used to fall through every branch to silence, which is the
  * exact failure these hints exist to prevent.
  */
-export type ForemanSendBlock = "foreman-off" | "not-allowlisted" | "no-cwd" | "drafts-only" | null;
+export type ForemanSendBlock =
+  | "foreman-off"
+  | "not-invited"
+  | "not-allowlisted"
+  | "no-cwd"
+  | "drafts-only"
+  | null;
 
 export function foremanSendBlock(o: {
   enabled: boolean;
+  /** Whether Foreman holds an invite here - `session.foremanInvite !== null`. */
+  invited: boolean;
   mode: string;
   allowlisted: boolean;
   cwd: string | null;
 }): ForemanSendBlock {
   if (!o.enabled) return "foreman-off";
+  if (!o.invited) return "not-invited";
   if (o.mode !== "live") return "drafts-only";
   if (!o.cwd) return "no-cwd";
   if (!o.allowlisted) return "not-allowlisted";
-  return null; // live, enabled, allowlisted: it sends, so there's nothing to explain
+  return null; // live, enabled, invited, allowlisted: it sends, so there's nothing to explain
 }
 
 /**
@@ -56,6 +73,7 @@ export function sessionSendBlock(
 ): ForemanSendBlock {
   return foremanSendBlock({
     enabled: o.enabled,
+    invited: session.foremanInvite !== null,
     mode: o.mode,
     allowlisted: foremanAllowlisted(session.cwd, session.repoRoot, o.allowlist ?? []),
     cwd: session.cwd,

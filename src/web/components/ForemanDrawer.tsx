@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ForemanEpisode, IntentRelationship, SessionGoal } from "@shared/types.ts";
+import type { ForemanEpisode, IntentRelationship, Session, SessionGoal } from "@shared/types.ts";
 // Moved to shared so the daemon can reduce an episode the same way this drawer does -
 // the fleet-wide ledger ships the RESULT rather than the captured screen it came from.
 import { askPreview } from "@shared/foreman-ask.ts";
@@ -20,15 +20,29 @@ export function openEpisodeCount(episodes: ForemanEpisode[]): number {
 }
 
 export function ForemanDrawer({
+  session,
   episodes,
   intent,
   open,
   onClose,
+  onWithdraw,
 }: {
+  /**
+   * The session this record is about. Carried whole rather than as the one field the
+   * header reads, because everything in here is already scoped to it and a drawer that
+   * knew a boolean called `invited` could not say which session it was true of.
+   */
+  session: Session;
   episodes: ForemanEpisode[];
   intent: SessionGoal | null;
   open: boolean;
   onClose: () => void;
+  /**
+   * Remove Foreman from this session. Owned by the parent rather than called from here:
+   * it is the other half of the rail's invite control, the two writes belong in one
+   * place, and the parent is what has to close this drawer afterwards.
+   */
+  onWithdraw: () => void;
 }): React.JSX.Element | null {
   const [selected, setSelected] = useState<number | null>(null);
 
@@ -76,6 +90,19 @@ export function ForemanDrawer({
             <span className="fd-title">
               {episodes.length} {episodes.length === 1 ? "note" : "notes"} on this session
             </span>
+            {/* The exit, where the record of what Foreman has been doing here is - which
+                is where an operator decides they want it to stop. Rendered on the list
+                view only: the detail view's header is a back button and one episode's
+                context, and offering to end participation from inside a single note reads
+                as acting on that note. Withdrawing from an SDK session is allowed too;
+                the daemon stores a tombstone that beats its implicit grant. */}
+            {session.foremanInvite !== null && (
+              <Tooltip label="Remove Foreman from this session - it stops triaging, wrapping up, and following PRs here">
+                <button className="fd-withdraw" onClick={onWithdraw}>
+                  Withdraw invite
+                </button>
+              </Tooltip>
+            )}
           </>
         )}
         <Tooltip label="Close this drawer (Escape)">

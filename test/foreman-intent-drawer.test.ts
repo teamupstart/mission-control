@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { SessionGoal } from "../src/shared/types.ts";
 import { ForemanDrawer } from "../src/web/components/ForemanDrawer.tsx";
 import { intentRefreshStamp } from "../src/web/components/layouts/ConsoleDetail.tsx";
+import { mkSession } from "./helpers/session-fixture.ts";
 
 function goal(over: Partial<SessionGoal> = {}): SessionGoal {
   return {
@@ -25,13 +26,15 @@ function goal(over: Partial<SessionGoal> = {}): SessionGoal {
   };
 }
 
-function render(intent: SessionGoal | null): string {
+function render(intent: SessionGoal | null, session = mkSession()): string {
   return renderToStaticMarkup(
     createElement(ForemanDrawer, {
+      session,
       episodes: [],
       intent,
       open: true,
       onClose: () => undefined,
+      onWithdraw: () => undefined,
     }),
   );
 }
@@ -56,6 +59,28 @@ test("the Foreman drawer makes an unresolved instruction visibly pause wrap-up",
 test("the Foreman drawer has a useful pre-objective state", () => {
   const html = render(null);
   assert.match(html, /Waiting for the session&#x27;s first substantive instruction/);
+});
+
+/**
+ * The exit lives here rather than on the rail, and it lives here for a reason worth
+ * pinning: the drawer is the record of what Foreman has been doing in this session, which
+ * is where an operator forms the opinion that it should stop.
+ */
+test("the Foreman drawer offers the way out of the session it is reporting on", () => {
+  const html = render(goal());
+  assert.match(html, /Withdraw invite/);
+  assert.match(html, /fd-withdraw/);
+  // Beside the close control rather than in the body: an action about the session, not
+  // about any one note in the list below it.
+  assert.match(html, /fd-withdraw[\s\S]*fd-close/, "withdraw sits before the pinned close");
+});
+
+test("the Foreman drawer offers no withdrawal for a session Foreman is not in", () => {
+  // Unreachable through ConsoleDetail, which renders the invite affordance instead - but
+  // the component must not offer to remove a participation that does not exist if it is
+  // ever mounted somewhere that does not check first.
+  const html = render(goal(), mkSession({ foremanInvite: null }));
+  assert.doesNotMatch(html, /Withdraw invite/);
 });
 
 test("the drawer refresh stamp advances when reconciliation resolves", () => {

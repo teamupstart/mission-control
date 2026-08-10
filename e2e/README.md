@@ -678,6 +678,35 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### Delete, on the backlog editor's danger side
+
+`e2e/.artifacts/backlog-task-delete/` carries four frames from
+`specs/backlog-task-delete.spec.ts`. `01-editor-footer.png` is the one the change exists for:
+the editor's footer reading `Delete  Save  Revert` on the left and `Cancel  Dispatch now` on
+the right. That Delete is *present* is a DOM assertion; that it reads as the same control the
+Sitrep row offers, wearing the same `btn btn-danger-ghost` every destructive action in this
+app wears, is a question only a picture answers.
+
+`02-card-gone.png` is the Board column after the delete, one card and a count of 1.
+`03-refusal-stays-open.png` is the daemon's own refusal wording under the fields with the
+form still up, which is the half that would rot silently. `04-dispatch-footer-has-none.png`
+is the new-task footer, whose whole content is an absence.
+
+The capture helper grows the viewport to 1280x1100 and puts it straight back: the dialog is
+taller than the 720px default and its body is what scrolls, so an element screenshot at the
+default size crops away the exact footer these frames exist to show.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/backlog-task-delete.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

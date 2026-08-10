@@ -233,6 +233,12 @@ launches. **Save** keeps it in the backlog;
 **Dispatch now** saves and launches it in one go, so a task you shelved half-written can be
 finished and sent without a second trip. **Revert** puts back the version the daemon still
 holds, and closing the form keeps your edits the same way a half-written dispatch is kept.
+**Delete** throws the task away from the same footer, so deciding against a task while you
+are reading it does not send you to [Sitrep](attention-and-alerts.md#roundup) to find the
+same row again; the card leaves every surface at once. It appears only when you are editing
+a shelved task, since a new dispatch has no row behind it to delete, and a removal the
+daemon refuses (a task that is running, or one whose worktree will not reclaim) leaves the
+form open with the reason in it.
 Clear the **Title** and it's derived afresh from the task text as you've now written it.
 
 **A save writes only the fields you changed**, so it can't undo work you didn't touch: set a

@@ -339,6 +339,19 @@ export function DispatchLayer({
   );
 
   /**
+   * The edited task was deleted. The same teardown a saved edit gets, minus the staleness
+   * test: that test exists to avoid discarding newer typing, and there is no row left for
+   * newer typing to be saved to. Dropping the slot is what keeps a deleted task's working
+   * copy from sitting in memory holding blob URLs open for the life of the page.
+   */
+  const onEditDeleted = useCallback(() => {
+    const cur = editRef.current;
+    if (cur) revokeAttachments(cur.draft.attachments);
+    setEdit(null);
+    onClose();
+  }, [onClose]);
+
+  /**
    * Attachment writes go through a functional update with a STABLE identity, which
    * the other fields don't need and this one can't do without: an upload resolves
    * a network round-trip after the drop that started it, and patches its row from
@@ -428,6 +441,7 @@ export function DispatchLayer({
         onRevert={onEditRevert}
         onClose={onClose}
         onSubmitted={onEditSubmitted}
+        onDeleted={onEditDeleted}
         onOpenSchedule={onOpenSchedule}
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
@@ -485,6 +499,7 @@ function DispatchModal({
   onRevert,
   onClose,
   onSubmitted,
+  onDeleted,
   onOpenSchedule,
   launchMode = "single",
   onLaunchModeChange,
@@ -507,6 +522,12 @@ function DispatchModal({
   onRevert: () => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft) => void;
+  /**
+   * The edited task was deleted, so the working copy over it has nothing left to describe.
+   * Edit-only - a new dispatch has no row to delete - and the layer's implementation drops
+   * the slot and revokes its thumbnails before closing. Absent, closing is the whole job.
+   */
+  onDeleted?: () => void;
   /** Open Recurring Missions from a scheduled task's read-only provenance. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Single vs Ensemble. Only meaningful for a new dispatch; an edit is always Single. */
@@ -549,9 +570,9 @@ function DispatchModal({
    * between this and `selectedWorkflowBlocked`, which genuinely blocks.
    */
   const [envWarnings, setEnvWarnings] = useState<EnvironmentCheckView[]>([]);
-  // Which action is in flight, not merely whether one is: both footer buttons submit,
-  // and only the one that was pressed should say so.
-  const [pending, setPending] = useState<null | "shelve" | "dispatch">(null);
+  // Which action is in flight, not merely whether one is: every footer button reaches the
+  // daemon, and only the one that was pressed should say so.
+  const [pending, setPending] = useState<null | "shelve" | "dispatch" | "delete">(null);
   const busy = pending !== null;
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
@@ -786,6 +807,33 @@ function DispatchModal({
     onRevert();
     setError(null);
     intentRef.current?.focus();
+  }
+
+  /**
+   * Throw the task away - the same `DELETE /api/tasks/:id` the Sitrep row calls, offered
+   * where the task is actually read.
+   *
+   * Edit mode only, and the button that reaches this is not rendered otherwise: there is no
+   * row behind a new dispatch to delete, and a Delete beside "Add to backlog" would read as
+   * an offer to discard the form.
+   *
+   * No confirm, deliberately, because the Sitrep's has none and two dialogs asking the same
+   * question in two places is how they drift. Reaching this already took opening the card.
+   *
+   * The card leaves every surface at once on the daemon's `task_remove`, so this closes
+   * rather than trying to reconcile a form over a row that is gone. A REFUSAL - a task that
+   * went `running` under the open modal, a worktree that would not reclaim - keeps the modal
+   * up with the reason printed where every other refusal from this form is printed, because
+   * the task still exists and the operator's next move is still about it.
+   */
+  async function remove(): Promise<void> {
+    if (!editing || busy) return;
+    setPending("delete");
+    setError(null);
+    const r = await api.deleteTask(editing.id);
+    setPending(null);
+    if (!r.ok) setError(r.error ?? "could not delete the task");
+    else (onDeleted ?? onClose)();
   }
 
   async function submit(dispatchNow: boolean): Promise<void> {
@@ -1439,6 +1487,26 @@ function DispatchModal({
       </div>
 
       <footer className="modal-foot">
+        {/* Leading edge, ahead of the verbs that keep the task, because it is the one action
+            here that destroys something - and edit-only, because a new dispatch has no row
+            behind it to delete. Ghost-danger rather than filled: it must be findable without
+            competing with the primary, which is the same weight the Sitrep's Delete carries. */}
+        {editing && (
+          <Tooltip label="Delete this task from the backlog">
+            <button
+              // The same pair the Sitrep's Delete wears, and the same pair every other
+              // destructive control in the app wears (ReportPanel, WorkflowRuns,
+              // WorkflowLibrary, ActionBar): one class for the danger tone, none for the
+              // frame. Deleting a backlog task should look like itself wherever it is
+              // offered, so this deliberately does not get a bespoke weight for this footer.
+              className="btn btn-danger-ghost"
+              onClick={() => void remove()}
+              disabled={busy}
+            >
+              {pending === "delete" ? "Deleting…" : "Delete"}
+            </button>
+          </Tooltip>
+        )}
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
             backlog" makes no sense there; its Review/Launch control owns the primary slot. */}
         {!ensembleMode && (

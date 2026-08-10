@@ -1,3 +1,4 @@
+import type { Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { WorkflowLadderPanel } from "../workflows/WorkflowLadder.tsx";
 
@@ -14,15 +15,20 @@ import { WorkflowLadderPanel } from "../workflows/WorkflowLadder.tsx";
  */
 export function SessionWorkflowsPane({
   run,
+  session,
   onOpenRun,
 }: {
   /** The workflow run bound to this session, if any. */
   run: WorkflowRunSummary | null;
+  /** The session the pane belongs to - the ladder's retro offer is conditioned on it. */
+  session: Session;
   onOpenRun: (runId: string) => void;
 }): React.JSX.Element {
   return (
     <>
-      {run && <WorkflowLadderPanel run={run} onOpenRun={() => onOpenRun(run.id)} />}
+      {run && (
+        <WorkflowLadderPanel run={run} session={session} onOpenRun={() => onOpenRun(run.id)} />
+      )}
       {!run && <p className="detail-empty">No workflow is bound to this session.</p>}
     </>
   );

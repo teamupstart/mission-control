@@ -444,6 +444,7 @@ export function SessionCard({
           onFiles={onOpenFiles}
           onComplete={onComplete}
           onKill={onKill}
+          workflowRun={workflowRun}
         />
       )}
 

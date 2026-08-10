@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Session, Task } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
+import { retroBackstopOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -50,6 +51,23 @@ export function CompleteModal({
   const [satisfy, setSatisfy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** A success worth saying out loud - today, only the retro that became a backlog task. */
+  const [notice, setNotice] = useState<string | null>(null);
+
+  /**
+   * The last place a retro can be offered, for the session that never opened a pull request.
+   *
+   * The card-level offer waits for the Inspector to have finished with a PR; a scout, a
+   * spike, or anything whose change landed by another route never reaches that moment, and
+   * this dialog is the last time anybody looks at it. So the timing condition is dropped
+   * here and the worthiness condition is not - see `retroBackstopOffer`.
+   *
+   * It does NOT complete the task, and that is the whole point of the placement: the retro is
+   * a turn this session has to take, so completing and killing it first would deliver the
+   * instruction into a conversation that is being torn down. Complete is still one click away
+   * once the retro has been through its approvals.
+   */
+  const retro = retroBackstopOffer(session);
 
   // Tasks held up by an operator-declared edge onto this one that no merge has closed.
   // Counted here rather than asked of the server: the dashboard already holds every
@@ -96,6 +114,35 @@ export function CompleteModal({
       return;
     }
     onCompleted?.();
+    onClose();
+  }
+
+  /**
+   * Send the retro and step out of the way.
+   *
+   * Closes on success rather than reporting into a dialog nobody has a reason to keep
+   * looking at - the answer is now in the session's own conversation, which is where the
+   * operator has to go next anyway. A refusal keeps the dialog up with the daemon's own
+   * sentence in the same place every other failure here is reported.
+   */
+  async function runRetro(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const result = await api.runRetro(session.id);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error ?? "could not start a retro for this session");
+      return;
+    }
+    // Named rather than silent, and NOT through `error`: "filed as a backlog task because
+    // this session cannot be typed into" is a different next move, not a failure, and it is
+    // the one case where closing would leave the operator believing a turn is coming.
+    if (result.kind === "dispatched") {
+      setNotice(retroOutcome(result));
+      return;
+    }
     onClose();
   }
 
@@ -203,9 +250,25 @@ export function CompleteModal({
           )}
 
           {error && <p className="complete-error">{error}</p>}
+          {notice && <p className="complete-notice" role="status">{notice}</p>}
         </div>
 
         <footer className="modal-foot">
+          {/* Before the spacer, so it sits on the dialog's own side of the row rather than
+              lining up with Cancel and Complete. This is not a third way to answer the
+              dialog's question - it is the one thing worth doing BEFORE answering it. */}
+          {retro && (
+            <Tooltip label={retro.tooltip}>
+              <button
+                type="button"
+                className="btn btn-ghost complete-retro"
+                onClick={() => void runRetro()}
+                disabled={busy}
+              >
+                {retro.label}
+              </button>
+            </Tooltip>
+          )}
           <span className="actions-spacer" />
           <Tooltip label="Leave the task and the agent alone">
             <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>

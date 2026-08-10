@@ -3177,7 +3177,7 @@ export const WorkflowConfigSchema = z.object({
     // never told which survived.
     .refine(
       (commands) =>
-        new Set(commands.map((entry) => `${entry.repoRoot} ${entry.slot}`)).size
+        new Set(commands.map((entry) => `${entry.repoRoot}\u0000${entry.slot}`)).size
           === commands.length,
       { message: "Each repository may configure a slot only once" },
     )

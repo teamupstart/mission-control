@@ -707,6 +707,39 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### The retro offer appearing, and being taken
+
+`e2e/.artifacts/retro-offer/` carries five frames and the run's own stdout from
+`specs/retro-offer.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The change is a control
+that **appears**, so the pair either side of that is the point: `01-no-offer-yet.png` is a
+fresh session's action row, and `02-offer-on-the-card.png` is the same row once a human has
+corrected the session and its review has come back clean - `Run retro` between Reset and
+Complete, with the Inspector's `⌕ ✓` beside the pull request chip that earned it.
+
+`03-delivered-into-the-conversation.png` is what one click does: the flash reading
+`Retro sent - the session will propose memories for you to approve.` under the row, and the
+instruction itself in the conversation below. `05-complete-offers-a-retro-first.png` and
+`04-complete-without-a-backstop.png` are the Complete dialog's two shapes, which differ only
+by whether the session earned the offer - the backstop sits on the dialog's own side of the
+footer, away from Cancel and Complete & close, because it is not a third answer to the
+dialog's question.
+
+That the offer is **absent** the rest of the time is checkable in the DOM as a count; that it
+reads as an offer rather than as a permanently disabled control is legible only here.
+
+Regenerate all six with:
+
+```sh
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/retro-offer.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/retro-offer/transcript.txt
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### A backlog task filed as a GitHub issue
 
 `e2e/.artifacts/push-task-to-github/` carries seven frames from

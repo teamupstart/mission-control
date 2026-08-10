@@ -565,6 +565,7 @@ export function ConsoleDetail({
           <div ref={paneRef} className="detail-pane">
             <SessionWorkflowsPane
               run={workflowRun}
+              session={session}
               onOpenRun={(runId) => view.onOpenWorkflowRun?.(runId)}
             />
           </div>
@@ -631,6 +632,7 @@ export function ConsoleDetail({
             onReset={() => view.onReset(session.id)}
             onComplete={() => view.onComplete(session.id)}
             onKill={() => view.onKill(session.id)}
+            workflowRun={workflowRun}
           />
         )}
       </footer>

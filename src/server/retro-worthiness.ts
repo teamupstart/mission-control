@@ -1,0 +1,223 @@
+import type { RetroReason, RetroSummary, Session, TranscriptMessage } from "@shared/types.ts";
+import { envVar } from "./config.ts";
+import { sessionMessages } from "./harness/index.ts";
+import type { Registry } from "./registry.ts";
+import { attributeTranscript } from "./transcript-attribution.ts";
+import { unref } from "./util/timers.ts";
+
+// Whether a session has anything worth retrospecting, computed here and pushed onto the
+// Session so every surface that offers a retro reads one answer.
+//
+// Two independent halves, because the two reasons cost completely different things to know:
+//
+//  - FINDINGS is free. The Inspector's ledger row already carries `resolvedFindings`, the
+//    registry already holds those rows to build the inspector chip, and both are recomputed
+//    on the same events. So that half lives in the registry beside `inspectorSummaryFor`
+//    and needs nothing from this file but `retroSummary`.
+//  - CORRECTIONS costs a file read. It is a fact about the TRANSCRIPT, which no other part
+//    of the daemon summarises per session, so it is polled - and everything below exists to
+//    make that poll cost approximately nothing in the steady state.
+//
+// Three properties do that, in increasing order of how much they save:
+//
+//  1. STICKY. A correction that happened cannot un-happen, so a session that has flipped is
+//     never read again - not even stat'd. The scan state is deleted outright.
+//  2. INCREMENTAL. A transcript is append-only, so after the first pass each poll reads only
+//     the bytes appended since the last one (`since`), which is usually zero.
+//  3. GUARDED BY SIZE. `size` is one `stat`; an unchanged file costs that and nothing else.
+//
+// What the first pass reads is deliberately different from every pass after it. It uses the
+// head+tail `window` rather than `since(path, 0)`, because the question is "is there a human
+// turn BEYOND the opening brief" and `since` reads from the tail: on a long transcript it
+// would miss the opening entirely, take a correction for the brief, and undercount by one.
+// The head slice is what makes the brief reliably present.
+
+/** How often to look for new human turns (ms). One `stat` per unflipped live session. */
+const RETRO_SCAN_MS = Number(envVar("RETRO_SCAN_MS") ?? 10_000);
+
+/** Opening turns the first pass reads, so the session's own brief is always in the window. */
+const SCAN_HEAD_TURNS = 12;
+/** Recent turns the first pass reads. */
+const SCAN_TAIL_TURNS = 48;
+
+/**
+ * The summary for a session, or null when neither reason holds.
+ *
+ * Pure, and the ONE place the two halves are combined, so the registry cannot decide the
+ * question differently from a test. Reason order is fixed rather than incidental:
+ * `corrections` first because it is the stronger argument for a retrospective - somebody had
+ * to intervene - and because a stable order keeps the rendered tooltip stable.
+ */
+export function retroSummary(input: {
+  corrections: boolean;
+  resolvedFindings: number;
+}): RetroSummary | null {
+  const reasons: RetroReason[] = [];
+  if (input.corrections) reasons.push("corrections");
+  if (input.resolvedFindings > 0) reasons.push("findings");
+  return reasons.length > 0 ? { reasons } : null;
+}
+
+/**
+ * A turn's identity for the purposes of "have I already counted this one".
+ *
+ * NOT the message id. Ids are stable for a harness whose records carry one (Claude's record
+ * uuid) and synthesized per parse batch for one whose records do not (the Codex rollout), so
+ * an id-keyed count would double-count on exactly the harness where two reads can overlap.
+ *
+ * Overlap is not hypothetical: `size` is read before `since`, and `since` reads to the file's
+ * CURRENT end, so a turn written in that window is returned by this pass and again by the
+ * next. Counting it twice would make one human turn look like two and light the offer on a
+ * session nobody ever corrected, which is the exact false positive the conditioning exists to
+ * prevent. A fingerprint of the turn's own content is idempotent under that overlap.
+ *
+ * The cost is that two IDENTICAL human turns read as one. That is the right way to be wrong
+ * here: repeating yourself verbatim is not the correction this is looking for.
+ */
+function turnPrint(message: TranscriptMessage): string {
+  // Escaped rather than written literally. A separator that cannot occur in a decimal
+  // timestamp is the right one here, but a RAW NUL in a source file makes git treat the
+  // whole file as binary - the diff stops being reviewable, and every grep over it stops
+  // matching. The escape produces the identical string with none of that.
+  return `${message.ts}\u0000${message.text.slice(0, 200)}`;
+}
+
+/** Per-session scan state. Present only while the session has NOT flipped. */
+interface CorrectionScan {
+  /**
+   * The transcript this state describes. A `/clear` mints a new conversation and a new file;
+   * carrying a byte offset across that would seek past the whole new transcript.
+   */
+  path: string;
+  /** Bytes already scanned. The next pass reads forward from here. */
+  offset: number;
+  /** The first human turn seen - the session's opening brief, whoever supplied it. */
+  opening: string | null;
+}
+
+export interface RetroCorrectionScanner {
+  /**
+   * Whether this session's transcript now shows a human turn beyond its opening brief.
+   *
+   * `false` means "not as far as this has read", never "definitely not": the window is
+   * bounded and attribution is best-effort (`originOf` is in-memory, so a daemon restart
+   * loses it). Both errors point the same way - toward not offering - which is the safe
+   * direction for a prompt that spends a session's turn.
+   */
+  advance(session: Session): boolean;
+  /** Drop scan state for sessions that are gone, so a long-lived daemon does not accrete it. */
+  retain(liveIds: ReadonlySet<string>): void;
+}
+
+export function createRetroCorrectionScanner(): RetroCorrectionScanner {
+  const scans = new Map<string, CorrectionScan>();
+  /** Sessions already known to carry corrections. Never read from disk again. */
+  const flipped = new Set<string>();
+
+  const advance = (session: Session): boolean => {
+    if (flipped.has(session.id)) return true;
+    const located = sessionMessages(session);
+    // A harness that keeps no conversation (Codex kept none for years) is not evidence of
+    // no corrections - it is evidence of nothing, which is what `false` says here.
+    if (!located) return false;
+
+    const size = located.read.size(located.path);
+    if (size === null) return false;
+
+    let scan = scans.get(session.id);
+    if (!scan || scan.path !== located.path) {
+      scan = { path: located.path, offset: 0, opening: null };
+      scans.set(session.id, scan);
+    } else if (size === scan.offset) {
+      return false; // nothing appended since the last pass: one `stat`, no read
+    } else if (size < scan.offset) {
+      // The file shrank, so it was rewritten under us. The offset names a byte that no
+      // longer exists; start over rather than seek into the middle of a record.
+      scan.offset = 0;
+      scan.opening = null;
+    }
+
+    let messages: TranscriptMessage[];
+    try {
+      messages = scan.offset === 0
+        ? located.read.window(located.path, SCAN_HEAD_TURNS, SCAN_TAIL_TURNS).messages
+        : located.read.since(located.path, scan.offset).messages;
+    } catch {
+      return false; // an unreadable transcript is not a session without corrections
+    }
+    scan.offset = size;
+
+    // Attribution first, and it is load-bearing rather than tidy: the daemon types into
+    // sessions itself - workflow repair packets, `/reload-skills`, and the retro packet this
+    // very offer delivers - and every one of those is a `user` record on disk. Counted as
+    // human they would make the offer self-fulfilling: deliver a retro, and the session it
+    // was delivered to becomes retro-worthy.
+    for (const message of attributeTranscript(session.id, messages)) {
+      if (message.role !== "user" || message.origin !== undefined || !message.text.trim()) continue;
+      const print = turnPrint(message);
+      if (scan.opening === null) {
+        scan.opening = print;
+        continue;
+      }
+      if (print === scan.opening) continue;
+      flipped.add(session.id);
+      scans.delete(session.id);
+      return true;
+    }
+    return false;
+  };
+
+  return {
+    advance,
+    retain: (liveIds) => {
+      for (const id of scans.keys()) if (!liveIds.has(id)) scans.delete(id);
+      for (const id of flipped) if (!liveIds.has(id)) flipped.delete(id);
+    },
+  };
+}
+
+/**
+ * Poll live sessions for the corrections half and hand every flip to the registry.
+ *
+ * Its own timer rather than a sixth reader bolted onto the runtime-meta poll: that loop is
+ * declared as "the highest-authority passive source for a session's model, effort and context",
+ * reads one file per session for all five of its facts, and runs at a cadence chosen for a
+ * live status meter. This asks a different question of a different read, needs no cadence at
+ * all once a session has flipped, and is the kind of thing an operator should be able to slow
+ * down or switch off without touching the meter.
+ *
+ * `retain` is scoped to LIVE sessions, while the registry's own flag is scoped to the session
+ * ROW. That asymmetry is deliberate: an exited session lingers on the board and can still be
+ * offered a retro (the route files a task for it), so the answer must outlive the scanning.
+ */
+export function startRetroWorthinessPoller(
+  registry: Registry,
+  scanner: RetroCorrectionScanner = createRetroCorrectionScanner(),
+): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const tick = (): void => {
+    if (stopped) return;
+    try {
+      const live = registry.liveSessions();
+      for (const session of live) {
+        if (scanner.advance(session)) registry.recordRetroCorrections(session.id);
+      }
+      scanner.retain(new Set(live.map((session) => session.id)));
+    } catch (err) {
+      console.error("[retro] worthiness scan failed:", err);
+    }
+    if (stopped) return;
+    timer = unref(setTimeout(tick, RETRO_SCAN_MS));
+  };
+
+  // Off entirely at 0, the same switch `MISSION_POLL_MS` offers - a daemon whose operator
+  // does not want transcripts scanned still gets the findings half, which costs nothing.
+  if (RETRO_SCAN_MS <= 0) return () => {};
+  void tick();
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
+}

@@ -115,6 +115,51 @@ export function retroBackstopOffer(session: Session): RetroOffer | null {
   };
 }
 
+/**
+ * One retro request, and the session it is about.
+ *
+ * Keyed by SESSION and not by run, because that is what `POST /api/sessions/:id/retro` takes.
+ * The surface that holds this state is a per-RUN panel, so without the key it belonged to
+ * neither: cleared on a run change it dropped the answer to a click the operator had just
+ * made and re-enabled a button whose second press sends a second retro into the same pane;
+ * left alone it outlived whatever the panel had moved on to.
+ */
+export interface RetroCall {
+  sessionId: string;
+  status: "sending" | "sent" | "failed";
+  /** The outcome sentence once settled; null while sending. */
+  message: string | null;
+}
+
+/** What a surface should draw for its own session, given whatever call is on record. */
+export interface RetroCallView {
+  /** A request is in flight FOR THIS SESSION, so the control reads "Sending…" and refuses. */
+  sending: boolean;
+  /** A settled success worth stating - typed into the session, or filed as a task. */
+  notice: string | null;
+  /** A settled refusal, in the daemon's own words. */
+  error: string | null;
+}
+
+/**
+ * Narrow a recorded call to the session actually being rendered.
+ *
+ * The one place the scoping rule lives, and a pure function rather than three ternaries at
+ * the render site, because the defect this replaces was invisible in exactly that shape: a
+ * boolean that no longer named its subject. Everything here is "only if it is mine".
+ */
+export function retroCallView(
+  call: RetroCall | null | undefined,
+  sessionId: string | null | undefined,
+): RetroCallView {
+  const mine = call && sessionId && call.sessionId === sessionId ? call : null;
+  return {
+    sending: mine?.status === "sending",
+    notice: mine?.status === "sent" ? mine.message : null,
+    error: mine?.status === "failed" ? mine.message : null,
+  };
+}
+
 /** What the daemon's two success arms mean to the person who clicked, in one line each. */
 export function retroOutcome(result: { kind?: string }): string {
   return result.kind === "dispatched"

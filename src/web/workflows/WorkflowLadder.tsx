@@ -12,7 +12,12 @@ import {
 import { duration } from "../lib/format.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { api } from "../lib/api.ts";
-import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
+import {
+  retroCallView,
+  retroOffer,
+  retroOutcome,
+  type RetroCall,
+} from "../lib/retro-offer.ts";
 import {
   WorkflowChip,
   workflowRunTone,
@@ -682,8 +687,22 @@ export function WorkflowLadderPanel({
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [feedbackCopied, setFeedbackCopied] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [retroBusy, setRetroBusy] = useState(false);
-  const [retroNotice, setRetroNotice] = useState<string | null>(null);
+  /**
+   * The retro request, keyed by the SESSION it is about rather than by the run.
+   *
+   * Every other transient here belongs to the run and is cleared when `run.id` changes. This
+   * one does not: `api.runRetro` takes a session id, is offered on sessions with no run at
+   * all, and a new round starting in the background changes nothing about a request already
+   * in flight to that session's pane.
+   *
+   * That distinction is the whole reason it is a keyed record and not a boolean. A bare
+   * `retroBusy` sat in the run-scoped reset regime and belonged to neither: left out of the
+   * reset it outlived what the panel was showing, and put INTO the reset it would re-enable
+   * the button mid-flight and let a second click type a second retro packet into the same
+   * session. Keying it by session makes both questions answerable - "is one in flight FOR
+   * THIS SESSION", and "is this outcome about the session I am looking at".
+   */
+  const [retroCall, setRetroCall] = useState<RetroCall | null>(null);
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const copyReset = useRef<number | null>(null);
   const mounted = useRef(false);
@@ -726,8 +745,12 @@ export function WorkflowLadderPanel({
     refreshCommit.current.release();
     setFeedbackCopied(false);
     setLocalError(null);
-    setRetroNotice(null);
     setConfirm(null);
+    // `retroCall` is deliberately NOT reset here. It is about the session, which has not
+    // changed - this panel is mounted under a session-keyed parent - so clearing it would
+    // either drop the answer to a click the operator just made, or, mid-flight, re-enable a
+    // button whose second press sends a second retro. It is filtered by session id at the
+    // render site instead, which is the honest form of the same intent.
   }, [run.id]);
 
   if (state.state === "loading") {
@@ -849,26 +872,34 @@ export function WorkflowLadderPanel({
    * and made a second surface's identical offer look already-pending.
    */
   const offer = session ? retroOffer(session, run) : null;
+  // Only this session's own call is ever read, so a record left over from a session this
+  // panel is no longer showing can neither disable its button nor claim its outcome.
+  const call = retroCallView(retroCall, session?.id);
+  const sending = call.sending;
   const retro = offer
     ? {
         id: "retro",
-        label: retroBusy ? "Sending…" : offer.label,
+        label: sending ? "Sending…" : offer.label,
         tooltip: offer.tooltip,
-        disabled: retroBusy,
+        disabled: sending,
       }
     : null;
   const runRetro = (): void => {
-    if (!session || retroBusy) return;
-    setRetroBusy(true);
+    if (!session || sending) return;
+    const sessionId = session.id;
+    setRetroCall({ sessionId, status: "sending", message: null });
     setLocalError(null);
-    setRetroNotice(null);
-    void api.runRetro(session.id).then((result) => {
-      setRetroBusy(false);
-      if (!result.ok) {
-        setLocalError(result.error ?? "Could not start a retro for this session");
-        return;
-      }
-      setRetroNotice(retroOutcome(result));
+    // `sessionId` is captured rather than re-read off `session` in the callback: the props
+    // may have moved on by the time this settles, and an outcome has to be filed under the
+    // session it was actually requested for.
+    void api.runRetro(sessionId).then((result) => {
+      setRetroCall(result.ok
+        ? { sessionId, status: "sent", message: retroOutcome(result) }
+        : {
+            sessionId,
+            status: "failed",
+            message: result.error ?? "Could not start a retro for this session",
+          });
     });
   };
   const ladder = (
@@ -878,7 +909,7 @@ export function WorkflowLadderPanel({
       onOpenRun={onOpenRun}
       retro={retro}
       onRetro={session ? runRetro : undefined}
-      actionNotice={retroNotice}
+      actionNotice={call.notice}
       onCopyFeedback={copyFeedback}
       onPreparePr={() => runPost(
         "prepare-pr",
@@ -895,7 +926,7 @@ export function WorkflowLadderPanel({
       }}
       onResolveDelivery={resolveDelivery}
       feedbackCopied={feedbackCopied}
-      actionError={localError ?? controller.error}
+      actionError={localError ?? call.error ?? controller.error}
       sessionBound={sessionBound}
       isPending={controller.isPending}
     />

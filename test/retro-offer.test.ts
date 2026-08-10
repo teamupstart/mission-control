@@ -4,7 +4,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { InspectorSummary, Session } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
-import { retroBackstopOffer, retroOffer, retroOutcome } from "../src/web/lib/retro-offer.ts";
+import {
+  retroBackstopOffer,
+  retroCallView,
+  retroOffer,
+  retroOutcome,
+} from "../src/web/lib/retro-offer.ts";
 import { ActionBar } from "../src/web/components/ActionBar.tsx";
 import { CompleteModal } from "../src/web/components/CompleteModal.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
@@ -130,6 +135,45 @@ test("the Complete backstop drops the timing condition and keeps the worthiness 
 test("the two success arms are reported as the different next moves they are", () => {
   assert.match(retroOutcome({ kind: "delivered" }), /Retro sent/);
   assert.match(retroOutcome({ kind: "dispatched" }), /filed in the backlog/);
+});
+
+// ---- the request's own state ------------------------------------------------------------
+
+test("a retro in flight disables the control for that session and no other", () => {
+  const sending = { sessionId: "s1", status: "sending" as const, message: null };
+  assert.deepEqual(retroCallView(sending, "s1"), {
+    sending: true,
+    notice: null,
+    error: null,
+  });
+  // The defect this replaces, in one line. The state lived on a per-RUN panel as a bare
+  // boolean, so a run change while a request was in flight left the next run's ladder
+  // reading "Sending…" for a request it had never made. Keyed by session, the answer for
+  // anyone else is simply no.
+  assert.deepEqual(retroCallView(sending, "s2"), {
+    sending: false,
+    notice: null,
+    error: null,
+  });
+  assert.deepEqual(retroCallView(null, "s1"), { sending: false, notice: null, error: null });
+  // A surface with no session in scope - the ladder can be rendered without one - must not
+  // match a call by accident.
+  assert.equal(retroCallView(sending, null).sending, false);
+});
+
+test("a settled outcome is only ever shown to the session it is about", () => {
+  const sent = { sessionId: "s1", status: "sent" as const, message: "Retro sent" };
+  assert.equal(retroCallView(sent, "s1").notice, "Retro sent");
+  assert.equal(retroCallView(sent, "s1").error, null);
+  assert.equal(retroCallView(sent, "s2").notice, null);
+
+  const failed = { sessionId: "s1", status: "failed" as const, message: "the pane refused" };
+  assert.equal(retroCallView(failed, "s1").error, "the pane refused");
+  assert.equal(retroCallView(failed, "s1").notice, null);
+  assert.equal(retroCallView(failed, "s2").error, null);
+  // A settled call never keeps the control disabled - only an in-flight one does.
+  assert.equal(retroCallView(sent, "s1").sending, false);
+  assert.equal(retroCallView(failed, "s1").sending, false);
 });
 
 // ---- what the rows actually draw ---------------------------------------------------------

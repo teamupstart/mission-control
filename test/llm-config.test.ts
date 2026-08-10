@@ -177,4 +177,8 @@ test("the status route carries every job, the runner, and the providers this bui
   // A LABEL, not just an id: the browser cannot import a runner implementation to find one.
   for (const r of status.runners) assert.ok(r.label.trim().length > 0, `${r.id} has no label`);
   assert.equal(status.runner.id, DEFAULT_LLM_RUNNER_ID);
+  assert.equal(status.claudeTransport, "print");
+
+  setLlmConfig({ claudeTransport: "sdk" });
+  assert.equal(llmStatus().claudeTransport, "sdk", "the resolved transport did not reach status");
 });

@@ -14,7 +14,7 @@ import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
-import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
+import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
@@ -2096,6 +2096,8 @@ export interface LlmProviderView {
  */
 export interface LlmStatus {
   runner: ResolvedLlmRunner;
+  /** The resolved wire transport for tool-less Claude calls in every process. */
+  claudeTransport: ClaudeTransport;
   models: Record<LlmJobId, ResolvedLlmJobModel>;
   /** Every provider this build has, in declaration order. */
   runners: LlmProviderView[];

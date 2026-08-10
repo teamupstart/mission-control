@@ -4,6 +4,7 @@ import type { AgentType, ReviewItem, Session, SessionQueue, WorkItem } from "@sh
 import { activePaneDialog, reportBucket } from "@shared/session.ts";
 import {
   ForemanClient,
+  foremanClaudeTransportFallback,
   flushPendingSpend,
   loadSpendOutbox,
   pendingSpendReports,
@@ -68,7 +69,8 @@ import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem, verifyModel } from "./queue-verify.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { DEFAULT_LLM_RUNNER_ID, killLiveLlmRuns, llmRunner } from "../llm/index.ts";
-import type { LlmRunnerId } from "@shared/llm.ts";
+import { configureClaudeRunnerTransport } from "../llm/claude.ts";
+import type { ClaudeTransport, LlmRunnerId } from "@shared/llm.ts";
 import {
   drainCompletionClaim,
   promptedCompletionClaim,
@@ -114,7 +116,7 @@ function askOnScreen(session: Session, pane: string | null): PaneDialog | null {
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
 // the sessions' needs-you queue AND feeds each session's work queue, one session at
-// a time, reviewing each in a FRESH `claude -p` process so context never bleeds
+// a time, reviewing each in a FRESH tool-less model call so context never bleeds
 // between sessions. It reaches the daemon only over the localhost API - it never
 // touches the DB directly - so it is a plain client that can run in its own
 // terminal, exactly as designed.
@@ -145,7 +147,7 @@ let lastSpendSweepAt = 0;
  * Minimum wall-clock gap between two full reviews of the *same* session. The marker
  * idempotency check already skips an unchanged episode for free; this floor stops a
  * session whose marker flaps (e.g. a terminal keyed on a moving `lastActivity`) from
- * spawning a fresh `claude -p` every loop. Overridable for tests/tuning; default 60s.
+ * starting a fresh model call every loop. Overridable for tests/tuning; default 60s.
  */
 const EVAL_DEBOUNCE_MS = Number(process.env.FOREMAN_EVAL_DEBOUNCE_MS || 60_000);
 /**
@@ -153,7 +155,7 @@ const EVAL_DEBOUNCE_MS = Number(process.env.FOREMAN_EVAL_DEBOUNCE_MS || 60_000);
  * emitting one small object over a trimmed window, not Opus reading a 60-turn window (head
  * plus tail - see `client.transcript`) with the whole POLICY. The budgets must differ because `on` mode runs the two SERIALLY (the router, then the
  * full review on route-up), so sharing Tier 2's cap would let a degraded API double the serial
- * queue's worst case rather than fail fast. A timeout is just a spawn failure to `triageSession`,
+ * queue's worst case rather than fail fast. A timeout is just a provider failure to `triageSession`,
  * which routes up - i.e. degrades to exactly the pre-triage cost.
  */
 const TRIAGE_TIMEOUT_MS = Number(process.env.FOREMAN_TRIAGE_TIMEOUT_MS || 30_000);
@@ -214,10 +216,10 @@ let isLeader = false;
  * difference between a lease that works and one that hands the sessions to two
  * workers mid-verify.
  *
- * The loop blocks on a `claude -p` for up to 2 * REVIEW_TIMEOUT_MS = 240s, so a
+ * The loop blocks on a model call for up to 2 * REVIEW_TIMEOUT_MS = 240s, so a
  * lease renewed only by loop progress would have to outlive that - and a
  * "comfortably longer than one tick" TTL would expire mid-verify, let a standby
- * acquire, and run both workers. A `claude -p` is async I/O, so the event loop is
+ * acquire, and run both workers. A model call is async I/O, so the event loop is
  * free throughout a verify and this timer fires ~8 times during one. That makes
  * the lease mean "this worker process is alive" rather than "this worker recently
  * finished a session", and keeps failover fast (90s, not 300s).
@@ -238,10 +240,9 @@ function startLeaseRenewal(client: ForemanClient): void {
 
 /**
  * Tear down on an ordinary exit signal. Two things must happen:
- *  - Kill our reviewers. They spawn `detached` (so the session poller never sees them
- *    as phantom sessions), which also means they'd SURVIVE us and burn tokens to
- *    nowhere. A SIGKILL of this process still leaks them; nothing can be done about
- *    that from in here, but every ordinary path is covered.
+ *  - Cancel our reviewers. Print-mode children are detached, so they would survive us;
+ *    SDK queries need their AbortControllers fired. A SIGKILL of this process still
+ *    cannot run cleanup, but every ordinary path is covered.
  *  - Release the lease, so a standby takes over at once instead of waiting out the
  *    90s TTL.
  */
@@ -252,8 +253,7 @@ function installShutdown(client: ForemanClient): void {
       if (closing) process.exit(1); // a second Ctrl-C means "now"
       closing = true;
       log("shutting down…");
-      // Every runner, not just `claude -p`: the cheap tier spawns through whichever one
-      // is configured, and these children are detached so they outlive this process.
+      // Every runner and transport: print children need signals and SDK calls need aborts.
       killLiveLlmRuns();
       // One last attempt to deliver accounting for runs that already happened. Best-effort
       // rather than load-bearing now that the outbox is durable: anything this does not
@@ -270,6 +270,10 @@ function installShutdown(client: ForemanClient): void {
 
 async function main(): Promise<void> {
   const client = new ForemanClient();
+  // The daemon installs the same runner with a DB-backed resolver. This separate process
+  // must not import that config module, so its resolver closes over the HTTP-refreshed
+  // value below instead. It is installed before any path can spend.
+  configureClaudeRunnerTransport(() => claudeTransport);
   // This process's half of usage accounting, installed before anything can spend. The
   // worker never opens the database, so its runs reach the ledger the way everything else
   // it does reaches it - over a route. `void` rather than await: the runner reports on the
@@ -318,7 +322,7 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Foreman's own pick wins, and only when it HAS one. An unset `runner` is not
+    // Foreman's own runner pick wins, and only when it HAS one. An unset `runner` is not
     // "claude" - it means the operator never chose here, so the answer is the app-wide
     // ladder (config, then `MISSION_LLM_RUNNER`, then the default), which only the daemon
     // can resolve because only it can see the config layer. Defaulting to a literal here
@@ -327,7 +331,12 @@ async function main(): Promise<void> {
     // Kept on the last known answer when the daemon can't say, rather than reset to the
     // default: a blip must not silently move the cheap tier onto a provider the operator
     // did not pick, and the next pass asks again anyway.
-    triageRunnerId = cfg.runner ?? (await client.llmRunner().catch(() => triageRunnerId));
+    // The Claude transport has no Foreman-local override. It follows the daemon's resolved
+    // app-wide answer so a Settings edit reaches both processes on the next pass. One status
+    // request carries both facts, and a transient failure retains both last-known values.
+    const llmSelection = await client.llmSelection().catch(() => null);
+    triageRunnerId = cfg.runner ?? llmSelection?.runner ?? triageRunnerId;
+    if (llmSelection) claudeTransport = llmSelection.claudeTransport;
 
     // A non-leader IDLES, it does not exit - so it takes over cleanly when the
     // leader's lease expires (a crash, a Ctrl-C), which is the whole point of an
@@ -947,7 +956,7 @@ async function processTarget(
   // Re-resolve the target against a FRESH session list before deciding ANYTHING - including
   // whether this session is here because it needs you - through the same
   // `resolveLiveSession` the send guard uses, for the same reason: a pass walks its
-  // targets serially and any one of them can block on a `claude -p` for up to 240s,
+  // targets serially and any one of them can block on a model call for up to 240s,
   // so the snapshot this target was selected with can be minutes old. Deciding from
   // it reads a long-dead `state: "idle"` against a fresh `now`, which makes
   // `settledIdle` trivially true and fires a verify at an agent that went back to
@@ -968,7 +977,7 @@ async function processTarget(
 
   // The FULL queue: Session.queue is only the compact card summary, while the
   // machine needs gaps, baseSha, transcriptAnchor, round, revision and strikes.
-  // One extra loopback round-trip per target per tick - noise next to a claude -p.
+  // One extra loopback round-trip per target per tick - noise next to a model call.
   //
   // A FAILED read has to stay distinguishable from a successful one, because `null` is
   // ALSO the legitimate answer for "this session has no queue" - and the two mean
@@ -1172,7 +1181,7 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
  * A tick that aborts returns NOT advanced, always. The loop reads that as "nothing here
  * right now" and sleeps IDLE_MS; claiming progress for a write that failed re-selects
  * this same session every BETWEEN_MS instead, which on the paths below the verifier
- * means a `claude -p` per 400ms for as long as one endpoint stays broken.
+ * means a model call per 400ms for as long as one endpoint stays broken.
  */
 async function processPromptedWrapup(
   client: ForemanClient,
@@ -1207,7 +1216,7 @@ async function processPromptedWrapup(
   // Foreman already gave up on this episode - see `promptedFailures`, which counts both
   // the failures below that can repeat forever. Checked HERE, above every read, because
   // the whole point of the cap is to stop spending on it: a check further down would
-  // still pay for the evidence gather and the `claude -p` it exists to prevent.
+  // still pay for the evidence gather and the model call it exists to prevent.
   if (promptedFailures.gaveUp(session.id, candidate.episodeKey)) return false;
 
   // --- evidence. Same discipline as runVerify: any gap in it is a verify-INFRASTRUCTURE
@@ -1388,7 +1397,7 @@ async function processPromptedWrapup(
   // A failed stamp aborts: proceeding would be typing an instruction that pushes with
   // nothing recording that we did, so the next tick would do it again. It also aborts
   // as NOT advanced, and counts a strike: nothing was written, and the episode is still
-  // armed, so claiming progress would spend a full evidence gather plus a `claude -p`
+  // armed, so claiming progress would spend a full evidence gather plus a model call
   // per BETWEEN_MS against a session whose only broken part is one endpoint.
   if (!(await retirePromptedEpisode(client, session, plan.goal))) return false;
 
@@ -1697,7 +1706,7 @@ async function processSession(
   // Debounce: the check above skips an UNCHANGED episode for free, but a *changed*
   // marker (a new review, or a terminal whose `lastActivity` moved) would otherwise
   // spawn a full review immediately. Hold each session to at most one evaluation per
-  // window so a flapping marker can't burn a `claude -p` on every loop; a session seen
+  // window so a flapping marker can't burn a model call on every loop; a session seen
   // for the first time is due at once, so genuinely new work is never delayed.
   if (!evaluations.claim(session.id)) return false;
 
@@ -1735,7 +1744,7 @@ async function processSession(
   // Resolve the verdict through the tier ladder (off / shadow / on). A null here means
   // the outcome was already handled - a transient review failure that will retry, or a
   // give-up note that was already written - so there's nothing left to apply. That still
-  // counts as work: a `claude -p` was spawned, so the loop must not hurry back.
+  // counts as work: a model call ran, so the loop must not hurry back.
   const decision = await decide(client, cfg, session, pending, ctx, {
     pane,
     // The SAME object `ctx.menu` holds when it is a driver's request, so what the reviewer
@@ -1755,7 +1764,7 @@ async function processSession(
     cfg.autoApproveAccess,
   );
 
-  // The review may have spawned a fresh `claude -p` that ran for up to two minutes, so
+  // The review may have run a fresh model call for up to two minutes, so
   // both the session snapshot and the config are stale by the time we're ready to act.
   // Before acting on it, re-confirm against a fresh session list that this session still
   // needs *this* exact prompt; if the human already handled it (answered, left
@@ -2027,7 +2036,7 @@ async function cheapTierDecides(
 }
 
 /**
- * The full Tier 2 review: a fresh `claude -p` on the wide window (60 turns: a
+ * The full Tier 2 review: a fresh tool-less model call on the wide window (60 turns: a
  * `TRANSCRIPT_HEAD_TURNS` head the route always adds, plus the default 48-turn tail
  * `client.transcript` asks for) with the whole POLICY. Returns the verdict, or null when a transient failure was handled -
  * either a retry (nothing written, left queued) or, after repeated strikes, a
@@ -2078,7 +2087,7 @@ async function fullReview(
     // marker, or the idempotency check would abandon this prompt forever after a
     // single blip. Leave it queued to retry; only after several consecutive failures
     // do we give up with a marker-stamped skip so a persistently-broken reviewer stops
-    // re-spawning `claude -p` every loop.
+    // starting another model call every loop.
     const outcome = reviewFailures.onFailure(ctx, result.reason);
     if (outcome.retry) {
       log(`${session.name}: review failed, will retry (${result.reason})`);
@@ -2134,6 +2143,15 @@ async function readInstructions(client: ForemanClient): Promise<string> {
  * with the default so the very first pass has an answer even if the daemon is slow.
  */
 let triageRunnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID;
+
+/**
+ * The Claude wire transport this worker process applies to all four Foreman call sites.
+ *
+ * Seeded from the worker's environment for rolling compatibility with a daemon that has
+ * no `/api/llm/status` route yet. A successful status read replaces it with the daemon's
+ * resolved config/env/default answer, keeping that daemon authoritative thereafter.
+ */
+let claudeTransport: ClaudeTransport = foremanClaudeTransportFallback();
 
 /**
  * Adapt the daemon client to the cheap tier's read-only dependency surface.

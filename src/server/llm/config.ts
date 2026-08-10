@@ -90,13 +90,17 @@ export function llmJobModel(job: LlmJobId, cfg: LlmConfig = getLlmConfig()): Res
   return resolveLlmJobModel(job, cfg.models, envVar(LLM_JOB_SPECS[job].envKey), llmRunnerChoice(cfg).id);
 }
 
-/** Every job at once, plus the runner and the providers this build has - the panel's read. */
+/** Every job at once, plus the runner, Claude transport and available providers. */
 export function llmStatus(cfg: LlmConfig = getLlmConfig()): LlmStatus {
   const envValues = Object.fromEntries(
     LLM_JOB_IDS.map((job) => [job, envVar(LLM_JOB_SPECS[job].envKey)]),
   ) as Partial<Record<LlmJobId, string | undefined>>;
   return {
     runner: llmRunnerChoice(cfg),
+    // Foreman reads this resolved value over HTTP. It cannot read app_config, and resolving
+    // only from its own environment would let the daemon and worker disagree about a stored
+    // choice until one of them restarted.
+    claudeTransport: claudeTransportChoice(cfg),
     models: resolveLlmJobModels(cfg.models, envValues, llmRunnerChoice(cfg).id),
     // Ids AND labels, because a label lives on the implementation and the browser cannot
     // import one - see `LlmStatus.runners`.

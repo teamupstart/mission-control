@@ -15,6 +15,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server, ServerResponse } from "node:http";
+import type {
+  ClaudeSdkMessage,
+  ClaudeSdkOneShotDeps,
+} from "../src/server/harness/claude/sdk-types.ts";
+import type { LlmSpendReport } from "../src/shared/llm-spend.ts";
 
 // What is at stake: a headless run's cost exists exactly once, and only for as long as it
 // takes to deliver it.
@@ -113,6 +118,10 @@ const {
   spendOutboxTest,
 } = await import("../src/server/foreman/client.ts");
 const client = new ForemanClient();
+const { claudeRunner, configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
+const { setLlmSpendSink } = await import("../src/server/llm/spend.ts");
+const { recordSpendReport } = await import("../src/server/spend-ledger.ts");
+const { openDb } = await import("../src/server/db.ts");
 const SPOOL = spendOutboxTest.path();
 const DEAD_OWNER_PID = 2_147_483_647;
 
@@ -317,6 +326,100 @@ test("a report reaches the daemon and leaves nothing queued or spooled", async (
   // No spool file at rest: "nothing pending" is the absence of one, not an empty array
   // somebody has to parse to find out.
   assert.equal(existsSync(SPOOL), false);
+});
+
+test("an SDK Foreman run keeps its identity and usage through the HTTP outbox", async () => {
+  const runId = "foreman-sdk-outbox";
+  const modelId = "claude-haiku-4-5-20251001";
+  const frame: ClaudeSdkMessage = {
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "routed",
+    session_id: runId,
+    total_cost_usd: 0.013531,
+    usage: {
+      input_tokens: 9,
+      cache_creation_input_tokens: 6_661,
+      cache_read_input_tokens: 0,
+      output_tokens: 40,
+    },
+    modelUsage: {
+      [modelId]: {
+        inputTokens: 9,
+        outputTokens: 40,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 6_661,
+        costUSD: 0.013531,
+        canonicalModel: "claude-haiku-4-5",
+      },
+    },
+  };
+  const deps: ClaudeSdkOneShotDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async () => ({
+      async *[Symbol.asyncIterator]() {
+        yield frame;
+      },
+    }),
+  };
+  const restoreTransport = configureClaudeRunnerTransport(() => "sdk", deps);
+  const previousSink = setLlmSpendSink((item) => void client.reportSpend(item));
+  try {
+    assert.equal(
+      await claudeRunner.run("route this prompt", {
+        model: "claude-haiku-4-5",
+        role: "foreman:triage",
+      }),
+      "routed",
+    );
+    await eventually(() => received.some((item) => item.runId === runId));
+
+    const delivered = received.find((item) => item.runId === runId) as unknown as LlmSpendReport;
+    assert.equal(delivered.role, "foreman:triage");
+    assert.equal(delivered.runner, "claude");
+    assert.equal(delivered.runId, runId);
+    assert.deepEqual(delivered.models, [{
+      modelId,
+      input: 9,
+      output: 40,
+      reasoningOutput: 0,
+      cacheRead: 0,
+      cacheWrite: 6_661,
+      reportedCostUsd: 0.013531,
+    }]);
+    assert.equal(pendingSpendReports(), 0);
+    assert.equal(existsSync(SPOOL), false);
+
+    // The worker only delivered tokens and provider cost. The daemon's existing writer is
+    // still the component that values and records the row, exactly as it does for print.
+    assert.deepEqual(recordSpendReport(delivered), { kind: "recorded" });
+    const row = openDb()
+      .prepare(
+        `SELECT note_key, agent, window_end_ns, cost_usd, cost_basis, spend_kind
+           FROM usage_ledger WHERE window_end_ns = ?`,
+      )
+      .get(runId) as {
+        note_key: string;
+        agent: string;
+        window_end_ns: string;
+        cost_usd: number;
+        cost_basis: string;
+        spend_kind: string;
+      };
+    assert.deepEqual({ ...row }, {
+      note_key: "foreman:triage",
+      agent: "claude",
+      window_end_ns: runId,
+      cost_usd: 0.013531,
+      cost_basis: "reported",
+      spend_kind: "automation",
+    });
+  } finally {
+    setLlmSpendSink(previousSink);
+    restoreTransport();
+  }
 });
 
 test("an undelivered report is written to disk, not just held in memory", async () => {

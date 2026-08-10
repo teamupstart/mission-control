@@ -8,10 +8,10 @@ import type { Verdict } from "./verdict.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 
 // Foreman's triage review: judge ONE session's pending question. A thin caller
-// over runStructured, which owns the fresh tool-less `claude -p` process (so every
-// session starts from a clean context), its detached group, its timeout, and the
-// parse-miss retry. Its stdout is a JSON envelope whose `result` holds the model's
-// text, from which we extract + validate the structured verdict.
+// over runStructured, which owns the fresh tool-less model call (so every session
+// starts from a clean context), its timeout, and the parse-miss retry. The selected
+// runner and transport normalize their provider response to text, from which we
+// extract and validate the structured verdict.
 
 /**
  * The result of one review: either a model-produced verdict (success - including a
@@ -33,7 +33,7 @@ export function reviewModel(cfg: { reviewModel?: string; runner?: LlmRunnerId })
 }
 
 /**
- * Review one session in a fresh process; never throws (returns `failed` instead).
+ * Review one session with fresh context; never throws (returns `failed` instead).
  *
  * `model` is REQUIRED, and passed rather than resolved here, for the same reason
  * `planBacklog` takes one: this module is the prompt-and-parse half, and the config that

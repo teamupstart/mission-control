@@ -8,7 +8,7 @@ import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
-// Runs ONE work-item verification in a fresh tool-less `claude -p`, mirroring
+// Runs ONE work-item verification in a fresh tool-less model call, mirroring
 // review.ts exactly. It NEVER throws: the {verdict | failed} split is the contract
 // that separates "the model judged" from "the infra blipped", and the queue treats
 // those completely differently - a verdict advances the item, a failure must not.
@@ -48,8 +48,8 @@ const MAX_RESOLVED = 32;
  * fails the parse, so a verifier that judged an item COMPLETE but wrote a 700-char
  * `detail` loses its verdict entirely; `runStructured` then retries the identical
  * prompt, gets the identical over-long answer, and the item escalates as "Foreman
- * could not verify this item" after six `claude -p` spawns - over a verbose
- * sentence, on work that was actually done.
+ * could not verify this item" after six headless calls over a verbose sentence on
+ * work that was actually done.
  *
  * The `detail` cap isn't even a rule the model was told: the prompt documents
  * `<= 600 chars` for `fix` alone and describes `detail` as "what is missing,
@@ -165,7 +165,7 @@ export function verifyModel(cfg: { verifyModel?: string; runner?: LlmRunnerId })
 }
 
 /**
- * Verify one work item in a fresh process; never throws.
+ * Verify one work item with fresh context; never throws.
  *
  * `model` is required and supplied by the caller - see `reviewSession` for why this is
  * a parameter rather than a lookup, and why it must not be optional.

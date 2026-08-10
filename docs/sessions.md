@@ -814,10 +814,12 @@ stream, the way the session actually ran:
 
 The shortcut row prints only keys that do something on **this** session, in your own
 bindings: a session running in a pane is offered `focus`, a driver-run one `terminal`
-(Shift+T), and a session with no checkout or no task is not offered `diff` or `complete` -
-the same conditions under which the action bar draws each button. A finished session is
-offered none, because there is nothing left to do to it. The row disappears entirely if you
-have turned keyboard hints off, since teaching the chords is all it does.
+(Shift+T), and a session with no checkout is not offered `diff`, because there is nothing
+to compare. `complete` is always offered on a live session even without a task, since the
+chord opens the same dialog either way and that dialog is what explains there is nothing to
+mark done. A finished session is offered nothing, because there is nothing left to do to
+it. The row disappears entirely if you have turned keyboard hints off, since teaching the
+chords is all it does.
 
 Everything else is unchanged, because it is the same panel: the same box replies, the same
 attachments drop onto it, find works the same way, the Observed activity rail is still

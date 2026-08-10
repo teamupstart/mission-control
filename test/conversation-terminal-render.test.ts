@@ -130,19 +130,25 @@ test("an SDK session is taught handoff, which is the one that works there", () =
   assert.deepEqual(legend[0], { action: "handoff", label: "terminal" });
 });
 
-test("a session with no checkout is not taught diff, and no task is not taught complete", () => {
-  // The footer draws neither button in these states - `diff` needs a checkout to compare
-  // and `complete` completes a task - so neither chord is promised here either.
-  const bare = terminalLegend(mkSession({ cwd: null, task: null }));
-  const actions = bare.map((e) => e.action);
-  assert.ok(!actions.includes("diff"), "a session off a checkout was taught diff");
-  assert.ok(!actions.includes("complete"), "a session with no task was taught complete");
+test("a session with no checkout is not taught diff, which the footer also omits", () => {
+  const bare = terminalLegend(mkSession({ cwd: null })).map((e) => e.action);
+  assert.ok(!bare.includes("diff"), "a session off a checkout was taught diff");
   // Kill still applies to any live session, and is what stops this from degrading to an
   // empty row that never says anything.
-  assert.ok(actions.includes("kill"));
+  assert.ok(bare.includes("kill"));
 
   const full = terminalLegend(mkSession({ cwd: "/wt/x", task: mkTaskSummary() })).map((e) => e.action);
   assert.deepEqual(full, ["focus", "diff", "complete", "kill"]);
+});
+
+test("a taskless session IS taught complete, because the chord still answers", () => {
+  // The line the inclusion test is drawn on. `complete`'s button is drawn disabled without
+  // a task, but `ActionBar.requestComplete` never checks for one - the chord opens
+  // `CompleteModal` either way, and the modal is what says there is nothing to mark done
+  // and to use Kill instead. Dropping the entry would hide a key that gives a real answer,
+  // so "the action bar draws no control" is the test, not "its button is enabled".
+  const actions = terminalLegend(mkSession({ task: null })).map((e) => e.action);
+  assert.ok(actions.includes("complete"), "a taskless session was under-taught the complete chord");
 });
 
 test("a finished session is taught nothing, because it has no action bar either", () => {

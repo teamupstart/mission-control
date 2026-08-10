@@ -94,9 +94,15 @@ export interface LegendEntry {
  *
  * Derived rather than a constant list, because a legend that teaches a chord which does
  * nothing here is worse than teaching nothing: the reader tries it, gets silence, and
- * learns to distrust the row. Every entry below is drawn only where the action bar draws
- * its own button for the same thing, and this function mirrors those conditions exactly
- * (`ActionBar`'s `variant="foot"`, plus the `live` gate both hosts put around it).
+ * learns to distrust the row.
+ *
+ * The test for inclusion is whether the CHORD reaches something, which is not quite the
+ * same as whether its button is usable. An entry is dropped only where the action bar
+ * DRAWS NO CONTROL at all - and `complete` is the case that makes the distinction worth
+ * stating: its button is drawn disabled without a task, but `requestComplete` never checks
+ * for one, so the chord opens `CompleteModal` either way and the modal is what says "this
+ * session has no Mission Control task, so there is nothing to mark done". Teaching that
+ * key is teaching a real answer; a disabled button cannot give one.
  *
  * The first entry is the one the mockup got wrong for most sessions. `handoff` (Shift+T,
  * "Continue in terminal") is an SDK-only action - its handler returns immediately unless
@@ -105,17 +111,18 @@ export interface LegendEntry {
  * different word, exactly as the footer already switches them.
  */
 export function terminalLegend(session: Session): readonly LegendEntry[] {
-  // A finished session has no action bar in either host, so it has nothing to teach.
+  // A finished session has no action bar in either host - both gate the whole row on the
+  // session being live - so there is no control here and nothing to teach.
   if (session.state === "exited" || session.state === "stopping") return [];
   const rows: LegendEntry[] = [
     session.runtime === "sdk"
       ? { action: "handoff", label: "terminal" }
       : { action: "focus", label: "focus" },
   ];
-  // No checkout, no diff to open.
+  // No checkout, no diff to open - and the footer draws no button either, rather than a
+  // disabled one, which is why this is the one fact that removes an entry.
   if (session.cwd) rows.push({ action: "diff", label: "diff" });
-  // Completing is completing a TASK; the footer's button is disabled without one.
-  if (session.task) rows.push({ action: "complete", label: "complete" });
+  rows.push({ action: "complete", label: "complete" });
   rows.push({ action: "kill", label: "kill" });
   return rows;
 }

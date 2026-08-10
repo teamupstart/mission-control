@@ -51,7 +51,7 @@ import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.ts
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { TerminalStatusLine, TerminalTitlebar } from "./ConversationTerminal.tsx";
 import { useSessionConversationView } from "../lib/conversation-view.ts";
-import { duration } from "../lib/format.ts";
+import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
 import { useRichText } from "../lib/rich-text.ts";
@@ -296,8 +296,10 @@ export function TranscriptPanel({
   const { view, overridden, setView } = useSessionConversationView(sessionId);
   const terminal = view === "terminal";
   // The prompt's `~/leaf`, not the whole checkout: a worktree path is 60 characters of
-  // pool bookkeeping and the strip directly above already prints it in full.
-  const promptCwd = session.cwd ? (session.cwd.split("/").filter(Boolean).pop() ?? "~") : "~";
+  // pool bookkeeping and the strip directly above already prints it in full. `promptPath`
+  // owns the whole displayed string, prefix included - see its note on why a leaf plus a
+  // renderer that adds `~/` is the wrong split.
+  const promptCwd = promptPath(session.cwd);
 
   // Derived, never stored. A streamed turn arriving re-runs the search, which is what
   // keeps the count honest as the conversation grows underneath an open find.
@@ -1291,7 +1293,7 @@ function TerminalTurn({
 }: {
   m: TranscriptMessage;
   agentLabel: string;
-  /** The prompt's working directory: the checkout's leaf, or `~` when it has none. */
+  /** The prompt's working directory as it is DRAWN - `~/leaf`, or `~` with no checkout. */
   cwd: string;
   /** The whole path the leaf above stands for, for the tooltip. */
   fullCwd: string | null;
@@ -1312,9 +1314,10 @@ function TerminalTurn({
           <span className="pty-host">{who.replace(/\s+/g, "-")}@mission</span>
           {/* `~/leaf` is the shell's own shorthand and the shape the mockup drew, which
               means it is short by leaving something out. The whole path is one hover
-              away, so the abbreviation never has to be taken at face value. */}
+              away, so the abbreviation never has to be taken at face value. Rendered
+              verbatim: `promptPath` has already decided whether there is a leaf to show. */}
           <Tooltip label={fullCwd ?? "this session has no checkout"}>
-            <span className="pty-cwd">~/{cwd}</span>
+            <span className="pty-cwd">{cwd}</span>
           </Tooltip>
           <span className="pty-caret" aria-hidden="true">
             ❯

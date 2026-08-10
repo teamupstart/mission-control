@@ -9,6 +9,7 @@ import {
 } from "../src/web/components/ConversationTerminal.tsx";
 import type { TerminalAttach } from "../src/web/components/ConversationTerminal.tsx";
 import type { Session } from "../src/shared/types.ts";
+import { promptPath } from "../src/web/lib/format.ts";
 import { meta, mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 /**
@@ -159,6 +160,30 @@ test("a finished session is taught nothing, because it has no action bar either"
   // The rest of the line still reports: an exited session's state is exactly what a reader
   // has come to the status line for.
   assert.match(status({ state: "exited" }), /claude: exited/);
+});
+
+// ---- the prompt line's working directory ----
+//
+// One function owns the WHOLE displayed string, prefix included. It did not: the panel
+// derived a leaf that fell back to "~", and the renderer prefixed every value with "~/",
+// so a session with no checkout drew `you@mission ~/~ ❯ …`. Splitting a value between a
+// producer and a template is what made that representable, and these pin the join.
+
+test("a checkout draws as ~/leaf, not as the whole worktree path", () => {
+  // The leaf, because this sits inline in a prompt line the reader scans for the words
+  // after it - and the launcher strip above already prints the path in full.
+  assert.equal(promptPath("/Users/j/.treehouse/pool-abc/20/ai-harness"), "~/ai-harness");
+  assert.equal(promptPath("/wt/goal"), "~/goal");
+  // A trailing slash is not an empty leaf.
+  assert.equal(promptPath("/wt/goal/"), "~/goal");
+});
+
+test("a session with no checkout draws a bare ~, never ~/~", () => {
+  assert.equal(promptPath(null), "~");
+  assert.equal(promptPath(""), "~");
+  // The pathological input that has no leaf at all takes the same branch, rather than
+  // producing a prefix with nothing after it.
+  assert.equal(promptPath("/"), "~");
 });
 
 test("the status line is addressable as the region it is", () => {

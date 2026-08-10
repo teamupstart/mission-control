@@ -223,6 +223,24 @@ export function shortenCwd(cwd: string | null): string {
   return p;
 }
 
+/**
+ * The working directory as a shell prompt writes it: `~/leaf`, or bare `~` when the
+ * session has no checkout at all.
+ *
+ * Returns the WHOLE displayed string rather than a leaf for a caller to prefix. That split
+ * is what produced `~/~` on a session with no checkout - the fallback was already a `~` and
+ * the renderer added another - and the only way to make that unrepresentable is for one
+ * function to own the entire value.
+ *
+ * The leaf rather than the path `shortenCwd` gives, because this sits inline in a prompt
+ * line the reader scans for the words after it: a worktree path is sixty characters of pool
+ * bookkeeping, and the conversation's launcher strip already prints it in full.
+ */
+export function promptPath(cwd: string | null): string {
+  const leaf = cwd ? (cwd.split("/").filter(Boolean).pop() ?? "") : "";
+  return leaf ? `~/${leaf}` : "~";
+}
+
 export type Tone = "working" | "idle" | "attention" | "exited" | "neutral";
 
 export interface StateDisplay {

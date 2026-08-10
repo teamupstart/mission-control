@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased plan: Push a backlog task to a task source</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #1a1e24; --muted: #5b6470; --line: #d9dee5;
+    --accent: #0b62c4; --accent-soft: #e8f1fb; --code-bg: #f4f6f8;
+    --warn: #8a5a00; --warn-bg: #fdf3dd; --box: #f8fafc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --fg: #e6e9ee; --muted: #9aa4b1; --line: #333b46;
+      --accent: #5aa2ec; --accent-soft: #1a2836; --code-bg: #1d2229;
+      --warn: #e3b45c; --warn-bg: #2a2415; --box: #191e25;
+    }
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         max-width: 60rem; margin: 0 auto; padding: 2.5rem 1.25rem 5rem; }
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 .5rem; }
+  h2 { font-size: 1.25rem; margin: 2.2rem 0 .6rem; padding-top: .8rem; border-top: 1px solid var(--line); }
+  a { color: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 1.6rem; }
+  code { font: .86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         background: var(--code-bg); border-radius: 4px; padding: .12em .35em; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+        padding: .8rem 1rem; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+  th, td { border: 1px solid var(--line); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--box); }
+  .note { border: 1px solid var(--line); border-left: 4px solid var(--accent);
+          background: var(--box); border-radius: 6px; padding: .7rem .9rem; margin: 1rem 0; }
+  .warn { border-left-color: var(--warn); background: var(--warn-bg); }
+  figure { margin: 1.4rem 0; }
+  figcaption { color: var(--muted); font-size: .88rem; margin-top: .4rem; }
+  .diagram { border: 1px solid var(--line); border-radius: 8px; background: var(--box); padding: .6rem; overflow-x: auto; }
+  .diagram svg { display: block; min-width: 720px; width: 100%; height: auto; }
+  ol li, ul li { margin: .25rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Phased plan: Push a backlog task to a task source</h1>
+<p class="sub">Implementation index for <a href="plan.html">plan.html</a> (source of truth: <code>plan.md</code>). Each scheduled Mission Control task points at one phase file below.</p>
+
+<h2>Source plan and incorporated decisions</h2>
+<ul>
+  <li>Push requires a configured github-issues source whose <code>repoRoot</code> matches the task's (no sourceless fallback).</li>
+  <li>UI surface: the edit-backlog-task modal only; the same spot renders the issue link after a push and for swept-in tasks.</li>
+  <li>Issue content: title = task title, body = task intent, labels = the source's <code>labelsAny</code> filter labels.</li>
+  <li>The local task stays in the backlog, linked via <code>task.source</code>; the seen row prevents re-import.</li>
+  <li>Plan review: <code>ghBin()</code> converts <strong>every</strong> gh call site now (github-issues.ts, pr.ts, inspector/github.ts).</li>
+  <li>The dashboard review initially chose "stop after this plan"; the operator later explicitly requested phasing - this index is that follow-up.</li>
+</ul>
+
+<h2>Investigated findings</h2>
+<ul>
+  <li>Exactly <strong>14</strong> literal <code>run("gh", ...)</code> sites: 3 in <code>github-issues.ts</code>, 2 in <code>pr.ts</code>, 9 in <code>inspector/github.ts</code>. The Inspector has no internal gh wrapper; the substitution is 9 mechanical edits there.</li>
+  <li><code>envVar()</code> resolves <code>MISSION_/FLEET_/HARNESS_</code> prefixes, so <code>envVar("GH_BIN")</code> yields the <code>MISSION_GH_BIN</code> override with no new plumbing.</li>
+  <li><code>src/server/tasks.ts</code> has <code>interface Ok</code> (~line 130) as the established refusal shape for <code>attachSource</code>.</li>
+  <li>Everything else in the source plan matched the repository as written.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+  <tr><th>#</th><th>Phase</th><th>File</th><th>Direct deps</th><th>Delivers</th></tr>
+  <tr><td>1</td><td>Contract and gh plumbing</td><td><a href="phase-1-contract-and-gh-plumbing.md"><code>phase-1-contract-and-gh-plumbing.md</code></a></td><td>none</td><td><code>canPush</code> / <code>PushDraft</code> / <code>PushResult</code> / <code>push</code> verb, registry entry points, <code>ghBin()</code> at all 14 sites, github-issues push impl, contract + mapping tests. Zero behavior change with the env var unset.</td></tr>
+  <tr><td>2</td><td>Push write path and route</td><td><a href="phase-2-push-write-path-and-route.md"><code>phase-2-push-write-path-and-route.md</code></a></td><td>Phase 1</td><td><code>attachSource</code>, <code>push.ts</code> chokepoint (seen row + link in one transaction), <code>PushTaskSchema</code>, <code>POST /api/tasks/:id/push</code> with the 200/400/404/409/502/504 contract, push + route tests. API usable via curl.</td></tr>
+  <tr><td>3</td><td>Modal UI, e2e, docs</td><td><a href="phase-3-modal-ui-e2e-docs.md"><code>phase-3-modal-ui-e2e-docs.md</code></a></td><td>Phase 2</td><td><code>PushToSourceBlock</code> in the edit modal, <code>Task.source</code> rendered for the first time, wording sweeps, <code>FAKE_GH</code> + <code>MISSION_GH_BIN</code> fixtures, two Playwright specs, render tests, <code>docs/dispatch-and-backlog.md</code>.</td></tr>
+</table>
+</div>
+
+<h2>Dependency graph and concurrency</h2>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 760 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Serial dependency graph: phase 1 to phase 2 to phase 3, each released by the previous phase's merged pull request.">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g font-family="-apple-system, Segoe UI, Roboto, sans-serif" font-size="13" fill="currentColor">
+    <g stroke="currentColor" fill="none" stroke-width="1.3">
+      <rect x="20"  y="40" width="200" height="62" rx="8"/>
+      <rect x="280" y="40" width="200" height="62" rx="8"/>
+      <rect x="540" y="40" width="200" height="62" rx="8"/>
+    </g>
+    <text x="120" y="66" text-anchor="middle" font-weight="600">Phase 1</text>
+    <text x="120" y="86" text-anchor="middle" opacity="0.7" font-size="11.5">contract + ghBin seam + push impl</text>
+    <text x="380" y="66" text-anchor="middle" font-weight="600">Phase 2</text>
+    <text x="380" y="86" text-anchor="middle" opacity="0.7" font-size="11.5">txn write path + POST /push route</text>
+    <text x="640" y="66" text-anchor="middle" font-weight="600">Phase 3</text>
+    <text x="640" y="86" text-anchor="middle" opacity="0.7" font-size="11.5">modal UI + e2e + docs</text>
+    <g stroke="currentColor" stroke-width="1.3" fill="none">
+      <line x1="220" y1="71" x2="277" y2="71" marker-end="url(#arr)"/>
+      <line x1="480" y1="71" x2="537" y2="71" marker-end="url(#arr)"/>
+    </g>
+    <text x="248" y="62" text-anchor="middle" font-size="11">merge</text>
+    <text x="508" y="62" text-anchor="middle" font-size="11">merge</text>
+    <text x="20" y="132" font-size="12" opacity="0.75">Strictly serial - no concurrency groups. Merge order equals phase order.</text>
+  </g>
+</svg>
+</div>
+<figcaption>Phase 2 consumes phase 1's types and registry entry points; phase 3 consumes phase 2's route contract and phase 1's env seam.</figcaption>
+</figure>
+
+<div class="note">An <strong>independent</strong> backlog task exists outside this plan: "Add a Delete button to the edit-backlog-task modal" (<code>5b24172d</code>), touching the modal footer while phase 3 touches the modal body. No dependency edge; whichever lands second rebases over a same-file, different-region overlap.</div>
+
+<h2>Cross-phase contracts</h2>
+<ul>
+  <li><strong>Phase 1 -&gt; 2, 3</strong>: <code>PushDraft</code>/<code>PushResult</code>/<code>PushContext</code> and <code>canPushTo</code>/<code>pushToSource</code> are frozen; <code>outcomeUnknown: true</code> is never retry-safe; exit-0-without-URL reads as unknown outcome, never success; <code>ghBin()</code> is the only gh seam and <code>MISSION_GH_BIN</code> its override. The push ctx <code>signal</code> is shape parity with sweeps, not a cancellation path - <code>run()</code> has none - so <code>GH_TIMEOUT_MS</code> and phase 2's in-flight guard are the actual bounds on a wedged push.</li>
+  <li><strong>Phase 2 -&gt; 3</strong>: route contract frozen (200 returns the updated <code>Task</code>; 504 body carries <code>outcomeUnknown: true</code>; 502 means retry-safe); eligibility = exact string equality of source and task <code>repoRoot</code> plus kind <code>canPush</code> - the UI filters by the identical comparison.</li>
+</ul>
+<div class="note warn"><strong>Safety invariant (all phases):</strong> the seen row and the task link are written in one transaction; no path writes them separately, except the deliberate moved-mid-push case which writes only the seen row and reports the created issue.</div>
+
+<h2>Final verification strategy</h2>
+<ol>
+  <li><code>npm run typecheck &amp;&amp; npm run lint &amp;&amp; npm test &amp;&amp; npm run build &amp;&amp; npm run smoke &amp;&amp; npm run test:e2e</code> on the default branch after phase 3.</li>
+  <li>Manual round trip on a real repo: push a task, see the issue (title/body/labels), see the modal link, then "Sweep now" files zero new tasks; delete the task and sweep again - still zero (seen rows outlive tasks).</li>
+  <li>The two failure paths: missing repo label -&gt; inline 502 error with the button retained; unknown outcome -&gt; 504 wording with the button removed.</li>
+</ol>
+
+</body>
+</html>

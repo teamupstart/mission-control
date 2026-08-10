@@ -79,6 +79,24 @@ function useEpisodes(sessionId: string, noteStamp: number): ForemanEpisode[] {
 }
 
 /**
+ * Why an invite write did not stick, in one sentence that leads with what is STILL true.
+ *
+ * Worded around the state rather than around the failure because the state is the part
+ * that can hurt. "Couldn't withdraw Foreman" invites the reading that nothing happened and
+ * the operator can move on; what they actually need to know is that Foreman is still in
+ * this session and may be typing into it right now. The daemon's own words follow, flatted
+ * and clamped for the same reason `useForeman`'s `whyItFailed` does it: a refusal can
+ * arrive as a multi-line JSON dump, and this line has a single row to live in.
+ */
+export function inviteFailure(action: "invite" | "withdraw", error: string | undefined): string {
+  const flat = (error ?? "").replace(/\s+/g, " ").replace(/[.\s]+$/, "").trim();
+  const why = flat ? `: ${flat.length > 80 ? `${flat.slice(0, 79)}…` : flat}` : "";
+  return action === "invite"
+    ? `Foreman was not invited${why}. It is still not in this session.`
+    : `Foreman was not withdrawn${why}. It may still be triaging, wrapping up and following pull requests here.`;
+}
+
+/**
  * SSE-visible goal fields that move when a prompt is captured and again when its
  * reconciliation becomes the effective completion contract.
  */
@@ -152,6 +170,7 @@ export function ConsoleDetail({
   const [hasReply, setHasReply] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
   const transcriptRef = useRef<TranscriptHandle>(null);
   const filesRef = useRef<FileWorkspaceHandle>(null);
   const paneRef = useRef<HTMLDivElement>(null);
@@ -234,13 +253,23 @@ export function ConsoleDetail({
    * exactly the question this feature exists to answer, and the first thing it would do
    * is claim Foreman had left a session it was still typing into.
    *
+   * `api`'s writes go through `request()`, which NEVER rejects - a 500, a vanished session
+   * or a dropped connection all come back as `{ ok: false, error }`. So a settled promise
+   * is not a success, and treating it as one here would be the most dangerous possible
+   * lie this feature can tell: closing the drawer on a failed withdrawal shows the
+   * operator the exact signal they would get if it had worked, while Foreman keeps
+   * typing. Both handlers read `.ok`, both leave the surface where it was on failure, and
+   * the message says what is STILL true rather than that something went wrong. Same shape
+   * as `useForeman`'s `update`, which reverts and explains for the same reason.
+   *
    * `inviteBusy` is only about the in-flight request: it disables the control so a second
    * click cannot race the first, and it makes no claim about the outcome.
    */
   async function inviteForeman(): Promise<void> {
     setInviteBusy(true);
     try {
-      await api.inviteForeman(session.id);
+      const res = await api.inviteForeman(session.id);
+      setInviteError(res.ok ? null : inviteFailure("invite", res.error));
     } finally {
       setInviteBusy(false);
     }
@@ -249,10 +278,13 @@ export function ConsoleDetail({
   async function withdrawForeman(): Promise<void> {
     setInviteBusy(true);
     try {
-      await api.withdrawForemanInvite(session.id);
-      // The drawer belongs to a session Foreman is in. Left open over one it has just been
-      // removed from, its header would keep offering an action that has already happened -
-      // and closing it is what puts the rail's invite affordance back in view.
+      const res = await api.withdrawForemanInvite(session.id);
+      if (!res.ok) return setInviteError(inviteFailure("withdraw", res.error));
+      setInviteError(null);
+      // Only on success. The drawer belongs to a session Foreman is in: left open over one
+      // it has just been removed from, its header would keep offering an action that has
+      // already happened - and closing it is what puts the rail's invite affordance back
+      // in view. Closing it on a REFUSED withdrawal would say all of that falsely.
       setDrawerOpen(false);
     } finally {
       setInviteBusy(false);
@@ -264,6 +296,12 @@ export function ConsoleDetail({
     focusPending.current = false;
     transcriptRef.current?.focusReply();
   }, [tab]);
+
+  // The message is a claim about a participation state, so it dies the moment that state
+  // moves. Without this, a refused withdrawal followed by a successful one from another
+  // tab - or by the session being re-dispatched - would leave "Foreman may still be
+  // triaging here" standing over a rail that says it is not in this session at all.
+  useEffect(() => setInviteError(null), [session.foremanInvite]);
 
   const st = stateDisplay(session);
   const live = session.state !== "exited" && session.state !== "stopping";
@@ -438,6 +476,16 @@ export function ConsoleDetail({
           onInvite={() => void inviteForeman()}
         />
       </div>
+
+      {/* Directly under the control that produced it, and outside the body so it does not
+          belong to whichever tab happens to be open - the write is about the session, not
+          about its conversation or its queue. `role="alert"` because it appears in
+          response to a press and is the only signal that the press did nothing. */}
+      {inviteError && (
+        <p className="detail-invite-error" role="alert">
+          {inviteError}
+        </p>
+      )}
 
       {/* The reader pane. `tabIndex=-1` so Tab from the rail can land focus HERE - the
           conversation window the operator reads and the vertical arrows scroll - and its

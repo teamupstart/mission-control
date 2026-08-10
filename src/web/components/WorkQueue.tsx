@@ -194,7 +194,8 @@ export function WorkQueue({
           mode={foremanMode}
           allowlisted={allowlisted}
           session={session}
-          queued={0}
+          waiting={0}
+          drawn={0}
         />
         {error && <p className="wq-error">{error}</p>}
       </section>
@@ -616,7 +617,8 @@ export function WorkQueue({
         mode={foremanMode}
         allowlisted={allowlisted}
         session={session}
-        queued={open.length}
+        waiting={open.length}
+        drawn={items.length}
       />
 
       {queue && queue.wrapupAskedAt !== null && (
@@ -640,13 +642,23 @@ export function WorkQueue({
  * offering to queue work for a worker that will not come - so it survives the emptiness
  * that retires the others, and words itself for it.
  */
-function QueueHint(props: {
+export function QueueHint(props: {
   enabled: boolean;
   mode: string;
   allowlisted: boolean;
   session: Session;
-  /** How many items are still waiting. Zero retires every line except the uninvited one. */
-  queued: number;
+  /** How many items are still WAITING. Zero retires every line except the uninvited one. */
+  waiting: number;
+  /**
+   * How many items the panel is DRAWING, terminal ones included.
+   *
+   * Separate from `waiting` because the list above this line renders every item, finished
+   * or not, so the two disagree for a queue that has run to completion: nothing is waiting
+   * and the panel is visibly not empty. Only the uninvited line has to tell them apart -
+   * it is the one that survives `waiting === 0`, and "Nothing queued" printed under six
+   * completed items is a false claim of exactly the kind this reason exists to prevent.
+   */
+  drawn: number;
 }): React.JSX.Element | null {
   const block = foremanSendBlock({
     enabled: props.enabled,
@@ -655,7 +667,7 @@ function QueueHint(props: {
     allowlisted: props.allowlisted,
     cwd: props.session.cwd,
   });
-  if (props.queued === 0 && block !== "not-invited") return null;
+  if (props.waiting === 0 && block !== "not-invited") return null;
 
   switch (block) {
     case "foreman-off":
@@ -665,20 +677,25 @@ function QueueHint(props: {
           wait - turn Foreman on from the toolbar to start working through them.
         </p>
       );
-    // The only reason with two wordings, because it is the only one that renders over an
-    // empty queue: with items waiting the sentence is about them, and with none it is
-    // about the panel itself, which would otherwise be a blank box with an add form and
-    // no hint that what you type into it has nobody to pick it up.
+    // The only reason that has to look at the queue it is standing under, because it is
+    // the only one that renders when nothing is waiting. Three states, and the sentence
+    // has to be true of the pixels above it in each: work still to do, work all finished,
+    // and no work at all - which is the panel explaining itself rather than its contents,
+    // and the case an operator meets when they open a queue that has never moved.
     case "not-invited":
-      return props.queued > 0 ? (
+      if (props.waiting > 0) {
+        return (
+          <p className="wq-hint dim">
+            Foreman is not in this session, so nothing here will be drafted or sent. Invite it from
+            the rail above to let it work through these.
+          </p>
+        );
+      }
+      return (
         <p className="wq-hint dim">
-          Foreman is not in this session, so nothing here will be drafted or sent. Invite it from
-          the rail above to let it work through these.
-        </p>
-      ) : (
-        <p className="wq-hint dim">
-          Nothing queued. Foreman is not in this session - invite it from the rail above to let it
-          triage and wrap up here.
+          {props.drawn > 0 ? "Nothing is waiting. " : "Nothing queued. "}
+          Foreman is not in this session - invite it from the rail above to let it triage and wrap
+          up here.
         </p>
       );
     // Allowlist honesty. An off-allowlist queue silently never goes live and every

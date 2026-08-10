@@ -3,8 +3,12 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ForemanEpisode, Session } from "../src/shared/types.ts";
-import { ConsoleDetail, ForemanRail } from "../src/web/components/layouts/ConsoleDetail.tsx";
-import { WorkQueue } from "../src/web/components/WorkQueue.tsx";
+import {
+  ConsoleDetail,
+  ForemanRail,
+  inviteFailure,
+} from "../src/web/components/layouts/ConsoleDetail.tsx";
+import { QueueHint, WorkQueue } from "../src/web/components/WorkQueue.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
 import { mkSessionView } from "./helpers/session-view.ts";
 
@@ -125,6 +129,36 @@ test("ConsoleDetail drives the slot from the session's own invite field", () => 
   assert.match(uninvited, /detail-tabs/, "still the same strip, not a suppressed one");
 });
 
+// ---- a refused write, and the sentence that has to admit it ----
+//
+// `api`'s writes go through `request()`, which never rejects: a 500, a vanished session or
+// a dropped connection all settle as `{ ok: false, error }`. So "the promise resolved" is
+// not "it worked", and the withdrawal case is where that distinction has teeth - Foreman
+// is still in the session, and still typing.
+
+test("a refused write leads with what is still true, not with the failure", () => {
+  const withdrawn = inviteFailure("withdraw", "HTTP 500");
+  // The operator's actual exposure: something may still be acting in their session.
+  assert.match(withdrawn, /still be triaging/);
+  assert.match(withdrawn, /not withdrawn/);
+  assert.match(withdrawn, /HTTP 500/, "the daemon's own words survive");
+
+  const invited = inviteFailure("invite", undefined);
+  assert.match(invited, /still not in this session/);
+  // No reason to give, so no dangling punctuation where one would have gone.
+  assert.doesNotMatch(invited, /:/);
+  assert.doesNotMatch(invited, /\.\./);
+});
+
+test("a multi-line refusal is flattened and clamped into one line", () => {
+  // A zod rejection arrives as a JSON dump. This line has one row to live in, and the
+  // sentence after the reason is the part that must survive.
+  const noisy = inviteFailure("withdraw", `{\n  "issues": [\n${"x".repeat(200)}\n  ]\n}`);
+  assert.doesNotMatch(noisy, /\n/);
+  assert.match(noisy, /…/, "clamped rather than allowed to run over the sentence");
+  assert.match(noisy, /still be triaging/, "the consequence survives the clamp");
+});
+
 // ---- the other half: the panel that would otherwise say nothing ----
 
 const queueHtml = (session: Session, enabled = true): string =>
@@ -159,4 +193,60 @@ test("an empty queue with Foreman off says nothing either", () => {
   // stays quiet rather than reaching past the winning reason for one it can render.
   const html = queueHtml(mkSession({ foremanInvite: null }), false);
   assert.doesNotMatch(html, /wq-hint/);
+});
+
+/**
+ * The uninvited line is the only one that renders when nothing is waiting, which makes it
+ * the only one that has to look at what the panel is actually DRAWING above it.
+ *
+ * A queue whose items have all finished is not empty on screen - the list renders every
+ * item, terminal ones included - but `open.length` is 0. Read as "nothing here at all",
+ * that prints "Nothing queued" directly beneath six completed rows: a false claim, made by
+ * the one reason whose entire job is to stop an operator reading silence as a bug.
+ *
+ * `QueueHint` is asserted directly because the panel gets its items from a fetch and
+ * `renderToStaticMarkup` runs no effects - the all-finished queue is unreachable through
+ * `WorkQueue`, which is how it survived review.
+ */
+const hintHtml = (o: { waiting: number; drawn: number }): string =>
+  renderToStaticMarkup(
+    createElement(QueueHint, {
+      enabled: true,
+      mode: "live",
+      allowlisted: true,
+      session: mkSession({ foremanInvite: null }),
+      ...o,
+    }),
+  );
+
+test("the uninvited line says what is true of the list it stands under", () => {
+  assert.match(hintHtml({ waiting: 2, drawn: 2 }), /nothing here will be drafted or sent/);
+  assert.match(hintHtml({ waiting: 2, drawn: 2 }), /work through these/);
+
+  // Items on screen, none of them waiting. It must not claim the queue is empty.
+  const finished = hintHtml({ waiting: 0, drawn: 6 });
+  assert.match(finished, /Nothing is waiting/);
+  assert.doesNotMatch(finished, /Nothing queued/, "six completed rows are drawn right above it");
+  assert.match(finished, /Foreman is not in this session/, "still explains the absence");
+
+  // Genuinely nothing - the panel explaining itself rather than its contents.
+  const empty = hintHtml({ waiting: 0, drawn: 0 });
+  assert.match(empty, /Nothing queued/);
+  assert.doesNotMatch(empty, /Nothing is waiting/);
+});
+
+test("a finished queue in an INVITED session still says nothing", () => {
+  // The `waiting === 0` retirement is unchanged for every other reason: they are claims
+  // about items that will be acted on, and there are none.
+  const html = renderToStaticMarkup(
+    createElement(QueueHint, {
+      enabled: true,
+      mode: "dry-run",
+      allowlisted: true,
+      session: mkSession(),
+      waiting: 0,
+      drawn: 6,
+    }),
+  );
+  assert.equal(html, "");
 });

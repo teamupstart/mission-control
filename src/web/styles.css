@@ -20669,6 +20669,19 @@ span.line-run-prov {
   cursor: progress;
   opacity: 0.6;
 }
+/* A refused invite or withdrawal, under the strip that holds the control. Full width and
+   in `--danger` rather than tucked beside the chip: it is the only signal that a press did
+   nothing, and the withdrawal case is telling the operator that Foreman may still be
+   typing into this session. Same size and colour as `.wq-error`, which is this app's other
+   "the write did not land" line. */
+.detail-invite-error {
+  margin: 0;
+  padding: 6px 14px 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+
 /* Keeps the busy chip in its slot. `Tooltip` wraps a DISABLED trigger in a `.tt-anchor`
    span, because a disabled button dispatches no mouse events and would otherwise lose the
    sentence explaining itself - which makes the span the flex item and leaves

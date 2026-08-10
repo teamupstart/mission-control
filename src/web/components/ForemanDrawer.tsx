@@ -95,7 +95,15 @@ export function ForemanDrawer({
                 view only: the detail view's header is a back button and one episode's
                 context, and offering to end participation from inside a single note reads
                 as acting on that note. Withdrawing from an SDK session is allowed too;
-                the daemon stores a tombstone that beats its implicit grant. */}
+                the daemon stores a tombstone that beats its implicit grant.
+
+                Not disabled while its write is in flight, unlike the rail's invite chip,
+                and the asymmetry is deliberate in both directions: a SUCCEEDING withdrawal
+                closes this drawer, so the control unmounts rather than needing to be
+                guarded, and a FAILING one leaves it standing precisely so it can be
+                pressed again. Disabling it would also hand it the `.tt-anchor` wrapper
+                `Tooltip` gives disabled triggers, which would orphan the `margin-left:
+                auto` below and slide it out of the header's right-hand pair. */}
             {session.foremanInvite !== null && (
               <Tooltip label="Remove Foreman from this session - it stops triaging, wrapping up, and following PRs here">
                 <button className="fd-withdraw" onClick={onWithdraw}>

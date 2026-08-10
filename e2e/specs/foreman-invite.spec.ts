@@ -172,6 +172,53 @@ test("an operator can withdraw Foreman from a session and invite it back", async
 });
 
 /**
+ * A refused withdrawal must not look like a successful one.
+ *
+ * `api.withdrawForemanInvite` goes through `request()`, which never rejects: a 500, a
+ * vanished session and a dropped connection all come back as a settled
+ * `{ ok: false, error }`. Closing the drawer on that would hand the operator the exact
+ * signal they get when it worked, while Foreman keeps triaging, wrapping up and following
+ * PRs in a session they believe they just removed it from. That is the most dangerous
+ * thing this feature can get wrong, and no other layer can see it - the render tests are
+ * handed a session object, and the route tests never press a button.
+ */
+test("a refused withdrawal leaves Foreman visibly still in the session", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  await openDetail(dashboard, daemon);
+
+  await intentButton(dashboard).click();
+  const withdraw = dashboard.getByRole("button", { name: "Withdraw invite" });
+  await expect(withdraw).toBeVisible();
+
+  // The daemon is fine; the answer is not. Fulfilled rather than aborted so this exercises
+  // the non-2xx arm of `request()`, which is the one that resolves rather than throwing.
+  await dashboard.route("**/foreman-invite", async (route) =>
+    route.request().method() === "DELETE"
+      ? route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"boom"}' })
+      : route.continue(),
+  );
+
+  await withdraw.click();
+
+  // Every signal still says Foreman is here, because it is.
+  await expect(dashboard.getByRole("alert")).toContainText("was not withdrawn");
+  await expect(dashboard.getByRole("alert")).toContainText("may still be triaging");
+  await expect(withdraw, "the drawer must not close on a write that did not land").toBeVisible();
+  await expect(intentButton(dashboard)).toBeVisible();
+  await expect(inviteButton(dashboard)).toHaveCount(0);
+
+  // And the control is usable again rather than latched disabled by the failure.
+  await dashboard.unroute("**/foreman-invite");
+  await withdraw.click();
+  await expect(inviteButton(dashboard)).toBeVisible();
+  // The message went with the state it was describing.
+  await expect(dashboard.getByRole("alert")).toHaveCount(0);
+});
+
+/**
  * The chip does not move while its own write is in flight.
  *
  * Not a nicety, and not something any other layer can see. `Tooltip` wraps a DISABLED

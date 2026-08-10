@@ -498,6 +498,7 @@ test("Live sends one exact packet, attributes it once, and re-arms only the drai
     id: "claude",
     label: "fake",
     runInThread: null,
+    structuredOutput: null,
     sandbox: null,
     price: () => null,
     litter: null,

@@ -305,8 +305,8 @@ export interface LlmRunner {
    */
   price(usage: LlmSpendModelUsage): LlmSpendPrice | null;
 
-  /** Whether `LlmRunOptions.schema` is enforced by the provider. Absent/null means ignored. */
-  structuredOutput?: LlmStructuredOutputSpec | null;
+  /** Whether `LlmRunOptions.schema` is enforced by the provider. `null` means ignored. */
+  structuredOutput: LlmStructuredOutputSpec | null;
 
   /** What this runner will accept in `LlmRunOptions.grant`, or `null` if it accepts none. */
   sandbox: LlmSandboxSpec | null;

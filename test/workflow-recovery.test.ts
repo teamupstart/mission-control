@@ -151,6 +151,7 @@ test("restart interrupts fresh calls, retries safely, and never duplicates recei
     id: "claude",
     label: "fake",
     runInThread: null,
+    structuredOutput: null,
     sandbox: null,
     price: () => null,
     litter: null,

@@ -67,6 +67,7 @@ function runner(verdict: () => "pass" | "fail"): LlmRunner {
     id: "claude",
     label: "fake",
     runInThread: null,
+    structuredOutput: null,
     sandbox: null,
     price: () => null,
     litter: null,

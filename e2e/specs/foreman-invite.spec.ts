@@ -42,13 +42,48 @@ const inviteButton = (page: Page) => page.getByRole("button", { name: "Invite fo
 /** Its invited state, before Foreman has decided anything here. */
 const intentButton = (page: Page) => page.getByRole("button", { name: "Foreman intent" });
 
-async function put(daemon: DaemonHandle, path: string, body: unknown): Promise<void> {
+async function call(
+  daemon: DaemonHandle,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<Response> {
   const res = await fetch(`${daemon.baseURL}${path}`, {
-    method: "PUT",
+    method,
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  if (!res.ok) throw new Error(`${path} answered ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}: ${await res.text()}`);
+  return res;
+}
+
+const put = (daemon: DaemonHandle, path: string, body: unknown): Promise<Response> =>
+  call(daemon, "PUT", path, body);
+
+/**
+ * The one SDK session this daemon has, by id - discovery is off, so there is exactly one.
+ *
+ * Polled rather than read once: the dispatch modal closes when the route accepts the
+ * dispatch, which is before the supervisor has adopted the session into the registry. Read
+ * straight through, this raced the adoption and reported zero sessions.
+ */
+async function sessionId(daemon: DaemonHandle): Promise<string> {
+  let found: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        const all = (await (await call(daemon, "GET", "/api/sessions")).json()) as {
+          id: string;
+          runtime: string;
+        }[];
+        const sdk = all.filter((s) => s.runtime === "sdk");
+        found = sdk[0]?.id;
+        return sdk.length;
+      },
+      { message: "the dispatched SDK session should reach the registry", timeout: 20_000 },
+    )
+    .toBe(1);
+  return found!;
 }
 
 /**
@@ -216,6 +251,49 @@ test("a refused withdrawal leaves Foreman visibly still in the session", async (
   await expect(inviteButton(dashboard)).toBeVisible();
   // The message went with the state it was describing.
   await expect(dashboard.getByRole("alert")).toHaveCount(0);
+});
+
+/**
+ * An invite that ends somewhere else must not leave this drawer armed to reopen.
+ *
+ * `withdrawForeman` resets `drawerOpen`, but it covers exactly one of the ways an invite
+ * ends. The daemon owns the field: another dashboard on the same session, a scripted
+ * `DELETE`, or a session reset all withdraw it, and every one arrives here as an ordinary
+ * `session_upsert`. The `invited` gate unmounts the drawer on any of them - but unmounting
+ * does not clear the flag, so without the reset the next invite remounts the drawer with
+ * `open` still true and pops it open in front of an operator who never clicked anything.
+ *
+ * Driven through the routes rather than a second browser because that is the same event
+ * this component sees either way, and it keeps the spec to one page.
+ */
+test("an invite withdrawn elsewhere does not leave the drawer armed to reopen", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  const id = await sessionId(daemon);
+  await openDetail(dashboard, daemon);
+
+  // Open it, the way an operator would, and confirm it is really open.
+  await intentButton(dashboard).click();
+  await expect(dashboard.getByRole("button", { name: "Withdraw invite" })).toBeVisible();
+
+  // Somebody else withdraws. This browser pressed nothing.
+  await call(daemon, "DELETE", `/api/sessions/${encodeURIComponent(id)}/foreman-invite`);
+  await expect(inviteButton(dashboard)).toBeVisible();
+  await expect(dashboard.getByRole("button", { name: "Withdraw invite" })).toHaveCount(0);
+
+  // And back in, again from elsewhere. The rail returns; the drawer must NOT.
+  await call(daemon, "POST", `/api/sessions/${encodeURIComponent(id)}/foreman-invite`);
+  await expect(intentButton(dashboard)).toBeVisible();
+  await expect(
+    dashboard.getByRole("button", { name: "Withdraw invite" }),
+    "the drawer reopened without a click - a stale drawerOpen survived the withdrawal",
+  ).toHaveCount(0);
+
+  // Still usable rather than merely closed: the flag was reset, not wedged.
+  await intentButton(dashboard).click();
+  await expect(dashboard.getByRole("button", { name: "Withdraw invite" })).toBeVisible();
 });
 
 /**

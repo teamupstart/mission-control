@@ -297,11 +297,27 @@ export function ConsoleDetail({
     transcriptRef.current?.focusReply();
   }, [tab]);
 
-  // The message is a claim about a participation state, so it dies the moment that state
-  // moves. Without this, a refused withdrawal followed by a successful one from another
-  // tab - or by the session being re-dispatched - would leave "Foreman may still be
+  // Both pieces of local state that are really claims ABOUT the invite, retired the moment
+  // the invite itself moves - however it moved.
+  //
+  // The message first: without this, a refused withdrawal followed by a successful one from
+  // another tab - or by the session being re-dispatched - would leave "Foreman may still be
   // triaging here" standing over a rail that says it is not in this session at all.
-  useEffect(() => setInviteError(null), [session.foremanInvite]);
+  //
+  // Then the drawer's flag, and this one has to happen HERE rather than only in
+  // `withdrawForeman`, because that handler covers exactly one of the ways an invite ends.
+  // The daemon owns this field: another client on the same session, a direct API call, or a
+  // reset can all withdraw it, and every one of those arrives as an ordinary
+  // `session_upsert`. The `invited` gate unmounts the drawer on any of them - but unmounting
+  // does not clear `drawerOpen`, so the flag survives, and the next invite remounts the
+  // drawer with `open` still true and pops it open in front of an operator who never
+  // clicked anything. Scoped to the transition to `null` rather than to every change, so a
+  // grant merely CHANGING KIND (an `operator` invite replaced by `dispatch` on redispatch)
+  // does not close a drawer the reader is using.
+  useEffect(() => {
+    setInviteError(null);
+    if (session.foremanInvite === null) setDrawerOpen(false);
+  }, [session.foremanInvite]);
 
   const st = stateDisplay(session);
   const live = session.state !== "exited" && session.state !== "stopping";

@@ -8,6 +8,7 @@ import {
   type PersonaView,
   type SessionAction,
   type WorkflowCheckSlot,
+  type WorkflowDefinition,
   type WorkflowDraftNode,
   type WorkflowEdge,
   type WorkflowSourcePort,
@@ -233,8 +234,16 @@ export function WorkflowLibrary({
   onDirtyChange: (dirty: boolean) => void;
   onSelectionChange?: (workflowId: string | null) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
-  /** Opens the binding dialog with no session pinned. Absent in surfaces App does not host. */
-  onBindWorkflow?: () => void;
+  /**
+   * Opens the binding dialog with no session pinned, for the workflow the operator is READING.
+   *
+   * Takes the workflow rather than nothing, because the button that reaches this sits inside
+   * one workflow's pipeline and its label promises to bind THAT one. Handing over `{}` left the
+   * dialog to guess, and its guess was catalog position - so an operator reading No-Mistakes
+   * Review was offered whichever workflow sorted first by name. Absent in surfaces App does
+   * not host.
+   */
+  onBindWorkflow?: (workflow: WorkflowDefinition) => void;
 }): React.JSX.Element {
   const ordered = useMemo(() => [...summaries].sort((a, b) => a.name.localeCompare(b.name)), [summaries]);
   const active = ordered.filter((workflow) => workflow.archivedAt === null);
@@ -1190,8 +1199,8 @@ export function WorkflowLibrary({
               409 the operator did not ask for. */}
           {mode === "pipeline" && onBindWorkflow && workflow.archivedAt === null && (
             <section className="wf-pipeline-bind">
-              <Tooltip label="Pick a session and a published version to run this workflow against">
-                <button className="btn" onClick={onBindWorkflow}>
+              <Tooltip label={`Pick a session to run ${workflow.name} against`}>
+                <button className="btn" onClick={() => onBindWorkflow(workflow)}>
                   Bind to a session…
                 </button>
               </Tooltip>

@@ -183,6 +183,7 @@ export function App(): React.JSX.Element {
     sessionActions,
     workflowSummaries,
     workflowRunSummaries: workflowRuns,
+    workflowBindingSummaries,
     ensembleSummaries,
     fleetCost,
     lineSummary,
@@ -988,6 +989,25 @@ export function App(): React.JSX.Element {
     return bySession;
   }, [workflowRuns]);
 
+  /**
+   * The workflow each live conversation is armed with, keyed by session.
+   *
+   * Only `active` bindings: orphaned and paused ones still exist and still describe the
+   * conversation's history, but they will not run at this session's completion, and a chip
+   * that named them would promise a review that is not coming. The dialog still shows them -
+   * it is where reattaching happens - which is the difference between a card's one-line claim
+   * and a surface that exists to manage the binding.
+   */
+  const workflowBindingBySession = useMemo(() => {
+    const bySession = new Map<string, (typeof workflowBindingSummaries)[number]>();
+    for (const binding of workflowBindingSummaries) {
+      if (!binding.sessionId || binding.state !== "active") continue;
+      const current = bySession.get(binding.sessionId);
+      if (!current || binding.updatedAt > current.updatedAt) bySession.set(binding.sessionId, binding);
+    }
+    return bySession;
+  }, [workflowBindingSummaries]);
+
   // Nav-bar filter: live substring match over each card's title, status, and agent. Empty
   // filter shows everything.
   //
@@ -1229,6 +1249,7 @@ export function App(): React.JSX.Element {
     onEditTask: openTaskEditor,
     workflowRunBySession,
     onOpenWorkflowRun: openWorkflowRun,
+    workflowBindingBySession,
     onBindWorkflow: (sessionId) => setWorkflowBindingTarget({ sessionId }),
     onOpenSchedule,
     scheduleNameById,
@@ -1905,10 +1926,15 @@ export function App(): React.JSX.Element {
           onBindVersion={(version) => setWorkflowBindingTarget({
             workflowVersionId: version.id,
             workflowId: version.workflowId,
-            workflowVersion: version.version,
             bindingDefaults: version.bindingDefaults,
           })}
-          onBindWorkflow={() => setWorkflowBindingTarget({})}
+          onBindWorkflow={(workflow) => setWorkflowBindingTarget({
+            workflowId: workflow.id,
+            // Null only while a draft has never been published, and the button that reaches
+            // here is not offered for one. Passing it through regardless keeps the dialog's
+            // "choose a version" state reachable instead of inventing a selection.
+            workflowVersionId: workflow.currentVersionId ?? undefined,
+          })}
         />
       </main>
     )

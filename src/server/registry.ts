@@ -58,6 +58,7 @@ import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal
 import type {
   PersonaView,
   SessionAction,
+  WorkflowBindingSummary,
   WorkflowRunSummary,
   WorkflowSummary,
 } from "@shared/workflow.ts";
@@ -458,6 +459,14 @@ export class Registry extends EventEmitter {
   private workflowSummaries = new Map<string, WorkflowSummary>();
   /** Compact execution projections only. Graphs, evidence, and timelines stay on HTTP. */
   private workflowRuns = new Map<string, WorkflowRunSummary>();
+  /**
+   * What each conversation is ARMED with, as distinct from what is running on it.
+   *
+   * Separate from `workflowRuns` because the two answer different questions and a binding
+   * outlives every run it starts - under the `foreman_complete` trigger it precedes the first
+   * run by the whole length of the session's work. Archived bindings never enter.
+   */
+  private workflowBindings = new Map<string, WorkflowBindingSummary>();
   /** Compact ensemble projections only. Members, artifacts and evaluations stay on HTTP. */
   private ensembles = new Map<string, EnsembleSummary>();
   /**
@@ -633,6 +642,7 @@ export class Registry extends EventEmitter {
     sessionActions: SessionAction[];
     workflowSummaries: WorkflowSummary[];
     workflowRunSummaries: WorkflowRunSummary[];
+    workflowBindingSummaries: WorkflowBindingSummary[];
     ensembleSummaries: EnsembleSummary[];
     schedules: MissionSchedule[];
     fleetCost: FleetCost | null;
@@ -648,6 +658,7 @@ export class Registry extends EventEmitter {
       sessionActions: [...this.sessionActions.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
       workflowRunSummaries: [...this.workflowRuns.values()],
+      workflowBindingSummaries: [...this.workflowBindings.values()],
       ensembleSummaries: [...this.ensembles.values()],
       schedules: [...this.schedules.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
@@ -989,6 +1000,19 @@ export class Registry extends EventEmitter {
 
   removeWorkflowRun(id: string): void {
     if (this.workflowRuns.delete(id)) this.emitEvent({ type: "workflow_run_remove", id });
+  }
+
+  initializeWorkflowBindings(bindings: WorkflowBindingSummary[]): void {
+    this.workflowBindings = new Map(bindings.map((binding) => [binding.id, binding]));
+  }
+
+  upsertWorkflowBinding(binding: WorkflowBindingSummary): void {
+    this.workflowBindings.set(binding.id, binding);
+    this.emitEvent({ type: "workflow_binding_upsert", binding });
+  }
+
+  removeWorkflowBinding(id: string): void {
+    if (this.workflowBindings.delete(id)) this.emitEvent({ type: "workflow_binding_remove", id });
   }
 
   // ---- ensemble catalog ----

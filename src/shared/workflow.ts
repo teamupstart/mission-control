@@ -9,7 +9,10 @@ import type {
 } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
 import { repoAllowlisted } from "./allowlist.ts";
-import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
+import {
+  NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  parseBuiltinWorkflowVersionId,
+} from "./builtin-workflow.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -1913,6 +1916,39 @@ export interface WorkflowSummary {
   builtin: boolean;
 }
 
+/** The catalog facts naming a version id needs. A `WorkflowSummary` satisfies it as-is. */
+export type WorkflowNamingSource =
+  Pick<WorkflowSummary, "id" | "name" | "currentVersionId" | "publishedVersion">;
+
+/**
+ * What to call an immutable version id, for a surface that holds one and must say what it is.
+ *
+ * Shared because three surfaces hold a bare version id and each was rendering it as
+ * `id.slice(0, 8)`. That is a usable prefix for an operator workflow, whose version ids are
+ * UUIDs, and it is nothing at all for a built-in: `builtin-workflow:no-mistakes-review@8`
+ * truncates to `builtin-`, which named the wrong thing so completely that an operator read a
+ * correctly bound session as unbound. A name the reader recognises is the whole job here.
+ *
+ * Three sources, in falling order of confidence: the catalog entry whose CURRENT version this
+ * is, then the workflow named by a built-in id's own structure (which keeps a superseded
+ * built-in version - `@7` while `@8` ships - naming its workflow rather than falling through),
+ * then the raw id. The last is deliberately not "Unknown": an id an operator can paste into a
+ * bug report beats a word that discards it.
+ */
+export function workflowVersionLabel(
+  versionId: string,
+  workflows: readonly WorkflowNamingSource[],
+): string {
+  const current = workflows.find((workflow) => workflow.currentVersionId === versionId);
+  if (current) return `${current.name} · v${current.publishedVersion}`;
+  const builtin = parseBuiltinWorkflowVersionId(versionId);
+  if (builtin) {
+    const named = workflows.find((workflow) => workflow.id === builtin.workflowId);
+    if (named) return `${named.name} · v${builtin.version}`;
+  }
+  return versionId;
+}
+
 export interface WorkflowDetail {
   workflow: WorkflowDefinition;
   versions: WorkflowVersionMetadata[];
@@ -1933,6 +1969,36 @@ export interface WorkflowBinding {
   state: WorkflowBindingState;
   maxRepairRounds: number;
   createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * What a conversation is ARMED with, compact enough to ride the fleet stream.
+ *
+ * A separate projection from `WorkflowBinding` for the reason `WorkflowRunSummary` is separate
+ * from `WorkflowRun`: the row is the durable shape four mutating routes return and thirty-odd
+ * call sites build, while this is a display record that resolves the workflow's NAME and
+ * VERSION NUMBER server-side. A binding stores only `workflowVersionId`, and no browser can
+ * turn that into a name on its own - a built-in's version has no database row to join, so the
+ * catalog lookup that resolves it lives in the store beside the identical one for runs.
+ *
+ * This exists because a session with an armed binding and no run yet was indistinguishable
+ * from an unbound one: every surface keyed "is a workflow attached" off the RUN, which for the
+ * `foreman_complete` trigger does not exist until the work is finished. Sessions spent their
+ * whole working life looking unarmed, and the chip offering to attach one said so.
+ */
+export interface WorkflowBindingSummary {
+  id: WorkflowBindingId;
+  workflowVersionId: WorkflowVersionId;
+  /** Resolved from the version, so a surface holding a binding can name its workflow. */
+  workflowId: WorkflowId;
+  workflowName: string;
+  workflowVersion: number;
+  noteKey: string;
+  sessionId: string | null;
+  triggerMode: WorkflowTriggerMode;
+  deliveryMode: WorkflowDeliveryMode;
+  state: WorkflowBindingState;
   updatedAt: number;
 }
 

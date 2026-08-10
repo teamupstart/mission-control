@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import type { ReviewItem, Session, SessionQueueSummary } from "@shared/types.ts";
-import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
@@ -127,6 +127,7 @@ export function SessionCard({
   inputReviewId = null,
   pendingReviewIds,
   workflowRun = null,
+  workflowBinding = null,
   onOpenWorkflowRun,
   onBindWorkflow,
   onOpenSchedule,
@@ -188,6 +189,8 @@ export function SessionCard({
    */
   reviews?: ReviewItem[];
   workflowRun?: WorkflowRunSummary | null;
+  /** What this conversation is ARMED with, which exists before any run does. */
+  workflowBinding?: WorkflowBindingSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
   onBindWorkflow?: () => void;
   /** Open Recurring Missions from this card's generated-task provenance mark. */
@@ -272,16 +275,39 @@ export function SessionCard({
             because the outcome is history and this is the next move. `sessionCanBindWorkflow`
             asks whether a run still OWNS the session, which is the only thing that should
             withhold the offer. */}
+        {/* Names the armed workflow when there is one, and offers to attach one when there is
+            not. Both reach the same dialog, because "show me what is bound" and "bind
+            something" are the same surface - but they are NOT the same sentence, and this chip
+            said the second one either way. A session armed with No-Mistakes Review read as
+            unarmed for the whole of its working life, because the only thing consulted here
+            was the RUN, and a `foreman_complete` binding has no run until the work is done. */}
         {sessionCanBindWorkflow(workflowRun) && onBindWorkflow && (
-          <Tooltip label="Bind a published workflow version">
+          <Tooltip
+            label={workflowBinding
+              ? `${workflowBinding.workflowName} v${workflowBinding.workflowVersion} runs when this session's work is complete - click to change it`
+              : "Bind a published workflow version"}
+          >
             <button
-              className="workflow-bind-chip"
+              className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
               onClick={(event) => {
                 event.stopPropagation();
                 onBindWorkflow();
               }}
             >
-              ＋ workflow
+              {workflowBinding
+                ? (
+                  <>
+                    <span aria-hidden>⌘ </span>
+                    {/* The NAME is what gives way when a card is narrow, and the version never
+                        does: "v8" is two characters and is half the identity an operator is
+                        checking. An unbounded name would push the card title past its 9ch floor
+                        and out of the head entirely. The tooltip still carries the whole
+                        sentence, so nothing is lost, only folded. */}
+                    <span className="wbc-name">{workflowBinding.workflowName}</span>
+                    <span className="wbc-version">{` v${workflowBinding.workflowVersion}`}</span>
+                  </>
+                )
+                : "＋ workflow"}
             </button>
           </Tooltip>
         )}

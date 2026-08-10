@@ -544,17 +544,23 @@ not. Delete asks for confirmation and cannot be undone.
 
 Bind a session to an exact published workflow version from the workflow history or from any
 fleet layout, then choose **Preview**. On a Cards card and in the Console and Board detail
-header, the offer is a **＋ workflow** chip, and it is present whenever no run currently *owns*
-that session - which includes a session whose last run has finished. A finished run shows both:
-its outcome chip (**Approved**, **Preview cancelled**, **Preview failed**) as history, and the
-＋ workflow chip as the next move. Only an open run withdraws the offer, on the same
+header the chip states what the session is armed with, naming the workflow and its version -
+**⌘ No-Mistakes Review v8** - and it falls back to an offer, **＋ workflow**, only when nothing
+is bound. That distinction matters most for the Foreman-complete trigger, where the binding
+exists for the whole working life of the session and the first run does not appear until the
+work is finished; a chip that keyed off the run alone reported every armed session as unarmed.
+The chip is present whenever no run currently *owns* that session - which includes a session
+whose last run has finished. A finished run shows both: its outcome chip (**Approved**,
+**Preview cancelled**, **Preview failed**) as history, and the chip as the next move. Only an
+open run withdraws the offer, on the same
 [held-ness join](ui.md#layout-cards-console-or-board) the held tag and the backlog drop target
 read, because that is the window in which the daemon would refuse a second binding anyway as a
 conflict. A binding records the conversation note key, harness, name, working directory, and
 repository root, and pins the immutable version id. Publishing or editing a newer workflow
 cannot change an existing binding or run. Reaching for the chip on a session that is still bound
-to an active binding opens the dialog on that binding rather than an error: choosing the bound
-version offers **Submit bound version**, and choosing a different one explains the conflict.
+to an active binding opens the dialog **on that binding** rather than on whichever workflow
+happens to sort first: choosing the bound version offers **Submit bound version**, and choosing
+a different one explains the conflict, naming both workflows in words rather than by id.
 
 Each submit and resubmit carries a durable request key. The daemon creates the submission
 before evidence capture, so retrying the same request returns the same durable row and never

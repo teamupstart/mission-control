@@ -230,6 +230,24 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --reporter=list
 ```
 
+### Run-scoped critical Persona feedback
+
+[`evidence/workflow-persona-directive.png`](evidence/workflow-persona-directive.png) shows the
+drawer opened directly from a Persona row. The locked run and Persona scope, future-round
+persistence, critical priority, byte limit, and editable instruction are all visible in the
+built dashboard. The same browser regression saves the instruction, proves it changes only
+that Persona in rounds 2 and 3, and checks the directive snapshots stored on both attempts.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-run-disable.spec.ts \
+  -g 'critical feedback follows' \
+  --workers=1 --reporter=list
+```
+
 ### Ship it replacement workflow
 
 The focused browser case opens the session's Ship it choice, verifies the visible

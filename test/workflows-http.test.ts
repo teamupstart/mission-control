@@ -565,3 +565,92 @@ test("per-run node disable validates ids, replays idempotently, and refuses fini
   assert.equal(terminal.status, 409);
   assert.equal((await terminal.json() as { code: string }).code, "workflow_conflict");
 });
+
+test("run-scoped Persona feedback validates, persists, edits, and removes idempotently", async () => {
+  const { request, store } = fixture();
+  const valid = await seedValid(request);
+  const publishedResponse = await request(`/api/workflows/${valid.workflow.id}/publish`, {
+    method: "POST",
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  const published = await publishedResponse.json() as { version: { id: string } };
+  const binding = store.insertBinding({
+    id: "directive-binding",
+    workflowVersionId: published.version.id,
+    noteKey: "directive-note",
+    sessionId: "directive-session",
+    sessionAgent: "codex",
+    sessionName: "Directive worker",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  store.createInitialSubmission({
+    id: "directive-run",
+    binding,
+    triggerSource: "manual",
+    triggerKey: "directive-run-trigger",
+    now: 2,
+  }, {
+    id: "directive-submission",
+    triggerSource: "manual",
+    triggerKey: "directive-submission-trigger",
+    context: {},
+    evidence: {},
+    now: 2,
+  });
+  const set = (body: object) => request("/api/workflow-runs/directive-run/set-persona-directive", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  const remove = (body: object) => request("/api/workflow-runs/directive-run/remove-persona-directive", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+  assert.equal((await set({})).status, 400);
+  assert.equal((await set({ requestId: "too-large", nodeId: "judge", feedback: "x".repeat(8_001) })).status, 400);
+  const structural = await set({ requestId: "bad-target", nodeId: "session", feedback: "Do this" });
+  assert.equal(structural.status, 404);
+  assert.match((await structural.json() as { error: string }).error, /only a Persona node/);
+
+  const saved = await set({ requestId: "set-1", nodeId: "judge", feedback: "Honor the human exception" });
+  assert.equal(saved.status, 200);
+  const savedBody = await saved.json() as {
+    run: { personaDirectives: Array<{ nodeId: string; feedback: string; revision: number }> };
+    idempotent: boolean;
+  };
+  assert.equal(savedBody.run.personaDirectives[0]?.nodeId, "judge");
+  assert.equal(savedBody.run.personaDirectives[0]?.feedback, "Honor the human exception");
+  assert.equal(savedBody.run.personaDirectives[0]?.revision, 1);
+  assert.equal(savedBody.idempotent, false);
+  assert.equal((await set({ requestId: "set-1", nodeId: "judge", feedback: "ignored replay" })).status, 200);
+
+  const edited = await set({ requestId: "set-2", nodeId: "judge", feedback: "Honor it and cite it" });
+  const editedBody = await edited.json() as {
+    directive: { feedback: string; revision: number };
+  };
+  assert.equal(editedBody.directive.feedback, "Honor it and cite it");
+  assert.equal(editedBody.directive.revision, 2);
+
+  const detail = await request("/api/workflow-runs/directive-run");
+  const detailBody = await detail.json() as {
+    run: { personaDirectives: Array<{ feedback: string; revision: number }> };
+    events: Array<{ kind: string }>;
+  };
+  assert.equal(detailBody.run.personaDirectives[0]?.revision, 2);
+  assert.ok(detailBody.events.some((event) => event.kind === "persona_directive_set"));
+
+  const removed = await remove({ requestId: "remove-1", nodeId: "judge" });
+  assert.equal(removed.status, 200);
+  assert.deepEqual((await removed.json() as { run: { personaDirectives: unknown[] } }).run.personaDirectives, []);
+  const replay = await remove({ requestId: "remove-1", nodeId: "judge" });
+  assert.equal((await replay.json() as { idempotent: boolean }).idempotent, true);
+
+  store.cancelRun("directive-run", "test_cleanup", 30);
+  const terminal = await set({ requestId: "set-terminal", nodeId: "judge", feedback: "Too late" });
+  assert.equal(terminal.status, 409);
+});

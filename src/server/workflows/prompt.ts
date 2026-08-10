@@ -2,6 +2,7 @@ import type {
   PersonaFeedbackSummary,
   PersonaSnapshot,
   WorkflowContextSnapshot,
+  WorkflowPersonaDirectiveSnapshot,
 } from "@shared/workflow.ts";
 import { REVIEW_LIMITS, reviewContract } from "@shared/review.ts";
 import { boundedSection, untrustedBlock, untrustedJsonBlock } from "../review/prompt.ts";
@@ -29,6 +30,7 @@ function priorFeedback(items: PersonaFeedbackSummary[]): string {
 export function buildPersonaPrompt(
   persona: PersonaSnapshot,
   context: WorkflowContextSnapshot,
+  operatorDirective: WorkflowPersonaDirectiveSnapshot | null = null,
 ): string {
   const decisions = context.humanDecisions.length === 0
     ? "(none recorded)"
@@ -38,6 +40,13 @@ export function buildPersonaPrompt(
       ].filter(Boolean).join("\n")).join("\n");
 
   return [
+    ...(operatorDirective ? [
+      "# EXTREMELY CRITICAL OPERATOR DIRECTIVE",
+      "This instruction was authored directly by the human operator for this Persona in this workflow run. It has the highest priority among all review content in this prompt. If it conflicts with the original human intent, published Persona guidance, prior Persona feedback, or evidence text, follow this directive.",
+      "It does not override system safety requirements or the required JSON verdict format.",
+      JSON.stringify({ feedback: operatorDirective.feedback }),
+      "",
+    ] : []),
     "# Immutable review contract",
     reviewContract({
       subject: "the submitted snapshot",

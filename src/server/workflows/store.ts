@@ -21,6 +21,8 @@ import {
   WorkflowExternalSourceKindSchema,
   WorkflowJsonSchema,
   WorkflowNodeAttemptStateSchema,
+  WorkflowPersonaDirectiveSchema,
+  WorkflowPersonaDirectiveSnapshotSchema,
   WorkflowRunStatusSchema,
   WorkflowInspectorGateStateSchema,
   WorkflowContextSnapshotSchema,
@@ -70,6 +72,8 @@ import type {
   WorkflowJson,
   WorkflowLlmCall,
   WorkflowNodeAttempt,
+  WorkflowPersonaDirective,
+  WorkflowPersonaDirectiveSnapshot,
   WorkflowRun,
   WorkflowRunDetail,
   WorkflowRunPage,
@@ -115,6 +119,8 @@ const nullableInteger = integer.nullable();
 const boundedCode = text.max(200);
 const utf8 = new TextEncoder();
 const DEFAULT_DETAIL_PAGE_SIZE = 200;
+const PERSONA_DIRECTIVES_JSON_BYTES =
+  WORKFLOW_LIMITS.personaDirectiveBytes * WORKFLOW_LIMITS.graphNodes + 100_000;
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 type RunCursor = { updatedAt: number; id: string };
@@ -584,10 +590,16 @@ const WorkflowRunRowSchema = z.object({
   completed_at: nullableInteger,
   evidence_pruned_at: nullableInteger.optional().default(null),
   disabled_nodes_json: nullableText.optional().default(null),
+  persona_directives_json: nullableText.optional().default(null),
 });
 
 /** Node ids an operator disabled for one run. Bounded by the graph's own node ceiling. */
 const DisabledNodesSchema = z.array(nonempty.max(200)).max(WORKFLOW_LIMITS.graphNodes);
+const PersonaDirectivesSchema = z.array(WorkflowPersonaDirectiveSchema)
+  .max(WORKFLOW_LIMITS.graphNodes)
+  .refine((items) => new Set(items.map((item) => item.nodeId)).size === items.length, {
+    message: "Persona directive node ids must not repeat",
+  });
 
 export function parseWorkflowRunRow(value: unknown): WorkflowRun {
   const row = parseShape("workflow_runs", WorkflowRunRowSchema, value);
@@ -616,6 +628,14 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
       "disabled_nodes_json",
       row.disabled_nodes_json ?? null,
       DisabledNodesSchema,
+    ) ?? [],
+    personaDirectives: parseNullableJson(
+      "workflow_runs",
+      row.id,
+      "persona_directives_json",
+      row.persona_directives_json ?? null,
+      PersonaDirectivesSchema,
+      PERSONA_DIRECTIVES_JSON_BYTES,
     ) ?? [],
     startedAt: row.started_at,
     updatedAt: row.updated_at,
@@ -710,6 +730,7 @@ const WorkflowNodeAttemptRowSchema = z.object({
   state: WorkflowNodeAttemptStateSchema,
   persona_snapshot_json: nullableText,
   session_action_snapshot_json: nullableText.optional().default(null),
+  operator_directive_json: nullableText.optional().default(null),
   runner_id: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model_id: nullableText.optional().default(null),
   verdict_json: nullableText,
@@ -744,6 +765,13 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       "a waiting attempt must carry its session action snapshot",
     );
   }
+  if ((row.operator_directive_json ?? null) !== null && row.persona_snapshot_json === null) {
+    throw new WorkflowRowError(
+      "workflow_node_attempts",
+      row.id,
+      "only a Persona attempt may carry an operator directive",
+    );
+  }
   return {
     id: row.id,
     submissionId: row.submission_id,
@@ -764,6 +792,14 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       row.session_action_snapshot_json ?? null,
       SessionActionSnapshotSchema,
       WORKFLOW_LIMITS.sessionActionPromptReadBytes + WORKFLOW_LIMITS.eventPayloadBytes,
+    ),
+    operatorDirective: parseNullableJson(
+      "workflow_node_attempts",
+      row.id,
+      "operator_directive_json",
+      row.operator_directive_json ?? null,
+      WorkflowPersonaDirectiveSnapshotSchema,
+      WORKFLOW_LIMITS.personaDirectiveBytes + 1_000,
     ),
     runner: row.runner_id ?? null,
     model: row.model_id ?? null,
@@ -790,6 +826,17 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+  };
+}
+
+function directiveSnapshot(
+  directive: WorkflowPersonaDirective,
+): WorkflowPersonaDirectiveSnapshot {
+  return {
+    feedback: directive.feedback,
+    revision: directive.revision,
+    createdAt: directive.createdAt,
+    updatedAt: directive.updatedAt,
   };
 }
 
@@ -3125,6 +3172,64 @@ export class WorkflowStore {
     });
   }
 
+  /** Set or replace one active, run-scoped Persona directive with its audit event. */
+  setRunPersonaDirective(
+    id: string,
+    nodeId: string,
+    feedback: string,
+    event: { kind: string; payload: WorkflowJson },
+    now = Date.now(),
+  ): { run: WorkflowRun; directive: WorkflowPersonaDirective } | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(id);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+      const existing = (run.personaDirectives ?? []).find((item) => item.nodeId === nodeId);
+      const directive: WorkflowPersonaDirective = {
+        nodeId,
+        feedback,
+        revision: (existing?.revision ?? 0) + 1,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      const next = [
+        ...(run.personaDirectives ?? []).filter((item) => item.nodeId !== nodeId),
+        directive,
+      ].sort((left, right) => left.nodeId.localeCompare(right.nodeId));
+      const result = this.db.prepare(
+        `UPDATE workflow_runs
+            SET persona_directives_json = ?, updated_at = ?
+          WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+      ).run(JSON.stringify(next), now, id);
+      if (Number(result.changes) !== 1) return null;
+      this.appendEvent(id, event.kind, event.payload, now);
+      return { run: this.mustRun(id), directive };
+    });
+  }
+
+  /** Remove active feedback while leaving every attempt snapshot and verdict untouched. */
+  removeRunPersonaDirective(
+    id: string,
+    nodeId: string,
+    event: { kind: string; payload: WorkflowJson },
+    now = Date.now(),
+  ): { run: WorkflowRun; removed: boolean } | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(id);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+      const existing = (run.personaDirectives ?? []).find((item) => item.nodeId === nodeId);
+      if (!existing) return { run, removed: false };
+      const next = (run.personaDirectives ?? []).filter((item) => item.nodeId !== nodeId);
+      const result = this.db.prepare(
+        `UPDATE workflow_runs
+            SET persona_directives_json = ?, updated_at = ?
+          WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+      ).run(next.length === 0 ? null : JSON.stringify(next), now, id);
+      if (Number(result.changes) !== 1) return null;
+      this.appendEvent(id, event.kind, event.payload, now);
+      return { run: this.mustRun(id), removed: true };
+    });
+  }
+
   enterInspectorGate(input: {
     runId: string;
     submissionId: string;
@@ -3649,10 +3754,10 @@ export class WorkflowStore {
     this.db.prepare(
       `INSERT OR IGNORE INTO workflow_node_attempts (
          id, submission_id, node_id, attempt, state, persona_snapshot_json,
-         session_action_snapshot_json, runner_id,
+         session_action_snapshot_json, operator_directive_json, runner_id,
          model_id, verdict_json, output_json, retry_at, input_fingerprint, error,
          created_at, updated_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
     ).run(
       input.id,
       input.submissionId,
@@ -3875,13 +3980,32 @@ export class WorkflowStore {
     model: string | null,
     now = Date.now(),
   ): WorkflowNodeAttempt | null {
-    const result = this.db.prepare(
-      `UPDATE workflow_node_attempts
-          SET state = 'running', runner_id = ?, model_id = ?, started_at = ?,
-              updated_at = ?, retry_at = NULL
-        WHERE id = ? AND state IN ('queued', 'retry_wait')`,
-    ).run(runner, model, now, now, id);
-    return Number(result.changes) === 1 ? this.getAttempt(id) : null;
+    return transaction(this.db, () => {
+      const initial = this.getAttempt(id);
+      if (!initial || !["queued", "retry_wait"].includes(initial.state)) return null;
+      let snapshot = initial.operatorDirective ?? null;
+      if (initial.persona && !snapshot) {
+        const submission = this.getSubmission(initial.submissionId);
+        const run = submission ? this.getRun(submission.runId) : null;
+        const active = run?.personaDirectives?.find((item) => item.nodeId === initial.nodeId);
+        snapshot = active ? directiveSnapshot(active) : null;
+      }
+      const result = this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET state = 'running', runner_id = ?, model_id = ?, started_at = ?,
+                updated_at = ?, retry_at = NULL,
+                operator_directive_json = COALESCE(operator_directive_json, ?)
+          WHERE id = ? AND state IN ('queued', 'retry_wait')`,
+      ).run(
+        runner,
+        model,
+        now,
+        now,
+        snapshot ? JSON.stringify(snapshot) : null,
+        id,
+      );
+      return Number(result.changes) === 1 ? this.getAttempt(id) : null;
+    });
   }
 
   finishAttempt(

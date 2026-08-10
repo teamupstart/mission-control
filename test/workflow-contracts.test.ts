@@ -41,6 +41,7 @@ test("workflow limits are finite front-door contracts", () => {
     personaName: 100,
     personaDescription: 500,
     personaGuidanceBytes: 100_000,
+    personaDirectiveBytes: 8_000,
     sessionActionName: 100,
     sessionActionDescription: 500,
     // DERIVED, not chosen: the packet budget less the envelope allowance. The two used to be

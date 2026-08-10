@@ -821,7 +821,7 @@ export class WorkflowEngine {
       this.handleInfrastructureFailure(claimed, run.id, "The persisted workflow context is invalid");
       return;
     }
-    const prompt = buildPersonaPrompt(node.persona, context.data);
+    const prompt = buildPersonaPrompt(node.persona, context.data, claimed.operatorDirective ?? null);
     let runner: LlmRunner;
     try {
       runner = this.runnerFor(execution.runner.id);

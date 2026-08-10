@@ -1,22 +1,19 @@
+import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
- * The per-run disable toggle, driven the way an operator drives it: a click on a reviewer
- * row in the Runs monitor travels `POST /api/workflow-runs/:id/set-nodes-disabled` into
- * SQLite, comes back through the SSE summary bump and the detail refetch, and repaints the
- * row - and on the next round the engine honours the set by auto-passing the gate. No
- * other layer covers that loop: the SSR render tests assert markup for a given detail, the
- * HTTP tests assert the route against an in-process app, and neither ever connects the
- * click to the refetch to the engine.
+ * Run-scoped Persona controls, driven the way an operator drives them. A reviewer click
+ * opens the critical feedback editor; save travels through the daemon into SQLite, comes
+ * back through the SSE summary bump and detail refetch, then changes that Persona's next
+ * provider prompt. Disable remains in the adjacent actions menu.
  *
- * The scenario is the feature's own headline: a reviewer keeps failing a run, the operator
- * clicks it off, resubmits, and the round goes PAST it. Both reviewers are steered through
- * the fake `claude` binary - their Persona guidance carries `E2E_FAIL_VERDICT`, which the
- * fake answers with a fixed failing verdict - so every state this spec waits for is a
- * stable one (`waiting_for_session`), never a mid-review race.
+ * Both reviewers are steered through the fake `claude` binary. Their published guidance
+ * carries `E2E_FAIL_VERDICT`; only a prompt beginning with the critical directive and
+ * carrying `E2E_DIRECTIVE_PASS_VERDICT` changes that answer. This proves both scoping and
+ * prompt placement without spending model tokens.
  */
 
 /** Ids this spec authors into the draft, so API assertions can name exact nodes. */
@@ -128,7 +125,7 @@ async function seedFailedRun(page: Page, daemon: DaemonHandle): Promise<string> 
   return runId;
 }
 
-test("clicking a reviewer disables it for this run, and the next round auto-passes it", async ({
+test("critical feedback follows one Persona through every later round of this run", async ({
   dashboard,
   daemon,
 }) => {
@@ -139,58 +136,79 @@ test("clicking a reviewer disables it for this run, and the next round auto-pass
   const row = (name: string) =>
     pipeline.locator("li.wf-pipeline-reviewer").filter({ hasText: name });
 
-  // Round 1's truth, before any toggle.
+  // Round 1's truth, before any directive.
   await expect(row("Blocking reviewer")).toContainText("Changes requested");
   await expect(row("Docs steward")).toContainText("Not started");
 
-  // Clicking the unreached reviewer turns its row red with the Disabled chip and a pressed
-  // toggle - the full loop: click -> POST -> DB -> SSE bump -> refetch -> repaint.
-  await row("Docs steward").getByRole("button").click();
-  await expect(row("Docs steward")).toHaveClass(/is-disabled/);
-  await expect(row("Docs steward").getByRole("button")).toHaveAttribute("aria-pressed", "true");
-  await expect(row("Docs steward")).toContainText("Disabled");
-
-  // The same click re-enables it.
-  await row("Docs steward").getByRole("button").click();
-  await expect(row("Docs steward").getByRole("button")).toHaveAttribute("aria-pressed", "false");
-  await expect(row("Docs steward")).not.toHaveClass(/is-disabled/);
-  await expect(row("Docs steward")).toContainText("Not started");
-
-  // Disabling the reviewer that already FAILED this round marks the row red but keeps the
-  // recorded outcome on its chip: the toggle is a promise about future work, not an eraser.
-  await row("Blocking reviewer").getByRole("button").click();
-  await expect(row("Blocking reviewer")).toHaveClass(/is-disabled/);
-  await expect(row("Blocking reviewer").getByRole("button")).toHaveAttribute("aria-pressed", "true");
-  await expect(row("Blocking reviewer")).toContainText("Changes requested");
-
-  // The set is durable, run-scoped, and names exactly the node that was clicked.
-  const disabled = await api<{ run: { disabledNodeIds: string[] } }>(
-    daemon,
-    `/api/workflow-runs/${runId}`,
+  // The row itself is the feedback affordance. The editor states its two locked dimensions
+  // and persistence before accepting the instruction.
+  await row("Blocking reviewer")
+    .getByRole("button", { name: /^Blocking reviewer/ })
+    .click();
+  const editor = dashboard.getByRole("dialog", { name: "Guide this reviewer's future rounds" });
+  await expect(editor).toBeVisible();
+  await expect(editor.getByLabel("Locked feedback scope")).toContainText("E2E disable toggle");
+  await expect(editor.getByLabel("Locked feedback scope")).toContainText("Blocking reviewer");
+  await expect(editor).toContainText("Repeats until removed");
+  await editor.getByLabel("Feedback for Blocking reviewer").fill(
+    "E2E_DIRECTIVE_PASS_VERDICT. Treat the operator exception as controlling.",
   );
-  expect(disabled.run.disabledNodeIds).toEqual([NODE.blocking]);
+  if (process.env.MC_E2E_EVIDENCE) {
+    await dashboard.screenshot({
+      path: fileURLToPath(new URL("../evidence/workflow-persona-directive.png", import.meta.url)),
+      fullPage: true,
+    });
+  }
+  await editor.getByRole("button", { name: "Save for future rounds" }).click();
+  await expect(row("Blocking reviewer")).toContainText("Critical feedback active");
+  await expect(row("Docs steward")).not.toContainText("Critical feedback active");
+  await expect(editor).toBeHidden();
 
-  // The headline: resubmit against the same evidence. Round 2 must auto-pass the disabled
-  // blocker and reach the second reviewer, whose scripted fail becomes the round's REAL
-  // objection - proof the run went PAST the switched-off gate.
+  // Round 2 proves the directive beats the target Persona's still-failing published guidance,
+  // while the sibling Persona receives no directive and keeps its original fail behavior.
   await dashboard.getByRole("button", { name: "Preview unchanged" }).click();
   await dashboard.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
 
-  await expect(row("Blocking reviewer")).toContainText("Disabled", { timeout: 40_000 });
+  await expect(row("Blocking reviewer")).toContainText("Passed", { timeout: 40_000 });
   await expect(row("Docs steward")).toContainText("Changes requested", { timeout: 40_000 });
   await expect(dashboard.locator(".wf-run-scrubber")).toContainText("Round 2");
 
-  // And the daemon's durable record agrees: the round advanced, the auto-pass is an audited
-  // event, and the run is back with the session rather than completed or stuck.
+  // It remains active without another save. Round 3 makes the same target pass again and
+  // reaches the same unmodified sibling failure.
+  await dashboard.getByRole("button", { name: "Preview unchanged" }).click();
+  await dashboard.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
+  await expect(dashboard.locator(".wf-run-scrubber")).toContainText("Round 3", { timeout: 40_000 });
+  await expect(row("Blocking reviewer")).toContainText("Passed", { timeout: 40_000 });
+  await expect(row("Docs steward")).toContainText("Changes requested", { timeout: 40_000 });
+
   const after = await api<{
-    run: { status: string };
+    run: { status: string; personaDirectives: Array<{ nodeId: string; revision: number }> };
+    submissions: Array<{ id: string; round: number }>;
+    attempts: Array<{
+      submissionId: string;
+      nodeId: string;
+      operatorDirective?: { feedback: string; revision: number } | null;
+    }>;
     events: Array<{ kind: string }>;
   }>(daemon, `/api/workflow-runs/${runId}`);
   expect(after.run.status).toBe("waiting_for_session");
-  expect(after.events.some((event) => event.kind === "disabled_node_auto_passed")).toBe(true);
+  expect(after.run.personaDirectives).toEqual([expect.objectContaining({
+    nodeId: NODE.blocking,
+    revision: 1,
+  })]);
+  for (const roundNumber of [2, 3]) {
+    const submissionId = after.submissions.find((item) => item.round === roundNumber)?.id;
+    expect(after.attempts.find((item) =>
+      item.submissionId === submissionId && item.nodeId === NODE.blocking)?.operatorDirective,
+    ).toEqual(expect.objectContaining({ revision: 1 }));
+    expect(after.attempts.find((item) =>
+      item.submissionId === submissionId && item.nodeId === NODE.docs)?.operatorDirective ?? null,
+    ).toBeNull();
+  }
+  expect(after.events.some((event) => event.kind === "persona_directive_set")).toBe(true);
 });
 
-test("a stage header click disables every member of the stage at once", async ({
+test("a stage actions menu disables every member of the stage at once", async ({
   dashboard,
   daemon,
 }) => {
@@ -198,11 +216,13 @@ test("a stage header click disables every member of the stage at once", async ({
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const pipeline = dashboard.locator(".wf-pipeline-strip");
 
-  // Each authored reviewer is its own single-member stage, so its header carries the
-  // stage-grain toggle. Click the SECOND stage's header: its one member is the unreached
-  // Docs steward, and the whole card takes the disabled treatment.
+  // Each authored reviewer is its own single-member stage. The header now opens critical
+  // feedback, so the stage-grain destructive toggle lives in its actions menu.
   const docsStage = pipeline.locator("section.wf-pipeline-stage").filter({ hasText: "Docs steward" });
-  await docsStage.locator(".wf-pipeline-stage-hit").click();
+  await docsStage.locator(".wf-pipeline-stage-actions")
+    .getByRole("button", { name: "Actions for Docs steward" }).click();
+  await docsStage.locator(".wf-pipeline-stage-actions")
+    .getByRole("menuitem", { name: "Disable for this run" }).click();
   await expect(docsStage).toHaveClass(/is-disabled/);
   await expect(docsStage.locator("li.wf-pipeline-reviewer")).toHaveClass(/is-disabled/);
   await expect(docsStage.locator("li.wf-pipeline-reviewer")).toContainText("Disabled");
@@ -213,8 +233,10 @@ test("a stage header click disables every member of the stage at once", async ({
   );
   expect(detail.run.disabledNodeIds).toEqual([NODE.docs]);
 
-  // The header click is a toggle too: the same click re-enables the stage.
-  await docsStage.locator(".wf-pipeline-stage-hit").click();
+  await docsStage.locator(".wf-pipeline-stage-actions")
+    .getByRole("button", { name: "Actions for Docs steward" }).click();
+  await docsStage.locator(".wf-pipeline-stage-actions")
+    .getByRole("menuitem", { name: "Enable for this run" }).click();
   await expect(docsStage).not.toHaveClass(/is-disabled/);
   const cleared = await api<{ run: { disabledNodeIds: string[] } }>(
     daemon,

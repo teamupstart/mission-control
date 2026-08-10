@@ -151,6 +151,20 @@ function headlessAnswer(prompt) {
   ) {
     return JSON.stringify({ constraints: [], acceptanceCriteria: [] });
   }
+  // This marker proves a run-scoped directive reached the Persona prompt in the promised
+  // position. The published Persona still carries E2E_FAIL_VERDICT, so only checking this
+  // higher-priority prefix first can turn that same reviewer into a pass in a later round.
+  if (
+    prompt.startsWith("# EXTREMELY CRITICAL OPERATOR DIRECTIVE")
+    && prompt.includes("E2E_DIRECTIVE_PASS_VERDICT")
+  ) {
+    return JSON.stringify({
+      verdict: "pass",
+      summary: "Deterministic e2e directive approval",
+      approvalDetails: { reason: "The run-scoped operator directive was applied", evidence: [] },
+      confidence: 0.95,
+    });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",

@@ -1342,6 +1342,82 @@ test("disabling a reviewer after a failed round makes the repair round auto-pass
   assert.equal((original.verdict as { verdict: string }).verdict, "fail");
 });
 
+test("Persona feedback stays scoped to one reviewer and persists into repair rounds", async () => {
+  const store = seedSubmission("directive-rerun", disableGraph());
+  store.setRunPersonaDirective(
+    "run-directive-rerun",
+    "p1",
+    "CRITICAL_OPERATOR_EXCEPTION",
+    { kind: "persona_directive_set", payload: { nodeId: "p1", requestId: "set-1" } },
+    4,
+  );
+  const prompts: Array<{ persona: "honest" | "blocking"; prompt: string }> = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: (id) => ({
+      ...passingRunner(id),
+      async run(prompt: string) {
+        const blocking = prompt.includes("FAIL_PERSONA");
+        prompts.push({ persona: blocking ? "blocking" : "honest", prompt });
+        return blocking
+          ? JSON.stringify({
+              verdict: "fail",
+              summary: "Needs repair",
+              requestedChanges: [{
+                title: "Fix it",
+                rationale: "Intent is not met",
+                evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
+              }],
+              confidence: 0.8,
+            })
+          : JSON.stringify({
+              verdict: "pass",
+              summary: "Approved",
+              approvalDetails: { reason: "Intent is met", evidence: [] },
+              confidence: 0.9,
+            });
+      },
+    }),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-directive-rerun");
+  await waitFor(() => store.getRun("run-directive-rerun")?.status === "waiting_for_session");
+
+  const roundOneHonest = prompts.find((item) => item.persona === "honest")!;
+  const roundOneBlocking = prompts.find((item) => item.persona === "blocking")!;
+  assert.match(roundOneHonest.prompt, /^# EXTREMELY CRITICAL OPERATOR DIRECTIVE/);
+  assert.match(roundOneHonest.prompt, /CRITICAL_OPERATOR_EXCEPTION/);
+  assert.doesNotMatch(roundOneBlocking.prompt, /CRITICAL_OPERATOR_EXCEPTION/);
+
+  const repair = store.createRepairSubmission({
+    id: "submission-directive-rerun-2",
+    runId: "run-directive-rerun",
+    round: 2,
+    triggerSource: "manual",
+    triggerKey: "manual:directive-rerun:round-2",
+    context: {},
+    evidence: {},
+    now: 20,
+  });
+  store.updateSubmissionCapture(repair.submission.id, {
+    context: workflowJson(context),
+    evidence: workflowJson(context.evidence),
+    fingerprint: "fingerprint-directive-rerun-2",
+    status: "running",
+  }, 21);
+  engine.activateSubmission(repair.submission.id);
+  await waitFor(() => prompts.filter((item) => item.persona === "honest").length === 2);
+  await engine.stop();
+
+  const roundTwoHonest = prompts.filter((item) => item.persona === "honest")[1]!;
+  assert.match(roundTwoHonest.prompt, /^# EXTREMELY CRITICAL OPERATOR DIRECTIVE/);
+  assert.match(roundTwoHonest.prompt, /CRITICAL_OPERATOR_EXCEPTION/);
+  const attempt = store.listAttempts(repair.submission.id).find((item) => item.nodeId === "p1")!;
+  assert.equal(attempt.operatorDirective?.feedback, "CRITICAL_OPERATOR_EXCEPTION");
+});
+
 test("a disabled check auto-passes without reaching the execution runtime", async () => {
   const disabledCheckGraph: PublishedWorkflowGraph = {
     nodes: [

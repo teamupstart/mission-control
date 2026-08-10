@@ -87,7 +87,9 @@ import {
   RetryWorkflowRunSchema,
   RetryWorkflowDeliverySchema,
   ResolveWorkflowDeliverySchema,
+  RemoveWorkflowPersonaDirectiveSchema,
   SetWorkflowNodesDisabledSchema,
+  SetWorkflowPersonaDirectiveSchema,
   WorkflowCompletionClaimSchema,
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
@@ -1236,6 +1238,26 @@ export function buildApp(
     const result = manager.setNodesDisabled(c.req.param("id"), parsed.data);
     return result.ok
       ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/set-persona-directive", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, SetWorkflowPersonaDirectiveSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.setPersonaDirective(c.req.param("id"), parsed.data);
+    return result.ok
+      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/remove-persona-directive", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, RemoveWorkflowPersonaDirectiveSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.removePersonaDirective(c.req.param("id"), parsed.data);
+    return result.ok
+      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/restart-full", async (c) => {

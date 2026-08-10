@@ -110,11 +110,10 @@ export function PipelineStatusChip({ status }: { status: PipelineStatus }): Reac
  * drawing them as two shapes would say they behave differently. A check's `name` is its bare
  * slot, so the chip supplies the noun that "test" alone next to a Persona's name does not.
  *
- * `disabled` and `onToggleDisabled` are the runs monitor's per-run auto-pass affordance.
- * Optional and defaulting off so the editor renders byte-identically: disabling belongs to
- * ONE run, so the affordance must not exist where a draft or a version is being read. When
- * a toggle is supplied the row's body becomes a real `<button>` - the whole row is the
- * click target - and `actions` stays outside it so the two can never nest.
+ * `onOpen` is the runs monitor's primary row action. `disabled` and the older
+ * `onToggleDisabled` slot remain available to callers that need a direct auto-pass toggle,
+ * while the run pipeline now places that destructive control in `actions` so a Persona row
+ * can open its feedback editor. Optional props keep the editor's shared leaf unchanged.
  */
 export function ReviewerRow({
   name,
@@ -123,8 +122,12 @@ export function ReviewerRow({
   status = null,
   state = "idle",
   actions = null,
+  notice = null,
   item = {},
   disabled = false,
+  hasDirective = false,
+  onOpen = null,
+  openLabel = null,
   onToggleDisabled = null,
   toggleLabel = null,
 }: {
@@ -134,8 +137,12 @@ export function ReviewerRow({
   status?: PipelineStatus | null;
   state?: PipelineItemState;
   actions?: ReactNode;
+  notice?: ReactNode;
   item?: PipelineItemProps;
   disabled?: boolean;
+  hasDirective?: boolean;
+  onOpen?: (() => void) | null;
+  openLabel?: string | null;
   onToggleDisabled?: (() => void) | null;
   toggleLabel?: string | null;
 }): React.JSX.Element {
@@ -151,22 +158,23 @@ export function ReviewerRow({
           {name}
         </span>
         {meta && <span className="wf-pipeline-reviewer-meta">{meta}</span>}
+        {notice}
       </span>
       {status && <PipelineStatusChip status={status} />}
     </>
   );
   return (
     <li
-      className={`wf-pipeline-reviewer is-${kind}${stateClass(state)}${disabled ? " is-disabled" : ""}`}
+      className={`wf-pipeline-reviewer is-${kind}${stateClass(state)}${disabled ? " is-disabled" : ""}${hasDirective ? " has-directive" : ""}`}
       {...itemAttributes(item)}
     >
-      {onToggleDisabled ? (
-        <Tooltip label={toggleLabel ?? ""}>
+      {onOpen || onToggleDisabled ? (
+        <Tooltip label={onOpen ? openLabel ?? "" : toggleLabel ?? ""}>
           <button
             type="button"
             className="wf-pipeline-toggle wf-pipeline-reviewer-hit"
-            aria-pressed={disabled}
-            onClick={onToggleDisabled}
+            aria-pressed={onOpen ? undefined : disabled}
+            onClick={onOpen ?? onToggleDisabled ?? undefined}
           >
             {content}
           </button>
@@ -183,10 +191,9 @@ export function ReviewerRow({
  * `header` wires the stage's own roving stop and drag handle; `frame` takes drops for the
  * card as a whole, so a member can be moved onto a stage without aiming at a row.
  *
- * `disabled`/`onToggleDisabled` mirror `ReviewerRow`'s per-run auto-pass affordance at
- * stage grain: one click switches every member of the gate, which is the "force this
- * phase to pass" the runs monitor offers. Optional, so the editor's header - which owns
- * these same slots for focus and drag - is untouched.
+ * `onOpen` mirrors `ReviewerRow` for single-Persona stages. The optional direct disable
+ * callback remains available to other callers, while the run pipeline puts its stage-grain
+ * auto-pass control in the trailing actions menu.
  */
 export function StageCard({
   name,
@@ -197,6 +204,9 @@ export function StageCard({
   header = {},
   frame = {},
   disabled = false,
+  hasDirective = false,
+  onOpen = null,
+  openLabel = null,
   onToggleDisabled = null,
   toggleLabel = null,
   children,
@@ -209,6 +219,9 @@ export function StageCard({
   header?: PipelineItemProps;
   frame?: Pick<PipelineItemProps, "onDragOver" | "onDrop">;
   disabled?: boolean;
+  hasDirective?: boolean;
+  onOpen?: (() => void) | null;
+  openLabel?: string | null;
   onToggleDisabled?: (() => void) | null;
   toggleLabel?: string | null;
   children: ReactNode;
@@ -227,18 +240,18 @@ export function StageCard({
   );
   return (
     <section
-      className={`wf-pipeline-stage${stateClass(state)}${disabled ? " is-disabled" : ""}`}
+      className={`wf-pipeline-stage${stateClass(state)}${disabled ? " is-disabled" : ""}${hasDirective ? " has-directive" : ""}`}
       onDragOver={frame.onDragOver}
       onDrop={frame.onDrop}
     >
       <header className="wf-pipeline-stage-head" {...itemAttributes(header)}>
-        {onToggleDisabled ? (
-          <Tooltip label={toggleLabel ?? ""}>
+        {onOpen || onToggleDisabled ? (
+          <Tooltip label={onOpen ? openLabel ?? "" : toggleLabel ?? ""}>
             <button
               type="button"
               className="wf-pipeline-toggle wf-pipeline-stage-hit"
-              aria-pressed={disabled}
-              onClick={onToggleDisabled}
+              aria-pressed={onOpen ? undefined : disabled}
+              onClick={onOpen ?? onToggleDisabled ?? undefined}
             >
               {title}
             </button>

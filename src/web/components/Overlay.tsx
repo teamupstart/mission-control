@@ -55,6 +55,7 @@ export const OVERLAY_IDS = {
   workflowConfirm: "workflow-confirm",
   palette: "palette",
   recurringMissions: "recurring-missions",
+  personaDirective: "persona-directive",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

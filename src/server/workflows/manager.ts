@@ -15,7 +15,9 @@ import type {
   RetryWorkflowDelivery,
   RetryWorkflowRun,
   RestartFullWorkflow,
+  RemoveWorkflowPersonaDirective,
   SetWorkflowNodesDisabled,
+  SetWorkflowPersonaDirective,
   SubmitWorkflow,
   UpdateWorkflow,
   UpdateWorkflowBinding,
@@ -30,6 +32,7 @@ import type {
   SessionActionWaitReason,
   WorkflowBinding,
   WorkflowNodeAttempt,
+  WorkflowPersonaDirective,
   WorkflowSessionActionNode,
   WorkflowCaptureExpectation,
   WorkflowContextSnapshot,
@@ -1483,6 +1486,118 @@ export class WorkflowManager {
     // engine so that claim happens now rather than on the next scheduled pump.
     this.engine.wake();
     return { ok: true, value: updated };
+  }
+
+  /** Persist highest-priority operator feedback for one Persona through later run rounds. */
+  setPersonaDirective(
+    runId: string,
+    input: SetWorkflowPersonaDirective,
+    now = Date.now(),
+  ): WorkflowRuntimeMutation<{ run: WorkflowRun; directive: WorkflowPersonaDirective | null }> {
+    const run = this.store.getRun(runId);
+    if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    const replay = this.store.listEvents(run.id).some((event) =>
+      event.kind === "persona_directive_set"
+      && event.payload
+      && !Array.isArray(event.payload)
+      && typeof event.payload === "object"
+      && event.payload.requestId === input.requestId);
+    if (replay) {
+      return {
+        ok: true,
+        value: {
+          run,
+          directive: (run.personaDirectives ?? []).find((item) => item.nodeId === input.nodeId) ?? null,
+        },
+        idempotent: true,
+      };
+    }
+    if (["completed", "cancelled", "failed"].includes(run.status)) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This run has finished, so its Persona feedback can no longer change",
+      };
+    }
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    const node = version?.graph.nodes.find((candidate) => candidate.id === input.nodeId);
+    if (!version || !node || node.kind !== "persona") {
+      return {
+        ok: false,
+        reason: "not_found",
+        message: "Feedback can target only a Persona node in this run's pinned workflow version",
+      };
+    }
+    const updated = this.store.setRunPersonaDirective(
+      run.id,
+      node.id,
+      input.feedback,
+      {
+        kind: "persona_directive_set",
+        payload: { nodeId: node.id, persona: node.persona.name, requestId: input.requestId },
+      },
+      now,
+    );
+    if (!updated) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This run finished before the Persona feedback was saved",
+      };
+    }
+    this.publishRun(run.id);
+    return { ok: true, value: updated };
+  }
+
+  /** Stop applying active feedback without changing attempts that already claimed it. */
+  removePersonaDirective(
+    runId: string,
+    input: RemoveWorkflowPersonaDirective,
+    now = Date.now(),
+  ): WorkflowRuntimeMutation<{ run: WorkflowRun; directive: null }> {
+    const run = this.store.getRun(runId);
+    if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    const replay = this.store.listEvents(run.id).some((event) =>
+      event.kind === "persona_directive_removed"
+      && event.payload
+      && !Array.isArray(event.payload)
+      && typeof event.payload === "object"
+      && event.payload.requestId === input.requestId);
+    if (replay) return { ok: true, value: { run, directive: null }, idempotent: true };
+    if (["completed", "cancelled", "failed"].includes(run.status)) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This run has finished, so its Persona feedback can no longer change",
+      };
+    }
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    const node = version?.graph.nodes.find((candidate) => candidate.id === input.nodeId);
+    if (!version || !node || node.kind !== "persona") {
+      return {
+        ok: false,
+        reason: "not_found",
+        message: "Feedback can target only a Persona node in this run's pinned workflow version",
+      };
+    }
+    const updated = this.store.removeRunPersonaDirective(
+      run.id,
+      node.id,
+      {
+        kind: "persona_directive_removed",
+        payload: { nodeId: node.id, persona: node.persona.name, requestId: input.requestId },
+      },
+      now,
+    );
+    if (!updated) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This run finished before the Persona feedback was removed",
+      };
+    }
+    this.publishRun(run.id);
+    return { ok: true, value: { run: updated.run, directive: null }, idempotent: !updated.removed };
   }
 
   /**

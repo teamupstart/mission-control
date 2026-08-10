@@ -258,6 +258,55 @@ test("a dispatched session names its armed workflow, and the bind dialog opens o
   await shoot(page, "bind-dialog-opens-on-real-binding");
 });
 
+test("a version picked while bindings are still loading is not reverted", async ({
+  page,
+  daemon,
+}) => {
+  /*
+   * The version select is live for the whole time `GET /api/workflow-bindings` is in flight,
+   * and hydration - "open on what this session is actually bound to" - fires when that request
+   * settles. A pick inside that window was silently reverted to whatever was bound, which is
+   * the same wrong-selection failure the rest of this spec exists to close, in miniature.
+   *
+   * The other three editable fields already had `overridesTouchedRef` for exactly this
+   * async-seed-versus-manual-edit conflict. The version had no equivalent.
+   *
+   * The race is made deterministic rather than raced: the binding fetch is held open until the
+   * pick has happened, then released. Without the guard this fails every run, not one in ten.
+   */
+  await armWorkflowPrerequisites(daemon);
+  await publishAardvark(daemon);
+  await page.goto(daemon.baseURL);
+  await dispatchWithNoMistakes(page, daemon);
+
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/workflow-bindings", async (route) => {
+    // The GET only. The dialog's writes go to this same path and must not be held.
+    if (route.request().method() === "GET") await held;
+    await route.continue();
+  });
+
+  await page.getByRole("button", { name: /No-Mistakes Review v\d+/ }).first().click();
+  const bind = page.getByRole("dialog", { name: "Bind workflow" });
+  await expect(bind).toBeVisible();
+
+  // Picked while the fetch is still out, which is the whole point.
+  const published = bind.getByRole("combobox", { name: "Published workflow", exact: true });
+  await published.selectOption({ label: "Aardvark Review · v1" });
+  await expect.poll(() => selectedLabel(published)).toContain("Aardvark");
+
+  release();
+
+  // The conflict notice is the deterministic proof the bindings landed AND that the pick
+  // survived them: it only renders once this session's active binding is known and is a
+  // DIFFERENT version from the one selected. Waiting on it removes any need to sleep.
+  await expect(bind.getByText(/already bound to No-Mistakes Review · v\d+/i)).toBeVisible();
+  seen("dialog > selection after the fetch settled", await selectedLabel(published));
+  await expect.poll(() => selectedLabel(published)).toContain("Aardvark");
+  await expect.poll(() => selectedLabel(published)).not.toContain("No-Mistakes");
+});
+
 test("a session with no workflow still offers to attach one", async ({ page, daemon }) => {
   // The other half, which would rot silently: naming the binding must not turn the chip into a
   // permanent label on sessions that genuinely have nothing armed.

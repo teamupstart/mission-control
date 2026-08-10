@@ -155,6 +155,26 @@ export function WorkflowBindingDialog({
    * conversation no longer on screen.
    */
   const hydratedForSession = useRef<string | null>(null);
+  /**
+   * Whether the operator has picked a version BY HAND for the session now on screen.
+   *
+   * The version select's counterpart to `overridesTouchedRef`, which guards the other three
+   * editable fields against exactly this: an async seed landing on top of a manual edit. The
+   * version had no such guard, and its seed is the slowest of them - it waits on
+   * `GET /api/workflow-bindings` - while the select is live the whole time that request is in
+   * flight. A pick inside that window was reverted to whatever was actually bound, silently,
+   * which is the same wrong-selection failure this dialog was changed to end.
+   *
+   * A separate ref rather than a fourth key on `overridesTouchedRef`, because that one is
+   * CLEARED by the version select's own `onChange` - a new version re-seeds trigger, delivery
+   * and repair rounds from its published defaults. Folding this in would have the pick clear
+   * the very flag that records it.
+   *
+   * Cleared when the SESSION changes, on the same reasoning `hydratedForSession` re-arms
+   * there: "what is bound" has a new answer, and a pick made about a conversation no longer on
+   * screen should not suppress it.
+   */
+  const versionPickedByHand = useRef(false);
   useEffect(() => {
     /*
      * A caller that named WHAT TO BIND asked for that, and hydration answers a different
@@ -170,6 +190,9 @@ export function WorkflowBindingDialog({
      * reason to overwrite what was asked for.
      */
     if (target.workflowVersionId || target.workflowId) return;
+    // Deliberately before the latch below, and not latching: a hand-picked version means this
+    // effect has nothing left to say about this session, so there is no state to record.
+    if (versionPickedByHand.current) return;
     if (!bindingsSettled) return;
     if (hydratedForSession.current === sessionId) return;
     hydratedForSession.current = sessionId;
@@ -353,6 +376,9 @@ export function WorkflowBindingDialog({
             disabled={busy || Boolean(target.sessionId)}
             onChange={(event) => {
               resetTouchedOverrides();
+              // A different conversation has a different answer to "what is bound here", so the
+              // previous session's hand-pick stops standing in the way of hydrating this one.
+              versionPickedByHand.current = false;
               setSessionId(event.target.value);
             }}
           >
@@ -369,6 +395,9 @@ export function WorkflowBindingDialog({
             disabled={busy || Boolean(target.workflowVersionId)}
             onChange={(event) => {
               resetTouchedOverrides();
+              // Recorded before the state write, so a binding fetch settling on the very next
+              // tick finds the pick already registered rather than racing it.
+              versionPickedByHand.current = true;
               setVersionId(event.target.value);
             }}
           >

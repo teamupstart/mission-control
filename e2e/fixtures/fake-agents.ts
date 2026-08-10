@@ -26,8 +26,12 @@ import { fileURLToPath } from "node:url";
 export interface FakeAgents {
   /** Directory the fakes write their invocation records into. */
   recordDir: string;
-  bins: { claude: string; codex: string; pi: string; cmux: string; keepAwake: string };
+  bins: { claude: string; codex: string; pi: string; cmux: string; keepAwake: string; gh: string };
 }
+
+/** The issue `FAKE_GH` says it created, and the id the daemon derives from it. */
+export const FAKE_GH_ISSUE_URL = "https://github.com/acme/demo-repo/issues/123";
+export const FAKE_GH_ISSUE_ID = "acme/demo-repo#123";
 
 /**
  * A fake that only has to exist.
@@ -72,6 +76,51 @@ if (dir) {
     join(dir, \`cmux-\${Date.now()}-\${process.pid}.json\`),
     JSON.stringify({ argv: process.argv.slice(2) }, null, 2),
   );
+}
+`;
+
+/**
+ * The stand-in `gh`, so a spec can watch what the daemon asks GitHub to do - and so that it
+ * never actually asks.
+ *
+ * This one is not a cost dam like the agent fakes; it is a BLAST dam. `gh issue create` files
+ * an issue into a repository other people are watching, and it cannot be taken back by
+ * deleting a row here - so the one place that could do it for real is redirected at this,
+ * through `MISSION_GH_BIN` (see `ghBin()` in `src/server/config.ts`). Without it a suite run
+ * on a developer's machine, where `gh` is signed in, would file a real issue on every pass.
+ *
+ * That override is whole-codebase rather than push-only, which has a consequence this fake
+ * owns: the PR poller reaches it too. Its `gh pr list --json …` output is parsed as JSON, and
+ * a fake that printed nothing would turn every existing spec's PR lookup into a parse error,
+ * so `pr list` and `issue list` answer with an empty array - "nothing found", the state every
+ * spec that does not care about a PR is already in.
+ *
+ * The record it writes is the assertion surface: the argv carries the title, the body and one
+ * `--label` per label the source sweeps on, and the cwd is the repo the issue is filed
+ * against - which is where a push aimed at the wrong repository would show up.
+ *
+ * CommonJS `require`, for the reason `FAKE_CMUX` gives: the file is extension-less, which Node
+ * treats as CJS, and an `import` here would crash at spawn time in a way that reads as a
+ * missing `gh` rather than as a broken fixture.
+ */
+const FAKE_GH = `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const argv = process.argv.slice(2);
+const dir = process.env.MC_E2E_RECORD_DIR;
+if (dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, \`gh-\${Date.now()}-\${process.pid}.json\`),
+    JSON.stringify({ argv, cwd: process.cwd() }, null, 2),
+  );
+}
+const command = argv.join(" ");
+if (command.startsWith("issue create")) {
+  // What the real gh prints on success: the URL of the issue, and nothing else.
+  process.stdout.write("${FAKE_GH_ISSUE_URL}\\n");
+} else if (command.startsWith("issue list") || command.startsWith("pr list")) {
+  process.stdout.write("[]\\n");
 }
 `;
 
@@ -156,5 +205,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(keepAwake, FAKE_KEEP_AWAKE);
   chmodSync(keepAwake, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux, keepAwake } };
+  const gh = join(binDir, "fake-gh");
+  writeFileSync(gh, FAKE_GH);
+  chmodSync(gh, 0o755);
+
+  return { recordDir, bins: { claude, codex, pi, cmux, keepAwake, gh } };
 }

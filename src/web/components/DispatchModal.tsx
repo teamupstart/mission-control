@@ -15,7 +15,18 @@ import { withAttachments } from "@shared/attachments.ts";
 import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
-import { api, fetchEnvironmentChecks, fetchHarnessesConfig, fetchRepos } from "../lib/api.ts";
+import {
+  TASK_SOURCE_KIND_INFO,
+  type TaskSourceInstance,
+  type TaskSourceRef,
+} from "@shared/task-source.ts";
+import {
+  api,
+  fetchEnvironmentChecks,
+  fetchHarnessesConfig,
+  fetchRepos,
+  fetchTaskSources,
+} from "../lib/api.ts";
 import { readLastDispatchRepo, rememberDispatchRepo } from "../lib/lastRepo.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
@@ -100,6 +111,55 @@ function ensembleDraftsEqual(
   b: EnsembleDispatchDraft,
 ): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * The configured sources this task could actually be filed into.
+ *
+ * The SAME two questions the daemon asks, deliberately - `pushTask` refuses a kind whose
+ * `canPush` is false and a source whose stored `repoRoot` is not the task's, by exact string
+ * comparison of two values that were both resolved to a git root when they were stored. The
+ * browser cannot run git, so it cannot re-derive either of them; matching the daemon's
+ * comparison exactly is what keeps the modal from offering an action the route would refuse.
+ *
+ * `canPush` is readable here because it lives on the pure half of the contract
+ * (`TASK_SOURCE_KIND_INFO`), which is the whole reason it was put there: the modal decides
+ * whether to offer the action without importing an implementation the browser cannot load.
+ */
+function eligiblePushSources(
+  sources: TaskSourceInstance[],
+  repoRoot: string,
+): TaskSourceInstance[] {
+  return sources.filter((s) => TASK_SOURCE_KIND_INFO[s.kind].canPush && s.repoRoot === repoRoot);
+}
+
+/** What to call a source in a picker: the operator's own name for it, else its kind's. */
+function sourceName(source: TaskSourceInstance): string {
+  return source.label.trim() || TASK_SOURCE_KIND_INFO[source.kind].label;
+}
+
+/**
+ * The push surface's state, tagged with the task it belongs to.
+ *
+ * The tag is the whole point of the type: see the state's declaration in `DispatchModal`.
+ * Every field here answers a question about ONE task, and a reader that forgets which task
+ * shows another one's issue as this one's.
+ */
+type PushState = {
+  taskId: string;
+  /** Which eligible source the operator picked. Null takes the first. */
+  sourceId: string | null;
+  /** What the push created, read off the route's own 200 body. */
+  ref: TaskSourceRef | null;
+  /** The daemon's own refusal, kept verbatim. */
+  error: string | null;
+  /** The 504: the item MAY exist, so the action is withdrawn rather than offered again. */
+  outcomeUnknown: boolean;
+};
+
+/** Nothing asked yet, for this task. */
+function freshPushState(taskId: string): PushState {
+  return { taskId, sourceId: null, ref: null, error: null, outcomeUnknown: false };
 }
 
 /**
@@ -570,9 +630,48 @@ function DispatchModal({
    * between this and `selectedWorkflowBlocked`, which genuinely blocks.
    */
   const [envWarnings, setEnvWarnings] = useState<EnvironmentCheckView[]>([]);
+  /**
+   * The configured sources, or null while the read is out - and if it never landed.
+   *
+   * Not tagged with a task the way `pushState` below is, because it is not about one: the
+   * source list is global, and the eligibility filter is applied against whichever task the
+   * form is over at render time. A list fetched for one task is therefore correct for the
+   * next; it is re-read per opening only so a source added in Settings a moment ago is usable
+   * without a reload.
+   */
+  const [taskSources, setTaskSources] = useState<TaskSourceInstance[] | null>(null);
+  /**
+   * What has been asked of the push surface, and what came back - CARRYING THE TASK IT IS
+   * ABOUT.
+   *
+   * One tagged object rather than four loose pieces of state, because every one of them is
+   * meaningful only about the task that produced it, and the cost of that going wrong is the
+   * worst kind: a `ref` left over from task A renders as task B's link, telling an operator
+   * that a task they have not filed anywhere is already upstream. An `outcomeUnknown` left
+   * over withdraws B's button for a failure that was not B's.
+   *
+   * `DispatchLayer` keys this component on the task id, so today a different task remounts it
+   * and the whole question is moot. That is exactly why the tag is here: the invariant this
+   * state depends on lives in another component, three hundred lines away, in a prop that is
+   * easy to drop in a refactor and whose loss would show up as a wrong ISSUE LINK rather than
+   * as anything that looks like a missing key. Reading it through `editing.id` makes the
+   * staleness unrepresentable instead of merely unlikely.
+   *
+   * `ref` is held even though the daemon emits `task_upsert` for the same fact, because the
+   * two arrive on different clocks: the route's own reply carries the updated `Task`, so
+   * reading the ref off it draws the link in the tick the button was pressed rather than
+   * whenever the event loop delivers the frame. The event still lands and still updates
+   * `editing`; this just refuses to race it.
+   *
+   * `outcomeUnknown` is scoped to the opening for the reason the 504 exists: the item may be
+   * upstream already, and the operator's next move is to go and look, not to press again.
+   * Reopening the form is a deliberate second act, and by then the row itself will say whether
+   * the sweep found it.
+   */
+  const [pushState, setPushState] = useState<PushState | null>(null);
   // Which action is in flight, not merely whether one is: every footer button reaches the
   // daemon, and only the one that was pressed should say so.
-  const [pending, setPending] = useState<null | "shelve" | "dispatch" | "delete">(null);
+  const [pending, setPending] = useState<null | "shelve" | "dispatch" | "delete" | "push">(null);
   const busy = pending !== null;
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
@@ -796,6 +895,100 @@ function DispatchModal({
       alive = false;
     };
   }, []);
+
+  /**
+   * What this task could be filed into, read once when the editor opens.
+   *
+   * Gated twice, and each gate removes a read that could tell nobody anything: a fresh
+   * dispatch has no row to file, and a task that already carries a source renders its link
+   * from the row it is over. A read that does not land leaves this `null` rather than `[]` -
+   * see `PushToSourceBlock`, where those two states print different sentences.
+   *
+   * Here rather than lifted to `App`, like every other open-scoped read this form does: the
+   * answer is only ever rendered inside this dialog, it changes when the operator edits
+   * Settings (which no server event announces), and asking on each open is what makes a source
+   * added five seconds ago usable without a reload.
+   *
+   * Keyed on the task's id as well as on whether it needs asking, so that a form which shows a
+   * DIFFERENT task without remounting still re-reads. Nothing stale can be rendered in the
+   * meantime - the list is global and the filter is applied per render - but a list read for
+   * yesterday's opening should not be the last word on today's.
+   */
+  const editingId = editing?.id ?? null;
+  const unlinkedEdit = editing !== null && editing.source === null;
+  useEffect(() => {
+    if (!unlinkedEdit) return;
+    let alive = true;
+    void fetchTaskSources().then((view) => {
+      if (alive && view) setTaskSources(view.sources);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [editingId, unlinkedEdit]);
+
+  /**
+   * The push state, but only if it is THIS task's.
+   *
+   * The read that makes the tag worth carrying. Everything below - the link, the picker's
+   * selection, the error, the withdrawn button - comes through here, so a state object left
+   * over from another task is not merely unlikely to be rendered, it cannot be.
+   */
+  const push = editing && pushState?.taskId === editing.id ? pushState : null;
+  // The link this form should draw: the row's own, or the one this opening just created.
+  const taskLink = editing?.source ?? push?.ref ?? null;
+  /**
+   * The form holds edits the daemon has not been told about.
+   *
+   * Load-bearing for the push, not only for Revert: the issue is composed by the DAEMON from
+   * the stored row, so pushing over an unsaved title publishes the old one to a place that
+   * cannot be edited from here. Disabled with a tooltip that says which order to do it in,
+   * rather than silently pushing something the operator can see is not what is on screen.
+   */
+  const editDirty = editing !== null && !draftsEqual(draft, draftFromTask(editing));
+
+  /**
+   * File this task upstream, through the source the block has selected.
+   *
+   * The one action in this form that PUBLISHES, which is why it folds into `pending` like the
+   * others: `busy` seals all four dismiss routes (`closable={!busy}`), so a modal cannot be
+   * escaped out from under a `gh issue create` that is still running and take the only thing
+   * that can report what happened with it.
+   *
+   * Both failures are kept apart exactly as the route sends them. A 502 published nothing, so
+   * the button stays and the error sits beside it; a 504 may have published, so the button is
+   * withdrawn for this opening and the sentence tells the operator to look before retrying.
+   */
+  async function pushToSource(): Promise<void> {
+    if (!editing || busy) return;
+    const eligible = eligiblePushSources(taskSources ?? [], editing.repoRoot);
+    const chosen = eligible.find((s) => s.id === push?.sourceId) ?? eligible[0];
+    if (!chosen) return;
+    // Captured, not re-read after the await. Every write below is tagged with the task this
+    // push was FOR, so an answer that arrives late lands on that task or on nothing - the same
+    // reconciliation `onSubmitted` does against the draft, for the same reason.
+    const taskId = editing.id;
+    const answered = (patch: Partial<PushState>): void =>
+      setPushState({ ...freshPushState(taskId), sourceId: chosen.id, ...patch });
+    setPending("push");
+    answered({});
+    const r = await api.pushTaskToSource(taskId, chosen.id);
+    setPending(null);
+    if (r.ok && r.source) {
+      answered({ ref: r.source });
+      return;
+    }
+    // An accepted push that names nothing cannot be told from a created issue we failed to
+    // read, so it takes the cautious reading rather than the convenient one. This is the
+    // route's contract being violated, not a state it can reach - and the direction to fail in
+    // is the one where nobody files a duplicate.
+    answered({
+      outcomeUnknown: r.ok || Boolean(r.outcomeUnknown),
+      error: r.ok
+        ? "the push was accepted but the daemon did not name the issue it created - check GitHub before retrying"
+        : r.error ?? "could not create the issue",
+    });
+  }
 
   // Put the form back where it started without closing: every close path preserves
   // what's typed, so this is the one way to abandon it. For a new dispatch that means
@@ -1091,7 +1284,18 @@ function DispatchModal({
                 ? ` for ${formatScheduledFor(editing.scheduledFor)}`
                 : ""}
               . This origin is immutable and is not changed by saving.
-              {editing.source && " This task also carries an external source (conflict)."}
+              {/* Two provenances, and no longer a contradiction. This used to say "(conflict)"
+                  because the only way a task could carry both was a bug - a schedule created
+                  it, and a sweep somehow claimed it too. Now a scheduled task can be filed
+                  upstream on purpose, so the second line is where it came to be, not evidence
+                  that something went wrong.
+
+                  Read from `taskLink`, the same value the block below draws, rather than from
+                  `editing.source` directly: a scheduled task pushed in this opening gets its
+                  link from the route's own reply, and `editing.source` does not catch up until
+                  the `task_upsert` frame lands. Sourced separately, the two banners disagree
+                  about the same fact for as long as that takes. */}
+              {taskLink && " This task is also linked to an external item below."}
             </span>
             <Tooltip label="Open this task's recurring mission and its run history">
               <button
@@ -1109,6 +1313,29 @@ function DispatchModal({
               </button>
             </Tooltip>
           </div>
+        )}
+        {/* Beside the schedule's provenance rather than among the fields, because it is the
+            same kind of fact: where this task stands in relation to something outside the
+            form. Edit-only - a task that does not exist yet cannot be filed anywhere. */}
+        {editing && (
+          <PushToSourceBlock
+            link={taskLink}
+            sources={taskSources}
+            /* The STORED repo, never `draft.repoRoot`: the daemon compares a source against
+               the row it holds, so filtering on an unsaved edit would offer sources for a repo
+               this task is not based on yet - and the push would be refused with a sentence
+               about a mismatch the operator cannot see. */
+            repoRoot={editing.repoRoot}
+            selectedSourceId={push?.sourceId ?? null}
+            onSelectSource={(id) =>
+              setPushState({ ...(push ?? freshPushState(editing.id)), sourceId: id })
+            }
+            onPush={() => void pushToSource()}
+            pushing={pending === "push"}
+            dirty={editDirty}
+            error={push?.error ?? null}
+            outcomeUnknown={push?.outcomeUnknown ?? false}
+          />
         )}
         {/* The brief leads: repo and task are the dispatch, everything below them is a
             default you occasionally override. */}
@@ -1537,11 +1764,7 @@ function DispatchModal({
             onClick={ensembleMode ? onEnsembleClear : clearDraft}
             disabled={
               busy ||
-              (ensembleMode
-                ? false
-                : editing
-                  ? draftsEqual(draft, draftFromTask(editing))
-                  : isEmptyDispatchDraft(draft))
+              (ensembleMode ? false : editing ? !editDirty : isEmptyDispatchDraft(draft))
             }
           >
             {editing ? "Revert" : "Clear"}
@@ -1593,5 +1816,185 @@ function DispatchModal({
         )}
       </footer>
     </Overlay>
+  );
+}
+
+/**
+ * Where a backlog task meets the world outside Mission Control: the item it is linked to, or
+ * the one action that creates one.
+ *
+ * Two things share this spot because they are two readings of one fact - `Task.source`, which
+ * until now was persisted, swept into, and rendered nowhere. A task that arrived from a source
+ * shows its link here with no fetch and no click; a task that was written here offers to
+ * become such an item. The states are exclusive by construction rather than by CSS, and the
+ * order below is the priority: a linked task is never also offered the button, because the
+ * daemon would refuse the second push and the operator should not have to learn that by
+ * pressing it.
+ *
+ * Deliberately pure and exported: it renders from props alone, so
+ * `test/backlog-edit-render.test.ts` can put it in each of its states without a daemon, and a
+ * later surface that wants to show a task's source (a board card, a Sitrep row) reuses this
+ * rendering rather than inventing a second one that drifts.
+ *
+ * The wording of the linked state names no tracker, and that is not vagueness - `Task.source`
+ * is also what a JIRA sweep writes, and this block is the first place any of them is drawn.
+ * The external id it prints ("acme/demo-repo#123", "MC-14") already says which world it came
+ * from, and says it truthfully for a kind that cannot receive pushes at all.
+ */
+export function PushToSourceBlock({
+  link,
+  sources,
+  repoRoot,
+  selectedSourceId = null,
+  onSelectSource,
+  onPush,
+  pushing = false,
+  dirty = false,
+  error = null,
+  outcomeUnknown = false,
+}: {
+  /** The item this task is linked to - stored on the row, or minted by a push in this opening. */
+  link: TaskSourceRef | null;
+  /**
+   * The configured sources, or null while the read is out - AND if it never landed.
+   *
+   * Those two really are the same state here. "We could not ask the daemon" and "you have no
+   * source for this repo" are different sentences, and only the second one is safe to print:
+   * a failed read that rendered the Settings hint would tell an operator to go and configure a
+   * source they may already have.
+   */
+  sources: TaskSourceInstance[] | null;
+  /** The task's STORED repo, which is the value the daemon compares a source against. */
+  repoRoot: string;
+  /** Which eligible source the operator picked. Null takes the first. */
+  selectedSourceId?: string | null;
+  onSelectSource?: (id: string) => void;
+  onPush?: () => void;
+  /** A push is in flight. Folded into the modal's `busy`, which seals every dismiss route. */
+  pushing?: boolean;
+  /** The form holds unsaved edits, so the item would carry text the daemon does not have. */
+  dirty?: boolean;
+  /** The daemon's own refusal, rendered verbatim. */
+  error?: string | null;
+  /** The 504: the item MAY exist, so the action is withdrawn rather than offered again. */
+  outcomeUnknown?: boolean;
+}): React.JSX.Element | null {
+  if (link) {
+    return (
+      <div className="rm-provenance-note source-provenance-note">
+        <span className="rm-provenance-text">
+          <span aria-hidden>↗</span> Filed upstream as{" "}
+          {link.url ? (
+            <Tooltip label={`Open ${link.externalId} in a new tab`}>
+              <a
+                className="source-provenance-link"
+                href={link.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {link.externalId}
+              </a>
+            </Tooltip>
+          ) : (
+            /* A kind with no URL for its items. The id is still the whole identity, so it is
+               shown as text rather than as a link to nowhere. */
+            <strong>{link.externalId}</strong>
+          )}
+          . This task stays in the backlog, and that source will not file it back as a new one.
+        </span>
+      </div>
+    );
+  }
+  // Nothing at all until the read lands: a button that appears a beat after the form does is
+  // a button the operator's cursor is already moving past.
+  if (sources === null) return null;
+
+  const eligible = eligiblePushSources(sources, repoRoot);
+  if (eligible.length === 0) {
+    return (
+      // A muted line rather than the banner the other two states wear, deliberately: this is
+      // the state EVERY task is in on a machine with no GitHub source configured, and a
+      // bordered box at the top of every editor would be permanent chrome advertising a
+      // feature nobody here uses. Said at all, because the reason the action is missing is
+      // something the operator can fix in about a minute - and an action that appears on some
+      // tasks and not others, with no explanation, reads as a bug.
+      <p className="source-provenance-hint">
+        <span aria-hidden>↗</span> To create a GitHub issue from this task, add a GitHub
+        Issues task source for this repo in Settings.
+      </p>
+    );
+  }
+
+  const selected = eligible.find((s) => s.id === selectedSourceId) ?? eligible[0];
+  if (!selected) return null;
+  const name = sourceName(selected);
+  // An unknown outcome always carries the daemon's own sentence; the fallback exists so that
+  // withdrawing the button is never unexplained, which would read as the action vanishing.
+  const failure =
+    error ??
+    (outcomeUnknown
+      ? "the push did not report back - the issue may already exist; check GitHub before retrying"
+      : null);
+  return (
+    <div className="rm-provenance-note source-provenance-note">
+      <span className="rm-provenance-text">
+        {/* "any labels" rather than "the labels": a source with an empty filter is a valid
+            source, and it files an issue carrying none. The sentence has to be true of both.
+            The source's name is quoted because it is an arbitrary string in the middle of a
+            sentence - unquoted, "any labels mission-control bugs filters on" reads as prose
+            that has lost a word. */}
+        <span aria-hidden>↗</span> Not filed in an external tracker. The issue carries this
+        task's saved title and text, plus any labels &ldquo;{name}&rdquo; filters on.
+        {failure && (
+          // The refusal wears `dispatch-error` as well as its own layout class, so the two
+          // refusals this form can print - a failed save at the foot of the body, a failed push
+          // here - are the same red by construction rather than by two rules agreeing.
+          <span
+            className={
+              outcomeUnknown
+                ? "source-provenance-warn"
+                : "dispatch-error source-provenance-error"
+            }
+          >
+            <span aria-hidden>{outcomeUnknown ? "⚠" : "✕"}</span> {failure}
+          </span>
+        )}
+      </span>
+      {/* One source needs no picker - a select of one is a control that cannot be used. */}
+      {eligible.length > 1 && (
+        <Tooltip label="Which configured source files the issue - they may point at different repositories or sweep different labels">
+          <select
+            className="field-input source-provenance-pick"
+            aria-label="GitHub issue source"
+            value={selected.id}
+            onChange={(e) => onSelectSource?.(e.target.value)}
+            disabled={pushing}
+          >
+            {eligible.map((s) => (
+              <option key={s.id} value={s.id}>
+                {sourceName(s)}
+              </option>
+            ))}
+          </select>
+        </Tooltip>
+      )}
+      {/* Withdrawn, not merely disabled, when the outcome is unknown. A disabled button is a
+          promise that something will re-enable it; here the correct next move is to go and
+          look at GitHub, and pressing this again is the one thing that could file a duplicate.
+          A refusal is the opposite case - nothing was published, so the button stays live. */}
+      {!outcomeUnknown && (
+        <Tooltip
+          label={
+            dirty
+              ? "Save your changes first - the issue carries the task's saved title and intent"
+              : `File this task as a GitHub issue through "${name}" - it carries the task's title, its text, and any labels that source filters on`
+          }
+        >
+          <button className="btn" type="button" onClick={onPush} disabled={pushing || dirty}>
+            {pushing ? "Creating issue…" : "Create GitHub issue"}
+          </button>
+        </Tooltip>
+      )}
+    </div>
   );
 }

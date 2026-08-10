@@ -5,7 +5,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 import type { Task } from "../src/shared/types.ts";
-import { DispatchLayer } from "../src/web/components/DispatchModal.tsx";
+import type { TaskSourceInstance } from "../src/shared/task-source.ts";
+import { DispatchLayer, PushToSourceBlock } from "../src/web/components/DispatchModal.tsx";
 import { BacklogColumn } from "../src/web/components/layouts/BacklogColumn.tsx";
 import { hasTooltip } from "./helpers/markup.ts";
 
@@ -148,6 +149,205 @@ test("the dependency picker offers both backlog tasks and active sessions", () =
   assert.match(html, /<optgroup label="Active sessions">/);
   assert.match(html, /Manual investigation/);
   assert.match(html, /each waits for its merged PR/);
+});
+
+// ---- Where a task meets the world outside Mission Control ----
+//
+// `Task.source` has been persisted and swept into since task sources shipped and rendered
+// nowhere at all, so every case below is the first assertion that any of it reaches a reader.
+// The block is exercised from both sides: through the whole editor, which is what proves a
+// swept-in task shows its link with no fetch and no click, and directly, which is the only way
+// to reach the states an effect-less render can never produce (a landed sources list, a push
+// in flight, a refusal, an unknown outcome).
+
+/** A configured source, as the modal reads one off `GET /api/task-sources/config`. */
+const mkSource = (over: Partial<TaskSourceInstance> = {}): TaskSourceInstance =>
+  ({
+    id: "src-1",
+    kind: "github-issues",
+    label: "mission-control bugs",
+    enabled: true,
+    repoRoot: "/Users/dev/work/harness",
+    intervalMs: 900_000,
+    defaults: { kind: "ship", agent: "claude", priority: null, labels: [] },
+    maxPerSweep: 25,
+    config: {},
+    ...over,
+  }) as TaskSourceInstance;
+
+const REF = {
+  sourceId: "src-1",
+  externalId: "acme/demo-repo#123",
+  url: "https://github.com/acme/demo-repo/issues/123",
+};
+
+/** The push block on its own, in a state the editor's own effects cannot reach. */
+const block = (props: Parameters<typeof PushToSourceBlock>[0]): string =>
+  renderToStaticMarkup(createElement(PushToSourceBlock, props));
+
+test("a swept-in task shows what it came from, without asking the daemon anything", () => {
+  // The headline of this whole surface: `renderToStaticMarkup` runs no effects, so nothing
+  // here has fetched a source list - and the link still renders, because it is a pure read of
+  // the row. A task filed by a sweep is legible the instant its editor opens.
+  const html = editor(mkTask({ source: REF }));
+  assert.match(
+    html,
+    /<a class="source-provenance-link" href="https:\/\/github\.com\/acme\/demo-repo\/issues\/123" target="_blank" rel="noreferrer"[^>]*>acme\/demo-repo#123<\/a>/,
+  );
+  // And it is a link OUT: a target-less anchor would replace the dashboard - and the modal,
+  // and any unsaved edit in it - with GitHub.
+  assert.match(html, /Filed upstream as/);
+  assert.ok(
+    hasTooltip(html, "Open acme/demo-repo#123 in a new tab"),
+    "a link that leaves the app should say where it goes and that it opens a tab",
+  );
+  // The action is not also offered. The daemon refuses a second push on a linked task, and an
+  // operator should not have to learn that by pressing a button that was there.
+  assert.doesNotMatch(html, /Create GitHub issue/);
+});
+
+test("a scheduled task that is also filed upstream reads as two origins, not a conflict", () => {
+  // Both banners at once, which used to be impossible on purpose: a task could only carry a
+  // schedule AND a source through a bug, so the schedule note called it a "(conflict)". Filing
+  // a scheduled task upstream is now something an operator does deliberately, and the note has
+  // to say where the second origin is rather than accuse it of being one.
+  const html = editor(mkTask({ scheduleId: "sched-1", source: REF }));
+  assert.match(html, /Scheduled by a recurring mission/);
+  assert.match(html, /This task is also linked to an external item below\./);
+  assert.doesNotMatch(html, /conflict/);
+  // And the thing it points at is really below it.
+  const noteAt = html.indexOf("also linked to an external item");
+  const linkAt = html.indexOf("Filed upstream as");
+  assert.ok(noteAt >= 0 && linkAt > noteAt, "the note must precede the link it refers to");
+});
+
+test("the editor offers no push at all until it knows what sources exist", () => {
+  // The pre-fetch state, which is what a static render IS. A button drawn now and corrected a
+  // beat later is a button the cursor is already moving toward - and the Settings hint printed
+  // now would tell an operator to go and configure something they may already have.
+  const html = editor(mkTask());
+  assert.doesNotMatch(html, /Create GitHub issue/);
+  assert.doesNotMatch(html, /add a GitHub\s*Issues task source/);
+  assert.doesNotMatch(html, /source-provenance-note/);
+});
+
+test("one eligible source is a button that names it, and no picker", () => {
+  const html = block({
+    link: null,
+    sources: [mkSource()],
+    repoRoot: "/Users/dev/work/harness",
+  });
+  assert.match(html, /<button class="btn"[^>]*>Create GitHub issue<\/button>/);
+  assert.ok(
+    hasTooltip(
+      html,
+      'File this task as a GitHub issue through "mission-control bugs" - it carries the task\'s title, its text, and any labels that source filters on',
+    ),
+    "the tooltip must name the source the issue is filed through",
+  );
+  // A select of one is a control that cannot be used.
+  assert.doesNotMatch(html, /<select/);
+});
+
+test("two eligible sources are picked between, defaulting to the first", () => {
+  const html = block({
+    link: null,
+    sources: [mkSource(), mkSource({ id: "src-2", label: "triage inbox" })],
+    repoRoot: "/Users/dev/work/harness",
+  });
+  assert.match(html, /<select class="field-input source-provenance-pick" aria-label="GitHub issue source"/);
+  assert.match(html, /<option value="src-1" selected="">mission-control bugs<\/option>/);
+  assert.match(html, /<option value="src-2">triage inbox<\/option>/);
+  assert.match(html, /Create GitHub issue/);
+});
+
+test("a source for another repo, or of a kind that cannot receive one, is not eligible", () => {
+  // Both halves of the daemon's own refusal, asserted together because either one alone would
+  // let the modal offer an action `pushTask` would reject: a Jira source implements no outward
+  // verb at all, and a GitHub one bound elsewhere files against a repo this task is not on.
+  const html = block({
+    link: null,
+    sources: [
+      mkSource({ id: "jira", kind: "jira", label: "platform queue" }),
+      mkSource({ id: "elsewhere", repoRoot: "/Users/dev/work/other" }),
+    ],
+    repoRoot: "/Users/dev/work/harness",
+  });
+  assert.doesNotMatch(html, /Create GitHub issue/);
+  assert.match(html, /add a GitHub\s*Issues task source for this repo in Settings/);
+});
+
+test("unsaved edits disable the push and say which order to do it in", () => {
+  const html = block({
+    link: null,
+    sources: [mkSource()],
+    repoRoot: "/Users/dev/work/harness",
+    dirty: true,
+  });
+  // The issue is composed by the daemon from the STORED row, so pushing over an unsaved title
+  // publishes the old one to a place this form cannot edit.
+  assert.match(html, /<button class="btn"[^>]*disabled=""[^>]*>Create GitHub issue<\/button>/);
+  assert.ok(
+    hasTooltip(
+      html,
+      "Save your changes first - the issue carries the task's saved title and intent",
+    ),
+    "a disabled button that does not say why reads as broken",
+  );
+});
+
+test("a push in flight says so on the button it disabled", () => {
+  const html = block({
+    link: null,
+    sources: [mkSource()],
+    repoRoot: "/Users/dev/work/harness",
+    pushing: true,
+  });
+  assert.match(html, /<button class="btn"[^>]*disabled=""[^>]*>Creating issue…<\/button>/);
+});
+
+test("a refusal keeps the button, because nothing was published", () => {
+  // The 502 half of the contract. `gh` ran and said no - most often a label that does not
+  // exist on the repo - so the fix is a minute away and the retry cannot duplicate anything.
+  const html = block({
+    link: null,
+    sources: [mkSource()],
+    repoRoot: "/Users/dev/work/harness",
+    error: "could not add label: 'triage' not found",
+  });
+  // `dispatch-error` beside its own layout class, pinned rather than matched loosely: the red a
+  // failed push is printed in is the red a failed SAVE is printed in, and the two live in the
+  // same dialog. Restating the colour instead of sharing the class is how they drift apart.
+  assert.match(html, /class="dispatch-error source-provenance-error"/);
+  assert.match(html, /could not add label: &#x27;triage&#x27; not found/);
+  assert.match(html, /<button class="btn"[^>]*>Create GitHub issue<\/button>/);
+  assert.doesNotMatch(html, /<button class="btn"[^>]*disabled=""/);
+});
+
+test("an unknown outcome withdraws the button rather than disabling it", () => {
+  // The 504, and the one place in this app where removing a control is safer than offering
+  // it: the issue may already exist, and pressing again is what files the duplicate. A
+  // disabled button would promise that something is coming to re-enable it; nothing is.
+  const html = block({
+    link: null,
+    sources: [mkSource()],
+    repoRoot: "/Users/dev/work/harness",
+    error: "gh issue create did not report back - the issue may exist; check GitHub before retrying",
+    outcomeUnknown: true,
+  });
+  assert.match(html, /class="source-provenance-warn"/);
+  assert.match(html, /check GitHub before retrying/);
+  assert.doesNotMatch(html, /Create GitHub issue/);
+});
+
+test("an item with no URL is still named, rather than linked to nowhere", () => {
+  const html = block({
+    link: { sourceId: "src-1", externalId: "MC-14", url: null },
+    sources: null,
+    repoRoot: "/Users/dev/work/harness",
+  });
+  assert.match(html, /<strong>MC-14<\/strong>/);
+  assert.doesNotMatch(html, /<a /);
 });
 
 test("a backlog card carries a focusable way into the editor, not just a click handler", () => {

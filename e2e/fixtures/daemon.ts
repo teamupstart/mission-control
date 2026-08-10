@@ -112,8 +112,13 @@ async function freeLoopbackPort(): Promise<number> {
  * worktree and reads the branch. A fixture
  * that only looked like a repo would fail at the first `git` call, inside the daemon, where
  * the failure surfaces as an inscrutable dispatch error rather than as a broken fixture.
+ *
+ * Exported for the specs that need a SECOND repo in the same workspace - anything asserting
+ * that a control is scoped to one repo has to have another one for it to be scoped away from.
+ * Routes that take a repo path resolve it to a git root and refuse anything else, so a bare
+ * `mkdir` cannot stand in for this.
  */
-function seedRepo(workspace: string, name: string): string {
+export function seedRepo(workspace: string, name: string): string {
   const repo = join(workspace, name);
   mkdirSync(repo, { recursive: true });
   const git = (...args: string[]): void => {
@@ -175,6 +180,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
     // Linux CI drives the full manager/route/SSE path, and no test run ever places a
     // real power assertion on the machine it runs on.
     MISSION_KEEP_AWAKE_BIN: bins.keepAwake,
+    // Every `gh` call the daemon makes, redirected at a fake. This is the one override here
+    // that is not about cost: `gh issue create` PUBLISHES to a repository other people watch,
+    // and on a machine where `gh` is signed in - which is every machine this is developed on -
+    // an unfaked binary would file a real issue on every run of the push spec. `ghBin()` is the
+    // single seam every `gh` call in the daemon goes through, so the PR poller and the Inspector
+    // are covered by this one variable rather than each needing its own.
+    MISSION_GH_BIN: bins.gh,
     MC_E2E_RECORD_DIR: recordDir,
     // The pool sweep is NOT scoped to MISSION_HOME - it reaps the shared treehouse
     // worktree pool, so an isolated daemon will still delete a sibling checkout's work.

@@ -115,7 +115,7 @@
 
 <h2>Cross-phase contracts</h2>
 <ul>
-  <li><strong>Phase 1 -&gt; 2, 3</strong>: <code>PushDraft</code>/<code>PushResult</code>/<code>PushContext</code> and <code>canPushTo</code>/<code>pushToSource</code> are frozen; <code>outcomeUnknown: true</code> is never retry-safe; exit-0-without-URL reads as unknown outcome, never success; <code>ghBin()</code> is the only gh seam and <code>MISSION_GH_BIN</code> its override.</li>
+  <li><strong>Phase 1 -&gt; 2, 3</strong>: <code>PushDraft</code>/<code>PushResult</code>/<code>PushContext</code> and <code>canPushTo</code>/<code>pushToSource</code> are frozen; <code>outcomeUnknown: true</code> is never retry-safe; exit-0-without-URL reads as unknown outcome, never success; <code>ghBin()</code> is the only gh seam and <code>MISSION_GH_BIN</code> its override. The push ctx <code>signal</code> is shape parity with sweeps, not a cancellation path - <code>run()</code> has none - so <code>GH_TIMEOUT_MS</code> and phase 2's in-flight guard are the actual bounds on a wedged push.</li>
   <li><strong>Phase 2 -&gt; 3</strong>: route contract frozen (200 returns the updated <code>Task</code>; 504 body carries <code>outcomeUnknown: true</code>; 502 means retry-safe); eligibility = exact string equality of source and task <code>repoRoot</code> plus kind <code>canPush</code> - the UI filters by the identical comparison.</li>
 </ul>
 <div class="note warn"><strong>Safety invariant (all phases):</strong> the seen row and the task link are written in one transaction; no path writes them separately, except the deliberate moved-mid-push case which writes only the seen row and reports the created issue.</div>

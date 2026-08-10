@@ -42,7 +42,7 @@ An **independent** backlog task exists outside this plan: "Add a Delete button t
 
 ## Cross-phase contracts
 
-- **Phase 1 -> 2, 3**: `PushDraft`/`PushResult`/`PushContext` and `canPushTo`/`pushToSource` are frozen; `outcomeUnknown: true` is never retry-safe; exit-0-without-URL reads as unknown outcome, never success; `ghBin()` is the only gh seam and `MISSION_GH_BIN` its override.
+- **Phase 1 -> 2, 3**: `PushDraft`/`PushResult`/`PushContext` and `canPushTo`/`pushToSource` are frozen; `outcomeUnknown: true` is never retry-safe; exit-0-without-URL reads as unknown outcome, never success; `ghBin()` is the only gh seam and `MISSION_GH_BIN` its override. The push ctx `signal` is shape parity with sweeps, not a cancellation path - `run()` has none - so `GH_TIMEOUT_MS` and phase 2's in-flight guard are the actual bounds on a wedged push.
 - **Phase 2 -> 3**: route contract frozen (200 returns the updated `Task`; 504 body carries `outcomeUnknown: true`; 502 means retry-safe); eligibility = exact string equality of source and task `repoRoot` plus kind `canPush` - the UI filters by the identical comparison.
 - **Safety invariant (all phases)**: the seen row and the task link are written in one transaction; no path writes them separately, except the deliberate moved-mid-push case which writes only the seen row and reports the created issue.
 

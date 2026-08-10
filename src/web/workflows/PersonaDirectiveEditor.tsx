@@ -29,10 +29,15 @@ export function PersonaDirectiveEditor({
   const [feedback, setFeedback] = useState(directive?.feedback ?? "");
   const [saveIntent, setSaveIntent] = useState(() => crypto.randomUUID());
   const [closeWhenSaved, setCloseWhenSaved] = useState<string | null>(null);
+  const [closeWhenRemoved, setCloseWhenRemoved] = useState(false);
   const pending = pendingFor(saveIntent);
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const bytes = useMemo(() => new TextEncoder().encode(feedback).byteLength, [feedback]);
-  const valid = feedback.trim().length > 0 && bytes <= WORKFLOW_LIMITS.personaDirectiveBytes;
+  const persistedFeedback = feedback.trim();
+  const bytes = useMemo(
+    () => new TextEncoder().encode(persistedFeedback).byteLength,
+    [persistedFeedback],
+  );
+  const valid = persistedFeedback.length > 0 && bytes <= WORKFLOW_LIMITS.personaDirectiveBytes;
 
   useEffect(() => {
     textarea.current?.focus();
@@ -42,6 +47,11 @@ export function PersonaDirectiveEditor({
     if (closeWhenSaved === null || directive?.feedback !== closeWhenSaved) return;
     onClose();
   }, [closeWhenSaved, directive?.feedback, onClose]);
+
+  useEffect(() => {
+    if (!closeWhenRemoved || directive !== null) return;
+    onClose();
+  }, [closeWhenRemoved, directive, onClose]);
 
   return (
     <Overlay
@@ -119,7 +129,15 @@ export function PersonaDirectiveEditor({
           <footer className="wf-persona-directive-actions">
             {directive && (
               <Tooltip label="Stop applying this feedback to future rounds">
-                <button className="btn btn-danger-ghost" type="button" disabled={pending} onClick={onRemove}>
+                <button
+                  className="btn btn-danger-ghost"
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    setCloseWhenRemoved(true);
+                    onRemove();
+                  }}
+                >
                   Remove feedback
                 </button>
               </Tooltip>
@@ -131,11 +149,10 @@ export function PersonaDirectiveEditor({
               <button
                 className="btn wf-persona-directive-save"
                 type="button"
-                disabled={pending || !valid || feedback.trim() === directive?.feedback}
+                disabled={pending || !valid || persistedFeedback === directive?.feedback}
                 onClick={() => {
-                  const next = feedback.trim();
-                  setCloseWhenSaved(next);
-                  onSave(next, saveIntent);
+                  setCloseWhenSaved(persistedFeedback);
+                  onSave(persistedFeedback, saveIntent);
                 }}
               >
                 {pending ? "Saving…" : "Save for future rounds"}

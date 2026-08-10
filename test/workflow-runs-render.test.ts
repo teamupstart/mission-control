@@ -22,6 +22,7 @@ import type {
   WorkflowVersion,
 } from "../src/shared/workflow.ts";
 import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
+import { PersonaDirectiveEditor } from "../src/web/workflows/PersonaDirectiveEditor.tsx";
 import { WorkflowRunView, WorkflowRunsEmpty } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   inspectorOnlySkipStatus,
@@ -31,6 +32,7 @@ import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
 import { workflowBindingSelection } from "../src/web/workflows/WorkflowBindingDialog.tsx";
 import type { Session } from "../src/shared/types.ts";
 import { hasTooltip, tooltipLabels } from "./helpers/markup.ts";
+import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 /**
  * Graph identities are real UUIDs on purpose: the leak this file guards against is a node
@@ -1619,6 +1621,38 @@ test("active Persona feedback marks only its target and opens from the row", () 
   assert.match(html, /Edit critical feedback/);
   assert.match(html, /Disable for this run/);
   assertNoGraphIds(html);
+});
+
+test("Persona feedback click targets require both mutation handlers", () => {
+  const detail = runningDetail();
+  const setOnly = render(detail, { onSetPersonaDirective: () => {} });
+  const removeOnly = render(detail, { onRemovePersonaDirective: () => {} });
+
+  assert.doesNotMatch(setOnly, /Add critical feedback for/);
+  assert.doesNotMatch(removeOnly, /Add critical feedback for/);
+});
+
+test("Persona feedback byte count matches the trimmed text Save persists", () => {
+  const html = renderToStaticMarkup(withOverlayHost(createElement(PersonaDirectiveEditor, {
+    workflowName: "Review",
+    runId: "12345678-0000-4000-8000-000000000000",
+    round: 2,
+    personaName: "Security reviewer",
+    directive: {
+      nodeId: NODE.security,
+      feedback: "  🚀  ",
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    pendingFor: () => false,
+    error: null,
+    onSave: () => {},
+    onRemove: () => {},
+    onClose: () => {},
+  })));
+
+  assert.match(html, /4 \/ 8,000 UTF-8 bytes/);
 });
 
 /** An attempt on a node that holds no opinion: Session, an all-pass join, End. */

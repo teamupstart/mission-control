@@ -908,6 +908,7 @@ export function WorkflowRunView({
           directiveFor={(nodeId) => (detail.run.personaDirectives ?? [])
             .some((directive) => directive.nodeId === nodeId)}
           onOpenPersonaDirective={onSetPersonaDirective
+            && onRemovePersonaDirective
             && !["completed", "cancelled", "failed"].includes(detail.run.status)
             ? setDirectiveNodeId
             : undefined}

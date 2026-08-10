@@ -215,6 +215,29 @@ test("critical feedback follows one Persona through every later round of this ru
     ).toBeNull();
   }
   expect(after.events.some((event) => event.kind === "persona_directive_set")).toBe(true);
+
+  // Removal follows the same durable round trip as Save. The drawer closes only after live
+  // state confirms the directive is gone, and reopening starts empty instead of offering to
+  // restore the just-deleted instruction.
+  await row("Blocking reviewer")
+    .getByRole("button", { name: /^Blocking reviewer/ })
+    .click();
+  await editor.getByRole("button", { name: "Remove feedback" }).click();
+  await expect(editor).toBeHidden();
+  await expect(row("Blocking reviewer")).not.toContainText("Critical feedback active");
+
+  const removed = await api<{
+    run: { personaDirectives: Array<{ nodeId: string }> };
+    events: Array<{ kind: string }>;
+  }>(daemon, `/api/workflow-runs/${runId}`);
+  expect(removed.run.personaDirectives).toEqual([]);
+  expect(removed.events.some((event) => event.kind === "persona_directive_removed")).toBe(true);
+
+  await row("Blocking reviewer")
+    .getByRole("button", { name: /^Blocking reviewer/ })
+    .click();
+  await expect(editor.getByLabel("Feedback for Blocking reviewer")).toHaveValue("");
+  await editor.getByRole("button", { name: "Cancel" }).click();
 });
 
 test("a stage actions menu disables every member of the stage at once", async ({

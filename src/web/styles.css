@@ -5657,10 +5657,17 @@ mark.find-hit.is-current {
   font: 9.5px/1.4 var(--mono);
 }
 /* The run state in the same tone the card's badge uses - `tone-*` sets `--tone-color`, so
-   this row and the card behind it can never disagree about what the session is doing. */
-.pty-live {
+   this row and the card behind it can never disagree about what the session is doing.
+   The family is borrowed for that VARIABLE only. It also carries `.tone-exited { opacity:
+   .62 }`, written for whole containers - a card, a rail row, a board column - where
+   dimming says "deprioritise me". Inherited by this span it would print `claude: exited`,
+   the one state a reader most needs to notice in a status line, at 62% while every other
+   state stayed full strength. Scoped by two classes so the restore does not depend on this
+   block coming later in the file than that one. */
+.pty-status .pty-live {
   color: var(--tone-color, var(--neutral));
   white-space: nowrap;
+  opacity: 1;
 }
 .pty-stat {
   white-space: nowrap;

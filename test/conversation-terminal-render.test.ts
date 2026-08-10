@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -184,6 +185,29 @@ test("a session with no checkout draws a bare ~, never ~/~", () => {
   // The pathological input that has no leaf at all takes the same branch, rather than
   // producing a prefix with nothing after it.
   assert.equal(promptPath("/"), "~");
+});
+
+test("an exited session's state is not dimmed by a rule written for whole cards", () => {
+  // The status line borrows the `tone-*` family for its `--tone-color`, and that family
+  // also carries an UNSCOPED `.tone-exited { opacity: .62 }` meant for a card, a rail row,
+  // a board column - containers where dimming reads as "deprioritise me". Inherited by this
+  // span it prints `claude: exited` at 62% while every other state stays full strength,
+  // which is backwards: in a status line that word is the most important thing on the row.
+  //
+  // The markup half first - the span really does wear the tone class...
+  assert.match(status({ state: "exited" }), /pty-live tone-exited/);
+  // ...and the stylesheet half, which is the only place the inheritance can be answered.
+  const css = readFileSync("src/web/styles.css", "utf8");
+  assert.match(
+    css,
+    /\.tone-exited\s*\{[^}]*opacity/,
+    "the container rule this guards against is gone - so is the need for the guard",
+  );
+  const scoped = /\.pty-status\s+\.pty-live\s*\{[^}]*opacity:\s*1/.exec(css);
+  assert.ok(
+    scoped,
+    "the run state must restore its own opacity, scoped by two classes so it does not depend on rule order",
+  );
 });
 
 test("the status line is addressable as the region it is", () => {

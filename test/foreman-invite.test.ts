@@ -117,6 +117,45 @@ test("the CHECK constraint refuses a source outside the persisted domain", () =>
   );
 });
 
+test("a source written by a newer build is reported and read as no row", () => {
+  // The downgrade scenario the change-contracts entry names: a newer build widened the
+  // CHECK constraint (this build's CREATE is a no-op on the existing table) and wrote a
+  // value these types never named. Simulated by suspending check enforcement for one
+  // insert - the same bytes that schema would leave on disk. The guard is at the READ:
+  // the raw string must never masquerade as a ForemanInvite on the wire, and the row
+  // must not be destroyed - it belongs to the build that understands it.
+  const k = key("future-source");
+  const d = openDb();
+  d.exec("PRAGMA ignore_check_constraints = ON;");
+  d.prepare(`INSERT INTO foreman_invites (note_key, source, created_at) VALUES (?, ?, ?)`)
+    .run(k, "future-grant", 1);
+  d.exec("PRAGMA ignore_check_constraints = OFF;");
+  try {
+    assert.equal(getForemanInvite(k), undefined, "an unreadable source narrows to no row");
+    assert.ok(!loadForemanInvites().some((r) => r.noteKey === k), "boot load drops it too");
+    const raw = d
+      .prepare(`SELECT source FROM foreman_invites WHERE note_key = ?`)
+      .get(k) as unknown as { source: string };
+    assert.equal(raw.source, "future-grant", "the row itself is left in place, not deleted");
+
+    // A registry booted over it resolves from the runtime alone: a terminal session on
+    // that key is uninvited, an SDK session keeps its implicit grant.
+    const registry = new Registry();
+    const term = discover(registry, { agentSessionId: k } as Partial<DiscoveredSession>);
+    assert.equal(term.foremanInvite, null);
+    const sdk = registry.registerSdkSession({
+      id: `sdk:future-${++seq}`,
+      agent: "claude",
+      name: "embedded",
+      cwd: "/repo",
+      agentSessionId: k,
+    });
+    assert.equal(sdk.foremanInvite, "sdk");
+  } finally {
+    d.prepare(`DELETE FROM foreman_invites WHERE note_key = ?`).run(k);
+  }
+});
+
 test("moveForemanInvite carries the row, and the moved row wins a conflict", () => {
   const from = key("move-from");
   const to = key("move-to");

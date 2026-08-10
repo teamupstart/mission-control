@@ -3973,13 +3973,41 @@ export function upsertForemanInvite(
     .run(noteKey, source, now);
 }
 
+/** Every source this build can read. See the change-contracts entry before extending. */
+const KNOWN_FOREMAN_INVITE_SOURCES = new Set<string>(["dispatch", "operator", "withdrawn"]);
+
+/**
+ * Narrow a stored row to one this build can read, or undefined - REPORTING the drop
+ * rather than guessing, the same rule `resolveDispatchRuntime` holds for a persisted
+ * runtime. An unreadable source exists after a downgrade: a newer build widened the
+ * CHECK (this build's own CREATE is a no-op on an existing table) and wrote a value
+ * these types never named. Passing it through would put a raw string on
+ * `Session.foremanInvite` and out over SSE as if it were a valid `ForemanInvite`;
+ * narrowing to "no row" means the session resolves from its runtime alone. The row
+ * itself is deliberately left in place - it belongs to the build that understands it.
+ */
+function readForemanInviteRow(r: {
+  note_key: string;
+  source: string;
+  created_at: number;
+}): ForemanInviteRow | undefined {
+  if (!KNOWN_FOREMAN_INVITE_SOURCES.has(r.source)) {
+    console.warn(
+      `[db] ignoring the foreman invite for ${r.note_key}: ` +
+        `unreadable source "${r.source}" (written by a newer build?)`,
+    );
+    return undefined;
+  }
+  return { noteKey: r.note_key, source: r.source as ForemanInviteSource, createdAt: r.created_at };
+}
+
 export function getForemanInvite(noteKey: string): ForemanInviteRow | undefined {
   const r = openDb()
     .prepare(`SELECT note_key, source, created_at FROM foreman_invites WHERE note_key = ?`)
     .get(noteKey) as unknown as
-    | { note_key: string; source: ForemanInviteSource; created_at: number }
+    | { note_key: string; source: string; created_at: number }
     | undefined;
-  return r ? { noteKey: r.note_key, source: r.source, createdAt: r.created_at } : undefined;
+  return r ? readForemanInviteRow(r) : undefined;
 }
 
 /** Restore-then-elevate's first half: dropping a tombstone lets implicit grants resume. */
@@ -3987,12 +4015,15 @@ export function deleteForemanInvite(noteKey: string): void {
   openDb().prepare(`DELETE FROM foreman_invites WHERE note_key = ?`).run(noteKey);
 }
 
-/** All invites, reloaded into the registry on start - the notes/goals boot pattern. */
+/** All READABLE invites, reloaded into the registry on start - the notes/goals boot pattern. */
 export function loadForemanInvites(): ForemanInviteRow[] {
   const rows = openDb()
     .prepare(`SELECT note_key, source, created_at FROM foreman_invites`)
-    .all() as unknown as Array<{ note_key: string; source: ForemanInviteSource; created_at: number }>;
-  return rows.map((r) => ({ noteKey: r.note_key, source: r.source, createdAt: r.created_at }));
+    .all() as unknown as Array<{ note_key: string; source: string; created_at: number }>;
+  return rows.flatMap((r) => {
+    const row = readForemanInviteRow(r);
+    return row ? [row] : [];
+  });
 }
 
 /**

@@ -845,6 +845,23 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Fired ONCE as a session starts being evicted, while its row and its transcript still
+   * exist.
+   *
+   * The window this exists for is small and shuts hard: `beginEviction` gives a session
+   * `EXIT_LINGER_MS` before `remove` deletes it, and that is SHORTER than some pollers'
+   * intervals - so "catch it on the next tick" is not a strategy, it is a race that the
+   * poller usually loses. A subscriber gets the transition itself instead.
+   *
+   * Deliberately not `session_remove`: by then the row is gone, and a listener that wanted
+   * to record something ABOUT the session would have nowhere to put it.
+   */
+  onSessionExit(fn: (s: Session) => void): () => void {
+    this.on("session_exit", fn);
+    return () => this.off("session_exit", fn);
+  }
+
+  /**
    * Fired when the pull request a TASK's work episode produced was observed merged.
    *
    * Emitted from `reconcileWorkEpisodeMerge`, which is the one place both merge
@@ -4137,6 +4154,12 @@ export class Registry extends EventEmitter {
     }
     const t = unref(setTimeout(() => this.remove(s.id), EXIT_LINGER_MS));
     this.exitTimers.set(s.id, t);
+    // AFTER the timer is armed, so the `exitTimers` guard above has already made this
+    // once-per-eviction, and BEFORE `remove` can run, so a listener still finds the row it
+    // wants to write to. Handed the current projection rather than `s`, which may be the
+    // pre-exit copy.
+    const current = this.sessions.get(s.id);
+    if (current) this.emit("session_exit", current);
   }
 
   private remove(id: string): void {

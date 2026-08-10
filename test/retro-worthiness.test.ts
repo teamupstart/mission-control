@@ -8,7 +8,11 @@ import { forgetInjections, recordInjection } from "../src/server/injections.ts";
 import {
   createRetroCorrectionScanner,
   retroSummary,
+  startRetroWorthinessPoller,
 } from "../src/server/retro-worthiness.ts";
+// Type only: importing the Registry as a VALUE opens the database, which the test runner's
+// isolation guard refuses outside an isolated MISSION_HOME.
+import type { Registry } from "../src/server/registry.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 // Whether a session is worth retrospecting, which is the whole condition on the offer.
@@ -242,4 +246,87 @@ test("scan state is dropped for sessions that are gone", () => {
   } finally {
     cleanup();
   }
+});
+
+// ---- the exit transition ----------------------------------------------------------------
+//
+// The registry half - that eviction actually emits `session_exit` while the row still
+// exists - needs a real Registry and therefore an isolated MISSION_HOME, so it lives in
+// `test/session-exit-signal.test.ts`. What is asserted here is the poller's own wiring:
+// which sessions reach the scanner, and what it does with a yes.
+
+/** A registry stand-in exposing only the three members the poller touches. */
+function pollerHost(): {
+  host: Registry;
+  exit: (session: Session) => void;
+  recorded: string[];
+} {
+  const listeners = new Set<(s: Session) => void>();
+  const recorded: string[] = [];
+  const host = {
+    liveSessions: () => [],
+    recordRetroCorrections: (id: string) => { recorded.push(id); },
+    onSessionExit: (fn: (s: Session) => void) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+  } as unknown as Registry;
+  return {
+    host,
+    exit: (session) => { for (const fn of [...listeners]) fn(session); },
+    recorded,
+  };
+}
+
+test("a correction that lands just before the session exits is still read", () => {
+  // The window this closes: `liveSessions()` excludes anything already `exited`, and the row
+  // is deleted EXIT_LINGER_MS (8s) later - shorter than this poller's own default interval.
+  // A one-shot dispatch whose LAST human message was the correction leaves the live set
+  // before the next tick and is gone before any later one, so a tick-only scan reads that
+  // correction never, and the session silently loses the reason it was most worth a retro
+  // for. The session below is never live: the transition is the only way it is ever seen.
+  const { host, exit, recorded } = pollerHost();
+  const seen: string[] = [];
+  const stop = startRetroWorthinessPoller(host, {
+    advance: (session) => { seen.push(session.id); return session.id === "exiting"; },
+    retain: () => {},
+  });
+  try {
+    exit(mkSession({ id: "exiting" }));
+    assert.deepEqual(seen, ["exiting"], "the exit transition has to reach the scanner");
+    assert.deepEqual(recorded, ["exiting"], "a correction found on exit must reach the registry");
+  } finally {
+    stop();
+  }
+});
+
+test("an exit scan that finds nothing records nothing", () => {
+  // The offer is conditioned, so the hook must not become a way for every session that ever
+  // ended to acquire a corrections reason on its way out.
+  const { host, exit, recorded } = pollerHost();
+  const stop = startRetroWorthinessPoller(host, { advance: () => false, retain: () => {} });
+  try {
+    exit(mkSession({ id: "quiet" }));
+    // Length, not `deepEqual(recorded, [])` - that narrows the array to `never[]` for
+    // anything after it. See the note in session-exit-signal.test.ts.
+    assert.equal(recorded.length, 0);
+  } finally {
+    stop();
+  }
+});
+
+test("the exit hook is released when the poller stops", () => {
+  // A daemon shutdown that left this subscribed would keep a dead poller reading transcripts
+  // for every session the registry evicts afterwards.
+  const { host, exit } = pollerHost();
+  let calls = 0;
+  const stop = startRetroWorthinessPoller(host, {
+    advance: () => { calls += 1; return false; },
+    retain: () => {},
+  });
+  exit(mkSession({ id: "a" }));
+  assert.equal(calls, 1);
+  stop();
+  exit(mkSession({ id: "b" }));
+  assert.equal(calls, 1, "a stopped poller must not go on scanning");
 });

@@ -199,6 +199,18 @@ export function createRetroCorrectionScanner(): RetroCorrectionScanner {
  * `retain` is scoped to LIVE sessions, while the registry's own flag is scoped to the session
  * ROW. That asymmetry is deliberate: an exited session lingers on the board and can still be
  * offered a retro (the route files a task for it), so the answer must outlive the scanning.
+ *
+ * The tick alone is NOT enough, and the gap it leaves is the reason `onSessionExit` is
+ * subscribed below. `liveSessions()` excludes anything already `exited`, and a session is
+ * removed outright `EXIT_LINGER_MS` (8s) later - shorter than this poll's own default
+ * interval. So a human whose LAST message was the correction, on a one-shot dispatch that
+ * then finished, would have that correction read by nothing: the session leaves the live set
+ * before the next tick and is deleted before any later one. It would lose the corrections
+ * reason permanently and silently, which is precisely the case the offer is most for.
+ *
+ * The exit hook closes it deterministically rather than by shortening the interval, which
+ * would only have narrowed the race. One last scan on the transition, while the row and the
+ * transcript are both still there.
  */
 export function startRetroWorthinessPoller(
   registry: Registry,
@@ -207,13 +219,20 @@ export function startRetroWorthinessPoller(
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  /** One scan, with the registry told only when the answer is yes. Never throws. */
+  const scan = (session: Session): void => {
+    try {
+      if (scanner.advance(session)) registry.recordRetroCorrections(session.id);
+    } catch (err) {
+      console.error("[retro] worthiness scan failed:", err);
+    }
+  };
+
   const tick = (): void => {
     if (stopped) return;
     try {
       const live = registry.liveSessions();
-      for (const session of live) {
-        if (scanner.advance(session)) registry.recordRetroCorrections(session.id);
-      }
+      for (const session of live) scan(session);
       scanner.retain(new Set(live.map((session) => session.id)));
     } catch (err) {
       console.error("[retro] worthiness scan failed:", err);
@@ -222,12 +241,23 @@ export function startRetroWorthinessPoller(
     timer = unref(setTimeout(tick, RETRO_SCAN_MS));
   };
 
+  // The last chance to read this session's transcript, taken before `retain` can drop its
+  // scan state on the next tick. Cheap by construction: everything up to the previous tick
+  // has already been consumed, so this reads only what was appended since - usually the one
+  // turn that made the session worth retrospecting in the first place.
+  const stopExitScan = registry.onSessionExit(scan);
+
   // Off entirely at 0, the same switch `MISSION_POLL_MS` offers - a daemon whose operator
   // does not want transcripts scanned still gets the findings half, which costs nothing.
-  if (RETRO_SCAN_MS <= 0) return () => {};
+  // The exit hook goes with it: "off" has to mean no transcript is read, not "read fewer".
+  if (RETRO_SCAN_MS <= 0) {
+    stopExitScan();
+    return () => {};
+  }
   void tick();
   return () => {
     stopped = true;
+    stopExitScan();
     if (timer) clearTimeout(timer);
   };
 }

@@ -104,10 +104,12 @@ one of those names as a symlink to the other (this one does), and two names for 
 file are one contract, not two copies of it in the prompt.
 
 A repo that carries [repository memory](repository-memory.md) has its
-`.agents/memory/MEMORY.md` index loaded too, after the root docs - so the Inspector reviews
-against what this repo has already learned about itself, not just what it wrote down as
-policy. The root docs are read first deliberately: at the bundle's byte cap the memory index
-is what gets dropped, and the prompt says documents were omitted.
+`.agents/memory/MEMORY.md` index loaded too - so the Inspector reviews against what this repo
+has already learned about itself, not just what it wrote down as policy. It is read **last**,
+after the root docs and after any nested doc governing a directory the PR touched, because
+reading order is budget order: at the bundle's byte cap the memory index is the first thing
+dropped, never the contract for the code under review, and the prompt says documents were
+omitted.
 
 ### On the card
 

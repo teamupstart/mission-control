@@ -70,9 +70,11 @@ consequences worth knowing when writing an index line:
 
 - **The index reaches them; the topic files do not.** An index line that is only a link is a
   line a reviewer cannot follow. Say what the memory *is* in the line.
-- **It is subject to the standards caps** - 24KB per document, 64KB for the whole bundle.
-  The repo's own `AGENTS.md` and `CLAUDE.md` are read first, so at the cap the memory index
-  is what gets dropped, and the prompt says out loud that documents were omitted.
+- **It is subject to the standards caps** - 24KB per document, 64KB for the whole bundle -
+  and it is read last. The repo's `AGENTS.md`/`CLAUDE.md` come first, then any nested doc
+  governing a directory the change touched, then memory. At the cap the memory index is the
+  first thing dropped, because it is advisory knowledge rather than a rule the repo asserts,
+  and the prompt says out loud that documents were omitted.
 
 A `.agents/memory/MEMORY.md` that is a symlink out of the repository is ignored everywhere -
 not read into a prompt, and not pointed at on dispatch. Memory is repo content, and repo

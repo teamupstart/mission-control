@@ -246,20 +246,26 @@ test("a repo with no memory is exactly the repo it was", () => {
   assert.equal(out.truncated, false);
 });
 
-test("the root contract is read FIRST, so it wins the budget and the citation", () => {
+test("the bundle is ordered by how binding a document is: root, then nested, then memory", () => {
+  // Push order IS budget priority in this function, so the order is the policy. The repo's
+  // rule for everywhere comes first, then the rule for the directories this diff actually
+  // touched, then memory - which is advisory knowledge rather than a rule.
   const root = mkRepo();
   writeFileSync(join(root, "AGENTS.md"), "# the contract");
+  writeFileSync(join(root, "packages", "app", "AGENTS.md"), "# the package's own");
   writeMemoryIndex(root, "- [a-trap](a-trap.md)\n");
 
-  const out = readStandards(root, []);
-  assert.deepEqual(out.docs.map((d) => d.path), ["AGENTS.md", MEMORY_INDEX_PATH]);
+  const out = readStandards(root, ["packages/app/src/a.ts"]);
+  assert.deepEqual(
+    out.docs.map((d) => d.path),
+    ["AGENTS.md", "packages/app/AGENTS.md", MEMORY_INDEX_PATH],
+  );
 });
 
 test("at the total cap the memory index is dropped, and the root docs are not", () => {
-  // Order is the whole mechanism: memory is the newer, cheaper, more disposable half of
-  // the contract, so a repo whose root docs already fill the 64KB bundle keeps them. The
-  // drop is still REPORTED - a reviewer judging against a contract it silently didn't read
-  // invents gaps.
+  // Memory is the newer, cheaper, more disposable half of what a repo knows about itself,
+  // so a repo whose root docs already fill the 64KB bundle keeps them. The drop is still
+  // REPORTED - a reviewer judging against a contract it silently didn't read invents gaps.
   const root = mkRepo();
   writeFileSync(join(root, "AGENTS.md"), `# agents\n${"x".repeat(24 * 1024)}`);
   writeFileSync(join(root, "CLAUDE.md"), `# claude\n${"y".repeat(24 * 1024)}`);
@@ -268,6 +274,27 @@ test("at the total cap the memory index is dropped, and the root docs are not", 
   const out = readStandards(root, []);
   assert.deepEqual(paths(out), ["AGENTS.md", "CLAUDE.md"], "the repo's own contract survives");
   assert.equal(out.truncated, true, "and the prompt must print its omitted-docs line");
+});
+
+test("at the cap memory yields to the nested doc governing the changed directory", () => {
+  // The reversal this ordering exists to prevent, and the review finding that caught it:
+  // with the index pushed before the climb, an established 24KB memory index evicted the
+  // `packages/app/AGENTS.md` that governs the very code under review - so the Inspector
+  // reviewed a monorepo package against everything except that package's own contract.
+  // Nested docs already outranked "nothing" by specificity; memory must not jump them.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), `# agents\n${"x".repeat(24 * 1024)}`);
+  writeFileSync(join(root, "packages", "app", "AGENTS.md"), `# the package's own\n${"y".repeat(24 * 1024)}`);
+  writeMemoryIndex(root, `# memory\n${"z".repeat(24 * 1024)}`);
+
+  const out = readStandards(root, ["packages/app/src/a.ts"]);
+  assert.deepEqual(paths(out), ["AGENTS.md", "packages/app/AGENTS.md"]);
+  assert.equal(
+    out.docs.some((d) => d.text.includes("the package's own")),
+    true,
+    "the contract for the code under review is the last thing that may be evicted",
+  );
+  assert.equal(out.truncated, true);
 });
 
 test("an oversized memory index is capped like any other doc, and says so", () => {

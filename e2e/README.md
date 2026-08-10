@@ -552,6 +552,52 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 `--workers=1` keeps the seven tests' output from interleaving, and the `tee` is the only thing
 that produces `transcript.txt`.
 
+### The conversation rendering picker, at its own size
+
+`e2e/.artifacts/settings-conversation-picker/` holds the before/after pair for the
+Conversation section of **Settings → Display**. `02-after.png` is captured by
+`specs/settings-conversation-picker.spec.ts` on a run whose measurements passed.
+
+The bug it closes: `ViewGlyph` drew an inline `<svg>` carrying a viewBox and neither `width`
+nor `height`. That is not a small icon - a replaced element with an intrinsic ratio and no
+intrinsic size takes 100% of the line and scales its height by the ratio, so each glyph drew
+at the width of its row. Its rects also set no `fill`, so they painted SVG-default black
+instead of the row's `currentColor` tint.
+
+The sizes it laid out at are recorded in the spec's header comment, which is the one place
+this repository states them: they are a browser's answer, and the spec is what asked. Note
+that the two rows did not match each other - a glyph took the flex line minus its label, so
+the longer word left a smaller picture.
+
+The spec measures rather than matches, because used height is exactly what a markup
+assertion cannot produce - `test/settings-sidebar-render.test.ts` pins the attributes across
+every settings category, and this pins what the attributes were for. Reintroducing the bug
+in the fixed component, by dropping the sizing from its 44x32 thumbnail, fails it with
+`Received: {"height": 634, "width": 872}` against the expected `44x32`. That figure is the
+reintroduction's, not the original's - a different drawing at a different ratio - and it is
+quoted here only because it is this spec's literal failure output.
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/settings-conversation-picker.spec.ts \
+  -g 'sized thumbnails' \
+  --workers=1 --reporter=list
+```
+
+`01-before.png` is the same section on the pre-fix build, and no spec regenerates it: a
+passing suite cannot photograph a bug it has removed. Reproduce it by reverting
+`src/web/components/ConversationViewPanel.tsx`, `src/web/styles.css` and
+`src/web/lib/conversation-view.ts` to the commit before the fix, rebuilding, and pointing a
+capture at `[data-anchor="display/conversation-view"]`. It is kept because the fix is a
+visual one, and a reviewer comparing a 749px row against a 61px row learns in one look what
+two numbers in a passing assertion do not show.
+
+`00-before-after.png` is the two stacked into one frame with their measurements, composed by
+`compare.html` in the same directory - the file to attach when one image has to carry the
+review. Rebuild it by serving the repository root and screenshotting that page; it reads the
+two PNGs beside it, so it is only as fresh as they are.
+
 ### A Jira task source in Settings
 
 `e2e/.artifacts/jira-task-source/` carries three frames

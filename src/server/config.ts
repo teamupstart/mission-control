@@ -147,3 +147,23 @@ export function pollIntervalMs(raw = envVar("POLL_MS")): number | null {
  * runs far slower to keep `gh` calls negligible.
  */
 export const PR_POLL_MS = Number(envVar("PR_POLL_MS") ?? 20_000);
+
+/**
+ * The `gh` binary. THE seam every gh subprocess in this codebase goes through - the PR
+ * poller, the Inspector, and the GitHub task source all resolve it here.
+ *
+ * One seam rather than three, because the value of an override is proportional to how
+ * little of the system escapes it: a fake that catches the task source but not the PR
+ * poller means a test process still shells out to the operator's real, authenticated
+ * `gh`, against whatever repo the cwd resolves to. `MISSION_GH_BIN` is what the
+ * browser-level suite points at a recording fake, and what an operator can point at a
+ * wrapper script.
+ *
+ * Read per call, not at import, so the value is whatever the daemon was started with
+ * rather than whatever won the module-load race - the same reason `pollIntervalMs` is a
+ * function. An empty string counts as unset: `MISSION_GH_BIN=` is somebody clearing the
+ * override, not asking us to spawn "".
+ */
+export function ghBin(): string {
+  return envVar("GH_BIN") || "gh";
+}

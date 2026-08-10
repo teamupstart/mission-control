@@ -8,10 +8,13 @@ import {
 import {
   candidateFrom,
   externalIdFor,
+  ghIssueCreateArgs,
   ghIssueListArgs,
   priorityFor,
+  pushResultFrom,
   sweepResultFrom,
 } from "../src/server/task-sources/github-issues.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 
 // What is at stake: three things a background sweep gives nobody the chance to notice.
 //
@@ -221,4 +224,138 @@ test("an abandoned sweep says so rather than filing what it had", () => {
   });
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /abandoned/);
+});
+
+// ---- the outward half: a task filed as an issue ----
+//
+// What is at stake here is different from everything above, and worse. A sweep that
+// misreads its subprocess files a bad card into a list somebody deletes. A push that
+// misreads its subprocess either creates a duplicate issue in a repo other people are
+// watching, or reports success for an issue that does not exist. The three-way reading of
+// one `gh issue create` run is the entire defence, so every branch of it is pinned.
+
+test("the created issue carries the task's title and intent, the repo, and every filter label", () => {
+  const args = ghIssueCreateArgs(cfg({ repo: "acme/widgets", labelsAny: ["mission", "triage"] }), {
+    title: "Widgets leak on resize",
+    intent: "Steps: resize the window twice.",
+  });
+  assert.deepEqual(args, [
+    "issue",
+    "create",
+    "--title",
+    "Widgets leak on resize",
+    "--body",
+    "Steps: resize the window twice.",
+    "--repo",
+    "acme/widgets",
+    // Repeated `--label` is right here where it was wrong for the sweep: the sweep needed
+    // ANY of them (and `--label` is AND), a created issue simply carries all of them - so
+    // the issue matches the very filter this source sweeps.
+    "--label",
+    "mission",
+    "--label",
+    "triage",
+  ]);
+});
+
+test("an unconfigured repo and no labels pass no flags at all", () => {
+  const args = ghIssueCreateArgs(cfg(), { title: "t", intent: "i" });
+  assert.deepEqual(args, ["issue", "create", "--title", "t", "--body", "i"]);
+});
+
+// An argv array handed to `execFile` - no shell parses it - so text that would be a
+// command injection anywhere else is just a title.
+test("shell metacharacters in a title or body are arguments, not syntax", () => {
+  const nasty = "$(rm -rf /) `whoami` && echo";
+  const args = ghIssueCreateArgs(cfg(), { title: nasty, intent: nasty });
+  assert.equal(args[3], nasty);
+  assert.equal(args[5], nasty);
+});
+
+test("a created issue is identified by the URL gh printed, the same id a sweep would give it", () => {
+  const r = pushResultFrom(
+    stubRun({ stdout: "https://github.com/acme/widgets/issues/42\n", stderr: "", code: 0 }),
+    ctx,
+  );
+  assert.equal(r.error, null);
+  assert.equal(r.outcomeUnknown, false);
+  assert.deepEqual(r.ref, {
+    sourceId: "src-1",
+    externalId: "acme/widgets#42",
+    url: "https://github.com/acme/widgets/issues/42",
+  });
+  // The point of reusing `externalIdFor`: the id an issue gets on the way out is the id
+  // it gets on the way back in, so a pushed issue is never swept in as a second task.
+  assert.equal(r.ref!.externalId, externalIdFor(r.ref!.url!));
+});
+
+// `gh` prints progress above the URL, so the URL is the LAST such line rather than the
+// first - taking the first would make a chatty release turn a progress line into the id.
+test("progress chatter above the URL is not mistaken for it", () => {
+  const r = pushResultFrom(
+    stubRun({
+      stdout: "Creating issue in acme/widgets\nhttps://github.com/acme/widgets/issues/9\n",
+      stderr: "",
+      code: 0,
+    }),
+    ctx,
+  );
+  assert.equal(r.ref!.url, "https://github.com/acme/widgets/issues/9");
+});
+
+// gh RAN and refused. Nothing was created, so this is the one failure a caller may retry
+// from - and a missing repo label is the failure that will actually happen, so the
+// operator has to be able to read which label it was.
+test("a non-zero gh exit is a refusal that names itself, and is retry-safe", () => {
+  const r = pushResultFrom(
+    stubRun({ stdout: "", stderr: "could not add label: 'triage' not found\n", code: 1 }),
+    ctx,
+  );
+  assert.equal(r.ref, null);
+  assert.match(r.error!, /gh issue create failed: could not add label: 'triage' not found/);
+  assert.equal(r.outcomeUnknown, false);
+});
+
+// The load-bearing one. The child never reported its own exit - our timeout, a signal,
+// the OOM killer - so GitHub may well have taken the request first. Reading this as an
+// ordinary refusal is exactly how a retry files the same issue twice.
+test("a gh that never reported back is an UNKNOWN outcome, not a refusal", () => {
+  const r = pushResultFrom(
+    { stdout: "", stderr: "timed out", code: null, outcomeUnknown: true, overflowed: false },
+    ctx,
+  );
+  assert.equal(r.ref, null);
+  assert.equal(r.outcomeUnknown, true);
+  assert.match(r.error!, /may exist/);
+  assert.match(r.error!, /check GitHub before retrying/);
+});
+
+// The awkward shape, and the one a naive reading gets backwards: gh says it worked, so
+// the issue almost certainly EXISTS - we simply cannot name it. That is worse than a
+// failure, not better, so it may not be success and may not be a retryable refusal.
+test("exit 0 with no URL is an unknown outcome - the issue exists and cannot be identified", () => {
+  const r = pushResultFrom(stubRun({ stdout: "done\n", stderr: "", code: 0 }), ctx);
+  assert.equal(r.ref, null);
+  assert.equal(r.outcomeUnknown, true);
+  assert.match(r.error!, /check GitHub before retrying/);
+});
+
+// `outcomeUnknown` is read FIRST, before the exit code, because a killed child's exit
+// code is whatever Node made up for it. A rule order that checked `code` first would
+// classify every timeout as a retry-safe refusal.
+test("an unknown outcome outranks whatever exit code came with it", () => {
+  for (const code of [0, 1, null]) {
+    const r = pushResultFrom(
+      {
+        stdout: "https://github.com/acme/widgets/issues/1",
+        stderr: "",
+        code,
+        outcomeUnknown: true,
+        overflowed: false,
+      },
+      ctx,
+    );
+    assert.equal(r.outcomeUnknown, true, `code ${code} was allowed to claim a known outcome`);
+    assert.equal(r.ref, null);
+  }
 });

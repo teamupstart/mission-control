@@ -1,4 +1,4 @@
-import { PR_POLL_MS } from "./config.ts";
+import { PR_POLL_MS, ghBin } from "./config.ts";
 import type { PrMatch, Registry } from "./registry.ts";
 import type { PrChecks, PrState } from "@shared/types.ts";
 import { unref } from "./util/timers.ts";
@@ -91,7 +91,7 @@ async function forEachConcurrent<T>(
 async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
   const [res, head] = await Promise.all([
     run(
-      "gh",
+      ghBin(),
       [
         "pr",
         "list",
@@ -148,7 +148,9 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
 }
 
 async function queryPrUrl(url: string): Promise<PrStateLookup> {
-  const res = await run("gh", ["pr", "view", url, "--json", "state,mergedAt"], { timeoutMs: 8000 });
+  const res = await run(ghBin(), ["pr", "view", url, "--json", "state,mergedAt"], {
+    timeoutMs: 8000,
+  });
   if (res.code !== 0) return "error";
   try {
     const parsed = JSON.parse(res.stdout) as { state?: unknown; mergedAt?: unknown };

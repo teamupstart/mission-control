@@ -1,5 +1,8 @@
 import type {
   GithubIssuesConfig,
+  PushContext,
+  PushDraft,
+  PushResult,
   SweepContext,
   SweepResult,
   TaskCandidate,
@@ -7,6 +10,7 @@ import type {
 } from "@shared/task-source.ts";
 import { GithubIssuesConfigSchema, TASK_SOURCE_KIND_INFO } from "@shared/task-source.ts";
 import type { TaskPriority } from "@shared/types.ts";
+import { ghBin } from "../config.ts";
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
 
@@ -17,10 +21,12 @@ import type { RunResult } from "../util/exec.ts";
 // `gh auth`. This feature therefore adds NO token storage, no OAuth flow and no new
 // secret that can leak, which is worth more than the flexibility of an API client.
 //
-// Nothing here writes: `sweep` returns candidates and `ingest.ts` decides. That is what
-// keeps this file a pure function over a subprocess's stdout, and testable as one.
+// Nothing here writes to OUR database: `sweep` returns candidates for `ingest.ts` to
+// decide on, and `push` returns the ref GitHub minted for its own chokepoint to record.
+// That is what keeps this file a pure function over a subprocess's stdout, and testable
+// as one.
 
-/** How long one `gh issue list` may take before it is abandoned. */
+/** How long one `gh` call may take before it is abandoned. */
 const GH_TIMEOUT_MS = 20_000;
 
 /** The fields the mapping below reads, and no more - `gh` returns exactly what you ask for. */
@@ -197,7 +203,7 @@ export function sweepResultFrom(
 
 /** Ask `gh` for the open issues this config selects, from inside the repo's checkout. */
 async function sweep(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<SweepResult> {
-  const res = await run("gh", ghIssueListArgs(cfg), {
+  const res = await run(ghBin(), ghIssueListArgs(cfg), {
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
@@ -212,7 +218,7 @@ async function sweep(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<SweepR
  * silently broken since you set it up".
  */
 async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<string | null> {
-  const auth = await run("gh", ["auth", "status"], { cwd: ctx.repoRoot, timeoutMs: 10_000 });
+  const auth = await run(ghBin(), ["auth", "status"], { cwd: ctx.repoRoot, timeoutMs: 10_000 });
   if (auth.code !== 0) {
     return auth.stderr.includes("not found") || auth.code === 127
       ? "the gh CLI is not installed - install it and run `gh auth login`"
@@ -220,7 +226,7 @@ async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<st
   }
   // Ask for zero issues: this proves the repo resolves and is readable under that auth
   // without spending a page of results, and it exercises the same filters the sweep will.
-  const probe = await run("gh", [...ghIssueListArgs({ ...cfg, limit: 1 })], {
+  const probe = await run(ghBin(), [...ghIssueListArgs({ ...cfg, limit: 1 })], {
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
@@ -231,6 +237,126 @@ async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<st
   return null;
 }
 
+// ---- the outward half: one of our tasks, filed as an issue ----
+
+/**
+ * The `gh issue create` argv for this config and draft.
+ *
+ * The labels are the source's OWN sweep filter (`labelsAny`), which is the point rather
+ * than a convenience: an issue created without them would not match the filter this
+ * source sweeps, so the same repo would show the issue to everyone else and hide it from
+ * the source that filed it. Here `--label` repeated is exactly right - the sweep needs
+ * ANY of the labels and had to fight the flag's AND semantics, but a created issue simply
+ * carries all of them.
+ *
+ * An argv ARRAY, handed to `execFile`, so no shell parses it: a title with a backtick, a
+ * body with `$(…)`, a label with a space are all passed through as written. There are no
+ * quoting rules to get wrong because there is no quoting.
+ *
+ * A label the repo does not define makes `gh` fail the whole command rather than create
+ * an unlabelled issue, and that is the behaviour we want - nothing was published, the
+ * error names the label, and the operator fixes either the repo or the source's filter.
+ */
+export function ghIssueCreateArgs(cfg: GithubIssuesConfig, draft: PushDraft): string[] {
+  return [
+    "issue",
+    "create",
+    "--title",
+    draft.title,
+    "--body",
+    draft.intent,
+    ...(cfg.repo ? ["--repo", cfg.repo] : []),
+    ...cfg.labelsAny.flatMap((l) => ["--label", l]),
+  ];
+}
+
+/**
+ * Read one `gh issue create` run as a push result.
+ *
+ * The half worth testing, and unlike `sweepResultFrom` it has THREE outcomes to tell
+ * apart rather than two. A sweep that fails retracts nothing, so "it failed" is a
+ * complete answer. A create that fails either published an issue or did not, and the
+ * caller's correct response differs: retry, or go and look. Mapping a dead `gh` to a
+ * plain refusal is how a retry files the same issue twice.
+ *
+ * The rules, in order:
+ *
+ *  1. The child never reported its own exit (`outcomeUnknown`) - our timeout, the OOM
+ *     killer, a signal. GitHub may well have taken the request first. Unknown.
+ *  2. A non-zero exit `gh` itself reported. It ran and refused: nothing was created, so a
+ *     retry is safe. This is where a nonexistent `--label` surfaces, loudly.
+ *  3. Exit 0 with a URL on stdout. The one success, and the URL is the identity - read
+ *     through `externalIdFor`, the same function the sweep uses, so an issue pushed today
+ *     and swept tomorrow has one id and is not filed twice.
+ *  4. Exit 0 with nothing that looks like a URL. `gh` says it worked, so the issue almost
+ *     certainly exists, but we cannot name it - which is a worse position than a failure,
+ *     not a better one. Unknown, never success and never a retryable refusal.
+ */
+export function pushResultFrom(res: RunResult, ctx: PushContext): PushResult {
+  if (res.outcomeUnknown) {
+    return {
+      ref: null,
+      error:
+        "gh issue create did not report back - the issue may exist; check GitHub before retrying",
+      outcomeUnknown: true,
+    };
+  }
+  if (res.code !== 0) {
+    const why = (res.stderr || res.stdout).trim().split("\n")[0] ?? "";
+    return {
+      ref: null,
+      error: `gh issue create failed${why ? `: ${why}` : ""}`,
+      outcomeUnknown: false,
+    };
+  }
+  // The URL is the LAST such line, not the first: `gh` prints progress ("Creating issue
+  // in owner/repo") above it, and a future line above the URL must not become the id.
+  const url = res.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => /^https?:\/\//.test(l))
+    .pop();
+  if (!url) {
+    return {
+      ref: null,
+      error:
+        "gh issue create reported success but printed no issue URL - the issue may exist; check GitHub before retrying",
+      outcomeUnknown: true,
+    };
+  }
+  return {
+    ref: { sourceId: ctx.sourceId, externalId: externalIdFor(url), url },
+    error: null,
+    outcomeUnknown: false,
+  };
+}
+
+/**
+ * File one task as an open issue, from inside the repo's checkout.
+ *
+ * `ctx.signal` is deliberately NOT read, and the omission is the careful choice rather
+ * than the lazy one. `sweep` checks it after its subprocess returns because a sweep that
+ * arrives late can simply be dropped - it retracted nothing. A push cannot be dropped
+ * that way: by the time an abort could be observed, `gh` has already run, and an issue
+ * may exist. `run()` has no cancellation parameter either, so a signal check could only
+ * ever mislabel a completed action. `GH_TIMEOUT_MS` and the caller's in-flight guard are
+ * the real bounds.
+ *
+ * If a post-run aborted check is ever added here, it must read as `outcomeUnknown: true`
+ * - the create may have landed - and never as a refusal.
+ */
+async function push(
+  cfg: GithubIssuesConfig,
+  draft: PushDraft,
+  ctx: PushContext,
+): Promise<PushResult> {
+  const res = await run(ghBin(), ghIssueCreateArgs(cfg, draft), {
+    cwd: ctx.repoRoot,
+    timeoutMs: GH_TIMEOUT_MS,
+  });
+  return pushResultFrom(res, ctx);
+}
+
 export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {
   // Spread rather than restated: the kind, the name and the blurb are the half the
   // settings panel renders in the browser, and it cannot import this file. The schema is
@@ -239,4 +365,7 @@ export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {
   configSchema: GithubIssuesConfigSchema,
   preflight,
   sweep,
+  // Present because the kind's `canPush` says so - the contract test holds the two
+  // together in both directions.
+  push,
 };

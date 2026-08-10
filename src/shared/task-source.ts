@@ -2,22 +2,34 @@ import { z } from "zod";
 import { AGENT_TYPES, type AgentType, type TaskKind, type TaskPriority } from "./types.ts";
 import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 
-// A task source reads an EXTERNAL system on a schedule and returns candidate tasks.
-// That is the whole contract: it does not write to the database, it does not dispatch
-// anything, and it does not decide whether a candidate is new.
+// A task source is this app's connection to an EXTERNAL work tracker. Inbound, it reads
+// that tracker on a schedule and RETURNS candidate tasks. Outbound, a kind may also
+// declare `push`, which files one of OUR tasks as an item in that tracker.
+//
+// What no implementation may do, in either direction, is write to OUR database. A sweep
+// returns candidates and `src/server/task-sources/ingest.ts` decides what becomes of
+// them; a push writes upstream and returns the ref it minted, and one chokepoint beside
+// `ingest.ts` records that ref here. Those chokepoints are the only DB writers on these
+// paths, which is what keeps every implementation a pure function over a subprocess.
 //
 // The split is the point of the design. `CLAUDE.md`'s "the daemon is the only writer of
 // the DB" holds BY CONSTRUCTION rather than by every implementer remembering it, dedupe
-// and normalization and the per-sweep cap get enforced exactly once (in
-// `src/server/task-sources/ingest.ts`), and a source stays a pure function to test -
-// `sweep(config) -> candidates` needs no database, no registry and no HTTP.
+// and normalization and the per-sweep cap get enforced exactly once (in `ingest.ts`), and
+// a source stays a pure function to test - `sweep(config) -> candidates` needs no
+// database, no registry and no HTTP, and `push(config, draft) -> ref` needs none either.
+//
+// The asymmetry between the two directions is deliberate, and it is about what a mistake
+// costs. A sweep is periodic and unattended, and the worst a broken one can do is file
+// junk into a list a human then reads and deletes - so it runs on a timer. A push
+// PUBLISHES, to a place other people are watching, and it cannot be taken back by
+// deleting a row here - so it fires only on an explicit per-task operator action, never
+// from the sweep loop, and never as a consequence of anything a sweep saw.
 //
 // Sources never type into a pane. The skills reload loop needs `settledIdle` plus a pane
 // read plus `withPaneLock` before it dares (see "The daemon is no longer strictly
-// reactive" in the README); a task source needs none of that, because the worst a broken
-// one can do is file junk into a list a human then reads and deletes. Nothing is
-// provisioned, no worktree is cut, no keystroke is sent. Auto-dispatching swept work is
-// deliberately out of scope: it is a different risk class and would need its own gate.
+// reactive" in the README); a task source needs none of that, because nothing here is
+// provisioned, no worktree is cut, and no keystroke is sent. Auto-dispatching swept work
+// is deliberately out of scope: it is a different risk class and would need its own gate.
 //
 // This file is the half that must stay pure - no `node:` imports - because the settings
 // panel renders from it in the browser. The same split `HARNESS_CAPABILITIES` makes
@@ -89,6 +101,53 @@ export interface SweepContext {
   signal: AbortSignal;
 }
 
+// ---- the outward direction: one of our tasks, filed upstream ----
+
+/**
+ * The task being pushed, reduced to what an external item can carry.
+ *
+ * A DRAFT rather than the `Task` itself, for the same reason `TaskCandidate` is not a
+ * passthrough of an issue: the implementation should not be able to read a status, an id
+ * or a worktree off the thing it is publishing, because none of that means anything
+ * upstream and all of it would leak our internals into somebody else's tracker.
+ */
+export interface PushDraft {
+  /** Becomes the external item's title. */
+  title: string;
+  /** Becomes its body - the task's intent, which is the text a human wrote. */
+  intent: string;
+}
+
+/** The outcome of one push. Exactly one of `ref` / `error` is set. */
+export interface PushResult {
+  /** What was created, or null when nothing was (or nothing could be read back). */
+  ref: TaskSourceRef | null;
+  /** Human-readable failure, or null. */
+  error: string | null;
+  /**
+   * The item MAY exist upstream and we cannot tell.
+   *
+   * The load-bearing flag of this whole direction, and the reason a push cannot reuse
+   * `SweepResult`. A failed sweep retracts nothing, so "failed" is a complete answer; a
+   * failed push either published or did not, and the two demand opposite responses. A
+   * caller may retry a failure with `outcomeUnknown: false` - nothing was published, so a
+   * retry cannot duplicate. It must NEVER blind-retry one with `outcomeUnknown: true`:
+   * the item may already be there, and a second attempt files a duplicate into a tracker
+   * other people are reading. This mirrors `RunResult.outcomeUnknown` and the Inspector's
+   * `wasRefused`, which is the same rule for the same reason.
+   */
+  outcomeUnknown: boolean;
+}
+
+/**
+ * What the daemon lends a push - the same lends as a sweep, deliberately.
+ *
+ * An alias rather than a fresh interface: the shape is identical (which source, which
+ * repo, which signal) and giving it a second declaration would let the two drift apart
+ * for no reason. Note that `signal` is shape parity only - see `TaskSourceImpl.push`.
+ */
+export type PushContext = SweepContext;
+
 /**
  * What can be answered about a kind WITHOUT a `node:` import, so the settings panel can
  * render a source whose implementation it cannot import: its name, its blurb, and the
@@ -112,6 +171,19 @@ export interface TaskSourceKindInfo<C = unknown> {
    */
   preflightOk: string;
   /**
+   * This kind can receive a task pushed OUTWARD from the backlog.
+   *
+   * On the pure half, and required, so the `Record<TaskSourceKind, …>` makes every kind
+   * declare it - a new kind cannot arrive silently unable to push and have the UI find
+   * out by calling. Being browser-safe is the other half of the point: the modal decides
+   * whether to offer the action without importing an implementation it cannot load.
+   *
+   * The server's registry holds the corresponding `push` slot, and
+   * `test/task-source-contract.test.ts` pins the two together - a kind that says `true`
+   * and implements nothing is a button that fails when pressed.
+   */
+  canPush: boolean;
+  /**
    * Validates and defaults this kind's config blob. The panel renders from it too.
    *
    * Input is `unknown`, not `C`: what is parsed is whatever the `app_config` blob holds,
@@ -128,9 +200,10 @@ export interface TaskSourceKindInfo<C = unknown> {
  * call site reads every slot off - the same shape `Harness extends HarnessCapabilities`
  * gives the harness registry.
  *
- * Both calls may leave the process, which is why they live on the server's record and
- * not in `TASK_SOURCE_KIND_INFO`. Neither may write: a sweep RETURNS candidates, and
- * `ingest.ts` decides what becomes of them.
+ * Every call here may leave the process, which is why they live on the server's record
+ * and not in `TASK_SOURCE_KIND_INFO`. None of them may write to OUR database: a sweep
+ * RETURNS candidates and `ingest.ts` decides what becomes of them, and a push RETURNS the
+ * ref it minted upstream for its own chokepoint to record.
  */
 export interface TaskSourceImpl<C> extends TaskSourceKindInfo<C> {
   /**
@@ -141,6 +214,24 @@ export interface TaskSourceImpl<C> extends TaskSourceKindInfo<C> {
    */
   preflight(config: C, ctx: SweepContext): Promise<string | null>;
   sweep(config: C, ctx: SweepContext): Promise<SweepResult>;
+  /**
+   * File one of our tasks as an item in the external system, and report what was created.
+   *
+   * Optional, and present EXACTLY when the kind's `canPush` says so - the contract test
+   * pins both directions, because a kind offering the action without implementing it and
+   * a kind implementing it without offering it are both silent bugs. Reach it through
+   * `pushToSource` (`src/server/task-sources/index.ts`), never by testing `inst.kind`.
+   *
+   * Fires only on an explicit per-task operator action. NEVER from the sweep loop, and
+   * never from anything a sweep saw: this publishes to a place other people watch, and
+   * deleting the row here does not take it back.
+   *
+   * `ctx.signal` is shape parity with `SweepContext` and nothing more. There is no
+   * cancellation path - `run()` takes no signal - so an implementation must not pretend
+   * to one, and a caller must not rely on aborting to stop a push. The real bounds are
+   * the implementation's own subprocess timeout and the caller's in-flight guard.
+   */
+  push?(config: C, draft: PushDraft, ctx: PushContext): Promise<PushResult>;
 }
 
 // ---- github-issues: the first kind's config ----
@@ -247,6 +338,9 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     blurb:
       "Files an open issue as a backlog task, through the gh CLI you are already signed in to.",
     preflightOk: "Looks good - gh is reachable and this repo lists issues.",
+    // `gh issue create` is the outward half, so a backlog task can become an issue other
+    // people sweeping this repo can see.
+    canPush: true,
     configSchema: GithubIssuesConfigSchema,
   },
   jira: {
@@ -255,6 +349,11 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     blurb:
       "Files the issues a JQL filter matches as backlog tasks, through your jira CLI or a JIRA_API_TOKEN.",
     preflightOk: "Looks good - Jira answered, and this JQL filter runs.",
+    // Inbound only, and that is a decision rather than a gap: creating a Jira issue means
+    // a project key, an issue type and whatever fields that project marks required, which
+    // is a configuration surface of its own. Declared false so the action is hidden
+    // instead of failing when pressed.
+    canPush: false,
     configSchema: JiraConfigSchema,
   },
 };

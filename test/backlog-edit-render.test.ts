@@ -32,6 +32,25 @@ const editor = (task: Task): string =>
     ),
   );
 
+/** A fresh dispatch, which is the same component over no row at all. */
+const dispatcher = (): string =>
+  renderToStaticMarkup(
+    withOverlayHost(createElement(DispatchLayer, { open: true, editTask: null, onClose: () => {} })),
+  );
+
+/**
+ * The modal's footer alone.
+ *
+ * Sliced rather than searched whole because "the footer offers it" is the claim: a Delete
+ * that rendered among the fields would satisfy a match against the full markup while being
+ * somewhere no operator looks for an action.
+ */
+const foot = (html: string): string => {
+  const at = html.indexOf('<footer class="modal-foot">');
+  assert.ok(at >= 0, "the modal renders a footer");
+  return html.slice(at, html.indexOf("</footer>", at));
+};
+
 test("the editor opens holding the task, not an empty form", () => {
   // Seeded during render for exactly this reason: a frame of blank fields reads as a
   // task that lost its intent, and the operator's next move is to retype it.
@@ -68,6 +87,28 @@ test("the verbs say edit, not create", () => {
   assert.match(html, /Dispatch now/);
 });
 
+test("only the editor offers to delete, and only from the footer", () => {
+  // The one destructive action in a form whose other verbs all keep the task, so it is
+  // asserted from both sides at once. Present in the editor: without it the only way to
+  // throw a shelved task away is the Sitrep row, which an operator reading the task in
+  // front of them has no reason to know exists.
+  const editing = foot(editor(mkTask()));
+  // `btn-ghost` as well as the danger modifier: the rest of this footer is borderless, and a
+  // Delete carrying a border would out-weight Save. See the button's own note.
+  assert.match(editing, /<button class="btn btn-ghost btn-danger-ghost"[^>]*>Delete<\/button>/);
+  assert.ok(
+    hasTooltip(editor(mkTask()), "Delete this task from the backlog"),
+    "Delete must say what it deletes - 'Delete' alone, beside Revert, could read as the draft",
+  );
+
+  // Absent from a fresh dispatch, which is the half that would rot silently. There is no
+  // row behind a create, so a Delete there deletes nothing and reads as "discard the form"
+  // - the job "Clear" already has, one button away.
+  const fresh = dispatcher();
+  assert.doesNotMatch(foot(fresh), /btn-danger-ghost/);
+  assert.doesNotMatch(fresh, />Delete</);
+});
+
 test("Revert is dead until something has actually been edited", () => {
   // It restores the stored row, so on an untouched form it has nothing to restore -
   // an enabled button that does nothing teaches the operator to distrust the footer.
@@ -80,9 +121,7 @@ test("Revert is dead until something has actually been edited", () => {
 
 test("a fresh dispatch is untouched by the edit mode", () => {
   // The same component serves both, and the create path is the one people use daily.
-  const html = renderToStaticMarkup(
-    withOverlayHost(createElement(DispatchLayer, { open: true, editTask: null, onClose: () => {} })),
-  );
+  const html = dispatcher();
   assert.match(html, /Dispatch an agent/);
   assert.match(html, /Add to backlog/);
   assert.doesNotMatch(html, /Edit backlog task/);

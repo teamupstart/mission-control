@@ -120,6 +120,55 @@ test("every category has at least one control indexed", () => {
   }
 });
 
+// The Conversation rendering picker, named on its own rather than left to the sweeps above.
+//
+// The sweeps are the reason this index holds together, but each of them only asks its
+// question of whatever happens to be in the array: a control that was never added passes
+// every one of them by not existing. This is the other half - that this particular control
+// IS in the index, points where it says it points, and behaves as the kind it declares -
+// and it is the shape a new control should copy.
+test("the Conversation rendering picker is indexed under Display, anchored at the panel that draws it", () => {
+  const control = SETTINGS_CONTROLS.find((c) => c.id === "conversation-view");
+  assert.ok(control, "the Conversation rendering picker is not in the search index at all");
+  assert.equal(control.category, "display");
+  assert.equal(control.anchor, "display/conversation-view");
+  // Anchored at a control the DISPLAY panel renders, specifically. The sweep above proves
+  // every anchor is rendered by some category; this proves the jump lands on the page the
+  // row promises, which is the failure a union over all categories cannot see.
+  assert.match(renderCategory("display"), /data-anchor="display\/conversation-view"/);
+});
+
+test("the Conversation rendering picker jumps, because a picker has nothing to flip", () => {
+  const control = SETTINGS_CONTROLS.find((c) => c.id === "conversation-view")!;
+  // `toggle` is for a boolean the palette can flip in place. This is a choice between named
+  // renderings, so there is no "on" to set from a search row - and declaring it a toggle
+  // would draw a switch whose state means nothing.
+  assert.equal(control.kind, "jump");
+  assert.ok(!control.risky, "a display preference is not consent-gated");
+  assert.ok(
+    !BINDABLE_CONTROL_IDS.includes("conversation-view"),
+    "a jump must never be handed a binding - that is what makes it a jump",
+  );
+});
+
+test("the Conversation rendering is reachable by the words someone would half-remember", () => {
+  const control = SETTINGS_CONTROLS.find((c) => c.id === "conversation-view")!;
+  // The palette matches over the row's title, detail and keywords, so what this pins is
+  // that the INDEX carries the vocabulary - that the operator who wants this setting can
+  // arrive from either side of the choice, and from the words the feature is described
+  // with rather than only its label. How the matcher walks that text is palette-index's
+  // own test; what it has to walk is this.
+  const searchable = [control.label, control.description, ...control.keywords]
+    .join(" ")
+    .toLowerCase();
+  for (const term of ["terminal", "pty", "shell", "stdout", "prompt", "transcript", "chat"]) {
+    assert.ok(searchable.includes(term), `"${term}" reaches nothing in the settings index`);
+  }
+  // And it is not findable only as a synonym of another control: the label is its own.
+  const labels = SETTINGS_CONTROLS.filter((c) => c.id !== control.id).map((c) => c.label);
+  assert.ok(!labels.includes(control.label), "two controls answer to the same name");
+});
+
 // The D5 exemption set: booleans whose consent copy has to be on screen when they change,
 // so they always jump to their panel rather than flipping from a search row. YOLO merges
 // code and the Inspector's two publish under the operator's GitHub account; Live workflow

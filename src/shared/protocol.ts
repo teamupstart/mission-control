@@ -766,6 +766,31 @@ export const AssignTaskSchema = z.object({
 export type AssignTask = z.infer<typeof AssignTaskSchema>;
 
 /**
+ * File a backlog task as an item in an external tracker - `POST /api/tasks/:id/push`.
+ *
+ * One field, and it is required rather than inferred, which is the decision worth stating.
+ * The daemon could pick "the configured source whose repo matches", and that would silently
+ * choose for the operator the moment a second source watched the same repo - having
+ * PUBLISHED to somebody else's tracker, where the wrong choice cannot be taken back by
+ * deleting anything here. So the caller names the source it means.
+ *
+ * Nothing about the ISSUE is accepted: its title, body and labels are derived from the task
+ * and from the source's own sweep filter (see `ghIssueCreateArgs`). A body that could
+ * override them would be a second, unversioned way to author an external item.
+ *
+ * The response is the updated `Task` on 200, exactly like its dispatch/complete siblings,
+ * so a caller reads the new `source` off the reply rather than racing the `task_upsert`
+ * event. The failure codes are part of the contract and are documented on the route: 502
+ * means the tracker refused and a retry is safe, 504 means the outcome is unknown and a
+ * retry may file a duplicate.
+ */
+export const PushTaskSchema = z.object({
+  /** Which configured task source to file through. See `TaskSourceInstance.id`. */
+  sourceId: z.string().min(1),
+});
+export type PushTask = z.infer<typeof PushTaskSchema>;
+
+/**
  * Store Foreman's reading of the backlog (see `BacklogPlan`).
  *
  * Written by the worker, which is the only thing that can produce it, and read by the

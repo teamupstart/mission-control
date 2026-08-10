@@ -22,10 +22,12 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * the `Approved` chip, because the outcome is history and the chip is the next move.
  *
  * What the chip SAYS moved after this was written. It now names the workflow a session is armed
- * with and falls back to `＋ workflow` only when nothing is bound - so the completed-run test
- * reads `armedChip` rather than the offer, because completion does not retire a binding and the
- * session is still armed when its run lands on `Approved`. The claim under test is unchanged and
- * is still the point: the button is present, and it opens the bind dialog rather than dead-ending.
+ * with, and falls back to `＋ workflow` both when nothing is bound and when the binding that
+ * exists is no longer `active` - orphaned or paused, which will not run at completion and so
+ * must not be named as though they will. The completed-run test below reads `armedChip` rather
+ * than the offer because completion retires neither the binding nor its `active` state. The
+ * claim under test is unchanged and is still the point: the button is present, and it opens the
+ * bind dialog rather than dead-ending.
  *
  * The run is real: dispatched agent, published workflow, bound, submitted, and polled until the
  * daemon settles it. Nothing is stubbed into the browser.

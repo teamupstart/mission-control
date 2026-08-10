@@ -189,7 +189,14 @@ export function SessionCard({
    */
   reviews?: ReviewItem[];
   workflowRun?: WorkflowRunSummary | null;
-  /** What this conversation is ARMED with, which exists before any run does. */
+  /**
+   * What this conversation is ARMED with, which exists before any run does.
+   *
+   * Null covers two cases the card renders identically and should: nothing bound, and a
+   * binding that is no longer `active` - App's join drops orphaned and paused ones, because
+   * neither will run at completion and a card naming one would promise a review that is not
+   * coming. Repairing those is the bind dialog's job, not a chip's.
+   */
   workflowBinding?: WorkflowBindingSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
   onBindWorkflow?: () => void;

@@ -545,8 +545,13 @@ not. Delete asks for confirmation and cannot be undone.
 Bind a session to an exact published workflow version from the workflow history or from any
 fleet layout, then choose **Preview**. On a Cards card and in the Console and Board detail
 header the chip states what the session is armed with, naming the workflow and its version -
-**⌘ No-Mistakes Review v8** - and it falls back to an offer, **＋ workflow**, only when nothing
-is bound. That distinction matters most for the Foreman-complete trigger, where the binding
+**⌘ No-Mistakes Review v8**. It falls back to an offer, **＋ workflow**, in two cases: nothing is
+bound at all, and the binding that exists is no longer `active` - `orphaned` after its session
+disappeared, or `paused` after the conversation changed. Those rows are not archived and the
+bind dialog still reattaches them, but neither will run when this session's work completes, so
+naming one on a card would promise a review that is not coming. The card answers "is a review
+going to run here"; the dialog is where a binding that stopped being able to answer yes gets
+repaired. That distinction matters most for the Foreman-complete trigger, where the binding
 exists for the whole working life of the session and the first run does not appear until the
 work is finished; a chip that keyed off the run alone reported every armed session as unarmed.
 The chip is present whenever no run currently *owns* that session - which includes a session

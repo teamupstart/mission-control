@@ -111,6 +111,46 @@ test("an armed binding rides the snapshot with no run in existence", () => {
   assert.equal("sessionCwd" in summaries[0]!, false);
 });
 
+test("an orphaned or paused binding stays on the stream, carrying its state", () => {
+  // The documented rule for the session chip is that it names only an ACTIVE binding and falls
+  // back to the offer otherwise, because an orphaned or paused row will not run at completion.
+  // That rule is a CLIENT-side filter, which only works if the daemon keeps publishing these
+  // rows: they are not archived, the bind dialog reattaches them, and a stream that dropped
+  // them would take the repair path with it. Archived is the only state that leaves.
+  clearWorkflowTables(db);
+  seedOperatorWorkflow();
+  const store = new WorkflowStore(db);
+  insertBinding(store, "v");
+
+  /** What a browser opening or reconnecting right now would receive. */
+  const streamed = (): ReturnType<typeof store.listBindingSummaries> => {
+    const registry = new Registry();
+    new PersonaManager(registry, store);
+    new WorkflowManager(registry, store);
+    return registry.snapshot().workflowBindingSummaries;
+  };
+
+  store.orphanBinding("b", "session_disappeared");
+  assert.equal(store.bindingSummary("b")?.state, "orphaned");
+  assert.equal(store.bindingSummary("b")?.workflowName, "Review", "still names its workflow");
+  assert.deepEqual(
+    streamed().map((summary) => [summary.id, summary.state]),
+    [["b", "orphaned"]],
+    "an orphaned binding reaches the browser, which is what makes reattach reachable",
+  );
+
+  store.pauseBinding("b", "conversation_changed");
+  assert.deepEqual(
+    streamed().map((summary) => [summary.id, summary.state]),
+    [["b", "paused"]],
+    "a paused binding reaches the browser too",
+  );
+
+  // And the one state that does NOT, so this test cannot pass by never filtering anything.
+  store.archiveBindingAndCancel("b", 400);
+  assert.deepEqual(streamed(), [], "archived is the only state that leaves the stream");
+});
+
 test("a built-in binding names its workflow, which no SQL join can reach", () => {
   clearWorkflowTables(db);
   const store = new WorkflowStore(db);

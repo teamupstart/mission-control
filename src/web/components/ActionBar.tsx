@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { canCycleMode } from "@shared/session.ts";
 import { canMessage, muxHandle } from "@shared/pane.ts";
 import { api, type ActionResult } from "../lib/api.ts";
+import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
@@ -72,8 +74,18 @@ export function ActionBar({
   variant = "card",
   onDiff,
   onFiles,
+  workflowRun = null,
 }: {
   session: Session;
+  /**
+   * The workflow run bound to this session, when the caller already holds it.
+   *
+   * Read for ONE thing: the Inspector gate's `clean`, which is the strongest form of "the
+   * pull request exists and its findings are addressed" and therefore decides whether Retro
+   * is offered. Null is not a degraded answer - `retroOffer` falls back to the session's own
+   * Inspector chip, which is the only predicate available to a session with no workflow.
+   */
+  workflowRun?: WorkflowRunSummary | null;
   /**
    * Which control set to draw. "card" (default, unchanged) is the grid's full row -
    * Send / Focus / Queue / Reset / Kill. "foot" is the console's detail footer, which
@@ -151,6 +163,11 @@ export function ActionBar({
   // rather than making you press it to find out whether anything is waiting.
   const openQueued = session.queue?.openCount ?? 0;
   const latestEditable = latestEditablePendingTurn(session.pendingTurns);
+  // An OFFER, not permanent chrome: it appears at the one moment the plan chose and is
+  // absent every other time, so its presence is itself the message. That is why there is no
+  // disabled Retro anywhere in this row - a greyed-out button on every card for the whole
+  // life of a session would say "you could have retrospected" rather than "now is the time".
+  const retro = retroOffer(session, workflowRun);
 
   // Written once and used by both variants, so the two rows cannot drift into telling
   // different stories about the same click.
@@ -260,6 +277,25 @@ export function ActionBar({
   function handoff() {
     if (!isEmbedded) return;
     void run("handoff", () => api.handoff(session.id));
+  }
+
+  /**
+   * Hand the session its own retrospective.
+   *
+   * A single click with no confirm, and that is the right weight for it: the daemon types an
+   * instruction, and the instruction's own first rule is that nothing gets written without
+   * the human approving it. The consequential step is the approval, which happens later and
+   * item by item - putting a confirm in front of the request would be guarding the harmless
+   * half of the ceremony.
+   *
+   * The success flash is not decoration either. The route has two success arms that mean
+   * different things - typed into this session, or filed as a backlog task because it could
+   * not be - and a live session is not a promise of delivery, so the outcome is REPORTED
+   * rather than assumed from a 200.
+   */
+  async function runRetro(): Promise<void> {
+    const result = await run("retro", () => api.runRetro(session.id));
+    if (result.ok) showFlash({ text: retroOutcome(result), ok: true }, 6000);
   }
 
   // Cycle the permission mode (Shift+Tab) - only meaningful for a harness whose live
@@ -438,6 +474,17 @@ export function ActionBar({
               </button>
             </Tooltip>
           )}
+          {retro && (
+            <Tooltip label={retro.tooltip}>
+              <button
+                className="act act-retro"
+                onClick={() => void runRetro()}
+                disabled={busy === "retro"}
+              >
+                {busy === "retro" ? "sending…" : "retro"}
+              </button>
+            </Tooltip>
+          )}
           {onComplete && (
             <Tooltip label={completeLabel}>
               <button
@@ -517,6 +564,17 @@ export function ActionBar({
             </Tooltip>
           )}
           <span className="actions-spacer" />
+          {retro && (
+            <Tooltip label={retro.tooltip}>
+              <button
+                className="btn btn-retro"
+                onClick={() => void runRetro()}
+                disabled={busy === "retro"}
+              >
+                {busy === "retro" ? "Sending…" : retro.label}
+              </button>
+            </Tooltip>
+          )}
           {onComplete && (
             <Tooltip label={completeLabel}>
               <button className="btn btn-complete" onClick={requestComplete} disabled={!session.task}>

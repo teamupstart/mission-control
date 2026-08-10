@@ -608,6 +608,16 @@ export interface Session {
    */
   inspector: InspectorSummary | null;
   /**
+   * Why this session is worth retrospecting, or ABSENT when it is not.
+   *
+   * Additive and optional rather than nullable, so a daemon that has never computed it and
+   * a session that has nothing to catalogue are the same thing on the wire: no offer. Every
+   * surface that renders the retro offer reads this first, so a session nobody corrected and
+   * whose review raised nothing gets no prompt at all - the whole point of conditioning the
+   * offer rather than making Retro permanent chrome.
+   */
+  retro?: RetroSummary;
+  /**
    * The option dialog this session's pane is showing right now - a permission prompt, an
    * `AskUserQuestion` clarification menu, the folder-trust check - or null when it isn't
    * showing one. Read off the pane each poll by `annotatePaneState`.
@@ -2048,6 +2058,35 @@ export interface InspectorSummary {
   lastReviewedAt: number | null;
   /** True when the last attempt errored, so the chip can say so instead of "clean". */
   failed: boolean;
+}
+
+/**
+ * Why a finished session is worth a retrospective.
+ *
+ * Two reasons, and they are the two the source plan named: the human corrected the agent in
+ * the transcript, or the Inspector raised findings that were then resolved. Both describe
+ * something that was LEARNED - a correction the next session should not need, a defect the
+ * repository could have warned about - which is exactly what a repository memory is for. A
+ * clean run nobody had to steer teaches nothing, and gets no offer.
+ *
+ * The values are display vocabulary rather than persisted vocabulary: nothing writes them to
+ * SQLite, so they may be renamed. They still reach the browser, so a build that does not
+ * recognise one must degrade to "worthy, reason unknown" rather than to "not worthy" - which
+ * is why the offer keys on the LIST being non-empty and never on a particular member.
+ */
+export const RETRO_REASONS = ["corrections", "findings"] as const;
+export type RetroReason = (typeof RETRO_REASONS)[number];
+
+/**
+ * The per-session retro-worthiness signal, denormalized onto a Session like `inspector`.
+ *
+ * A list rather than one reason because both can hold at once and they say different things
+ * to the person deciding whether to spend a turn on it: "you corrected this agent four times"
+ * and "the review found things" are separate arguments for the same ceremony. The summary is
+ * only ever present when `reasons` is non-empty; absence IS "not worth retrospecting".
+ */
+export interface RetroSummary {
+  reasons: RetroReason[];
 }
 
 /** A ledger row plus its finding tallies - what the settings panel lists. */

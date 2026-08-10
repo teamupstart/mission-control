@@ -43,6 +43,7 @@ test("the Workflows pane starts loading the session's bound workflow", () => {
   const html = renderToStaticMarkup(
     createElement(SessionWorkflowsPane, {
       run: { ...LADDER_SUMMARY, sessionId: session.id },
+      session,
       onOpenRun: () => {},
     }),
   );
@@ -52,7 +53,11 @@ test("the Workflows pane starts loading the session's bound workflow", () => {
 
 test("the Workflows pane names its empty state", () => {
   const html = renderToStaticMarkup(
-    createElement(SessionWorkflowsPane, { run: null, onOpenRun: () => {} }),
+    createElement(SessionWorkflowsPane, {
+      run: null,
+      session: mkSession(),
+      onOpenRun: () => {},
+    }),
   );
   assert.match(html, /No workflow is bound to this session/);
 });

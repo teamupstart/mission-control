@@ -36,6 +36,7 @@ import type {
   InspectorSummary,
   InspectionUpdated,
   KeepAwakeStatus,
+  RetroSummary,
   SettingsStatus,
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
@@ -171,6 +172,7 @@ import type { ForemanInviteRow, SessionWorkEpisode, TaskWorkEpisodeBinding, Usag
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
+import { retroSummary } from "./retro-worthiness.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -547,6 +549,20 @@ export class Registry extends EventEmitter {
   private sweptSessions = false;
   /** The Inspector's ledger, by PR key. Rebuilt from the DB; see `refreshInspections`. */
   private inspections = new Map<string, InspectorInspection>();
+  /**
+   * Session ids whose transcript has shown a human turn beyond the opening brief.
+   *
+   * Written only by `recordRetroCorrections` and held until the session ROW is removed, not
+   * until the session exits: an exited card still offers a retro (the route files a task for
+   * it), so forgetting the reason the moment the agent stopped would withdraw the offer at
+   * precisely the moment it is most likely to be taken.
+   *
+   * In memory rather than persisted, like the injection attribution it depends on. A daemon
+   * restart therefore loses it and the poller rebuilds what it can from the transcript still
+   * on disk - which is the honest behaviour, since `originOf` cannot re-derive who typed a
+   * turn it never saw delivered.
+   */
+  private retroCorrections = new Set<string>();
   private lastQueuePrune = 0;
   /**
    * The last rate-limit reading either Claude live transport reported.
@@ -826,6 +842,23 @@ export class Registry extends EventEmitter {
   onPrOpened(fn: (e: PrOpened) => void): () => void {
     this.on("pr_opened", fn);
     return () => this.off("pr_opened", fn);
+  }
+
+  /**
+   * Fired ONCE as a session starts being evicted, while its row and its transcript still
+   * exist.
+   *
+   * The window this exists for is small and shuts hard: `beginEviction` gives a session
+   * `EXIT_LINGER_MS` before `remove` deletes it, and that is SHORTER than some pollers'
+   * intervals - so "catch it on the next tick" is not a strategy, it is a race that the
+   * poller usually loses. A subscriber gets the transition itself instead.
+   *
+   * Deliberately not `session_remove`: by then the row is gone, and a listener that wanted
+   * to record something ABOUT the session would have nowhere to put it.
+   */
+  onSessionExit(fn: (s: Session) => void): () => void {
+    this.on("session_exit", fn);
+    return () => this.off("session_exit", fn);
   }
 
   /**
@@ -1249,6 +1282,7 @@ export class Registry extends EventEmitter {
       // Carried forward like the PR fields for the same reason: discovery cannot see it.
       // Re-resolved from the ledger just below, once cwd/prUrl are settled.
       inspector: prev?.inspector ?? null,
+      retro: prev?.retro,
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
@@ -1324,7 +1358,7 @@ export class Registry extends EventEmitter {
       prev && noteKeyFor(prev) === noteKeyFor(base) ? prev.cost : sessionCostFor(noteKeyFor(base));
     base.queue = this.queueSummaryFor(base);
     base.pendingTurns = this.pendingTurnsFor(base);
-    base.inspector = this.inspectorSummaryFor(base);
+    this.resolveInspectionSummaries(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
     // statement about every session ("no live session holds that key"), and this
     // runs per session while `applyDiscovery` is still filling the map. Carry the
@@ -1447,7 +1481,7 @@ export class Registry extends EventEmitter {
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
     s.pendingTurns = this.pendingTurnsFor(s);
-    s.inspector = this.inspectorSummaryFor(s);
+    this.resolveInspectionSummaries(s);
     this.sessions.set(s.id, s);
     this.emitSession(s);
     // A newly live key is the mirror of `remove`'s reason for doing this: a queue looks
@@ -1632,7 +1666,7 @@ export class Registry extends EventEmitter {
     next.queue = this.queueSummaryFor(next);
     next.pendingTurns = this.pendingTurnsFor(next);
     next.orphanedQueue = this.orphanedQueueFor(next);
-    next.inspector = this.inspectorSummaryFor(next);
+    this.resolveInspectionSummaries(next);
     this.sessions.set(next.id, next);
     logEvent(next.id, now, "SdkBound", { agentSessionId });
     this.emitSession(next);
@@ -1690,7 +1724,7 @@ export class Registry extends EventEmitter {
       // Unknown at creation, and cleared so a session cannot carry a previous PR's rollup.
       prChecks: null,
     };
-    next.inspector = this.inspectorSummaryFor(next);
+    this.resolveInspectionSummaries(next);
     this.sessions.set(next.id, next);
     if (!sessionEqual(s, next)) this.emitSession(next);
     this.announcePrOpened(next, url);
@@ -1872,7 +1906,7 @@ export class Registry extends EventEmitter {
       // A hook is how a PR url first reaches a card, and the summary is keyed on it -
       // so resolving here is what makes the chip appear on the same event that
       // produced the PR, rather than up to a poll tick later.
-      next.inspector = this.inspectorSummaryFor(next);
+      this.resolveInspectionSummaries(next);
       this.rememberAgentSession(next, target.agentSessionId);
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, { activity, state });
@@ -3240,7 +3274,7 @@ export class Registry extends EventEmitter {
       // ordinary startup ordering (this poller runs seconds after the first sweep, which
       // saw no PR yet), leaves an adopted PR with no chip at all until something unrelated
       // happens to rebuild the session. Same reason `applyHook` re-resolves.
-      next.inspector = this.inspectorSummaryFor(next);
+      this.resolveInspectionSummaries(next);
       this.sessions.set(id, next);
       this.emitSession(next);
     }
@@ -4120,6 +4154,12 @@ export class Registry extends EventEmitter {
     }
     const t = unref(setTimeout(() => this.remove(s.id), EXIT_LINGER_MS));
     this.exitTimers.set(s.id, t);
+    // AFTER the timer is armed, so the `exitTimers` guard above has already made this
+    // once-per-eviction, and BEFORE `remove` can run, so a listener still finds the row it
+    // wants to write to. Handed the current projection rather than `s`, which may be the
+    // pre-exit copy.
+    const current = this.sessions.get(s.id);
+    if (current) this.emit("session_exit", current);
   }
 
   private remove(id: string): void {
@@ -4131,6 +4171,9 @@ export class Registry extends EventEmitter {
     this.permissionModeFreshnessGuards.delete(id);
     this.statusLineTimestamps.delete(id);
     this.driverDialogs.delete(id);
+    // Held until the ROW goes, not until the agent stopped - see `retroCorrections`. This is
+    // where "the row goes", so this is where it is forgotten.
+    this.retroCorrections.delete(id);
     if (!this.sessions.delete(id)) return;
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
@@ -5318,6 +5361,59 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Whether this session is worth retrospecting, and why.
+   *
+   * Sits beside `inspectorSummaryFor` and is resolved with it at every one of its call sites,
+   * because half of it is the SAME ledger row: `resolvedFindings` comes out of the grouped
+   * query that already produced the chip's counts, so the findings half costs one map read
+   * and follows `prUrl` wherever the inspector summary follows it. The corrections half is a
+   * flag the poller sets; combining them here is what keeps one answer on the wire.
+   *
+   * `undefined` rather than `null` for "nothing to retrospect", so the field is simply absent
+   * from the JSON a browser receives - see `Session.retro`.
+   */
+  private retroSummaryFor(s: Session): RetroSummary | undefined {
+    const parsed = s.prUrl ? parsePrUrl(s.prUrl) : null;
+    const row = parsed ? this.inspections.get(parsed.key) : undefined;
+    return retroSummary({
+      corrections: this.retroCorrections.has(s.id),
+      resolvedFindings: row?.resolvedFindings ?? 0,
+    }) ?? undefined;
+  }
+
+  /**
+   * Re-resolve every summary derived from the Inspector's ledger.
+   *
+   * One call rather than two assignments at each of the seven sites that re-resolve after a
+   * pull request moves. `inspector` and `retro` read the same row for the same reason - the
+   * ledger is keyed on the PR, so a session that gains, loses or switches one has both facts
+   * go stale at once - and a site that remembered only the first would leave the retro offer
+   * answering for the previous pull request.
+   */
+  private resolveInspectionSummaries(s: Session): void {
+    s.inspector = this.inspectorSummaryFor(s);
+    s.retro = this.retroSummaryFor(s);
+  }
+
+  /**
+   * Record that this session's human has corrected it, and light the offer if that is new.
+   *
+   * Idempotent and one-way, because the fact is: the poller calls this on every tick once a
+   * session has flipped, and a correction cannot be taken back. The early return is what
+   * keeps that from being an emit per tick.
+   */
+  recordRetroCorrections(sessionId: string): void {
+    if (this.retroCorrections.has(sessionId)) return;
+    this.retroCorrections.add(sessionId);
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    const next: Session = { ...s, retro: this.retroSummaryFor(s) };
+    if (sessionEqual(s, next)) return;
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+  }
+
+  /**
    * Re-read the ledger and push any changed summary onto its session.
    *
    * Called by the Inspector at the end of a tick rather than on a timer: a review round
@@ -5328,9 +5424,13 @@ export class Registry extends EventEmitter {
     this.inspections.clear();
     for (const row of loadInspectorInspections()) this.inspections.set(row.key, row);
     for (const [id, s] of this.sessions) {
-      const next = this.inspectorSummaryFor(s);
-      if (JSON.stringify(next) === JSON.stringify(s.inspector)) continue;
-      const updated: Session = { ...s, inspector: next };
+      const updated: Session = { ...s };
+      this.resolveInspectionSummaries(updated);
+      // Both summaries, because both are derived from the row this just re-read: a round
+      // that resolves the last finding clears the chip AND is the moment the retro becomes
+      // worth offering, and checking only the chip would hold the offer back until some
+      // unrelated change happened to rebuild the session.
+      if (sessionEqual(s, updated)) continue;
       this.sessions.set(id, updated);
       this.emitSession(updated);
     }
@@ -6090,6 +6190,12 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp
   // that all change together at the end of a review round.
   inspector: byJson,
+  // byJson over an OPTIONAL field, which `byValue` could not do: absent and present-with-one
+  // -reason are different offers, and two present summaries differ by the contents of an
+  // array. Included rather than excluded because this field is the offer's whole condition -
+  // the tick that flips it is a tick where, on a finished session, nothing else moves at all,
+  // so leaving it out would withhold the prompt until something unrelated shook the card.
+  retro: byJson,
   // Load-bearing: a dialog opening is a tick where almost nothing ELSE changes.
   // `permissionMode` is sticky and so doesn't flip when the menu covers the
   // footer, and a session parked on a question is by definition not doing

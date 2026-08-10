@@ -34,6 +34,7 @@ import { CheckRuntime } from "./workflows/check-runtime.ts";
 import { startPrPoller } from "./pr.ts";
 import { startInspector } from "./inspector/worker.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
+import { startRetroWorthinessPoller } from "./retro-worthiness.ts";
 import { startUsagePoller } from "./usage.ts";
 import { setLlmSpendSink } from "./llm/spend.ts";
 import { recordSpendReport } from "./spend-ledger.ts";
@@ -280,6 +281,11 @@ const stopInspector = startInspector(registry, {
   workflowGatePending: (prKey) => workflows.blocksMerge(prKey),
 });
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
+// Whether each live session has been corrected by its human, which is half of whether the
+// dashboard offers it a retrospective. Its own loop rather than a sixth reader on the meta
+// poll above: different question, different read, and a session that has already flipped is
+// never looked at again. See `retro-worthiness.ts` for why the steady-state cost is a stat.
+const stopRetroWorthiness = startRetroWorthinessPoller(registry);
 const stopUsage = startUsagePoller(registry);
 const stopGoalRefiner = startGoalRefiner(registry);
 // The repeat-offender derivation is detail-only (it walks a run's submissions and attempts),
@@ -386,6 +392,7 @@ async function shutdown(): Promise<void> {
   stopPrPoller();
   stopInspector();
   stopRuntimeMeta();
+  stopRetroWorthiness();
   stopUsage();
   stopGoalRefiner();
   // Stopping the refiner only stops it STARTING runs; one already in flight is a detached

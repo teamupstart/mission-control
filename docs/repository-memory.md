@@ -152,9 +152,61 @@ fact.
 
 Two properties hold on both paths. **The daemon never commits**: the commit is an agent turn,
 on a branch a human reviews. And **nothing is ever typed autonomously** - the route is a
-request, and phase 3's dashboard affordances are what make it a click.
+request, and the dashboard affordances below are what make it a click.
 
 Where a workflow stage runs the Retro action rather than a human asking for one, its
 completion is `repo_commit`: the action is finished when the checkout's HEAD is a commit made
 after the session picked the packet up. A retrospective that discussed three memories and
 wrote none of them does not complete.
+
+## When the dashboard offers one
+
+The server only ever **proposes**; you always click. There is no path anywhere in the daemon
+that delivers a retro on its own.
+
+The offer appears at one moment and is absent the rest of the time, which is the point: a
+Retro button standing on every card for the life of every session says "you could have
+retrospected", where an offer that appears says "now is the time". Nothing is ever drawn
+disabled.
+
+**Where it appears**, all reading one predicate so no two surfaces can disagree:
+
+| Surface | Where exactly |
+|---|---|
+| Session card | The action row, beside Complete |
+| Console detail | The footer action row, beside `complete` |
+| Workflow ladder | The ladder's own action row, on the Board tile and in the session's Workflows tab |
+| Complete dialog | A secondary **Run a retro first**, which sends the retro and completes nothing |
+
+**The condition is two independent halves, and both must hold** (except in the Complete
+dialog - see below):
+
+1. **The session is worth retrospecting.** Either a human corrected it - a turn in its
+   transcript beyond the opening brief that Mission Control did not type itself - or the
+   Inspector raised findings on its pull request that were then resolved. A clean run nobody
+   had to steer teaches nothing, and gets no prompt. This rides the session payload as
+   `Session.retro`, and the offer's tooltip names which reason applied.
+2. **The review has finished.** Either the bound workflow run's Inspector gate reads `clean`,
+   or - for the great majority of sessions, which bind no workflow - the session's own
+   Inspector chip reads clean. A dry-run review counts, because that chip counts it. A pull
+   request that merged before the gate cleared keeps the offer, because the session's review
+   outcome is unchanged even though the run is now blocked on a closed pull request.
+
+The Complete dialog is the one place the second half is dropped. A scout or a spike never
+opens a pull request, so it never reaches that moment at all, and Complete is the last time
+anybody is looking at it. It sends the retro and leaves the task open and the session alive,
+because the retro is a turn that session still has to take.
+
+Clicking reports which arm the route took - typed into this session, or filed as a backlog
+task - rather than a bare success, because those are different next moves.
+
+Two things this deliberately is **not**: there is no post-Inspector workflow stage (the
+Inspector is the completion policy that runs after the graph's End, not a node to hook), and
+there is no per-repo "always retro" policy. Both were considered and rejected for v1; the
+completion policy, not the graph, is where a standing offer would be raised later.
+
+The signal behind half of it is computed lazily. The findings half is free - it comes out of
+the same ledger query that already builds the Inspector chip. The corrections half reads the
+transcript, so it is polled (`MISSION_RETRO_SCAN_MS`, default 10s), reads only the bytes
+appended since the last pass, and stops reading a session entirely once it has flipped. Set
+it to `0` to switch transcript scanning off; the findings half still works.

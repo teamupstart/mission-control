@@ -215,6 +215,7 @@ export function SessionTile({
       {workflowRun && (
         <WorkflowLadderPanel
           run={workflowRun}
+          session={session}
           onOpenRun={() => onOpenWorkflowRun?.(workflowRun.id)}
           tileDisclosure={{
             expanded: workflowExpanded,

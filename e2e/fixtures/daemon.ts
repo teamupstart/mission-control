@@ -211,6 +211,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
     // work here is not free - and a sweep fifteen times faster than shipped is already far
     // more than the action specs need.
     MISSION_WORKFLOW_SWEEP_MS: "1000",
+    // Same reasoning as the sweep above. The retro-worthiness scan decides whether the
+    // dashboard offers a retrospective, and it is deliberately lazy in production - a stat
+    // per unflipped live session every ten seconds, and nothing at all once one flips. Here
+    // the transcripts are three turns long and a spec would otherwise spend that ten seconds
+    // as pure wall clock waiting for a button to appear.
+    MISSION_RETRO_SCAN_MS: "400",
     // Belt and braces: if some path ever escaped the fake bins, an unset key fails loudly
     // instead of quietly spending.
     ANTHROPIC_API_KEY: "",

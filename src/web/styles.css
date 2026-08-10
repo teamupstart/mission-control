@@ -3542,6 +3542,20 @@ a.btn {
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+/* The card variant's Retro. Same reasoning as `.act-retro`: an offer, not a consequence. */
+.btn-retro {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 40%, var(--border));
+}
+.btn-retro:hover:not(:disabled) {
+  color: var(--purple) !important;
+  border-color: color-mix(in oklab, var(--purple) 60%, var(--border)) !important;
+  background: color-mix(in oklab, var(--purple) 12%, var(--panel-2)) !important;
+}
+.btn-retro:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 /* The foot variant's Complete. Same green-against-red reasoning as `.act-complete`. */
 .btn-complete {
   color: var(--idle);
@@ -7260,6 +7274,19 @@ select:not([multiple]) option:focus-visible {
 .kill-error {
   margin: 8px 0 0;
   color: #e5877f;
+}
+/* A settled OUTCOME, not a failure - the retro that became a backlog task because the
+   session could not be typed into. It sits where the error does and must not read like
+   one, which is the whole reason it is a separate node rather than reused copy. */
+.complete-notice {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+/* Left of the footer's spacer, so it reads as "before you answer this dialog" rather than
+   as a third answer to it. */
+.complete-retro {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 40%, var(--border));
 }
 /* Killing a session that carries a task strands everything declared behind it, and
    that is the one thing this dialog exists to say out loud. */
@@ -18399,6 +18426,19 @@ span.line-run-prov {
   outline: 2px solid var(--working);
   outline-offset: 2px;
 }
+/* The ladder's counterpart to `.complete-notice`: what the retro actually did, in the same
+   slot the failure would have used and deliberately not in its colours. */
+.wf-ladder-action-notice {
+  flex: none;
+  margin: -5px 0 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
 .wf-ladder-action-error {
   flex: none;
   margin: -5px 0 0;
@@ -18514,6 +18554,23 @@ span.line-run-prov {
   background: color-mix(in oklab, var(--idle) 13%, var(--panel-2));
 }
 .act-complete:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* Retro is an OFFER rather than a standing control: it appears at one moment and is gone
+   the rest of the time, so it takes the neutral-informative purple Focus uses and NOT a
+   consequence colour. Nothing here is destructive and nothing here is the end of the
+   session - it asks the agent a question. */
+.act-retro {
+  color: color-mix(in oklab, var(--purple) 82%, var(--fg));
+  border-color: color-mix(in oklab, var(--purple) 36%, var(--border));
+}
+.act-retro:hover:not(:disabled) {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 60%, var(--border));
+  background: color-mix(in oklab, var(--purple) 13%, var(--panel-2));
+}
+.act-retro:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }

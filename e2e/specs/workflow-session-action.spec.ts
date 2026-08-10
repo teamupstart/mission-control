@@ -444,7 +444,10 @@ test("the Graph palette creates an action node with one complete port, and can d
   await node.click();
   const rail = dashboard.getByRole("complementary", { name: "Workflow properties and validation" });
   await expect(rail.getByLabel("Session action")).toBeVisible();
-  await expect(rail).toContainText("Completes once the session's turn finishes");
+  // The sentence the capability table supplies, not one this surface writes: the kinds are
+  // append-only, and a rail that derived its own two-way split would caption the next adapter
+  // as a session-turn completion.
+  await expect(rail).toContainText("Completes when session turn finishes");
   await rail.getByRole("button", { name: "Delete node" }).click();
   await dashboard.getByRole("dialog", { name: "Remove node" })
     .getByRole("button", { name: "Remove node" }).click();
@@ -597,4 +600,79 @@ test("a graph naming the shipped built-in publishes, and freezes its snapshot", 
   // The published node carries the TEXT, not the id it was resolved from: an edit to the
   // shipped document cannot reach a version already published.
   expect(frozen.action!.promptMarkdown).toContain("# Pull Request");
+});
+
+/** Session -> Retro built-in -> End, the shipped action whose proof is a commit. */
+const RETRO_NODE = { action: "action-node", session: "session-node", end: "end-node" };
+
+const retroDraft = {
+  nodes: [
+    { id: RETRO_NODE.session, kind: "session", position: { x: 60, y: 60 } },
+    {
+      id: RETRO_NODE.action,
+      kind: "session_action",
+      sessionActionId: "builtin:retro",
+      position: { x: 340, y: 60 },
+    },
+    { id: RETRO_NODE.end, kind: "end", outcome: "Complete", position: { x: 620, y: 60 } },
+  ],
+  edges: [
+    { id: "e-submit", source: RETRO_NODE.session, sourcePort: "submitted", target: RETRO_NODE.action, targetPort: "activate" },
+    { id: "e-complete", source: RETRO_NODE.action, sourcePort: "complete", target: RETRO_NODE.end, targetPort: "terminal" },
+  ],
+};
+
+/**
+ * A commit-proving action is described as one, everywhere a reader can meet it.
+ *
+ * The kinds are append-only, and every surface below used to derive its own two-way split on
+ * `=== "pull_request"`. Widening the tuple to `repo_commit` made all three say "the session
+ * turn finishes" about an action that waits for a commit and will sit there with the turn long
+ * settled - a confident wrong sentence, which is worse than no sentence. Asserted at all three
+ * because they are three files: fixing one and missing the others is exactly what happened.
+ */
+test("a repo_commit action is captioned by what it proves, on the canvas, the rail and history", async ({
+  dashboard,
+  daemon,
+}) => {
+  const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E retro stage",
+  });
+  const id = created.workflow.id;
+  await api(daemon, `/api/workflows/${id}`, {
+    expectedDraftRevision: 1,
+    draft: retroDraft,
+  }, "PATCH");
+
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.getByRole("button", { name: /E2E retro stage/ }).click();
+
+  // The pipeline card, which already derived its sentence from the capability table.
+  await expect(dashboard.locator(".wf-pipeline-strip"))
+    .toContainText("Completes when a commit lands in the checkout");
+
+  await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
+
+  // The canvas node's subtitle.
+  const node = dashboard.locator('[data-node-kind="session_action"]');
+  await expect(node).toHaveCount(1);
+  await expect(node).toContainText("Completes when a commit lands in the checkout");
+  await expect(node).not.toContainText("session turn");
+
+  // The properties rail, once the node is selected.
+  await node.click();
+  const rail = dashboard.getByRole("complementary", { name: "Workflow properties and validation" });
+  await expect(rail).toContainText("Completes when a commit lands in the checkout");
+  await expect(rail).not.toContainText("Completes when session turn finishes");
+
+  // And the version history, which describes a guarantee that has already been published - the
+  // worst of the three places to misstate it, because the run it describes has already run.
+  await dashboard.getByRole("button", { name: "Publish" }).click();
+  await expect.poll(async () =>
+    (await api<Array<{ version: number }>>(daemon, `/api/workflows/${id}/versions`)).length,
+  ).toBe(1);
+  const history = dashboard.locator("section.workflow-version-history");
+  await history.getByRole("button", { name: /Version 1/ }).click();
+  await expect(history).toContainText("Completes when a commit lands in the checkout");
+  await expect(history).not.toContainText("Completes when session turn finishes");
 });

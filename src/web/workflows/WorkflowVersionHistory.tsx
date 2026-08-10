@@ -5,7 +5,11 @@ import type {
   WorkflowVersion,
   WorkflowVersionMetadata,
 } from "@shared/workflow.ts";
-import { personaSnapshotIsOutdated, sessionActionSnapshotIsOutdated } from "@shared/workflow.ts";
+import {
+  personaSnapshotIsOutdated,
+  sessionActionCompletionLabel,
+  sessionActionSnapshotIsOutdated,
+} from "@shared/workflow.ts";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { InspectorFooter } from "./pipeline-bits.tsx";
 import { workflowRequest } from "./workflowApi.ts";
@@ -100,9 +104,13 @@ export function WorkflowVersionDetail({
                 ? `Requires the ${node.action.requiredSkillId} skill`
                 : "No required skill"}
               {" · "}
-              {node.action.completion.kind === "pull_request"
-                ? "Completes on a verified pull request"
-                : "Completes when the session turn finishes"}
+              {/* The capability table's sentence, so a snapshot frozen under a kind this
+                  build learned later is described by what it actually proves. A ternary's
+                  `else` would report every future adapter as a session-turn completion, and a
+                  version history that misstates a published guarantee is the worst place for
+                  it: the run it describes has already happened. */}
+              {`Completes when ${sessionActionCompletionLabel(node.action.completion)
+                .toLocaleLowerCase("en-US")}`}
             </p>
             <pre>{node.action.promptMarkdown}</pre>
           </details>

@@ -25,7 +25,7 @@ import {
   useReactFlow,
   useStore,
 } from "@xyflow/react";
-import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { WORKFLOW_LIMITS, sessionActionCompletionLabel } from "@shared/workflow.ts";
 import type {
   PersonaView,
   PublishedWorkflowNode,
@@ -223,9 +223,11 @@ function canvasNodes(
         ? `Snapshot revision ${snapshot.sourceRevision}`
         : live
           ? [
-              live.completion.kind === "pull_request"
-                ? "Waits for a verified pull request"
-                : "Waits for the session turn to finish",
+              // The capability table's own sentence, not a ternary over the kind: the kinds are
+              // append-only, and a two-armed conditional's `else` absorbs the next adapter
+              // rather than failing, so the node would caption a commit-proving action as one
+              // that finishes with the turn.
+              `Completes when ${sessionActionCompletionLabel(live.completion).toLocaleLowerCase("en-US")}`,
               // Said on the node itself and not only in the rail: an archived source is why
               // Publish is off, and a canvas that looked fine until the button did not work
               // sends an operator hunting through diagnostics for it.

@@ -1037,6 +1037,18 @@ export const api = {
   setAwayConfig: (cfg: AwayConfigPatch) => put(`/api/away`, cfg),
   setNote: (id: string, note: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, note),
 
+  // --- Foreman invites: whether Foreman may act in this session at all ---
+  //
+  // Both body-less, matching the routes. The answer never comes back through the
+  // response: the daemon re-resolves the session and emits a `session_upsert`, so the
+  // rail and every "not-invited" sentence flip from the stream that already owns the
+  // session record rather than from a second, racing copy of it held here.
+  /** Let Foreman triage, wrap up, and follow PRs in this session. */
+  inviteForeman: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/foreman-invite`),
+  /** Remove Foreman from this session. Authoritative even for embedded SDK sessions. */
+  withdrawForemanInvite: (id: string) =>
+    del(`/api/sessions/${encodeURIComponent(id)}/foreman-invite`),
+
   // --- Foreman episodes: the append-only record behind the note ---
   /**
    * Stamp your answer onto the episode Foreman left open.

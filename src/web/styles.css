@@ -21078,6 +21078,58 @@ span.line-run-prov {
   outline: 2px solid var(--working);
   outline-offset: 2px;
 }
+/* The uninvited state, and the ONE place in this strip that is an offer rather than a
+   reading. Same silhouette as the invited rail so the slot does not jump when the click
+   lands, in `--foreman` purple so it is legible as an action first - every neighbouring
+   control here is muted until hovered, and a muted "Invite foreman" reads as a label for
+   a state rather than a thing to press. Purple because it is Foreman's colour everywhere
+   else (the note badge, the drawer, the intent track), so the button names its subject
+   without a second word. */
+.foreman-rail.invite {
+  color: var(--foreman);
+  border-color: color-mix(in oklab, var(--foreman) 50%, transparent);
+  background: color-mix(in oklab, var(--foreman) 8%, transparent);
+}
+.foreman-rail.invite:hover {
+  color: color-mix(in oklab, var(--foreman) 80%, var(--fg));
+  border-color: var(--foreman);
+  background: color-mix(in oklab, var(--foreman) 15%, transparent);
+}
+.foreman-rail.invite:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+/* A refused invite or withdrawal, under the strip that holds the control. Full width and
+   in `--danger` rather than tucked beside the chip: it is the only signal that a press did
+   nothing, and the withdrawal case is telling the operator that Foreman may still be
+   typing into this session. Same size and colour as `.wq-error`, which is this app's other
+   "the write did not land" line. */
+.detail-invite-error {
+  margin: 0;
+  padding: 6px 14px 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+
+/* Keeps the busy chip in its slot. `Tooltip` wraps a DISABLED trigger in a `.tt-anchor`
+   span, because a disabled button dispatches no mouse events and would otherwise lose the
+   sentence explaining itself - which makes the span the flex item and leaves
+   `.foreman-rail`'s own `margin-left: auto` on a child that no longer decides where it
+   sits. Untreated, the chip jumps from the right-hand slot to the middle of the strip for
+   the length of the request and back. The rail is the only control in this row that is
+   ever disabled, so the rule is as specific as it reads. */
+.detail-tabs > .tt-anchor {
+  margin-left: auto;
+  align-self: center;
+}
+/* Optically centred with the cap height beside it: the full-width plus sits high and
+   wide in its own em box, so left alone it reads as a superscript with a gap after it. */
+.fr-plus {
+  font-size: 12px;
+  line-height: 1;
+  margin-right: -2px;
+}
 .fr-dot {
   width: 6px;
   height: 6px;
@@ -21122,7 +21174,8 @@ span.line-run-prov {
   color: var(--muted);
 }
 .fd-back,
-.fd-close {
+.fd-close,
+.fd-withdraw {
   background: none;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -21138,13 +21191,31 @@ span.line-run-prov {
   margin-left: auto;
   border-color: var(--border);
 }
+/* Takes the flexible gap so Withdraw and Close finish the header as a pair on the right,
+   with the title against the left edge. `.fd-close` gives its own `auto` up when they are
+   siblings: two auto margins in one flex row SPLIT the free space, which would strand
+   Withdraw in the middle of the header reading as a third title. Borderless until hovered,
+   unlike Close - both end something, and the one that ends Foreman's participation should
+   be the quieter of the two to arrive at by accident. */
+.fd-withdraw {
+  margin-left: auto;
+}
+.fd-withdraw + .fd-close {
+  margin-left: 0;
+}
 .fd-back:hover,
 .fd-close:hover {
   color: var(--fg);
   border-color: var(--neutral);
 }
+.fd-withdraw:hover {
+  color: color-mix(in oklab, var(--foreman) 70%, var(--fg));
+  border-color: color-mix(in oklab, var(--foreman) 55%, var(--border));
+  background: color-mix(in oklab, var(--foreman) 8%, transparent);
+}
 .fd-back:focus-visible,
-.fd-close:focus-visible {
+.fd-close:focus-visible,
+.fd-withdraw:focus-visible {
   outline: 2px solid var(--working);
   outline-offset: 2px;
 }

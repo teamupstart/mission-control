@@ -152,6 +152,12 @@ pickup/completion signals: Claude sessions must report installed hooks, Codex se
 have the launch-scoped hooks attached, and Pi is unsupported. The panel says so rather than
 letting you queue work that can't run.
 
+It says the same about a session Foreman was never [invited
+into](foreman.md#which-sessions-foreman-may-act-in) - and says it over an *empty* queue too,
+which no other explanation does. The rest describe what will happen to the items waiting, so
+with none waiting there is nothing to say; this one is about the panel itself, and an empty
+queue that has never moved is exactly where you go looking for the reason.
+
 ### Keeping a PR on track
 
 Once work has an **open pull request**, its session can park while the

@@ -79,6 +79,24 @@ function useEpisodes(sessionId: string, noteStamp: number): ForemanEpisode[] {
 }
 
 /**
+ * Why an invite write did not stick, in one sentence that leads with what is STILL true.
+ *
+ * Worded around the state rather than around the failure because the state is the part
+ * that can hurt. "Couldn't withdraw Foreman" invites the reading that nothing happened and
+ * the operator can move on; what they actually need to know is that Foreman is still in
+ * this session and may be typing into it right now. The daemon's own words follow, flatted
+ * and clamped for the same reason `useForeman`'s `whyItFailed` does it: a refusal can
+ * arrive as a multi-line JSON dump, and this line has a single row to live in.
+ */
+export function inviteFailure(action: "invite" | "withdraw", error: string | undefined): string {
+  const flat = (error ?? "").replace(/\s+/g, " ").replace(/[.\s]+$/, "").trim();
+  const why = flat ? `: ${flat.length > 80 ? `${flat.slice(0, 79)}…` : flat}` : "";
+  return action === "invite"
+    ? `Foreman was not invited${why}. It is still not in this session.`
+    : `Foreman was not withdrawn${why}. It may still be triaging, wrapping up and following pull requests here.`;
+}
+
+/**
  * SSE-visible goal fields that move when a prompt is captured and again when its
  * reconciliation becomes the effective completion contract.
  */
@@ -151,6 +169,8 @@ export function ConsoleDetail({
   });
   const [hasReply, setHasReply] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
   const transcriptRef = useRef<TranscriptHandle>(null);
   const filesRef = useRef<FileWorkspaceHandle>(null);
   const paneRef = useRef<HTMLDivElement>(null);
@@ -222,11 +242,82 @@ export function ConsoleDetail({
     return true;
   }
 
+  /**
+   * The two halves of one control: the rail invites, the drawer's header withdraws.
+   *
+   * Kept together here rather than one per component because they are a single decision
+   * with two directions, and because NEITHER of them writes the answer down locally. The
+   * daemon re-resolves the invite and emits a `session_upsert`, so `session.foremanInvite`
+   * arriving over the stream is what swaps the button - the same field the Foreman worker
+   * gates itself on. An optimistic local copy would be a second source of truth for
+   * exactly the question this feature exists to answer, and the first thing it would do
+   * is claim Foreman had left a session it was still typing into.
+   *
+   * `api`'s writes go through `request()`, which NEVER rejects - a 500, a vanished session
+   * or a dropped connection all come back as `{ ok: false, error }`. So a settled promise
+   * is not a success, and treating it as one here would be the most dangerous possible
+   * lie this feature can tell: closing the drawer on a failed withdrawal shows the
+   * operator the exact signal they would get if it had worked, while Foreman keeps
+   * typing. Both handlers read `.ok`, both leave the surface where it was on failure, and
+   * the message says what is STILL true rather than that something went wrong. Same shape
+   * as `useForeman`'s `update`, which reverts and explains for the same reason.
+   *
+   * `inviteBusy` is only about the in-flight request: it disables the control so a second
+   * click cannot race the first, and it makes no claim about the outcome.
+   */
+  async function inviteForeman(): Promise<void> {
+    setInviteBusy(true);
+    try {
+      const res = await api.inviteForeman(session.id);
+      setInviteError(res.ok ? null : inviteFailure("invite", res.error));
+    } finally {
+      setInviteBusy(false);
+    }
+  }
+
+  async function withdrawForeman(): Promise<void> {
+    setInviteBusy(true);
+    try {
+      const res = await api.withdrawForemanInvite(session.id);
+      if (!res.ok) return setInviteError(inviteFailure("withdraw", res.error));
+      setInviteError(null);
+      // Only on success. The drawer belongs to a session Foreman is in: left open over one
+      // it has just been removed from, its header would keep offering an action that has
+      // already happened - and closing it is what puts the rail's invite affordance back
+      // in view. Closing it on a REFUSED withdrawal would say all of that falsely.
+      setDrawerOpen(false);
+    } finally {
+      setInviteBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (tab !== "conversation" || !focusPending.current) return;
     focusPending.current = false;
     transcriptRef.current?.focusReply();
   }, [tab]);
+
+  // Both pieces of local state that are really claims ABOUT the invite, retired the moment
+  // the invite itself moves - however it moved.
+  //
+  // The message first: without this, a refused withdrawal followed by a successful one from
+  // another tab - or by the session being re-dispatched - would leave "Foreman may still be
+  // triaging here" standing over a rail that says it is not in this session at all.
+  //
+  // Then the drawer's flag, and this one has to happen HERE rather than only in
+  // `withdrawForeman`, because that handler covers exactly one of the ways an invite ends.
+  // The daemon owns this field: another client on the same session, a direct API call, or a
+  // reset can all withdraw it, and every one of those arrives as an ordinary
+  // `session_upsert`. The `invited` gate unmounts the drawer on any of them - but unmounting
+  // does not clear `drawerOpen`, so the flag survives, and the next invite remounts the
+  // drawer with `open` still true and pops it open in front of an operator who never
+  // clicked anything. Scoped to the transition to `null` rather than to every change, so a
+  // grant merely CHANGING KIND (an `operator` invite replaced by `dispatch` on redispatch)
+  // does not close a drawer the reader is using.
+  useEffect(() => {
+    setInviteError(null);
+    if (session.foremanInvite === null) setDrawerOpen(false);
+  }, [session.foremanInvite]);
 
   const st = stateDisplay(session);
   const live = session.state !== "exited" && session.state !== "stopping";
@@ -235,7 +326,7 @@ export function ConsoleDetail({
   const dialog = activePaneDialog(session);
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
   const queueCount = session.queue?.openCount ?? 0;
-  const openCount = openEpisodeCount(episodes);
+  const invited = session.foremanInvite !== null;
 
   const tabs = useMemo(() => detailTabs({ queueCount }), [queueCount]);
   const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
@@ -348,12 +439,21 @@ export function ConsoleDetail({
         )}
       </dl>
 
-      <ForemanDrawer
-        episodes={episodes}
-        intent={intent}
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-      />
+      {/* Gated on the invite, not just on `drawerOpen`: this is Foreman's record of a
+          session it is in, and the header's one action is to leave. A session it has been
+          removed from renders the invite affordance alone (the rail below), so the slot
+          keeps a single meaning; the history is not deleted, only unreachable until
+          Foreman is invited back. */}
+      {invited && (
+        <ForemanDrawer
+          session={session}
+          episodes={episodes}
+          intent={intent}
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          onWithdraw={() => void withdrawForeman()}
+        />
+      )}
 
       <div className="detail-tabs" role="tablist" aria-label="Session detail">
         {tabs.map((t) => (
@@ -382,24 +482,26 @@ export function ConsoleDetail({
           </Tooltip>
         ))}
 
-        {/* In the tab row but NOT a tab - no `role="tab"`, and pushed to the far end
-            past a flexible gap. Work queue, Gate and Diff are things this session
-            HAS; Foreman is an observer talking about it, so it opens a surface rather
-            than switching the body. A captured objective also makes the surface useful,
-            even before Foreman has made its first decision. */}
-        {(episodes.length > 0 || session.goal) && (
-          <Tooltip label={drawerOpen ? "Close Foreman's session reading" : "Inspect Foreman's objective and decision history"}>
-            <button
-              className="foreman-rail"
-              aria-expanded={drawerOpen}
-              onClick={() => setDrawerOpen((v) => !v)}
-            >
-              {openCount > 0 && <span className="fr-dot" aria-hidden="true" />}
-              {episodes.length > 0 ? `Foreman · ${episodes.length}` : "Foreman intent"}
-            </button>
-          </Tooltip>
-        )}
+        <ForemanRail
+          session={session}
+          episodes={episodes}
+          live={live}
+          drawerOpen={drawerOpen}
+          busy={inviteBusy}
+          onToggleDrawer={() => setDrawerOpen((v) => !v)}
+          onInvite={() => void inviteForeman()}
+        />
       </div>
+
+      {/* Directly under the control that produced it, and outside the body so it does not
+          belong to whichever tab happens to be open - the write is about the session, not
+          about its conversation or its queue. `role="alert"` because it appears in
+          response to a press and is the only signal that the press did nothing. */}
+      {inviteError && (
+        <p className="detail-invite-error" role="alert">
+          {inviteError}
+        </p>
+      )}
 
       {/* The reader pane. `tabIndex=-1` so Tab from the rail can land focus HERE - the
           conversation window the operator reads and the vertical arrows scroll - and its
@@ -533,5 +635,77 @@ export function ConsoleDetail({
         )}
       </footer>
     </div>
+  );
+}
+
+/**
+ * The Foreman slot at the far end of the detail tab strip. One control, three states,
+ * because whether Foreman is in this session is one question.
+ *
+ * In the tab row but NOT a tab - no `role="tab"`, and pushed past a flexible gap. Work
+ * queue, Gate and Diff are things this session HAS; Foreman is an observer talking about
+ * it, so it opens a surface rather than switching the body.
+ *
+ *  1. **Uninvited and live** - `＋ Invite foreman`, in the Foreman purple so it reads as
+ *     an action rather than a status. Every neighbour here is muted until hovered, and a
+ *     muted "Invite foreman" reads as a label for a state. No confirm step: the write is
+ *     cheap, immediately visible, and undone by the drawer's Withdraw.
+ *  2. **Invited, no history** - `Foreman intent`, and now ALWAYS, where this used to be
+ *     gated on an objective or an episode existing. That gate made the slot vanish for
+ *     the seconds right after an invite, taking the drawer - and with it the only way to
+ *     withdraw - out of reach at the moment the operator is most likely to want it.
+ *  3. **Invited, with history** - `Foreman · N` and the attention dot, unchanged.
+ *
+ * Uninvited and NOT live renders nothing at all: an exited session has no work left for
+ * Foreman to be invited to. Uninvited sessions also show no route to their past episodes;
+ * that history still exists and comes back with the invite, and keeping the slot
+ * single-purpose is worth more than a reading nobody was asking for.
+ *
+ * Its own component so all three states can be rendered by a test. The rail's episode
+ * count arrives from a fetch inside `ConsoleDetail`, which no `renderToStaticMarkup` test
+ * can make return - so state 3 was unpinnable while this was written inline.
+ */
+export function ForemanRail({
+  session,
+  episodes,
+  live,
+  drawerOpen,
+  busy,
+  onToggleDrawer,
+  onInvite,
+}: {
+  session: Session;
+  episodes: ForemanEpisode[];
+  live: boolean;
+  drawerOpen: boolean;
+  /** An invite write is in flight, so a second click cannot race the first. */
+  busy: boolean;
+  onToggleDrawer: () => void;
+  onInvite: () => void;
+}): React.JSX.Element | null {
+  if (session.foremanInvite === null) {
+    if (!live) return null;
+    return (
+      <Tooltip label="Foreman is not in this session. Invite it to triage, wrap up, and follow PRs here.">
+        <button className="foreman-rail invite" disabled={busy} onClick={onInvite}>
+          {/* Decoration, so a screen reader does not announce "full-width plus sign"
+              ahead of the words that say what the button does. */}
+          <span className="fr-plus" aria-hidden="true">
+            ＋
+          </span>
+          Invite foreman
+        </button>
+      </Tooltip>
+    );
+  }
+
+  const openCount = openEpisodeCount(episodes);
+  return (
+    <Tooltip label={drawerOpen ? "Close Foreman's session reading" : "Inspect Foreman's objective and decision history"}>
+      <button className="foreman-rail" aria-expanded={drawerOpen} onClick={onToggleDrawer}>
+        {openCount > 0 && <span className="fr-dot" aria-hidden="true" />}
+        {episodes.length > 0 ? `Foreman · ${episodes.length}` : "Foreman intent"}
+      </button>
+    </Tooltip>
   );
 }

@@ -35,6 +35,10 @@ function mkSession(over: Partial<Session> = {}): Session {
     cwd: WORKTREE,
     repoRoot: REPO,
     terminals: [mkMuxHandle({ session: "m", windowName: "w", windowIndex: 1, paneId: "%1" })],
+    // Stated rather than left off the cast: an uninvited session is now its own reason,
+    // and it outranks every allowlist and mode question below. Undefined would read as
+    // invited by accident, which is the right answer for the wrong reason.
+    foremanInvite: "dispatch",
     ...over,
   } as Session;
 }
@@ -108,6 +112,37 @@ test("ForemanNote: dry-run keeps its plain draft-only line", () => {
 test("ForemanNote: Foreman being off outranks the mode", () => {
   const html = render({ mode: "live", enabled: false, allowlist: [REPO] });
   assert.match(html, /Foreman is off/);
+});
+
+/**
+ * The state phase 2 created and this leaves explained: Foreman is on, live, and
+ * allowlisted here, and it still will not touch this session - because it was never
+ * invited into it. Every other sentence this card can say would send the operator to fix
+ * a switch that is not what stopped it.
+ */
+test("ForemanNote: an uninvited session says so rather than blaming the mode or the allowlist", () => {
+  const html = render({
+    session: mkSession({ foremanInvite: null }),
+    mode: "live",
+    enabled: true,
+    allowlist: [REPO],
+  });
+  assert.match(html, /Foreman is not in this session/);
+  assert.match(html, /Invite it from the rail above/, "points at the control that fixes it");
+  assert.doesNotMatch(html, /allowlist/, "the allowlist is not what stopped this");
+});
+
+test("ForemanNote: Foreman being off outranks the invite", () => {
+  // Both are true, and only one of them is worth acting on first: inviting Foreman into a
+  // session while Foreman is off buys nothing.
+  const html = render({
+    session: mkSession({ foremanInvite: null }),
+    mode: "live",
+    enabled: false,
+    allowlist: [REPO],
+  });
+  assert.match(html, /Foreman is off/);
+  assert.doesNotMatch(html, /not in this session/);
 });
 
 test("ForemanNote: a session with no cwd says so instead of blaming the allowlist", () => {

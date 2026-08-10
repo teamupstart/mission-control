@@ -70,11 +70,37 @@ pull-request follow-through, but the autopilot still hands whole new tasks only 
 `dispatch` sessions. Inviting Foreman to help with what a session is *already doing* must not
 read as permission to start something else in it.
 
+#### Inviting and withdrawing
+
+The far-right slot in a session's detail tab strip is the control, and it has one meaning at
+a time:
+
+| The slot reads | The session is | Clicking it |
+|----------------|----------------|-------------|
+| **＋ Invite foreman** (purple) | uninvited | invites Foreman, with no confirm step |
+| **Foreman intent** | invited, nothing decided yet | opens Foreman's drawer |
+| **Foreman · N** | invited, with N decisions | opens the same drawer, on the history |
+
+**Withdraw invite** lives in that drawer's header, beside its close control - the record of
+what Foreman has been doing here is where you decide it should stop. Withdrawing works on
+*every* session, embedded ones included, and it survives a restart. Re-inviting restores
+whatever the session would have had on its own: a withdrawn embedded session goes back to
+`sdk`, backlog eligibility included, rather than being permanently downgraded to `operator`.
+The one residue is a withdrawn *dispatched terminal*, which re-invites as `operator` until
+its next dispatch.
+
+An uninvited session says so rather than going quiet: its work queue and any Foreman note
+left behind explain that Foreman is not in this session and point at the rail. An exited
+session shows no invite control at all - there is nothing left there to invite it to.
+
+Both are also plain routes, if you would rather script it: `POST
+/api/sessions/:id/foreman-invite` and `DELETE /api/sessions/:id/foreman-invite`, neither
+taking a body.
+
 > **On upgrade:** invites begin empty, so terminal sessions already running when you upgrade -
 > including ones Mission Control dispatched earlier - start **uninvited**, and Foreman goes
-> quiet on them. Re-dispatching restores the invite automatically; embedded sessions are
-> unaffected. Until the invite control lands in the detail rail, inviting an existing session
-> is an API call: `POST /api/sessions/:id/foreman-invite` (and `DELETE` to withdraw).
+> quiet on them. Re-dispatching restores the invite automatically, or invite them from the
+> rail; embedded sessions are unaffected.
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **enabled but inert**, and the distinction is the whole point:

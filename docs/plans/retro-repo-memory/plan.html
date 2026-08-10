@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retro sessions and repository-scoped agent memory</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1f26; --muted: #5a6472; --border: #d9dee5;
+    --accent: #2563eb; --accent-soft: #eff4ff; --code-bg: #f4f6f9;
+    --card: #fafbfc; --rec: #0a7a4b; --rec-soft: #e9f7f0; --warn: #9a5b00; --warn-soft: #fdf4e3;
+    --box-fill: #eff4ff; --box-stroke: #2563eb; --box2-fill: #e9f7f0; --box2-stroke: #0a7a4b;
+    --arrow: #5a6472;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151a; --fg: #e6eaf0; --muted: #98a2b0; --border: #2a313b;
+      --accent: #7aa2ff; --accent-soft: #1a2233; --code-bg: #1b2028;
+      --card: #171b21; --rec: #4cc38a; --rec-soft: #12261d; --warn: #e0a94c; --warn-soft: #2a2213;
+      --box-fill: #1a2233; --box-stroke: #7aa2ff; --box2-fill: #12261d; --box2-stroke: #4cc38a;
+      --arrow: #98a2b0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .subtitle { color: var(--muted); margin: 0 0 32px; }
+  h2 { font-size: 1.35rem; margin: 44px 0 12px; letter-spacing: -0.01em; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 1.08rem; margin: 28px 0 8px; }
+  p, li { max-width: 76ch; }
+  a { color: var(--accent); }
+  code {
+    font: 0.86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; white-space: nowrap;
+  }
+  .tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 0.92rem; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  th { background: var(--card); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td code { white-space: normal; word-break: break-word; }
+  .card { border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 16px 20px; margin: 14px 0; }
+  .card h3 { margin-top: 0; }
+  .tag { display: inline-block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+         text-transform: uppercase; border-radius: 999px; padding: 2px 10px; vertical-align: 2px; margin-left: 8px; }
+  .tag.rec { color: var(--rec); background: var(--rec-soft); }
+  .tag.base { color: var(--accent); background: var(--accent-soft); }
+  .tag.warn { color: var(--warn); background: var(--warn-soft); }
+  .pros, .cons { margin: 6px 0; padding-left: 22px; }
+  .pros li::marker { content: "+ "; color: var(--rec); font-weight: 700; }
+  .cons li::marker { content: "\2212  "; color: var(--warn); font-weight: 700; }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft);
+             border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 16px 0; }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  figure { margin: 22px 0; }
+  figure figcaption { color: var(--muted); font-size: 0.86rem; margin-top: 6px; }
+  .svgwrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 12px; }
+  svg text { font: 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: var(--fg); }
+  svg .lbl { fill: var(--muted); font-size: 11px; }
+  svg .box { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.4; rx: 8; }
+  svg .box2 { fill: var(--box2-fill); stroke: var(--box2-stroke); stroke-width: 1.4; rx: 8; }
+  svg .arrow { stroke: var(--arrow); stroke-width: 1.6; fill: none; marker-end: url(#ah); }
+  svg .arrow2 { stroke: var(--arrow); stroke-width: 1.6; fill: none; marker-end: url(#ah2); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Retro sessions and repository-scoped agent memory</h1>
+<p class="subtitle">docs/plans/retro-repo-memory/plan.md &middot; Mission Control &middot; 2026-08-03, decisions recorded 2026-08-04</p>
+
+<h2>Problem</h2>
+<p>Sessions rediscover the same repo-specific traps over and over, and the corrections the
+operator types into one session die with that session. Mission Control has no memory
+feature today: greps for memory/notes/knowledge across <code>src/</code> and <code>docs/</code> find only
+<code>session_notes</code> (Foreman's per-session disposition, upserted so each write destroys its
+predecessor) and <code>app_config</code> (instance-local KV). The one durable memory that does exist
+is the operator's private <code>~/.claude</code> auto-memory, which is per-operator and per-machine -
+exactly what this feature must not be.</p>
+
+<p>The proposed feature has two halves:</p>
+<ol>
+  <li><strong>Retro</strong>: an interactive retrospective over a finished session. It inspects the full
+  transcript, isolates instructions / guidance / corrections issued by the user, finds
+  avoidable issues the session ran into, and recommends <strong>up to 3 improvements</strong> to
+  catalogue. The user approves, edits, or rejects each one.</li>
+  <li><strong>Repository memory</strong>: the approved improvements are committed into the session's
+  target repository as a memory artifact that is separate from AGENTS.md but referenced by
+  it, and auto-loaded into context by every session Mission Control dispatches against
+  that repo.</li>
+</ol>
+
+<h2>Requirements</h2>
+<div class="tablewrap"><table>
+  <tr><th>#</th><th>Requirement</th><th>Consequence</th></tr>
+  <tr><td>1</td><td>Memory is associated with each repository</td>
+      <td>The artifact lives in the repo, keyed by nothing but its path in the tree. Repo identity in MC is the main-checkout path (<code>tasks.repo_root</code>, <code>src/server/db.ts:155</code>; <code>resolveTaskRepoRoot</code>, <code>src/server/repos.ts:215</code>) - no remote-URL identity exists, and none is needed if the memory travels inside the repo itself.</td></tr>
+  <tr><td>2</td><td>Shared across sessions and users of Mission Control, not this running instance</td>
+      <td>Rules out SQLite / <code>app_config</code> as the primary store (instance-local). A git-committed artifact is shared by construction: clone the repo, get the memory. MC's own precedent agrees - <code>readStandards</code> deliberately excludes <code>~/.claude/CLAUDE.md</code> because "it is personal preference, not a contract the repo asserts" (<code>src/server/standards.ts:72-78</code>).</td></tr>
+  <tr><td>3</td><td>Contains repeatable optimizations / fixes / preferences for coding successfully in this repo</td>
+      <td>See "What lives in memory" below.</td></tr>
+</table></div>
+
+<h2>What lives in memory</h2>
+<p>The operator's existing auto-memory is the existence proof: most of its entries are
+repo-scoped facts that today benefit one operator on one machine and should benefit every
+session of every user. Categories, with real examples of the kind of entry:</p>
+
+<div class="tablewrap"><table>
+  <tr><th>Category</th><th>Example entry</th></tr>
+  <tr><td>Tooling traps</td><td>"The Bash grep wrapper silently returns zero matches on <code>src/shared/protocol.ts</code>; reproduce negatives with <code>command grep</code> or <code>-a</code>."</td></tr>
+  <tr><td>Test invocation recipes</td><td>"Run one test file with <code>node --test --test-concurrency=2 --import tsx &lt;file&gt;</code>; <code>test:e2e</code> needs a prior <code>npm run build</code> and a one-time <code>npx playwright install chromium</code>."</td></tr>
+  <tr><td>Flake catalog</td><td>"http-integration's pane test fails locally when tmux <code>%3</code> hits a sibling-worktree pane; CI-green, not a regression."</td></tr>
+  <tr><td>Verification recipes</td><td>":5173 serves the main checkout, not your worktree - run your own vite port or you verify unmodified code. Isolated E2E daemons need <code>MISSION_POOL_REAP_MS=0</code>."</td></tr>
+  <tr><td>Recovery procedures</td><td>"A killed run's fix commits survive only in the bare repo; fetch them back before rerunning."</td></tr>
+  <tr><td>Landmine map</td><td>"<code>findRolloutForSession</code> gives up after 400 files; <code>builtin-personas.generated.ts</code> is generated - change <code>docs/personas/*.md</code> and run <code>npm run personas</code>."</td></tr>
+  <tr><td>Repo conventions not yet in AGENTS.md</td><td>"Terminal write policy lives in <code>actions.ts</code>, never in <code>src/server/terminal/</code>."</td></tr>
+  <tr><td>Operator preferences (repo-scoped)</td><td>"PRs go to <code>mancej-cyc/ai-harness</code>; pass <code>--repo</code> explicitly because the old owner still redirects pushes but breaks <code>gh pr create</code>."</td></tr>
+  <tr><td>Decision provenance</td><td>"Skills are symlinked, not copied, so the file Claude reads IS the file in the repo - do not switch to copies."</td></tr>
+</table></div>
+
+<p>What does <strong>not</strong> belong: secrets, per-user paths, machine-local state, anything already
+in AGENTS.md (the retro should propose promoting a memory into AGENTS.md when it hardens
+into a rule, not duplicate it).</p>
+
+<h2>Decisions</h2>
+<p>Adopted 2026-08-04 after review:</p>
+<ul>
+  <li><strong>Memory store: B, index plus topic files.</strong> A folds in as the degenerate single-file case; D remains the documented escape hatch for purely procedural memories; C rejected.</li>
+  <li><strong>Retro runner: R1, SessionAction in the session itself, with R3 as the fallback</strong> when the session has already exited.</li>
+  <li><strong>Loading scope: reference line + pi intent pointer + readStandards extension.</strong> The belt-and-braces Claude system-prompt pointer is deferred.</li>
+  <li><strong>Solicitation:</strong> gate-driven card prompt; see "Soliciting the retro" below.</li>
+</ul>
+
+<h2>Memory store: baseline and three alternatives</h2>
+<p>All four shapes satisfy the requirements; they differ in scale behavior, editability, and
+how much machinery MC must grow.</p>
+
+<div class="card">
+  <h3>A. Baseline (as proposed): single committed markdown file<span class="tag base">baseline</span></h3>
+  <p><code>.agents/memory/MEMORY.md</code> at the repo root. AGENTS.md gains one stable line:
+  "Read <code>.agents/memory/MEMORY.md</code> before starting work." Retro appends entries; every
+  harness loads it by reading that line.</p>
+  <ul class="pros">
+    <li>Simplest possible; one file to read, diff, and review in PRs; zero new formats.</li>
+  </ul>
+  <ul class="cons">
+    <li>Grows without structure; every session pays the full file in context even when only two entries are relevant.</li>
+    <li>Concurrent retros from different sessions conflict on one file; pruning is a manual editorial act.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>B. Index plus topic files<span class="tag rec">adopted</span></h3>
+  <p><code>.agents/memory/MEMORY.md</code> is a short index - one line per memory with a link - and each
+  memory is its own file (<code>.agents/memory/&lt;slug&gt;.md</code>) with a small front-matter header
+  (category, date, source session, times-confirmed). This is the same shape as Claude
+  Code's own auto-memory, proven at exactly this job.</p>
+  <ul class="pros">
+    <li>Context cost is the index, not the corpus - sessions read topic files on demand.</li>
+    <li>Parallel retros append different files and rarely conflict; each memory has provenance.</li>
+    <li>Pruning is deleting a file and an index line; the index doubles as the catalogue the retro browses for duplicates.</li>
+  </ul>
+  <ul class="cons">
+    <li>Two-step read for agents.</li>
+    <li>Index/file drift risk (mitigated: the retro validates index-matches-directory before committing, plus a cheap <code>test/</code> check for this repo).</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>C. Structured catalog with generated rendering</h3>
+  <p><code>.agents/memory/memories.yaml</code> as source of truth, Zod-validated by MC (schema in
+  <code>src/shared/</code>), with fields like <code>id</code>, <code>category</code>, <code>title</code>, <code>body</code>, <code>provenance</code>,
+  <code>confirmedCount</code>, optional <code>staleCheck</code> (a command whose failure flags the memory for
+  review). MC renders a <code>MEMORY.md</code> from it (generated, never hand-edited).</p>
+  <ul class="pros">
+    <li>Machine-readable: enables a dashboard catalogue UI, dedup by id, staleness sweeps, per-category loading, cross-repo analytics later.</li>
+  </ul>
+  <ul class="cons">
+    <li>Heaviest; a generated file in every target repo violates the grain of repos MC does not own.</li>
+    <li>Agents read YAML worse than prose; contributors without MC cannot regenerate the rendering.</li>
+    <li>The schema becomes a wire contract MC must version forever.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>D. Memories as repo-local skills</h3>
+  <p>Each memory becomes a skill directory (<code>.claude/skills/&lt;slug&gt;/SKILL.md</code>) whose
+  description is the trigger, so it loads only when relevant instead of always-on.</p>
+  <ul class="pros">
+    <li>Zero standing context cost; the trigger mechanism is battle-tested.</li>
+    <li>Great fit for procedural memories ("how to verify a UI change here").</li>
+  </ul>
+  <ul class="cons">
+    <li>Preferences and landmines must load <em>before</em> the agent knows to look - triggers cannot do that.</li>
+    <li>Codex and Pi do not load Claude skill directories; two of three harnesses see nothing.</li>
+    <li>MC's skills reconciler (<code>src/server/skills/reconcile.ts</code>) owns <code>mission-</code>/<code>fleet-</code> prefixes in <code>~/.claude/skills</code> and would need a parallel per-repo mechanism.</li>
+  </ul>
+</div>
+
+<div class="callout"><strong>Recommendation: B</strong>, with D as a documented escape hatch for the rare
+memory that is purely procedural and expensive in context (the retro may propose "this one
+should be a skill"). A is B with one file, so B degrades gracefully to A for repos with
+few memories. C's dashboard-catalogue benefits can be layered onto B later by parsing
+front-matter, without a generated file in the target repo.</div>
+
+<h2>Auto-loading into dispatched sessions</h2>
+<p>The load-bearing fact from the code: for Claude SDK sessions, MC already passes
+<code>settingSources: ["user", "project", "local"]</code> (<code>src/server/harness/claude/sdk.ts:940</code>),
+and terminal Claude loads project CLAUDE.md itself. So for Claude, a reference line in
+AGENTS.md/CLAUDE.md is sufficient - <strong>no MC change is strictly required</strong> for the memory
+to load. The remaining harnesses need small, explicit paths:</p>
+
+<div class="tablewrap"><table>
+  <tr><th>Harness / arm</th><th>Load path</th><th>MC change needed</th></tr>
+  <tr><td>Claude terminal</td><td>CLI loads project CLAUDE.md; the AGENTS.md reference line instructs the read</td><td>None (optional belt-and-braces: extend the existing <code>--append-system-prompt</code> in <code>src/server/ask-channel.ts:186-194</code> with a one-line memory pointer)</td></tr>
+  <tr><td>Claude SDK</td><td><code>settingSources: ["user","project","local"]</code> already loads project instructions</td><td>None</td></tr>
+  <tr><td>Codex</td><td>Codex reads AGENTS.md natively; the reference line is a plain instruction it follows. <code>prepareCodexLaunch</code> (<code>src/server/harness/codex/launch.ts:67</code>) has no system-prompt channel, so file-based is the only shape that works</td><td>None</td></tr>
+  <tr><td>Pi</td><td>Prompt is the only channel (<code>src/server/harness/pi/launch.ts:22</code>)</td><td>Prepend a one-line memory pointer when <code>deliverIntent</code> composes turn one for pi dispatches</td></tr>
+  <tr><td>MC's own prompts (Inspector, personas, workflows)</td><td>Extend <code>readStandards</code> (<code>src/server/standards.ts:80</code>) to include <code>.agents/memory/MEMORY.md</code> in the standards bundle, under the existing 24KB/file, 64KB/bundle caps</td><td>One reader change, every review consumer inherits it</td></tr>
+</table></div>
+
+<p>This is why "separate file, referenced by AGENTS.md" beats "a section inside AGENTS.md":
+the reference line is the single cross-harness loading mechanism, AGENTS.md stays a stable
+contract humans curate, and the memory file stays a churning append-mostly log agents
+curate.</p>
+
+<figure>
+  <div class="svgwrap">
+  <svg viewBox="0 0 860 260" width="860" height="260" role="img" aria-label="Memory load flow at dispatch">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+      </marker>
+    </defs>
+    <rect class="box" x="20" y="100" width="120" height="52" rx="8"/>
+    <text x="80" y="122" text-anchor="middle">Dispatcher</text>
+    <text x="80" y="138" text-anchor="middle" class="lbl">dispatcher.ts</text>
+
+    <rect class="box2" x="210" y="92" width="180" height="68" rx="8"/>
+    <text x="300" y="116" text-anchor="middle">Worktree of target repo</text>
+    <text x="300" y="132" text-anchor="middle" class="lbl">.agents/memory/ committed</text>
+    <text x="300" y="147" text-anchor="middle" class="lbl">AGENTS.md reference line</text>
+
+    <rect class="box" x="470" y="14" width="180" height="48" rx="8"/>
+    <text x="560" y="34" text-anchor="middle">Claude terminal</text>
+    <text x="560" y="50" text-anchor="middle" class="lbl">CLAUDE.md self-load</text>
+
+    <rect class="box" x="470" y="76" width="180" height="48" rx="8"/>
+    <text x="560" y="96" text-anchor="middle">Claude SDK</text>
+    <text x="560" y="112" text-anchor="middle" class="lbl">settingSources: project</text>
+
+    <rect class="box" x="470" y="138" width="180" height="48" rx="8"/>
+    <text x="560" y="158" text-anchor="middle">Codex</text>
+    <text x="560" y="174" text-anchor="middle" class="lbl">reads AGENTS.md natively</text>
+
+    <rect class="box" x="470" y="200" width="180" height="48" rx="8"/>
+    <text x="560" y="220" text-anchor="middle">Pi</text>
+    <text x="560" y="236" text-anchor="middle" class="lbl">pointer prepended to intent</text>
+
+    <rect class="box" x="700" y="92" width="145" height="68" rx="8"/>
+    <text x="772" y="114" text-anchor="middle">readStandards</text>
+    <text x="772" y="130" text-anchor="middle" class="lbl">Inspector, personas,</text>
+    <text x="772" y="145" text-anchor="middle" class="lbl">workflows</text>
+
+    <path class="arrow" d="M 140 126 L 204 126"/>
+    <path class="arrow" d="M 390 104 C 430 90, 430 50, 464 40"/>
+    <path class="arrow" d="M 390 118 C 425 112, 430 102, 464 100"/>
+    <path class="arrow" d="M 390 136 C 425 142, 430 156, 464 160"/>
+    <path class="arrow" d="M 140 148 C 300 236, 380 226, 464 225"/>
+    <path class="arrow" d="M 390 126 L 694 126"/>
+    <text x="250" y="210" class="lbl">deliverIntent (pi only)</text>
+  </svg>
+  </div>
+  <figcaption>Memory load flow at dispatch. Three of four session arms load the committed memory with no MC change; pi needs a one-line pointer, and <code>readStandards</code> feeds MC's own review prompts.</figcaption>
+</figure>
+
+<h3>Bootstrap: who writes the reference line, and when</h3>
+<p>The reference line is written by the retro, never by feature sessions and never by the
+daemon. The first retro in a repo bootstraps the whole mechanism in one approved,
+reviewable commit: it creates <code>.agents/memory/MEMORY.md</code>, writes the first approved topic
+files, and adds the reference line to AGENTS.md if it is absent. The line and the first
+memory arrive together - before that commit there is nothing to load, so a repo without
+the line is not broken, it is just a repo with no memories yet.</p>
+
+<p>Mechanics the retro skill enforces:</p>
+<ul>
+  <li><strong>Idempotent marker check.</strong> The skill looks for the line by a stable marker string and
+  adds it only when missing, so every later retro leaves AGENTS.md untouched.</li>
+  <li><strong>Symlink-aware target.</strong> The line goes into the real root doc: AGENTS.md, or CLAUDE.md
+  when that is what the repo has, resolving symlinks the way <code>readStandards</code> already does
+  (this very repo ships <code>CLAUDE.md -&gt; AGENTS.md</code>). When neither exists, the retro creates a
+  minimal AGENTS.md containing only the reference line.</li>
+  <li><strong>Feature sessions never touch it.</strong> A session implementing a random feature does not add
+  the line - that would be an unrelated edit in its diff, violating "commit only
+  task-related files". Dispatched into a repo without the line, it simply loads no
+  memories, which is correct: none exist.</li>
+</ul>
+
+<p>How agents know to load it once the line exists: Claude (terminal and SDK) and Codex load
+the root doc natively, and the line is an imperative instruction ("Read
+<code>.agents/memory/MEMORY.md</code> before starting work") that reaches them the same way every
+other AGENTS.md rule does - instruction-following, not a special loader. Where the repo has
+a CLAUDE.md, the line can additionally use Claude's <code>@</code>-import syntax so the index is
+inlined at load time instead of depending on the agent choosing to read it; the imperative
+sentence remains the cross-harness baseline.</p>
+
+<p>Drift repair, for repos where memories exist but the line was lost (hand edits, partial
+reverts):</p>
+<ul>
+  <li>MC's own consumers never depend on the line: <code>readStandards</code> picks up
+  <code>.agents/memory/MEMORY.md</code> by convention, exactly as the Inspector reads INSPECTOR.md.</li>
+  <li>Every retro re-validates line-present and index-matches-directory before committing.</li>
+  <li>Optional dispatch belt-and-braces: when the dispatcher sees <code>.agents/memory/MEMORY.md</code>
+  in the target repo but no reference line, it prepends the same one-line pointer pi already
+  gets to the delivered intent - MC-dispatched sessions stay covered without MC ever writing
+  to a repo it does not own.</li>
+</ul>
+
+<h2>The retro itself: three ways to run it</h2>
+
+<div class="card">
+  <h3>R1. SessionAction typed into the finished session<span class="tag rec">adopted, R3 fallback</span></h3>
+  <p>A new built-in SessionAction (<code>docs/session-actions/retro.md</code> compiled into
+  <code>src/server/workflows/builtin-session-actions.ts</code>), delivered through the existing
+  <code>renderSessionAction</code> path (<code>src/server/workflows/feedback.ts:383</code>), invoking a new
+  <code>skills/retro</code> skill. The session that did the work performs its own retro: it already
+  holds the full context, re-reads its transcript through
+  <code>GET /api/sessions/:id/transcript</code>, and runs the interactive half by calling
+  <code>request_plan_decisions</code> with up to 3 proposed memories as selectable options
+  (approve / edit / reject). On approval it writes the memory files, updates the AGENTS.md
+  reference if absent, and commits on the task branch. A new completion adapter kind
+  (<code>repo_commit</code>) in <code>src/server/workflows/session-action-adapters.ts</code> proves the retro landed.</p>
+  <ul class="pros">
+    <li>Reuses four existing mechanisms (session actions, skills gate, MCP reviews, transcript route); almost no new machinery.</li>
+    <li>The commit is an agent turn - preserves the invariant that nothing commits on the daemon's behalf.</li>
+    <li>The retrospective is native: the same session talking to the same user.</li>
+  </ul>
+  <ul class="cons">
+    <li>Requires the session to still be alive.</li>
+    <li>A session that ended badly may retro itself charitably.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>R2. Headless daemon-side review</h3>
+  <p><code>runClaudeText</code> (<code>src/server/claude-cli.ts:136</code>) over a transcript bundle built like
+  <code>buildWorkflowContext</code> (<code>src/server/workflows/context.ts:369</code>), producing proposed
+  memories as structured output; the user approves through a <code>ReviewManager</code> decision
+  form; an injection into the session (or a fresh one-shot) performs the commit.</p>
+  <ul class="pros">
+    <li>Works on any session, including dead ones; an outside reviewer is less charitable than self-review.</li>
+    <li><code>humanTranscriptDecisions</code> (<code>context.ts:147</code>) already extracts the user-correction turns the retro needs.</li>
+  </ul>
+  <ul class="cons">
+    <li>Someone still has to commit, so R2 collapses into R1 or a dispatched task at the end anyway.</li>
+    <li>Transcript windows are byte-bounded; a full sweep of long sessions needs new paging logic. Costs a headless model call per retro.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>R3. Dedicated retro session dispatched against the repo</h3>
+  <p>Dispatch a fresh task whose intent is "retro session X", pointing at the transcript.</p>
+  <ul class="pros">
+    <li>Full session powers (tools, browser, tests) to <em>verify</em> a proposed memory before cataloguing it.</li>
+    <li>Survives the original session.</li>
+  </ul>
+  <ul class="cons">
+    <li>Heaviest; the fresh session lacks lived context and must reconstruct everything from transcript bytes.</li>
+    <li>Doubles session count for a lightweight ceremony.</li>
+  </ul>
+</div>
+
+<div class="callout"><strong>Recommendation: R1</strong>, with R2's transcript-extraction helpers reused
+inside the retro skill's instructions ("fetch your transcript, focus on human turns"), and
+R3 reserved as the manual fallback for sessions that already exited (the dashboard button
+dispatches a retro task when the session is gone).</div>
+
+<div class="callout warn">Two transcript-fidelity caveats shape the skill instructions
+regardless of choice: scaffolding stripping (<code>conversationText</code> / <code>substantivePrompt</code>,
+<code>src/server/harness/claude/scaffolding.ts:99,163</code> - about half of "user" turns are machine
+noise without it) and injection attribution (<code>originOf</code>, <code>src/server/injections.ts:74</code>),
+which is in-memory only, so a retro run after a daemon restart cannot fully distinguish
+Foreman-typed turns from human ones. The retro treats attribution as best-effort and says so.</div>
+
+<figure>
+  <div class="svgwrap">
+  <svg viewBox="0 0 860 320" width="860" height="320" role="img" aria-label="Retro flow from button to committed memory">
+    <defs>
+      <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+      </marker>
+    </defs>
+    <rect class="box" x="20" y="30" width="180" height="56" rx="8"/>
+    <text x="110" y="53" text-anchor="middle">User: Retro button</text>
+    <text x="110" y="70" text-anchor="middle" class="lbl">ConsoleDetail / ActionBar</text>
+
+    <rect class="box" x="270" y="30" width="180" height="56" rx="8"/>
+    <text x="360" y="53" text-anchor="middle">Daemon: prepare</text>
+    <text x="360" y="70" text-anchor="middle" class="lbl">retro SessionAction</text>
+
+    <rect class="box2" x="520" y="30" width="200" height="56" rx="8"/>
+    <text x="620" y="53" text-anchor="middle">Session: /retro skill</text>
+    <text x="620" y="70" text-anchor="middle" class="lbl">re-reads own transcript</text>
+
+    <rect class="box" x="520" y="140" width="200" height="56" rx="8"/>
+    <text x="620" y="163" text-anchor="middle">request_plan_decisions</text>
+    <text x="620" y="180" text-anchor="middle" class="lbl">up to 3 proposed memories</text>
+
+    <rect class="box" x="270" y="140" width="180" height="56" rx="8"/>
+    <text x="360" y="163" text-anchor="middle">User approves / edits</text>
+    <text x="360" y="180" text-anchor="middle" class="lbl">dashboard ReviewModal</text>
+
+    <rect class="box2" x="270" y="240" width="200" height="56" rx="8"/>
+    <text x="370" y="263" text-anchor="middle">Session writes .agents/memory/*</text>
+    <text x="370" y="280" text-anchor="middle" class="lbl">updates AGENTS.md reference</text>
+
+    <rect class="box2" x="560" y="240" width="200" height="56" rx="8"/>
+    <text x="660" y="263" text-anchor="middle">Commit on task branch</text>
+    <text x="660" y="280" text-anchor="middle" class="lbl">repo_commit adapter verifies</text>
+
+    <path class="arrow2" d="M 200 58 L 264 58"/>
+    <path class="arrow2" d="M 450 58 L 514 58"/>
+    <path class="arrow2" d="M 620 86 L 620 134"/>
+    <path class="arrow2" d="M 520 168 L 456 168"/>
+    <path class="arrow2" d="M 360 196 L 362 234"/>
+    <path class="arrow2" d="M 470 268 L 554 268"/>
+    <text x="480" y="163" text-anchor="middle" class="lbl">blocks</text>
+    <text x="300" y="222" class="lbl">approved subset only</text>
+  </svg>
+  </div>
+  <figcaption>Retro flow (R1). The daemon only prepares and delivers the action; the session does the reading, asking, writing, and committing, and the completion adapter proves it landed.</figcaption>
+</figure>
+
+<h2>Soliciting the retro</h2>
+<p>The right moment to ask is after the PR exists and the Inspector's findings are all
+addressed: by then the session holds everything worth remembering (the coding, the user's
+corrections, and the findings-and-fixes cycle), and the branch is usually still open, so
+approved memories ride the same PR through normal review. Two mechanisms were weighed:</p>
+
+<div class="card">
+  <h3>A workflow step after the Inspector<span class="tag warn">rejected for v1</span></h3>
+  <p>There is no post-Inspector slot to hook. The Inspector is not a graph node; it is the
+  completion policy that runs after the graph's End. The gate's clean transition writes
+  <code>completed</code> directly (<code>src/server/workflows/manager.ts:2828-2848</code>), and
+  <code>compactGate</code> treats <code>completed</code> as the end of the story
+  (<code>src/server/workflows/store.ts:191-202</code>). A retro authored as a late graph stage (the
+  shape of v8's <code>pull_request</code> action stage, <code>builtin-workflows.ts:446</code>) is expressible
+  today but fires <em>before</em> the Inspector has said anything - the wrong moment. A true
+  post-gate slot would mean a new node class and a change to the run state machine's
+  terminal contract. If a per-repo "always retro" policy is wanted later, the completion
+  policy (not the graph) is where it would raise the same offer described below.</p>
+</div>
+
+<div class="card">
+  <h3>A card prompt driven by the gate signal<span class="tag rec">chosen</span></h3>
+  <p>The predicate is already computed and on the wire: <code>WorkflowRunSummary.gate === "clean"</code>
+  means exactly "adopted PR, reviewed head equals target head, zero unresolved findings".
+  For sessions without a bound workflow, the weaker universal predicate is PR-present plus
+  inspector-clean (<code>inspectorChipView</code> tone <code>insp-clean</code>,
+  <code>src/web/components/session-bits.tsx:954-983</code>). The offer renders through the existing
+  run-action descriptor pattern (<code>src/web/workflows/run-actions.ts:65-105</code>) - the same
+  "server proposes, human clicks" shape as <strong>Prepare PR in session</strong> - so it appears on the
+  Board tile's workflow ladder, the Grid card, and the Runs page, plus a Retro entry in the
+  ActionBar (<code>src/web/components/ActionBar.tsx:413-533</code>) for detail view. Clicking POSTs a
+  new route that delivers the retro SessionAction into the session. Nothing is ever typed
+  autonomously.</p>
+</div>
+
+<p><strong>Conditioning, so the offer is not ceremony:</strong> light it only when the session is
+retro-worthy - the transcript contains human-correction turns
+(<code>humanTranscriptDecisions</code>) or the Inspector raised findings that were then resolved
+(resolved <code>inspector_comments</code> rows). A clean run with no corrections has nothing to
+catalogue and gets no prompt.</p>
+
+<p>Backstops:</p>
+<ul>
+  <li>The Complete flow (<code>CompleteModal.tsx</code>) offers a retro for sessions that never produce
+  a PR, under the same retro-worthiness condition.</li>
+  <li>If shipping auto-merges on clean before the user clicks, the offer stays; the retro
+  then commits on a small follow-up branch through the R3 fallback path.</li>
+  <li><strong>Never autonomous</strong>: <code>src/server/skills/reload.ts:19-33</code> documents the one sanctioned
+  autonomous pane-writer and warns against adding a second. The server only ever proposes;
+  the user always clicks.</li>
+</ul>
+
+<h2>Guardrails</h2>
+<ul>
+  <li>The daemon never commits; the agent turn commits. Memory writes go through the session,
+  on the task branch, reviewable in the PR like any other change.</li>
+  <li>Up to 3 recommendations per retro, hard cap; the user approves each individually.
+  A retro may also propose <em>removing</em> a stale memory - pruning is a first-class outcome.</li>
+  <li>Memory files respect the standards caps (24KB/file) so <code>readStandards</code> inclusion never
+  silently truncates; the retro skill enforces entry brevity.</li>
+  <li>The retro must not propose anything AGENTS.md already states; when a memory has been
+  confirmed repeatedly, the retro proposes promoting it into AGENTS.md and deleting the memory.</li>
+  <li>No secrets, tokens, user paths, or machine state in memory files - the skill
+  instructions say so and the approval step is the human backstop.</li>
+</ul>
+
+<h2>Testing</h2>
+<ul>
+  <li><code>test/</code>: reader logic (memory discovery, index/directory consistency, caps), the
+  <code>repo_commit</code> completion adapter, <code>readStandards</code> extension, pi intent-pointer composition.</li>
+  <li><code>e2e/</code>: the retro offer through the fake-agent harness - the offer appears only when
+  the gate reads clean and the retro-worthiness condition holds, click it, see the decision
+  form render with proposed memories, submit approvals, assert the session receives the
+  action text. UI surfaces get Playwright specs per project policy.</li>
+</ul>
+
+<h2>Out of scope (this plan)</h2>
+<ul>
+  <li>Cross-repo or org-level memory aggregation.</li>
+  <li>Automatic memory injection for non-MC sessions (the committed file already serves them by convention).</li>
+  <li>A dashboard memory-catalogue browser (layerable on shape B later).</li>
+</ul>
+
+</main>
+</body>
+</html>

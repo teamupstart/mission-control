@@ -230,7 +230,22 @@ export function WorkflowBindingDialog({
    */
   const selectedWorkflowId = workflowIdForVersion(versionId, publishable);
   useEffect(() => {
-    if (!versionId) return;
+    /*
+     * No version selected, no claim to make about one. Returning early instead left `defaults`
+     * describing whatever was selected before, so the sentence outlived its subject: pick a
+     * bound session, read "This version defaults to foreman complete and live", switch to an
+     * unbound one, and the Published workflow field correctly empties while that sentence
+     * keeps asserting the defaults of a workflow no longer on screen.
+     *
+     * Cleared HERE rather than beside the `setVersionId` that empties it, because this effect
+     * owns `defaults` and this covers every route to an empty selection - hydration landing on
+     * an unbound session, and an operator choosing "Choose a published version" by hand. A
+     * reset at one call site would have fixed the route that was reported and left the other.
+     */
+    if (!versionId) {
+      setDefaults(null);
+      return;
+    }
     /*
      * Two different questions, which this effect used to answer with one early return.
      *

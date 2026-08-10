@@ -375,11 +375,27 @@ test("switching to an unbound session clears the previous session's workflow", a
   await expect.poll(() => selectedLabel(published)).toContain("No-Mistakes Review");
   seen("dialog > version on the bound session", await selectedLabel(published));
 
+  // The hint that describes what is selected, which the next step has to take with it.
+  await expect(bind.getByText(/^This version defaults to /)).toBeVisible();
+
   // Now the unbound one. Its answer is nothing, and nothing is what it has to show.
   await sessionSelect.selectOption(unboundSession);
   await expect.poll(() => selectedLabel(published)).toBe("Choose a published version");
   seen("dialog > version after switching to an unbound session", await selectedLabel(published));
   await expect(bind.getByText(/^Already bound to /)).toHaveCount(0);
+  // The sentence must not outlive its subject. It described the previous session's workflow and
+  // kept rendering over an empty selection, which is the same contradiction between a hint and
+  // the field beside it that this dialog was changed to end.
+  await expect(bind.getByText(/^This version defaults to /)).toHaveCount(0);
+
+  // The other route to an empty selection: chosen by hand rather than by hydration. A reset
+  // wired to the session switch alone would fix the reported case and leave this one.
+  await sessionSelect.selectOption(boundSession);
+  await expect.poll(() => selectedLabel(published)).toContain("No-Mistakes Review");
+  await expect(bind.getByText(/^This version defaults to /)).toBeVisible();
+  await published.selectOption("");
+  await expect.poll(() => selectedLabel(published)).toBe("Choose a published version");
+  await expect(bind.getByText(/^This version defaults to /)).toHaveCount(0);
 });
 
 test("a session bound to a superseded version still gets its defaults hint", async ({

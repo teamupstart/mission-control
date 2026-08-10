@@ -78,7 +78,13 @@ export interface ReviewRuntime {
   /** Resolve runner+model at attempt time from the explicit pins / guidance overrides / app ladder. */
   resolveExecution(guidance: EnsembleEvaluatorGuidance, pins: ReviewExecutionPins): ReviewExecution;
   /** The bound provider call. Tool-less by construction: no grant, cwd, shell, web, or terminal. */
-  runModel(runnerId: LlmRunnerId, prompt: string, opts: { modelId: string; timeoutMs: number }): Promise<string>;
+  runModel(
+    runnerId: LlmRunnerId,
+    prompt: string,
+    opts: { modelId: string; timeoutMs: number; schema?: Record<string, unknown> },
+  ): Promise<string>;
+  /** Whether this runner enforces the supplied JSON Schema at the provider boundary. */
+  guaranteesSchema(runnerId: LlmRunnerId): boolean;
   /** Materialize one subject's bounded diff from its immutable ref, reading the run's repo. */
   materialize(subject: ReviewSubject, repoRoot: string, maxPatchBytes: number): Promise<ReviewMaterial>;
   now(): number;

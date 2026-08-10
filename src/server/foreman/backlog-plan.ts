@@ -3,6 +3,7 @@ import type { BacklogPlanInput } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
+import { providerJsonSchema } from "../llm/json-schema.ts";
 import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { buildBacklogPrompt } from "./backlog-prompt.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
@@ -102,6 +103,7 @@ export const BacklogReportSchema = z.object({
   ),
   note: z.string().optional(),
 });
+const BACKLOG_REPORT_JSON_SCHEMA = providerJsonSchema(BacklogReportSchema);
 export type BacklogReport = z.infer<typeof BacklogReportSchema>;
 
 export type BacklogPlanResult =
@@ -310,16 +312,20 @@ export async function planBacklog(
     };
   }
 
+  const runner = llmRunner(runnerId);
   const result = await runStructured(
     (p) =>
-      llmRunner(runnerId).run(p, {
+      runner.run(p, {
         model,
         timeoutMs: backlogTimeoutMs(backlog.length),
         role: "foreman:backlog",
+        schema: BACKLOG_REPORT_JSON_SCHEMA,
       }),
     buildBacklogPrompt(backlog),
     (raw) => parseModelJson(raw, BacklogReportSchema),
     "The backlog planner",
+    undefined,
+    { shapeGuaranteed: runner.structuredOutput?.guaranteesInputShape === true },
   );
   if (result.kind === "failed") return result;
   return { kind: "ok", plan: sanitizePlan(result.value, backlog) };

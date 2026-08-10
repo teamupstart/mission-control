@@ -108,6 +108,8 @@ export { unwrapEnvelope as resultText };
 export interface ClaudeRunOptions {
   model?: string;
   timeoutMs?: number;
+  /** A rendered JSON Schema passed to Claude Code's structured-output validator. */
+  schema?: string;
   /**
    * The `--tools` value. Defaults to `""` - EVERY tool disabled - because that is what
    * makes it safe to embed untrusted transcript and repo text in a prompt, which every
@@ -182,6 +184,9 @@ export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Prom
     // `cwd` writes outside what that sweep walks, which is a gap in the pruner rather
     // than an argument for this flag.)
     const args = ["-p", "--output-format", "json", "--tools", opts.tools ?? ""];
+    // Unlike the deliberately absent resume flags above, this constrains only the reply
+    // shape. It cannot connect this fresh invocation to any previous conversation.
+    if (opts.schema) args.push("--json-schema", opts.schema);
     if (opts.model) args.push("--model", opts.model);
     if (opts.settings) args.push("--settings", opts.settings);
     const child = spawn(CLAUDE_BIN, args, {

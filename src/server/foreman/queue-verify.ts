@@ -3,6 +3,7 @@ import { buildVerifyPrompt } from "./queue-prompt.ts";
 import type { VerifyInput } from "./queue-prompt.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
+import { providerJsonSchema } from "../llm/json-schema.ts";
 import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
@@ -149,6 +150,7 @@ export const QueueVerdictSchema = z.object({
   resolved: z.array(z.string().transform(clampTo(GAP_ID_MAX))).default([]).transform((r) => r.slice(0, MAX_RESOLVED)),
   confidence: z.number().min(0).max(1).default(0.5),
 });
+const QUEUE_VERDICT_JSON_SCHEMA = providerJsonSchema(QueueVerdictSchema);
 
 export type QueueVerifyResult =
   | { kind: "verdict"; verdict: QueueVerdict }
@@ -173,8 +175,14 @@ export async function verifyItem(
   model: string,
   runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
 ): Promise<QueueVerifyResult> {
+  const runner = llmRunner(runnerId);
   const r = await runStructured<typeof QueueVerdictSchema>(
-    (p) => llmRunner(runnerId).run(p, { model, role: "foreman:verify" }),
+    (p) =>
+      runner.run(p, {
+        model,
+        role: "foreman:verify",
+        schema: QUEUE_VERDICT_JSON_SCHEMA,
+      }),
     buildVerifyPrompt(input),
     extractQueueVerdict,
     "Foreman verify",

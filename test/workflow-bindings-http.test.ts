@@ -794,6 +794,7 @@ test("resubmit fingerprints are durable, unchanged confirmation reuses its trigg
     id: "claude",
     label: "fake",
     runInThread: null,
+    structuredOutput: null,
     sandbox: null,
     price: () => null,
     litter: null,

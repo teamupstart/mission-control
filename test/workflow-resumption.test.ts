@@ -102,6 +102,7 @@ const failingRunner: LlmRunner = {
   id: "claude",
   label: "fake",
   runInThread: null,
+  structuredOutput: null,
   sandbox: null,
   price: () => null,
   litter: null,

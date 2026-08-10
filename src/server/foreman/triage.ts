@@ -10,6 +10,7 @@ import { textlessAnswer, VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import type { Pending } from "./pending.ts";
 import type { CheapAction, Divergence } from "@shared/foreman.ts";
+import { providerJsonSchema } from "../llm/json-schema.ts";
 
 // The cheap tier that sits in front of Foreman's full `claude -p` reviewer (see
 // docs/plans/foreman-watcher/plan.md). It disposes the structurally-determined and
@@ -87,6 +88,7 @@ export const TriageReportSchema = z.object({
    */
   confidence: z.number().min(0).max(1),
 });
+const TRIAGE_REPORT_JSON_SCHEMA = providerJsonSchema(TriageReportSchema);
 export type TriageReport = z.infer<typeof TriageReportSchema>;
 
 /**
@@ -462,7 +464,7 @@ interface TriageWindow {
 /** The daemon reads the cheap tier needs: a trimmed transcript, the child's screen, and the router subprocess. */
 export interface TriageDeps {
   transcript(id: string, turns: number): Promise<TriageWindow>;
-  runModel(prompt: string, model: string): Promise<string>;
+  runModel(prompt: string, model: string, schema: Record<string, unknown>): Promise<string>;
 }
 
 /**
@@ -603,7 +605,7 @@ export async function triageSession(
 
   let raw: string;
   try {
-    raw = await deps.runModel(buildTriagePrompt(input), triageModel(cfg));
+    raw = await deps.runModel(buildTriagePrompt(input), triageModel(cfg), TRIAGE_REPORT_JSON_SCHEMA);
   } catch (err) {
     return { kind: "route-up", reason: `tier1-failed: ${String(err)}` };
   }

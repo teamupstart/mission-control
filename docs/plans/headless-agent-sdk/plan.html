@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Headless calls on the Agent SDK</title>
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1a1a1a;
+    --muted: #5f5f5c;
+    --rule: #e2e0dc;
+    --accent: #a8501e;
+    --accent-soft: #fdf3ec;
+    --code-bg: #f3f2ef;
+    --ok: #2f6b45;
+    --warn: #8a5a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a;
+      --panel: #1e1f22;
+      --ink: #e6e5e2;
+      --muted: #9b9a96;
+      --rule: #33343a;
+      --accent: #e8935c;
+      --accent-soft: #2a211b;
+      --code-bg: #232428;
+      --ok: #6cc08b;
+      --warn: #d9a441;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    padding: 3rem 1.25rem 6rem;
+  }
+  .wrap { max-width: 54rem; margin: 0 auto; }
+  header.title { border-bottom: 1px solid var(--rule); padding-bottom: 1.5rem; margin-bottom: 2.25rem; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .6rem; letter-spacing: -.02em; }
+  .lede { color: var(--muted); margin: 0; font-size: 1.02rem; }
+  h2 {
+    font-size: 1.28rem; margin: 3rem 0 .9rem; letter-spacing: -.01em;
+    padding-top: 1.25rem; border-top: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.02rem; margin: 1.9rem 0 .5rem; letter-spacing: -.005em; }
+  p { margin: 0 0 1rem; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.35rem; }
+  li { margin: .35rem 0; }
+  a { color: var(--accent); }
+  strong { font-weight: 640; }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  code { background: var(--code-bg); padding: .1em .38em; border-radius: 4px; font-size: .88em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px;
+    padding: .9rem 1rem; overflow-x: auto; font-size: .84rem; line-height: 1.55; margin: 0 0 1.25rem;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .scroll { overflow-x: auto; margin: 0 0 1.4rem; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; min-width: 34rem; }
+  th, td { text-align: left; padding: .55rem .75rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 620; white-space: nowrap; background: var(--code-bg); }
+  tr:last-child td { border-bottom: none; }
+  td code { font-size: .82em; white-space: nowrap; }
+  .note {
+    background: var(--accent-soft); border-left: 3px solid var(--accent);
+    padding: .9rem 1.1rem; border-radius: 0 7px 7px 0; margin: 0 0 1.4rem;
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .rec { border-left-color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+  .opt {
+    border: 1px solid var(--rule); background: var(--panel);
+    border-radius: 9px; padding: 1rem 1.2rem; margin: 0 0 1rem;
+  }
+  .opt.pick { border-color: var(--ok); border-width: 1.5px; }
+  .opt h3 { margin-top: 0; }
+  .tag {
+    display: inline-block; font-size: .7rem; text-transform: uppercase; letter-spacing: .07em;
+    font-weight: 700; color: var(--ok); border: 1px solid currentColor; border-radius: 999px;
+    padding: .08rem .5rem; margin-left: .5rem; vertical-align: middle;
+  }
+  .phase { border-left: 2px solid var(--rule); padding-left: 1.1rem; margin: 0 0 1.6rem; }
+  .phase h3 { margin-top: 0; }
+  figure { margin: 0 0 1.6rem; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption { color: var(--muted); font-size: .85rem; margin-top: .5rem; }
+  .diagram { border: 1px solid var(--rule); border-radius: 9px; background: var(--panel); padding: 1rem; overflow-x: auto; }
+  footer { margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="title">
+  <h1>Headless calls on the Agent SDK</h1>
+  <p class="lede">Should Foreman, the Inspector, and workflow Personas stop shelling out to <code>claude -p</code>?</p>
+</header>
+
+<p>Every model call the app makes for itself - Foreman's four, the Inspector's two, workflow
+Personas, ensemble reviews, and the background jobs - spawns <code>claude -p --output-format json</code>
+through one function, <code>runClaudeText</code> (<code>src/server/claude-cli.ts:136</code>). Meanwhile the daemon
+already drives <em>interactive</em> sessions through <code>@anthropic-ai/claude-agent-sdk</code>
+(<code>src/server/harness/claude/sdk.ts</code>). This plan asks whether the headless callers should move
+to the same SDK, and what it would cost.</p>
+
+<p>The short answer is that the question contains a false premise, and the plan is organised
+around correcting it before proposing anything.</p>
+
+<h2>The premise: "shelling out" is not the alternative to the SDK</h2>
+
+<p>The Agent SDK spawns the <code>claude</code> CLI as a subprocess. It is Claude Code packaged as a
+library, not a client for a remote API:</p>
+
+<pre><code>$ grep -o "spawn\|child_process\|--input-format\|stream-json" \
+    node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs | sort | uniq -c
+   5 child_process
+  47 spawn
+   2 stream-json</code></pre>
+
+<p>This repo pins that subprocess to the operator's own binary rather than the copy vendored
+inside the npm package, deliberately, so an embedded session and a dispatched pane are the
+same build (<code>src/server/harness/claude/sdk-deps.ts:28-40</code>).</p>
+
+<p>So both paths spawn the same binary. The choice is a wire protocol:</p>
+
+<div class="scroll"><table>
+<thead><tr><th></th><th><code>claude -p</code> (today)</th><th>Agent SDK <code>query()</code></th></tr></thead>
+<tbody>
+<tr><td>Process</td><td>spawn <code>claude</code></td><td>spawn <code>claude</code></td></tr>
+<tr><td>Protocol</td><td>one-shot, <code>--output-format json</code> on stdout</td><td>held-open stdio, <code>--input-format stream-json</code></td></tr>
+<tr><td>Context</td><td>empty by construction (no <code>--resume</code>/<code>--continue</code>/<code>--session-id</code>)</td><td>empty unless <code>resume</code>/<code>sessionId</code> are passed</td></tr>
+<tr><td>Reply</td><td>one JSON envelope</td><td>a frame stream to project</td></tr>
+<tr><td>Cancellation</td><td>SIGKILL the detached process group</td><td><code>abortController</code></td></tr>
+</tbody></table></div>
+
+<h2>The decisive finding: two of the three wins need no migration</h2>
+
+<div class="note">
+<p>The three arguments for the SDK were structured output, live progress, and first-class tool
+permissions. The operator's pinned CLI is version 2.1.223, and it already has the first two on
+the <code>-p</code> path.</p>
+</div>
+
+<pre><code>$ claude --help | grep -A2 json-schema
+  --json-schema &lt;schema&gt;     JSON Schema for structured output validation.
+  --max-budget-usd &lt;amount&gt;  Maximum dollar amount to spend on API calls (only works with --print)
+
+$ claude --help | grep -A3 output-format
+  --output-format &lt;format&gt;   "text" (default), "json" (single result), or "stream-json" (realtime streaming)</code></pre>
+
+<ul>
+<li><strong><code>--json-schema</code></strong> would delete <code>runStructured</code>'s re-prompt ladder
+(<code>src/server/llm/structured.ts:94-117</code>) and <code>parseModelJson</code>'s fence handling today, on the
+current transport.</li>
+<li><strong><code>--output-format stream-json</code></strong> means even live progress is reachable without the SDK. The
+SDK would be doing the frame reading for us, which is real work, but it is not a capability
+we lack.</li>
+</ul>
+
+<p>What the SDK genuinely adds over a maximally-configured <code>claude -p</code> is narrower than it first
+appears, and is set out under <a href="#buys">What the SDK actually buys</a>.</p>
+
+<h2>Scope: 14 call sites, three processes' worth of constraints</h2>
+
+<p>Every site below reaches <code>runClaudeText</code> through <code>LlmRunner.run</code> on <code>claudeRunner</code>
+(<code>src/server/llm/claude.ts:105-175</code>), the only importer of <code>claude-cli.ts</code>.</p>
+
+<div class="scroll"><table>
+<thead><tr><th>#</th><th>Site</th><th>Process</th><th>Model</th><th>Timeout</th><th>Tools</th><th>Structured</th><th>Gate</th><th>Spend <code>role</code></th></tr></thead>
+<tbody>
+<tr><td>A1</td><td>Foreman full review</td><td>worker</td><td><code>claude-opus-5</code></td><td>120s</td><td>none</td><td>yes</td><td>serial loop</td><td>yes</td></tr>
+<tr><td>A2</td><td>Foreman queue verify</td><td>worker</td><td><code>claude-opus-5</code></td><td>120s</td><td>none</td><td>yes</td><td>serial loop</td><td>yes</td></tr>
+<tr><td>A3</td><td>Foreman backlog planner</td><td>worker</td><td><code>claude-sonnet-5</code></td><td>scales</td><td>none</td><td>yes</td><td>serial loop</td><td>yes</td></tr>
+<tr><td>A4</td><td>Foreman Tier 1 triage</td><td>worker</td><td><code>claude-haiku-4-5</code></td><td>30s</td><td>none</td><td><strong>no</strong></td><td>serial loop</td><td>yes</td></tr>
+<tr><td>B1</td><td>Inspector review</td><td>daemon</td><td><code>claude-sonnet-5</code></td><td>600s</td><td><strong>Read,Grep,Glob</strong></td><td>yes</td><td><code>limiter(1)</code></td><td>yes</td></tr>
+<tr><td>B2</td><td>Inspector reply</td><td>daemon</td><td><code>claude-sonnet-5</code></td><td>300s</td><td><strong>Read,Grep,Glob</strong></td><td><strong>no</strong></td><td><code>limiter(1)</code></td><td>yes</td></tr>
+<tr><td>C1</td><td>Workflow Persona</td><td>daemon</td><td>persona's / balanced</td><td>600s</td><td>none</td><td>yes</td><td>review sched (3)</td><td>no</td></tr>
+<tr><td>C2</td><td>Workflow context compaction</td><td>daemon</td><td><code>claude-haiku-4-5</code></td><td>45s</td><td>none</td><td>yes</td><td>review sched, <code>capture</code></td><td>no</td></tr>
+<tr><td>D1</td><td>Ensemble comparative</td><td>daemon</td><td><code>claude-haiku-4-5</code></td><td>120s</td><td>none</td><td>yes</td><td>review sched</td><td>no</td></tr>
+<tr><td>D2</td><td>Ensemble panel judges</td><td>daemon</td><td>per judge</td><td>120s</td><td>none</td><td>yes</td><td>review sched, per judge</td><td>no</td></tr>
+<tr><td>E1</td><td>Dispatch titler</td><td>daemon</td><td><code>claude-haiku-4-5</code></td><td>15s</td><td>none</td><td>yes</td><td><code>limiter(2)</code></td><td>no</td></tr>
+<tr><td>E2</td><td>Goal refiner</td><td>daemon</td><td><code>claude-haiku-4-5</code></td><td>30s</td><td>none</td><td>yes</td><td><code>limiter(2)</code></td><td>no</td></tr>
+<tr><td>E3</td><td>Away digest</td><td>daemon</td><td><code>claude-haiku-4-5</code></td><td>20s</td><td>none</td><td><strong>no</strong></td><td>none</td><td>no</td></tr>
+</tbody></table></div>
+
+<p>Three facts from this table shape everything below.</p>
+
+<ol>
+<li><strong>The Foreman is a separate process.</strong> It is started by <code>npm run foreman</code>
+(<code>package.json:34</code>), never spawned by the daemon, forbidden from opening SQLite, and
+reports spend over HTTP with a durable outbox (<code>foreman/worker.ts:274-286</code>). Any transport
+must work there, or the migration covers two subsystems out of three.</li>
+<li><strong>Only six sites are <code>role</code>-tagged</strong>, and <code>claudeSpendReport</code> only fires when <code>role</code> is set
+(<code>llm/claude.ts:130-133</code>). The other eight already discard their cost accounting.</li>
+<li><strong>Exactly one caller holds tools.</strong> The Inspector's grant is paid for with four other
+defence layers (<code>inspector/worker.ts:255-307</code>), and the deny-glob rendering is byte-pinned
+against the Inspector's own constants by <code>test/llm-runner-contract.test.ts:313-331</code>.</li>
+</ol>
+
+<h2 id="buys">What the SDK actually buys</h2>
+
+<p>Verified present in <code>@anthropic-ai/claude-agent-sdk@0.3.220</code> (<code>sdk.d.ts</code>) and unused by this repo:</p>
+
+<div class="scroll"><table>
+<thead><tr><th>Capability</th><th>Option</th><th>What it replaces today</th></tr></thead>
+<tbody>
+<tr><td>Structured output</td><td><code>outputFormat: {type:'json_schema', schema}</code> → <code>structured_output</code> (<code>sdk.d.ts:929, 1726, 4314</code>)</td><td><code>runStructured</code>'s two-attempt ladder and <code>parseModelJson</code>'s fence handling. <strong>Also reachable via <code>--json-schema</code>.</strong></td></tr>
+<tr><td>Disable every tool</td><td><code>tools: []</code> (<code>sdk.d.ts:1424-1432</code>)</td><td><code>--tools ""</code></td></tr>
+<tr><td>Cancellation</td><td><code>abortController</code> (<code>sdk.d.ts:1327</code>)</td><td><code>killTree</code> SIGKILL of a detached process group</td></tr>
+<tr><td>Hard spend ceiling</td><td><code>maxBudgetUsd</code> (<code>sdk.d.ts:1691</code>)</td><td>nothing</td></tr>
+<tr><td>stderr visibility</td><td><code>stderr: (data) =&gt; void</code> (<code>sdk.d.ts:1943</code>)</td><td>stderr is only read on a non-zero exit</td></tr>
+<tr><td>Determinism</td><td><code>settingSources: []</code> (<code>sdk.d.ts:1874</code>)</td><td>nothing - today's runs inherit whatever the CLI loads</td></tr>
+<tr><td>Turn ceiling</td><td><code>maxTurns: 1</code> (<code>sdk.d.ts:1685</code>)</td><td>nothing</td></tr>
+</tbody></table></div>
+
+<p><strong><code>abortController</code> replaces a SIGKILL that cannot be trusted.</strong> Today a timeout kills a
+detached process group and the parent cannot guarantee it landed; <code>claude-cli.ts:69-76</code>
+concedes that a <code>SIGKILL</code> of the daemon leaks children outright. This is the largest single
+gain, because it is the one capability with no equivalent on the <code>-p</code> path at any flag.</p>
+
+<p><code>persistSession: false</code> was the other candidate - it would have deleted <code>goal/prune.ts</code> and its
+hourly sweep outright. <strong>It is not adopted</strong>; see <a href="#decisions">Decisions</a>. Headless runs keep
+writing transcripts, which turns transcript continuity into a phase 2 requirement rather than
+something a later phase deletes.</p>
+
+<p>What the SDK does <strong>not</strong> buy, because a one-shot does not need it: multi-turn steering,
+<code>interrupt()</code>, live <code>setModel</code>/<code>setPermissionMode</code>, session resume, the permission callback
+loop, hooks, and the MCP ask-channel.</p>
+
+<h2>Tradeoffs</h2>
+
+<h3>Lost or changed</h3>
+
+<div class="scroll"><table>
+<thead><tr><th>What</th><th>Today (<code>claude -p</code>)</th><th>Under the SDK transport</th><th>Severity</th></tr></thead>
+<tbody>
+<tr><td>Bundling</td><td>spawns a binary; nothing to bundle</td><td>worker and daemon both import the SDK; the worker bundle has never carried it</td><td><strong>Medium - the top risk</strong></td></tr>
+<tr><td>Headless run visibility</td><td>a <code>.jsonl</code> transcript per run</td><td>unchanged - persistence stays on, so the transcript and the sweep both survive</td><td>None, by decision</td></tr>
+<tr><td>Settings inheritance</td><td>whatever the CLI loads by default</td><td><code>settingSources: []</code> stops runs reading the operator's CLAUDE.md</td><td>Low, but a <strong>behaviour change to verdict inputs</strong></td></tr>
+<tr><td>Failure vocabulary</td><td><code>claude exited &lt;code&gt;: &lt;stderr&gt;</code></td><td>SDK errors and <code>TerminalReason</code> values</td><td>Low</td></tr>
+<tr><td>One fewer moving part</td><td>296 lines of heavily-argued spawn</td><td>SDK option construction; the arguments must migrate, not vanish</td><td>Neutral</td></tr>
+</tbody></table></div>
+
+<h3>Gained</h3>
+<ul>
+<li>One transport for one binary instead of two, with the tool grant expressed as data rather than a hand-built <code>--settings</code> JSON string.</li>
+<li>Provider-validated structured output, removing a whole retry attempt from 12 of 14 sites.</li>
+<li>Real cancellation, a spend ceiling, and stderr the caller can see.</li>
+<li>A path to live progress for the ten-minute Persona and Inspector calls, which today are opaque until they exit.</li>
+</ul>
+
+<h3>Unchanged by design</h3>
+<ul>
+<li><strong>The <code>LlmRunner</code> seam and every call site above it.</strong> All 14 already go through <code>runner.run(prompt, opts)</code>.</li>
+<li><strong>Spend accounting.</strong> <code>claudeEnvelopeModels</code> is <em>already</em> shared between the <code>-p</code> envelope and the SDK's <code>result</code> frame, because the CLI serialises one struct for both. This is the single biggest de-risking fact in the plan.</li>
+<li><strong>Context isolation.</strong> Guaranteed today by three absent flags; under the SDK by not passing <code>resume</code>/<code>sessionId</code>/<code>forkSession</code>.</li>
+<li><strong>The pane-identity subtraction.</strong> <code>headlessEnv()</code> and <code>sdkSubprocessEnv()</code> already do the same job.</li>
+<li><strong>Headless transcripts and the pruner.</strong> Persistence stays on, so <code>goal/prune.ts</code> keeps working and keeps being needed. The SDK one-shot must therefore spawn in <code>HEADLESS_CWD</code> like its predecessor, or its transcripts land where the sweep does not walk.</li>
+</ul>
+
+<h2>Architecture: a transport behind the runner id, never a third runner</h2>
+
+<p>The tempting shape is a third <code>LlmRunnerId</code> - <code>"claude-sdk"</code> beside <code>"claude"</code> and <code>"codex"</code>.
+It is the wrong shape, and the survey of the contract says why in six places:</p>
+
+<ol>
+<li><code>providerModelDefault</code> (<code>src/shared/model.ts:153-161</code>) branches <code>codex</code> vs <em>everything
+else</em>, so a third id silently inherits Claude's model ids for every tier.</li>
+<li><code>AGENT_IDENTITY[runner]</code> in <code>InspectorSettingsPanel.tsx:333,351</code> indexes an <code>AgentType</code> map
+with an <code>LlmRunnerId</code>. A third id yields <code>undefined</code> and <code>.label</code> <strong>throws</strong> in the panel.</li>
+<li><code>LlmRunnerId</code> is <strong>persisted</strong>: <code>personas.runner</code>, the <code>llm</code> app-config blob, and <code>usage_ledger</code> rows carry it.</li>
+<li>Six <code>?? "claude"</code> sites in Foreman and the Inspector would keep pinning the old transport.</li>
+<li><code>litter</code> is declared on the interface but consumed by nothing.</li>
+<li>The contract test is name-specific except for two blocks.</li>
+</ol>
+
+<p>This mirrors the decision the interactive migration already made: <em>the axis is how this
+particular call is driven, not a new identity</em>.</p>
+
+<pre><code>// src/server/llm/claude.ts - one runner, two transports
+export type ClaudeTransport = "print" | "sdk";</code></pre>
+
+<p><code>claudeRunner.run</code> selects a transport, defaulting from config with an env override, and
+delegates to either <code>runClaudeText</code> (today's module, unchanged) or a new
+<code>runClaudeSdkOneShot</code>. <code>id</code> stays <code>"claude"</code>, so no persisted value moves.</p>
+
+<h3>Request flow, before and after</h3>
+
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fourteen call sites reach one LlmRunner seam, which selects either the print transport or the SDK transport; both spawn the same claude binary and both rejoin at claudeEnvelopeModels before the spend ledger.">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+    <style>
+      .bx { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; rx: 7; }
+      .bx-seam { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.75; }
+      .bx-new { stroke-dasharray: 5 3; }
+      .t { font: 12px ui-sans-serif, -apple-system, "Segoe UI", sans-serif; fill: var(--ink); }
+      .t-s { font: 10.5px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--muted); }
+      .ln { stroke: var(--muted); stroke-width: 1.4; fill: none; color: var(--muted); }
+      .ln-a { stroke: var(--accent); color: var(--accent); }
+    </style>
+  </defs>
+
+  <text class="t" x="8" y="16" font-weight="700">14 call sites</text>
+  <rect class="bx" x="8" y="26" width="150" height="34"/>
+  <text class="t" x="20" y="47">Foreman worker (4)</text>
+  <rect class="bx" x="8" y="70" width="150" height="34"/>
+  <text class="t" x="20" y="91">Inspector (2)</text>
+  <rect class="bx" x="8" y="114" width="150" height="34"/>
+  <text class="t" x="20" y="129">Personas, ensembles,</text>
+  <text class="t" x="20" y="142">jobs (8)</text>
+
+  <path class="ln" d="M 158 43 H 200 Q 210 43 210 53 V 96" marker-end="url(#ar)"/>
+  <path class="ln" d="M 158 87 H 205" marker-end="url(#ar)"/>
+  <path class="ln" d="M 158 131 H 200 Q 210 131 210 121 V 100" marker-end="url(#ar)"/>
+
+  <rect class="bx bx-seam" x="212" y="66" width="146" height="44"/>
+  <text class="t" x="228" y="84" font-weight="700">LlmRunner.run</text>
+  <text class="t-s" x="228" y="99">claudeRunner</text>
+
+  <path class="ln ln-a" d="M 358 79 H 420 Q 432 79 432 69 V 50" marker-end="url(#ar)"/>
+  <text class="t-s" x="366" y="66">print</text>
+  <path class="ln ln-a" d="M 358 97 H 420 Q 432 97 432 107 V 140" marker-end="url(#ar)"/>
+  <text class="t-s" x="368" y="122">sdk</text>
+
+  <rect class="bx" x="434" y="16" width="196" height="44"/>
+  <text class="t" x="446" y="34">runClaudeText</text>
+  <text class="t-s" x="446" y="49">claude -p --output-format json</text>
+
+  <rect class="bx bx-new" x="434" y="140" width="196" height="48"/>
+  <text class="t" x="446" y="158">runClaudeSdkOneShot</text>
+  <text class="t-s" x="446" y="172">query({ tools: [], maxTurns: 1,</text>
+  <text class="t-s" x="446" y="184">outputFormat, abortController })</text>
+
+  <path class="ln" d="M 630 38 H 682 Q 694 38 694 48 V 88" marker-end="url(#ar)"/>
+  <path class="ln" d="M 630 164 H 682 Q 694 164 694 154 V 122" marker-end="url(#ar)"/>
+
+  <rect class="bx" x="640" y="88" width="110" height="34"/>
+  <text class="t" x="652" y="109">claude 2.1.223</text>
+
+  <path class="ln" d="M 750 105 H 790" marker-end="url(#ar)"/>
+  <rect class="bx" x="792" y="70" width="100" height="70"/>
+  <text class="t" x="802" y="94">claudeEnvelope</text>
+  <text class="t" x="802" y="108">Models</text>
+  <text class="t-s" x="802" y="126">shared today</text>
+
+  <path class="ln" d="M 842 140 V 176" marker-end="url(#ar)"/>
+  <rect class="bx" x="792" y="178" width="100" height="34"/>
+  <text class="t" x="802" y="199">spend ledger</text>
+
+  <text class="t-s" x="8" y="240">Solid box = exists today.  Dashed box = the one new module.</text>
+  <text class="t-s" x="8" y="256">The seam is LlmRunner.run; the join is claudeEnvelopeModels, which both transports already share.</text>
+  <text class="t-s" x="8" y="272">Nothing above the seam and nothing below the join has to change.</text>
+</svg>
+</div>
+<figcaption>The transport swap in full. Both paths spawn the same binary and rejoin at the same usage reader.</figcaption>
+</figure>
+
+<h2 id="decisions">Decisions</h2>
+
+<p>Resolved by the operator on review of this plan. These are settled, not open.</p>
+
+<div class="scroll"><table>
+<thead><tr><th>Decision</th><th>Choice</th></tr></thead>
+<tbody>
+<tr><td>How far to move</td><td><strong>Transport swap behind <code>claudeRunner</code>.</strong> Structured output arrives through <code>outputFormat</code>, plus <code>abortController</code>, <code>maxBudgetUsd</code>, <code>stderr</code> and <code>settingSources: []</code>. One transport for one binary.</td></tr>
+<tr><td>Headless transcripts</td><td><strong>Keep them, keep the pruner.</strong> <code>persistSession</code> stays on. The transcript is the only record of what a headless run did, and nothing else covers that debugging case yet.</td></tr>
+<tr><td>The latent driver bug</td><td><strong>Fix now, in its own PR.</strong> It affects interactive sessions today and is not gated on any phase here.</td></tr>
+<tr><td>After this plan</td><td><strong>Phase it and schedule the work.</strong></td></tr>
+</tbody></table></div>
+
+<p>Two shapes were considered and are not being built:</p>
+
+<ul>
+<li><strong>Stay on <code>claude -p</code> and only add <code>--json-schema</code>.</strong> It is the cheapest real win and it is
+still how phase 1 starts, but stopping there leaves SIGKILL cancellation in place - the one
+capability with no <code>-p</code> equivalent at any flag.</li>
+<li><strong>A live progress UI over intermediate frames.</strong> The thing that would have made the Persona
+timeout easy to diagnose, and the natural sequel, but it is a UI feature with its own protocol
+surface and e2e specs rather than part of a transport change. Phase 2 leaves the frame stream
+available for it.</li>
+</ul>
+
+<div class="note rec">
+<p>The phases below are written so that stopping after any one of them leaves the tree better than
+it started, with no half-migrated transport in place.</p>
+</div>
+
+<h2>Phases</h2>
+
+<div class="phase">
+<h3>Phase 1 - capability probe and the <code>schema</code> option</h3>
+<p>Add <code>schema?: object</code> to <code>LlmRunOptions</code>. Render it as <code>--json-schema</code> in <code>claudeRunner</code>; ignore
+it in <code>codexRunner</code>. Teach <code>runStructured</code> to skip its second attempt when the runner reports
+the shape was provider-validated. Also a probe that records the operator's CLI version and
+whether it accepts <code>--json-schema</code>, because every later phase depends on the <strong>operator's</strong>
+binary rather than the npm package.</p>
+<p>Delivers the whole <code>--json-schema</code> win on the existing transport. Exit criteria: the parse-retry attempt disappears from
+<code>workflow_llm_calls</code> rows for structured sites.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 2 - <code>runClaudeSdkOneShot</code>, daemon-only, off by default</h3>
+<p>A new module beside <code>claude-cli.ts</code> implementing one tool-less <code>query()</code>: <code>tools: []</code>,
+<code>settingSources: []</code>, <code>maxTurns: 1</code>, <code>abortController</code> wired to the caller's <code>timeoutMs</code>, and
+<code>cwd: HEADLESS_CWD</code>. Behind <code>ClaudeTransport</code>, defaulting to <code>"print"</code>.</p>
+<p>Session persistence stays <strong>on</strong>, per the decision above, which makes transcript continuity an
+exit criterion rather than an afterthought: the run must land a <code>.jsonl</code> in the same encoded
+project directory <code>headlessTranscriptDir()</code> derives, or the hourly sweep silently stops covering
+these runs. <code>claudeSdkTranscriptPath</code> (<code>sdk.ts:159-166</code>) already derives that path the same way
+for interactive sessions, so this is an assertion to write, not a mechanism to invent.</p>
+<p>The load-bearing comments in <code>claude-cli.ts:155-183</code> <strong>move</strong>, they do not get summarised. A
+test asserts the SDK path passes no <code>resume</code>, no <code>sessionId</code>, no <code>forkSession</code>.</p>
+<p>Exit criteria: with the flag on, the eight daemon-side tool-less sites produce identical
+verdicts and identical ledger rows to the <code>print</code> transport on the same prompts, and
+<code>pruneHeadlessTranscripts</code> still finds and ages out what they wrote.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 3 - the Inspector's grant</h3>
+<p>Render the grant as SDK options and prove the deny rules are enforced identically. The existing
+byte-equality test (<code>test/llm-runner-contract.test.ts:313-331</code>) is the anchor. Separate because
+it is the only phase where getting it wrong leaks a secret rather than producing a bad verdict.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 4 - the Foreman worker</h3>
+<p>The bundling phase. <code>npm run build</code> must produce a worker bundle that can lazily <code>import()</code> the
+SDK, <code>scripts/smoke-bundles.mjs</code> must prove it, and the worker's four sites must produce ledger
+rows the daemon still prices identically. Only after this phase is <code>"sdk"</code> a defensible default.</p>
+</div>
+
+<p>There is no phase 5. Retiring <code>goal/prune.ts</code> was the only work that depended on turning
+persistence off, and that is not being done.</p>
+
+<h2>Risks</h2>
+<ol>
+<li><strong>The operator's CLI, not the npm package, gates every capability.</strong> A machine on an older
+<code>claude</code> gets an SDK that offers <code>outputFormat</code> and a binary that ignores it. Phase 1's probe
+exists for this.</li>
+<li><strong>Bundling the SDK into the Foreman worker.</strong> The lazy <code>import()</code> in <code>sdk-deps.ts</code> is the
+only thing keeping the vendor bundle out of the eager path today. Most likely to fail late.</li>
+<li><strong><code>settingSources: []</code> changes what the model reads.</strong> Making runs deterministic is right,
+but it changes verdict inputs and must be A/B'd on real prompts.</li>
+<li><strong>Transcript continuity, which replaces the risk of losing transcripts.</strong> Persistence stays
+on, so the risk inverts: if the SDK one-shot writes its <code>.jsonl</code> anywhere other than where
+<code>headlessTranscriptDir()</code> looks, the sweep quietly stops covering headless runs and the
+directory grows forever. Silent in exactly the way <code>prune.ts:48-54</code> documents from the last
+time this went wrong.</li>
+<li><strong><code>spendReportIsRecordable</code> drops a report with no <code>runId</code>.</strong> The SDK's <code>session_id</code> must be
+captured off the result frame, or six role-tagged sites stop appearing in the automation line
+silently.</li>
+</ol>
+
+<h2>Adjacent findings, not in scope</h2>
+<ul>
+<li><strong>A latent bug in the live SDK driver - now owned, fixed in its own PR.</strong> <code>SDK_PERMISSION_MODES</code>
+(<code>sdk.ts:135-142</code>) accepts <code>bypassPermissions</code>, but the vendor requires that mode to be paired
+with <code>allowDangerouslySkipPermissions</code> (<code>sdk.d.ts:1777</code>), which the driver never passes. This
+affects interactive sessions today, is not gated on any phase here, and by decision ships
+separately rather than riding this migration.</li>
+<li><strong>Six <code>?? "claude"</code> sites</strong> in Foreman and the Inspector drop the <code>MISSION_LLM_RUNNER</code> env
+layer, contradicting a rule the codebase states explicitly three times.</li>
+<li><strong><code>LlmLitterSpec</code> is declared and never consumed.</strong> Either wire <code>goal/prune.ts</code> to it or
+delete it.</li>
+</ul>
+
+<footer>
+Rendering of <code>docs/plans/headless-agent-sdk/plan.md</code>, which is the source of truth.
+</footer>
+
+</div>
+</body>
+</html>
+</content>

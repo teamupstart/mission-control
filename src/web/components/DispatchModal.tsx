@@ -1494,13 +1494,12 @@ function DispatchModal({
         {editing && (
           <Tooltip label="Delete this task from the backlog">
             <button
-              // `btn-ghost` UNDER the danger modifier, which the Sitrep's copy does not need
-              // and this one does: there the neighbour is a filled `btn-send`, so a bordered
-              // ghost sits right, while every other control in THIS footer is borderless and
-              // a bordered Delete would carry more weight than Save. The danger hover rules
-              // are `!important` for exactly this layering, so the red border and tint on
-              // hover still arrive over the transparent resting state.
-              className="btn btn-ghost btn-danger-ghost"
+              // The same pair the Sitrep's Delete wears, and the same pair every other
+              // destructive control in the app wears (ReportPanel, WorkflowRuns,
+              // WorkflowLibrary, ActionBar): one class for the danger tone, none for the
+              // frame. Deleting a backlog task should look like itself wherever it is
+              // offered, so this deliberately does not get a bespoke weight for this footer.
+              className="btn btn-danger-ghost"
               onClick={() => void remove()}
               disabled={busy}
             >

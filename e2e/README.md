@@ -665,11 +665,9 @@ Attach the generated frames to the pull request; they are never committed.
 `e2e/.artifacts/backlog-task-delete/` carries four frames from
 `specs/backlog-task-delete.spec.ts`. `01-editor-footer.png` is the one the change exists for:
 the editor's footer reading `Delete  Save  Revert` on the left and `Cancel  Dispatch now` on
-the right. That Delete is *present* is a DOM assertion, but that it sits on the danger side
-without out-weighting Save is a question only a picture answers, and it is what moved the
-button from `btn btn-danger-ghost` to `btn btn-ghost btn-danger-ghost` - every other control
-in that row is borderless, so the app's usual bordered danger-ghost read as the heaviest
-thing in the footer.
+the right. That Delete is *present* is a DOM assertion; that it reads as the same control the
+Sitrep row offers, wearing the same `btn btn-danger-ghost` every destructive action in this
+app wears, is a question only a picture answers.
 
 `02-card-gone.png` is the Board column after the delete, one card and a count of 1.
 `03-refusal-stays-open.png` is the daemon's own refusal wording under the fields with the

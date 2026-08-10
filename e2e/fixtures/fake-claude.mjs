@@ -107,23 +107,25 @@ if (recordDir) {
   );
 }
 
-// --- headless one-shot mode (`claude -p`) ---------------------------------------------
+// --- headless one-shot modes -----------------------------------------------------------
 
 /**
  * The OTHER protocol this binary has to speak.
  *
- * `src/server/llm/claude-cli.ts` runs `claude -p --output-format json` for the app's
- * offline work - the task titler, Foreman's verdicts, the goal refiner, the Inspector -
- * and it is nothing like the session control protocol below. It is one shot: prompt on
- * stdin, a single JSON object on stdout, exit.
+ * App-owned work can arrive through either shipped transport. The print escape hatch runs
+ * `claude -p --output-format json`: prompt on stdin, one JSON object on stdout, exit. The
+ * default Agent SDK also uses a one-shot subprocess, but sends the prompt as a stream-json
+ * user frame and expects a stream-json result frame back.
  *
  * Worth stating plainly because it is the more expensive half in practice: a dispatch fires
- * the titler before the session ever starts, so an e2e run that faked only the session
- * would still have spent real tokens on every dispatch. The recorded argv from the first
- * run of this suite was `-p --output-format json --model claude-haiku-4-5`, which is a real
- * model id and a real bill.
+ * the titler before the session ever starts, so an e2e run that faked only the session would
+ * still have spent real tokens on every dispatch. `--setting-sources=` is the deliberate
+ * one-shot discriminator: app-owned SDK calls load no filesystem settings, while a live
+ * session names the user, project, and local sources it inherits.
  */
-if (process.argv.includes("-p")) {
+if (process.argv.includes("--setting-sources=")) {
+  runHeadlessSdk();
+} else if (process.argv.includes("-p")) {
   const chunks = [];
   process.stdin.on("data", (c) => chunks.push(c));
   process.stdin.on("end", () => {
@@ -222,6 +224,83 @@ function headlessAnswer(prompt) {
   // A fixed title, so the card's name is deterministic and a spec can assert on it
   // instead of on whatever the titler's fallback happens to title-case the task into.
   return "E2E Mock Session";
+}
+
+/** Speak the Agent SDK's one-shot stream protocol without becoming a live session. */
+function runHeadlessSdk() {
+  const schema = argvValue("--json-schema");
+  const rl = createInterface({ input: process.stdin });
+  let answered = false;
+
+  const emit = (frame) => {
+    process.stdout.write(`${JSON.stringify(frame)}\n`);
+  };
+
+  const finish = (prompt) => {
+    if (answered) return;
+    answered = true;
+    const answer = headlessAnswer(prompt);
+    let structuredOutput;
+    if (schema !== undefined) {
+      try {
+        structuredOutput = JSON.parse(answer);
+      } catch {
+        // Preserve the old fake's invalid-answer behavior for tests that deliberately make
+        // an unmarked structured call. The production schema parser must reject this string.
+        structuredOutput = answer;
+      }
+    }
+    emit({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: SESSION_ID,
+      result: answer,
+      ...(schema === undefined ? {} : { structured_output: structuredOutput }),
+    });
+    process.exit(0);
+  };
+
+  rl.on("line", (line) => {
+    if (!line.trim()) return;
+    let frame;
+    try {
+      frame = JSON.parse(line);
+    } catch {
+      return;
+    }
+
+    if (frame.type === "control_request") {
+      emit({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: frame.request_id,
+          response: frame.request?.subtype === "get_usage"
+            ? { rate_limits_available: false }
+            : {},
+        },
+      });
+      return;
+    }
+    if (frame.type !== "user") return;
+
+    const raw = frame.message?.content;
+    const prompt =
+      typeof raw === "string"
+        ? raw
+        : Array.isArray(raw)
+          ? raw.filter((block) => block?.type === "text").map((block) => block.text).join("\n")
+          : "";
+    if (
+      prompt.includes(SLOW_WORKFLOW_CONTEXT)
+      && prompt.includes("Compact workflow intent without rewriting it.")
+    ) {
+      setTimeout(() => finish(prompt), SLOW_WORKFLOW_CONTEXT_MS);
+    } else {
+      finish(prompt);
+    }
+  });
 }
 
 function runSession() {

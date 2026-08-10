@@ -766,17 +766,31 @@ test("the dispatched agent was launched headless, without the daemon's terminal 
   // covers locators, not the filesystem, so the retry has to be asked for explicitly.
   //
   // A dispatch launches the binary through TWO unrelated paths, and waiting for only one of
-  // them is how half the spend goes unnoticed. The titler is a one-shot `claude -p` from
-  // `llm/claude-cli.ts`; the session is the Agent SDK's `--input-format stream-json`. Both
-  // must land on the fake, or an e2e run bills a real account.
+  // them is how half the spend goes unnoticed. The titler is an app-owned Agent SDK one-shot
+  // with no setting sources; the session is a long-lived Agent SDK stream that inherits the
+  // interactive setting sources. Both must land on the fake, or an e2e run bills a real account.
   await expect
-    .poll(() => read().map((r) => (r.argv.includes("-p") ? "headless" : r.argv.includes("--input-format") ? "sdk" : "other")).sort(), {
-      message: "both the headless titler and the SDK session should have launched the fake",
+    .poll(() => read().map((r) => (
+      r.argv.includes("--setting-sources=")
+        ? "headless-sdk"
+        : r.argv.includes("--input-format")
+          ? "session-sdk"
+          : "other"
+    )).sort(), {
+      message: "both the headless SDK titler and the SDK session should have launched the fake",
     })
-    .toEqual(expect.arrayContaining(["headless", "sdk"]));
+    .toEqual(expect.arrayContaining(["headless-sdk", "session-sdk"]));
 
   const records = read();
-  const record = records.find((r) => r.argv.includes("--input-format"));
+  const oneShot = records.find((r) => r.argv.includes("--setting-sources="));
+  expect(oneShot?.argv).toEqual(
+    expect.arrayContaining(["--output-format", "stream-json", "--input-format", "stream-json"]),
+  );
+  expect(oneShot?.entrypoint).toBe("sdk-ts");
+
+  const record = records.find(
+    (r) => r.argv.includes("--input-format") && !r.argv.includes("--setting-sources="),
+  );
   expect(record).toBeDefined();
   if (!record) return;
 

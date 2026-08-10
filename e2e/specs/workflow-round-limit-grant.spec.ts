@@ -1,9 +1,28 @@
+import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+
+const EVIDENCE = artifactsDir("workflow-round-limit-grant");
+
+/**
+ * Photograph a state this spec has already asserted on.
+ *
+ * The assertions prove the button is there and the sentence reads right; neither shows a
+ * reader that the header now leads with a primary where it used to lead with a paragraph.
+ * Behind `MC_E2E_EVIDENCE` like every other capture in the suite.
+ */
+async function shoot(target: Page | Locator, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await target.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/workflow-round-limit-grant/${name}.png`);
+}
 
 /**
  * The dead end a round-limited run used to be, and the two things that now end it.
@@ -201,6 +220,9 @@ test("a run out of repair rounds offers the grant, and the grant revives it", as
   // The remedy the page used to name, pinned as gone: it pointed at the binding, and a
   // binding edit cannot reach the budget snapshot this run actually compares against.
   await expect(header).not.toContainText("A larger repair budget is a change to the binding");
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer.
+  await dashboard.mouse.move(0, 0);
+  await shoot(header, "01-out-of-rounds-offers-the-grant");
 
   await grant.click();
   const confirm = dashboard.getByRole("dialog");
@@ -230,6 +252,9 @@ test("a run out of repair rounds offers the grant, and the grant revives it", as
   await expect(grant).toHaveCount(0, { timeout: 20_000 });
   await expect(primary).toHaveCount(1);
   await expect(primary).toBeEnabled();
+
+  await dashboard.mouse.move(0, 0);
+  await shoot(header, "02-granted-hands-back-the-resume");
 });
 
 /**
@@ -277,7 +302,28 @@ test("the merge queue tells a spent gate apart from a working one", async ({
    * new head - and it has to name the way out, because there is no other one.
    */
   await expect(spent).not.toContainText("an active workflow still owns the Inspector final gate");
-  await expect(spent).toContainText("ran out of repair rounds");
-  await expect(spent).toContainText("will not clear on its own");
+  await expect(spent).toContainText("gave up");
   await expect(spent).toContainText(/grant|retire/i);
+
+  /*
+   * And it says the distinguishing part where a person can SEE it. This column is one
+   * ellipsized line, so `toContainText` alone is not enough - it reads `textContent`, which
+   * carries the whole label however much of it CSS has clipped away. The first draft of this
+   * label passed a text assertion while rendering "a workflow gate ran out of repair rou…",
+   * with the entire remedy hidden. So the rendered width is measured too.
+   */
+  const clipped = await spent.locator(".sc-standing").evaluate(
+    (el) => el.scrollWidth > el.clientWidth + 1,
+  );
+  if (clipped) {
+    const visible = await spent.locator(".sc-standing").evaluate((el) => {
+      const ratio = el.clientWidth / el.scrollWidth;
+      return (el.textContent ?? "").slice(0, Math.floor((el.textContent ?? "").length * ratio));
+    });
+    expect(visible, "the clipped label hides what makes it different from a working gate")
+      .toContain("gave up");
+  }
+
+  await dashboard.mouse.move(0, 0);
+  await shoot(ledger, "03-merge-queue-tells-them-apart");
 });

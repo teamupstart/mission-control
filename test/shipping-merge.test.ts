@@ -148,6 +148,25 @@ test("a workflow gate that spent its repair budget still vetoes, under its own r
   // re-tests the budget on every new head, so pushing more commits re-enters the block.
   assert.match(MERGE_BLOCK_LABEL["workflow-gate-spent"], /round/i);
   assert.match(MERGE_BLOCK_LABEL["workflow-gate-spent"], /grant|retire/i);
+
+  /*
+   * And it has to say it inside the width the panel actually gives it.
+   *
+   * `.sc-standing` is one line with `text-overflow: ellipsis`, so everything past roughly
+   * the first forty characters is invisible until somebody widens a column. That is a real
+   * trap rather than a hypothetical: the first draft of this label opened with "a workflow
+   * gate ran out of repair rou…" and hid the entire remedy behind the ellipsis, and no
+   * assertion caught it because `textContent` carries the whole string whatever CSS does
+   * with it. So the distinguishing words are pinned to the visible prefix.
+   */
+  const GLANCE = 40;
+  const spentGlance = MERGE_BLOCK_LABEL["workflow-gate-spent"].slice(0, GLANCE);
+  assert.notEqual(
+    spentGlance,
+    MERGE_BLOCK_LABEL["workflow-gate-pending"].slice(0, GLANCE),
+    "the two workflow blocks are indistinguishable in the width the panel renders",
+  );
+  assert.match(spentGlance, /gave up/i, "the permanence is not readable without hovering");
 });
 
 // The whole point of the feature is that the Inspector looked at THIS code. A review of a

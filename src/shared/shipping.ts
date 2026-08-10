@@ -72,9 +72,13 @@ export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
   "not-open": "the pull request is closed",
   draft: "still a draft",
   "workflow-gate-pending": "an active workflow still owns the Inspector final gate",
+  // Front-loaded deliberately. The Merge queue's standing column is one ellipsized line
+  // (`.sc-standing`), so roughly the first forty characters are all an operator reads
+  // without opening anything - and the two workflow blocks have to be told apart THERE.
+  // "gave up" and the surface that fixes it both land inside that budget; the remedy
+  // detail trails past the ellipsis where it costs nothing.
   "workflow-gate-spent":
-    "a workflow gate ran out of repair rounds - it will not clear on its own, "
-    + "so grant it more rounds or retire it on the run",
+    "a workflow gate gave up - open the run to grant more rounds or retire it",
   "not-reviewed": "the Inspector has not reviewed this push yet",
   findings: "the Inspector has open findings",
   threads: "there are unresolved review threads",

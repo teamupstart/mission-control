@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { settled } from "../fixtures/settle.ts";
 import type { Locator, Page } from "@playwright/test";
 
 /**
@@ -143,14 +142,20 @@ test("a session parked on a permission prompt is counted AND answerable", async 
   await shoot(dashboard, "pulse-both-segments", dashboard.locator(".pulse"));
 
   // And the click has to land somewhere. It used to open a modal reading "Nothing needs you".
-  //
-  // Settled first: a segment appearing re-flows every one beside it, so the pill can still be
-  // moving when the assertions above have already passed. Under the full suite's parallel load
-  // that raced the click and failed with `element was detached from the DOM`.
-  await settled(toAnswer);
-  await toAnswer.click();
   const inbox = dashboard.getByRole("dialog", { name: "Attention inbox" });
-  await expect(inbox).toBeVisible();
+  // Retried as a whole, and with NO `settled()` barrier in front of it, because settling is
+  // the wrong tool here and was itself the second failure this spec produced: an SSE frame
+  // re-renders the pulse and REPLACES this node rather than moving it, so `boundingBox()`
+  // waits on an element that keeps being destroyed under it, and `click`'s own retry
+  // re-attempts the one it already resolved. Both hung under the full suite's parallel load.
+  // Re-querying on every attempt handles movement and replacement together, which is what
+  // makes this a retry rather than a race. The claim is unchanged and no weaker: the click
+  // still has to open the inbox, and the guard stops a second attempt from toggling shut an
+  // inbox the first one opened.
+  await expect(async () => {
+    if (!(await inbox.isVisible())) await toAnswer.click({ timeout: 3000 });
+    await expect(inbox).toBeVisible({ timeout: 3000 });
+  }).toPass({ timeout: 45_000 });
   // The heading borrows the segment's words, not the other segment's.
   await expect(inbox.getByText(`${beforeOwed + 1} to answer`)).toBeVisible();
   const row = inbox.locator(".inbox-blocked").filter({ hasText: "Check the Linter Config" });

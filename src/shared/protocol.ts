@@ -1629,6 +1629,25 @@ export const LayoutModeSchema = z.enum(LAYOUT_MODES);
 export type LayoutMode = (typeof LAYOUT_MODES)[number];
 
 /**
+ * How one session's Conversation is DRAWN - the same rows, read two ways.
+ *
+ * `chat` is the shipped log: role bylines, bubbles, tool chips. `terminal` is the Native
+ * PTY reading (`docs/plans/conversation-native-pty/plan.md`): human turns as prompt
+ * lines, agent turns as stdout under a speaker header, tool runs folded into disclosure
+ * records, inside a titlebar/status-line frame.
+ *
+ * A named set rather than a boolean, and here beside `LAYOUT_MODES` for the same reason:
+ * the daemon validates a stored value against the one list the render switch branches on.
+ * The conversation study drew three concepts and this is the second to ship, so a
+ * `terminalConversation: boolean` would have to be renamed the first time a third reading
+ * arrives - and this key is persisted on operators' machines.
+ */
+export const CONVERSATION_VIEWS = ["chat", "terminal"] as const;
+export const ConversationViewSchema = z.enum(CONVERSATION_VIEWS);
+/** Derived from the array, not from the schema, so reading it costs the web no zod. */
+export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
+
+/**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
  * whether messages render as markdown. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig/HarnessesConfig, so a new key needs no migration.
@@ -1655,6 +1674,7 @@ export type LayoutMode = (typeof LAYOUT_MODES)[number];
  */
 export const UI_CONFIG_DEFAULTS = {
   layout: "grid",
+  conversationView: "chat",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -1664,6 +1684,13 @@ export const UI_CONFIG_DEFAULTS = {
 
 export const UiConfigSchema = z.object({
   layout: LayoutModeSchema.default(UI_CONFIG_DEFAULTS.layout),
+  /**
+   * Which rendering the Conversation opens in. `chat` by default: the terminal reading is
+   * a deliberate choice about how you want to read a session, not a change anyone should
+   * arrive at. A per-session override lives in the browser only and never reaches here -
+   * see `src/web/lib/conversation-view.ts` for why that one is honestly tab-scoped.
+   */
+  conversationView: ConversationViewSchema.default(UI_CONFIG_DEFAULTS.conversationView),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon

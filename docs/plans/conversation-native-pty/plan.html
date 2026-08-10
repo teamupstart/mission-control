@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Conversation native PTY rendering</title>
+  <style>
+    :root {
+      --paper: #eef1f5;
+      --panel: #fbfcfe;
+      --ink: #131a21;
+      --muted: #57646f;
+      --line: #c7cfd8;
+      --strong-line: #8b98a5;
+      --accent: #1b5f8c;
+      --accent-soft: #d9e9f4;
+      --signal: #b1522a;
+      --signal-soft: #f6e0d5;
+      --code: #0a0f14;
+      --code-ink: #d5e7f4;
+      --shadow: 0 14px 42px rgba(20, 34, 46, .1);
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #0f1418;
+        --panel: #171e24;
+        --ink: #e9f0f6;
+        --muted: #a7b4bf;
+        --line: #31404b;
+        --strong-line: #5c6d7a;
+        --accent: #74c7f1;
+        --accent-soft: #17313f;
+        --signal: #f0a173;
+        --signal-soft: #45291c;
+        --code: #070a0e;
+        --code-ink: #cbe4f5;
+        --shadow: 0 18px 52px rgba(0, 0, 0, .3);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 0;
+      background:
+        linear-gradient(var(--line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line) 1px, transparent 1px),
+        var(--paper);
+      background-size: 32px 32px;
+      color: var(--ink);
+      font: 16px/1.6 var(--sans);
+    }
+    a { color: var(--accent); text-underline-offset: .18em; }
+    a:hover { text-decoration-thickness: 2px; }
+    code { font-family: var(--mono); font-size: .9em; }
+    main { width: min(1160px, calc(100% - 32px)); margin: 32px auto 72px; }
+    .sheet {
+      overflow: hidden;
+      border: 1px solid var(--strong-line);
+      border-radius: 20px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .masthead {
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) minmax(240px, .5fr);
+      gap: 28px;
+      padding: clamp(28px, 5vw, 64px);
+      border-bottom: 1px solid var(--line);
+    }
+    .kicker, .eyebrow {
+      color: var(--accent);
+      font: 700 12px/1.2 var(--mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 820px;
+      margin: 12px 0 16px;
+      font-size: clamp(38px, 6.6vw, 78px);
+      line-height: .95;
+      letter-spacing: -.055em;
+    }
+    .lede { max-width: 720px; margin: 0; color: var(--muted); font-size: 19px; }
+    .status-card {
+      align-self: end;
+      border-left: 4px solid var(--signal);
+      padding: 4px 0 4px 18px;
+    }
+    .status-card strong { display: block; margin: 5px 0; font-size: 21px; }
+    .status-card p { margin: 0; color: var(--muted); }
+    .toplinks { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+    .toplinks a {
+      border: 1px solid var(--strong-line);
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: var(--paper);
+      color: var(--ink);
+      font: 650 13px/1.2 var(--mono);
+      text-decoration: none;
+    }
+    .toplinks a:first-child { border-color: var(--accent); background: var(--accent); color: var(--panel); }
+    .content { padding: clamp(24px, 5vw, 60px); }
+    .decision {
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      gap: 22px;
+      margin-bottom: 52px;
+      padding: 24px;
+      border: 1px solid var(--accent);
+      border-radius: 14px;
+      background: var(--accent-soft);
+    }
+    .decision p { margin: 0; font-size: 18px; }
+    section { margin: 58px 0; scroll-margin-top: 20px; }
+    h2 { margin: 0 0 18px; font-size: clamp(26px, 4vw, 42px); line-height: 1.05; letter-spacing: -.035em; }
+    h3 { margin: 0 0 8px; font-size: 18px; }
+    p { max-width: 78ch; }
+    .facts, .experience, .checks {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .fact, .experience article, .check {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      background: color-mix(in srgb, var(--panel) 90%, var(--paper));
+    }
+    .fact b { display: block; margin-bottom: 6px; color: var(--accent); font: 700 13px/1.2 var(--mono); }
+    .fact p, .experience p, .check p { margin: 0; color: var(--muted); font-size: 14px; }
+    .flow {
+      overflow: hidden;
+      border: 1px solid var(--strong-line);
+      border-radius: 16px;
+      background: var(--code);
+      color: var(--code-ink);
+      padding: 16px;
+      margin: 0;
+    }
+    .flow svg { display: block; width: 100%; height: auto; min-height: 260px; }
+    .flow text { fill: var(--code-ink); font-family: var(--mono); }
+    .flow .node { fill: #142230; stroke: #6fb3d8; stroke-width: 1.5; }
+    .flow .new { fill: #2e2118; stroke: #f0b761; }
+    .flow .edge { stroke: #7ba7c2; stroke-width: 2; fill: none; }
+    .flow .branch { stroke: #f0b761; }
+    .flow figcaption { color: #9dc0d6; font: 13px/1.5 var(--mono); }
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, .48fr);
+      gap: 28px;
+      align-items: start;
+    }
+    ol.requirements { margin: 0; padding: 0; list-style: none; counter-reset: req; }
+    .requirements li {
+      counter-increment: req;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+      padding: 13px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .requirements li::before {
+      content: "R" counter(req);
+      color: var(--accent);
+      font: 700 12px/1.7 var(--mono);
+    }
+    .warning {
+      border-top: 4px solid var(--signal);
+      border-radius: 10px;
+      padding: 20px;
+      background: var(--signal-soft);
+    }
+    .warning h3 { color: var(--signal); }
+    .warning ul, .plain-list { margin: 12px 0 0; padding-left: 20px; }
+    .warning li, .plain-list li { margin: 7px 0; }
+    .scroller { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--accent); font: 700 12px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+    td code { white-space: nowrap; }
+    .acceptance {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--line);
+    }
+    .acceptance div { position: relative; padding: 18px 18px 18px 48px; background: var(--panel); }
+    .acceptance div::before {
+      content: "✓";
+      position: absolute;
+      left: 18px;
+      color: var(--accent);
+      font-weight: 800;
+    }
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px clamp(24px, 5vw, 60px);
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font: 12px/1.4 var(--mono);
+    }
+    @media (max-width: 820px) {
+      .masthead, .decision, .split { grid-template-columns: 1fr; }
+      .facts, .experience, .checks { grid-template-columns: 1fr 1fr; }
+      .status-card { align-self: auto; }
+    }
+    @media (max-width: 560px) {
+      main { width: min(100% - 16px, 1160px); margin-top: 8px; }
+      .sheet { border-radius: 12px; }
+      .facts, .experience, .checks, .acceptance { grid-template-columns: 1fr; }
+      .masthead, .content { padding: 24px 18px; }
+      .decision { padding: 18px; }
+      .footer { flex-direction: column; padding: 18px; }
+      .flow { padding: 8px; }
+      .flow svg { min-height: 420px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <main>
+    <article class="sheet">
+      <header class="masthead">
+        <div>
+          <div class="kicker">Mission Control / Product plan / Concept 01</div>
+          <h1>Read the session as the process it already is.</h1>
+          <p class="lede">A second, selectable rendering of Conversation: prompt lines in, stdout out, tool runs folded, a titlebar above and a live status line below. Same stream, same composer, same rows - a different reading of them.</p>
+          <nav class="toplinks" aria-label="Plan resources">
+            <a href="../../archive/mockups/conversation-terminal/01-native-pty.html">Open the Native PTY mockup</a>
+            <a href="../../archive/mockups/conversation-terminal/index.html">Compare all mockups</a>
+            <a href="../conversation-activity-sideband/plan.html">Sibling plan (concept 02)</a>
+            <a href="plan.md">Markdown source</a>
+          </nav>
+        </div>
+        <aside class="status-card">
+          <span class="eyebrow">Decision recorded</span>
+          <strong>Approved for implementation</strong>
+          <p>Mockup 01 ships as a selectable rendering on August 9, 2026. The current view stays the default.</p>
+        </aside>
+      </header>
+
+      <div class="content">
+        <div class="decision">
+          <div class="eyebrow">The promise</div>
+          <p>Draw the transcript Mission Control already holds as a terminal stream, and say only what it recorded. No fabricated tool status, no exit codes, and no duration beyond a labelled span between two real timestamps.</p>
+        </div>
+
+        <section id="problem">
+          <div class="eyebrow">Problem</div>
+          <h2>A chat log is the wrong metaphor twice over.</h2>
+          <p>An agent session <em>is</em> a process. The operator is watching a program work, and the facts they need while watching it - is it running, on which pid, on which branch, how much context is left - live on the card behind the panel, in a different visual language, and not in the reader's eye while they read. Meanwhile a long stretch of tool work renders as a column of chat rows that say nothing a shell would not have said in one line.</p>
+          <div class="facts">
+            <article class="fact"><b>ALREADY HELD</b><p><code>TranscriptPanel</code> receives the whole session, so pid, branch, state and context need no new prop.</p></article>
+            <article class="fact"><b>ALREADY FOLDED</b><p><code>transcriptRows()</code> folds runs of tool-only turns - the exact fold the mockup's disclosure record draws.</p></article>
+            <article class="fact"><b>NOT RECORDED</b><p><code>ToolCall</code> carries a name and a capped input. No status, no exit code, no duration.</p></article>
+          </div>
+        </section>
+
+        <section id="experience">
+          <div class="eyebrow">Intended experience</div>
+          <h2>One list of rows, two renderings of it.</h2>
+          <div class="experience">
+            <article><h3>Human turn</h3><p>A prompt line: <code>you@mission ~/repo ❯ text</code>. The host part is the turn's real author, so a turn Foreman typed reads <code>foreman@mission</code>.</p></article>
+            <article><h3>Agent turn</h3><p>A stdout block under a <code>&lt;agent&gt; / stdout</code> speaker header with its timestamp. Markdown and find highlighting behave exactly as they do today.</p></article>
+            <article><h3>Tool run</h3><p>A closed disclosure - <code>codex executed 3 commands · 1.8s</code> - listing the full command or path per call when opened.</p></article>
+            <article><h3>Frame</h3><p>Window lights, <code>mission-control: conversation · agent · shell</code>, and an attach indicator driven by the transcript stream's own state.</p></article>
+            <article><h3>Composer</h3><p>A <code>mission ❯</code> label and an <code>enter sends</code> hint around the same uncontrolled box, with the same draft, attachments and Enter behaviour.</p></article>
+            <article><h3>Status line</h3><p>Run state, <code>pid</code>, branch, context percentage, and a legend of the operator's own chords for terminal / diff / complete / kill.</p></article>
+          </div>
+          <p style="margin-top:22px">Foreman episodes and answered reviews keep their existing cards. They are not transcript stdout and must not be dressed as it. Everything else the panel owns survives untouched in both renderings: the SSE stream and its reconnect, scrollback paging, pending turns, attachments and the drop veil, the find bar and rail, the observed-activity sideband, and the launcher strip.</p>
+        </section>
+
+        <section id="honesty">
+          <div class="eyebrow">Constraint</div>
+          <h2>What the honesty contract rules out.</h2>
+          <div class="split">
+            <div>
+              <p>The sideband plan's rule applies here unchanged: the interface may say what the transcript recorded, and must not imply what it did not.</p>
+              <p>Where the mockup shows <code>codex executed 3 commands · 1.8s</code>, the honest reading is the <strong>span between the first and last turn in that folded run</strong> - arithmetic over two recorded timestamps. It is shown only when the run holds more than one turn and the span is positive, and it is labelled as the span it is. A one-turn run shows the count alone.</p>
+            </div>
+            <aside class="warning">
+              <h3>Not rendered</h3>
+              <ul>
+                <li>The mockup's <code>done</code> marker before each command - there is no result.</li>
+                <li>An exit code, a status, or an output size for any tool call.</li>
+                <li>A duration for a single tool call.</li>
+                <li>A shell name. The titlebar prints the session's tty, or its runtime.</li>
+              </ul>
+            </aside>
+          </div>
+        </section>
+
+        <section id="flow">
+          <div class="eyebrow">Data and request flow</div>
+          <h2>No server path changes.</h2>
+          <p>The preference rides the existing UI-config route, and the rendering is a second projection of rows the panel already holds. Amber marks what this plan adds.</p>
+          <figure class="flow">
+            <svg viewBox="0 0 980 400" role="img" aria-labelledby="flow-title flow-desc">
+              <title id="flow-title">Transcript and preference flow into one of two renderings</title>
+              <desc id="flow-desc">Transcript files reach the panel through the existing parser and SSE stream, are folded into one row list, and are drawn by either the chat rendering or the new terminal rendering. The rendering is chosen by resolving a per-session override map over the daemon-persisted UI config.</desc>
+
+              <rect class="node" x="14" y="24" width="168" height="52" rx="9"></rect>
+              <text x="98" y="46" text-anchor="middle" font-size="13">Harness transcript</text>
+              <text x="98" y="64" text-anchor="middle" font-size="13">files</text>
+
+              <rect class="node" x="212" y="24" width="168" height="52" rx="9"></rect>
+              <text x="296" y="46" text-anchor="middle" font-size="13">Transcript parser</text>
+              <text x="296" y="64" text-anchor="middle" font-size="13">+ per-session SSE</text>
+
+              <rect class="node" x="410" y="24" width="180" height="52" rx="9"></rect>
+              <text x="500" y="46" text-anchor="middle" font-size="13">TranscriptPanel</text>
+              <text x="500" y="64" text-anchor="middle" font-size="13">messages</text>
+
+              <rect class="node" x="620" y="24" width="200" height="52" rx="9"></rect>
+              <text x="720" y="46" text-anchor="middle" font-size="13">transcriptRows +</text>
+              <text x="720" y="64" text-anchor="middle" font-size="13">mergeConversation</text>
+
+              <path class="edge" d="M182 50 H206" marker-end="url(#a)"></path>
+              <path class="edge" d="M380 50 H404" marker-end="url(#a)"></path>
+              <path class="edge" d="M590 50 H614" marker-end="url(#a)"></path>
+
+              <rect class="node" x="620" y="150" width="200" height="52" rx="9"></rect>
+              <text x="720" y="172" text-anchor="middle" font-size="13">Chat rendering</text>
+              <text x="720" y="190" text-anchor="middle" font-size="13">(default, unchanged)</text>
+
+              <rect class="node new" x="620" y="234" width="200" height="52" rx="9"></rect>
+              <text x="720" y="256" text-anchor="middle" font-size="13">Terminal rendering</text>
+              <text x="720" y="274" text-anchor="middle" font-size="13">(new)</text>
+
+              <path class="edge" d="M720 76 V110 H598 V176 H614" marker-end="url(#a)"></path>
+              <path class="edge" d="M598 176 V260 H614" marker-end="url(#a)"></path>
+
+              <rect class="node" x="14" y="150" width="200" height="52" rx="9"></rect>
+              <text x="114" y="172" text-anchor="middle" font-size="13">app_config.ui</text>
+              <text x="114" y="190" text-anchor="middle" font-size="13">.conversationView</text>
+
+              <rect class="node" x="14" y="234" width="200" height="52" rx="9"></rect>
+              <text x="114" y="256" text-anchor="middle" font-size="13">GET / PUT</text>
+              <text x="114" y="274" text-anchor="middle" font-size="13">/api/ui/config</text>
+
+              <rect class="node" x="14" y="318" width="200" height="52" rx="9"></rect>
+              <text x="114" y="340" text-anchor="middle" font-size="13">uiConfig store</text>
+              <text x="114" y="358" text-anchor="middle" font-size="13">(module level)</text>
+
+              <rect class="node new" x="252" y="318" width="220" height="52" rx="9"></rect>
+              <text x="362" y="340" text-anchor="middle" font-size="13">session override Map</text>
+              <text x="362" y="358" text-anchor="middle" font-size="13">(tab-scoped, transient)</text>
+
+              <rect class="node new" x="512" y="318" width="240" height="52" rx="9"></rect>
+              <text x="632" y="340" text-anchor="middle" font-size="13">resolveConversationView</text>
+              <text x="632" y="358" text-anchor="middle" font-size="13">override ?? global</text>
+
+              <path class="edge" d="M114 202 V234" marker-end="url(#a)"></path>
+              <path class="edge" d="M114 286 V318" marker-end="url(#a)"></path>
+              <path class="edge" d="M214 344 H246" marker-end="url(#a)"></path>
+              <path class="edge branch" d="M472 344 H506" marker-end="url(#b)"></path>
+              <path class="edge branch" d="M752 344 H900 V260 H826" marker-end="url(#b)"></path>
+              <path class="edge branch" d="M900 260 V176 H826" marker-end="url(#b)"></path>
+              <text x="900" y="300" text-anchor="middle" font-size="11" fill="#f0b761">selects</text>
+
+              <defs>
+                <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M0 0 L10 5 L0 10 z" fill="#7ba7c2"></path>
+                </marker>
+                <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M0 0 L10 5 L0 10 z" fill="#f0b761"></path>
+                </marker>
+              </defs>
+            </svg>
+            <figcaption>One row list, two renderings. The chosen rendering is resolved per session: override when set, global preference otherwise.</figcaption>
+          </figure>
+        </section>
+
+        <section id="switches">
+          <div class="eyebrow">Choosing a rendering</div>
+          <h2>One global default, one transient override.</h2>
+          <div class="scroller">
+            <table>
+              <thead>
+                <tr><th>Switch</th><th>Where it lives</th><th>Scope</th><th>Why that shape</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Global default</strong><br><code>conversationView</code></td>
+                  <td><code>UiConfigSchema</code> + <code>UI_CONFIG_DEFAULTS</code>, <code>uiCache.coerce()</code>, a hook in <code>src/web/lib/</code>, a radio group in Settings → Display with a <code>data-anchor</code>, a <code>SETTINGS_CONTROLS</code> entry.</td>
+                  <td>Per machine, persisted by the daemon. No new route, no migration.</td>
+                  <td>An enum rather than a boolean, because the study produced three concepts and <code>LAYOUT_MODES</code> is the precedent for a named set of renderings validated in one place.</td>
+                </tr>
+                <tr>
+                  <td><strong>Per-session override</strong></td>
+                  <td>A module-level <code>Map</code> keyed by session id, beside the hook, with a toggle in the conversation pane's launcher strip.</td>
+                  <td>The tab. Dropped on <code>session_remove</code>, gone on reload.</td>
+                  <td>There is no precedent for a persisted per-session UI preference and this plan does not create one. <code>drafts.ts</code> is the precedent for honestly transient per-session state.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p style="margin-top:18px">Precedence is explicit and stated in one function: <strong>session override when set, global preference otherwise.</strong> A reload starts over from the global preference.</p>
+        </section>
+
+        <section id="geometry">
+          <div class="eyebrow">Both mounts</div>
+          <h2>The frame has to survive the narrow card.</h2>
+          <p>The terminal frame is a flex column inside <code>.transcript</code>, so it inherits the height contract the panel already gives the log and both hosts keep their <code>max-height: none</code> overrides. At the existing <code>@container (max-width: 560px)</code> breakpoint - which the expanded card crosses and the console detail does not - the frame drops the centred title, drops the <code>enter sends</code> hint and the context percentage, and wraps the status line rather than clipping it.</p>
+          <div class="facts">
+            <article class="fact"><b>LOAD-BEARING</b><p><code>.transcript → .find-split → .find-logwrap → .transcript-log</code>: <code>min-height: 0</code> at every link, one scrolling surface.</p></article>
+            <article class="fact"><b>ONE CONTAINER</b><p><code>.transcript</code> carries <code>container-type</code>. A container query cannot style its own container - the reason #444 had to move it.</p></article>
+            <article class="fact"><b>NEVER CLIPPED</b><p>The status line is <code>flex: none</code> and wraps. If the container pass leaves doubt, the Electron geometry test measures it.</p></article>
+          </div>
+        </section>
+
+        <section id="requirements">
+          <div class="eyebrow">Requirements</div>
+          <h2>What has to be true.</h2>
+          <ol class="requirements">
+            <li><span>Render the approved mockup's five elements from data the transcript and session already carry: prompt lines, stdout blocks under a speaker header, folded disclosure records, a titlebar with a live attach indicator, and a status line with run state, pid, branch, context and the chord legend.</span></li>
+            <li><span>Derive every rendering from the existing <code>mergeConversation(transcriptRows(messages))</code> list, so find hits keep addressing the rows the reader can see.</span></li>
+            <li><span>Make no claim the transcript does not carry: no tool status, no exit codes, and no duration beyond a labelled span between two recorded timestamps.</span></li>
+            <li><span>Preserve the chat rendering as the default and preserve every behaviour of the panel in both renderings: stream and reconnect, scrollback paging, pending turns, attachments, find bar and rail, observed-activity sideband, launchers, Foreman and review rows.</span></li>
+            <li><span>Add the global preference through the existing display-preference path only - schema, defaults, cache coercion, hook, settings control with <code>data-anchor</code>, search entry. No new route and no migration.</span></li>
+            <li><span>Add the per-session override as transient tab-scoped state in a module-level keyed Map, collected on <code>session_remove</code>. Do not create a second settings store, and do not persist it.</span></li>
+            <li><span>Resolve precedence in one place: session override when set, global preference otherwise.</span></li>
+            <li><span>Keep both mounts working across the existing <code>@container (max-width: 560px)</code> breakpoint, with the status line visible and unclipped in the expanded card.</span></li>
+            <li><span>Use roles, labels and placeholders for every new control; add no <code>data-testid</code>.</span></li>
+            <li><span>Document the rendering and its two switches where Conversation behaviour is described.</span></li>
+          </ol>
+        </section>
+
+        <section id="non-goals">
+          <div class="eyebrow">Non-goals</div>
+          <h2>What this is not.</h2>
+          <ul class="plain-list">
+            <li>Attaching to a real PTY, or streaming real process output. This renders the transcript Mission Control already has; the terminal is a reading, not a connection.</li>
+            <li>Replacing, restyling or retiring the chat rendering.</li>
+            <li>A third rendering. Concept 03 is out of scope, though the enum leaves room for it.</li>
+            <li>Persisting the per-session override, or adding any per-session settings store.</li>
+            <li>New server events, tables, routes, migrations, hook payloads or transcript parsing.</li>
+            <li>New action paths for terminal / diff / complete / kill. Those four already have one home each, and a second control path to <code>kill</code> is exactly what this repository forbids - so the status line teaches the chords rather than duplicating the buttons.</li>
+            <li>Changing the find, sideband, pending-turn, attachment or paging contracts.</li>
+          </ul>
+        </section>
+
+        <section id="compatibility">
+          <div class="eyebrow">Compatibility and privacy</div>
+          <h2>One field, one shipped default.</h2>
+          <p>No wire contract, persisted schema or harness protocol changes. <code>UiConfigSchema</code> gains one field with a shipped default, so an existing <code>app_config.ui</code> blob parses unchanged and an older blob reads as <code>chat</code>. A cache written by a newer build and read by an older one is already handled by <code>coerce()</code>'s field-by-field rule.</p>
+          <p>The terminal rendering shows nothing the chat rendering does not already show, with one deliberate difference: a folded run lists <code>toolChip().title</code>, the uncapped command or path, where the chat chip shows it in a tooltip. That string is already on screen today on hover and already governed by the same <code>TOOL_INPUT_CAP</code>, so this exposes no new input - it moves a hover into a disclosure the reader opens.</p>
+        </section>
+
+        <section id="verification">
+          <div class="eyebrow">Verification strategy</div>
+          <h2>Proven in a browser, not in a diff.</h2>
+          <div class="checks">
+            <article class="check"><h3>Unit</h3><p>Row projection and the folded-run span; the config field in the store and cache tests; the settings control in the search and sidebar-render tests; override precedence in its own test.</p></article>
+            <article class="check"><h3>Markup</h3><p><code>renderToStaticMarkup</code> pins the honest status line: no pid row when the session reports none, no context when unknown, attach indicator following the stream state.</p></article>
+            <article class="check"><h3>Browser</h3><p>A Playwright spec against fake agents: switch the global preference by <code>PUT /api/ui/config</code> and reload, assert the prompt line, the folded run and the status line, then assert the override wins. No model tokens.</p></article>
+            <article class="check"><h3>Geometry</h3><p>The Electron test, only if the container-query pass leaves doubt that the status line survives the narrow breakpoint unclipped.</p></article>
+            <article class="check"><h3>Gates</h3><p>typecheck, lint, unit tests, build, bundle smoke tests, and the Playwright suite.</p></article>
+            <article class="check"><h3>Eyes</h3><p>Both renderings compared against the mockup at console-detail and expanded-card widths, captured and attached to the pull request.</p></article>
+          </div>
+        </section>
+
+        <section id="acceptance">
+          <div class="eyebrow">Acceptance criteria</div>
+          <h2>Done means this.</h2>
+          <div class="acceptance">
+            <div>With the preference set to Terminal, the Conversation reads as one terminal stream: a prompt line for what the operator typed, a stdout block for what the agent said, a folded record for a run of tool calls, a titlebar above and a status line below.</div>
+            <div>The status line carries this session's real run state, pid, branch and context, and says nothing when a fact is absent.</div>
+            <div>One session can be read as a terminal while the rest stay on the current view, and that choice disappears with the tab.</div>
+            <div>The default is unchanged, and every existing Conversation behaviour works identically in both renderings.</div>
+            <div>Both mounts render the frame without clipping the status line at their own widths.</div>
+            <div>Automated browser coverage proves the switch, the precedence and the rendering through the built dashboard.</div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="footer">
+        <span>docs/plans/conversation-native-pty/plan.html</span>
+        <span>Rendering of plan.md · Mission Control</span>
+      </footer>
+    </article>
+  </main>
+</body>
+</html>

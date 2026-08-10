@@ -1,5 +1,5 @@
-import { LAYOUT_MODES, UI_CONFIG_DEFAULTS } from "@shared/protocol.ts";
-import type { LayoutMode, UiConfig } from "@shared/protocol.ts";
+import { CONVERSATION_VIEWS, LAYOUT_MODES, UI_CONFIG_DEFAULTS } from "@shared/protocol.ts";
+import type { ConversationView, LayoutMode, UiConfig } from "@shared/protocol.ts";
 
 /**
  * The synchronous first-paint cache for the dashboard's preferences, and the ONLY module
@@ -76,9 +76,18 @@ function parseLayout(raw: string | undefined): LayoutMode {
     : UI_CONFIG_DEFAULTS.layout;
 }
 
+/** Same rule as the layout above, for the same reason: an unrecognised rendering is the
+ *  shipped one, never a string adopted from this cache and PUT to the daemon as real. */
+function parseConversationView(raw: string | undefined): ConversationView {
+  return (CONVERSATION_VIEWS as readonly string[]).includes(raw ?? "")
+    ? (raw as ConversationView)
+    : UI_CONFIG_DEFAULTS.conversationView;
+}
+
 function coerce(raw: Partial<UiConfig> | null): UiConfig {
   return {
     layout: parseLayout(raw?.layout),
+    conversationView: parseConversationView(raw?.conversationView),
     keybindings: raw?.keybindings ?? UI_CONFIG_DEFAULTS.keybindings,
     alerts: {
       notifications: raw?.alerts?.notifications ?? UI_CONFIG_DEFAULTS.alerts.notifications,

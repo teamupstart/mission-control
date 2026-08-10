@@ -8,6 +8,7 @@ import type {
   TranscriptStreamMsg,
   Session,
 } from "@shared/types.ts";
+import type { ConversationView } from "@shared/protocol.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
@@ -30,7 +31,7 @@ import {
   resumeTail,
   seedTail,
 } from "../lib/transcript-history.ts";
-import { toolChip, transcriptRows } from "../lib/tools.ts";
+import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeConversation } from "../lib/episodes.ts";
 import {
@@ -40,6 +41,7 @@ import {
   buildMatcher,
   splitForHighlight,
   stepIndex,
+  toolLineText,
   toolSearchText,
   turnWho,
   type FindHit,
@@ -48,6 +50,9 @@ import {
 import { ConversationActivity } from "./ConversationActivity.tsx";
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
+import { TerminalStatusLine, TerminalTitlebar } from "./ConversationTerminal.tsx";
+import { useSessionConversationView } from "../lib/conversation-view.ts";
+import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
 import { useRichText } from "../lib/rich-text.ts";
@@ -279,10 +284,39 @@ export function TranscriptPanel({
    */
   const rows = mergeConversation(transcriptRows(messages), episodes, reviews);
   const agentLabel = AGENT_IDENTITY[agent].speaker;
+  /**
+   * Which rendering this conversation is drawn in - the shipped chat log, or the Native
+   * PTY terminal stream. One resolved answer, from one module: this session's own
+   * override if it has one, the daemon-stored default otherwise.
+   *
+   * It changes only the DRAWING. Everything below this line - the stream, the paging, the
+   * find state, the pending turns, the composer's draft and attachments - is shared, and
+   * that is the whole design: a second conversation implementation is how the two would
+   * drift apart on the next fix that only landed in one of them.
+   */
+  const { view, overridden, setView } = useSessionConversationView(sessionId);
+  const terminal = view === "terminal";
+  // The prompt's `~/leaf`, not the whole checkout: a worktree path is 60 characters of
+  // pool bookkeeping and the strip directly above already prints it in full. `promptPath`
+  // owns the whole displayed string, prefix included - see its note on why a leaf plus a
+  // renderer that adds `~/` is the wrong split.
+  const promptCwd = promptPath(session.cwd);
 
   // Derived, never stored. A streamed turn arriving re-runs the search, which is what
   // keeps the count honest as the conversation grows underneath an open find.
-  const allHits = find ? collectHits(rows, find.query, { caseSensitive: find.caseSensitive }, agentLabel) : [];
+  // Searched with the text the CURRENT rendering puts on screen. The terminal record
+  // shows a call's literal input where a chat chip shows the capped summary, so the two
+  // renderings have different visible text for the same call - and this module's whole
+  // contract is that what is counted is what can be seen.
+  const allHits = find
+    ? collectHits(
+        rows,
+        find.query,
+        { caseSensitive: find.caseSensitive },
+        agentLabel,
+        terminal ? toolLineText : toolSearchText,
+      )
+    : [];
   const hits = find ? hitsInScope(allHits, find.scope) : [];
   // Clamped on read rather than stored clamped: the hit list changes shape as the
   // query, the scope, and the transcript itself move, and a stored index that outlived
@@ -664,16 +698,15 @@ export function TranscriptPanel({
 
   const latestEditable = latestEditablePendingTurn(session.pendingTurns);
 
-  return (
-    // Stop clicks inside the panel from re-selecting / collapsing the card. The accent
-    // is set here rather than per turn: every assistant byline in this log belongs to
-    // the same harness, and the stylesheet then names no agent to colour them.
-    <div
-      className="transcript"
-      style={agentAccentStyle(agent)}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <SessionLaunchers session={session} registerLaunchers={registerLaunchers} />
+  /**
+   * The conversation itself - the log and the box you answer it in.
+   *
+   * Held in a variable rather than duplicated down two branches so the terminal frame can
+   * wrap exactly this, and so there is no chance of a fix landing on one rendering's copy
+   * of the composer and not the other's.
+   */
+  const conversation = (
+    <>
       {/* The split's secondary column has exactly one owner at a time: find while it
           is open, Observed activity otherwise. Both render at the same width, so the
           takeover and the restore never reflow the conversation being read - and the
@@ -736,11 +769,33 @@ export function TranscriptPanel({
               ) : row.kind === "review" ? (
                 <ReviewAnswerCard key={`rv-${row.review.id}`} review={row.review} />
               ) : row.kind === "tools" ? (
-                <ToolRun
+                terminal ? (
+                  <TerminalToolRun
+                    key={row.id}
+                    tools={row.tools}
+                    ts={row.ts}
+                    endTs={row.endTs}
+                    agentLabel={agentLabel}
+                    find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                  />
+                ) : (
+                  <ToolRun
+                    key={row.id}
+                    tools={row.tools}
+                    ts={row.ts}
+                    agentLabel={agentLabel}
+                    find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                  />
+                )
+              ) : terminal ? (
+                <TerminalTurn
                   key={row.id}
-                  tools={row.tools}
-                  ts={row.ts}
+                  m={row.message}
                   agentLabel={agentLabel}
+                  cwd={promptCwd}
+                  fullCwd={session.cwd}
+                  onOpenFile={linkHandler}
+                  filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                 />
               ) : (
@@ -794,6 +849,14 @@ export function TranscriptPanel({
       <div className="transcript-compose" {...drop.dropProps}>
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
         <div className="compose-row">
+          {/* Decorative, and marked as such: the box's accessible name stays its
+              placeholder, which says what typing here does. A real `<label>` reading
+              "mission ❯" would replace that sentence with a glyph. */}
+          {terminal && (
+            <span className="pty-prompt" aria-hidden="true">
+              mission ❯
+            </span>
+          )}
           <textarea
             // Remount on reset so an open box drops the text the reset discarded;
             // `defaultValue` then re-hydrates from the emptied draft. See `resetNonce`.
@@ -805,9 +868,15 @@ export function TranscriptPanel({
                 ? "No pane to send to"
                 : dialogOpen
                   ? "Waiting on a menu - pick an option above to answer it"
-                  : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
+                  : terminal
+                    ? // The prompt metaphor, with the keys moved out to the hint beside the
+                      // box the way a shell's own footer carries them. The two BLOCKED
+                      // placeholders above are deliberately identical in both renderings:
+                      // they are the reason you cannot type, and that reason is the same.
+                      "Send the next instruction to this process…"
+                    : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
             }
-            rows={2}
+            rows={terminal ? 1 : 2}
             disabled={!canSend || dialogOpen}
             // Stays uncontrolled - that's why typing here has never re-rendered the
             // log above it, and a reply written against a streaming transcript can't
@@ -867,6 +936,12 @@ export function TranscriptPanel({
               {drop.uploading ? "Uploading…" : "Send"}
             </button>
           </Tooltip>
+          {/* The mockup's `enter sends`, carrying the two facts the terminal placeholder
+              no longer has room for. Hidden at narrow container widths, where the box
+              needs every pixel it can get - the keys still work, unannounced. */}
+          {terminal && (
+            <span className="pty-sendkey">enter sends · shift+enter newline · drop images</span>
+          )}
         </div>
         {flash && (
           <span className={`action-flash${flash.ok ? " is-ok" : ""}`} role="status">
@@ -875,7 +950,84 @@ export function TranscriptPanel({
         )}
         {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
       </div>
+    </>
+  );
+
+  return (
+    // Stop clicks inside the panel from re-selecting / collapsing the card. The accent
+    // is set here rather than per turn: every assistant byline in this log belongs to
+    // the same harness, and the stylesheet then names no agent to colour them.
+    <div
+      className="transcript"
+      data-view={view}
+      style={agentAccentStyle(agent)}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <SessionLaunchers
+        session={session}
+        registerLaunchers={registerLaunchers}
+        leading={
+          <ConversationViewToggle terminal={terminal} overridden={overridden} onChange={setView} />
+        }
+      />
+      {terminal ? (
+        // A region rather than a bare div: the frame is a named part of the page, and
+        // naming it is what lets a reader (and a browser test) address the terminal as
+        // the thing it is rather than as "the div around the log".
+        <section className="pty-frame" aria-label="Conversation terminal">
+          <TerminalTitlebar session={session} attach={status} />
+          {conversation}
+          <TerminalStatusLine session={session} />
+        </section>
+      ) : (
+        conversation
+      )}
     </div>
+  );
+}
+
+/**
+ * The per-session rendering switch, in the strip above the log.
+ *
+ * A toggle BUTTON rather than a second radio group: there are two renderings and the
+ * question at this level is "read this one differently", which is one press. `aria-pressed`
+ * carries the state, so the control keeps one stable accessible name instead of relabelling
+ * itself to the thing it is not currently showing - the relabelling toggle is the one every
+ * screen reader user has to read twice.
+ *
+ * It sits beside the launchers because that strip is already the answer to "where am I and
+ * how do I get at this session", and it reaches all three conversation surfaces from that
+ * one mount.
+ */
+function ConversationViewToggle({
+  terminal,
+  overridden,
+  onChange,
+}: {
+  terminal: boolean;
+  overridden: boolean;
+  onChange: (next: ConversationView) => void;
+}): React.JSX.Element {
+  return (
+    <Tooltip
+      label={
+        terminal
+          ? "Read this session as a chat log again"
+          : "Read this session as a terminal stream - just this session, until you close the tab"
+      }
+    >
+      <button
+        type="button"
+        className={`launch-btn conv-view-btn${overridden ? " is-overridden" : ""}`}
+        aria-pressed={terminal}
+        onClick={() => onChange(terminal ? "chat" : "terminal")}
+      >
+        <span className="launch-glyph-lead" aria-hidden>
+          ▤
+        </span>
+        Terminal view
+      </button>
+    </Tooltip>
   );
 }
 
@@ -1055,20 +1207,54 @@ function Turn({
         // tint are the same either way. Only what's inside it changes, and `markdown` swaps
         // the `pre-wrap` raw text for parsed blocks.
         <div className={`turn-text${richText && !highlight ? " markdown" : ""}`}>
-          {highlight ? (
-            <Highlighted text={m.text} hits={textHits} currentKey={find?.currentKey ?? null} />
-          ) : richText ? (
-            <Markdown breaks onLinkClick={onOpenFile} filePaths={filePaths}>
-              {m.text}
-            </Markdown>
-          ) : (
-            m.text
-          )}
+          <TurnProse
+            text={m.text}
+            hits={textHits}
+            currentKey={find?.currentKey ?? null}
+            richText={richText}
+            onOpenFile={onOpenFile}
+            filePaths={filePaths}
+          />
         </div>
       )}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
     </div>
   );
+}
+
+/**
+ * One turn's words: the literal bytes while a match is being highlighted inside them,
+ * parsed markdown when formatting is on, and the raw text otherwise.
+ *
+ * Shared by both renderings rather than written twice, because the middle branch is the
+ * subtle one (see `Turn`'s note on source offsets) and a terminal copy of it would be a
+ * second place for that rule to be got wrong. The wrapper element differs between the two
+ * - a bubble there, a stdout block here - so only the CONTENTS live here.
+ */
+function TurnProse({
+  text,
+  hits,
+  currentKey,
+  richText,
+  onOpenFile,
+  filePaths,
+}: {
+  text: string;
+  hits: FindHit[];
+  currentKey: string | null;
+  richText: boolean;
+  onOpenFile?: WorkspaceLinkHandler;
+  filePaths?: ReadonlySet<string> | null;
+}): React.JSX.Element {
+  if (hits.length > 0) return <Highlighted text={text} hits={hits} currentKey={currentKey} />;
+  if (richText) {
+    return (
+      <Markdown breaks onLinkClick={onOpenFile} filePaths={filePaths}>
+        {text}
+      </Markdown>
+    );
+  }
+  return <>{text}</>;
 }
 
 /**
@@ -1100,57 +1286,251 @@ function ToolRun({
   );
 }
 
-function ToolChips({ tools, find }: { tools: ToolCall[]; find?: RowFind | null }): React.JSX.Element {
-  // Tool chips are searchable because this is where the file paths are, and a path is
-  // the single most likely thing to be looking for in an agent's transcript. The
-  // searched string is the chip as rendered ("read registry.ts"), so what matches is
-  // what the reader can see - matching the untruncated tool input would highlight
-  // nothing and count things that are not on screen.
+/**
+ * One turn, drawn as terminal traffic: what you typed is a prompt line, what the agent
+ * said is stdout under a speaker header.
+ *
+ * The split is on ROLE, not on authorship, because that is what the metaphor is about -
+ * input versus output. Who typed the input is still said: `turnWho` decides the host part
+ * exactly as it decides the chat byline, so a turn Foreman sent reads `foreman@mission`
+ * and never claims the operator asked for it.
+ */
+function TerminalTurn({
+  m,
+  agentLabel,
+  cwd,
+  fullCwd,
+  onOpenFile,
+  filePaths,
+  find,
+}: {
+  m: TranscriptMessage;
+  agentLabel: string;
+  /** The prompt's working directory as it is DRAWN - `~/leaf`, or `~` with no checkout. */
+  cwd: string;
+  /** The whole path the leaf above stands for, for the tooltip. */
+  fullCwd: string | null;
+  onOpenFile?: WorkspaceLinkHandler;
+  filePaths?: ReadonlySet<string> | null;
+  find?: RowFind | null;
+}): React.JSX.Element {
+  const [richText] = useRichText();
+  const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
+  const who = turnWho(m, agentLabel);
+  const currentKey = find?.currentKey ?? null;
+  if (m.role === "user") {
+    return (
+      <article className="pty-entry pty-user">
+        <p className="pty-commandline">
+          {/* A shell host is one token, so a two-word author becomes one: "mission
+              control" is `mission-control@mission`, the same name the titlebar uses. */}
+          <span className="pty-host">{who.replace(/\s+/g, "-")}@mission</span>
+          {/* `~/leaf` is the shell's own shorthand and the shape the mockup drew, which
+              means it is short by leaving something out. The whole path is one hover
+              away, so the abbreviation never has to be taken at face value. Rendered
+              verbatim: `promptPath` has already decided whether there is a leaf to show. */}
+          <Tooltip label={fullCwd ?? "this session has no checkout"}>
+            <span className="pty-cwd">{cwd}</span>
+          </Tooltip>
+          <span className="pty-caret" aria-hidden="true">
+            ❯
+          </span>
+          {/* Never markdown, whatever the formatting preference says: this is the command
+              line, and a command line shows what was typed. Highlighting still applies -
+              a match must be visible wherever it was counted. */}
+          <span className="pty-command">
+            {textHits.length > 0 ? (
+              <Highlighted text={m.text} hits={textHits} currentKey={currentKey} />
+            ) : (
+              m.text
+            )}
+          </span>
+          <ConversationTimestamp at={m.ts} className="pty-time" />
+        </p>
+        {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} lines />}
+      </article>
+    );
+  }
+  const highlight = textHits.length > 0;
+  return (
+    <article className="pty-entry pty-agent">
+      <header className="pty-speaker">
+        {who} / stdout
+        <ConversationTimestamp at={m.ts} className="pty-time" />
+      </header>
+      {m.text && (
+        // Wears `turn-text` as well as `pty-copy`, which is what buys the whole markdown
+        // stylesheet (`.turn-text.markdown pre`, tables, headings) for free rather than a
+        // second copy of it under a terminal selector. `.pty-copy` then strips the bubble
+        // the chat log wants and this one does not.
+        <div className={`turn-text pty-copy${richText && !highlight ? " markdown" : ""}`}>
+          <TurnProse
+            text={m.text}
+            hits={textHits}
+            currentKey={currentKey}
+            richText={richText}
+            onOpenFile={onOpenFile}
+            filePaths={filePaths}
+          />
+        </div>
+      )}
+      {/* Lines, like the folded record's - so EVERY tool call in this rendering is drawn
+          the same way. Not a nicety: the panel searches this rendering with
+          `toolLineText`, and a call drawn as a chip here would be searched over text it
+          does not show. */}
+      {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} lines />}
+    </article>
+  );
+}
+
+/**
+ * A folded run of tool-only turns, as a disclosure record under the output.
+ *
+ * Closed by default: the mockup's point is that a stretch of tool work is ONE event to
+ * the person reading, and opening it is asking for the detail. Open, it lists the literal
+ * command or path per call - `toolChip().title`, the same uncapped string the chat chip
+ * puts in its tooltip - because a terminal record that named `bash` nine times would be
+ * the very non-information the fold exists to delete.
+ *
+ * The trailing `· 1m 04s` is the span between the run's first and last turn, and appears
+ * only when there is more than one turn and at least a second between them. It is NOT a
+ * duration for any tool: nothing in the transcript records one, and the tooltip says which
+ * of the two this number is.
+ */
+function TerminalToolRun({
+  tools,
+  ts,
+  endTs,
+  agentLabel,
+  find,
+}: {
+  tools: ToolCall[];
+  ts: number;
+  endTs: number;
+  agentLabel: string;
+  find?: RowFind | null;
+}): React.JSX.Element {
+  const span = endTs > ts && ts > 0 ? endTs - ts : 0;
+  // Open when it holds a match, because a closed record is not on screen: find counts a
+  // hit the reader cannot see, and stepping onto it would scroll to nothing. Uncontrolled
+  // otherwise - `open` as a starting state, so the reader's own click still wins.
+  const hasHit = (find?.hits.length ?? 0) > 0;
+  return (
+    <details className="pty-toolrun" open={hasHit || undefined}>
+      {/* One tooltip on the row rather than one per part: the span needs a sentence saying
+          which of the two times it is, and a second bubble nested inside this one would
+          fire under the same pointer. */}
+      <Tooltip
+        label={
+          span >= 1000
+            ? `Show the commands in this run · ${duration(span)} between its first and last call, which is not how long any of them took`
+            : "Show the commands in this run"
+        }
+      >
+        <summary>
+          <b>
+            {agentLabel} executed {tools.length} {tools.length === 1 ? "command" : "commands"}
+          </b>
+          {span >= 1000 && <span className="pty-span"> · {duration(span)}</span>}
+          <ConversationTimestamp at={ts} className="pty-time" />
+        </summary>
+      </Tooltip>
+      <ToolChips tools={tools} find={find} lines />
+    </details>
+  );
+}
+
+/**
+ * The tool calls a row made, in one of two shapes.
+ *
+ * `chips` (the default) is the inline row the chat log has always drawn. `lines` is the
+ * terminal record's list, one call per line with the literal input around the same target
+ * span - and it is a VARIANT of this component rather than a component of its own on
+ * purpose: hits are addressed by offset into `"<name> <detail>"`, and a second renderer
+ * doing that arithmetic separately is how one of them ends up marking the wrong span.
+ */
+function ToolChips({
+  tools,
+  find,
+  lines = false,
+}: {
+  tools: ToolCall[];
+  find?: RowFind | null;
+  lines?: boolean;
+}): React.JSX.Element {
+  // Tool calls are searchable because this is where the file paths are, and a path is
+  // the single most likely thing to be looking for in an agent's transcript. The searched
+  // string is the call AS RENDERED, so what matches is what the reader can see - which is
+  // why the two variants search different strings: a chip shows the capped summary, a line
+  // shows the literal input. `toolLineText`/`toolSearchText` are the same two projections
+  // the panel hands `collectHits`, so a hit's offsets and these windows always agree.
   const matcher = find ? buildMatcher(find.query, { caseSensitive: find.caseSensitive }) : null;
   return (
-    <div className="turn-tools">
+    <div className={lines ? "turn-tools turn-tools-lines" : "turn-tools"}>
       {tools.map((t, i) => {
         // The name alone ("Bash", nine times over) is frame without content; the chip
-        // carries what the call actually touched, and the title the literal input.
+        // carries what the call actually touched, and the line the literal input.
         const chip = toolChip(t);
         const chipHits = find ? find.hits.filter((h) => h.toolIndex === i) : [];
-        const searchText = toolSearchText(t);
-        const detailOffset = searchText.length - (chip.detail?.length ?? 0);
-        // Hits are collected over "<name> <detail>" but rendered as two spans, so each
+        // The one span after the name, and the ONE string it draws. Deliberately not the
+        // chip's detail spliced into its own title: that split put text on screen which
+        // no offset addressed, so `status --short` was readable in an opened record and
+        // uncountable by find - the exact "a wrong number looks like a right one" failure
+        // the find model exists to prevent.
+        const target = lines ? toolLineTarget(t) : chip.detail;
+        const searchText = lines ? toolLineText(t) : toolSearchText(t);
+        const targetOffset = searchText.length - (target?.length ?? 0);
+        // Hits are collected over "<name> <target>" but rendered as two spans, so each
         // is re-expressed in its own span's coordinates. `hitsInWindow` clips rather
         // than filters, which is what lets a match spanning the two - "read prompt" -
         // mark both halves instead of neither.
         const nameHits = hitsInWindow(chipHits, 0, chip.name.length);
-        const detailHits = hitsInWindow(chipHits, detailOffset, searchText.length);
-        return (
-          <Tooltip key={`${t.name}-${i}`} label={chip.title}>
-            <span className={`tool-chip${chipHits.length ? " has-find-hit" : ""}`}>
-              <span className="tool-chip-name">
-                {nameHits.length && matcher ? (
-                  <Highlighted text={chip.name} hits={nameHits} currentKey={find?.currentKey ?? null} />
-                ) : (
-                  chip.name
-                )}
-              </span>
-              {chip.detail &&
-                (detailHits.length && matcher ? (
-                  <span className="tool-chip-detail">
-                    <Highlighted
-                      text={chip.detail}
-                      hits={detailHits}
-                      currentKey={find?.currentKey ?? null}
-                    />
-                  </span>
-                ) : (
-                  <span className="tool-chip-detail">{chip.detail}</span>
-                ))}
+        const targetHits = hitsInWindow(chipHits, targetOffset, searchText.length);
+        const body = (
+          <span className={`tool-chip${chipHits.length ? " has-find-hit" : ""}`}>
+            <span className="tool-chip-name">
+              {nameHits.length && matcher ? (
+                <Highlighted text={chip.name} hits={nameHits} currentKey={find?.currentKey ?? null} />
+              ) : (
+                chip.name
+              )}
             </span>
+            {/* A real space, and only on a line. The chat chip separates its two spans with
+                flex `gap`, which is a gap in the LAYOUT and not in the text - fine for a
+                pill you read, wrong for a line you copy, which is the whole point of this
+                record: `bash` and `git status --short` would come off the clipboard as
+                `bashgit status --short`. Adding it in both variants would instead give the
+                chip an anonymous flex item and a second gap. */}
+            {lines && target && " "}
+            {target &&
+              (targetHits.length && matcher ? (
+                <span className="tool-chip-detail">
+                  <Highlighted
+                    text={target}
+                    hits={targetHits}
+                    currentKey={find?.currentKey ?? null}
+                  />
+                </span>
+              ) : (
+                <span className="tool-chip-detail">{target}</span>
+              ))}
+          </span>
+        );
+        // No tooltip on a line: the line already shows what the chip's tooltip was for.
+        return lines ? (
+          <span key={`${t.name}-${i}`} className="tool-line">
+            {body}
+          </span>
+        ) : (
+          <Tooltip key={`${t.name}-${i}`} label={chip.title}>
+            {body}
           </Tooltip>
         );
       })}
     </div>
   );
 }
+
 
 /** Append only turns we haven't already shown (init and append can overlap). */
 function mergeById(prev: TranscriptMessage[], next: TranscriptMessage[]): TranscriptMessage[] {

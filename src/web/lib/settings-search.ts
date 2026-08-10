@@ -100,6 +100,15 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
+    id: "conversation-view",
+    label: "Conversation rendering",
+    description: "Read conversations as a chat log or as a terminal stream.",
+    category: "display",
+    anchor: "display/conversation-view",
+    keywords: ["terminal", "pty", "shell", "stdout", "prompt", "transcript", "chat", "stream"],
+    kind: "jump",
+  },
+  {
     id: "format-messages",
     label: "Format messages",
     description: "Render transcripts as markdown rather than the literal text an agent emitted.",

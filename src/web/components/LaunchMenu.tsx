@@ -235,9 +235,20 @@ function Launcher({
 export function SessionLaunchers({
   session,
   registerLaunchers,
+  leading,
 }: {
   session: Session;
   registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
+  /**
+   * A control to sit at the head of the button run, before the launchers.
+   *
+   * A slot rather than another prop pair, because what goes here is not a launcher and
+   * this component should not learn about it: the conversation pane owns the control and
+   * this strip only owns where the row of buttons begins. Today that is the rendering
+   * switch - the one control that is about the pane you are looking at rather than about
+   * somewhere else to open the session.
+   */
+  leading?: React.ReactNode;
 }): React.JSX.Element {
   const [flash, setFlash] = useState<{ text: string; error: boolean } | null>(null);
   const terminalRef = useRef<LauncherHandle>(null);
@@ -312,6 +323,7 @@ export function SessionLaunchers({
       {flash && (
         <span className={`launch-flash${flash.error ? " is-error" : ""}`}>{flash.text}</span>
       )}
+      {leading}
       <Launcher
         ref={terminalRef}
         label="Terminal"

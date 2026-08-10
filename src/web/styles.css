@@ -5497,6 +5497,436 @@ mark.find-hit.is-current {
 .conv-launch-sp {
   flex: 1;
 }
+/* The rendering switch, at the head of the button run. It wears `.launch-btn` because it
+   IS one of that row's buttons visually - the difference is only that it acts on the pane
+   you are looking at rather than opening the session somewhere else. Pressed state carries
+   the accent, the way the launcher buttons carry it while their menu is open. */
+.conv-view-btn[aria-pressed="true"] {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  background: color-mix(in oklab, var(--working) 12%, var(--panel-2));
+}
+.conv-view-btn[aria-pressed="true"] .launch-glyph-lead {
+  color: var(--working);
+}
+/* The mark that says this session is being read differently from the rest of the fleet -
+   a choice that lives in this tab only. Without it, an operator who flipped one session a
+   while ago has no way to tell that from having changed the global default.
+   Driven by a COMPARISON against the current default (`differsFromDefault`), not by the
+   existence of an override: flipping a session out and back leaves an explicit choice
+   behind, and while that choice agrees with the default this session reads like every
+   other one and the mark must be off. */
+.conv-view-btn.is-overridden::after {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--working);
+}
+
+/* ---- conversation: the Native PTY rendering ----
+   The second reading of a conversation (docs/plans/conversation-native-pty/plan.md): the
+   same rows, drawn as one terminal stream. Everything here is scoped under the frame or
+   the `pty-` prefix, so the chat log's rules are untouched and the default rendering
+   cannot regress from this block. */
+.pty-frame {
+  /* Takes the height `.find-split` takes in the chat rendering, and passes it on: the
+     `min-height: 0` chain from `.transcript` down to `.transcript-log` runs THROUGH this
+     element now, and a frame without it would hand the log an unbounded height and stop
+     the conversation scrolling. */
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.pty-frame > .find-split {
+  padding: 0 10px;
+}
+.pty-titlebar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  min-height: 28px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  font: 10px/1 var(--mono);
+  color: var(--dim);
+}
+.pty-lights {
+  display: flex;
+  gap: 5px;
+}
+.pty-lights i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  /* Muted against the titlebar rather than the full state colours: these are window
+     furniture, and at full strength three dots read as three status lights. */
+  background: var(--border);
+}
+.pty-lights i:nth-child(1) {
+  background: color-mix(in oklab, var(--danger) 52%, var(--panel));
+}
+.pty-lights i:nth-child(2) {
+  background: color-mix(in oklab, var(--attention) 52%, var(--panel));
+}
+.pty-lights i:nth-child(3) {
+  background: color-mix(in oklab, var(--idle) 52%, var(--panel));
+}
+.pty-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Three states, three tones, and no animation on any of them: a blinking dot in the
+   corner of a log is a thing the eye keeps going back to for no new information. */
+.pty-attach {
+  justify-self: end;
+  white-space: nowrap;
+  color: var(--idle);
+}
+.pty-attach[data-attach="connecting"] {
+  color: var(--attention);
+}
+.pty-attach[data-attach="unavailable"] {
+  color: var(--exited);
+}
+
+/* The log is one stream rather than a stack of cards, so the rows carry their own spacing
+   and the flex `gap` that separates chat bubbles goes to zero. */
+.transcript[data-view="terminal"] .transcript-log {
+  gap: 0;
+  padding: 14px 4px 16px 2px;
+}
+.pty-entry {
+  position: relative;
+  max-width: 1160px;
+  padding: 0 0 17px 24px;
+  font-family: var(--mono);
+}
+/* The spine: one continuous line down the left of the stream, with a node per entry. It
+   is what makes a run of turns read as one session rather than as separate messages. */
+.pty-entry::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 1px;
+  background: var(--border);
+}
+.pty-entry:last-child::before {
+  bottom: 15px;
+}
+.pty-entry::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 2px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--dim);
+  border-radius: 50%;
+  background: var(--bg-2);
+}
+.pty-user::after {
+  border-color: var(--working);
+  background: color-mix(in oklab, var(--working) 38%, var(--bg-2));
+}
+/* The agent's node in the agent's own colour, from the inline `--agent-accent` the panel
+   already carries - so a third harness is marked in its colour with no rule here. */
+.pty-agent::after {
+  border-color: var(--agent-accent, var(--idle));
+  background: color-mix(in oklab, var(--agent-accent, var(--idle)) 35%, var(--bg-2));
+}
+.pty-commandline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: baseline;
+  margin: 0;
+  color: var(--fg);
+  font: 12.5px/1.55 var(--mono);
+}
+.pty-host {
+  color: var(--working);
+}
+.pty-cwd {
+  color: var(--muted);
+}
+.pty-caret {
+  color: var(--fg);
+  font-weight: 700;
+}
+/* What was typed, exactly as typed: a pasted two-line instruction is two lines here, the
+   way it would be in the terminal this is drawn as. */
+.pty-command {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pty-speaker {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: color-mix(in oklab, var(--agent-accent, var(--muted)) 70%, var(--muted));
+  font: 700 9.5px/1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+/* Same right-edge column the chat log pins its clock to, for the same reason: times that
+   trail a label of varying length have to be re-found on every row. */
+.pty-entry .pty-time,
+.pty-toolrun .pty-time {
+  flex: none;
+  margin-left: auto;
+  padding-left: 10px;
+  color: var(--dim);
+  font: 500 9.5px/1 var(--mono);
+  letter-spacing: 0.01em;
+  text-transform: none;
+  white-space: nowrap;
+}
+/* Stdout, not a bubble: `.pty-copy` keeps everything `.turn-text` carries for markdown -
+   the code fences, tables and headings all render from those rules - and drops the
+   chrome that made it a message. */
+.pty-copy {
+  max-width: 108ch;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font: 12.5px/1.7 var(--mono);
+}
+.pty-copy.markdown > :first-child {
+  margin-top: 0;
+}
+.pty-copy.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+/* The folded run: one line closed, the literal commands open. */
+.pty-toolrun {
+  margin: -6px 0 17px 24px;
+}
+.pty-toolrun > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  color: var(--muted);
+  font: 10.5px/1.5 var(--mono);
+  cursor: pointer;
+  list-style: none;
+}
+.pty-toolrun > summary::-webkit-details-marker {
+  display: none;
+}
+.pty-toolrun > summary::before {
+  content: "▸";
+  color: var(--attention);
+}
+.pty-toolrun[open] > summary::before {
+  content: "▾";
+}
+.pty-toolrun > summary b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.pty-toolrun > summary:hover {
+  color: var(--fg);
+}
+.pty-span {
+  color: var(--dim);
+}
+/* One call per line, so a run reads as a shell's scrollback rather than as a wrapped row
+   of pills. The chips keep their own name/target spans - and therefore their own find
+   highlighting - and only the box around them changes. */
+.turn-tools-lines {
+  display: grid;
+  gap: 4px;
+  margin: 7px 0 0 14px;
+  font: 10.5px/1.6 var(--mono);
+}
+.turn-tools-lines .tool-line {
+  min-width: 0;
+}
+.turn-tools-lines .tool-chip {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+/* `min-width` is the alignment COLUMN - it lines the commands up under each other for the
+   common short names - and `padding-right` is the gap that survives a name wider than the
+   column (`notebookedit`, `chrome-devtools:click`), which the column alone could not give.
+   Neither is what separates the words: the markup carries a literal space, because a line
+   in this record is meant to be copied. */
+.turn-tools-lines .tool-chip-name {
+  display: inline-block;
+  min-width: 54px;
+  padding-right: 8px;
+  color: color-mix(in oklab, var(--agent-accent, var(--muted)) 60%, var(--muted));
+}
+.turn-tools-lines .tool-chip-detail {
+  color: var(--fg);
+}
+/* The composer keeps its own element and every behaviour attached to it; the prompt and
+   the hint are added around the box, and the box loses the panel styling that would look
+   like a form field inside a terminal. */
+.transcript[data-view="terminal"] .transcript-compose {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.transcript[data-view="terminal"] .compose-row {
+  align-items: center;
+  gap: 8px;
+}
+.pty-prompt {
+  flex: none;
+  color: var(--working);
+  font: 700 12.5px/1 var(--mono);
+}
+.transcript[data-view="terminal"] .transcript-input {
+  min-height: 24px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  caret-color: var(--working);
+  font: 12.5px/1.5 var(--mono);
+  /* No drag handle: the box sits on a prompt line that is one line tall by design, and a
+     resizer in the corner of it is furniture from the other rendering. */
+  resize: none;
+}
+.transcript[data-view="terminal"] .transcript-input:focus {
+  outline: 0;
+}
+/* Send stays - it is the only control that can say "waiting for an upload", and a pointer
+   user should not have to learn a key to send. It just stops being the loudest thing in a
+   terminal frame: the same button, quiet, until you are on it. */
+.transcript[data-view="terminal"] .btn-send {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  font: 10px/1.6 var(--mono);
+}
+.transcript[data-view="terminal"] .btn-send:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  color: var(--fg);
+}
+/* The observed-activity rail keeps its shipped behaviour whole and only takes the frame's
+   palette, so the secondary column reads as part of the terminal rather than as a panel
+   sitting on top of one. */
+.transcript[data-view="terminal"] .activity-rail {
+  border-color: var(--border);
+  background: color-mix(in oklab, var(--panel) 60%, var(--bg-2));
+}
+.transcript[data-view="terminal"] .activity-rail .activity-title,
+.transcript[data-view="terminal"] .activity-rail .activity-tool {
+  font-family: var(--mono);
+}
+.pty-sendkey {
+  flex: none;
+  color: var(--dim);
+  font: 9.5px/1 var(--mono);
+  white-space: nowrap;
+}
+
+/* The status line. `flex: none` and wrapping rather than clipping: this row carries the
+   session's state and it is the last thing that may be squeezed out of the frame. */
+.pty-status {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 13px;
+  min-height: 26px;
+  padding: 5px 11px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--dim);
+  font: 9.5px/1.4 var(--mono);
+}
+/* The run state in the same tone the card's badge uses - `tone-*` sets `--tone-color`, so
+   this row and the card behind it can never disagree about what the session is doing.
+   The family is borrowed for that VARIABLE only. It also carries `.tone-exited { opacity:
+   .62 }`, written for whole containers - a card, a rail row, a board column - where
+   dimming says "deprioritise me". Inherited by this span it would print `claude: exited`,
+   the one state a reader most needs to notice in a status line, at 62% while every other
+   state stayed full strength. Scoped by two classes so the restore does not depend on this
+   block coming later in the file than that one. */
+.pty-status .pty-live {
+  color: var(--tone-color, var(--neutral));
+  white-space: nowrap;
+  opacity: 1;
+}
+.pty-stat {
+  white-space: nowrap;
+}
+.pty-branch {
+  color: var(--muted);
+}
+.pty-status-sp {
+  flex: 1;
+}
+.pty-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 11px;
+}
+.pty-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+/* Below the panel width the expanded card sits at - the same breakpoint the activity rail
+   relocates on - the frame gives up its centred title, the send hint and the context
+   share. All three are the things a person can get elsewhere; the run state, the pid and
+   the branch are not, so they stay and the row wraps under them if it has to. */
+@container (max-width: 560px) {
+  .pty-title,
+  .pty-sendkey,
+  .pty-optional {
+    display: none;
+  }
+  .pty-titlebar {
+    grid-template-columns: 1fr auto;
+  }
+  .pty-frame > .find-split {
+    padding: 0 6px;
+  }
+  .pty-entry {
+    padding-left: 18px;
+  }
+  .pty-entry::before {
+    left: 3px;
+  }
+  .pty-entry::after {
+    left: 0;
+  }
+  .pty-toolrun {
+    margin-left: 18px;
+  }
+}
 
 .launch {
   position: relative;

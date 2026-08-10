@@ -259,10 +259,43 @@ export function toolChip(t: ToolCall): ToolChip {
   return { name, detail: detail ? cap(detail) : null, title: source };
 }
 
+/**
+ * What a terminal record's LINE shows after the tool name: the literal input, uncapped -
+ * `ls -la e2e`, `src/server/registry.ts` - or null when the call carried none to show.
+ *
+ * A line is not a chip. A chip is a glance and shows the 40-char summary `toolChip`
+ * derives; a line is opened on purpose and is meant to be read and copied, so it shows
+ * what actually ran. `title` is the uncapped source the chip already carries for its
+ * tooltip, so this exposes no input the chip did not already consider displayable.
+ *
+ * Null when the chip found no detail, because `title` degrades to the bare tool name there
+ * and a line reading `bash bash` says less than `bash` alone.
+ */
+export function toolLineTarget(t: ToolCall): string | null {
+  const chip = toolChip(t);
+  return chip.detail ? chip.title : null;
+}
+
 /** A transcript row: a real turn, or a run of tool-only turns folded into one line. */
 export type TranscriptRow =
   | { kind: "turn"; id: string; ts: number; message: TranscriptMessage }
-  | { kind: "tools"; id: string; ts: number; tools: ToolCall[] };
+  | {
+      kind: "tools";
+      id: string;
+      ts: number;
+      /**
+       * The LAST folded turn's time, where `ts` is the first one's.
+       *
+       * The only elapsed number this data can honestly produce. There is no per-call
+       * duration anywhere in the transcript contract - `ToolCall` carries a name and a
+       * capped input and nothing else - so `endTs - ts` is the span the run OCCUPIED
+       * between two recorded timestamps, not how long any tool took, and the terminal
+       * rendering labels it as exactly that. Equal to `ts` on a run of one, which is why
+       * the presentation shows nothing rather than "0s".
+       */
+      endTs: number;
+      tools: ToolCall[];
+    };
 
 /**
  * Fold consecutive tool-only assistant turns into one row.
@@ -288,8 +321,12 @@ export function transcriptRows(messages: TranscriptMessage[]): TranscriptRow[] {
       continue;
     }
     const last = rows[rows.length - 1];
-    if (last?.kind === "tools") last.tools = [...last.tools, ...m.tools];
-    else rows.push({ kind: "tools", id: m.id, ts: m.ts, tools: [...m.tools] });
+    if (last?.kind === "tools") {
+      last.tools = [...last.tools, ...m.tools];
+      // Only ever forward: an undated turn (`ts` 0) joining a dated run must not drag the
+      // span backwards into a negative number the presentation would have to guard.
+      last.endTs = Math.max(last.endTs, m.ts);
+    } else rows.push({ kind: "tools", id: m.id, ts: m.ts, endTs: m.ts, tools: [...m.tools] });
   }
   return rows;
 }

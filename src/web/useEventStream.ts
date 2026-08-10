@@ -17,6 +17,7 @@ import type {
 } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
+import { dropSessionView } from "./lib/conversation-view.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
@@ -203,11 +204,13 @@ export function useEventStream(): MissionState {
         case "session_remove":
           // The one signal that positively means a session is gone, rather than not
           // yet re-added: the daemon evicted it after a completed sweep. That makes
-          // this the only safe place to collect its half-written compose text, and its
-          // accumulated conversation history, which is bound to the session the same way
-          // and would otherwise be re-hydrated into a reused id.
+          // this the only safe place to collect its half-written compose text, its
+          // accumulated conversation history, and the rendering it was being read in -
+          // all three are bound to the session the same way and would otherwise be
+          // re-hydrated into a reused id.
           dropSessionDrafts(msg.id);
           dropHistory(msg.id);
+          dropSessionView(msg.id);
           setSessions((prev) => {
             const next = new Map(prev);
             next.delete(msg.id);

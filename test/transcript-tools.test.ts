@@ -179,3 +179,43 @@ test("a run split by prose stays split", () => {
   ]);
   assert.deepEqual(rows.map((r) => r.kind), ["tools", "turn", "tools"]);
 });
+
+// ---- the folded run's span ----
+//
+// The terminal rendering prints `· 1m 04s` after a folded run, and this is the only
+// elapsed number the transcript can honestly produce: `ToolCall` carries a name and a
+// capped input and nothing else, so there is no per-call duration anywhere to read. What
+// these pin is that the number means the span between two RECORDED turn timestamps, and
+// that it never becomes something a presentation would have to guard against.
+
+test("a folded run's span runs from its first turn to its last", () => {
+  const rows = transcriptRows([
+    msg({ ts: 1000, tools: [call("Bash", { command: "ls" })] }),
+    msg({ ts: 2800, tools: [call("Bash", { command: "wc -l x" })] }),
+    msg({ ts: 4200, tools: [call("Bash", { command: "curl -s u" })] }),
+  ]);
+  const folded = rows[0];
+  assert.equal(folded?.kind, "tools");
+  assert.equal(folded.ts, 1000, "the run starts where its first turn did");
+  assert.equal(folded.endTs, 4200);
+});
+
+test("a run of one ends where it starts, so the presentation has no span to print", () => {
+  const rows = transcriptRows([msg({ ts: 1000, tools: [call("Bash", { command: "ls" })] })]);
+  const folded = rows[0];
+  assert.equal(folded?.kind, "tools");
+  assert.equal(folded.endTs, folded.ts, "a single turn invented a span");
+});
+
+test("an undated turn joining a dated run cannot drag the span backwards", () => {
+  // `ts` is 0 when a record carried no timestamp, and 0 is "unknown" rather than 1970.
+  // Taking it as the end would make `endTs - ts` negative, and a negative span is not a
+  // shorter run - it is a number with no meaning.
+  const rows = transcriptRows([
+    msg({ ts: 5000, tools: [call("Bash", { command: "ls" })] }),
+    msg({ ts: 0, tools: [call("Bash", { command: "pwd" })] }),
+  ]);
+  const folded = rows[0];
+  assert.equal(folded?.kind, "tools");
+  assert.equal(folded.endTs, 5000);
+});

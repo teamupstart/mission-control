@@ -457,6 +457,17 @@ application, and says so rather than guessing). The row names what it found, so 
   change. Both records are `Record<OpenTargetId, …>`, so a declared target that nothing can
   launch does not compile.
 
+## Conversation rendering
+
+The Conversation is drawn as a **chat log** by default and can be drawn as a **terminal
+stream** instead - prompt lines in, stdout out, tool runs folded into one record, inside a
+frame with a live status line. **Settings → Display → Conversation** sets the default for
+every session, per machine; the **Terminal view** button above any conversation flips that
+one session for as long as the tab is open. Both renderings are the same panel over the
+same transcript, so find, the Observed activity rail, scroll-back, attachments and the
+reply box behave identically in either. See
+[Reading a conversation as a terminal](sessions.md#reading-a-conversation-as-a-terminal).
+
 ## Message formatting
 
 Agents write markdown, so the transcript renders it: headings, lists, tables, and fenced

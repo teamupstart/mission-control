@@ -135,13 +135,18 @@ test("rows are highlighted from the scoped hits, so the count describes what is 
   }
 });
 
-test("a chip's two spans are derived by clipping, so a match across them survives", () => {
+test("a tool call's two spans are derived by clipping, so a match across them survives", () => {
   // The model half of this lives in conversation-find-model. This is the half that
-  // pins the RENDERER to it: a chip is searched as "<name> <detail>" but drawn as two
+  // pins the RENDERER to it: a call is searched as "<name> <target>" but drawn as two
   // spans, and deriving each by containment (`h.end <= name.length`) silently drops a
   // hit spanning the two - counted in the rail, marked nowhere on screen.
+  //
+  // `targetHits` rather than `detailHits` since the terminal rendering landed: the
+  // second span holds the capped detail in a chat chip and the literal input in a
+  // terminal line, and the window arithmetic is the same either way - which is the
+  // point. Both are searched over the string they actually draw.
   const src = readFileSync("src/web/components/TranscriptPanel.tsx", "utf8");
-  for (const which of ["nameHits", "detailHits"]) {
+  for (const which of ["nameHits", "targetHits"]) {
     assert.match(
       src,
       new RegExp(`const ${which} = hitsInWindow\\(chipHits,`),

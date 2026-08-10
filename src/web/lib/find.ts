@@ -1,6 +1,6 @@
 import type { ToolCall, TranscriptMessage, TurnOrigin } from "@shared/types.ts";
 import type { ConversationRow } from "./episodes.ts";
-import { toolChip } from "./tools.ts";
+import { toolChip, toolLineTarget } from "./tools.ts";
 
 /**
  * Find-in-conversation: the match model.
@@ -117,6 +117,25 @@ export function toolSearchText(t: ToolCall): string {
 }
 
 /**
+ * The same, for a tool call drawn as a LINE in the terminal rendering's opened record.
+ *
+ * A second function rather than a wider `toolSearchText`, because the two renderings put
+ * different text on screen and the invariant this module rests on is that the searched
+ * string is the rendered one. A line shows the literal input where a chip shows the capped
+ * summary, so searching a line has to reach `status --short` - which is plainly on screen
+ * there - while searching a chat chip must NOT, because in the chat log that text lives
+ * only in a hover tooltip and a hit inside it could be neither seen nor jumped to.
+ *
+ * Which of the two a row is searched with is the caller's to say (`collectHits`'s
+ * `toolText`), because only the panel knows which rendering is on screen.
+ */
+export function toolLineText(t: ToolCall): string {
+  const chip = toolChip(t);
+  const target = toolLineTarget(t);
+  return target ? `${chip.name} ${target}` : chip.name;
+}
+
+/**
  * Narrow hits to the window `[from, to)` of the text they were collected over, in that
  * window's own coordinates.
  *
@@ -160,6 +179,15 @@ export function collectHits(
   query: string,
   opts: FindOptions,
   agentLabel: string,
+  /**
+   * How to read a tool call as text, defaulting to the chat chip's projection.
+   *
+   * A parameter because the two conversation renderings put different text on screen for
+   * the same call, and this module's whole contract is that the searched string is the
+   * rendered one. The panel passes `toolLineText` while the terminal rendering is up. It
+   * is a function rather than a mode flag so `find.ts` never has to learn what a view is.
+   */
+  toolText: (t: ToolCall) => string = toolSearchText,
 ): FindHit[] {
   const re = buildMatcher(query, opts);
   if (!re) return [];
@@ -185,7 +213,7 @@ export function collectHits(
       }
       // A turn can carry tool calls of its own as well as text.
       row.message.tools.forEach((tool, i) => {
-        const text = toolSearchText(tool);
+        const text = toolText(tool);
         for (const { start, end } of matchesIn(text, re)) {
           hits.push({
             key: `${row.id}:x${i}:${start}`,
@@ -203,7 +231,7 @@ export function collectHits(
     }
 
     row.tools.forEach((tool, i) => {
-      const text = toolSearchText(tool);
+      const text = toolText(tool);
       for (const { start, end } of matchesIn(text, re)) {
         hits.push({
           key: `${row.id}:x${i}:${start}`,

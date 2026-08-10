@@ -40,6 +40,8 @@ printf %s '{"result":"{\\"tasks\\":[{\\"id\\":\\"a\\",\\"dependsOn\\":[]},{\\"id
 );
 chmodSync(fake, 0o755);
 process.env.MISSION_CLAUDE_BIN = fake;
+const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
+const restoreTransport = configureClaudeRunnerTransport(() => "print");
 
 const { backlogTimeoutMs, BACKLOG_BASE_MS, BACKLOG_PER_TASK_MS, BACKLOG_CEILING_MS, planBacklog } =
   await import("../src/server/foreman/backlog-plan.ts");
@@ -47,6 +49,7 @@ const { PLANNABLE_LIMIT } = await import("../src/shared/backlog.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
 
 after(() => {
+  restoreTransport();
   rmSync(home, { recursive: true, force: true });
   rmSync(bin, { recursive: true, force: true });
 });

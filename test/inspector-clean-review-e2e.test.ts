@@ -42,6 +42,9 @@ process.stdin.on("end", () => {
 );
 chmodSync(claudePath, 0o755);
 
+const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
+const restoreTransport = configureClaudeRunnerTransport(() => "print");
+
 writeFileSync(
   ghPath,
   `#!/usr/bin/env node
@@ -202,7 +205,10 @@ beforeEach(() => {
   resetAuthenticatedLogin();
 });
 
-after(() => rmSync(temp, { recursive: true, force: true }));
+after(() => {
+  restoreTransport();
+  rmSync(temp, { recursive: true, force: true });
+});
 
 test("clean review is live-only, follows resolution, and is not duplicated after a lost response", async () => {
   const fingerprint = "prior-finding";

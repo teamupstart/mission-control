@@ -217,7 +217,8 @@ is the only record of what the session was ever about that survives a restart. A
 work declares no continuation still falls back to the generic `resume-continuation.json`.
 
 **The player also answers the daemon's own headless calls**, which is the half of a demo nothing
-on screen credits. `claude -p` is how the daemon titles an untitled dispatch, reconciles a Goal,
+on screen credits. Claude's Agent SDK transport is how the daemon titles an untitled dispatch by
+default, reconciles a Goal,
 compacts a workflow's intent - and how every Persona in a Workflow run reviews. That last one has
 no fallback: a verdict the daemon cannot parse is an infrastructure failure, and three of those
 block the run, so a seeded review workflow would end `Workflow blocked` rather than `⌁ Approved`.

@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
 import type {
+  ClaudeSdkMessage,
+  ClaudeSdkOneShotDeps,
+} from "../src/server/harness/claude/sdk-types.ts";
+import type {
   PersonaExecutionView,
   PublishedWorkflowGraph,
   WorkflowContextSnapshot,
@@ -28,6 +32,9 @@ const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { runSupervisedCheck } = await import("../src/server/workflows/check-supervisor.ts");
 const { liveCheckGroupCount } = await import("../src/server/workflows/check-group.ts");
 const { checkRuntimeSupport } = await import("../src/server/workflows/check-identity.ts");
+const { claudeRunner, configureClaudeRunnerTransport } = await import(
+  "../src/server/llm/claude.ts"
+);
 
 function persona(
   id: string,
@@ -441,7 +448,7 @@ test("each structured provider attempt has its own durable LLM call receipt", as
   ]);
 });
 
-test("infrastructure failures retry durably, exhaust without fail receipts, and deduplicate manual retry", async () => {
+test("SDK failures keep the existing persona_infrastructure vocabulary and durable retry", async () => {
   const retryGraph: PublishedWorkflowGraph = {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -455,31 +462,49 @@ test("infrastructure failures retry durably, exhaust without fail receipts, and 
     ],
   };
   const store = seedSubmission("infra", retryGraph);
-  const fake: LlmRunner = {
-    id: "claude",
-    label: "failure",
-    runInThread: null,
-    structuredOutput: null,
-    sandbox: null,
-    price: () => null,
-    litter: null,
-    killLiveRuns() {},
-    async run() {
-      throw new Error("provider unavailable");
-    },
+  const sdkDeps: ClaudeSdkOneShotDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async () => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          session_id: "sdk-infrastructure-failure",
+          terminal_reason: "api_error",
+          errors: ["provider unavailable"],
+        } satisfies ClaudeSdkMessage;
+      },
+    }),
   };
+  const restoreTransport = configureClaudeRunnerTransport(() => "sdk", sdkDeps);
   const engine = new WorkflowEngine(store, () => {}, {
-    runnerFor: () => fake,
+    runnerFor: () => claudeRunner,
     resolveExecution: () => ({
       runner: { id: "claude", source: "config", unknown: null },
       model: { id: "fake-model", source: "config" },
     }),
     retryBaseMs: 1,
   });
-  engine.start();
-  engine.activateSubmission("submission-infra");
-  await waitFor(() => store.getRun("run-infra")?.status === "blocked", 10_000);
-  await engine.stop();
+  try {
+    engine.start();
+    engine.activateSubmission("submission-infra");
+    await waitFor(() => store.getRun("run-infra")?.status === "blocked", 10_000);
+  } finally {
+    await engine.stop();
+    restoreTransport();
+  }
+
+  const calls = openDb().prepare(
+    `SELECT state, error_code FROM workflow_llm_calls
+      WHERE run_id = 'run-infra' ORDER BY attempt`,
+  ).all().map((row) => ({ ...(row as { state: string; error_code: string | null }) }));
+  assert.deepEqual(calls, [
+    { state: "failed", error_code: "persona_infrastructure" },
+    { state: "failed", error_code: "persona_infrastructure" },
+    { state: "failed", error_code: "persona_infrastructure" },
+  ]);
 
   const attempts = store.listAttempts("submission-infra").filter((attempt) => attempt.nodeId === "p");
   assert.deepEqual(attempts.map((attempt) => attempt.attempt), [1, 2, 3]);

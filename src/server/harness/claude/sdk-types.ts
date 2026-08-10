@@ -165,7 +165,8 @@ export interface ClaudeSdkOneShotQueryOptions {
   /** Inline flag settings, used only when a validated grant carries deny rules. */
   settings?: string;
   settingSources: ("user" | "project" | "local")[];
-  maxTurns: number;
+  /** Optional because granted reviews need later turns after tool results. */
+  maxTurns?: number;
   model?: string;
   maxBudgetUsd?: number;
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };

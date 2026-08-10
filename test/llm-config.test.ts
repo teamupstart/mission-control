@@ -36,7 +36,12 @@ const {
   setLlmConfig,
 } = await import("../src/server/llm/config.ts");
 const { LLM_JOB_IDS, LLM_JOB_SPECS } = await import("../src/shared/llm-jobs.ts");
-const { CLAUDE_TRANSPORTS, DEFAULT_LLM_RUNNER_ID, LLM_RUNNER_IDS } = await import(
+const {
+  CLAUDE_TRANSPORTS,
+  DEFAULT_CLAUDE_TRANSPORT,
+  DEFAULT_LLM_RUNNER_ID,
+  LLM_RUNNER_IDS,
+} = await import(
   "../src/shared/llm.ts"
 );
 const { LlmConfigPatchSchema } = await import("../src/shared/protocol.ts");
@@ -50,10 +55,10 @@ beforeEach(() => {
   delete process.env.MISSION_CLAUDE_TRANSPORT;
 });
 
-test("an unconfigured daemon spawns exactly what the hardcoded constants did", () => {
-  // The whole promise of this migration: never open the panel, get the old behaviour.
+test("an unconfigured daemon uses the shipped runner, SDK transport, and model defaults", () => {
   assert.equal(llmRunnerChoice().id, DEFAULT_LLM_RUNNER_ID);
-  assert.equal(claudeTransportChoice(), "print");
+  assert.equal(DEFAULT_CLAUDE_TRANSPORT, "sdk");
+  assert.equal(claudeTransportChoice(), DEFAULT_CLAUDE_TRANSPORT);
   for (const job of LLM_JOB_IDS) {
     const resolved = llmJobModel(job);
     assert.equal(resolved.id, LLM_JOB_SPECS[job].fallback, job);
@@ -61,25 +66,25 @@ test("an unconfigured daemon spawns exactly what the hardcoded constants did", (
   }
 });
 
-test("Claude transport resolves config, then env, then the print default", () => {
-  process.env.MISSION_CLAUDE_TRANSPORT = "sdk";
-  assert.equal(claudeTransportChoice(), "sdk", "the environment fallback was ignored");
-
-  setLlmConfig({ claudeTransport: "print" });
-  assert.equal(claudeTransportChoice(), "print", "the stored choice must beat the environment");
+test("Claude transport resolves config, then env, then the SDK default", () => {
+  process.env.MISSION_CLAUDE_TRANSPORT = "print";
+  assert.equal(claudeTransportChoice(), "print", "the environment fallback was ignored");
 
   setLlmConfig({ claudeTransport: "sdk" });
-  assert.equal(claudeTransportChoice(), "sdk");
+  assert.equal(claudeTransportChoice(), "sdk", "the stored choice must beat the environment");
+
+  setLlmConfig({ claudeTransport: "print" });
+  assert.equal(claudeTransportChoice(), "print", "print must remain a pinnable escape hatch");
 });
 
-test("an unknown Claude transport degrades to print instead of breaking background work", () => {
+test("an unknown Claude transport degrades to the shipped default", () => {
   setAppConfig("llm", { claudeTransport: "future-wire", models: {} });
   assert.doesNotThrow(() => getLlmConfig());
   assert.equal(getLlmConfig().claudeTransport, "");
-  assert.equal(claudeTransportChoice(), "print");
+  assert.equal(claudeTransportChoice(), DEFAULT_CLAUDE_TRANSPORT);
 
   process.env.MISSION_CLAUDE_TRANSPORT = "future-wire";
-  assert.equal(claudeTransportChoice(), "print");
+  assert.equal(claudeTransportChoice(), DEFAULT_CLAUDE_TRANSPORT);
 });
 
 test("a model override is stored and resolves as `config`", () => {
@@ -177,7 +182,7 @@ test("the status route carries every job, the runner, and the providers this bui
   // A LABEL, not just an id: the browser cannot import a runner implementation to find one.
   for (const r of status.runners) assert.ok(r.label.trim().length > 0, `${r.id} has no label`);
   assert.equal(status.runner.id, DEFAULT_LLM_RUNNER_ID);
-  assert.equal(status.claudeTransport, "print");
+  assert.equal(status.claudeTransport, DEFAULT_CLAUDE_TRANSPORT);
 
   setLlmConfig({ claudeTransport: "sdk" });
   assert.equal(llmStatus().claudeTransport, "sdk", "the resolved transport did not reach status");

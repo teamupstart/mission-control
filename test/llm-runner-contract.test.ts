@@ -147,6 +147,15 @@ function fakeClaudeSdk(): {
   };
 }
 
+async function withPrintTransport<T>(run: () => Promise<T>): Promise<T> {
+  const restore = configureClaudeRunnerTransport(() => "print");
+  try {
+    return await run();
+  } finally {
+    restore();
+  }
+}
+
 test("the registry answers for every declared runner", () => {
   // The whole enforcement mechanism: a new id that is not implemented must not compile,
   // and this catches the other half - an entry filed under the wrong key, which typecheck
@@ -161,7 +170,9 @@ test("the registry answers for every declared runner", () => {
 });
 
 test("a run carries no way to see a previous one", async () => {
-  await claudeRunner.run("summarise this session", { model: "claude-haiku-4-5", timeoutMs: 5000 });
+  await withPrintTransport(() =>
+    claudeRunner.run("summarise this session", { model: "claude-haiku-4-5", timeoutMs: 5000 })
+  );
   const args = argv();
   // Absence is the guarantee, so absence is what is asserted. Without one of these three
   // flags every `claude -p` mints a new session with an empty context; WITH one, Foreman's
@@ -208,6 +219,7 @@ test("a grant follows the configured SDK transport with the Inspector's exact sa
     assert.equal(fake.options()?.cwd, realpathSync(dir));
     assert.equal(fake.options()?.settings, DENY_SETTINGS);
     assert.deepEqual(fake.options()?.settingSources, []);
+    assert.equal(Object.hasOwn(fake.options() ?? {}, "maxTurns"), false);
   } finally {
     restore();
     rmSync(dir, { recursive: true, force: true });
@@ -221,16 +233,20 @@ test("Claude renders an exact JSON Schema and omits the flag when none was suppl
     required: ["answer"],
     additionalProperties: false,
   };
-  await claudeRunner.run("answer as JSON", { timeoutMs: 5000, schema });
-  assert.equal(flag("--json-schema"), JSON.stringify(schema));
-  assert.deepEqual(claudeRunner.structuredOutput, { guaranteesInputShape: true });
+  await withPrintTransport(async () => {
+    await claudeRunner.run("answer as JSON", { timeoutMs: 5000, schema });
+    assert.equal(flag("--json-schema"), JSON.stringify(schema));
+    assert.deepEqual(claudeRunner.structuredOutput, { guaranteesInputShape: true });
 
-  await claudeRunner.run("answer as text", { timeoutMs: 5000 });
-  assert.equal(flag("--json-schema"), null);
+    await claudeRunner.run("answer as text", { timeoutMs: 5000 });
+    assert.equal(flag("--json-schema"), null);
+  });
 });
 
 test("a run without a grant has every tool disabled, in a directory of no consequence", async () => {
-  await claudeRunner.run("summarise this session", { timeoutMs: 5000 });
+  await withPrintTransport(() =>
+    claudeRunner.run("summarise this session", { timeoutMs: 5000 })
+  );
   assert.equal(flag("--tools"), "", "tools were not disabled for an ungranted run");
   assert.equal(flag("--settings"), null, "an ungranted run should carry no permission payload");
   // Not the daemon's cwd and not a repo: with no tools a working directory is meaningless
@@ -242,7 +258,9 @@ test("the provider's envelope never reaches the caller", async () => {
   // `--output-format json` is this runner's own flag, so unwrapping `{ result: "…" }` is
   // its own job. A caller that did it would be undoing its runner's choice, and would
   // break outright against a provider whose envelope looks different.
-  const text = await claudeRunner.run("summarise this session", { timeoutMs: 5000 });
+  const text = await withPrintTransport(() =>
+    claudeRunner.run("summarise this session", { timeoutMs: 5000 })
+  );
   assert.equal(text, "the model text");
 });
 
@@ -447,7 +465,9 @@ test("a run cannot be attributed to the card the daemon was launched from", asyn
   process.env.TMUX_PANE = "%42";
   process.env.WEZTERM_PANE = "7";
   try {
-    await claudeRunner.run("summarise this session", { timeoutMs: 5000 });
+    await withPrintTransport(() =>
+      claudeRunner.run("summarise this session", { timeoutMs: 5000 })
+    );
   } finally {
     if (prev.tmux === undefined) delete process.env.TMUX_PANE;
     else process.env.TMUX_PANE = prev.tmux;
@@ -485,10 +505,12 @@ test("a tool grant renders exactly the deny rules the Inspector ships today", ()
 
 test("a granted run is scoped to the grant's directory", async () => {
   const dir = mkdtempSync(join(tmpdir(), "llm-grant-"));
-  await claudeRunner.run("review this diff", {
-    timeoutMs: 5000,
-    grant: { tools: [...CLAUDE_GRANTABLE_TOOLS], cwd: dir, denyPaths: DENY_PATHS },
-  });
+  await withPrintTransport(() =>
+    claudeRunner.run("review this diff", {
+      timeoutMs: 5000,
+      grant: { tools: [...CLAUDE_GRANTABLE_TOOLS], cwd: dir, denyPaths: DENY_PATHS },
+    })
+  );
   assert.equal(flag("--tools"), "Read,Grep,Glob");
   assert.equal(flag("--settings"), DENY_SETTINGS);
   // The cwd is not a convenience here: under a one-shot run there is nobody to approve a

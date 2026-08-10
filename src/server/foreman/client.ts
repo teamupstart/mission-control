@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { BASE_URL, envVar, stateDir } from "@shared/harness-runtime.mjs";
 import {
   CLAUDE_TRANSPORT_ENV,
+  DEFAULT_CLAUDE_TRANSPORT,
   DEFAULT_LLM_RUNNER_ID,
   isClaudeTransport,
   isLlmRunnerId,
@@ -88,7 +89,7 @@ export interface ForemanLlmSelection {
 /** Compatibility answer when the daemon predates the transport field or status route. */
 export function foremanClaudeTransportFallback(): ClaudeTransport {
   const configured = envVar(CLAUDE_TRANSPORT_ENV)?.trim() ?? "";
-  return isClaudeTransport(configured) ? configured : "print";
+  return isClaudeTransport(configured) ? configured : DEFAULT_CLAUDE_TRANSPORT;
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -923,8 +924,8 @@ export class ForemanClient implements ForemanActions {
    * would answer differently from the panel that printed it.
    *
    * Falls back rather than throwing on fields it cannot read. A newer worker paired with an
-   * older daemon takes its own environment transport and then `print`; it never guesses
-   * `sdk`. The caller handles a failed request separately by retaining its last known answer.
+   * older daemon takes its own environment transport and then this build's shipped default.
+   * The caller handles a failed request separately by retaining its last known answer.
    */
   async llmSelection(): Promise<ForemanLlmSelection> {
     const status = await get<{

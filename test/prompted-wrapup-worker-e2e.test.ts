@@ -272,6 +272,7 @@ async function runWorker(
         MISSION_PORT: String(opts.port),
         MISSION_HOME: tmp("mission-pw-e2e-"),
         MISSION_CLAUDE_BIN: opts.claudeBin,
+        MISSION_CLAUDE_TRANSPORT: "print",
         FAKE_CLAUDE_LOG: opts.claudeLog,
         // The trigger requires a settled idle session; the fixtures above are two
         // minutes idle, so this only keeps the test honest about which gate it passed.

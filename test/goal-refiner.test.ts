@@ -74,6 +74,8 @@ const setMode = (
 setMode("good");
 
 process.env.MISSION_CLAUDE_BIN = fake;
+const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
+const restoreTransport = configureClaudeRunnerTransport(() => "print");
 process.env.MISSION_GOAL_POLL_MS = "20";
 /**
  * The ceiling on ONE `claude -p` run. Named so the deadlines below can be DERIVED from it
@@ -99,6 +101,7 @@ const { startGoalRefiner } = await import("../src/server/goal/refiner.ts");
 
 openDb();
 after(() => {
+  restoreTransport();
   rmSync(home, { recursive: true, force: true });
   rmSync(bin, { recursive: true, force: true });
 });

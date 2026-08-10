@@ -173,7 +173,12 @@ export async function runClaudeSdkOneShot(
         tools: grant ? [...grant.tools] : [],
         ...(grant ? { settings: claudeGrantSettings(grant) } : {}),
         settingSources: [],
-        maxTurns: 1,
+        // A tool-less one-shot can and should finish in one turn. A granted Inspector
+        // review cannot: the first assistant turn commonly asks Read/Grep/Glob, then the
+        // tool result has to reach a later assistant turn before a verdict exists. Keeping
+        // `maxTurns: 1` on that path makes every real granted review terminate with
+        // `error_max_turns`; its existing wall-clock timeout remains the hard bound.
+        ...(grant ? {} : { maxTurns: 1 }),
         cwd: realpathSync(grant?.cwd ?? HEADLESS_CWD),
         pathToClaudeCodeExecutable: executable,
         // A headless Claude run fires the same machine-installed hooks as an interactive

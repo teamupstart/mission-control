@@ -53,6 +53,9 @@ process.stdin.on("end", () => {
 );
 chmodSync(claudePath, 0o755);
 
+const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
+const restoreTransport = configureClaudeRunnerTransport(() => "print");
+
 // The fake `gh` records every snapshot read and every diff read in the state file, and
 // writes it atomically (write + rename) because the test polls the file while ticks are
 // still running.
@@ -236,7 +239,10 @@ beforeEach(() => {
   resetAuthenticatedLogin();
 });
 
-after(() => rmSync(temp, { recursive: true, force: true }));
+after(() => {
+  restoreTransport();
+  rmSync(temp, { recursive: true, force: true });
+});
 
 test("a tick that replies AND reviews fetches the diff once; steady state fetches none", async () => {
   writeGithubState({

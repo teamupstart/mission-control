@@ -7,6 +7,7 @@ import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { claudeEnvelopeModels } from "../harness/claude/envelope.ts";
 import type { ClaudeTransport, LlmRunOptions, LlmRunner, LlmToolGrant } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
+import type { ClaudeSdkOneShotDeps } from "../harness/claude/sdk-types.ts";
 
 // Claude's `LlmRunner`: one provider identity with print and SDK wire transports.
 //
@@ -105,15 +106,25 @@ export function claudeSpendReport(
 // database reader by importing `llm/config.ts` from this shared runner. Phase 4 will give
 // the worker its own transport input over its existing process boundary.
 let resolveTransport: () => ClaudeTransport = () => "print";
+let sdkDeps: ClaudeSdkOneShotDeps | undefined;
 
-/** Install this process's per-call Claude transport resolver, returning a restore hook. */
+/**
+ * Install this process's per-call Claude transport resolver, returning a restore hook.
+ *
+ * The optional dependency is the contract-test seam for the routed SDK branch. Production
+ * omits it and `runClaudeSdkOneShot` uses the pinned binary and lazy vendor import.
+ */
 export function configureClaudeRunnerTransport(
   resolver: () => ClaudeTransport,
+  deps?: ClaudeSdkOneShotDeps,
 ): () => void {
   const previous = resolveTransport;
+  const previousDeps = sdkDeps;
   resolveTransport = resolver;
+  sdkDeps = deps;
   return () => {
     resolveTransport = previous;
+    sdkDeps = previousDeps;
   };
 }
 
@@ -135,7 +146,7 @@ export const claudeRunner: LlmRunner = {
     // adapter also refuses a grant directly, so bypassing this routing guard fails loudly.
     const transport = grant ? "print" : resolveTransport();
     if (transport === "sdk") {
-      const result = await runClaudeSdkOneShot(prompt, opts);
+      const result = await runClaudeSdkOneShot(prompt, opts, sdkDeps);
       if (opts.role) {
         const report = claudeSpendReport(
           JSON.stringify(result.envelope),

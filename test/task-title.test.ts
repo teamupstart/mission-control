@@ -48,6 +48,8 @@ const callCount = (): number =>
 setMode("good");
 
 process.env.MISSION_CLAUDE_BIN = fake;
+const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
+const restoreTransport = configureClaudeRunnerTransport(() => "print");
 process.env.MISSION_TASK_TITLE_TIMEOUT_MS = "5000";
 
 const { openDb } = await import("../src/server/db.ts");
@@ -56,6 +58,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 
 openDb();
 after(() => {
+  restoreTransport();
   rmSync(home, { recursive: true, force: true });
   rmSync(bin, { recursive: true, force: true });
 });

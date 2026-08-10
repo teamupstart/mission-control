@@ -102,8 +102,8 @@ taking a body.
 > quiet on them. Re-dispatching restores the invite automatically, or invite them from the
 > rail; embedded sessions are unaffected.
 
-Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
-between reviews. Foreman ships **enabled but inert**, and the distinction is the whole point:
+Each session is reviewed in a **fresh headless model call**, using Claude's Agent SDK transport
+by default, so context never bleeds between reviews. Foreman ships **enabled but inert**, and the distinction is the whole point:
 it starts in **dry-run**, its repository allowlist starts empty, and its worker is a separate
 process nothing starts for you. So on a fresh install Foreman types nothing, sends nothing and
 runs nothing - it *drafts* answers onto the card until you trust it. `enabled` flipped on
@@ -279,8 +279,10 @@ changes only that block, leaving the rest of every prompt byte-for-byte identica
 
 Foreman spawns a fresh, tool-less headless call for four different jobs, and each one picks its
 own model. **Settings → Foreman → Models** shows what each is running as and lets you change it.
-One **Provider** row above the four says which CLI they all spawn through - `claude -p` or
+One **Provider** row above the four says which CLI they all spawn through - `claude` or
 `codex exec` - and changing it clears all four boxes, since a model id does not carry across.
+Claude uses one fresh Agent SDK query by default; [`MISSION_CLAUDE_TRANSPORT=print`](configuration.md)
+keeps the one-shot `claude -p` path available as an operator-pinned escape hatch.
 Left unchosen it follows the app-wide
 [Models](models.md#models-what-the-apps-own-model-work-runs-on) provider rather than a hardcoded
 `claude`, so an environment variable set in the daemon's shell is not silently dropped

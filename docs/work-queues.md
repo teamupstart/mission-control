@@ -69,7 +69,7 @@ Foreman:
 2. **delivers** the intent as a single bracketed paste (so a multi-line prompt doesn't
    submit halfway through);
 3. waits for the agent to finish, then **verifies** the work in a fresh tool-less
-   `claude -p` - reading the item's own diff and transcript against the repo's `AGENTS.md`
+   model call - using Claude's Agent SDK transport by default and reading the item's own diff and transcript against the repo's `AGENTS.md`
    / `CLAUDE.md`;
 4. if something's genuinely missing, hands the **specific gaps** back to the agent to fix
    and re-checks - escalating to you only once an issue looks beyond it;
@@ -94,7 +94,7 @@ direct PR is refused outright unless Foreman is live *and* the repository is
 allowlisted.
 
 The prompted trigger doesn't fire on idleness alone, because idle isn't finished. It runs
-the same verifier queued items get - a fresh tool-less `claude -p` reading the branch diff
+the same verifier queued items get - a fresh tool-less model call reading the branch diff
 against the reconciled durable objective - and acts only on a **complete** verdict; an empty diff
 decides itself without a model call. A session that still needs you is left alone, and a
 checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
@@ -255,7 +255,7 @@ and **semi-auto** it still *plans*, so you see the ordering and the dependency r
 board and can click **launch new agent** yourself. Dry-run means dry-run.
 
 **Foreman's inferred dependencies come from a model, and are treated as one.** A fresh
-tool-less `claude -p` (Sonnet by default - `FOREMAN_BACKLOG_MODEL`) sees every planning
+tool-less Claude call (Sonnet by default, over the Agent SDK transport - `FOREMAN_BACKLOG_MODEL`) sees every planning
 item's title and intent and returns an order plus, for each item, what it must
 wait for. The reply isn't trusted as written: ids that aren't in the backlog are dropped,
 self-references are dropped, **only the edges that close a cycle** are cut, and any item

@@ -183,6 +183,11 @@ test("a validated grant reaches the SDK with the Inspector's exact tools, cwd, a
   assert.equal(options.cwd, realpathSync(cwd));
   assert.equal(options.settings, DENY_SETTINGS);
   assert.deepEqual(options.settingSources, []);
+  assert.equal(
+    Object.hasOwn(options, "maxTurns"),
+    false,
+    "a granted review needs a later turn after its tool result",
+  );
 });
 
 test("an invalid grant is refused before the binary is resolved or query is called", async () => {

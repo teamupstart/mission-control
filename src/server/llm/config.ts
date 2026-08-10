@@ -5,6 +5,7 @@ import { LLM_JOB_IDS, LLM_JOB_SPECS, resolveLlmJobModel, resolveLlmJobModels } f
 import type { LlmJobId, ResolvedLlmJobModel } from "@shared/llm-jobs.ts";
 import {
   CLAUDE_TRANSPORT_ENV,
+  DEFAULT_CLAUDE_TRANSPORT,
   isClaudeTransport,
   LLM_RUNNER_ENV,
   resolveLlmRunner,
@@ -74,15 +75,14 @@ export function llmRunnerChoice(cfg: LlmConfig = getLlmConfig()): ResolvedLlmRun
  * Which wire protocol a daemon-side, tool-less Claude call uses.
  *
  * Resolved per call so a config edit reaches the next run. The stored choice wins, then
- * the environment chain, then today's `print` behavior. Unknown environment values fail
- * closed to `print`; unknown stored values have already degraded to empty in the read
- * schema above.
+ * the environment chain, then the shipped default. Unknown values fall through to that
+ * default; unknown stored values have already degraded to empty in the read schema above.
  */
 export function claudeTransportChoice(cfg: LlmConfig = getLlmConfig()): ClaudeTransport {
   const configured = cfg.claudeTransport.trim();
   if (isClaudeTransport(configured)) return configured;
   const environment = envVar(CLAUDE_TRANSPORT_ENV)?.trim() ?? "";
-  return isClaudeTransport(environment) ? environment : "print";
+  return isClaudeTransport(environment) ? environment : DEFAULT_CLAUDE_TRANSPORT;
 }
 
 /** What one background job will spawn with, and why. Per call, for the reason above. */

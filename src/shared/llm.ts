@@ -67,6 +67,9 @@ export const CLAUDE_TRANSPORTS = ["print", "sdk"] as const;
 
 export type ClaudeTransport = (typeof CLAUDE_TRANSPORTS)[number];
 
+/** The wire protocol used when neither config nor the environment pins one. */
+export const DEFAULT_CLAUDE_TRANSPORT: ClaudeTransport = "sdk";
+
 /**
  * The `envVar()` suffix selecting Claude's headless transport.
  *

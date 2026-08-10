@@ -180,12 +180,16 @@ test("a model changed in Settings reaches the very next dispatch's command line"
 
   // Polled: the card registers before the child has run far enough to write its record.
   await expect
-    .poll(() => read().some((r) => r.argv.includes("--input-format")), {
+    .poll(() => read().some(
+      (r) => r.argv.includes("--input-format") && !r.argv.includes("--setting-sources="),
+    ), {
       message: "the SDK session should have launched the fake",
     })
     .toBe(true);
 
-  const session = read().find((r) => r.argv.includes("--input-format"));
+  const session = read().find(
+    (r) => r.argv.includes("--input-format") && !r.argv.includes("--setting-sources="),
+  );
   expect(
     session?.argv[session.argv.indexOf("--model") + 1],
     "the dispatch should run on the model saved moments earlier, with no daemon restart",

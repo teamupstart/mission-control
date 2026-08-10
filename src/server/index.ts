@@ -61,8 +61,8 @@ import { createCheckScheduler } from "./workflows/checks.ts";
 
 openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
-// process and deliberately remains on print until its transport is carried over HTTP in
-// Phase 4. Resolve on every run so an API config edit reaches the next tool-less call.
+// process and receives this resolved transport over HTTP. Resolve on every run so an API
+// config edit reaches the next call in both processes.
 configureClaudeRunnerTransport(claudeTransportChoice);
 ensureToken();
 // Reclaim expired image drops now, while we know no send is mid-flight. An upload

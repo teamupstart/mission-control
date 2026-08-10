@@ -47,15 +47,15 @@ test("Foreman reads the daemon's resolved Claude transport beside its runner", a
   });
 });
 
-test("an older daemon degrades through the worker environment and then print", async () => {
+test("an older daemon degrades through the worker environment and then the SDK default", async () => {
   statusBody = { runner: { id: "claude" } };
   process.env.MISSION_CLAUDE_TRANSPORT = "sdk";
   assert.equal((await new ForemanClient().llmSelection()).claudeTransport, "sdk");
   assert.equal(foremanClaudeTransportFallback(), "sdk");
 
   process.env.MISSION_CLAUDE_TRANSPORT = "future-wire";
-  assert.equal((await new ForemanClient().llmSelection()).claudeTransport, "print");
-  assert.equal(foremanClaudeTransportFallback(), "print");
+  assert.equal((await new ForemanClient().llmSelection()).claudeTransport, "sdk");
+  assert.equal(foremanClaudeTransportFallback(), "sdk");
 });
 
 test("the Agent SDK package resolves in a separate tsx-run process", async () => {

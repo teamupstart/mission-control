@@ -6,7 +6,7 @@ import {
 } from "./claude-grant.ts";
 import { unwrapEnvelope } from "./structured.ts";
 import { headlessTranscriptDir } from "../goal/prune.ts";
-import { grantRefusal } from "@shared/llm.ts";
+import { DEFAULT_CLAUDE_TRANSPORT, grantRefusal } from "@shared/llm.ts";
 import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { claudeEnvelopeModels } from "../harness/claude/envelope.ts";
 import type { ClaudeTransport, LlmRunOptions, LlmRunner } from "@shared/llm.ts";
@@ -80,10 +80,10 @@ export function claudeSpendReport(
 }
 
 // Process-local on purpose. The daemon installs its config-backed resolver after opening
-// the database; the separate Foreman worker does not, so Phase 2 cannot make that worker a
-// database reader by importing `llm/config.ts` from this shared runner. Phase 4 will give
-// the worker its own transport input over its existing process boundary.
-let resolveTransport: () => ClaudeTransport = () => "print";
+// the database; the separate Foreman worker installs the value it learns over HTTP, so it
+// stays a database non-reader. The fallback covers direct use before either process installs
+// its resolver and must match the shipped default.
+let resolveTransport: () => ClaudeTransport = () => DEFAULT_CLAUDE_TRANSPORT;
 let sdkDeps: ClaudeSdkOneShotDeps | undefined;
 
 /**

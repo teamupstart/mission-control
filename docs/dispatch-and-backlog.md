@@ -85,8 +85,8 @@ it moves only when a *new* dispatch is accepted (shelving counts; saving an edit
 old backlog task doesn't). It's a starting point, not a lock: type or pick another and
 that repo becomes the seed instead.
 
-Leave **Title** blank and the daemon names the task for you: a headless `claude -p` on
-Haiku summarizes your task text into a few words - "Fix flaky worktree cleanup on Reset",
+Leave **Title** blank and the daemon names the task for you: a fresh, tool-less Claude call on
+Haiku, using the Agent SDK transport by default, summarizes your task text into a few words - "Fix flaky worktree cleanup on Reset",
 not the top of your first paragraph. It runs *before* dispatch and the dispatch waits on
 it, because the title supplies the git branch and the launched session's name (including a
 terminal home name on the terminal runtime), and later task-title edits do not propagate

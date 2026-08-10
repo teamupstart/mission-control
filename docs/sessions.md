@@ -1048,7 +1048,7 @@ Six transports feed these figures, each kept to the facts it actually reports:
 | **statusLine payload** | your Claude subscription's `five_hour` / `seven_day` rate-limit windows for terminal sessions; OTel has no quota metric |
 | **Claude Agent SDK usage** | the same account windows for embedded SDK sessions, refreshed when the session resumes after a daemon restart and after each completed turn |
 | **Codex rollout file** | quota windows plus request-level `last_token_usage`, including model, cached input, cache writes, output, and reasoning output. A durable byte cursor and event identity make restarts/replays idempotent |
-| **Headless run envelopes** | the app's OWN model calls: `claude -p --output-format json` reports its cost and per-model tokens, `codex exec --json` reports tokens on `turn.completed`. Read straight from the process the run already returns, so no exporter or endpoint is involved |
+| **Headless run envelopes** | the app's OWN model calls: Claude's Agent SDK `result` frame reports its cost and per-model tokens by default, the supported `claude -p --output-format json` escape hatch carries the same envelope, and `codex exec --json` reports tokens on `turn.completed`. Read straight from the process the run already returns, so no exporter or endpoint is involved |
 
 #### One writer per session, chosen by runtime
 
@@ -1092,7 +1092,7 @@ panel that warns about a quiet weekend is one you learn to scroll past.
 The Foreman and the Inspector call models on their own schedule, with nobody asking them
 to. That spend is real - on a busy fleet it is the largest thing running when you are not
 looking - and until it was attributed it was also invisible: a `codex exec --ephemeral` run
-writes no rollout file and exports nothing, while a `claude -p` run *does* export
+writes no rollout file and exports nothing, while a headless Claude run *does* export
 OpenTelemetry, but under the fresh session id every headless run mints, so it landed in the
 ledger under a key belonging to no card and was silently counted as session spend.
 
@@ -1111,7 +1111,7 @@ be added by anyone who wants one number.
 The runs are valued exactly as everything else is: Claude runs carry the cost the CLI
 calculated (`reported`), Codex runs are priced from the same versioned Standard API
 snapshot an interactive Codex session uses (`api-equivalent`), and a model with no verified
-rate stays honestly unpriced. Each row is keyed to the run's own id - `claude -p`'s
+rate stays honestly unpriced. Each row is keyed to the run's own id - Claude's
 `session_id`, `codex exec`'s `thread_id` - so a retried report cannot double-count, and a
 Claude run's OpenTelemetry twin is recognised by that same id and excluded from session
 spend rather than billed twice.

@@ -50,8 +50,9 @@ and never answered.
 
 ### What it can read, and why that is a trade
 
-On Claude, the reviewer runs `claude -p` with **`Read`, `Grep`, `Glob`** in the reviewed
-worktree. Reviewing a diff without being able to open a file misses most of what matters -
+On Claude, the reviewer runs one fresh Agent SDK query by default with **`Read`, `Grep`,
+`Glob`** in the reviewed worktree. The operator can pin the supported `claude -p` escape hatch
+with [`MISSION_CLAUDE_TRANSPORT=print`](configuration.md). Reviewing a diff without being able to open a file misses most of what matters -
 whether a change breaks a caller three files away, whether there is a test - so the grant is
 deliberate. It also means a pull request diff (which anyone can author) reaches a model
 that can read the filesystem, whose output is published publicly.

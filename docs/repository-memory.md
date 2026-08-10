@@ -116,7 +116,16 @@ which happened:
 |---|---|---|
 | `{"kind":"delivered", ...}` | the session is live | The shipped **Retro** session action was rendered and typed into it. The session that did the work runs its own retrospective, because it already holds the context a fresh one would have to reconstruct from transcript bytes. |
 | `{"kind":"dispatched","task":{...}}` | the session cannot receive a turn | A retro task is filed in the backlog against that session's repository, naming the session, its branch and its pull request. Dispatch it when you want it. |
-| `409` | the retro skill is off, or nothing types | The refusal names the reason. Nothing is written into any session. |
+| `409` | the retro skill is off, or there is no repository to file against | The refusal names the reason. Nothing is typed and nothing is filed. |
+
+**Both arms fail closed on the skill**, including the one that types nothing. The skill is where
+the human-approval ceremony lives, so a task filed while it is switched off would reach an agent
+holding an intent that names a procedure it cannot load - and the retro's one hard rule, that
+nothing is written a human did not approve, would survive only as prose. The two arms ask the
+question of different agents at different times: the live arm asks whether *this* session can
+run the skill now, reload watermark included; the dispatch arm asks whether the harness it is
+about to pick could run it at launch, where a watermark about some other session's history is
+not evidence.
 
 The delivered packet carries the receiving session's own id, which is how the skill knows
 which transcript to read - the action's prompt is frozen bytes and cannot carry a per-delivery

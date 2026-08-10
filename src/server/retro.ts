@@ -5,7 +5,7 @@ import type { RetroResponse } from "@shared/protocol.ts";
 import type { AgentType, Session } from "@shared/types.ts";
 import { BUILTIN_SESSION_ACTIONS, RETRO_SESSION_ACTION_ID } from "./workflows/builtin-session-actions.ts";
 import { renderSessionAction } from "./workflows/feedback.ts";
-import { requiredSkillCommand } from "./skills/invoke.ts";
+import { requiredSkillCommand, skillInvocationForAgent } from "./skills/invoke.ts";
 import { recordInjection } from "./injections.ts";
 import { injectPromptForRuntime } from "./sdk/deliver.ts";
 import { resolveTaskRepoRoot } from "./repos.ts";
@@ -30,6 +30,15 @@ import type { TaskManager } from "./tasks.ts";
 // The R3 fallback below - dispatch a retro task when the session can no longer be typed into -
 // is the source plan's, and it keeps the daemon out of git either way: a task is a row, and the
 // agent it launches is what commits.
+//
+// BOTH arms fail closed on the retro skill, and the second one is the easier to get wrong. It
+// types nothing, so it looks like it has nothing to gate - but the skill is where the
+// human-approval ceremony lives, so a task filed while the skill is off would reach an agent
+// holding an intent that names a procedure it cannot load. The arms ask different questions of
+// the same config, because they are about different agents at different times: the live arm
+// asks whether THIS session can run the skill NOW, watermark included; the dispatch arm asks
+// whether the harness it is about to pick could run it at launch, where a watermark about some
+// other session's history is not evidence.
 
 /**
  * What the retro route did, or the reason it did nothing.
@@ -49,6 +58,8 @@ export interface RetroDeps {
   /** The pre-write refusal a live session may currently have. Same guard `/inject` passes. */
   promptBlocker: (sessionId: string) => string | null;
   requireSkill?: typeof requiredSkillCommand;
+  /** The launch-time half of the same gate, asked of the harness a retro TASK would run on. */
+  skillForAgent?: typeof skillInvocationForAgent;
   inject?: typeof injectPromptForRuntime;
   remember?: typeof recordInjection;
   /** Injected so a route test never shells out to git. Returns the task's main checkout. */
@@ -89,7 +100,7 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
   // `state === "exited"` is never read as durable removal (see `session_remove`); it is read
   // here as "a turn sent now would land nowhere", which is the question being asked.
   if (session.state === "exited" || !canMessage(session)) {
-    return dispatchRetroTask(session, deps);
+    return dispatchRetroTask(session, action.requiredSkillId, deps);
   }
 
   const requireSkill = deps.requireSkill ?? requiredSkillCommand;
@@ -182,8 +193,29 @@ function staleSkill(
  * A backlog task rather than an immediate dispatch. The retro is a small piece of housekeeping
  * about work that has already finished, so it must not jump a queue of real work or take a
  * worktree lease the moment somebody clicks; the operator dispatches it when they want it.
+ *
+ * Gated on the skill FIRST, and that is not symmetry for its own sake. The retro skill is not
+ * decoration on this path: it is where the human-approval ceremony lives, so an agent that
+ * reaches the task without it would run a retrospective whose one hard rule - write nothing a
+ * human did not approve - exists only as a sentence in an intent nobody enforces. Filing a
+ * task whose procedure is switched off is exactly the failure "fails closed" promises not to
+ * be, and refusing it here is what makes that promise true of both arms rather than one.
  */
-async function dispatchRetroTask(session: Session, deps: RetroDeps): Promise<RetroResult> {
+async function dispatchRetroTask(
+  session: Session,
+  requiredSkillId: string | null,
+  deps: RetroDeps,
+): Promise<RetroResult> {
+  const runner = retroRunner(session, requiredSkillId, deps);
+  if ("problem" in runner) {
+    return {
+      kind: "refused",
+      status: 409,
+      error: `${runner.problem} A retro task filed now would reach an agent that cannot load `
+        + "the procedure its intent names.",
+    };
+  }
+
   const from = session.repoRoot ?? session.gitRoot ?? session.cwd;
   if (!from) {
     return {
@@ -204,23 +236,63 @@ async function dispatchRetroTask(session: Session, deps: RetroDeps): Promise<Ret
     title: `Retro: ${session.name}`.slice(0, 120),
     intent: retroTaskIntent(session),
     kind: "ship",
-    agent: retroAgent(session.agent),
+    agent: runner.agent,
     backlog: true,
   });
   return { kind: "dispatched", task };
 }
 
 /**
- * Which harness runs a dispatched retro.
+ * Which harness a dispatched retro should run on, or why none of them can.
  *
- * The retro's procedure IS a skill, so an agent that cannot load one would be handed an intent
- * pointing at instructions it will never see. The session's own harness is preferred - it read
- * the same repository and wrote the transcript being reviewed - and anything else falls back to
- * a harness that loads skills at all.
+ * Asked of the AGENT rather than of the dead session, because the session is not what will run
+ * the task - it is gone, which is why there is a task at all. Its harness is only a preference:
+ * it read the same repository and wrote the transcript being reviewed, so it is tried first,
+ * and a harness that cannot actually invoke the skill hands the work to one that can.
+ *
+ * All three shipped harnesses declare a skills directory today, so the fallback is about
+ * INVOCABILITY rather than about a harness that loads nothing: a drifted symlink under one
+ * agent's directory is the case it really covers, and the candidate list stays written as a
+ * capability question so a future skill-less harness needs no change here.
+ *
+ * `skillInvocationForAgent` rather than `requiredSkillCommand`: the reload watermark is a fact
+ * about a live conversation's history, and the conversation this picks a harness for has not
+ * started. See that function for why borrowing the stricter check would answer wrongly in both
+ * directions.
+ *
+ * The reported problem comes from the first SKILL-LOADING candidate rather than from whichever
+ * candidate was tried first, so a harness that was never going to run the task cannot supply
+ * the sentence an operator acts on. With Skills switched off every candidate returns the same
+ * "enable it" sentence and the distinction does not arise.
  */
-function retroAgent(agent: AgentType): AgentType {
-  if (HARNESS_CAPABILITIES[agent].skills) return agent;
-  return skillLoadingAgents()[0] ?? agent;
+function retroRunner(
+  session: Session,
+  requiredSkillId: string | null,
+  deps: RetroDeps,
+): { agent: AgentType } | { problem: string } {
+  // No required skill means nothing to prove, and the session's own harness is the honest
+  // default. Unreachable for the shipped action, which always requires one.
+  if (!requiredSkillId) return { agent: session.agent };
+
+  const loaders = skillLoadingAgents();
+  const candidates = HARNESS_CAPABILITIES[session.agent].skills
+    ? [session.agent, ...loaders.filter((agent) => agent !== session.agent)]
+    : loaders;
+  if (candidates.length === 0) {
+    return {
+      problem: `No harness in this build loads Mission Control skills, so the ${requiredSkillId} `
+        + "skill has nowhere to run.",
+    };
+  }
+
+  const resolve = deps.skillForAgent ?? skillInvocationForAgent;
+  let problem: string | null = null;
+  for (const agent of candidates) {
+    const resolved = resolve(agent, requiredSkillId);
+    if (resolved.ok) return { agent };
+    problem ??= resolved.message;
+  }
+  return { problem: problem ?? `The ${requiredSkillId} skill is unavailable.` };
 }
 
 /**

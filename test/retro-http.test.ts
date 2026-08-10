@@ -208,6 +208,32 @@ test("a session that cannot be typed into files a retro task against its reposit
   assert.equal(f.tasks.get(task.id)?.id, task.id, "the task is really in the backlog");
 });
 
+/**
+ * The dispatch arm's half of "fails closed", and the easier half to lose.
+ *
+ * It types nothing, so it looks like it has nothing to gate - but the retro skill is where the
+ * human-approval ceremony lives. A task filed while the skill is off reaches an agent holding
+ * an intent that names a procedure it cannot load, and the one rule the retro has (write
+ * nothing a human did not approve) would survive only as prose nobody enforces.
+ */
+test("a disabled retro skill refuses the dead-session fallback too, filing nothing", async () => {
+  installRetroSkill();
+  enableSkills(false);
+  const f = fixture();
+  const repo = gitRepo(`closed-${f.serial}`);
+  const session = paneless(f, repo, "feature/no-skill");
+  const before = f.tasks.list().length;
+
+  const response = await retro(f.app, session.id);
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { error: string };
+  assert.match(body.error, /Enable Skills and the retro skill/);
+  // The refusal says why filing it would not have helped, rather than only naming the toggle.
+  assert.match(body.error, /cannot load the procedure/);
+  assert.equal(f.tasks.list().length, before, "a refused retro files nothing");
+  enableSkills(true);
+});
+
 test("a session the registry has never heard of is a 404, not a task", async () => {
   const f = fixture();
   // Counted rather than asserted empty: tasks are durable rows in this file's one database,

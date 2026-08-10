@@ -40,15 +40,22 @@ const defaultDeps: RequiredSkillCommandDeps = {
 };
 
 /**
- * Resolve a skill invocation only when the bound session can actually run it.
+ * Whether an AGENT OF THIS KIND could run this skill, and the line that would invoke it.
  *
- * A configured toggle is not enough: the link may have drifted, and a reload-capable
- * session that predates the current generation may still hold the previous skill set.
- * Failing closed here is what makes a workflow's required skill a guarantee rather than
- * prose that merely asks the model to behave as if it had loaded one.
+ * Everything `requiredSkillCommand` checks except the one rung that is about a conversation
+ * that already exists - the reload watermark. Split out because two callers ask genuinely
+ * different questions of the same config: "may I type this into that session now" is the
+ * whole ladder, while "would an agent I am about to LAUNCH be able to follow this" cannot
+ * involve a watermark, because the session it would be measured against does not exist yet
+ * and will, by construction, start after the current generation.
+ *
+ * Answering the second question with the first is not a conservative approximation, it is a
+ * wrong answer in both directions: it would refuse a launch because some unrelated dead
+ * session never acked a reload, and it would report a Pi session's inability to load skills
+ * as though it settled what a Claude task could do.
  */
-export function requiredSkillCommand(
-  session: Session,
+export function skillInvocationForAgent(
+  agent: AgentType,
   id: string,
   deps: RequiredSkillCommandDeps = defaultDeps,
 ): RequiredSkillCommand {
@@ -73,22 +80,43 @@ export function requiredSkillCommand(
     };
   }
 
-  const skills = HARNESS_CAPABILITIES[session.agent].skills;
-  const command = deps.command(session.agent, entry.name);
+  const skills = HARNESS_CAPABILITIES[agent].skills;
+  const command = deps.command(agent, entry.name);
   if (!skills || !command) {
     return {
       ok: false,
-      message: `${AGENT_IDENTITY[session.agent].label} cannot invoke the required ${entry.name} skill.`,
+      message: `${AGENT_IDENTITY[agent].label} cannot invoke the required ${entry.name} skill.`,
     };
   }
 
-  const installProblem = deps.installProblem(session.agent, id);
+  const installProblem = deps.installProblem(agent, id);
   if (installProblem) return { ok: false, message: installProblem };
+
+  return { ok: true, command };
+}
+
+/**
+ * Resolve a skill invocation only when the bound session can actually run it.
+ *
+ * A configured toggle is not enough: the link may have drifted, and a reload-capable
+ * session that predates the current generation may still hold the previous skill set.
+ * Failing closed here is what makes a workflow's required skill a guarantee rather than
+ * prose that merely asks the model to behave as if it had loaded one.
+ */
+export function requiredSkillCommand(
+  session: Session,
+  id: string,
+  deps: RequiredSkillCommandDeps = defaultDeps,
+): RequiredSkillCommand {
+  const resolved = skillInvocationForAgent(session.agent, id, deps);
+  if (!resolved.ok) return resolved;
 
   // A null reload command means the harness watches its skills directory itself. For a
   // reload-capable harness, the generation watermark is proof that THIS conversation
   // has read the current symlink set. Starting after the change is equivalent proof.
-  if (skills.reloadCommand && config.generation > 0) {
+  const config = deps.config();
+  const skills = HARNESS_CAPABILITIES[session.agent].skills;
+  if (skills?.reloadCommand && config.generation > 0) {
     const ack = deps.acks().get(noteKeyFor(session)) ?? 0;
     const startedCurrent =
       session.startedAt !== null
@@ -101,5 +129,5 @@ export function requiredSkillCommand(
     }
   }
 
-  return { ok: true, command };
+  return resolved;
 }

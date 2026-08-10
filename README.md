@@ -589,6 +589,15 @@ This adds one `command` hook per event to `~/.claude/settings.json`, each runnin
 to stdout, swallows every error, and always exits 0, so a hook never blocks or
 fails the agent even when the daemon is down.
 
+The paths it bakes are absolute, and chosen to outlive the machine changing under
+them. The `node` it writes is a stable alias (e.g. `/opt/homebrew/bin/node`) rather
+than the versioned directory `process.execPath` resolves to, which the next
+`brew upgrade node` deletes. And it refuses to run from a checkout inside a
+treehouse worktree pool: pool slots are reclaimed, and every hook baked from one
+then fails every event in every session on the machine with `MODULE_NOT_FOUND`.
+Install from a durable clone, or pass `--force` to override; `--uninstall` is
+always allowed, so an abandoned slot can still clean up after itself.
+
 Which events those are, and what each one means for a card, belongs to the agent rather
 than to the installer: both live on `HARNESSES.claude.hooks`
 (`src/server/harness/claude/hooks.ts`), which this script and the packaged app's
@@ -632,7 +641,8 @@ master switch in Settings → Skills.
 <summary>What it writes to <code>settings.json</code></summary>
 
 Tool events (`PreToolUse`, `PostToolUse`) get a `"*"` matcher; the rest match
-every invocation. Paths are absolute (your `node` and this repo):
+every invocation. Paths are absolute (a durable alias for your `node`, and this
+repo):
 
 ```jsonc
 {

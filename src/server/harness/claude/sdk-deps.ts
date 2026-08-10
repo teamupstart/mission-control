@@ -2,7 +2,11 @@ import { existsSync } from "node:fs";
 import { run } from "../../util/exec.ts";
 import { resolveBinSpec } from "../bin.ts";
 import { claudeBin } from "./bin.ts";
-import type { ClaudeSdkDeps, ClaudeSdkQuery } from "./sdk-types.ts";
+import type {
+  ClaudeSdkDeps,
+  ClaudeSdkOneShotDeps,
+  ClaudeSdkQuery,
+} from "./sdk-types.ts";
 
 // The ONE module that imports `@anthropic-ai/claude-agent-sdk`.
 //
@@ -69,14 +73,19 @@ export function sdkSubprocessEnv(
  * it on every file that reaches the harness registry. esbuild still inlines it into
  * `dist/server/index.mjs`, so this resolves nothing at runtime in a packaged build.
  */
-async function startQuery(params: Parameters<ClaudeSdkDeps["query"]>[0]): Promise<ClaudeSdkQuery> {
+type StartQueryParams =
+  | Parameters<ClaudeSdkDeps["query"]>[0]
+  | Parameters<ClaudeSdkOneShotDeps["query"]>[0];
+
+async function startQuery(params: StartQueryParams): Promise<ClaudeSdkQuery> {
   const { query } = await import("@anthropic-ai/claude-agent-sdk");
   type VendorParams = Parameters<typeof query>[0];
   type VendorOptions = NonNullable<VendorParams["options"]>;
 
   // Spread-and-assign rather than one blanket cast, so this line is what actually checks
   // the vendor's surface: `cwd`, `pathToClaudeCodeExecutable`, `env`, `model`, `effort`,
-  // `permissionMode`, `allowDangerouslySkipPermissions`, `resume`, `settingSources` and
+  // `permissionMode`, `allowDangerouslySkipPermissions`, `resume`, `settingSources`,
+  // `abortController`, `tools`, `maxTurns`, `maxBudgetUsd`, `outputFormat`, `stderr` and
   // `includePartialMessages` all have to still exist upstream, with types ours satisfy, or
   // this fails to compile - which is what makes this module, and not the driver, the place
   // an SDK bump lands.
@@ -88,13 +97,20 @@ async function startQuery(params: Parameters<ClaudeSdkDeps["query"]>[0]): Promis
   // `canUseTool` differs only in `updatedPermissions`, whose elements are OPAQUE to this
   // driver by design: we hand back the exact rule set the CLI suggested, never one we
   // composed, so modelling its variants here would be re-declaring a type we never read.
-  const { hooks, mcpServers, canUseTool, ...rest } = params.options;
-  const options: VendorOptions = {
-    ...rest,
-    canUseTool: canUseTool as unknown as VendorOptions["canUseTool"],
-    hooks: hooks as VendorOptions["hooks"],
-    ...(mcpServers ? { mcpServers: mcpServers as VendorOptions["mcpServers"] } : {}),
-  };
+  let options: VendorOptions;
+  if ("canUseTool" in params.options) {
+    const { hooks, mcpServers, canUseTool, ...rest } = params.options;
+    options = {
+      ...rest,
+      canUseTool: canUseTool as unknown as VendorOptions["canUseTool"],
+      hooks: hooks as VendorOptions["hooks"],
+      ...(mcpServers ? { mcpServers: mcpServers as VendorOptions["mcpServers"] } : {}),
+    };
+  } else {
+    // The one-shot surface has none of the four opaque fields above, so every option is
+    // assigned directly and remains compiler-checked against the installed vendor.
+    options = { ...params.options };
+  }
   return query({
     prompt: params.prompt as VendorParams["prompt"],
     options,
@@ -103,6 +119,13 @@ async function startQuery(params: Parameters<ClaudeSdkDeps["query"]>[0]): Promis
 
 /** What the shipped driver uses. Tests replace the whole object. */
 export const defaultClaudeSdkDeps: ClaudeSdkDeps = {
+  query: startQuery,
+  executable: claudeExecutable,
+  env: () => sdkSubprocessEnv(),
+};
+
+/** The same lazy vendor import and binary/env answers, narrowed for one fresh query. */
+export const defaultClaudeSdkOneShotDeps: ClaudeSdkOneShotDeps = {
   query: startQuery,
   executable: claudeExecutable,
   env: () => sdkSubprocessEnv(),

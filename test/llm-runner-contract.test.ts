@@ -4,6 +4,10 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import type {
+  ClaudeSdkMessage,
+  ClaudeSdkOneShotDeps,
+} from "../src/server/harness/claude/sdk-types.ts";
 
 // What is at stake here is the CONTRACT, not the call shape. `LlmRunner` exists so the
 // app's offline work - Foreman's verdicts, the goal refiner, the titler, the digest, the
@@ -72,8 +76,13 @@ process.env.MISSION_CODEX_BIN = fakeCodexBin;
 const { LLM_RUNNERS, DEFAULT_LLM_RUNNER_ID, allLlmRunners, llmRunner } = await import(
   "../src/server/llm/index.ts"
 );
-const { CLAUDE_GRANTABLE_TOOLS, claudeGrantSettings, claudeRunner, claudeSpendReport } =
-  await import("../src/server/llm/claude.ts");
+const {
+  CLAUDE_GRANTABLE_TOOLS,
+  claudeGrantSettings,
+  claudeRunner,
+  claudeSpendReport,
+  configureClaudeRunnerTransport,
+} = await import("../src/server/llm/claude.ts");
 const { codexRunner } = await import("../src/server/llm/codex.ts");
 const { setLlmSpendSink } = await import("../src/server/llm/spend.ts");
 type LlmSpendReport = import("../src/shared/llm-spend.ts").LlmSpendReport;
@@ -105,6 +114,34 @@ function clearRecording(): void {
   for (const f of [RUN_ARGS, RUN_CWD, RUN_ENV]) rmSync(f, { force: true });
 }
 
+function fakeClaudeSdk(): {
+  deps: ClaudeSdkOneShotDeps;
+  calls(): number;
+} {
+  let calls = 0;
+  return {
+    calls: () => calls,
+    deps: {
+      executable: async () => "/fake/bin/claude",
+      env: () => ({ PATH: "/usr/bin" }),
+      query: async () => {
+        calls += 1;
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              result: "the sdk model text",
+              session_id: "sdk-run-1",
+            } satisfies ClaudeSdkMessage;
+          },
+        };
+      },
+    },
+  };
+}
+
 test("the registry answers for every declared runner", () => {
   // The whole enforcement mechanism: a new id that is not implemented must not compile,
   // and this catches the other half - an entry filed under the wrong key, which typecheck
@@ -131,6 +168,41 @@ test("a run carries no way to see a previous one", async () => {
   }
   assert.ok(args.includes("-p"), "not a one-shot run");
   assert.equal(flag("--model"), "claude-haiku-4-5", "the caller's model did not reach the provider");
+});
+
+test("the Claude runner routes an sdk transport choice through the SDK one-shot", async () => {
+  clearRecording();
+  const fake = fakeClaudeSdk();
+  const restore = configureClaudeRunnerTransport(() => "sdk", fake.deps);
+  try {
+    const text = await claudeRunner.run("summarise this session", { timeoutMs: 5000 });
+    assert.equal(text, "the sdk model text");
+    assert.equal(fake.calls(), 1, "the configured SDK transport did not construct a query");
+    assert.equal(existsSync(RUN_ARGS), false, "the SDK route also spawned the print binary");
+  } finally {
+    restore();
+  }
+});
+
+test("a grant forces the Claude runner onto print even when sdk is configured", async () => {
+  clearRecording();
+  const fake = fakeClaudeSdk();
+  const dir = mkdtempSync(join(tmpdir(), "llm-sdk-grant-"));
+  const restore = configureClaudeRunnerTransport(() => "sdk", fake.deps);
+  try {
+    const text = await claudeRunner.run("review this diff", {
+      timeoutMs: 5000,
+      grant: { tools: [...CLAUDE_GRANTABLE_TOOLS], cwd: dir, denyPaths: DENY_PATHS },
+    });
+    assert.equal(text, "the model text");
+    assert.equal(fake.calls(), 0, "a granted call reached the Phase 2 SDK refusal");
+    assert.ok(argv().includes("-p"), "the granted call did not use the print transport");
+    assert.equal(flag("--tools"), "Read,Grep,Glob");
+    assert.equal(lines(RUN_CWD)[0], realpathSync(dir));
+  } finally {
+    restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Claude renders an exact JSON Schema and omits the flag when none was supplied", async () => {

@@ -44,7 +44,7 @@ const CLAUDE_BIN = resolveAgentBin("claude");
  * expensive thing that runs through here; every cheaper caller - the Tier 1 router,
  * the goal refiner - passes its own `timeoutMs` rather than inheriting this.
  */
-const DEFAULT_TIMEOUT_MS = Number(
+export const CLAUDE_DEFAULT_TIMEOUT_MS = Number(
   process.env.MISSION_CLAUDE_TIMEOUT_MS || process.env.FOREMAN_REVIEW_TIMEOUT_MS || 120_000,
 );
 
@@ -207,7 +207,7 @@ export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Prom
       killTree(child);
       done();
       reject(new Error("claude -p timed out"));
-    }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    }, opts.timeoutMs ?? CLAUDE_DEFAULT_TIMEOUT_MS);
     timer.unref?.();
     // Decode ONCE, as a stream, rather than coercing each Buffer chunk to a string
     // independently. `claude -p` streams its response, so a multi-byte character

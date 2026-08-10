@@ -4,7 +4,7 @@ import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
-import { LLM_RUNNER_IDS } from "./llm.ts";
+import { CLAUDE_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
@@ -1822,8 +1822,8 @@ const ModelOverrideSchema = z.union([ModelIdSchema, z.literal("")]);
  * daemon's background jobs uses. A schema-validated blob over the `app_config` KV, so a
  * new key needs no migration.
  *
- * Both defaults are the shipped behaviour exactly: an operator who never opens this panel
- * gets the same runner and the same model ids the hardcoded constants produced.
+ * All defaults are the shipped behaviour exactly: an operator who never saves this config
+ * gets the same runner, Claude print transport, and model ids the hardcoded constants produced.
  */
 export const LlmConfigSchema = z.object({
   /**
@@ -1838,6 +1838,16 @@ export const LlmConfigSchema = z.object({
    */
   runner: z
     .union([z.enum(LLM_RUNNER_IDS), z.literal("")])
+    .catch("")
+    .default(""),
+  /**
+   * Claude's headless wire protocol, or empty for the config -> env -> default ladder.
+   *
+   * Tolerant on read for the runner field's downgrade reason: a newer stored value must
+   * not take every background job down over a preference this build cannot understand.
+   */
+  claudeTransport: z
+    .union([z.enum(CLAUDE_TRANSPORTS), z.literal("")])
     .catch("")
     .default(""),
   /**
@@ -1863,6 +1873,7 @@ export type LlmConfig = z.infer<typeof LlmConfigSchema>;
 export const LlmConfigPatchSchema = z
   .object({
     runner: z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]),
+    claudeTransport: z.union([z.enum(CLAUDE_TRANSPORTS), z.literal("")]),
     models: z
       .record(z.string(), ModelOverrideSchema)
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {

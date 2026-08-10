@@ -106,7 +106,20 @@ test("version history names immutable source revisions and never offers update-v
   // BOTH doors into the bind flow, not just the one. Version history was gated first and the
   // pipeline-mode button was left open, so an archived workflow still offered a bind whose
   // only ending is the server's 409. A gate on one of two entry points is not a gate.
-  assert.match(source, /mode === "pipeline" && onBindWorkflow && workflow\.archivedAt === null &&/);
+  //
+  // Matched as separate clauses rather than one literal line, because the previous single-line
+  // pattern made adding the third condition below look like a regression. What has to hold is
+  // that all three are asked, not how they are wrapped.
+  assert.match(source, /mode === "pipeline"/);
+  assert.match(source, /&& onBindWorkflow/);
+  assert.match(source, /&& workflow\.archivedAt === null/);
+  // The third condition, and the one an archived-only gate cannot cover: a workflow that has
+  // never been published has no immutable version to bind. A brand-new draft is the
+  // stage-expressible session+end graph, so it opens in Pipeline mode before its first publish
+  // and used to offer this button. The dialog then had no version to lock onto and fell
+  // through to pre-selecting whatever the target session was already bound to - unlocked, and
+  // one click from reattaching an unrelated binding.
+  assert.match(source, /&& workflow\.currentVersionId !== null/);
 });
 
 test("autosave conflict recovery offers reload and duplicate without overwriting", () => {

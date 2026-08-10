@@ -1196,8 +1196,19 @@ export function WorkflowLibrary({
           {/* Archived is checked here as well as on the version-history binding above,
               because these are two independent doors into the same bind flow and the server
               refuses both. Offering one of them would start a flow whose only ending is a
-              409 the operator did not ask for. */}
-          {mode === "pipeline" && onBindWorkflow && workflow.archivedAt === null && (
+              409 the operator did not ask for.
+
+              `currentVersionId` is the same rule for the same reason, and it is not
+              hypothetical: a brand-new workflow is the stage-expressible session+end graph, so
+              it opens in Pipeline mode before its first publish. There is no immutable version
+              to bind, and a dialog handed a workflow with none falls through to answering a
+              DIFFERENT question - what is the target session already bound to - and opens
+              unlocked on that unrelated binding, one click from reattaching it. Publish first,
+              then bind. */}
+          {mode === "pipeline"
+            && onBindWorkflow
+            && workflow.archivedAt === null
+            && workflow.currentVersionId !== null && (
             <section className="wf-pipeline-bind">
               <Tooltip label={`Pick a session to run ${workflow.name} against`}>
                 <button className="btn" onClick={() => onBindWorkflow(workflow)}>

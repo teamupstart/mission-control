@@ -156,9 +156,20 @@ export function WorkflowBindingDialog({
    */
   const hydratedForSession = useRef<string | null>(null);
   useEffect(() => {
-    // A caller that pinned a version asked for that version. Version history's "bind this one"
-    // is the case, and overriding it with the active binding would discard the request.
-    if (target.workflowVersionId) return;
+    /*
+     * A caller that named WHAT TO BIND asked for that, and hydration answers a different
+     * question: what is this session already bound to. Overriding a named request with the
+     * session's own binding is how the Library's "Bind to a session…" could open on an
+     * unrelated workflow and sit one click from reattaching it.
+     *
+     * Both fields are checked, not just the version. A caller with a published workflow pins
+     * `workflowVersionId`, but one naming only `workflowId` has still named a workflow, and
+     * treating that as "no request" is what made the field decorative. Whether such a caller
+     * can produce a bindable selection is a separate question the surrounding UI answers -
+     * the Library no longer offers the button for an unpublished draft - and it is not a
+     * reason to overwrite what was asked for.
+     */
+    if (target.workflowVersionId || target.workflowId) return;
     if (!bindingsSettled) return;
     if (hydratedForSession.current === sessionId) return;
     hydratedForSession.current = sessionId;
@@ -166,7 +177,7 @@ export function WorkflowBindingDialog({
       (binding) => binding.state === "active" && binding.sessionId === sessionId,
     );
     if (active) setVersionId(active.workflowVersionId);
-  }, [bindings, bindingsSettled, sessionId, target.workflowVersionId]);
+  }, [bindings, bindingsSettled, sessionId, target.workflowId, target.workflowVersionId]);
   const { existing, conflict } = useMemo(
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],

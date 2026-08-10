@@ -57,14 +57,28 @@ function transcriptFixture(): { path: string; cleanup: () => void } {
   return { path, cleanup: () => rmSync(dir, { force: true, recursive: true }) };
 }
 
-/** One JSONL record in the shape Claude Code writes, appended the way the CLI appends. */
-function turn(path: string, role: "user" | "assistant", text: string, uuid: string): void {
+/**
+ * One JSONL record in the shape Claude Code writes, appended the way the CLI appends.
+ *
+ * `at` is a parameter rather than a fixed constant, and that is load-bearing rather than
+ * flexibility for its own sake: with one hardcoded timestamp for every synthetic message, no
+ * case here can tell a fingerprint keyed on text from one keyed on text-plus-time, because
+ * the time never varies. The resend case needs a real clock difference to mean anything,
+ * and it was green against a build with the defect until this argument existed.
+ */
+function turn(
+  path: string,
+  role: "user" | "assistant",
+  text: string,
+  uuid: string,
+  at = 1_700_000_000_000,
+): void {
   appendFileSync(
     path,
     `${JSON.stringify({
       type: role,
       uuid,
-      timestamp: new Date(1_700_000_000_000).toISOString(),
+      timestamp: new Date(at).toISOString(),
       message: { role, content: text },
     })}\n`,
   );
@@ -140,10 +154,40 @@ test("the same human turn read twice is still one turn", () => {
     // `size` is read before the window is, and the window reads to the file's CURRENT end,
     // so a turn written in that gap comes back from this pass AND the next. Rewriting the
     // file with the identical record is that overlap, made deterministic: counting it twice
-    // would turn one opening brief into a correction nobody made.
+    // would turn one opening brief into a correction nobody made. Note the record is
+    // byte-identical, timestamp included - which is why this case alone could not catch a
+    // fingerprint that keyed on the clock. The resend case below is the one that does.
     writeFileSync(path, "");
     turn(path, "user", "Fix the flaky pane test", "u1");
     assert.equal(scanner.advance(session), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("resending the same instruction later is a nudge, not a correction", () => {
+  const { path, cleanup } = transcriptFixture();
+  try {
+    turn(path, "user", "Fix the flaky pane test", "u1");
+    const scanner = createRetroCorrectionScanner();
+    const session = scanned(path);
+    assert.equal(scanner.advance(session), false);
+
+    // A REAL resend: a distinct record, a distinct uuid, and - the part that matters - a
+    // later wall-clock time, because the human waited before nudging. A fingerprint carrying
+    // the timestamp reads this as new text and lights the offer on a session nobody
+    // corrected, which is what shipped first and what this pins.
+    turn(path, "user", "Fix the flaky pane test", "u2", 1_700_000_600_000);
+    assert.equal(
+      scanner.advance(session),
+      false,
+      "repeating an instruction verbatim is not the correction this looks for",
+    );
+
+    // And the session is not made permanently un-offerable by it: genuinely new guidance
+    // still flips, so the dedup narrows what counts rather than muting the signal.
+    turn(path, "user", "Reproduce it in docker - it never fails on the Mac", "u3", 1_700_000_900_000);
+    assert.equal(scanner.advance(session), true);
   } finally {
     cleanup();
   }

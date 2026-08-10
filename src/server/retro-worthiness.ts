@@ -61,25 +61,35 @@ export function retroSummary(input: {
 /**
  * A turn's identity for the purposes of "have I already counted this one".
  *
- * NOT the message id. Ids are stable for a harness whose records carry one (Claude's record
- * uuid) and synthesized per parse batch for one whose records do not (the Codex rollout), so
- * an id-keyed count would double-count on exactly the harness where two reads can overlap.
+ * TEXT ALONE, and every other candidate was tried and is wrong:
  *
- * Overlap is not hypothetical: `size` is read before `since`, and `since` reads to the file's
- * CURRENT end, so a turn written in that window is returned by this pass and again by the
- * next. Counting it twice would make one human turn look like two and light the offer on a
- * session nobody ever corrected, which is the exact false positive the conditioning exists to
- * prevent. A fingerprint of the turn's own content is idempotent under that overlap.
+ *  - NOT the message id. Ids are stable for a harness whose records carry one (Claude's
+ *    record uuid) and synthesized per parse batch for one whose records do not (the Codex
+ *    rollout), so an id-keyed count double-counts on exactly the harness where two reads can
+ *    overlap.
+ *  - NOT text plus the timestamp, which is what this shipped as first. It looks strictly
+ *    safer and is strictly weaker: `ts` is the turn's real epoch time, so a human who resends
+ *    the SAME instruction later - a nudge after nothing happened - gets a different print
+ *    purely because the clock moved, and the offer lights. That is the false positive this
+ *    whole predicate exists to avoid, and it made the paragraph below a claim the code did
+ *    not honour.
  *
- * The cost is that two IDENTICAL human turns read as one. That is the right way to be wrong
- * here: repeating yourself verbatim is not the correction this is looking for.
+ * Overlap is the problem being solved, and it is not hypothetical: `size` is read before
+ * `since`, and `since` reads to the file's CURRENT end, so a turn written in that window is
+ * returned by this pass and again by the next. Counting it twice would make one human turn
+ * look like two and light the offer on a session nobody ever corrected. Text alone settles it
+ * completely - an overlapping re-read is the same on-disk record, so its text is identical by
+ * construction - and it needs no separator, no escape, and no assumption about `ts`.
+ *
+ * The cost is real and is accepted: two identical human turns read as one, so a verbatim
+ * resend is not a correction. That is the right way to be wrong here - repeating yourself is
+ * a nudge, and the safe direction for a prompt that spends a session's turn is to under-offer.
+ *
+ * The slice is the pre-existing bound on how much of a turn is compared; two different turns
+ * sharing a 200-character prefix collapse, which costs the same under-offer.
  */
 function turnPrint(message: TranscriptMessage): string {
-  // Escaped rather than written literally. A separator that cannot occur in a decimal
-  // timestamp is the right one here, but a RAW NUL in a source file makes git treat the
-  // whole file as binary - the diff stops being reviewable, and every grep over it stops
-  // matching. The escape produces the identical string with none of that.
-  return `${message.ts}\u0000${message.text.slice(0, 200)}`;
+  return message.text.slice(0, 200);
 }
 
 /** Per-session scan state. Present only while the session has NOT flipped. */

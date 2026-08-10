@@ -180,11 +180,41 @@ export async function pushTask(
     //    push that has already reached GitHub cannot be un-sent by observing one. The real
     //    bounds on a wedged push are the implementation's own subprocess timeout and the
     //    in-flight claim above, which the finally releases either way.
-    const result = await push(
-      inst,
-      { title: task.title, intent: task.intent },
-      { sourceId: inst.id, repoRoot: inst.repoRoot, signal: new AbortController().signal },
-    );
+    let result: PushResult;
+    try {
+      result = await push(
+        inst,
+        { title: task.title, intent: task.intent },
+        { sourceId: inst.id, repoRoot: inst.repoRoot, signal: new AbortController().signal },
+      );
+    } catch (err) {
+      // A THROW out of the one call that reaches the external system, which is a different
+      // event from the `PushResult` it was supposed to return - and it must not escape into
+      // the route, because an uncaught error arrives at the caller as a generic failure with
+      // no `outcomeUnknown` on it, which is indistinguishable from a retry-safe refusal.
+      // That is the double-created issue this file exists to prevent, entering through the
+      // one door that was left open.
+      //
+      // Classified as UNKNOWN rather than as a refusal, and the asymmetry with
+      // `pushToSource`'s own catch is deliberate. That one may conclude "nothing was
+      // published" because it wraps the implementation call and knows `run()` never throws,
+      // so a throw inside it is our own code failing before or after the subprocess. This
+      // one wraps the SEAM - an injected `push`, a registry lookup, a future refactor of
+      // that guarantee - and from here an exception says nothing about which side of the
+      // request it fell on. "No information about whether it landed" is the definition of
+      // `unknown-outcome`, and the alternative is an optimistic default in the one place
+      // this feature cannot afford one.
+      const why = err instanceof Error ? err.message : String(err);
+      log(
+        `${inst.label || inst.id}: push of "${task.title}" threw (${why}) - ` +
+          `nothing was recorded here; check the external system before retrying`,
+      );
+      return {
+        ok: false,
+        kind: "unknown-outcome",
+        error: `the push failed unexpectedly: ${why} - the item may exist; check before retrying`,
+      };
+    }
 
     // 5. Asked BEFORE the error, because an unknown outcome usually carries an error
     //    message too and reading that first would collapse the distinction this whole file

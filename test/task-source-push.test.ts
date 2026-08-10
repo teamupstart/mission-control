@@ -188,6 +188,37 @@ test("an unknown outcome writes nothing, and is NOT reported as a refusal", asyn
   assert.equal(getTask("t1")!.source, null);
 });
 
+// A throw is not a `PushResult`, so it carries no `outcomeUnknown` to read - and letting it
+// escape into the route would deliver a generic failure a caller cannot tell from a
+// retry-safe refusal. Unknown rather than refused because an exception out of the seam says
+// nothing about which side of the request it fell on; assuming "nothing was published" here
+// is the one optimistic default this feature cannot afford.
+test("a push that THROWS is an unknown outcome, never an escaped exception", async () => {
+  const { tasks, task } = setup();
+  const r = await pushTask(mkSource(), task, tasks, {
+    push: async () => {
+      throw new Error("spawn EAGAIN");
+    },
+  });
+  assert.equal(r.ok === false && r.kind, "unknown-outcome");
+  assert.notEqual(r.ok === false && r.kind, "upstream", "a throw was read as retry-safe");
+  assert.match(r.ok === false ? r.error : "", /spawn EAGAIN/);
+  assert.match(r.ok === false ? r.error : "", /may exist/);
+  assert.equal(countTaskSourceSeen("src-1"), 0);
+  assert.equal(getTask("t1")!.source, null);
+});
+
+test("a push that throws still releases its claim, so the task is not wedged", async () => {
+  const { tasks, task } = setup();
+  await pushTask(mkSource(), task, tasks, {
+    push: async () => {
+      throw new Error("spawn EAGAIN");
+    },
+  });
+  const after = await pushTask(mkSource(), task, tasks, { push: spy(created).push });
+  assert.equal(after.ok, true);
+});
+
 test("a result with neither an item nor an error is still a refusal, never a success", async () => {
   const { tasks, task } = setup();
   const r = await pushTask(mkSource(), task, tasks, {

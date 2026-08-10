@@ -152,13 +152,18 @@ export interface ClaudeSdkQueryOptions {
   includePartialMessages: boolean;
 }
 
-/** The smaller options surface used by one fresh, tool-less query. */
+/**
+ * The smaller options surface used by one fresh query. Calls are tool-less by default;
+ * a validated grant may populate tools and inline deny settings.
+ */
 export interface ClaudeSdkOneShotQueryOptions {
   cwd: string;
   pathToClaudeCodeExecutable: string;
   env: Record<string, string | undefined>;
   abortController: AbortController;
   tools: string[];
+  /** Inline flag settings, used only when a validated grant carries deny rules. */
+  settings?: string;
   settingSources: ("user" | "project" | "local")[];
   maxTurns: number;
   model?: string;

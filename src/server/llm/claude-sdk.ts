@@ -1,11 +1,12 @@
 import { realpathSync } from "node:fs";
-import type { LlmRunOptions } from "@shared/llm.ts";
+import { grantRefusal, type LlmRunOptions } from "@shared/llm.ts";
 import { defaultClaudeSdkOneShotDeps } from "../harness/claude/sdk-deps.ts";
 import type {
   ClaudeSdkMessage,
   ClaudeSdkOneShotDeps,
 } from "../harness/claude/sdk-types.ts";
 import { CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
+import { CLAUDE_SANDBOX, claudeGrantSettings } from "./claude-grant.ts";
 
 // One fresh SDK query for one app-owned model call. This is deliberately separate from
 // `harness/claude/sdk.ts`: that adapter owns a long-lived, human-reachable conversation,
@@ -75,7 +76,7 @@ function resultText(frame: ClaudeSdkMessage, structured: boolean): string {
 }
 
 /**
- * Run one tool-less Claude call through one Agent SDK `query()`.
+ * Run one fresh Claude call through one Agent SDK `query()`.
  *
  * The SDK still starts the operator's Claude Code binary. What changes here is the wire
  * protocol and cancellation authority, not the process or the account it bills.
@@ -85,11 +86,13 @@ export async function runClaudeSdkOneShot(
   opts: LlmRunOptions = {},
   deps: ClaudeSdkOneShotDeps = defaultClaudeSdkOneShotDeps,
 ): Promise<ClaudeSdkOneShotResult> {
-  // Phase 3 owns translating the Inspector's provider-enforced deny rules. Refuse before
-  // resolving a binary or constructing `query()`: silently dropping a grant would run an
-  // untrusted review under a weaker sandbox than its caller requested.
-  if (opts.grant) {
-    throw new Error("Claude Agent SDK tool grants are not implemented until phase 3");
+  const grant = opts.grant ?? null;
+  if (grant) {
+    const refusal = grantRefusal(CLAUDE_SANDBOX, grant);
+    // Validate again at the transport boundary, before resolving a binary or constructing
+    // `query()`. `runClaudeSdkOneShot` is exported and a future caller must not be able to
+    // bypass the runner's identical check and reach a partly-honoured grant.
+    if (refusal) throw new Error(`Claude Agent SDK refused the tool grant: ${refusal}`);
   }
   if (
     opts.maxBudgetUsd !== undefined
@@ -134,9 +137,11 @@ export async function runClaudeSdkOneShot(
     // transcripts and repo content from a diff, the model only ever needs to emit JSON,
     // and a crafted transcript must not be able to steer it into invoking tools.
     //
-    // A grant widens that for a caller that has argued for it. Today only the Inspector
-    // does, and this phase refuses that branch above so the empty default cannot widen by
-    // accident.
+    // A validated grant widens that for a caller that has argued for it. Today only the
+    // Inspector does. Its deny rules travel as inline flag settings, which the SDK defines
+    // as the same highest-priority layer as CLI `--settings`; `settingSources: []` disables
+    // filesystem settings without disabling this payload. The subprocess-boundary test
+    // pins that composition so an SDK change cannot silently detach the rules.
     //
     // The OPTIONS THAT ARE NOT HERE are load-bearing, and this comment is the only thing
     // saying so. There is no `resume`, no `sessionId`, no `forkSession`: without one of
@@ -153,7 +158,10 @@ export async function runClaudeSdkOneShot(
     // a transcript at all, which sounds tidy but deletes the only record of what a
     // headless run did. For this fixed cwd, `goal/prune.ts` already bounds them by age on
     // purpose; that is the considered answer, and disabling persistence would quietly make
-    // it dead code.
+    // it dead code. A granted Inspector run uses its worktree as cwd and therefore writes
+    // outside that sweep. This is the existing override-cwd pruner gap documented beside
+    // the print transport in `claude-cli.ts`; the SDK path inherits it rather than widening
+    // transcript cleanup in a security-sensitive transport change.
     //
     // `realpathSync` is load-bearing on macOS, where TMPDIR is commonly a symlink. Claude
     // records the resolved cwd in its encoded project path, and `headlessTranscriptDir()`
@@ -162,10 +170,11 @@ export async function runClaudeSdkOneShot(
     const query = await deps.query({
       prompt,
       options: {
-        tools: [],
+        tools: grant ? [...grant.tools] : [],
+        ...(grant ? { settings: claudeGrantSettings(grant) } : {}),
         settingSources: [],
         maxTurns: 1,
-        cwd: realpathSync(HEADLESS_CWD),
+        cwd: realpathSync(grant?.cwd ?? HEADLESS_CWD),
         pathToClaudeCodeExecutable: executable,
         // A headless Claude run fires the same machine-installed hooks as an interactive
         // one. Strip every inherited pane identity and add the independent marker that

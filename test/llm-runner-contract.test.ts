@@ -7,6 +7,7 @@ import { z } from "zod";
 import type {
   ClaudeSdkMessage,
   ClaudeSdkOneShotDeps,
+  ClaudeSdkOneShotQueryOptions,
 } from "../src/server/harness/claude/sdk-types.ts";
 
 // What is at stake here is the CONTRACT, not the call shape. `LlmRunner` exists so the
@@ -117,15 +118,19 @@ function clearRecording(): void {
 function fakeClaudeSdk(): {
   deps: ClaudeSdkOneShotDeps;
   calls(): number;
+  options(): ClaudeSdkOneShotQueryOptions | null;
 } {
   let calls = 0;
+  let options: ClaudeSdkOneShotQueryOptions | null = null;
   return {
     calls: () => calls,
+    options: () => options,
     deps: {
       executable: async () => "/fake/bin/claude",
       env: () => ({ PATH: "/usr/bin" }),
-      query: async () => {
+      query: async (params) => {
         calls += 1;
+        options = params.options;
         return {
           async *[Symbol.asyncIterator]() {
             yield {
@@ -178,13 +183,15 @@ test("the Claude runner routes an sdk transport choice through the SDK one-shot"
     const text = await claudeRunner.run("summarise this session", { timeoutMs: 5000 });
     assert.equal(text, "the sdk model text");
     assert.equal(fake.calls(), 1, "the configured SDK transport did not construct a query");
+    assert.deepEqual(fake.options()?.tools, []);
+    assert.equal(Object.hasOwn(fake.options() ?? {}, "settings"), false);
     assert.equal(existsSync(RUN_ARGS), false, "the SDK route also spawned the print binary");
   } finally {
     restore();
   }
 });
 
-test("a grant forces the Claude runner onto print even when sdk is configured", async () => {
+test("a grant follows the configured SDK transport with the Inspector's exact sandbox", async () => {
   clearRecording();
   const fake = fakeClaudeSdk();
   const dir = mkdtempSync(join(tmpdir(), "llm-sdk-grant-"));
@@ -194,11 +201,13 @@ test("a grant forces the Claude runner onto print even when sdk is configured", 
       timeoutMs: 5000,
       grant: { tools: [...CLAUDE_GRANTABLE_TOOLS], cwd: dir, denyPaths: DENY_PATHS },
     });
-    assert.equal(text, "the model text");
-    assert.equal(fake.calls(), 0, "a granted call reached the Phase 2 SDK refusal");
-    assert.ok(argv().includes("-p"), "the granted call did not use the print transport");
-    assert.equal(flag("--tools"), "Read,Grep,Glob");
-    assert.equal(lines(RUN_CWD)[0], realpathSync(dir));
+    assert.equal(text, "the sdk model text");
+    assert.equal(fake.calls(), 1);
+    assert.equal(existsSync(RUN_ARGS), false, "the granted SDK call also spawned print");
+    assert.deepEqual(fake.options()?.tools, REVIEW_TOOLS.split(","));
+    assert.equal(fake.options()?.cwd, realpathSync(dir));
+    assert.equal(fake.options()?.settings, DENY_SETTINGS);
+    assert.deepEqual(fake.options()?.settingSources, []);
   } finally {
     restore();
     rmSync(dir, { recursive: true, force: true });
@@ -493,16 +502,23 @@ test("a grant this runner cannot honour is refused before anything is spawned", 
     ["a relative cwd", { tools: ["Read"], cwd: "checkout", denyPaths: [] }],
     ["no tools at all", { tools: [], cwd: "/tmp", denyPaths: [] }],
   ];
-  for (const [what, grant] of cases) {
-    clearRecording();
-    await assert.rejects(
-      claudeRunner.run("review this diff", { timeoutMs: 5000, grant }),
-      /refused the tool grant/,
-      `${what} was accepted`,
-    );
-    // Refused, not partly applied: a caller that asked for a deny list and silently did not
-    // get one cannot tell until something it named turns up in a prompt.
-    assert.equal(existsSync(RUN_ARGS), false, `${what} still spawned a run`);
+  const fake = fakeClaudeSdk();
+  const restore = configureClaudeRunnerTransport(() => "sdk", fake.deps);
+  try {
+    for (const [what, grant] of cases) {
+      clearRecording();
+      await assert.rejects(
+        claudeRunner.run("review this diff", { timeoutMs: 5000, grant }),
+        /refused the tool grant/,
+        `${what} was accepted`,
+      );
+      // Refused, not partly applied: a caller that asked for a deny list and silently did not
+      // get one cannot tell until something it named turns up in a prompt.
+      assert.equal(existsSync(RUN_ARGS), false, `${what} still spawned a print run`);
+      assert.equal(fake.calls(), 0, `${what} still constructed an SDK query`);
+    }
+  } finally {
+    restore();
   }
 });
 

@@ -23,7 +23,8 @@ import { unref } from "./util/timers.ts";
 //  1. STICKY. A correction that happened cannot un-happen, so a session that has flipped is
 //     never read again - not even stat'd. The scan state is deleted outright.
 //  2. INCREMENTAL. A transcript is append-only, so after the first pass each poll reads only
-//     the bytes appended since the last one (`since`), which is usually zero.
+//     the bytes appended since the last one (`appended`), which is usually zero - and it
+//     advances over exactly what it consumed, so nothing can be stepped over unread.
 //  3. GUARDED BY SIZE. `size` is one `stat`; an unchanged file costs that and nothing else.
 //
 // What the first pass reads is deliberately different from every pass after it. It uses the
@@ -149,13 +150,37 @@ export function createRetroCorrectionScanner(): RetroCorrectionScanner {
 
     let messages: TranscriptMessage[];
     try {
-      messages = scan.offset === 0
-        ? located.read.window(located.path, SCAN_HEAD_TURNS, SCAN_TAIL_TURNS).messages
-        : located.read.since(located.path, scan.offset).messages;
+      if (scan.offset === 0) {
+        messages = located.read.window(located.path, SCAN_HEAD_TURNS, SCAN_TAIL_TURNS).messages;
+        // The window is head+tail, so there is no honest byte boundary to resume from -
+        // its own middle may be elided. Resuming at EOF is what that costs, and it is the
+        // documented gap: a correction in an elided middle is missed on a cold start.
+        scan.offset = size;
+      } else {
+        // `appended`, NOT `since`, and the difference is permanent data loss rather than
+        // taste. `since` is TAIL-anchored: past 512KB or 48 turns it drops the PREFIX of
+        // the range and says so with `truncated`. Advancing the offset past a dropped
+        // prefix - which is what reading `size` here used to do - means the turns in it are
+        // never read on this pass and can never be read on any later one, because the
+        // offset has already moved beyond them. A busy session that appends fifty turns
+        // between two ticks would silently lose the correction sitting at the front of them.
+        //
+        // `appended` reads every complete record from the offset and reports the boundary
+        // it actually reached, so the scan advances over exactly what it consumed. The
+        // partial trailing line a writer is mid-way through is left for the next pass
+        // rather than skipped, which `size` also got wrong.
+        //
+        // The read is bounded by what one session wrote since the last tick rather than by
+        // a byte cap, and that is the right trade here: a cap that skipped bytes would
+        // reintroduce the loss, the delta is small on any ordinary tick, and a session that
+        // has already flipped is never read again at all.
+        const read = located.read.appended(located.path, scan.offset);
+        messages = read.messages;
+        scan.offset = read.pos;
+      }
     } catch {
       return false; // an unreadable transcript is not a session without corrections
     }
-    scan.offset = size;
 
     // Attribution first, and it is load-bearing rather than tidy: the daemon types into
     // sessions itself - workflow repair packets, `/reload-skills`, and the retro packet this

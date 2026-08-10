@@ -197,6 +197,69 @@ test("resending the same instruction later is a nudge, not a correction", () => 
   }
 });
 
+test("a correction is not lost under a burst that overflows one incremental read", () => {
+  // The permanent-loss case, and the reason the incremental read is `appended` rather than
+  // `since`. `since` is TAIL-anchored: past 48 turns it returns only the newest slice and
+  // drops the prefix. A scan that then advanced its offset to the file size would step over
+  // the dropped turns for good - they are behind the offset on every later pass too.
+  //
+  // So the correction goes FIRST in the burst and is buried under more turns than one
+  // `since` window can carry. Nothing about this is exotic: it is one busy session between
+  // two ten-second ticks.
+  const { path, cleanup } = transcriptFixture();
+  try {
+    turn(path, "user", "Fix the flaky pane test", "u1");
+    const scanner = createRetroCorrectionScanner();
+    const session = scanned(path);
+    assert.equal(scanner.advance(session), false);
+
+    turn(path, "user", "Actually - use command grep, the wrapper misses protocol.ts", "u2");
+    // Comfortably past SINCE_MAX_TURNS (48), so the correction above sits in the prefix a
+    // tail-anchored read discards.
+    for (let i = 0; i < 60; i += 1) {
+      turn(path, "assistant", `working ${i}`, `a${i}`);
+    }
+
+    assert.equal(
+      scanner.advance(session),
+      true,
+      "a correction buried under a burst must still be read, not stepped over",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("a record still being written is re-read rather than skipped", () => {
+  // The second half of the same defect. Advancing to the file SIZE also stepped over a
+  // partial trailing line, because a bounded reader drops it and the offset moved past it
+  // anyway. `appended` reports the last complete line boundary instead, so the turn is
+  // picked up once the writer finishes it.
+  const { path, cleanup } = transcriptFixture();
+  try {
+    turn(path, "user", "Fix the flaky pane test", "u1");
+    const scanner = createRetroCorrectionScanner();
+    const session = scanned(path);
+    assert.equal(scanner.advance(session), false);
+
+    // A half-written record: valid JSON never arrives, and no newline terminates it.
+    const partial = JSON.stringify({
+      type: "user",
+      uuid: "u2",
+      timestamp: new Date(1_700_000_000_000).toISOString(),
+      message: { role: "user", content: "reproduce it in docker first" },
+    });
+    appendFileSync(path, partial.slice(0, partial.length - 12));
+    assert.equal(scanner.advance(session), false, "an unterminated record is not a turn yet");
+
+    // The writer finishes it.
+    appendFileSync(path, `${partial.slice(partial.length - 12)}\n`);
+    assert.equal(scanner.advance(session), true, "the completed record has to be read");
+  } finally {
+    cleanup();
+  }
+});
+
 test("a correction stays found once the transcript is gone", () => {
   const { path, cleanup } = transcriptFixture();
   try {

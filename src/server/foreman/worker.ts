@@ -2145,11 +2145,12 @@ let triageRunnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID;
 function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
-    runModel: (prompt, model) =>
+    runModel: (prompt, model, schema) =>
       llmRunner(triageRunnerId).run(prompt, {
         model,
         timeoutMs: TRIAGE_TIMEOUT_MS,
         role: "foreman:triage",
+        schema,
       }),
   };
 }

@@ -185,6 +185,7 @@ function harness(opts: HarnessOptions = {}) {
         prompts.push(prompt);
         return opts.runModel ? await opts.runModel(prompt) : validResponse(prompt);
       },
+      guaranteesSchema: (runnerId) => runnerId === "claude",
       timeoutMs: 1000,
     },
   });
@@ -518,7 +519,7 @@ test("overlong per-field text is refused by the schema, not truncated into a val
   assert.equal(await runToReview(engine, gateway, store, run.id), "failed");
 });
 
-test("a parse miss retries once inside one attempt and then succeeds", async () => {
+test("a provider-validated parse miss skips the inner retry and the engine retries the stage", async () => {
   let calls = 0;
   const { store, gateway, engine } = harness({
     runModel: (prompt) => {
@@ -528,12 +529,36 @@ test("a parse miss retries once inside one attempt and then succeeds", async () 
   });
   const run = makeRun(store, bestOfNPlan(2));
   assert.equal(await runToReview(engine, gateway, store, run.id), "awaiting_decision");
-  assert.equal(calls, 2, "runStructured retried the parse once");
-  // Both provider calls are on the ledger, under one evaluation: the miss failed, the retry succeeded.
-  const evaluation = store.listEvaluations(run.id)[0]!;
-  const calls2 = store.listLlmCalls(run.id).filter((c) => c.evaluationId === evaluation.id);
+  assert.equal(calls, 2, "the engine used its existing bounded stage retry");
+  const evaluations = store.listEvaluations(run.id);
+  assert.equal(evaluations.length, 2, "the syntax miss did not start a second call in one evaluation");
+  const calls2 = store.listLlmCalls(run.id);
   assert.equal(calls2.length, 2);
+  assert.ok(calls2.every((call) => call.attempt === 1), "every evaluation made one provider call");
   assert.deepEqual(calls2.map((c) => c.state).sort(), ["failed", "succeeded"]);
+});
+
+test("a runner without schema support keeps the parse retry inside one evaluation", async () => {
+  let calls = 0;
+  const { store, gateway, engine } = harness({
+    resolveExecution: () => ({
+      runnerId: "codex",
+      modelId: "test-judge",
+      unknownRunner: null,
+    }),
+    runModel: (prompt) => {
+      calls += 1;
+      return calls === 1 ? "not valid json at all" : validResponse(prompt);
+    },
+  });
+  const run = makeRun(store, bestOfNPlan(2));
+  assert.equal(await runToReview(engine, gateway, store, run.id), "awaiting_decision");
+  assert.equal(calls, 2);
+  assert.equal(store.listEvaluations(run.id).length, 1, "the existing parse ladder handled the miss");
+  assert.deepEqual(
+    store.listLlmCalls(run.id).map((call) => call.attempt),
+    [1, 2],
+  );
 });
 
 test("a provider that always throws exhausts the bounded retry and fails the run", async () => {
@@ -550,7 +575,7 @@ test("a provider that always throws exhausts the bounded retry and fails the run
   assert.ok(reviewAttempts.every((a) => a.status === "failed"));
 });
 
-test("cancelling mid-comparison stops the parse retry from starting", async () => {
+test("cancelling mid-comparison stops later provider work from starting", async () => {
   let runId = "";
   let calls = 0;
   let harnessRef: ReturnType<typeof harness>;
@@ -569,7 +594,7 @@ test("cancelling mid-comparison stops the parse retry from starting", async () =
   runId = run.id;
   await runToReview(engine, gateway, store, run.id);
   assert.equal(store.getRun(run.id)!.status, "cancelled");
-  assert.equal(calls, 1, "the second (retry) provider call never started after the cancel");
+  assert.equal(calls, 1, "no later provider call started after the cancel");
   assert.equal(store.listEvaluations(run.id)[0]?.status, "interrupted");
   assert.equal(
     store.listStageAttempts(run.id).find((attempt) => attempt.driverKind === "review")?.status,

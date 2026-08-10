@@ -299,6 +299,8 @@ export interface EvidenceReviewSpec<S extends ZodTypeAny> {
   }): string;
   /** Structure and lengths. Meaning is `validate`'s. */
   replySchema: S;
+  /** Provider-facing input shape, rendered once beside the Zod schema that owns it. */
+  replyJsonSchema: Record<string, unknown>;
   /**
    * Semantic validation and the label-to-artifact mapping, in that order. Every rule here must
    * REFUSE rather than repair: a result shown to an operator as what the fleet found may not be
@@ -446,11 +448,13 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
         runtime.runModel(execution.runnerId, request, {
           modelId: execution.modelId,
           timeoutMs: runtime.timeoutMs,
+          schema: spec.replyJsonSchema,
         }),
       prompt,
       (raw) => parseModelJson(raw, spec.replySchema),
       spec.label,
       observer,
+      { shapeGuaranteed: runtime.guaranteesSchema(execution.runnerId) },
     ),
   );
 

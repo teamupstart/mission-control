@@ -187,6 +187,7 @@ function harness(
         prompts.push(prompt);
         return await runModel(prompt);
       },
+      guaranteesSchema: (runnerId) => runnerId === "claude",
       timeoutMs: 1000,
     },
   });
@@ -389,8 +390,7 @@ test("a tied panel receipt names no leader", async () => {
 // ---- one judge fails alone ----
 
 test("a malformed ballot fails that judge's row only; the panel still recommends on quorum", async () => {
-  // Keyed on the LENS, not on a call count: `runStructured` re-asks once with a stricter reminder,
-  // so a judge that is meant to fail has to fail both times or it just succeeds on the retry.
+  // Keyed on the lens so one malformed provider-validated ballot fails only that judge.
   const { store, gateway, engine } = harness((prompt) =>
     lensOf(prompt) === PANEL_LENSES.panel_maintainability_v1.label
       ? "I would rather write you an essay about these submissions."
@@ -465,10 +465,8 @@ test("below quorum the stage fails and retries against the same subjects rather 
   const rounds = new Map<string, number>();
   const { store, gateway, engine } = harness((prompt) => {
     const lens = lensOf(prompt);
-    // `runStructured`'s stricter re-ask is the same round; only a fresh stage attempt is a new one.
-    if (!prompt.includes("Your previous reply was not valid JSON")) {
-      rounds.set(lens, (rounds.get(lens) ?? 0) + 1);
-    }
+    // Provider validation trims the inner syntax retry, so each call is a fresh stage attempt.
+    rounds.set(lens, (rounds.get(lens) ?? 0) + 1);
     const round = rounds.get(lens) ?? 1;
     return round === 1 && lens !== PANEL_LENSES.panel_risk_v1.label ? "prose, not a ballot" : ballot(prompt);
   });

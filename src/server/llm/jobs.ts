@@ -35,6 +35,14 @@ export interface JobRunOptions {
   observer?: StructuredAttemptObserver;
 }
 
+/** Structured-only options kept off `runJob`, whose callers ask for unconstrained text. */
+export interface StructuredJobRunOptions extends JobRunOptions {
+  /** The already-rendered provider input schema. Caller-side parsing remains mandatory. */
+  schema?: Record<string, unknown>;
+  /** Trim the syntax retry only when this call site's rendered schema is faithful. */
+  shapeGuaranteed?: boolean;
+}
+
 /**
  * Run one background job's prompt and hand back the model's text, envelope already off.
  *
@@ -63,16 +71,20 @@ export function runJobStructured<S extends ZodTypeAny>(
   prompt: string,
   extract: (raw: string) => TypeOf<S> | null,
   label: string,
-  opts: JobRunOptions = {},
+  opts: StructuredJobRunOptions = {},
 ): Promise<StructuredResult<TypeOf<S>>> {
   const cfg = getLlmConfig();
   const runner = llmRunner(llmRunnerChoice(cfg).id);
   const model = llmJobModel(job, cfg).id;
   return runStructured<S>(
-    (p) => runner.run(p, { model, timeoutMs: opts.timeoutMs }),
+    (p) => runner.run(p, { model, timeoutMs: opts.timeoutMs, schema: opts.schema }),
     prompt,
     extract,
     label,
     opts.observer,
+    {
+      shapeGuaranteed:
+        opts.shapeGuaranteed && runner.structuredOutput?.guaranteesInputShape === true,
+    },
   );
 }

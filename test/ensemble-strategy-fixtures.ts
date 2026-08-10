@@ -622,6 +622,7 @@ export function reviewEngine(
         prompts.push(prompt);
         return opts.runModel ? await opts.runModel(prompt) : validComparison(prompt);
       },
+      guaranteesSchema: (runnerId) => runnerId === "claude",
       timeoutMs: 1000,
     },
   });

@@ -16,6 +16,7 @@ import { loadResolvedWorkflowReviews } from "../db.ts";
 import { sessionMessages } from "../harness/index.ts";
 import { changedPaths } from "../inspector/diff-lines.ts";
 import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
+import { providerJsonSchema } from "../llm/json-schema.ts";
 import { runJobStructured } from "../llm/jobs.ts";
 import { parseModelJson } from "../llm/structured.ts";
 import type { StructuredAttemptObserver, StructuredResult } from "../llm/structured.ts";
@@ -43,6 +44,7 @@ const CompactionSchema = z.object({
   constraints: z.array(z.string().max(4_000)).max(100),
   acceptanceCriteria: z.array(z.string().max(4_000)).max(100),
 });
+const COMPACTION_JSON_SCHEMA = providerJsonSchema(CompactionSchema);
 type CompactionValue = z.infer<typeof CompactionSchema>;
 
 export interface WorkflowCompactionDeps {
@@ -211,6 +213,8 @@ export async function compactWorkflowContext(
         {
           timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS,
           observer: deps.observer,
+          schema: COMPACTION_JSON_SCHEMA,
+          shapeGuaranteed: true,
         },
       );
   if (result.kind === "failed") {

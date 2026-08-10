@@ -10,8 +10,11 @@ import {
   type BestOfNScorecard,
 } from "@shared/ensemble-strategies/best-of-n.ts";
 import { buildComparativePrompt } from "./prompt.ts";
+import { providerJsonSchema } from "../../llm/json-schema.ts";
 import { runEvidenceReview, SUBJECT_LETTERS, type EvidencePacket } from "./packet.ts";
 import type { ReviewDriver, ReviewDriverContext, ReviewOutcome } from "./types.ts";
+
+const BEST_OF_N_COMPARISON_JSON_SCHEMA = providerJsonSchema(BestOfNComparisonResultSchema);
 
 /**
  * `comparative_review@1`: one tool-less, provider-neutral, ANONYMOUS comparison of every eligible
@@ -158,6 +161,7 @@ async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
         subjects,
       }),
     replySchema: BestOfNComparisonResultSchema,
+    replyJsonSchema: BEST_OF_N_COMPARISON_JSON_SCHEMA,
     validate,
   });
 }

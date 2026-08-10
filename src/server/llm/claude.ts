@@ -121,6 +121,7 @@ export const claudeRunner: LlmRunner = {
     const raw = await runClaudeText(prompt, {
       model: opts.model,
       timeoutMs: opts.timeoutMs,
+      schema: opts.schema ? JSON.stringify(opts.schema) : undefined,
       ...(grant
         ? { tools: grant.tools.join(","), cwd: grant.cwd, settings: claudeGrantSettings(grant) }
         : {}),
@@ -160,6 +161,8 @@ export const claudeRunner: LlmRunner = {
     if (usage.reportedCostUsd === null) return null;
     return { costUsd: usage.reportedCostUsd, basis: "reported", pricingVersion: "" };
   },
+
+  structuredOutput: { guaranteesInputShape: true },
 
   sandbox: { tools: CLAUDE_GRANTABLE_TOOLS, enforcesDenyPaths: true },
 

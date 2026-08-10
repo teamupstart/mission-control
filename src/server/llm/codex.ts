@@ -165,6 +165,9 @@ export const codexRunner: LlmRunner = {
         // stream is the only place its token usage is ever stated.
         "--json",
       ];
+      // `codex exec` has no equivalent of Claude's `--json-schema`, so `opts.schema` is
+      // intentionally ignored. The caller still runs its own Zod parse and retains its
+      // parse retry, making this a loss of provider validation rather than correctness.
       if (opts.model) args.push("--model", opts.model);
       args.push("-");
       const child = spawn(CODEX_BIN, args, {
@@ -249,6 +252,7 @@ export const codexRunner: LlmRunner = {
   },
 
   runInThread: null,
+  structuredOutput: null,
   sandbox: null,
   litter: null,
   killLiveRuns: killLiveCodexRuns,

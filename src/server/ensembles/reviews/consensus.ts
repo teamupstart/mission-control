@@ -12,8 +12,11 @@ import {
   type ConsensusResult,
 } from "@shared/ensemble-strategies/consensus.ts";
 import { buildConsensusPrompt } from "./consensus-prompt.ts";
+import { providerJsonSchema } from "../../llm/json-schema.ts";
 import { runEvidenceReview, type EvidencePacket } from "./packet.ts";
 import type { ReviewDriver, ReviewDriverContext, ReviewOutcome } from "./types.ts";
+
+const CONSENSUS_RESULT_JSON_SCHEMA = providerJsonSchema(ConsensusResultSchema);
 
 /**
  * `consensus_review@1`: one tool-less, provider-neutral, ANONYMOUS pass over every eligible
@@ -176,6 +179,7 @@ async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
         subjects,
       }),
     replySchema: ConsensusResultSchema,
+    replyJsonSchema: CONSENSUS_RESULT_JSON_SCHEMA,
     validate,
   });
 }

@@ -11,6 +11,7 @@ import {
 } from "../db.ts";
 import { createLimiter, parseModelJson, runStructured } from "../llm/structured.ts";
 import { llmRunner } from "../llm/index.ts";
+import { providerJsonSchema } from "../llm/json-schema.ts";
 import type { LlmSpendRole } from "@shared/llm-spend.ts";
 import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
@@ -58,6 +59,8 @@ import {
   wasRefused,
 } from "./github.ts";
 import type { GhResult, PrSnapshot, ThreadSnapshot } from "./github.ts";
+
+const INSPECTOR_VERDICT_JSON_SCHEMA = providerJsonSchema(InspectorVerdictSchema);
 
 // The Inspector's tick: review the pull requests we opened, answer follow-ups in our own
 // threads, and close our own threads once a push has fixed what they were about.
@@ -174,6 +177,7 @@ function inspectorRunOptions(
   timeoutMs: number,
   cwd: string,
   role: LlmSpendRole,
+  schema?: Record<string, unknown>,
 ) {
   const runner = llmRunner(cfg.runner ?? "claude");
   return {
@@ -182,6 +186,7 @@ function inspectorRunOptions(
       model: reviewModel(cfg),
       timeoutMs,
       role,
+      ...(schema ? { schema } : {}),
       // Claude can enforce Inspector's exact read-tool deny list. Codex currently
       // cannot, so it reviews the supplied diff without repository tools instead of
       // silently accepting a weaker grant.
@@ -817,7 +822,13 @@ async function reviewRound(
     round: pr.round + 1,
   });
 
-  const run = inspectorRunOptions(cfg, TIMEOUT_MS, dir, "inspector:review");
+  const run = inspectorRunOptions(
+    cfg,
+    TIMEOUT_MS,
+    dir,
+    "inspector:review",
+    INSPECTOR_VERDICT_JSON_SCHEMA,
+  );
   const result = await runStructured<typeof InspectorVerdictSchema>(
     (p) => run.runner.run(p, run.options),
     prompt,

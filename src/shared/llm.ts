@@ -166,6 +166,15 @@ export interface LlmRunOptions {
    */
   grant?: LlmToolGrant | null;
   /**
+   * A JSON Schema the provider validates the reply against, when it can.
+   *
+   * This guarantees the reply's input shape only. Callers must still run their own Zod
+   * parse because transforms, preprocessing and cross-field refinements are not JSON
+   * Schema constraints. A runner without structured-output support ignores this option:
+   * losing the guarantee costs a retry, unlike silently weakening a tool grant.
+   */
+  schema?: Record<string, unknown>;
+  /**
    * Who is spending, when the spender is not a card. Omit for a run nobody is accounting
    * for yet.
    *
@@ -217,6 +226,12 @@ export interface LlmLitterSpec {
    * shared parent directory.
    */
   ext: string;
+}
+
+/** A runner capability that makes a provider-side JSON Schema promise meaningful. */
+export interface LlmStructuredOutputSpec {
+  /** Literal so a future weaker mode cannot be mistaken for provider validation. */
+  guaranteesInputShape: true;
 }
 
 /**
@@ -289,6 +304,9 @@ export interface LlmRunner {
    * `null` is that honest answer and is not a failure - see `LlmSpendPrice`.
    */
   price(usage: LlmSpendModelUsage): LlmSpendPrice | null;
+
+  /** Whether `LlmRunOptions.schema` is enforced by the provider. Absent/null means ignored. */
+  structuredOutput?: LlmStructuredOutputSpec | null;
 
   /** What this runner will accept in `LlmRunOptions.grant`, or `null` if it accepts none. */
   sandbox: LlmSandboxSpec | null;

@@ -17,6 +17,7 @@ import {
   type PanelVerdict,
 } from "@shared/ensemble-strategies/panel-vote.ts";
 import { parseModelJson, runStructured, type StructuredAttemptObserver } from "../../llm/structured.ts";
+import { providerJsonSchema } from "../../llm/json-schema.ts";
 import {
   assembleEvidencePacket,
   resolveGuidance as resolveSnapshotGuidance,
@@ -33,6 +34,8 @@ import type {
   ReviewExecution,
   ReviewOutcome,
 } from "./types.ts";
+
+const PANEL_BALLOT_JSON_SCHEMA = providerJsonSchema(PanelBallotSchema);
 
 /**
  * `panel_review@1`: M independent single-lens judges over ONE anonymous evidence packet, in
@@ -274,11 +277,17 @@ async function runJudge(
   // once would spend a global budget on one stage.
   const result = await runtime.scheduler(() =>
     runStructured(
-      (request) => runtime.runModel(execution.runnerId, request, { modelId: execution.modelId, timeoutMs: runtime.timeoutMs }),
+      (request) =>
+        runtime.runModel(execution.runnerId, request, {
+          modelId: execution.modelId,
+          timeoutMs: runtime.timeoutMs,
+          schema: PANEL_BALLOT_JSON_SCHEMA,
+        }),
       prompt,
       (raw) => parseModelJson(raw, PanelBallotSchema),
       `The ${judge.label} ballot`,
       observer,
+      { shapeGuaranteed: runtime.guaranteesSchema(execution.runnerId) },
     ),
   );
 

@@ -186,6 +186,7 @@ function harness(opts: HarnessOptions = {}) {
         prompts.push(prompt);
         return opts.runModel ? await opts.runModel(prompt) : validResponse(prompt);
       },
+      guaranteesSchema: (runnerId) => runnerId === "claude",
       timeoutMs: 1000,
     },
     // Retention needs no finalize authority of its own, but the engine refuses to leave `finalizing`

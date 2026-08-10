@@ -117,6 +117,7 @@ function makeEngine(
       scheduler: <T>(fn: () => Promise<T>) => fn(),
       resolveExecution: () => ({ runnerId: "claude" as const, modelId: "judge-model", unknownRunner: null }),
       runModel: (_runnerId, prompt) => runModel(prompt),
+      guaranteesSchema: (runnerId) => runnerId === "claude",
       timeoutMs: 1000,
     },
   });

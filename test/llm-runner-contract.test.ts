@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 
 // What is at stake here is the CONTRACT, not the call shape. `LlmRunner` exists so the
 // app's offline work - Foreman's verdicts, the goal refiner, the titler, the digest, the
@@ -77,6 +78,7 @@ const { codexRunner } = await import("../src/server/llm/codex.ts");
 const { setLlmSpendSink } = await import("../src/server/llm/spend.ts");
 type LlmSpendReport = import("../src/shared/llm-spend.ts").LlmSpendReport;
 const { HEADLESS_CWD } = await import("../src/server/claude-cli.ts");
+const { parseModelJson, runStructured, unwrapEnvelope } = await import("../src/server/llm/structured.ts");
 const { LLM_RUNNER_IDS, grantRefusal } = await import("../src/shared/llm.ts");
 // The one caller that holds tools, and therefore the one that decides whether the grant
 // shape fits. Imported for its real constants: an equality asserted against a copy of them
@@ -131,6 +133,21 @@ test("a run carries no way to see a previous one", async () => {
   assert.equal(flag("--model"), "claude-haiku-4-5", "the caller's model did not reach the provider");
 });
 
+test("Claude renders an exact JSON Schema and omits the flag when none was supplied", async () => {
+  const schema = {
+    type: "object",
+    properties: { answer: { type: "string" } },
+    required: ["answer"],
+    additionalProperties: false,
+  };
+  await claudeRunner.run("answer as JSON", { timeoutMs: 5000, schema });
+  assert.equal(flag("--json-schema"), JSON.stringify(schema));
+  assert.deepEqual(claudeRunner.structuredOutput, { guaranteesInputShape: true });
+
+  await claudeRunner.run("answer as text", { timeoutMs: 5000 });
+  assert.equal(flag("--json-schema"), null);
+});
+
 test("a run without a grant has every tool disabled, in a directory of no consequence", async () => {
   await claudeRunner.run("summarise this session", { timeoutMs: 5000 });
   assert.equal(flag("--tools"), "", "tools were not disabled for an ungranted run");
@@ -148,10 +165,18 @@ test("the provider's envelope never reaches the caller", async () => {
   assert.equal(text, "the model text");
 });
 
+test("envelope unwrapping accepts result text but never mistakes an object result for the reply", () => {
+  assert.equal(unwrapEnvelope('{"result":"the model text"}'), "the model text");
+  const objectResult = '{"result":{"answer":"yes"},"session_id":"run-1"}';
+  assert.equal(unwrapEnvelope(objectResult), objectResult);
+  assert.notEqual(unwrapEnvelope(objectResult), '{"answer":"yes"}');
+});
+
 test("Codex runs ephemerally with command tools disabled and returns its final text", async () => {
   const text = await codexRunner.run("summarise this session", {
     model: "gpt-5.6-sol",
     timeoutMs: 5000,
+    schema: { type: "object" },
   });
   const args = argv();
   assert.equal(text, "the codex text");
@@ -168,10 +193,57 @@ test("Codex runs ephemerally with command tools disabled and returns its final t
   // to parse around, and an `--ephemeral` run writes no rollout file, so this is the only
   // place its token usage is ever stated.
   assert.ok(args.includes("--json"));
+  assert.equal(flag("--json-schema"), null, "Codex must ignore a schema it cannot enforce");
+  assert.equal(codexRunner.structuredOutput, null);
   for (const forbidden of ["resume", "--dangerously-bypass-approvals-and-sandbox"]) {
     assert.equal(args.includes(forbidden), false);
   }
   assert.equal(lines(RUN_ENV)[2], "1");
+});
+
+test("provider validation trims only the retry, never the caller's Zod parse", async () => {
+  const schema = z.object({ answer: z.string().transform((value) => value.trim()) });
+  let guaranteedCalls = 0;
+  let guaranteedParses = 0;
+  const guaranteed = await runStructured(
+    async () => {
+      guaranteedCalls += 1;
+      return "{}";
+    },
+    "answer as JSON",
+    (raw) => {
+      guaranteedParses += 1;
+      return parseModelJson(raw, schema);
+    },
+    "The test model",
+    undefined,
+    { shapeGuaranteed: true },
+  );
+  assert.equal(guaranteed.kind, "failed");
+  assert.equal(guaranteedCalls, 1);
+  assert.equal(guaranteedParses, 1, "provider validation must not bypass safeParse");
+
+  let defaultCalls = 0;
+  const retried = await runStructured(
+    async () => {
+      defaultCalls += 1;
+      return "{}";
+    },
+    "answer as JSON",
+    (raw) => parseModelJson(raw, schema),
+  );
+  assert.equal(retried.kind, "failed");
+  assert.equal(defaultCalls, 2, "the default ladder remains available to lossy or unsupported schemas");
+
+  const transformed = await runStructured(
+    async () => '{"answer":"  yes  "}',
+    "answer as JSON",
+    (raw) => parseModelJson(raw, schema),
+    "The test model",
+    undefined,
+    { shapeGuaranteed: true },
+  );
+  assert.deepEqual(transformed, { kind: "ok", value: { answer: "yes" } });
 });
 
 test("a Codex run reports what it spent, under the role that asked for it", async () => {

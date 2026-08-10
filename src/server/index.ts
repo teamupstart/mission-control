@@ -213,7 +213,14 @@ ensembles = new EnsembleManager(registry, undefined, {
           ).id,
       });
     },
-    runModel: (runnerId, prompt, opts) => llmRunner(runnerId).run(prompt, { model: opts.modelId, timeoutMs: opts.timeoutMs }),
+    runModel: (runnerId, prompt, opts) =>
+      llmRunner(runnerId).run(prompt, {
+        model: opts.modelId,
+        timeoutMs: opts.timeoutMs,
+        schema: opts.schema,
+      }),
+    guaranteesSchema: (runnerId) =>
+      llmRunner(runnerId).structuredOutput?.guaranteesInputShape === true,
   },
   // The finalization authorities: exact restore through `resetSession`, replacement Task
   // materialization through TaskManager, guarded pane injection, and the Workflow external

@@ -22,7 +22,7 @@ FOREMAN_MATCH := src/server/foreman/worker.ts
 NPM_STAMP := node_modules/.install-stamp
 
 .DEFAULT_GOAL := help
-.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs db build app install-app icons test lint check smoke hooks setup
+.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs db build app install-app icons demo demo-fresh test lint check smoke hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -105,6 +105,12 @@ install-app: app ## Build, package, and copy Mission Control.app into /Applicati
 
 icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-convert)
 	node scripts/gen-icons.mjs
+
+demo: ## Build and boot the token-free demo mode (real daemon, scripted agents), state at ~/.mission-control-demo
+	npm run build && npm run demo
+
+demo-fresh: ## Same as `demo`, but rebuilds state and seeds a lived-in fleet first (takes a few minutes)
+	npm run build && npm run demo -- --fresh
 
 # The quality gates need the dependency tree, and a freshly leased worktree has none
 # (`make session` cuts a new one, and nothing in it has run `npm install` yet). Without

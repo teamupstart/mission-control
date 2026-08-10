@@ -13,7 +13,8 @@ import { openDb } from "./db.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
-import { getLlmConfig, llmRunnerChoice } from "./llm/config.ts";
+import { claudeTransportChoice, getLlmConfig, llmRunnerChoice } from "./llm/config.ts";
+import { configureClaudeRunnerTransport } from "./llm/claude.ts";
 import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
@@ -59,6 +60,10 @@ import { createReviewScheduler } from "./llm/review-scheduler.ts";
 import { createCheckScheduler } from "./workflows/checks.ts";
 
 openDb();
+// Only the daemon can read app_config. The Foreman imports the same runner in a separate
+// process and deliberately remains on print until its transport is carried over HTTP in
+// Phase 4. Resolve on every run so an API config edit reaches the next tool-less call.
+configureClaudeRunnerTransport(claudeTransportChoice);
 ensureToken();
 // Reclaim expired image drops now, while we know no send is mid-flight. An upload
 // outlives its send on purpose (the agent reads the path on its own schedule), so

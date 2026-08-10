@@ -62,6 +62,27 @@ export const LLM_RUNNER_ENV = "LLM_RUNNER";
 /** The env var as the operator would type it. Shown in the settings panel. */
 export const LLM_RUNNER_ENV_VAR = `MISSION_${LLM_RUNNER_ENV}`;
 
+/** The two wire protocols Claude Code can use for one headless call. */
+export const CLAUDE_TRANSPORTS = ["print", "sdk"] as const;
+
+export type ClaudeTransport = (typeof CLAUDE_TRANSPORTS)[number];
+
+/**
+ * The `envVar()` suffix selecting Claude's headless transport.
+ *
+ * Kept beside `LLM_RUNNER_ENV` for the same reason: the daemon reads the suffix through
+ * the `MISSION_` / `FLEET_` / `HARNESS_` chain, while documentation prints the one
+ * `MISSION_` spelling an operator should export.
+ */
+export const CLAUDE_TRANSPORT_ENV = "CLAUDE_TRANSPORT";
+
+/** The env var as the operator would type it. */
+export const CLAUDE_TRANSPORT_ENV_VAR = `MISSION_${CLAUDE_TRANSPORT_ENV}`;
+
+export function isClaudeTransport(value: string): value is ClaudeTransport {
+  return (CLAUDE_TRANSPORTS as readonly string[]).includes(value);
+}
+
 /** A runner id, and which of the three layers chose it. */
 export interface ResolvedLlmRunner {
   id: LlmRunnerId;
@@ -157,6 +178,13 @@ export interface LlmRunOptions {
   model?: string;
   /** Wall-clock budget for the whole call. Omit to take the runner's own default. */
   timeoutMs?: number;
+  /**
+   * Optional provider-enforced spend ceiling for this call.
+   *
+   * Omit when the caller owns no dollar policy. A transport that can enforce the ceiling
+   * passes it through; one that cannot must not invent a different limit.
+   */
+  maxBudgetUsd?: number;
   /**
    * Tools for this run, or `null`/omitted for the default: NOTHING enabled.
    *

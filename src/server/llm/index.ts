@@ -45,7 +45,8 @@ export function allLlmRunners(): LlmRunner[] {
  *
  * Through the registry rather than one provider's own kill, because the daemon's background
  * jobs spawn through whichever runner is configured: a shutdown that knew only how to kill
- * `claude -p` would leave a second provider's children running. `killLiveRuns` is required
+ * Claude's print transport would leave SDK queries or another provider's children running.
+ * `killLiveRuns` is required
  * on `LlmRunner` (never optional) for exactly this call - these children are deliberately
  * detached, so they OUTLIVE the process that started them and go on burning tokens to
  * nowhere. A runner that leaves nothing behind implements it as a no-op and says so.

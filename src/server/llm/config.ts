@@ -3,8 +3,13 @@ import { LlmConfigSchema } from "@shared/protocol.ts";
 import type { LlmConfig, LlmConfigPatch } from "@shared/protocol.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS, resolveLlmJobModel, resolveLlmJobModels } from "@shared/llm-jobs.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "@shared/llm-jobs.ts";
-import { LLM_RUNNER_ENV, resolveLlmRunner } from "@shared/llm.ts";
-import type { ResolvedLlmRunner } from "@shared/llm.ts";
+import {
+  CLAUDE_TRANSPORT_ENV,
+  isClaudeTransport,
+  LLM_RUNNER_ENV,
+  resolveLlmRunner,
+} from "@shared/llm.ts";
+import type { ClaudeTransport, ResolvedLlmRunner } from "@shared/llm.ts";
 import type { LlmStatus } from "@shared/types.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { allLlmRunners } from "./index.ts";
@@ -14,11 +19,12 @@ import { allLlmRunners } from "./index.ts";
 // defaults are applied on every read, and a blob written by an older build gains new fields
 // for free.
 //
-// What it holds is the two answers `@shared/llm.ts` separates: WHO does the app's offline
-// work (the runner) and, for the daemon's own background jobs, on WHICH MODEL. Foreman's
-// four roles and the Inspector's one keep their own blobs, because each is edited by the
-// panel that owns that subsystem and a single writer per blob is what makes a per-key merge
-// enough concurrency control.
+// What it holds is the answers `@shared/llm.ts` separates: WHO does the app's offline work
+// (the runner), HOW Claude's daemon-side tool-less calls reach that provider (the
+// transport), and, for the daemon's own background jobs, on WHICH MODEL. Foreman's four
+// roles and the Inspector's one keep their own blobs, because each is edited by the panel
+// that owns that subsystem and a single writer per blob is what makes a per-key merge enough
+// concurrency control.
 //
 // The env lookups are on this side of the shared/server line for the usual reason: `envVar`
 // reads `node:os`, and the dashboard imports the resolvers.
@@ -62,6 +68,21 @@ export function setLlmConfig(patch: LlmConfigPatch): LlmConfig {
  */
 export function llmRunnerChoice(cfg: LlmConfig = getLlmConfig()): ResolvedLlmRunner {
   return resolveLlmRunner(cfg.runner, envVar(LLM_RUNNER_ENV));
+}
+
+/**
+ * Which wire protocol a daemon-side, tool-less Claude call uses.
+ *
+ * Resolved per call so a config edit reaches the next run. The stored choice wins, then
+ * the environment chain, then today's `print` behavior. Unknown environment values fail
+ * closed to `print`; unknown stored values have already degraded to empty in the read
+ * schema above.
+ */
+export function claudeTransportChoice(cfg: LlmConfig = getLlmConfig()): ClaudeTransport {
+  const configured = cfg.claudeTransport.trim();
+  if (isClaudeTransport(configured)) return configured;
+  const environment = envVar(CLAUDE_TRANSPORT_ENV)?.trim() ?? "";
+  return isClaudeTransport(environment) ? environment : "print";
 }
 
 /** What one background job will spawn with, and why. Per call, for the reason above. */

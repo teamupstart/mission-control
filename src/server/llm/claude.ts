@@ -1,21 +1,19 @@
 import { HEADLESS_CWD, killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
+import { killLiveClaudeSdkRuns, runClaudeSdkOneShot } from "./claude-sdk.ts";
 import { unwrapEnvelope } from "./structured.ts";
 import { headlessTranscriptDir } from "../goal/prune.ts";
 import { grantRefusal } from "@shared/llm.ts";
 import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { claudeEnvelopeModels } from "../harness/claude/envelope.ts";
-import type { LlmRunOptions, LlmRunner, LlmToolGrant } from "@shared/llm.ts";
+import type { ClaudeTransport, LlmRunOptions, LlmRunner, LlmToolGrant } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 
-// The `claude -p` implementation of `LlmRunner`, with today's exact behaviour.
+// Claude's `LlmRunner`: one provider identity with print and SDK wire transports.
 //
-// A THIN ADAPTER over `claude-cli.ts` rather than a copy of it, deliberately. Every
-// argument this file could have re-derived - why `--tools` defaults to empty, why the
-// child is detached, why the pane env is stripped, why the stream is decoded once, which
-// flags are load-bearing by their ABSENCE - is written out at length over there, next to
-// the code it constrains. Duplicating the spawn here would fork those arguments the first
-// time one of the two was edited. The migration that moves the bodies across is a later
-// item; this one only has to make the seam exist.
+// The print adapter remains in `claude-cli.ts`; the SDK one-shot is beside this module in
+// `claude-sdk.ts`. Both keep their transport-specific arguments next to the code they
+// constrain, while this module owns the invariant shared above them: grant validation,
+// spend reporting, runner identity, litter, and shutdown coverage.
 //
 // The direction of the remaining import is the same story: `HEADLESS_CWD` and
 // `headlessTranscriptDir()` stay where they are and are surfaced here, so the cwd a run
@@ -65,10 +63,10 @@ export function claudeGrantSettings(grant: LlmToolGrant): string {
 export { HEADLESS_CWD };
 
 /**
- * Turn a `claude -p --output-format json` envelope into a spend report.
+ * Turn either Claude transport's result envelope into a spend report.
  *
- * The envelope is READ rather than routed, and that is the whole design. `claude -p` already
- * hands back everything the ledger wants - the run's own `session_id`, a cost figure it
+ * The envelope is READ rather than routed, and that is the whole design. Both transports
+ * hand back everything the ledger wants - the run's own `session_id`, a cost figure Claude
  * calculated itself, and a per-model token breakdown - so accounting for a headless run
  * needs no exporter, no endpoint and no session identity invented for it. The alternative
  * considered and rejected was OTel: these runs DO export it, but every run mints a fresh
@@ -102,6 +100,23 @@ export function claudeSpendReport(
   return spendReportIsRecordable(report) ? report : null;
 }
 
+// Process-local on purpose. The daemon installs its config-backed resolver after opening
+// the database; the separate Foreman worker does not, so Phase 2 cannot make that worker a
+// database reader by importing `llm/config.ts` from this shared runner. Phase 4 will give
+// the worker its own transport input over its existing process boundary.
+let resolveTransport: () => ClaudeTransport = () => "print";
+
+/** Install this process's per-call Claude transport resolver, returning a restore hook. */
+export function configureClaudeRunnerTransport(
+  resolver: () => ClaudeTransport,
+): () => void {
+  const previous = resolveTransport;
+  resolveTransport = resolver;
+  return () => {
+    resolveTransport = previous;
+  };
+}
+
 export const claudeRunner: LlmRunner = {
   id: "claude",
   label: "Claude Code",
@@ -114,6 +129,23 @@ export const claudeRunner: LlmRunner = {
       // must not run at all: a caller that asked for a deny list and silently did not get
       // one cannot tell the difference until something it named leaks into a prompt.
       if (refusal) throw new Error(`claude runner refused the tool grant: ${refusal}`);
+    }
+    // Phase 2 adopts only tool-less daemon work. A granted Inspector review stays on its
+    // proven print sandbox until Phase 3 implements the same grant in SDK options. The SDK
+    // adapter also refuses a grant directly, so bypassing this routing guard fails loudly.
+    const transport = grant ? "print" : resolveTransport();
+    if (transport === "sdk") {
+      const result = await runClaudeSdkOneShot(prompt, opts);
+      if (opts.role) {
+        const report = claudeSpendReport(
+          JSON.stringify(result.envelope),
+          opts.role,
+          opts.model ?? "",
+          Date.now(),
+        );
+        if (report) reportLlmSpend(report);
+      }
+      return result.text;
     }
     // No grant means no `tools`, no `cwd` and no `settings` - so `runClaudeText` applies
     // its own defaults: every tool disabled, and the temp dir above. That is the safe
@@ -174,5 +206,8 @@ export const claudeRunner: LlmRunner = {
    */
   litter: { dir: headlessTranscriptDir, ext: ".jsonl" },
 
-  killLiveRuns: killLiveClaudeRuns,
+  killLiveRuns() {
+    killLiveClaudeRuns();
+    killLiveClaudeSdkRuns();
+  },
 };

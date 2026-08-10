@@ -27,11 +27,18 @@ const home = mkdtempSync(join(tmpdir(), "mission-llm-cfg-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb, setAppConfig } = await import("../src/server/db.ts");
-const { getLlmConfig, llmJobModel, llmRunnerChoice, llmStatus, setLlmConfig } = await import(
-  "../src/server/llm/config.ts"
-);
+const {
+  claudeTransportChoice,
+  getLlmConfig,
+  llmJobModel,
+  llmRunnerChoice,
+  llmStatus,
+  setLlmConfig,
+} = await import("../src/server/llm/config.ts");
 const { LLM_JOB_IDS, LLM_JOB_SPECS } = await import("../src/shared/llm-jobs.ts");
-const { DEFAULT_LLM_RUNNER_ID, LLM_RUNNER_IDS } = await import("../src/shared/llm.ts");
+const { CLAUDE_TRANSPORTS, DEFAULT_LLM_RUNNER_ID, LLM_RUNNER_IDS } = await import(
+  "../src/shared/llm.ts"
+);
 const { LlmConfigPatchSchema } = await import("../src/shared/protocol.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -40,16 +47,39 @@ beforeEach(() => {
   openDb().exec("DELETE FROM app_config");
   for (const job of LLM_JOB_IDS) delete process.env[LLM_JOB_SPECS[job].envVar];
   delete process.env.MISSION_LLM_RUNNER;
+  delete process.env.MISSION_CLAUDE_TRANSPORT;
 });
 
 test("an unconfigured daemon spawns exactly what the hardcoded constants did", () => {
   // The whole promise of this migration: never open the panel, get the old behaviour.
   assert.equal(llmRunnerChoice().id, DEFAULT_LLM_RUNNER_ID);
+  assert.equal(claudeTransportChoice(), "print");
   for (const job of LLM_JOB_IDS) {
     const resolved = llmJobModel(job);
     assert.equal(resolved.id, LLM_JOB_SPECS[job].fallback, job);
     assert.equal(resolved.source, "default", job);
   }
+});
+
+test("Claude transport resolves config, then env, then the print default", () => {
+  process.env.MISSION_CLAUDE_TRANSPORT = "sdk";
+  assert.equal(claudeTransportChoice(), "sdk", "the environment fallback was ignored");
+
+  setLlmConfig({ claudeTransport: "print" });
+  assert.equal(claudeTransportChoice(), "print", "the stored choice must beat the environment");
+
+  setLlmConfig({ claudeTransport: "sdk" });
+  assert.equal(claudeTransportChoice(), "sdk");
+});
+
+test("an unknown Claude transport degrades to print instead of breaking background work", () => {
+  setAppConfig("llm", { claudeTransport: "future-wire", models: {} });
+  assert.doesNotThrow(() => getLlmConfig());
+  assert.equal(getLlmConfig().claudeTransport, "");
+  assert.equal(claudeTransportChoice(), "print");
+
+  process.env.MISSION_CLAUDE_TRANSPORT = "future-wire";
+  assert.equal(claudeTransportChoice(), "print");
 });
 
 test("a model override is stored and resolves as `config`", () => {
@@ -122,9 +152,18 @@ test("the PATCH refuses what the config tolerates, so a typo is answerable", () 
   // never resolves - a control that appears to work and does nothing.
   assert.equal(LlmConfigPatchSchema.safeParse({ models: { "not-a-job": "x" } }).success, false);
   assert.equal(LlmConfigPatchSchema.safeParse({ runner: "ollama" }).success, false);
+  assert.equal(LlmConfigPatchSchema.safeParse({ claudeTransport: "future-wire" }).success, false);
   assert.equal(LlmConfigPatchSchema.safeParse({}).success, false, "an empty patch says nothing");
   assert.equal(LlmConfigPatchSchema.safeParse({ runner: LLM_RUNNER_IDS[0] }).success, true);
   assert.equal(LlmConfigPatchSchema.safeParse({ runner: "" }).success, true, "clearing the pick");
+  for (const transport of CLAUDE_TRANSPORTS) {
+    assert.equal(LlmConfigPatchSchema.safeParse({ claudeTransport: transport }).success, true);
+  }
+  assert.equal(
+    LlmConfigPatchSchema.safeParse({ claudeTransport: "" }).success,
+    true,
+    "clearing the transport pick",
+  );
   assert.equal(LlmConfigPatchSchema.safeParse({ models: { goal: "" } }).success, true);
 });
 

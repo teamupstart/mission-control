@@ -152,6 +152,21 @@ export interface ClaudeSdkQueryOptions {
   includePartialMessages: boolean;
 }
 
+/** The smaller options surface used by one fresh, tool-less query. */
+export interface ClaudeSdkOneShotQueryOptions {
+  cwd: string;
+  pathToClaudeCodeExecutable: string;
+  env: Record<string, string | undefined>;
+  abortController: AbortController;
+  tools: string[];
+  settingSources: ("user" | "project" | "local")[];
+  maxTurns: number;
+  model?: string;
+  maxBudgetUsd?: number;
+  outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };
+  stderr?: (data: string) => void;
+}
+
 /**
  * The transport seam: how a session is started, where the binary is, and what env it gets.
  *
@@ -167,5 +182,18 @@ export interface ClaudeSdkDeps {
   /** The absolute `claude` path to pin the subprocess to. Rejects when it cannot be found. */
   executable(): Promise<string>;
   /** The subprocess environment. See `sdkSubprocessEnv` for what it subtracts and why. */
+  env(): Record<string, string | undefined>;
+}
+
+/** A one-shot only needs to consume frames; it drives none of the live query controls. */
+export interface ClaudeSdkOneShotQuery extends AsyncIterable<ClaudeSdkMessage> {}
+
+/** The same vendor seam, narrowed to the one-shot call shape. */
+export interface ClaudeSdkOneShotDeps {
+  query(params: {
+    prompt: string;
+    options: ClaudeSdkOneShotQueryOptions;
+  }): Promise<ClaudeSdkOneShotQuery>;
+  executable(): Promise<string>;
   env(): Record<string, string | undefined>;
 }

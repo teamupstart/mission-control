@@ -86,6 +86,13 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   `Record` key in `src/web/workflows/run-model.ts`, so adding one fails typecheck until
   somebody says what it means to a human. That is the intended cost, not an obstacle to route
   around with a default arm.
+- Repository memory paths (`MEMORY_DIR`, `MEMORY_INDEX_PATH`, `MEMORY_REFERENCE_MARKER` in
+  `src/shared/memory.ts`) - the one entry here that is not persisted in this database at
+  all, and the strictest for it: these become paths committed into every repository a retro
+  has touched, including checkouts this build will never open, so a rename orphans memories
+  that no migration can reach. Add, never rename. `MEMORY_REFERENCE_MARKER` is exported
+  separately from the path it currently equals so the retro's idempotence check on
+  `AGENTS.md` can survive the path moving. See [Repository memory](../repository-memory.md)
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
   editing one rewrites the graph every existing binding pinned to it. The literal node and

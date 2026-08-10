@@ -161,9 +161,22 @@ test("the Conversation rendering is reachable by the words someone would half-re
   const searchable = [control.label, control.description, ...control.keywords]
     .join(" ")
     .toLowerCase();
-  for (const term of ["terminal", "pty", "shell", "stdout", "prompt", "transcript", "chat"]) {
+  // Spelled out rather than looped from `control.keywords`, which would pass whatever that
+  // array happened to hold - the keywords ARE most of the haystack, so reading them back
+  // out of it asserts nothing. A literal list is what gives this teeth: these words must
+  // reach this control, and deleting one from the entry fails here.
+  const TERMS = ["terminal", "pty", "shell", "stdout", "prompt", "transcript", "chat", "stream"];
+  for (const term of TERMS) {
     assert.ok(searchable.includes(term), `"${term}" reaches nothing in the settings index`);
   }
+  // And the literal list is held to the entry, because a hand-written subset silently falls
+  // behind: the first version of this test pinned seven of the eight words the entry
+  // declares, and nothing said so. Adding a keyword now fails here until it is pinned too.
+  assert.deepEqual(
+    [...control.keywords].sort(),
+    [...TERMS].sort(),
+    "the entry's keywords and the vocabulary this test pins have drifted apart",
+  );
   // And it is not findable only as a synonym of another control: the label is its own.
   const labels = SETTINGS_CONTROLS.filter((c) => c.id !== control.id).map((c) => c.label);
   assert.ok(!labels.includes(control.label), "two controls answer to the same name");

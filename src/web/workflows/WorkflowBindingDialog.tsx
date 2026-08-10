@@ -9,6 +9,7 @@ import {
   type WorkflowDetail,
   type WorkflowSummary,
   type WorkflowConfig,
+  workflowIdForVersion,
   workflowVersionLabel,
 } from "@shared/workflow.ts";
 import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
@@ -217,7 +218,17 @@ export function WorkflowBindingDialog({
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],
   );
-  const selectedWorkflowId = publishable.find((item) => item.currentVersionId === versionId)?.id ?? null;
+  /*
+   * Resolved the same way the version is NAMED, rather than by `currentVersionId` equality.
+   *
+   * That equality only holds while a version is the newest one, so a session bound to a
+   * superseded built-in - `@7` after `@8` ships - resolved to null, the detail fetch below
+   * never fired, and "This version defaults to …" silently never rendered for it. Hydration
+   * makes that reachable by design: it selects whatever the session is actually bound to,
+   * superseded versions included, and the select already renders an option for exactly that
+   * case. Naming and lookup have to recognise the same set of versions.
+   */
+  const selectedWorkflowId = workflowIdForVersion(versionId, publishable);
   useEffect(() => {
     if (!versionId) return;
     /*

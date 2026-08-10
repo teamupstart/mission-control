@@ -5,7 +5,11 @@ import {
   NO_MISTAKES_REVIEW_WORKFLOW_ID,
   parseBuiltinWorkflowVersionId,
 } from "../src/shared/builtin-workflow.ts";
-import { workflowVersionLabel, type WorkflowNamingSource } from "../src/shared/workflow.ts";
+import {
+  workflowIdForVersion,
+  workflowVersionLabel,
+  type WorkflowNamingSource,
+} from "../src/shared/workflow.ts";
 
 // What is at stake: a binding stores only an immutable version id, and three surfaces render
 // one. They used to render `id.slice(0, 8)`, which turns the shipped review workflow into
@@ -82,6 +86,48 @@ test("falls back to the id rather than inventing a name", () => {
   const orphan = "0000ffff-0000-4000-8000-00000000dead";
   assert.equal(workflowVersionLabel(orphan, CATALOG), orphan);
   assert.equal(workflowVersionLabel(NO_MISTAKES.currentVersionId!, []), NO_MISTAKES.currentVersionId);
+});
+
+test("resolves the owning workflow for a superseded built-in version", () => {
+  // The case `currentVersionId` equality misses, and the reason this resolver exists: a session
+  // bound to @7 while @8 ships. Keying off equality alone returned null, so the dialog's
+  // "/api/workflows/{id}" fetch never fired and its version-defaults hint silently never
+  // rendered - for a version the select is perfectly happy to display.
+  assert.equal(
+    workflowIdForVersion(builtinWorkflowVersionId("no-mistakes-review", 7), CATALOG),
+    NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  );
+  // The current version still resolves, by the first branch.
+  assert.equal(
+    workflowIdForVersion(NO_MISTAKES.currentVersionId!, CATALOG),
+    NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  );
+  assert.equal(workflowIdForVersion(OPERATOR.currentVersionId!, CATALOG), OPERATOR.id);
+});
+
+test("naming and identity recognise exactly the same versions", () => {
+  // The invariant worth holding: a surface must not be able to NAME a version in one line and
+  // fail to look it up in the next. Anything the label resolves to a name has an id, and
+  // anything it falls back to the raw id for has none.
+  const cases = [
+    NO_MISTAKES.currentVersionId!,
+    builtinWorkflowVersionId("no-mistakes-review", 7),
+    OPERATOR.currentVersionId!,
+    "0000ffff-0000-4000-8000-00000000dead",
+    builtinWorkflowVersionId("never-shipped", 2),
+  ];
+  for (const versionId of cases) {
+    const named = workflowVersionLabel(versionId, CATALOG) !== versionId;
+    assert.equal(
+      workflowIdForVersion(versionId, CATALOG) !== null,
+      named,
+      `${versionId} is named=${named} but resolved=${workflowIdForVersion(versionId, CATALOG)}`,
+    );
+  }
+});
+
+test("refuses a built-in version whose workflow is not in the catalog", () => {
+  assert.equal(workflowIdForVersion(builtinWorkflowVersionId("no-mistakes-review", 7), []), null);
 });
 
 test("does not confuse two workflows that share a version number", () => {

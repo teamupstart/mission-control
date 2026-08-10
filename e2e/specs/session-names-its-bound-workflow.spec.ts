@@ -382,6 +382,49 @@ test("switching to an unbound session clears the previous session's workflow", a
   await expect(bind.getByText(/^Already bound to /)).toHaveCount(0);
 });
 
+test("a session bound to a superseded version still gets its defaults hint", async ({
+  page,
+  daemon,
+}) => {
+  /*
+   * `selectedWorkflowId` keyed off `currentVersionId` equality, which only holds while a
+   * version is the newest. Hydration makes the other case reachable by design - it selects
+   * whatever the session is actually bound to - so a session on `@7` after `@8` ships resolved
+   * to no workflow at all, the detail fetch never fired, and "This version defaults to …"
+   * silently never rendered. The select is perfectly happy to display that version; only the
+   * lookup beside it disagreed about which versions it recognises.
+   *
+   * The built-in ships eight versions, so `@7` is a real published version to bind rather than
+   * a fixture invented for this test.
+   */
+  await armWorkflowPrerequisites(daemon);
+  await page.goto(daemon.baseURL);
+  const sessionId = await dispatchWithoutWorkflow(page, daemon, "bound to a superseded version");
+
+  const supersededVersion = "builtin-workflow:no-mistakes-review@7";
+  await api(daemon, "/api/workflow-bindings", {
+    workflowVersionId: supersededVersion,
+    sessionId,
+    triggerMode: "manual",
+    deliveryMode: "preview",
+  });
+
+  await page.reload();
+  await page.getByRole("button", { name: /No-Mistakes Review v7/ }).first().click();
+  const bind = page.getByRole("dialog", { name: "Bind workflow" });
+  await expect(bind).toBeVisible();
+
+  const published = bind.getByRole("combobox", { name: "Published workflow", exact: true });
+  await expect.poll(() => selectedLabel(published)).toBe("No-Mistakes Review · v7");
+
+  // The hint the broken lookup silently withheld. Its presence is the assertion; the exact
+  // words belong to v7's own published defaults, which this test does not get to choose.
+  const hint = bind.getByText(/^This version defaults to /);
+  await expect(hint).toBeVisible();
+  seen("dialog > superseded version selected", await selectedLabel(published));
+  seen("dialog > superseded version hint", await accessibleName(hint));
+});
+
 test("a session with no workflow still offers to attach one", async ({ page, daemon }) => {
   // The other half, which would rot silently: naming the binding must not turn the chip into a
   // permanent label on sessions that genuinely have nothing armed.

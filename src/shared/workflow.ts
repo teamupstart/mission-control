@@ -1949,6 +1949,31 @@ export function workflowVersionLabel(
   return versionId;
 }
 
+/**
+ * WHICH workflow an immutable version id belongs to, or null when the catalog cannot say.
+ *
+ * The same two-step resolution `workflowVersionLabel` performs, exposed on its own for callers
+ * that need the identity rather than the words - fetching that workflow's detail, say.
+ *
+ * Keying off `currentVersionId` equality alone is the trap this closes. That matches only while
+ * a version is the newest one, so a session bound to a superseded built-in - `@7` after `@8`
+ * ships - resolved to nothing, and whatever the caller does with the answer silently did not
+ * happen. Naming and identity have to agree about which versions are recognisable, or a surface
+ * can name a version in one line and fail to look it up in the next.
+ */
+export function workflowIdForVersion(
+  versionId: string,
+  workflows: readonly WorkflowNamingSource[],
+): WorkflowId | null {
+  const current = workflows.find((workflow) => workflow.currentVersionId === versionId);
+  if (current) return current.id;
+  const builtin = parseBuiltinWorkflowVersionId(versionId);
+  if (builtin && workflows.some((workflow) => workflow.id === builtin.workflowId)) {
+    return builtin.workflowId;
+  }
+  return null;
+}
+
 export interface WorkflowDetail {
   workflow: WorkflowDefinition;
   versions: WorkflowVersionMetadata[];

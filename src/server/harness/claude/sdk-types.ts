@@ -120,6 +120,16 @@ export interface ClaudeSdkQueryOptions {
   model?: string;
   effort?: ThinkingLevel;
   permissionMode?: ClaudeSdkPermissionMode;
+  /**
+   * The vendor's confirmation that `permissionMode: "bypassPermissions"` was meant.
+   *
+   * Required rather than optional when that mode is used - the SDK documents it as "a safety
+   * measure to ensure intentional bypassing of permissions" - and it is set nowhere else. The
+   * intent it is asking about is the operator picking "bypass" for this session, which has
+   * already happened by the time the driver builds these options; this flag says so to the
+   * vendor rather than deciding anything itself.
+   */
+  allowDangerouslySkipPermissions?: boolean;
   resume?: string;
   mcpServers?: Record<string, unknown>;
   canUseTool: (

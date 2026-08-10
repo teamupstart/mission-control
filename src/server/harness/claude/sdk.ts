@@ -968,6 +968,21 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
           ...(permissionMode ? { permissionMode } : {}),
+          // `bypassPermissions` alone is not a launchable state: the SDK requires this flag
+          // alongside it and says so twice, calling it "a safety measure to ensure
+          // intentional bypassing of permissions". Without it the mode was accepted by our
+          // own narrowing gate and then refused further down, which is the worst place for a
+          // mode to fail - the operator picked "bypass" from a list this app offers
+          // (`harness-capabilities.ts` has it in `pickable`), so the failure looked like the
+          // session, not the flag.
+          //
+          // Derived from the mode rather than carried on `SdkLaunchOptions`, because there is
+          // no second answer: every caller that asks for this mode means it, and a launch
+          // option would only create a way to ask for the mode and decline the flag - which
+          // is precisely the unlaunchable combination this line exists to remove.
+          ...(permissionMode === "bypassPermissions"
+            ? { allowDangerouslySkipPermissions: true }
+            : {}),
           ...(opts.resume ? { resume: opts.resume } : {}),
           ...(opts.mcp
             ? {

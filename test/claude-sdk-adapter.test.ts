@@ -705,6 +705,24 @@ test("live controls delegate, and a mode this CLI has never heard of is refused"
   await assert.rejects(() => handle.setPermissionMode!("askForApproval"), /no permission mode/);
 });
 
+test("bypass mode carries the vendor's confirmation flag, and no other mode does", async () => {
+  // `bypassPermissions` is offered to the operator (`harness-capabilities.ts` lists it in
+  // `pickable`), and the SDK refuses that mode unless this flag comes with it. Asserted as a
+  // pair because either half alone is a bug: the flag without the mode would arm a bypass
+  // nobody asked for, and the mode without the flag is the unlaunchable state this pins.
+  const bypass = fakeDeps();
+  await claudeSdkSpec(bypass.deps).launch(launchOpts({ permissionMode: "bypassPermissions" }));
+  const bypassOptions = (await bypass.started).options;
+  assert.equal(bypassOptions.permissionMode, "bypassPermissions");
+  assert.equal(bypassOptions.allowDangerouslySkipPermissions, true);
+
+  const plain = fakeDeps();
+  await claudeSdkSpec(plain.deps).launch(launchOpts({ permissionMode: "acceptEdits" }));
+  const plainOptions = (await plain.started).options;
+  assert.equal(plainOptions.permissionMode, "acceptEdits");
+  assert.equal(plainOptions.allowDangerouslySkipPermissions, undefined);
+});
+
 // The resume argv used to be asserted here, because it used to live on `SdkSpec`. It is a
 // harness capability now (every harness has one; only Claude has a driver), so it is pinned
 // in `harness-resume.test.ts` for all three rather than under this one adapter's tests.

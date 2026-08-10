@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Headless calls on the Agent SDK - phased implementation</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #1a1a1a; --muted: #5f5f5c; --rule: #e2e0dc;
+    --accent: #a8501e; --accent-soft: #fdf3ec; --code-bg: #f3f2ef; --ok: #2f6b45;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a; --panel: #1e1f22; --ink: #e6e5e2; --muted: #9b9a96; --rule: #33343a;
+      --accent: #e8935c; --accent-soft: #2a211b; --code-bg: #232428; --ok: #6cc08b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    padding: 3rem 1.25rem 6rem;
+  }
+  .wrap { max-width: 56rem; margin: 0 auto; }
+  header.title { border-bottom: 1px solid var(--rule); padding-bottom: 1.5rem; margin-bottom: 2.25rem; }
+  h1 { font-size: 1.95rem; line-height: 1.2; margin: 0 0 .6rem; letter-spacing: -.02em; }
+  .lede { color: var(--muted); margin: 0; font-size: 1.02rem; }
+  h2 { font-size: 1.26rem; margin: 3rem 0 .9rem; letter-spacing: -.01em; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
+  h3 { font-size: 1rem; margin: 1.8rem 0 .5rem; }
+  p { margin: 0 0 1rem; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.35rem; }
+  li { margin: .35rem 0; }
+  a { color: var(--accent); }
+  strong { font-weight: 640; }
+  code { background: var(--code-bg); padding: .1em .38em; border-radius: 4px; font-size: .87em;
+         font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  .scroll { overflow-x: auto; margin: 0 0 1.4rem; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: .87rem; min-width: 34rem; }
+  th, td { text-align: left; padding: .55rem .75rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 620; white-space: nowrap; background: var(--code-bg); }
+  tr:last-child td { border-bottom: none; }
+  td code { font-size: .82em; }
+  .note { background: var(--accent-soft); border-left: 3px solid var(--accent);
+          padding: .9rem 1.1rem; border-radius: 0 7px 7px 0; margin: 0 0 1.4rem; }
+  .note p:last-child { margin-bottom: 0; }
+  figure { margin: 0 0 1.6rem; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption { color: var(--muted); font-size: .85rem; margin-top: .5rem; }
+  .diagram { border: 1px solid var(--rule); border-radius: 9px; background: var(--panel); padding: 1rem; overflow-x: auto; }
+  footer { margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="title">
+  <h1>Headless calls on the Agent SDK</h1>
+  <p class="lede">Phased implementation index. <a href="./plan.html">The approved plan</a> owns what and why; this owns how it is split.</p>
+</header>
+
+<p>Implementation index for <a href="./plan.md"><code>plan.md</code></a>, which remains the source of truth for
+<em>what</em> is being built and <em>why</em>. This document owns <em>how it is split</em>, and the phase files own
+the detail.</p>
+
+<h2>Incorporated decisions</h2>
+
+<p>Resolved by the operator on review of the source plan. These are requirements here, not open questions.</p>
+
+<div class="scroll"><table>
+<thead><tr><th>Decision</th><th>Choice</th><th>Where it is owned</th></tr></thead>
+<tbody>
+<tr><td>How far to move</td><td><strong>Transport swap behind <code>claudeRunner</code></strong> - <code>outputFormat</code>, <code>abortController</code>, <code>maxBudgetUsd</code>, <code>stderr</code>, <code>settingSources: []</code>. One transport for one binary. Not a third <code>LlmRunnerId</code>. Not a live-progress UI.</td><td>Phases 1-5</td></tr>
+<tr><td>Headless transcripts</td><td><strong>Keep them, keep the pruner.</strong> <code>persistSession</code> stays on.</td><td>Phase 2 makes transcript continuity an exit criterion; no phase retires <code>goal/prune.ts</code></td></tr>
+<tr><td>The latent driver bug</td><td><strong>Fix now, in its own PR.</strong></td><td>No phase - excluded deliberately</td></tr>
+<tr><td>After this plan</td><td><strong>Phase it and schedule the work.</strong></td><td>This document</td></tr>
+</tbody></table></div>
+
+<h2>What investigation changed</h2>
+
+<div class="note">
+<p>Three assumptions in the source plan did not survive contact with the repository. Each is recorded
+in the affected phase file rather than silently dropped.</p>
+</div>
+
+<ol>
+<li><strong>"The bundling phase" is not one.</strong> There is no <code>build:foreman</code>; the worker runs from
+TypeScript source under <code>tsx</code> (<code>package.json:34</code>) and resolves <code>node_modules</code> directly. The
+daemon bundle already carries the SDK as a lazy dynamic-import specifier, proven in production by
+the interactive driver. Phase 4's risk profile was rewritten from the code.</li>
+<li><strong><code>--json-schema</code> does not delete the retry ladder globally.</strong> <code>zodToJsonSchema</code> silently drops
+<code>.refine</code>, <code>.preprocess</code> and <code>.transform</code>, so a schema-valid reply can still fail <code>safeParse</code> - and
+callers consume the Zod <em>output</em> type, which only <code>safeParse</code> produces. Five of twelve schemas
+render cleanly, three are lossy-but-safe, and three are excluded.</li>
+<li><strong><code>zod-to-json-schema</code> is a phantom dependency.</strong> It resolves only transitively through
+<code>@modelcontextprotocol/sdk</code>. Phase 1 must declare it before importing it, or the daemon bundle
+inlines a package nothing owns.</li>
+</ol>
+
+<h2>Phases</h2>
+
+<div class="scroll"><table>
+<thead><tr><th>#</th><th>Phase</th><th>Depends on</th><th>Delivers</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><a href="./phase-1-provider-validated-structured-output.md">Provider-validated structured output</a></td><td>-</td><td><code>LlmRunOptions.schema</code>, <code>--json-schema</code>, a trimmable ladder</td></tr>
+<tr><td>2</td><td><a href="./phase-2-sdk-one-shot-transport.md">SDK one-shot transport, off by default</a></td><td>1</td><td><code>runClaudeSdkOneShot</code>, <code>ClaudeTransport</code>, the 8 tool-less daemon sites</td></tr>
+<tr><td>3</td><td><a href="./phase-3-inspector-grant-on-sdk.md">The Inspector's grant on SDK</a></td><td>2</td><td>tool grants enforced identically</td></tr>
+<tr><td>4</td><td><a href="./phase-4-foreman-worker-on-sdk.md">The Foreman worker on SDK</a></td><td>2</td><td>the 4 worker sites, spend through the outbox</td></tr>
+<tr><td>5</td><td><a href="./phase-5-default-transport-flip.md">Make SDK the default</a></td><td>3, 4</td><td>the migration actually delivered</td></tr>
+</tbody></table></div>
+
+<h3>Dependency graph</h3>
+
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 880 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Phase 1 leads to Phase 2. Phase 2 leads to Phase 3 and Phase 4, which run concurrently. Phase 3 and Phase 4 both lead to Phase 5.">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+    <style>
+      .b { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; rx: 8; }
+      .b-par { stroke: var(--ok); stroke-width: 1.75; }
+      .n { font: 12.5px ui-sans-serif, -apple-system, "Segoe UI", sans-serif; fill: var(--ink); font-weight: 700; }
+      .d { font: 11px ui-sans-serif, -apple-system, "Segoe UI", sans-serif; fill: var(--muted); }
+      .e { stroke: var(--muted); stroke-width: 1.5; fill: none; color: var(--muted); }
+    </style>
+  </defs>
+
+  <rect class="b" x="8" y="62" width="140" height="52"/>
+  <text class="n" x="22" y="84">Phase 1</text>
+  <text class="d" x="22" y="100">structured output</text>
+
+  <path class="e" d="M 148 88 H 190" marker-end="url(#a2)"/>
+
+  <rect class="b" x="192" y="62" width="140" height="52"/>
+  <text class="n" x="206" y="84">Phase 2</text>
+  <text class="d" x="206" y="100">SDK transport</text>
+
+  <path class="e" d="M 332 80 H 366 Q 378 80 378 68 V 42" marker-end="url(#a2)"/>
+  <path class="e" d="M 332 96 H 366 Q 378 96 378 108 V 134" marker-end="url(#a2)"/>
+
+  <rect class="b b-par" x="380" y="8" width="150" height="52"/>
+  <text class="n" x="394" y="30">Phase 3</text>
+  <text class="d" x="394" y="46">Inspector grant</text>
+
+  <rect class="b b-par" x="380" y="116" width="150" height="52"/>
+  <text class="n" x="394" y="138">Phase 4</text>
+  <text class="d" x="394" y="154">Foreman worker</text>
+
+  <path class="e" d="M 530 34 H 566 Q 578 34 578 46 V 72" marker-end="url(#a2)"/>
+  <path class="e" d="M 530 142 H 566 Q 578 142 578 130 V 104" marker-end="url(#a2)"/>
+
+  <rect class="b" x="580" y="62" width="140" height="52"/>
+  <text class="n" x="594" y="84">Phase 5</text>
+  <text class="d" x="594" y="100">default flip</text>
+
+  <text class="d" x="740" y="80">Green outline =</text>
+  <text class="d" x="740" y="96">runs concurrently</text>
+</svg>
+</div>
+<figcaption>Edges are direct prerequisites only. Phases 3 and 4 share no files and merge in either order.</figcaption>
+</figure>
+
+<h3>Concurrency groups</h3>
+
+<div class="scroll"><table>
+<thead><tr><th>Group</th><th>Phases</th><th>Why they can overlap</th></tr></thead>
+<tbody>
+<tr><td>A</td><td>1</td><td>Root. Nothing else can start.</td></tr>
+<tr><td>B</td><td>2</td><td>Sole consumer of Phase 1's option.</td></tr>
+<tr><td>C</td><td><strong>3 and 4, concurrently</strong></td><td>Both depend only on Phase 2 and share no files. Phase 3 owns <code>src/server/inspector/</code> and the grant branch of <code>claude-sdk.ts</code>; Phase 4 owns <code>src/server/foreman/</code> and possibly <code>LlmStatus</code>. Phase 4 adds no branch to <code>runClaudeSdkOneShot</code>, so they merge in either order.</td></tr>
+<tr><td>D</td><td>5</td><td>The join. Needs both of group C.</td></tr>
+</tbody></table></div>
+
+<p>Merge order: 1, then 2, then 3 and 4 in either order, then 5.</p>
+
+<h2>Cross-phase contracts</h2>
+
+<p>These are the interfaces one phase creates and another consumes. Breaking one is a cross-phase
+regression, not a local refactor.</p>
+
+<div class="scroll"><table>
+<thead><tr><th>Contract</th><th>Created by</th><th>Consumed by</th><th>Rule</th></tr></thead>
+<tbody>
+<tr><td><code>LlmRunOptions.schema</code></td><td>1</td><td>2</td><td>A <strong>rendered</strong> JSON Schema, not a Zod schema, so the SDK path needs no conversion of its own</td></tr>
+<tr><td><code>shapeGuaranteed</code></td><td>1</td><td>2, 5</td><td>Means "the provider validated the input shape". Never "skip <code>safeParse</code>". Set per call site, never globally</td></tr>
+<tr><td><code>parseModelJson</code>'s <code>safeParse</code></td><td>existing</td><td>all</td><td>Stays on every path. Callers consume the Zod output type, which transforms produce and no provider can</td></tr>
+<tr><td><code>ClaudeTransport</code> + <code>claudeTransportChoice()</code></td><td>2</td><td>3, 4, 5</td><td>The single selector. No phase introduces a second switch</td></tr>
+<tr><td><code>runClaudeSdkOneShot</code> refusing grants</td><td>2</td><td>3</td><td>Phase 3 is the only phase permitted to replace that refusal</td></tr>
+<tr><td><code>cwd: HEADLESS_CWD</code> for tool-less runs</td><td>2</td><td>3, 5</td><td>A phase that changes it owes the pruner an answer. Phase 3 does, for granted runs, and documents the inherited gap</td></tr>
+<tr><td>No <code>resume</code>/<code>sessionId</code>/<code>forkSession</code></td><td>2</td><td>all</td><td>Context isolation is a correctness property, not a default</td></tr>
+<tr><td><code>claudeGrantSettings</code> as the single deny renderer</td><td>existing</td><td>3</td><td>One derivation for both transports</td></tr>
+<tr><td>How the worker learns the transport</td><td>4</td><td>5</td><td>Phase 4 records <code>envVar</code>-only or <code>LlmStatus</code>; Phase 5 documents whichever it chose rather than assuming</td></tr>
+<tr><td>Daemon-side pricing, worker-side reporting</td><td>existing</td><td>4</td><td>The worker never prices and never opens the database</td></tr>
+</tbody></table></div>
+
+<h2>Final verification strategy</h2>
+
+<p>Each phase runs <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code> and
+<code>npm run smoke</code> - build and smoke are required throughout because Phase 1 adds a dependency that
+lands in <code>dist/server/index.mjs</code> and every later phase changes what that bundle does at runtime.
+No phase requires <code>npm run test:e2e</code>: nothing here has a UI surface, which is also why no phase
+carries a Playwright spec.</p>
+
+<p>Two things the suite structurally cannot prove, assigned rather than assumed:</p>
+
+<ul>
+<li><strong>Grant enforcement</strong> (Phase 3) - rendering the right deny string is what the existing
+byte-equality test proves. That the rules <em>bind</em> is a separate assertion, and if the seam cannot
+express it, Phase 3 must say so in its PR rather than claim coverage it does not have.</li>
+<li><strong>The <code>settingSources: []</code> behaviour change</strong> (Phase 5) - a before/after on real prompts,
+because a systematic shift in reviewer strictness is invisible to every unit test.</li>
+</ul>
+
+<p>The end state matches <code>plan.md</code> with no undocumented cleanup: <code>print</code> remains supported rather
+than vestigial, <code>goal/prune.ts</code> remains load-bearing, the three excluded schemas remain on the
+retry ladder, and the latent driver bug ships on its own.</p>
+
+<footer>
+Rendering of <code>docs/plans/headless-agent-sdk/phased-plan.md</code>, which is the source of truth.
+</footer>
+
+</div>
+</body>
+</html>
+</content>

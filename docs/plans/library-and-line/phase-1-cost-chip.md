@@ -8,7 +8,7 @@ popover carrying everything the strip showed: today's estimated cost, current ra
 estimated cost per shipped PR, the automation overhead line (per role), and per-provider rate-limit
 runway meters. Cost detail becomes a glance plus a drill-down instead of permanent chrome.
 
-Visual reference: `docs/mockups/automation-prominence-2/1-library-line.html`, Frame B topbar and
+Visual reference: `docs/archive/mockups/automation-prominence-2/1-library-line.html`, Frame B topbar and
 the open "Spend - today" popover.
 
 ## 2. Entry criteria and dependencies

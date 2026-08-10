@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
+import { recordsIn } from "../fixtures/records.ts";
 
 /**
  * INVESTIGATION SPEC - reproduces the reported "per-harness model changes are not taken
@@ -23,7 +24,7 @@ import { expect, test } from "../fixtures/test.ts";
 
 const CLAUDE_MODEL = "Default model for dispatched Claude Code sessions";
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/harness-defaults-propagate/", import.meta.url));
+const EVIDENCE = artifactsDir("harness-defaults-propagate");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -41,7 +42,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // oxlint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/harness-defaults-propagate/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/harness-defaults-propagate/${name}.png`);
 }
 
 test("a model just changed in Settings is not overwritten by an in-flight config poll", async ({
@@ -175,12 +176,7 @@ test("a model changed in Settings reaches the very next dispatch's command line"
   await expect(dialog).toBeHidden();
 
   const dir = join(daemon.recordDir, "claude");
-  const read = (): { argv: string[] }[] =>
-    existsSync(dir)
-      ? readdirSync(dir)
-          .filter((f) => f.endsWith(".json"))
-          .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { argv: string[] })
-      : [];
+  const read = (): { argv: string[] }[] => recordsIn<{ argv: string[] }>(dir);
 
   // Polled: the card registers before the child has run far enough to write its record.
   await expect

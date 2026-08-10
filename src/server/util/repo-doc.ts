@@ -57,7 +57,7 @@ export interface RepoDoc {
    * review and Foreman verify prompt. The waste is `min(fileSize, maxBytes)` per
    * duplicated doc, so it is not a fixed figure: it tracks whatever the root doc
    * currently weighs. It was 24,576 bytes per prompt when the defect was found;
-   * `docs/evidence/inspector-prompt-bytes.md` holds the measurement and how to re-run it.
+   * `docs/agent-guides/inspector-prompt-bytes.md` holds the measurement and how to re-run it.
    *
    * Reported here rather than recomputed by the caller because the `realpathSync`
    * below has already paid for it, and - the load-bearing half - because a second

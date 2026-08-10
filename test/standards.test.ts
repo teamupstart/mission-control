@@ -103,7 +103,7 @@ test("CLAUDE.md symlinked to AGENTS.md is ONE document, not two copies of it", (
   // de-duplication was keyed on the REQUESTED path, which cannot see that two names are
   // one file. A whole second copy of the doc, byte-identical, paid on every Inspector
   // review and every queue verify - min(fileSize, MAX_FILE_BYTES) of it, so the figure
-  // moves with the root doc. See docs/evidence/inspector-prompt-bytes.md.
+  // moves with the root doc. See docs/agent-guides/inspector-prompt-bytes.md.
   const root = mkRepo();
   writeFileSync(join(root, "AGENTS.md"), "# the one contract");
   symlinkSync(join(root, "AGENTS.md"), join(root, "CLAUDE.md"));

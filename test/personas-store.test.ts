@@ -113,3 +113,91 @@ test("a name-changing CAS checks uniqueness in the same transaction", () => {
   if (!conflict.ok) assert.equal(conflict.reason, "name_conflict");
   assert.equal(store.getPersona("p2")?.name, "Design");
 });
+
+const PROVENANCE = {
+  sourcePath: "/plugins/agent-team/references/roles/reviewer.md",
+  sourceRepo: "/plugins",
+  pluginVersion: "0.1.1",
+  contentSha256: "b".repeat(64),
+  importedAt: 150,
+};
+
+test("provenance round-trips field for field, and an edit that ignores it leaves it alone", () => {
+  const created = store.insertPersona({
+    id: "p1",
+    name: "Imported",
+    normalizedName: normalizePersonaName("Imported"),
+    description: "",
+    guidanceMarkdown: exact,
+    runner: null,
+    model: null,
+    createdAt: 100,
+    updatedAt: 100,
+    provenance: PROVENANCE,
+  });
+  assert.equal(created.ok, true);
+
+  const reopened = new DatabaseSync(DB_PATH);
+  try {
+    // Through a second handle, so this is the STORED record rather than the object handed in.
+    assert.deepEqual(new WorkflowStore(reopened, []).getPersona("p1")?.provenance, PROVENANCE);
+  } finally {
+    reopened.close();
+  }
+
+  // An ordinary edit names no provenance, so the column is not in its SET list at all - the
+  // failure this pins is a patch builder that writes every column it knows about.
+  const edited = store.updatePersonaCas("p1", 1, { description: "Edited" }, 200);
+  assert.equal(edited.ok, true);
+  if (edited.ok) assert.deepEqual(edited.persona.provenance, PROVENANCE);
+
+  // And an explicit null clears it, which is what "this is not tracking a file any more" is.
+  const cleared = store.updatePersonaCas("p1", 2, { provenance: null }, 300);
+  assert.equal(cleared.ok, true);
+  if (cleared.ok) assert.equal(cleared.persona.provenance, null);
+});
+
+/**
+ * The one row-level asymmetry provenance introduces, and the reason it is the right one.
+ *
+ * Guidance failing its schema fails the ROW - a Persona with unreadable guidance cannot review.
+ * A provenance blob is not load-bearing in that way: losing it costs a badge, while failing the
+ * row would remove a working reviewer from the library, from every draft that names it, and from
+ * Publish. So the blob degrades to null and the Persona is served.
+ */
+test("a malformed provenance blob degrades to null without dropping the Persona", () => {
+  insert("p1");
+  for (const blob of [
+    "not json at all",
+    JSON.stringify({ sourcePath: "relative/path.md", contentSha256: "b".repeat(64), importedAt: 1 }),
+    JSON.stringify({ sourcePath: "/role.md", sourceRepo: null, pluginVersion: null, contentSha256: "nope", importedAt: 1 }),
+    JSON.stringify({ sourcePath: "/role.md" }),
+    JSON.stringify(["not", "an", "object"]),
+  ]) {
+    db.prepare(`UPDATE personas SET import_provenance_json = ? WHERE id = 'p1'`).run(blob);
+    const persona = store.getPersona("p1");
+    assert.equal(persona?.guidanceMarkdown, exact, `the row survived: ${blob.slice(0, 24)}`);
+    assert.equal(persona?.provenance, null);
+    // Still in every listing a surface reads, not merely fetchable by id.
+    assert.equal(store.listPersonas().some((row) => row.id === "p1"), true);
+    assert.equal(store.personaCatalog().some((row) => row.id === "p1"), true);
+  }
+});
+
+test("a provenance record too large to read back is refused at the write instead", () => {
+  // The one failure mode this column has: a write the reader would then silently degrade to
+  // null. Refusing here keeps the stored row as whatever it already was.
+  assert.throws(() => store.insertPersona({
+    id: "p-huge",
+    name: "Huge provenance",
+    normalizedName: normalizePersonaName("Huge provenance"),
+    description: "",
+    guidanceMarkdown: exact,
+    runner: null,
+    model: null,
+    createdAt: 100,
+    updatedAt: 100,
+    provenance: { ...PROVENANCE, sourcePath: `/${"p".repeat(5000)}.md` },
+  }));
+  assert.equal(store.getPersona("p-huge"), null);
+});

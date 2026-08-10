@@ -93,3 +93,41 @@ test("the renderer disables only the action reported pending", () => {
   const idle = render();
   assert.doesNotMatch(buttonFor(idle, "Recheck Inspector"), /disabled/);
 });
+
+/**
+ * The URL gate is in the SHARED factory, so it has to hold from this side too.
+ *
+ * This rung is where the disabled `Open PR` was most visible: the ladder's own comment records
+ * it printing "three unknowns and a dead control" from the first submission of every Inspector
+ * workflow. The ladder never read `href` - it renders every descriptor as a button plus a
+ * callback - so absence is the only thing that could ever have fixed it here.
+ */
+test("Open PR leaves the Inspector rung when the gate has no pull request to open", () => {
+  assert.match(render(), /Open PR/);
+
+  const unadopted = ladderDetail("gate");
+  unadopted.inspectorGate = {
+    ...unadopted.inspectorGate!,
+    state: { ...unadopted.inspectorGate!.state, prUrl: null, prKey: null },
+  };
+  const html = render(unadopted);
+  assert.doesNotMatch(html, /Open PR/);
+  assert.doesNotMatch(html, /This run has no adopted pull request/);
+  // The rung itself and its other action survive: this removed a control, not the gate.
+  assert.match(html, /Recheck Inspector/);
+});
+
+/** The policy still decides whether the rung exists at all, which is the ladder's own gate. */
+test("the Inspector rung renders under an inspector policy and not under none", () => {
+  assert.match(render(), /Inspector/);
+  assert.match(render(), /Recheck Inspector/);
+
+  const unpolicied = ladderDetail("gate");
+  unpolicied.version = {
+    ...unpolicied.version!,
+    completionPolicy: { kind: "none" },
+  };
+  const html = render(unpolicied);
+  assert.doesNotMatch(html, /Recheck Inspector/);
+  assert.doesNotMatch(html, /Open PR/);
+});

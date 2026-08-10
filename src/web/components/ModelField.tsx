@@ -58,6 +58,7 @@ export function ModelField({
   runner,
   disabled,
   onCommit,
+  blurb = "block",
 }: {
   /** DOM id for the label association. Unique within the panel. */
   id: string;
@@ -81,6 +82,12 @@ export function ModelField({
   runner: AgentType;
   disabled: boolean;
   onCommit: (next: string) => void;
+  /**
+   * Where the blurb is spent. `block` prints it under the field, as every panel but
+   * Foreman's does; `hover` leaves it to the Tooltip, which already carries it on hover,
+   * on focus, and in the hidden portal an assertion can reach.
+   */
+  blurb?: "block" | "hover";
 }): React.JSX.Element {
   const note = modelSourceNote(resolved, spec.envVar);
   return (
@@ -104,7 +111,7 @@ export function ModelField({
           ))}
         </select>
       </Tooltip>
-      <p className="settings-hint foreman-model-blurb">{spec.blurb}</p>
+      {blurb === "block" && <p className="settings-hint foreman-model-blurb">{spec.blurb}</p>}
       {note && <p className="foreman-model-source">{note}</p>}
     </div>
   );

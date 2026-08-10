@@ -125,7 +125,7 @@ snapshot, so the mid-review safety net still applies.
   and `shadow <divergence> (cheap=… opus=…)` under `shadow`. The log remains the live view while
   watching one session. Shadow comparisons are also persisted on the episode and exposed in the
   fleet-wide Settings -> Foreman ledger; the operator-facing contract is documented in
-  [Foreman](../../../README.md#foreman-auto-responder).
+  [Foreman](../../foreman.md#foreman-auto-responder).
 
 ## Step 0 (shipped in this PR): per-session evaluation debounce
 
@@ -176,7 +176,7 @@ action.
   front of the existing reviewer.
 
 The tiers remain agent-agnostic. Current harness support and authorization boundaries are
-documented in [Foreman](../../../README.md#foreman-auto-responder).
+documented in [Foreman](../../foreman.md#foreman-auto-responder).
 
 ## Open questions
 

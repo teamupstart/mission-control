@@ -7,6 +7,7 @@ import type {
 } from "@shared/task-source.ts";
 import { TASK_SOURCE_KINDS } from "@shared/task-source.ts";
 import { githubIssues } from "./github-issues.ts";
+import { jira } from "./jira.ts";
 
 // The registry of implementations - the server half of the split
 // `HARNESS_CAPABILITIES` / `HARNESSES` makes: `TASK_SOURCE_KIND_INFO`
@@ -71,6 +72,7 @@ function erase<C>(impl: TaskSourceImpl<C>): ErasedTaskSource {
  */
 export const TASK_SOURCES: Record<TaskSourceKind, ErasedTaskSource> = {
   "github-issues": erase(githubIssues),
+  jira: erase(jira),
 };
 
 /** The kinds this build offers, for the panel's add control. Derived, never hand-kept. */

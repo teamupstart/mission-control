@@ -6,7 +6,7 @@ import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
 const personas: Persona[] = ["code", "maint", "design"].map((id) => ({
   id, name: id, normalizedName: id, description: "", guidanceMarkdown: "# Judge",
   runner: null, model: null, revision: 1, archivedAt: null, createdAt: 1, updatedAt: 1,
-  builtin: false,
+  provenance: null, builtin: false,
 }));
 
 const graph = (): WorkflowDraftGraph => ({

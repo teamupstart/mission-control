@@ -117,10 +117,19 @@ test("only the Overlay primitive renders a backdrop", () => {
  * App stand down entirely - which reaches further than one nested popover should, and
  * would leave the layering to the registry's topmost-wins rule rather than to the layer
  * that knows what it is nested in.
+ *
+ * `KeepAwakeControl.tsx` is the Keep awake dropdown on the pulse's live segment - the
+ * fourth topbar popover, and it joins for SpendChip's reason exactly: anchored to its
+ * trigger rather than owning the screen, its own Escape/outside dismissal pinned by
+ * `topbar-popover-dismiss.test.ts`, and a backdrop would give a dropdown a modal posture
+ * it should not have. Its share of the gap matches SpendChip's shape too: the one control
+ * inside it acts on HOST POWER, not on the session behind it, so a stray shortcut
+ * reaching through hits the same card it would have hit with no popover open.
  */
 const UNREGISTERED_DIALOGS = [
   "components/AlertBar.tsx",
   "components/ForemanBar.tsx",
+  "components/KeepAwakeControl.tsx",
   "components/SpendChip.tsx",
   "components/line/NextUpPlanner.tsx",
   "components/session-bits.tsx",

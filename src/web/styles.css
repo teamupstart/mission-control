@@ -512,6 +512,25 @@ button.wf-run-version:focus-visible {
   gap: 8px;
 }
 
+/* The sentence that replaces a disabled button, in the identity block beneath the facts row.
+   Capped at a reading measure rather than left to fill the header, because the identity block
+   is `margin-right: auto` in a flex row and an uncapped paragraph pushes the action row it is
+   explaining off to the far edge. No `margin` of its own: it is a `<p>`, so the rule above
+   zeroes it and the identity grid's own 4px gap does the spacing. */
+.wf-run-why {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 66ch;
+  padding: 1px 0 3px;
+}
+
+/* The fact leads; the pointer at whoever owns the decision follows it in muted text. */
+.wf-run-why b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 /* The bound session, as a link rather than a labelled button: the name IS the affordance,
    and a disabled one still has to say which session has gone. */
 .wf-run-session {
@@ -1155,6 +1174,10 @@ body {
 /* The spend popover hangs off the cost chip IN the bar, so it opens entirely inside the
    drag rectangle - every row it draws, and the Cost settings link in its footer. */
 .is-desktop .spend-pop,
+/* The Keep awake dropdown hangs off the pulse's leading segment IN the bar, so like the
+   spend popover it opens entirely inside the drag rectangle - and its whole point is a
+   switch the OS must not eat. */
+.is-desktop .ka-pop,
 .is-desktop .combobox-list,
 .is-desktop .cmdbar,
 /* The ⌘K search palette panel opens near the top of the viewport, so it can land inside
@@ -1398,6 +1421,208 @@ body {
   50% {
     opacity: 0.55;
   }
+}
+
+/* ---- the Keep Awake control and its dropdown ----
+   The connection segment is now a BUTTON: it keeps its live/reconnecting meaning - the
+   first segment still qualifies every streamed figure beside it - and opens the compact
+   Keep awake dropdown anchored to it. The wrapper exists only to anchor that panel; it
+   must stay invisible to the pulse's own layout, which is why it stretches and why the
+   hairline the next segment used to inherit from `.pulse-seg + .pulse-seg` is restated
+   against it below. */
+.ka-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+.ka-wrap + .pulse-seg {
+  border-left: 1px solid var(--border-soft);
+}
+.pulse-link {
+  cursor: pointer;
+  /* Leading-edge rounding only, the mirror of `.pulse-btn`'s trailing edge: a fully
+     rounded hover inside the pill would read as a second pill. */
+  border-radius: 999px 0 0 999px;
+  transition: background 0.14s ease;
+}
+.pulse-link:hover,
+.pulse-link[aria-expanded="true"] {
+  background: var(--panel-2);
+}
+.pulse-link:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: -2px;
+}
+/* The mode states on the live dot. The WORD carries the mode (`live · awake`,
+   `live · awake failed`) - color alone must not - so these only make the dot agree
+   with it. Off keeps the plain green breathing dot above. */
+.pulse-link.is-awake .pulse-dot {
+  background: var(--purple);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--purple) 26%, transparent);
+  /* A steady halo: the green dot breathes to say "streaming", but a held power
+     assertion is a state, not activity. */
+  animation: none;
+}
+.pulse-link.is-awake-pending .pulse-dot {
+  background: var(--purple);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--purple) 18%, transparent);
+  animation: ka-settle 1.4s ease-in-out infinite;
+}
+.pulse-link.is-awake-failed .pulse-dot {
+  background: var(--danger);
+  box-shadow: none;
+  animation: none;
+}
+.pulse-link.is-awake-failed .pulse-link-label {
+  color: var(--danger);
+}
+/* Restrained on purpose - a transition normally settles in well under a second, so this
+   is a hint, not a spinner - and switched off entirely under reduced motion. */
+@keyframes ka-settle {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse-link.is-awake-pending .pulse-dot {
+    animation: none;
+  }
+}
+
+/* The dropdown. Hangs off `.ka-wrap`'s `position: relative`, reuses the fleet pulse's
+   dark surface, border, radius and typography, and is listed in the desktop shell's
+   no-drag rule above - a layer painted over the title bar does not take its own clicks
+   back unless it says so explicitly. Anchored LEFT because its trigger leads the pulse. */
+.ka-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  width: 268px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+/* The active border is the same purple as the active dot, and the failed border the same
+   red: the indicator opening to explain itself, not an unrelated settings card. */
+.ka-pop[data-state="on"] {
+  border-color: color-mix(in oklab, var(--purple) 55%, var(--border));
+}
+.ka-pop[data-state="failed"] {
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
+}
+.ka-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.ka-words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ka-title {
+  font-size: 10px;
+  font-weight: 640;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.ka-sub {
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.ka-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ka-reading {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.ka-pop[data-state="on"] .ka-reading {
+  color: var(--purple);
+}
+.ka-pop[data-state="failed"] .ka-reading {
+  color: var(--danger);
+}
+/* The switch: a real `role="switch"` button whose track turns the active dot's purple.
+   Disabled is dimmed, never hidden, so a reconnecting or unavailable dropdown still
+   shows WHAT it is refusing. */
+.ka-switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease;
+}
+.ka-switch[aria-checked="true"] {
+  background: color-mix(in oklab, var(--purple) 45%, var(--panel));
+  border-color: var(--purple);
+}
+.ka-switch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ka-switch:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+.ka-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg);
+  transition: left 0.14s ease;
+}
+.ka-switch[aria-checked="true"] .ka-knob {
+  left: 16px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ka-knob {
+    transition: none;
+  }
+}
+.ka-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 14px 12px;
+}
+.ka-body p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.ka-body .ka-life {
+  color: var(--dim);
+}
+.ka-body .ka-note.is-warn {
+  color: var(--attention);
+}
+.ka-body .ka-note.is-error {
+  color: var(--danger);
 }
 
 /* ---- the cost chip and its spend popover ----
@@ -1736,19 +1961,20 @@ body {
 .topbar[data-rung~="3"] .filter-box {
   padding-right: 4px;
 }
-/* Once the filter is collapsed there is no longer room for both it and the full readout, so
-   the four count readouts step aside while the field has focus or holds a term - but the
-   reviews control does not: an active filter must not make the bar's only route to reviews
-   unreachable. The surviving control sheds its redundant tone dot and becomes a complete
-   pill, including cancelling the divider it still inherits from preceding siblings even when
-   they are hidden. When no reviews control exists, the now-empty wrapper is neutralized; the
-   guard ensures a wrapper containing a control is never hidden. Together these preserve the
-   one-row budget without hiding an interactive element.
+/* Once the filter is collapsed there is no longer room for both it and the full readout,
+   so the count readouts step aside while the field has focus or holds a term - but the two
+   INTERACTIVE segments do not: an active filter must not make the bar's only route to
+   reviews, or its only route to Keep awake, unreachable. What survives is the pulse's two
+   controls drawn as one compact pill - the live segment leading (its dot is the one that
+   still carries meaning) and the reviews control trailing, which sheds its redundant tone
+   dot and keeps the hairline it inherits from its hidden siblings as the divider between
+   them. There is no empty-wrapper rule any more: the live control means the pulse is
+   never empty, even when no reviews control exists.
 
    Scoped to `.topbar` rather than written as a bare `:has()` so it cannot reach the search
    boxes on the settings and workflow pages. */
-.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-seg:not(.pulse-btn),
-.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-seg:not(.pulse-btn) {
+.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-seg:not(.pulse-btn):not(.pulse-link),
+.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-seg:not(.pulse-btn):not(.pulse-link) {
   display: none;
 }
 .topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-btn .pulse-dot,
@@ -1758,12 +1984,15 @@ body {
 .topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-btn,
 .topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-btn {
   padding: 0 9px;
-  border-left: none;
-  border-radius: 999px;
 }
-.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse:not(:has(.pulse-btn)),
-.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse:not(:has(.pulse-btn)) {
-  display: none;
+/* The sole-survivor rounding, inherited from the rule the review button used to carry.
+   The reviews control renders only when the inbox holds anything, so on the COMMON
+   fleet (empty inbox) compaction leaves the live trigger as the pulse's only visible
+   segment - and its leading-edge-only rounding would draw a square trailing corner on
+   hover inside the container's fully rounded pill (`.pulse` does not clip). */
+.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse:not(:has(.pulse-btn)) .pulse-link,
+.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse:not(:has(.pulse-btn)) .pulse-link {
+  border-radius: 999px;
 }
 
 /* Rung 4: Foreman and the page segment drop to their glyphs. Split from rung 5 deliberately -
@@ -6013,7 +6242,10 @@ mark.find-hit.is-current {
 }
 
 /* Unmet dependencies speak in the attention tone, once: a compact note beside the
-   dependencies, and the primary button recolored below. */
+   dependencies, and the primary button recolored below. An environment-check warning wears
+   the same shape deliberately - both say "this will not go the way you expect" in the
+   dispatch form's own voice, and a second amber treatment would only invite the reader to
+   work out what the difference in styling was supposed to mean. */
 .dispatch-wait-note {
   display: flex;
   align-items: baseline;
@@ -6024,6 +6256,20 @@ mark.find-hit.is-current {
   background: color-mix(in srgb, var(--attention) 7%, var(--panel));
   border-radius: 8px;
   padding: 8px 11px;
+}
+/* A paragraph in `.dispatch-body`'s flex column, so its own margin would double the gap. */
+.dispatch-env-note {
+  margin: 0;
+  line-height: 1.45;
+}
+/* The evidence, under the sentence: which file was read and what it said. Quieter and
+   monospaced, because it is a path to go look at rather than prose to read. */
+.dispatch-env-detail {
+  display: block;
+  margin-top: 5px;
+  font: 11px var(--mono);
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 /* The doubled class outranks .btn-primary's hover !important by specificity, whatever
    the source order. */
@@ -10522,6 +10768,38 @@ select.ensemble-judge-persona {
 .persona-file-input {
   display: none;
 }
+/* Import-by-path and the upstream re-check, on their own strip under the file picker: the path
+   field needs the width of the row, and putting it beside the State select would squeeze both
+   to where neither reads.
+   The field takes a line of its own and the two buttons share the next one. On one line in a
+   ~280px rail the field collapses to a slot too narrow to read a path in and both labels wrap
+   mid-phrase - which is what this looked like before the rows were split. */
+.persona-import-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.persona-import-path {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.persona-import-source .btn {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+.persona-import-source input {
+  width: 100%;
+  padding: 7px 9px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+}
 .persona-list,
 .wf-action-list {
   display: flex;
@@ -10588,6 +10866,14 @@ select.ensemble-judge-persona {
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 999px;
+}
+/* The one tag on these rows that is not provenance-as-trivia: an imported Persona's source file
+   has moved on, and adopting it is a decision waiting for the operator. Toned like every other
+   "this needs you" surface rather than muted like `Built-in` beside it. */
+.persona-list-tag.is-attention {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 10%, var(--panel-2));
 }
 .persona-list-item small,
 .persona-list-empty,
@@ -10671,6 +10957,21 @@ select.ensemble-judge-persona {
 }
 .persona-state.conflict span {
   flex: 1;
+}
+/* Drift reads as information, not as a fault: the stored guidance is intact and still what runs,
+   so this is the one status on the line that does not take the attention colour. A paragraph
+   rather than a row, because the action it names lives in the header with Save and Archive. */
+.persona-state.drift {
+  color: var(--muted);
+  background: var(--panel-2);
+}
+/* Where this Persona's guidance was read from, under the name it was read into. Dim and mono:
+   it is a path an operator scans for a directory they recognise, not prose. */
+.persona-source {
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
 }
 /* The same two toned states for `.wf-state`, which had only the base box: an editor holding
    unsaved text read as ordinary prose, and a `role="alert"` conflict banner - the one moment
@@ -12729,6 +13030,12 @@ select.ensemble-judge-persona {
 .ts-check {
   grid-column: 1 / -1;
 }
+/* The "this filter sweeps nothing" warning, which is a sentence rather than a field: it
+   spans the row for the reason `.ts-field-wide` does, since a 220px grid cell would break
+   one line of prose across five. */
+.ts-no-jql {
+  grid-column: 1 / -1;
+}
 /* One label -> priority mapping. The label field takes the room; the picker and the
    remove button are sized to their content so a column of these lines up. */
 .ts-prio-row {
@@ -13604,6 +13911,53 @@ select.foreman-model-input {
 }
 .sc-ledger {
   min-width: 0;
+}
+
+/* ---- Foreman's configuration groups ----
+   A compact local rail over one visible card. This is separate from `.sc-seg`: the latter
+   is a real radio group for changing a stored value, while this strip only changes which
+   already-mounted section is exposed. */
+.sc-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.sc-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  appearance: none;
+  padding: 7px 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.sc-tab:hover {
+  color: var(--fg);
+}
+.sc-tab.is-active {
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--fg);
+}
+.sc-tab:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+/* How many settings the group holds, so a tab you have not opened still says how much is
+   behind it. Hidden from the accessible name; the tab's tooltip announces it instead. */
+.sc-tab-count {
+  margin-left: 5px;
+  opacity: 0.55;
 }
 
 /* ---- a control card ---- */
@@ -16806,7 +17160,7 @@ span.line-run-prov {
 }
 
 /* ---- console detail: a bespoke, tabbed reading of one session ----
-   Ported from docs/mockups/console.html: fixed chrome (head / sub / tabs / foot),
+   Ported from docs/archive/mockups/console.html: fixed chrome (head / sub / tabs / foot),
    only the body switches. Padding lives on each section, not the container, so the
    dividing rules run edge to edge. */
 .cdetail {

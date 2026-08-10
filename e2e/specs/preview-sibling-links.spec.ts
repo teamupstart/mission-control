@@ -1,13 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
-const EVIDENCE = fileURLToPath(new URL("../evidence/", import.meta.url));
+const EVIDENCE = artifactsDir("preview-sibling-links");
 
 /**
  * Photograph the state the fix bought, on the same run whose assertions proved it.
@@ -20,7 +20,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED e2e/evidence/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/preview-sibling-links/${name}.png`);
 }
 
 function observed(what: string): void {

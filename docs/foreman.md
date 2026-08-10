@@ -1,0 +1,350 @@
+# Foreman (auto-responder)
+
+The dashboard tells you *who needs you*; **Foreman** can start draining that queue for
+you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
+Claude Code session or Mission Control-launched Codex session that has reported a hook,
+reads the transcript to understand the goal **and the session's terminal screen to see
+the ask itself**. Foreman then:
+
+- **auto-answers** the routine calls - implementation trade-offs (defaulting to the most
+  correct, secure, non-duplicative option) and non-destructive access requests;
+- **escalates** the genuine forks - a call that hinges on your intent, or anything
+  destructive/risky - as a framed **decision brief** with its recommendation, and pings you;
+- writes a 1-2 sentence **Purpose** on every session it inspects - the recent context
+  bearing on *this* decision, shown in the expanded card. It reads the session's
+  [Goal](sessions.md#goal) rather than re-deriving it, so the two don't say the same thing twice.
+
+The screen matters more than it sounds: a prompt that is *waiting on you* - a menu, a
+permission dialog - isn't written to the transcript until it returns, so the transcript
+routinely ends **before** the very question Foreman is there to answer. Reading the pane is
+what lets it answer the ask rather than hand it back to you having only read the history.
+
+The screen is also *how* a menu gets answered. A dialog isn't a text box: it discards typed
+characters, and the Enter that follows them confirms whichever row was already highlighted -
+the default, not the reply. So Foreman answers a menu the way you would, by walking the
+cursor onto the row it picked and pressing Enter only while the pane still shows that row
+selected. An answer it can't pin to a row on screen is **escalated to you** - with its
+reasoning kept as the recommendation - rather than typed at a menu that would discard it.
+You get the same affordance for the same reason: a menu on any session is offered to you as
+[clickable rows](sessions.md#answer-a-sessions-menu-from-the-dashboard) too, and whichever of you
+reaches it second is refused rather than pressing the wrong row. Because a visible menu puts
+a session in `needs-you` on its own, Foreman can pick up a Claude session parked on one that
+no hook has reported yet: Claude's hooks are machine-scoped, so the visible menu supplies the
+missing state without crossing a launch boundary. That gap is real and measurable: Claude
+reports `AskUserQuestion` as *work in progress* when the menu opens and only says it is
+waiting for you about six seconds later, so an ask caught in between used to be handed
+straight back to you as "no reply channel", with an answer Foreman had already written. The
+menu's own rows identify the ask, so one question costs one review however the hooks land.
+Codex hooks are launch-scoped instead: an operator-started Codex menu remains available as
+clickable rows for you, but is explicitly excluded from Foreman automation.
+
+Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
+between reviews. Foreman ships **enabled but inert**, and the distinction is the whole point:
+it starts in **dry-run**, its repository allowlist starts empty, and its worker is a separate
+process nothing starts for you. So on a fresh install Foreman types nothing, sends nothing and
+runs nothing - it *drafts* answers onto the card until you trust it. `enabled` flipped on
+because it is a prerequisite gate rather than an action: while it shipped off, a **Foreman
+Complete** workflow binding could not be created at all, which left
+[the repair loop](workflows.md#the-repair-loop-end-to-end) unreachable on a fresh install no matter what
+you configured in Workflow settings. If you have ever switched Foreman off in Settings, that
+answer is persisted and survives - the new default only reaches installs that never answered.
+
+Start the worker - a plain agent in a terminal that talks to the daemon over localhost - with:
+
+```sh
+npm run foreman
+```
+
+Control it from the **Foreman** control in the top bar (beside Alerts): enable it, then
+pick a mode.
+
+| Mode | What it does |
+|------|--------------|
+| **dry-run** (default) | drafts a reply onto the card; never sends |
+| **semi-auto** | drafts a reply with a one-click **Approve & send** on the card |
+| **live** | sends the reply on your behalf - but only in repos you've **allowlisted** |
+
+Live sending is gated by an explicit **repo allowlist**, granted in
+**Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)** (the Foreman panel shows the
+count and links there). With an empty allowlist Foreman never types into any live session. In
+Live mode the popover shows a read-only **Live in N repos · manage in Settings →** link
+straight to it. An entry allowlists the **repo**, not just the directory: a session in a
+*worktree* of an allowlisted repo is cleared too, wherever that worktree sits on disk.
+That's what makes live mode usable - dispatched agents and treehouse checkouts run in
+worktrees parked far from the repo, so a directory-only rule would draft forever on the
+very repo you cleared.
+A worktree of a repo you haven't allowlisted is still refused. A separate
+**Auto-approve non-destructive access** switch (on by default) governs whether it may
+approve access/permission asks - turn it off and those escalate to you instead.
+Destructive or risky asks (force-push, secret access, prod deploy, data drops, disabling a
+safety check) are **always** escalated, never auto-approved.
+
+Everything Foreman does surfaces where you're already looking. On a **card**: a needs-you
+session it acted on shows a
+**◆ decision** flag (or **✎ draft**) in its header, the expanded card shows the decision
+brief + recommended answer with **Approve & send / Dismiss** controls, and an answered
+session carries a `✓ Foreman answered: …` audit line. An escalation also fires a browser
+**alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
+depth.
+
+Foreman's completion checks use the card's [durable Goal](sessions.md#goal), while its latest tactical
+focus remains separate.
+
+**Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
+tier, **Models** for the provider and four Foreman roles, **Launches** for the three
+per-harness backlog models, and **Safety** for the completion safeguards. Each tab shows how
+many settings it holds, and each field's explanation appears on hover or focus - as the
+control's tooltip and accessible description - rather than printing under the field. The
+current Foreman posture stays above the tabs so a stopped worker is always visible. **Live
+repositories** and **Right now** stay below them as read-only cards; the repository card
+shows the grant count and links to **Settings → Trust**, where repository access is edited.
+
+Two default-on safeguards under **Settings → Foreman → Safety** decide which
+finished work never reaches an automatic completion action:
+
+- **Skip automatic completion for Scout tasks** uses the task's durable `Kind`. A Scout is
+  retired once its findings are ready, without showing Ship it, running No-Mistakes Review,
+  or typing the Straight-to-PR instruction.
+- **Skip automatic completion for mockups and review artifacts** recognizes explicit output
+  contracts such as `Output: mockups`, natural-language requests for reports, plans, research,
+  wireframes or prototypes, and completed diffs containing only conventional artifact paths.
+  Mixed contracts that also request source code, tests, components or another implementation
+  action still follow the configured completion path.
+
+The safeguards are independent. A task matching either one is retired while that switch is
+on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
+
+In the [Console and Board](ui.md#layout-cards-console-or-board) detail the same decision is
+arranged differently, because a permanent conversation gives it somewhere better to sit:
+Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
+you still *owe* is a one-line strip above it - badge, disposition, purpose, **Approve &
+send** - that expands for the recommendation and **Dismiss**. It can't cover the chat,
+because the prose isn't in it. The strip unmounts once the note is answered or dismissed;
+the inline entry stays.
+
+**Answering the question yourself retires the note.** A pinned decision is a claim on your
+attention, and answering the ask spends it: the agent is unblocked and the suggestion answers
+a closed question. So submitting the agent's own form, picking a row on its menu, or
+answering, approving or dismissing its review clears the note as part of the same action -
+no second click on **Dismiss**. It is matched to the *ask*, not to the session, so an
+escalation raised about something else - a session stuck with no reply channel - stays put
+and stays yours. The decision is kept in the **Foreman · N** history as one you closed
+without using Foreman's answer, exactly as pressing **Dismiss** always recorded it.
+
+**Approve & send** appears only where there is somewhere to send it. A note Foreman escalated
+*because* it had no reply channel offers **Dismiss** and says so - the alternative was a button
+that silently closed the note, which reads as having sent something. The same sentence covers a
+question resolved somewhere the daemon cannot see it, such as a reply typed straight into a
+tmux pane; a resolution that goes through the dashboard retires the note outright. Foreman also re-checks the
+session before pinning a decision at all: a review takes up to a few minutes, and if the
+session moved on in that time the decision is filed in the **Foreman · N** history instead of
+waiting for a click on a question that has already closed. Those decisions are recorded as
+**stale** rather than as skips - Foreman had an answer, and the clock beat it.
+
+Every decision is also **kept**, which the note alone never was - a note is one upserted row,
+so each write erased the last one and approving erased the words that had just been sent.
+Foreman now records each decision it faces: the question the session was blocked on, what it
+concluded, and what actually went back. That question is the part worth recording - for a
+terminal ask (a permission prompt, a menu) the child's screen is the only place it ever
+exists, per the transcript gap above. The **Foreman · N** rail at the end of the detail's tab
+row opens that history: rows lead with the *ask* rather than the verdict, and opening one
+shows the ask verbatim beside Foreman's reasoning and the resolution, credited to whoever
+actually made the call. Records age out after a retention window.
+
+That drawer also starts with **Current intent**, even when Foreman has made no decisions yet.
+It shows the completion objective and version, the latest tactical focus, the latest
+relationship or reconciliation state, and Foreman's rationale. This is the inspectable source
+for what Foreman currently believes the session is trying to finish; the rows below it remain
+the decision history.
+
+Only one worker drives the sessions at a time. `npm run foreman` twice is safe: the second
+process acquires no **lease** and idles as a standby, taking over automatically if the
+leader dies. That matters because two workers would double-answer a prompt - or, with work
+queues below, type the same work instruction into a live agent twice.
+
+### Its standing instructions (`FOREMAN.md`)
+
+Foreman ships with a built-in judgment policy, which is deliberately generic. Beside it sits a
+second, editable half: **standing instructions** written in plain prose, telling it how *you*
+want these calls made. They are read into every review, every work-item verification, **and the
+[cheap tier](#the-cheap-tier)** - that last one matters, because the cheap tier answers routine
+permission asks on its own and never escalates them, so instructions it couldn't see would be
+silently skipped on the highest-volume path in the system.
+
+The defaults ship as [`personas/FOREMAN.md`](../personas/FOREMAN.md), under the app root beside the
+rest of the [persona documents](../personas/) - ordinary markdown you can read and edit. Write what
+you would say if you were looking over its shoulder:
+
+```markdown
+## What I care about, in order
+1. Correctness, then simplicity, then maintainability. Development cost is nearly last.
+2. One abstraction over N special cases. If the options all amount to repeating an
+   implementation per case, ask for a single unified API instead of picking one.
+
+## Judging whether work is done
+Hold these as **blocking**, not advisory:
+- A bug fix with no end-to-end reproduction.
+- A capability that did not update `README.md` in the same change.
+```
+
+Two things make these different from the `AGENTS.md` / `CLAUDE.md` that Foreman *already* reads:
+
+- **They are direction, not evidence.** The standards docs reach the verifier fenced as material
+  to judge, and a finding against them is `advisory` - so it never sends an agent back for
+  another round. These reach it as instructions to follow, so they are the only way to say "this
+  particular thing is not done until X" and have it actually block.
+- **They can only raise your bar, never lower it.** They can make Foreman more careful -
+  escalate something it would have answered, demand more before calling work finished, weigh a
+  trade-off your way. They cannot authorize a destructive action, widen what it may approve on
+  your behalf, retire an escalation rule, or dictate the literal text it sends to a session. That
+  division is deliberate: prose shapes *judgement*, while the switches above grant *authority*,
+  each with its own confirmation and its own repo allowlist. A sentence in a text box should not
+  do a switch's job.
+
+With no instructions the section renders as nothing at all, and a test pins that adding them
+changes only that block, leaving the rest of every prompt byte-for-byte identical.
+
+> **Next:** these move into a dashboard setting, stored in the database and editable from
+> **Settings → Foreman**. `personas/FOREMAN.md` stays the seed a fresh install starts from; once you save
+> your own, the file is only what "Reset to default" restores. The plumbing is already in place -
+> `GET`/`PUT /api/foreman/instructions`, stored under `app_config`, with empty and unset kept
+> distinct so clearing the box means "judge on your own policy" rather than silently reinstating
+> the default.
+
+### Which model Foreman runs as
+
+Foreman spawns a fresh, tool-less headless call for four different jobs, and each one picks its
+own model. **Settings → Foreman → Models** shows what each is running as and lets you change it.
+One **Provider** row above the four says which CLI they all spawn through - `claude -p` or
+`codex exec` - and changing it clears all four boxes, since a model id does not carry across.
+Left unchosen it follows the app-wide
+[Models](models.md#models-what-the-apps-own-model-work-runs-on) provider rather than a hardcoded
+`claude`, so an environment variable set in the daemon's shell is not silently dropped
+here.
+
+| Call | Default | Config key | What it does |
+|---|---|---|---|
+| Review | `claude-opus-5` | `reviewModel` | Judges a stuck session's pending question - answer, escalate, or leave it |
+| Verify | `claude-opus-5` | `verifyModel` | Reads the diff and decides whether a queued work item is done |
+| Triage | `claude-haiku-4-5` | `triageModel` | The [cheap tier](#the-cheap-tier)'s Tier 1 router - buckets the ask, never solves it |
+| Backlog | `claude-sonnet-5` | `backlogModel` | Reads the [backlog](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet) once per change and orders it by what depends on what |
+
+Each field resolves the same way: **your setting, then the environment variable, then the
+shipped default**. Clearing a field means "fall back", not "run with no model" - so emptying the
+box hands the decision to `FOREMAN_REVIEW_MODEL` (or the default), it never spawns the CLI
+without a `--model`. The panel prints which of the three is in force, because an environment
+variable set in the daemon's shell outranks the box and would otherwise be invisible from the
+browser.
+
+Any id the selected provider's CLI accepts works - the fields are free text, not a fixed list.
+
+> Before this existed, Review and Verify passed no `--model` at all and silently inherited
+> whatever the CLI happened to be logged in as. If you relied on that, set the two fields to
+> match it; otherwise they now pin to Opus explicitly.
+
+### The cheap tier
+
+Not every blocked session needs the expensive reviewer, so a **cheap tier** sits in front of
+it and spends the big model only where judgment is actually required. **Tier 0** is pure code
+and costs nothing: a plan/diff review is always yours to approve, so it's disposed with a
+Purpose and no model call at all. **Tier 1** is a cheap router (Haiku) that reads a trimmed
+transcript and *buckets* the ask rather than solving it. Only the genuine judgment calls route
+up to the full **Tier 2** review, which is unchanged.
+
+The tier is **asymmetric on purpose**. It may hand a session back to you (skip) or ask you
+(escalate) freely, but it may auto-answer only one tightly bounded category - routine,
+non-destructive access - and that answer flows through the *same* mode + allowlist +
+auto-approve gate the full reviewer's answers do, so it can never send under a looser config
+than Opus would. Five code backstops the router cannot override sit behind it: the destructive
+denylist above forces an escalation, low confidence routes up, a window with nothing to scan
+counts as *unknown* rather than safe and routes up. The fifth is delivery: the router never
+names a menu row, so its answer to a permission prompt (which is a menu) routes up to the full
+reviewer that can name one, rather than putting every routine approval in front of you.
+
+Pick the posture with the **Cheap tier** control in **Settings → Foreman**:
+
+| Cheap tier | What it does |
+|------|--------------|
+| **shadow** (default) | runs the cheap tier *alongside* the full review, acts on the **full review**, and **records** every divergence - so its accuracy is measured before you trust it |
+| **on** | the cheap tier disposes the easy cases; the full review fires only on route-up |
+| **off** | every new prompt gets a full review (the pre-tier behavior) |
+
+**Shadow's measurement is in the panel**, in the decisions ledger's *Cheap tier* column.
+The panel shows that column only while **shadow** is selected, because that is the only
+posture that takes a second measurement. Each measured row carries what the cheap tier
+would have done and how that compared, and `cheap-over-eager` - after applying the same
+delivery gate as **on**, the cheap tier would have answered where the full review would
+not - is called out in red. That is the number to watch before flipping to **on**, and it
+is the whole reason the posture exists. Within the column, **off** rows stay blank because
+they made no cheap call, **on** rows stay blank because the cheap tier was the decision
+rather than a second opinion, and rows recorded before this shipped stay blank because no
+measurement was persisted. None of those blanks is reported as agreement.
+
+The tier that produced the verdict is reported separately, and honestly: under shadow it
+is always the full review, because that is the verdict that acted.
+
+The worker log carries the same thing for anyone watching one session live: every acted
+session logs the tier that decided it (`[tier 2] answer/access -> answered (sent)`), and
+shadow mode adds a divergence line per session (`shadow cheap-over-eager (cheap=… opus=…)`).
+
+### What Foreman has been deciding
+
+**Settings → Foreman** carries the fleet-wide **decisions ledger**: every prompt Foreman
+has faced, across every session, newest first. Each of these was already being recorded;
+until now the only way to read any of it was one session at a time, through that session's
+Foreman drawer, so there was no answer anywhere to *what has this thing actually been
+doing* - which is the question you open its settings to ask before giving it more rope.
+The count strip above the table filters it: **escalated**, **drafted**, **answered**,
+**left alone**. The last 100 decisions are shown, and episodes are kept for 30 days, so the
+list reaches back only as far as the cap allows - 25 rows to a page, walked with **Newer**
+and **Older**, in the [same table](inspector-and-shipping.md#dry-run) the Inspector and Shipping panels use.
+
+A row leads with **what the decision was for**, not with what was literally asked. The
+verbatim ask is not an identity - `Needs approval: Bash` and `running AskUserQuestion` cover
+most of a busy ledger between them - so Foreman's own one-line reading of the ask carries the
+row and the literal text sits under it as the recognition cue.
+
+Beside the outcome, each row says **why the tier ladder landed there**: `needs judgment`,
+`low confidence`, `human-only, risky`, `no recent turns`, `no menu row named`, `routine
+access`. The cheap tier has always computed this and only ever logged it; escalated *because
+the router was unsure* and escalated *because the ask looked destructive* are two different
+stories, and the ledger could previously tell only the word they share. Hover for the full
+sentence and the string that was recorded.
+
+**Outcome says what actually happened**, which is finer-grained than the four dispositions
+the tiles group by. `skipped` used to cover three unrelated events, and on a real ledger the
+majority of it was neither of the two you would guess:
+
+| Outcome | What it means |
+| --- | --- |
+| **answered** | A reply was delivered - by Foreman, or by you approving a draft. |
+| **drafted** | Foreman wrote a reply and is holding it for your confirmation. |
+| **escalated** | Handed to you, and nobody has answered it yet. |
+| **declined** | Foreman judged the call yours and left it alone. |
+| **stale** | Foreman *reached a verdict* and the session moved on before it could be delivered, so nothing was sent. A race, not a judgment - the verdict it reached is still on the record. |
+| **dismissed** | Foreman escalated it to you, and you closed it without answering. |
+
+The last three all file under the **left alone** tile, which is what they have in common:
+nobody ever answered them.
+
+**Open a row** for the whole decision - the ask verbatim, the child's screen as Foreman read
+it, the reviewer's brief and recommendation, and what was actually sent back, credited to
+whoever made the call. That is the same card the session drawer shows, fetched one decision
+at a time: the ledger itself ships a **summary**, with each ask reduced by the daemon to the
+one line the table shows, so the captured terminal screens - by far the largest thing in the
+table - never ride the 4-second poll.
+
+The rows scroll **inside** the table rather than running down the page, so the count strip
+stays reachable while you read the list it filters.
+
+The panel also states, in words, **whether Foreman is running at all**. A worker holds a
+lease and renews it; when nothing does, Foreman is enabled, set to whatever mode you chose,
+and nothing is executing it - a state that until now looked exactly like a quiet fleet.
+That reading outranks the mode in the posture line, because a mode nothing is running is
+not the fact you need first. The live figures beside it - sessions needing you, when the
+last decision was, the backlog autopilot's budget - are under **Right now**, and are
+deliberately a different population from the historical ledger above.
+
+Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar
+Foreman control: those are the things you reach for while watching the fleet, and the
+panel is the durable posture.

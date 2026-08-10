@@ -58,9 +58,11 @@ below is its own `###` subsection, in this order.
 4. **Known gaps** - what the change does not cover. Unhandled cases, surfaces left untouched,
    limitations you accepted, and anything left unverified.
 5. **Evidence** - concrete proof the feature works. Name the checks you actually ran and what
-   they reported, and for a UI change embed or link screenshots of the working feature so a
-   reviewer can see the result without reconstructing it locally. When a check or a screenshot
-   is unavailable, say so and explain why rather than implying it exists.
+   they reported, and for a UI change attach screenshots of the working feature to the pull
+   request so a reviewer can see the result without reconstructing it locally. Evidence files
+   are never committed to the repository: produce them in a gitignored location and upload them
+   to the pull request. When a check or a screenshot is unavailable, say so and explain why
+   rather than implying it exists.
 6. **Follow-up work** - what you recommend next and why it is out of scope here. Make each
    item specific enough to act on.
 

@@ -30,7 +30,7 @@ further input.
 - Not a summary of what the session *is doing right now*. That is `activity`, which already
   exists and is a different fact (see [Trap 1](#trap-1-the-activity-slot-is-a-ticker)).
 - Not a decision brief. That is Foreman's Purpose, which stays (shrunk) for blocked sessions.
-- Not Codex support, this pass - but the seam for it is required (see [D4](#d4---codex-coverage) / [Q5](#q5---do-we-run-codex)).
+- Not Codex support, this pass - but the seam for it is required (see [D4](#d4--q5---codex) / [Q5](#d4--q5---codex)).
 
 ---
 
@@ -107,7 +107,7 @@ is "what it is trying to solve".** They are orthogonal and Goal must not take th
 slash-command scaffolding. A user-role message may be a `<local-command-caveat>` block, a
 `<command-name>` tag, a `<system-reminder>`, or Claude's own local-command echo (e.g. "Set
 effort level to high"). A noise filter is **mandatory in every option** - see
-[Phase 2](#phase-2---capture-and-store).
+[Phase 2](#phase-2---capture-and-store---done-badb9d2).
 
 **Understated, as Phase 2 measured.** The dominant noise is `<task-notification>` - a
 background task reporting in through the same hook - which this list never mentioned and
@@ -151,7 +151,7 @@ parse.**
 Each call mints a session id and writes `~/.claude/projects/-private-tmp/<uuid>.jsonl` (the
 dir is derived from the spawn's `cwd: tmpdir()`). This is already happening - 153 of 250
 sampled transcripts were Foreman's. Goal refreshes multiply it. Addressed in
-[Phase 6](#phase-6---prune-the-headless-transcript-dir).
+[Phase 6](#phase-6---prune-the-headless-transcript-dir---done-e836ccf).
 
 ### Trap 5b: a headless `claude -p` also fires HOOKS - and they impersonate a real card
 
@@ -170,7 +170,7 @@ cards fused onto one headless uuid.**
 For Goal this is fatal rather than untidy: goals key on `noteKeyFor`, and the Phase 4
 refiner spawns `claude -p` **from the daemon**. Unfixed, the refiner would poison the key of
 the very card it was summarising and then summarise its own prompt. Fixed in
-[Phase 1.5](#phase-15---stop-headless-runs-impersonating-a-card--done-8f08364).
+[Phase 1.5](#phase-15---stop-headless-runs-impersonating-a-card---done-8f08364).
 
 ### Trap 6: this worktree had no `node_modules`
 

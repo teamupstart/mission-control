@@ -36,7 +36,7 @@ const personas: Persona[] = [
 ].map(([id, name]) => ({
   id: id!, name: name!, normalizedName: name!.toLowerCase(), description: "",
   guidanceMarkdown: "# Judge", runner: null, model: null, revision: 1,
-  archivedAt: null, createdAt: 1, updatedAt: 1, builtin: false,
+  archivedAt: null, createdAt: 1, updatedAt: 1, provenance: null, builtin: false,
 }));
 
 const empty: WorkflowDraftGraph = { nodes: [], edges: [] };

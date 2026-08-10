@@ -22,8 +22,12 @@ import type { TaskSourcesState } from "../src/web/useTaskSources.ts";
 // Static markup runs no effects, so nothing fetches and the pre-poll state is what draws -
 // which is also the state a first-run user sees.
 
+// Both kinds this build offers, as the daemon reports them. The panel derives its add
+// control and its type filter from this list rather than a hand-kept one, so a kind missing
+// here is a kind an operator cannot reach.
 const KINDS = [
   { kind: "github-issues" as const, label: "GitHub issues", blurb: "Files an open issue." },
+  { kind: "jira" as const, label: "Jira", blurb: "Files the issues a JQL filter matches." },
 ];
 
 function mkSource(over: Partial<TaskSourceInstance> = {}): TaskSourceInstance {
@@ -153,6 +157,22 @@ test("a failed sweep is shown in the attention summary and row", () => {
   assert.match(html, /need attention/);
   assert.match(html, /Attention:.*1 source had a failed sweep/);
   assert.match(html, /Failed/);
+});
+
+// A second kind has to be REACHABLE, not merely implemented: the row says which upstream it
+// pulls from, and the type filter offers it, both off the daemon's kinds list rather than a
+// list in this file. A source whose kind the panel cannot name reads as a GitHub one.
+//
+// The editor beside the list - where the Jira site and JQL fields live - is gated on an
+// effect that picks a selection, and `renderToStaticMarkup` runs no effects, so this layer
+// cannot see it at all. That field group is asserted in a browser instead
+// (`e2e/specs/settings-task-sources-jira.spec.ts`), which is where it is reachable.
+test("a jira source is named by its own kind, and the type filter offers it", () => {
+  const html = render(viewOf([mkSource({ id: "src-2", kind: "jira", label: "platform queue" })]));
+  assert.match(html, /platform queue/);
+  assert.match(html, /<option value="jira">Jira<\/option>/);
+  assert.match(html, /Jira · \/repo\/widgets · every 15 min/);
+  assert.doesNotMatch(html, /GitHub issues · /, "the row must not name the other kind's upstream");
 });
 
 test("the overview exposes filtering and an add-source entry point", () => {

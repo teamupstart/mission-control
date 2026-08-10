@@ -8,7 +8,7 @@ assets (workflows, Personas, actions, strategies, missions, sources), live execu
 **Do** / **Settings**, each row carrying a kind chip. It is the connective tissue between the two
 homes: type three letters, land on the shelf card, the live run, or the setting.
 
-Visual reference: `docs/mockups/automation-prominence/4-palette.html` (round 1 concept 4, adopted
+Visual reference: `docs/archive/mockups/automation-prominence/4-palette.html` (round 1 concept 4, adopted
 unchanged by the plan).
 
 ## 2. Entry criteria and dependencies

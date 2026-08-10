@@ -6,9 +6,12 @@ import {
   DEFAULT_SWEEP_INTERVAL_MS,
   DEFAULT_MAX_PER_SWEEP,
   GithubIssuesConfigSchema,
+  JiraConfigSchema,
   MAX_SWEEP_INTERVAL_MS,
   MIN_SWEEP_INTERVAL_MS,
+  TASK_SOURCE_KIND_INFO,
   type GithubIssuesConfig,
+  type JiraConfig,
   type TaskSourceInstance,
   type TaskSourceKind,
   type TaskSourceStatus,
@@ -45,6 +48,45 @@ function githubConfigOf(src: TaskSourceInstance): GithubIssuesConfig {
   // own defaults are the only honest answer - the alternative is a blank panel over a
   // stored config that goes on sweeping with settings nobody can see.
   return parsed.success ? parsed.data : GithubIssuesConfigSchema.parse({});
+}
+
+/** The jira config as this build understands it, on the same terms. */
+function jiraConfigOf(src: TaskSourceInstance): JiraConfig {
+  const parsed = JiraConfigSchema.safeParse(src.config ?? {});
+  return parsed.success ? parsed.data : JiraConfigSchema.parse({});
+}
+
+/**
+ * Text fields that commit on blur rather than per keystroke.
+ *
+ * Every change here is a PUT, and a PUT per character would both hammer the daemon and let
+ * the 4s poll snap a half-typed value back under the cursor. One hook rather than a copy
+ * per field group, so a new kind's fields cannot accidentally commit on a different beat.
+ */
+function useDraftText(): {
+  /** The draft for this key, else what is stored. */
+  val: (key: string, stored: string) => string;
+  edit: (key: string, v: string) => void;
+  /** Hand the draft to `apply` and forget it. A key never edited applies nothing. */
+  commit: (key: string, apply: (v: string) => void) => void;
+  /** The raw drafts, for a control that must know whether a field differs from storage. */
+  draft: Record<string, string>;
+} {
+  const [text, setText] = useState<Record<string, string>>({});
+  return {
+    draft: text,
+    val: (key, stored) => text[key] ?? stored,
+    edit: (key, v) => setText((t) => ({ ...t, [key]: v })),
+    commit: (key, apply) => {
+      const v = text[key];
+      setText((t) => {
+        const next = { ...t };
+        delete next[key];
+        return next;
+      });
+      if (v !== undefined) apply(v);
+    },
+  };
 }
 
 /** Comma-separated, the way every label field in this app takes them. */
@@ -130,21 +172,7 @@ function GithubFields({
   cfg: GithubIssuesConfig;
   onChange: (next: GithubIssuesConfig) => void;
 }): React.JSX.Element {
-  // Text fields commit on blur, not per keystroke: every change is a PUT, and a PUT per
-  // character would both hammer the daemon and let the 4s poll snap a half-typed value
-  // back under the cursor.
-  const [text, setText] = useState<Record<string, string>>({});
-  const val = (key: string, stored: string): string => text[key] ?? stored;
-  const edit = (key: string, v: string): void => setText((t) => ({ ...t, [key]: v }));
-  const commit = (key: string, apply: (v: string) => void): void => {
-    const v = text[key];
-    setText((t) => {
-      const next = { ...t };
-      delete next[key];
-      return next;
-    });
-    if (v !== undefined) apply(v);
-  };
+  const { val, edit, commit } = useDraftText();
 
   // Three mutually exclusive answers to one question, so they are one radio group rather
   // than two checkboxes. As checkboxes the pair that selects NOTHING is reachable, and
@@ -288,6 +316,92 @@ function GithubFields({
   );
 }
 
+/**
+ * The kind-specific half of a jira source.
+ *
+ * Two fields carry the whole configuration - the site and the filter - because everything
+ * else a Jira query needs is already IN the JQL, and re-expressing project/status/assignee
+ * as controls beside it would give two places to say one thing. The credential is
+ * deliberately not here: it is the operator's `jira` CLI or their `JIRA_API_TOKEN` +
+ * `JIRA_EMAIL`, so this panel has no secret to store and none to leak.
+ */
+function JiraFields({
+  cfg,
+  onChange,
+}: {
+  cfg: JiraConfig;
+  onChange: (next: JiraConfig) => void;
+}): React.JSX.Element {
+  const { val, edit, commit } = useDraftText();
+
+  return (
+    <div className="ts-fields">
+      <label className="ts-field">
+        <span className="ts-field-label">Jira site</span>
+        <input
+          className="field-input mono"
+          placeholder="your-org.atlassian.net"
+          value={val("site", cfg.site)}
+          onChange={(e) => edit("site", e.target.value)}
+          onBlur={() => commit("site", (v) => onChange({ ...cfg, site: v.trim() }))}
+        />
+      </label>
+
+      <label className="ts-field">
+        {/* PAGE size, not a per-sweep cap: a sweep walks pages until the filter is exhausted,
+            because a filter read only as its first page can never reach its own tail. What is
+            actually FILED is bounded by "Most tasks per sweep" above. */}
+        <span className="ts-field-label">Issues per page</span>
+        <Tooltip label="How many issues one request asks Jira for. A sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds">
+          <input
+            className="field-input"
+            type="number"
+            min={1}
+            max={200}
+            value={cfg.limit}
+            onChange={(e) => onChange({ ...cfg, limit: Number(e.target.value) || cfg.limit })}
+          />
+        </Tooltip>
+      </label>
+
+      {/* Last of the inputs rather than second, though it is the most important one: it spans
+          the row, so anything after it leaves a half-empty row above - and here it sits
+          directly over the warning and the priority switch, which are both about it. */}
+      <label className="ts-field ts-field-wide">
+        <span className="ts-field-label">JQL filter</span>
+        <input
+          className="field-input mono"
+          placeholder='project = MC AND status = "To Do" ORDER BY created DESC'
+          value={val("jql", cfg.jql)}
+          onChange={(e) => edit("jql", e.target.value)}
+          onBlur={() => commit("jql", (v) => onChange({ ...cfg, jql: v.trim() }))}
+        />
+      </label>
+
+      <label className="alert-row ts-check">
+        <Tooltip label="Take the task's priority from the issue's own Jira priority - Highest and P0 become Blocker, High becomes High, and so on. A name this build doesn't recognise leaves the source's default in place">
+          <input
+            type="checkbox"
+            checked={cfg.priorityFromJira}
+            onChange={(e) => onChange({ ...cfg, priorityFromJira: e.target.checked })}
+          />
+        </Tooltip>
+        <span>Take each task's priority from the Jira issue's own</span>
+      </label>
+
+      {/* Said here rather than left to the first sweep: an empty filter is a storable
+          config that files nothing, which is exactly what a healthy quiet source looks
+          like. "Check it works" says the same thing, and this says it before you ask. */}
+      {!cfg.jql.trim() && (
+        <p className="settings-warn ts-no-jql">
+          Without a JQL filter this source sweeps nothing. Paste the query from Jira's
+          search bar - <strong>Check it works</strong> below runs it against one issue.
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** One configured source's editor. The overview chooses which source reaches this surface. */
 function SourceCard({
   src,
@@ -308,22 +422,23 @@ function SourceCard({
   onRemove: () => void;
   state: TaskSourcesState;
 }): React.JSX.Element {
-  const [text, setText] = useState<Record<string, string>>({});
+  const { val, edit, commit, draft } = useDraftText();
   const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const val = (key: string, stored: string): string => text[key] ?? stored;
-  const edit = (key: string, v: string): void => setText((t) => ({ ...t, [key]: v }));
-  const commit = (key: string, apply: (v: string) => void): void => {
-    const v = text[key];
-    setText((t) => {
-      const next = { ...t };
-      delete next[key];
-      return next;
-    });
-    if (v !== undefined) apply(v);
-  };
+  /**
+   * What the last action answered, and whether that answer was a PROBLEM.
+   *
+   * The tone is carried rather than inferred because these three buttons answer in three
+   * different voices - a sweep report, a preflight verdict, a confirmation - and the one
+   * that matters most is a preflight naming a credential to go and fix. Rendered in the same
+   * dim hint colour as "Forgotten - the next sweep will file these items again", it read as
+   * reassurance.
+   */
+  const [note, setNote] = useState<{ say: string; problem: boolean } | null>(null);
 
-  async function run(what: string, fn: () => Promise<string | null>): Promise<void> {
+  async function run(
+    what: string,
+    fn: () => Promise<{ say: string; problem: boolean }>,
+  ): Promise<void> {
     setBusy(what);
     setNote(null);
     const said = await fn();
@@ -375,7 +490,6 @@ function SourceCard({
         {status && status.seenCount > 0 && ` ${status.seenCount} item(s) already filed.`}
       </p>
       {status?.lastError && <p className="settings-error ts-error">{status.lastError}</p>}
-      {note && <p className="settings-hint ts-note">{note}</p>}
 
       <div className="ts-fields">
         {/* A div rather than a label: the control is a combobox plus the button that
@@ -394,7 +508,7 @@ function SourceCard({
             <Tooltip label="Commit this checkout as the repo swept tasks are filed against">
               <button
                 className="btn"
-                disabled={!text.repoRoot?.trim() || text.repoRoot.trim() === src.repoRoot}
+                disabled={!draft.repoRoot?.trim() || draft.repoRoot.trim() === src.repoRoot}
                 onClick={() => commit("repoRoot", (v) => onChange({ ...src, repoRoot: v.trim() }))}
               >
                 Set repo
@@ -434,11 +548,17 @@ function SourceCard({
         </label>
       </div>
 
+      {/* The one place a kind is named in this panel, because a field group is bespoke JSX
+          and cannot come off a registry the way the label, the blurb and the preflight
+          sentence do. Everything else here is kind-agnostic on purpose. */}
       {src.kind === "github-issues" && (
         <GithubFields
           cfg={githubConfigOf(src)}
           onChange={(config) => onChange({ ...src, config })}
         />
+      )}
+      {src.kind === "jira" && (
+        <JiraFields cfg={jiraConfigOf(src)} onChange={(config) => onChange({ ...src, config })} />
       )}
 
       <div className="ts-defaults">
@@ -536,12 +656,14 @@ function SourceCard({
             onClick={() =>
               void run("sweep", async () => {
                 const r = await state.sweep(src.id);
-                if (!r) return "The sweep could not run.";
-                if (r.error) return r.error;
+                if (!r) return { say: "The sweep could not run.", problem: true };
+                if (r.error) return { say: r.error, problem: true };
                 const bits = [`filed ${r.filed}`, `${r.alreadySeen} already filed`];
                 if (r.overCap > 0) bits.push(`${r.overCap} left for the next sweep`);
                 if (r.refused.length > 0) bits.push(`${r.refused.length} refused`);
-                return `Swept: ${bits.join(", ")}.`;
+                // A refusal is a problem even though the sweep itself worked: those rows
+                // were not filed, and nothing else on this card says so.
+                return { say: `Swept: ${bits.join(", ")}.`, problem: r.refused.length > 0 };
               })
             }
           >
@@ -555,7 +677,12 @@ function SourceCard({
             onClick={() =>
               void run("preflight", async () => {
                 const problem = await state.preflight(src.id);
-                return problem ?? "Looks good - gh is reachable and this repo lists issues.";
+                // The success sentence comes off the KIND, because what was proved differs
+                // per upstream: this used to name `gh` and the repo's issues, which a Jira
+                // source would have claimed while never going near either.
+                return problem === null
+                  ? { say: TASK_SOURCE_KIND_INFO[src.kind].preflightOk, problem: false }
+                  : { say: problem, problem: true };
               })
             }
           >
@@ -569,7 +696,10 @@ function SourceCard({
             onClick={() =>
               void run("forget", async () => {
                 await state.forget(src.id);
-                return "Forgotten - the next sweep will file these items again.";
+                return {
+                  say: "Forgotten - the next sweep will file these items again.",
+                  problem: false,
+                };
               })
             }
           >
@@ -577,6 +707,14 @@ function SourceCard({
           </button>
         </Tooltip>
       </div>
+      {/* What one of those three buttons just answered, BELOW them - because the card is
+          taller than the pane and the buttons are at the bottom of it, so a note at the top
+          put the answer off screen above the question. That is worst for the one sentence
+          that has to be read: preflight naming the credential to go and fix. `lastError`
+          stays up with the status line, since that is health rather than an answer. */}
+      {note && (
+        <p className={`${note.problem ? "settings-error" : "settings-hint"} ts-note`}>{note.say}</p>
+      )}
     </div>
   );
 }
@@ -632,7 +770,6 @@ function SourceDirectory({
   restoreFocusId,
   onFocusRestored,
   onSelect,
-  onAdd,
 }: {
   sources: TaskSourceInstance[];
   kinds: { kind: TaskSourceKind; label: string; blurb: string }[];
@@ -644,7 +781,6 @@ function SourceDirectory({
   restoreFocusId: string | null;
   onFocusRestored: () => void;
   onSelect: (id: string) => void;
-  onAdd: () => void;
 }): React.JSX.Element {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const directoryRef = useRef<HTMLDivElement>(null);
@@ -942,7 +1078,6 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
                 restoreFocusId={restoreFocusId}
                 onFocusRestored={() => setRestoreFocusId(null)}
                 onSelect={setSelectedId}
-                onAdd={() => setShowAdd(true)}
               />
             </div>
 

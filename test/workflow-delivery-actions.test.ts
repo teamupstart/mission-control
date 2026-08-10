@@ -36,8 +36,6 @@ test("the Runs reader renders the shared delivery descriptors", () => {
   const actions = deliveryResolutionActions(detail.deliveries[0]!, true);
   const html = renderToStaticMarkup(createElement(WorkflowRunView, {
     detail,
-    onResubmit: async () => {},
-    onRetry: async () => {},
     onCancel: async () => {},
   }));
   for (const action of actions) {

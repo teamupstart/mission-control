@@ -46,7 +46,7 @@ Inherits C1-C9 (and C11 is owned here). Findings:
   `permissionModes: null`, transcript non-null with messages, launch-scoped
   `--session-id` identity (`preparePiLaunch`, `bindLaunchedAgentSession`) - the pattern
   the whole SDK design generalized. The current terminal launch contract is owned by the
-  [README](../../../README.md#dispatch-an-agent); the RPC launch replaces that terminal
+  [README](../../dispatch-and-backlog.md#dispatch-an-agent); the RPC launch replaces that terminal
   arm for SDK-runtime dispatches.
 - **Sessions**: `~/.pi/agent/sessions/--<cwd>--/<ts>_<uuid>.jsonl`; RPC mode still
   writes them, so `piTranscript.locate` works once `bound` supplies the session id
@@ -94,7 +94,7 @@ Inherits C1-C9 (and C11 is owned here). Findings:
    without a pi-specific branch.
 4. **Dispatcher**: nothing pi-specific to add - the phase 2 branch covers it; preserve
    the terminal Pi launch contract documented in the
-   [README](../../../README.md#dispatch-an-agent) when the toggle is off.
+   [README](../../dispatch-and-backlog.md#dispatch-an-agent) when the toggle is off.
 5. **Tests**: `pi-sdk-adapter.test.ts` on scripted JSONL frames (LF framing incl. a
    U+2028-in-content case, ui request/response matching, timeout resolution,
    new_session rotation, resume argv), capability/contract updates, queue authorization
@@ -103,7 +103,7 @@ Inherits C1-C9 (and C11 is owned here). Findings:
 ## Data and compatibility
 
 No schema changes. Terminal Pi dispatch (toggle off) remains byte-identical to the
-contract documented in the [README](../../../README.md#dispatch-an-agent).
+contract documented in the [README](../../dispatch-and-backlog.md#dispatch-an-agent).
 
 ## Verification
 

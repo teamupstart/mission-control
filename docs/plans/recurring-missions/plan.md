@@ -3,7 +3,7 @@
 Status: approved for phased implementation  
 Owner: Mission Control  
 Date: 2026-07-23  
-Mockups: [`../../mockups/recurring-missions/index.html`](../../mockups/recurring-missions/index.html)
+Mockups: [`../../mockups/recurring-missions/index.html`](../../archive/mockups/recurring-missions/index.html)
 
 ## Approved decisions
 
@@ -130,10 +130,10 @@ stand down automatically through the existing host.
 
 The mockup contains four complete screens:
 
-1. [Catalog and detail](../../mockups/recurring-missions/catalog.html)
-2. [Create/edit flow](../../mockups/recurring-missions/editor.html)
-3. [Occurrence preview and availability](../../mockups/recurring-missions/preview.html)
-4. [Run history and exact-once audit](../../mockups/recurring-missions/history.html)
+1. [Catalog and detail](../../archive/mockups/recurring-missions/catalog.html)
+2. [Create/edit flow](../../archive/mockups/recurring-missions/editor.html)
+3. [Occurrence preview and availability](../../archive/mockups/recurring-missions/preview.html)
+4. [Run history and exact-once audit](../../archive/mockups/recurring-missions/history.html)
 
 ### Catalog
 

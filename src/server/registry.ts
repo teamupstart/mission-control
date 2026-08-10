@@ -34,6 +34,7 @@ import type {
   InspectorInspection,
   InspectorSummary,
   InspectionUpdated,
+  KeepAwakeStatus,
   SettingsStatus,
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
@@ -550,6 +551,25 @@ export class Registry extends EventEmitter {
   private lastFleetCostAt = 0;
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
+  /**
+   * The current Keep Awake observation, held for the snapshot and emitted on change.
+   *
+   * Held rather than computed: the manager owns the child process and pushes every
+   * transition through `setKeepAwakeStatus`, so this cache IS the daemon's answer. The
+   * default is a truthful placeholder for a registry no manager has seeded yet (the
+   * ~20 hand-built route-test registries): unsupported and off, which a browser renders
+   * as unavailable rather than as a claim about host power state. `src/server/index.ts`
+   * seeds the real status before the server accepts traffic. Deliberately TRANSIENT -
+   * a new daemon always snapshots `off`, which is the approved restart-reset behavior.
+   */
+  private keepAwake: KeepAwakeStatus = {
+    supported: false,
+    unavailableReason: "this daemon did not initialize a keep-awake provider",
+    state: "off",
+    provider: null,
+    since: null,
+    error: null,
+  };
   /** Last Line fold emitted, for the same reason as the two above. */
   private lastLineSummary: LineSummary | null = null;
   private lastLineSummaryAt = 0;
@@ -604,6 +624,7 @@ export class Registry extends EventEmitter {
     fleetCost: FleetCost | null;
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
+    keepAwake: KeepAwakeStatus;
   } {
     return {
       sessions: [...this.sessions.values()],
@@ -626,7 +647,31 @@ export class Registry extends EventEmitter {
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
+      // The held observation, not a recompute: the manager pushes every transition here,
+      // and a daemon that just started holds the seeded `off` - which is exactly the
+      // restart-reset a reconnecting dashboard must converge on.
+      keepAwake: this.keepAwake,
     };
+  }
+
+  /**
+   * Adopt the manager's Keep Awake observation, dropping a frame that restates the last
+   * one. The suppression mirrors `emitSettingsStatus`: the manager publishes on every
+   * transition attempt, and an idempotent re-request (double-enable from two windows)
+   * must not wake every browser with a status none of them can see move.
+   */
+  setKeepAwakeStatus(status: KeepAwakeStatus): void {
+    const prev = this.keepAwake;
+    const same =
+      prev.supported === status.supported &&
+      prev.unavailableReason === status.unavailableReason &&
+      prev.state === status.state &&
+      prev.provider === status.provider &&
+      prev.since === status.since &&
+      prev.error === status.error;
+    this.keepAwake = status;
+    if (same) return;
+    this.emitEvent({ type: "keep_awake_status", status });
   }
 
   /**

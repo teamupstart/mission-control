@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 export interface FakeAgents {
   /** Directory the fakes write their invocation records into. */
   recordDir: string;
-  bins: { claude: string; codex: string; pi: string; cmux: string };
+  bins: { claude: string; codex: string; pi: string; cmux: string; keepAwake: string };
 }
 
 /**
@@ -76,6 +76,50 @@ if (dir) {
 `;
 
 /**
+ * The stand-in `caffeinate`, so the keep-awake spec can drive the real manager, routes
+ * and SSE path without ever touching host power settings - `MISSION_KEEP_AWAKE_BIN`
+ * makes this the provider under test on any platform, which is how Linux CI runs it.
+ *
+ * It records its argv at start (the assertion surface: `-i -w <daemon PID>` either
+ * shows up exactly or provably does not) and an exit record when it goes, then behaves
+ * like the real thing: it stays alive until SIGTERM, and it honours `-w <pid>` by
+ * exiting when the watched process disappears - which is what keeps a SIGKILLed test
+ * daemon from leaking an immortal fake into the operator's process table.
+ *
+ * CommonJS `require` for the reason FAKE_CMUX gives: the file is extension-less, which
+ * Node treats as CJS.
+ */
+const FAKE_KEEP_AWAKE = `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const dir = process.env.MC_E2E_RECORD_DIR;
+const record = (kind, body) => {
+  if (!dir) return;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, \`keep-awake-\${process.pid}-\${kind}.json\`),
+    JSON.stringify(body, null, 2),
+  );
+};
+record("start", { argv: process.argv.slice(2), pid: process.pid });
+const leave = (reason) => {
+  record("exit", { reason });
+  process.exit(0);
+};
+process.on("SIGTERM", () => leave("SIGTERM"));
+const at = process.argv.indexOf("-w");
+const watched = at >= 0 ? Number(process.argv[at + 1]) : null;
+setInterval(() => {
+  if (watched === null) return;
+  try {
+    process.kill(watched, 0);
+  } catch {
+    leave("watched-pid-gone");
+  }
+}, 250);
+`;
+
+/**
  * Write the three fakes into `home` and return their paths.
  *
  * The claude fake is COPIED to an extension-less path rather than symlinked or run in
@@ -108,5 +152,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(cmux, FAKE_CMUX);
   chmodSync(cmux, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux } };
+  const keepAwake = join(binDir, "fake-caffeinate");
+  writeFileSync(keepAwake, FAKE_KEEP_AWAKE);
+  chmodSync(keepAwake, 0o755);
+
+  return { recordDir, bins: { claude, codex, pi, cmux, keepAwake } };
 }

@@ -1,7 +1,8 @@
-import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -35,6 +36,7 @@ const REVIEWER = {
   risk: "E2E risk reviewer",
   evidence: "E2E evidence auditor",
 };
+const EVIDENCE = artifactsDir("workflow-run-reviewer-verdicts");
 
 const WORKFLOW = "E2E reviewer verdicts";
 const OUTCOME = "Approved";
@@ -184,13 +186,14 @@ test("a completed run lists its reviewers and no structural attempts", async ({
     .toContainText("2 of 2 reviewers reported");
 
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
     // eslint-disable-next-line no-console
     console.log("OBSERVED two reviewer cards and zero structural attempt cards");
     await dashboard.screenshot({
-      path: fileURLToPath(new URL("../evidence/workflow-run-reviewer-verdicts.png", import.meta.url)),
+      path: `${EVIDENCE}workflow-run-reviewer-verdicts.png`,
       fullPage: true,
     });
     // eslint-disable-next-line no-console
-    console.log("CAPTURED e2e/evidence/workflow-run-reviewer-verdicts.png");
+    console.log("CAPTURED e2e/.artifacts/workflow-run-reviewer-verdicts/workflow-run-reviewer-verdicts.png");
   }
 });

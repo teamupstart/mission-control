@@ -78,6 +78,14 @@ test("every background job gets a field, labelled and explained", () => {
   }
 });
 
+test("every blurb is still PRINTED under its field - Foreman's tooltip-only mode did not leak", () => {
+  // `ModelField`'s `blurb` prop defaults to "block". Only the Foreman panel opts out; a
+  // default flip would silently strip the visible explanation from this whole panel while
+  // the assertion above kept passing off the tooltip's hidden copy.
+  const html = render();
+  assert.equal((html.match(/foreman-model-blurb/g) ?? []).length, LLM_JOB_IDS.length);
+});
+
 test("workflow context compaction is a visible configurable background job", () => {
   const html = decoded(render());
   assert.ok(html.includes("Workflow context"));

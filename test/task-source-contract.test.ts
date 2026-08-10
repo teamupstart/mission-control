@@ -45,6 +45,19 @@ test("every kind says what it is called and what it sweeps", () => {
   assert.equal(taskSourceKinds().length, TASK_SOURCE_KINDS.length);
 });
 
+// The sentence the panel shows when `preflight` finds nothing wrong. It lives on the kind
+// because what was proved differs per upstream: the panel used to hardcode "gh is reachable
+// and this repo lists issues", which a Jira source would have claimed while never going
+// near `gh` - a success message about somebody else's credential.
+test("every kind says what a clean preflight actually proved", () => {
+  for (const kind of TASK_SOURCE_KINDS) {
+    const said = TASK_SOURCE_KIND_INFO[kind].preflightOk;
+    assert.ok(said.trim().length > 0, `${kind} has no preflight success sentence`);
+  }
+  const sentences = TASK_SOURCE_KINDS.map((k) => TASK_SOURCE_KIND_INFO[k].preflightOk);
+  assert.equal(new Set(sentences).size, sentences.length, "two kinds claim the same proof");
+});
+
 // A freshly added source stores `config: {}`, and the sweeper parses that blob through
 // this schema on every tick. A kind whose schema refuses an empty object would be
 // addable, storable, and permanently broken.

@@ -1,10 +1,10 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -36,7 +36,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * No model tokens: the one dispatched session runs against the fake agent.
  */
 
-const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/ship-log/", import.meta.url));
+const EVIDENCE = artifactsDir("ship-log");
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -54,7 +54,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED docs/evidence/ship-log/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/ship-log/${name}.png`);
 }
 
 /** Say what just held, after it held - so the transcript cannot narrate a step that did not. */

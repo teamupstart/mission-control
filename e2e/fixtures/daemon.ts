@@ -183,9 +183,9 @@ export async function startDaemon(): Promise<DaemonHandle> {
     // Every `gh` call the daemon makes, redirected at a fake. This is the one override here
     // that is not about cost: `gh issue create` PUBLISHES to a repository other people watch,
     // and on a machine where `gh` is signed in - which is every machine this is developed on -
-    // an unfaked binary would file a real issue on every run of the push spec. `ghBin()` is a
-    // single seam over all fourteen call sites, so the PR poller and the Inspector are covered
-    // by the same variable rather than each needing its own.
+    // an unfaked binary would file a real issue on every run of the push spec. `ghBin()` is the
+    // single seam every `gh` call in the daemon goes through, so the PR poller and the Inspector
+    // are covered by this one variable rather than each needing its own.
     MISSION_GH_BIN: bins.gh,
     MC_E2E_RECORD_DIR: recordDir,
     // The pool sweep is NOT scoped to MISSION_HOME - it reaps the shared treehouse

@@ -10,6 +10,7 @@ import {
   type SettingsCategoryId,
 } from "../src/web/lib/settings-registry.ts";
 import { LAYOUTS } from "../src/web/lib/layout.ts";
+import { CONVERSATION_VIEW_OPTIONS } from "../src/web/lib/conversation-view.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
@@ -99,6 +100,7 @@ const SKILLS_ONLY = /Enable Mission Control skills/; // the skills master toggle
 const LAYOUT_ONLY = /Dashboard layout/; // the picker's radiogroup label
 const HARNESSES_ONLY = /Auto mode on dispatch/; // the harnesses toggle label
 const APPEARANCE_ONLY = /Format messages/; // the rich-text toggle label
+const CONVERSATION_ONLY = /Conversation rendering/; // the view picker's radiogroup label
 const COST_ONLY = /Track Claude estimated cost/; // the telemetry master toggle label
 const INSPECTOR_ONLY = /Run the Inspector/; // the inspector master toggle label
 const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
@@ -207,13 +209,40 @@ test("opens on Display by default: the layout picker shows, skills does not", ()
   assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>▦<\/span>Display/);
 });
 
-// Layout and Appearance merged into one category: two settings about how this browser
-// draws the fleet, which sat as visual peers of the panel that merges pull requests.
-test("Display renders the layout picker and the formatting toggle together", () => {
+// Layout, Conversation and Appearance merged into one category: three settings about how
+// this browser draws the fleet, which sat as visual peers of the panel that merges pull
+// requests. Stacked outside in - the arrangement, then the reading, then the formatting.
+test("Display renders the layout picker, the conversation picker and the formatting toggle together", () => {
   const html = render("display");
   assert.match(html, LAYOUT_ONLY);
+  assert.match(html, CONVERSATION_ONLY);
   assert.match(html, APPEARANCE_ONLY);
   assert.doesNotMatch(html, KEYBOARD_ONLY);
+  // Outside in, in that order: a reader scanning the pane meets the arrangement before the
+  // reading before the type.
+  assert.ok(
+    html.indexOf("Dashboard layout") <
+      html.indexOf("Conversation rendering") &&
+      html.indexOf("Conversation rendering") < html.indexOf("Format messages"),
+    "the display panels are stacked out of order",
+  );
+});
+
+test("the conversation picker offers both renderings, with chat the shipped default", () => {
+  const html = render("display");
+  const radios = (html.match(/<input[^>]*type="radio"[^>]*>/g) ?? []).filter((i) =>
+    i.includes('name="conversation-view"'),
+  );
+  assert.equal(radios.length, CONVERSATION_VIEW_OPTIONS.length, "one radio per rendering");
+  // Rendered with no daemon and no storage, so the shared config store holds the shipped
+  // defaults. What this pins is that default reaching the control: a session opens as the
+  // chat log unless someone chose otherwise.
+  const checked = radios.filter((i) => i.includes("checked"));
+  assert.equal(checked.length, 1, "exactly one rendering is checked");
+  assert.match(checked[0]!, /value="chat"/);
+  for (const o of CONVERSATION_VIEW_OPTIONS) {
+    assert.ok(html.includes(o.label), `picker missing ${o.label}`);
+  }
 });
 
 test("the layout picker offers every layout, with the live one checked", () => {
@@ -229,7 +258,12 @@ test("the layout picker offers every layout, with the live one checked", () => {
   // panel against `layout: "grid"` must not leave a different mode selected - that is the
   // bug where the picker and the dashboard behind it disagree about what you're in.
   // (React emits `checked=""` BEFORE `value`, so the attributes are matched in that order.)
-  const radios = (html.match(/<input[^>]*type="radio"[^>]*>/g) ?? []);
+  // Scoped by `name`, because Display holds a second radio group (the conversation
+  // rendering) and counting every radio in the pane would make this assertion answer to a
+  // control it is not about.
+  const radios = (html.match(/<input[^>]*type="radio"[^>]*>/g) ?? []).filter((i) =>
+    i.includes('name="layout"'),
+  );
   const checked = radios.filter((i) => i.includes("checked"));
   assert.equal(radios.length, LAYOUTS.length, "one radio per layout");
   assert.equal(checked.length, 1, "exactly one layout is checked");

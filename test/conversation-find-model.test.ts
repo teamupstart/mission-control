@@ -38,7 +38,10 @@ function turn(id: string, m: Partial<TranscriptMessage>): ConversationRow {
 }
 
 function tools(id: string, list: ToolCall[]): ConversationRow {
-  return { kind: "tools", id, ts: 0, tools: list };
+  // `endTs` matches `ts` here: these fixtures are undated, and a folded run of one turn
+  // ends where it starts. Nothing in the search model reads it - it exists for the
+  // terminal rendering's span - but the row type is one shape for both.
+  return { kind: "tools", id, ts: 0, endTs: 0, tools: list };
 }
 
 test("counts every occurrence, including several in one turn", () => {

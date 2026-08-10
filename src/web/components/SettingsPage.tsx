@@ -17,6 +17,7 @@ import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { LayoutPanel } from "./LayoutPanel.tsx";
+import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useTaskSources } from "../useTaskSources.ts";
@@ -465,12 +466,15 @@ export function SettingsPage({
   function renderCategory(id: SettingsCategoryId): React.JSX.Element {
     switch (id) {
       case "display":
-        // Layout and Appearance stacked, not two rail peers: both are one browser's
-        // preference about this screen, and a category holding a single checkbox sat as a
-        // visual equal of the one that merges pull requests.
+        // Layout, Conversation and Appearance stacked, not three rail peers: all three are
+        // one browser's preference about this screen, and a category holding a single
+        // checkbox sat as a visual equal of the one that merges pull requests. Stacked
+        // outside in: how sessions are arranged, how a conversation is read, how the
+        // messages inside it are formatted.
         return (
           <>
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
+            <ConversationViewPanel />
             <AppearancePanel />
           </>
         );

@@ -95,7 +95,17 @@ export const SETTINGS_CATEGORIES = [
     blurb: "How the dashboard arranges sessions, and how transcripts are drawn",
     group: "screen",
     scope: "browser",
-    keywords: ["layout", "appearance", "cards", "console", "board", "markdown", "rich text"],
+    keywords: [
+      "layout",
+      "appearance",
+      "cards",
+      "console",
+      "board",
+      "markdown",
+      "rich text",
+      "conversation",
+      "terminal",
+    ],
   },
   {
     id: "keyboard",

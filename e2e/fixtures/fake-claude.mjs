@@ -72,6 +72,17 @@ const ASK_TURN = "ask me which linter to use";
  * of the messages would silently miss it.
  */
 const TOOL_TURN = "E2E_OBSERVED_TOOLS";
+/**
+ * The prompt that leaves a RUN of tool-only turns: three of them, back to back, with no
+ * prose between.
+ *
+ * Distinct from `TOOL_TURN` because the two shapes prove different things. That one exists
+ * so a projection that folded turns would miss a tool call riding prose; this one exists so
+ * the terminal rendering has a genuine multi-turn run to fold into one disclosure record -
+ * "claude executed 3 commands". A single tool-only turn folds into a record of one, which
+ * is a fold that never had to decide anything.
+ */
+const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (recordDir) {
@@ -479,6 +490,25 @@ rl.on("line", (line) => {
       ]);
       appendTurn("assistant", [
         { type: "tool_use", id: `obs-${turn}-bash`, name: "Bash", input: { command: "ls -la e2e" } },
+      ]);
+      answer([prompt]);
+      return;
+    }
+
+    // A run of tool-only turns with prose on either side, which is the shape the terminal
+    // rendering folds into one record. The commands are distinguishable on purpose: the
+    // record lists the literal input, so a spec can tell the folded list apart from the
+    // chip summary the chat log draws.
+    if (prompt === TOOL_RUN_TURN) {
+      appendTurn("assistant", [{ type: "text", text: "Mock reply before the run" }]);
+      appendTurn("assistant", [
+        { type: "tool_use", id: `run-${turn}-a`, name: "Bash", input: { command: "rg PersonaDirective src test" } },
+      ]);
+      appendTurn("assistant", [
+        { type: "tool_use", id: `run-${turn}-b`, name: "Bash", input: { command: "git status --short" } },
+      ]);
+      appendTurn("assistant", [
+        { type: "tool_use", id: `run-${turn}-c`, name: "Read", input: { file_path: "src/server/registry.ts" } },
       ]);
       answer([prompt]);
       return;

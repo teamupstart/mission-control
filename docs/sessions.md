@@ -794,6 +794,41 @@ the agent wrote more than a reconnect can honestly be said to have missed. Both 
 honest answer rather than a continuation with an invisible hole in it, and scrolling up
 re-reads whatever was dropped.
 
+### Reading a conversation as a terminal
+
+A conversation can be drawn two ways. **Chat** is the shipped log - a byline per speaker,
+prose in bubbles, tool calls as grey chips. **Terminal** draws the same conversation as one
+stream, the way the session actually ran:
+
+- what you sent is a prompt line, `you@mission ~/repo ❯ ...`, naming whoever typed it - a
+  turn Foreman sent reads `foreman@mission`, never as though you asked for it;
+- what the agent said is a block of stdout under a `claude / stdout` header;
+- a run of back-to-back tool calls folds into one record - *claude executed 3 commands* -
+  which opens to the literal commands and paths, rather than becoming rows in the log;
+- above it a titlebar names the window, the agent, and the tty the session is on (or its
+  runtime, for a session with no terminal), with an indicator that says whether the
+  dashboard is attached to the transcript right now;
+- below it a status line carries the session's run state, its pid, its branch, how much of
+  the context window it has used, and the shortcuts for terminal, diff, complete and kill.
+
+Everything else is unchanged, because it is the same panel: the same box replies, the same
+attachments drop onto it, find works the same way, the Observed activity rail is still
+beside it, and Foreman's decisions and your review answers still appear in place. Only the
+drawing differs.
+
+The status line says nothing it cannot prove. A session that reports no pid shows no pid
+rather than `pid 0`; a session off a checkout shows no branch; a context share appears once
+a harness has reported one. The folded record is held to the same rule as the Observed
+activity rail below: it lists the calls the transcript recorded, and claims no result,
+no exit code and no duration for any of them. Where it shows an elapsed time, that is the
+span between the run's first and last recorded turn, and its tooltip says so.
+
+**Settings → Display → Conversation** chooses the default for every session. Any single
+conversation can be flipped on its own with the **Terminal view** button above the log,
+which wins over that default for that session until you close the tab - so one agent can be
+watched as a terminal while the rest stay on the chat log. Nothing about the per-session
+choice is stored; a reload starts over from the default.
+
 ### Observed activity beside the conversation
 
 An **Observed activity** rail sits to the right of the transcript and lists the tool

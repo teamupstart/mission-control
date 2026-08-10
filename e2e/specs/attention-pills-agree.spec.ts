@@ -145,12 +145,20 @@ test("a session parked on a permission prompt is counted AND answerable", async 
   // And the click has to land somewhere. It used to open a modal reading "Nothing needs you".
   //
   // Settled first: a segment appearing re-flows every one beside it, so the pill can still be
-  // moving when the assertions above have already passed. Under the full suite's parallel load
-  // that raced the click and failed with `element was detached from the DOM`.
+  // moving when the assertions above have already passed.
   await settled(toAnswer);
-  await toAnswer.click();
   const inbox = dashboard.getByRole("dialog", { name: "Attention inbox" });
-  await expect(inbox).toBeVisible();
+  // Then retried as a whole, because settling is not enough on its own: an SSE frame
+  // re-renders the pulse and REPLACES this node rather than moving it, and `click`'s own
+  // retry re-attempts the element it already resolved - so under the full suite's parallel
+  // load a stream of frames could detach it repeatedly until the test timed out. Re-querying
+  // each attempt is what makes that a retry instead of a race. The claim is unchanged and no
+  // weaker: the click still has to open the inbox, and the guard stops a second attempt from
+  // toggling shut an inbox the first one opened.
+  await expect(async () => {
+    if (!(await inbox.isVisible())) await toAnswer.click({ timeout: 3000 });
+    await expect(inbox).toBeVisible({ timeout: 3000 });
+  }).toPass({ timeout: 45_000 });
   // The heading borrows the segment's words, not the other segment's.
   await expect(inbox.getByText(`${beforeOwed + 1} to answer`)).toBeVisible();
   const row = inbox.locator(".inbox-blocked").filter({ hasText: "Check the Linter Config" });

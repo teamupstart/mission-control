@@ -28,6 +28,7 @@ beforeEach(() => store.clear());
 test("nothing stored anywhere reads as the shipped defaults", () => {
   const config = readCache();
   assert.equal(config.layout, "grid");
+  assert.equal(config.conversationView, "chat");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
@@ -36,6 +37,7 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
 test("a written cache round-trips", () => {
   writeCache({
     layout: "console",
+    conversationView: "terminal",
     keybindings: { select: "shift+Tab" },
     alerts: { notifications: true, sound: false },
     richText: false,
@@ -44,11 +46,19 @@ test("a written cache round-trips", () => {
   });
   const config = readCache();
   assert.equal(config.layout, "console");
+  assert.equal(config.conversationView, "terminal");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
   assert.equal(config.keybindingHints, false);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
+});
+
+test("a rendering this build does not ship reads as the shipped one", () => {
+  // Same rule the layout has, and for the same reason: a hand-edit or a mode from a future
+  // build must not be adopted out of this cache and PUT to the daemon as if it were real.
+  store.set("mission-control.ui", JSON.stringify({ conversationView: "hologram" }));
+  assert.equal(readCache().conversationView, "chat");
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {

@@ -63,6 +63,7 @@ import {
   SetWorkItemStateSchema,
   PromptedWrapupSchema,
   WrapupAskedSchema,
+  PushTaskSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
   SpendReportSchema,
@@ -150,6 +151,7 @@ import { requestSessionStop } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
+import { pushTask } from "./task-sources/push.ts";
 import { noteTaskSourceConfigChange, preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
 import type { TaskSourcesView } from "@shared/task-source.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
@@ -3326,8 +3328,18 @@ export function buildApp(
 
   // --- Task sources: pulling work INTO the backlog from systems that already hold it ---
   //
-  // Every route here files into the backlog and nothing else. Nothing dispatches, nothing
-  // provisions, and nothing types into a pane - see `src/shared/task-source.ts`.
+  // Every route HERE files into the backlog and nothing else - these are the inbound half,
+  // and they are periodic and unattended.
+  //
+  // The feature has exactly one outward write, and it is deliberately not among them:
+  // `POST /api/tasks/:id/push`, with the task routes below, files one of OUR tasks as an
+  // item upstream. It sits there rather than here because it acts on a TASK, and it fires
+  // only on an explicit per-task operator action - never from the sweep loop, because it
+  // publishes to a place other people are watching and deleting a row here does not take
+  // it back.
+  //
+  // In neither direction does anything dispatch, provision, or type into a pane - see
+  // `src/shared/task-source.ts`.
 
   /** The whole panel in one read: what is configured, how it is doing, what is on offer. */
   const taskSourcesView = (): TaskSourcesView => {
@@ -3511,6 +3523,53 @@ export function buildApp(
     }
     const r = await tasks.update(id, patch);
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  /**
+   * File this backlog task as an item in the external tracker a configured source points
+   * at - the one outward write in the task-sources feature.
+   *
+   * The task STAYS in the backlog. Nothing is dispatched, nothing is provisioned, and the
+   * only change to the row is that it now carries the ref of the item that was created for
+   * it, which is what the modal renders as a link.
+   *
+   * The status codes are the contract, and the 502/504 split is the load-bearing part of
+   * it - the same reading `POST /api/sessions/:id/open-file` takes, for the same reason:
+   *
+   *   400 the request could never work (bad body; a kind with no outward verb)
+   *   404 no such task, or no such task source
+   *   409 a state conflict the operator can see and resolve - not backlog, already linked,
+   *       a source bound to a different repo, a push already running, or a task that moved
+   *       while `gh` was running (that last one CREATED the item and says so)
+   *   502 the tracker refused. Nothing was published, so retrying is safe.
+   *   504 the outcome is unknown. The item MAY exist, so retrying may file a duplicate -
+   *       the body carries `outcomeUnknown: true` so a caller can drop its retry
+   *       affordance rather than having to parse the sentence.
+   *
+   * A 200 returns the updated `Task`, like its dispatch/assign/complete siblings, so the
+   * caller reads the new `source` off the reply instead of racing the `task_upsert` event.
+   */
+  app.post("/api/tasks/:id/push", async (c) => {
+    const parsed = await parseBody(c, PushTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = tasks.get(c.req.param("id"));
+    if (!task) return c.json({ error: "no such task" }, 404);
+    const inst = taskSourceById(parsed.data.sourceId);
+    if (!inst) return c.json({ error: "no such task source" }, 404);
+    const r = await pushTask(inst, task, tasks);
+    if (r.ok) return c.json(r.task);
+    switch (r.kind) {
+      case "unpushable":
+        return c.json({ error: r.error }, 400);
+      case "conflict":
+        return c.json({ error: r.error }, 409);
+      case "upstream":
+        return c.json({ error: r.error }, 502);
+      // Flagged as well as worded. The sentence is what a human reads; the flag is what a
+      // client branches on, and this is the one failure a client must not offer to retry.
+      case "unknown-outcome":
+        return c.json({ error: r.error, outcomeUnknown: true }, 504);
+    }
   });
 
   app.post("/api/tasks/:id/dispatch", async (c) => {

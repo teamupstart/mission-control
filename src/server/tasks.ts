@@ -1315,6 +1315,60 @@ export class TaskManager {
   }
 
   /**
+   * Link a backlog task to the external item that was just created FOR it.
+   *
+   * The counterpart of `create({source})`, for the direction that did not exist until
+   * push did: a swept task is born carrying its ref, and this is the only way a task
+   * born here acquires one. `UpdateTask` deliberately cannot set `source` - provenance
+   * is not something an HTTP client gets to assert about a row - so this is a separate,
+   * narrower call rather than another optional field on the edit path.
+   *
+   * SYNCHRONOUS, and that is a requirement rather than a convenience. Its caller
+   * (`src/server/task-sources/push.ts`) runs it inside `inTransaction` alongside the
+   * `task_source_seen` write, and SQLite transaction bodies are synchronous - an async
+   * body would commit before it resolved and split the pair this feature exists to keep
+   * together. So this cannot wait out in-flight titling the way `update` does, and it does
+   * not need to: `autoTitleThenDispatch` re-reads the row before writing its title, so a
+   * title that lands after this one carries the link forward, and one that lands before is
+   * simply the row this reads.
+   *
+   * Every refusal is RETURNED, never thrown, and that is the second requirement. A throw
+   * would roll the caller's transaction back, taking the seen row with it - and the seen
+   * row is precisely what must survive a task that vanished mid-push, or the next sweep
+   * re-files the very issue this push just created.
+   *
+   * There are exactly two refusals, and STATUS is deliberately not one of them - which is
+   * where this parts company with `update`. That guard exists because a dispatched task's
+   * title and repo have already been cut into a branch name and a terminal home, so
+   * rewriting them changes the card without propagating. Nothing is provisioned from
+   * `source`: it is a record of something that HAPPENED, and it happened while the task
+   * was in the backlog, because `pushTask` refuses to publish for a task that has left it.
+   * Refusing to write it down because the operator dispatched the task during the two
+   * seconds `gh` was running would throw away the identity of an issue that exists - and
+   * with it the "already linked" guard that stops a later push filing a second one.
+   */
+  attachSource(id: string, ref: TaskSourceRef): Ok & { task?: Task } {
+    const t = this.registry.getTask(id);
+    // Deleted while the push was in flight. The one state that genuinely cannot hold a
+    // link, and the caller reports the created item's name because this is where the
+    // knowledge of it ends.
+    if (!t) return { ok: false, error: "no such task" };
+    // Re-checked here rather than trusted from the caller's earlier look, because the
+    // window between them is a subprocess talking to GitHub. Refused rather than
+    // overwritten: the first item is the one that exists, and clobbering its ref would
+    // leave it unreachable from the task it was created for.
+    if (t.source) {
+      return { ok: false, error: `task is already linked to ${t.source.externalId}` };
+    }
+    const task: Task = { ...t, source: ref, updatedAt: Date.now() };
+    // The db upsert behind this already persists `source_id/external_id/source_url` and
+    // the registry emits `task_upsert` - so the dashboard learns of the link over the
+    // stream that already exists, and this feature adds no `ServerEvent`.
+    this.registry.upsertTask(task);
+    return { ok: true, task };
+  }
+
+  /**
    * The task this session is executing right now, or undefined - the serial-execution
    * invariant, asked as a question.
    *

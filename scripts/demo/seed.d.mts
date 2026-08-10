@@ -82,7 +82,7 @@ export const SEED_WORKFLOW_REVIEWERS: {
 };
 
 /** What the seeder will build, given the mode. `reduced` is `--check`'s smaller seed. */
-export function seedPlan(opts?: { reduced?: boolean }): {
+export function seedPlan(opts?: { reduced?: boolean; readme?: boolean; capture?: boolean }): {
   sessionTasks: SeedSessionTask[];
   backlogTasks: SeedBacklogTask[];
   schedules: SeedSchedule[];
@@ -253,7 +253,12 @@ export function seedDemoFleet(opts: {
   root: string;
   port: number;
   reduced?: boolean;
+  readme?: boolean;
+  capture?: boolean;
+  keepDaemonAlive?: boolean;
   log?: (message: string) => void;
-}): Promise<SeededFleet>;
+}): Promise<SeededFleet & {
+  daemon?: { baseURL: string; stop: () => Promise<void> };
+}>;
 
 export function printSeedSummary(seeded: SeededFleet): void;

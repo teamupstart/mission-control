@@ -85,3 +85,8 @@ Demo mode uses `~/.mission-control-demo` rather than your normal state directory
 replaces agent binaries with local scenario players. `npm run demo -- --fresh` rebuilds
 and seeds a populated demo fleet; it takes longer because it drives real application
 routes. See [demo-mode.md](demo-mode.md) for its flags and boundaries.
+
+To regenerate the committed README imagery after a dashboard change, first build and then
+run `npm run docs:screenshots`. The capture tool uses its own disposable demo state root,
+fixed viewport, and local scenario players, so it does not use agent models or alter your
+normal demo.

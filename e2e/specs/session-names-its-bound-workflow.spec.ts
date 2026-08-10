@@ -1,6 +1,9 @@
+import { mkdirSync } from "node:fs";
+
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -29,6 +32,25 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * in isolation was exactly what it should be. It is where they MEET, in a rendered chip and a
  * pre-selected option, that the product lied.
  */
+
+const EVIDENCE = artifactsDir("session-bound-workflow");
+
+/**
+ * A picture of the surface the report was written about, gated behind `MC_E2E_EVIDENCE`.
+ *
+ * Taken inside the regression test rather than in a staged capture, because what makes the
+ * picture worth anything is that the assertions around it passed on the same run: the chip in
+ * the image is the chip `toBeVisible` just matched, over a binding the daemon really created.
+ */
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer.
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/session-bound-workflow/${name}.png`);
+}
 
 async function api<T>(
   daemon: DaemonHandle,
@@ -170,6 +192,7 @@ test("a dispatched session names its armed workflow, and the bind dialog opens o
   const chip = page.getByRole("button", { name: /No-Mistakes Review v\d+/ }).first();
   await expect(chip).toBeVisible();
   await expect(page.getByRole("button", { name: "＋ workflow" })).toHaveCount(0);
+  await shoot(page, "card-names-bound-workflow");
 
   // 2. The dialog opens on what is actually bound - not on the workflow that merely sorts
   //    first. "Aardvark Review" is published and would win a catalog-position default.
@@ -184,6 +207,7 @@ test("a dispatched session names its armed workflow, and the bind dialog opens o
   //    which is the failure that let a correct binding look like a wrong one.
   await expect(bind.getByText(/Already bound to No-Mistakes Review · v\d+/)).toBeVisible();
   await expect(bind.getByText("builtin-", { exact: false })).toHaveCount(0);
+  await shoot(page, "bind-dialog-opens-on-real-binding");
 });
 
 test("a session with no workflow still offers to attach one", async ({ page, daemon }) => {
@@ -205,4 +229,5 @@ test("a session with no workflow still offers to attach one", async ({ page, dae
   await expect(page.getByRole("button", { name: "＋ workflow" }).first()).toBeVisible({
     timeout: 60_000,
   });
+  await shoot(page, "card-unbound-still-offers");
 });

@@ -1233,7 +1233,39 @@ export const WORKFLOW_RUN_STATUSES = [
 ] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
 
-/** The statuses a run cannot leave. Everything else is still on its way somewhere. */
+/**
+ * The statuses a run cannot leave. Everything else is still on its way somewhere.
+ *
+ * `blocked` IS DELIBERATELY NOT HERE, and the reason is worth the paragraph because the
+ * omission looks like an oversight from two directions at once.
+ *
+ * A `blocked` run has stopped, so "terminal" reads right - and adding it would, in one
+ * line, end the permanent Shipping veto a `round_limit` run holds over its pull request.
+ * That is exactly why it must not be added. `blocked` is the status of a gate that did
+ * NOT pass: the reviewer ran out of repair rounds with findings still open. Marking it
+ * terminal would make `workflowRunIsOpen` false, `mergeGate` return "none", and YOLO
+ * mode merge the branch - so "the reviewer gave up" would become "the reviewer approved
+ * it", which is precisely the bypass the veto was built to prevent. A workflow that
+ * exhausted its budget is the LAST thing that should auto-merge.
+ *
+ * The second direction: `blocked` is not even reliably an ending. `session_disappeared`
+ * blocks a run a Reattach can revive, and a `round_limit` run comes back the moment an
+ * operator grants it more rounds. `workflowRunIsOpen` also drives board drop targets,
+ * held-session marks, and the ＋ bind chip, all of which mean "this session is still
+ * spoken for" - which a blocked run genuinely is.
+ *
+ * So the veto stays, and the fix for a run that will never clear on its own is to say so
+ * and offer a way out, not to stop vetoing: `workflowRunGaveUp` below separates "still
+ * working" from "gave up", Shipping reports the two as different blocks, and run detail
+ * carries the controls that clear it. See `docs/agent-guides/architecture.md`.
+ *
+ * Worth knowing before acting on this list: it is NOT the only place the three terminal
+ * statuses are written down. `workflow_runs` queries in the store spell the same set as a
+ * literal `status NOT IN ('completed', 'cancelled', 'failed')` in around a dozen
+ * statements, including the `activeRunForBinding` that the Shipping veto reads. Editing
+ * this array alone therefore moves the browser and leaves the daemon where it was - which
+ * is a quieter failure than it sounds, so a fourth terminal status means changing both.
+ */
 export const WORKFLOW_RUN_TERMINAL_STATUSES = ["completed", "cancelled", "failed"] as const;
 
 /**
@@ -1246,6 +1278,48 @@ export const WORKFLOW_RUN_TERMINAL_STATUSES = ["completed", "cancelled", "failed
  */
 export function workflowRunIsOpen(status: WorkflowRunStatus): boolean {
   return !(WORKFLOW_RUN_TERMINAL_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * The phases in which a run has spent its repair budget and cannot open another round.
+ *
+ * Both spellings are here because the gate writes the phase and the EVENT KIND from two
+ * different vocabularies: every round-limit writer sets the phase `round_limit`, while
+ * the Inspector gate's new-head re-test additionally appends an `inspector_round_limit`
+ * event. A reader that matched only the event kind, or only one of the two strings, would
+ * classify half the ways a run runs out as "still working".
+ */
+export const WORKFLOW_RUN_SPENT_PHASES = ["round_limit", "inspector_round_limit"] as const;
+
+/**
+ * Has this run given up - stopped in a way that will NEVER clear on its own?
+ *
+ * The distinction this draws is the whole point of leaving `blocked` non-terminal (see
+ * `WORKFLOW_RUN_TERMINAL_STATUSES`). "Blocked" spans a run a Reattach revives and a run
+ * whose budget is gone, and only the second one is a dead end: the Inspector gate re-tests
+ * `round > maxRepairRounds` on EVERY new head, so pushing more commits re-enters the same
+ * refusal. The operator cannot push their way out, and a surface that cannot tell the two
+ * apart has to describe a permanent stop with the same words it uses for a live review.
+ *
+ * Stated here, beside the status union, so the daemon's Shipping veto and the browser's
+ * run detail answer it identically - the same reason `workflowRunIsOpen` lives here.
+ */
+export function workflowRunGaveUp(run: {
+  status: WorkflowRunStatus;
+  phase: string;
+  round: number;
+  maxRepairRounds: number;
+}): boolean {
+  if (run.status !== "blocked") return false;
+  if (!(WORKFLOW_RUN_SPENT_PHASES as readonly string[]).includes(run.phase)) return false;
+  // The BUDGET, not just the phase. `round_limit` is a historical marker of how the run
+  // stopped and it never gets rewritten; the live question is whether another round is
+  // affordable, which is the same `round > maxRepairRounds` inequality every writer of the
+  // phase tested on the way in. Reading the budget is what lets granting rounds downgrade
+  // this to "still working" the instant it lands, with no second revival path to keep in
+  // step - the existing resume and full-restart moves gate on the same inequality and come
+  // back by themselves.
+  return run.round > run.maxRepairRounds;
 }
 
 export const WORKFLOW_GATE_WAIT_REASONS = [

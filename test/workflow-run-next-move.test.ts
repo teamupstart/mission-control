@@ -516,7 +516,7 @@ test("a block whose recovery is a decision offers no move and names the owner", 
   }
 });
 
-test("the two blocks nothing here revives say so, and name cancelling", () => {
+test("a session that is gone says so, and names cancelling", () => {
   const gone = runNoMoveReason(detailFor({
     status: "blocked",
     phase: "session_disappeared",
@@ -524,14 +524,53 @@ test("the two blocks nothing here revives say so, and name cancelling", () => {
   }));
   assert.equal(gone?.cause, "The session this run was reviewing is gone,");
   assert.match(gone?.consequence ?? "", /Cancelling clears it from your queue/);
+});
 
+/*
+ * A run out of rounds used to be the page's one true dead end: no move, and a paragraph
+ * naming the binding as the place to fix it. The paragraph was wrong - a run compares
+ * against the `maxRepairRounds` it snapshotted at insert, which no binding edit rewrites -
+ * and the dead end was the reason its pull request could never merge again. It is a move
+ * now, and the move raises the number the refusal actually reads.
+ */
+test("a run out of rounds offers the grant rather than a dead end", () => {
+  const detail = detailFor({ status: "blocked", phase: "round_limit", round: 6 });
+  const move = runNextMove(detail);
+  assert.equal(move?.kind, "grant-rounds");
+  assert.match(move?.label ?? "", /Grant \d+ more rounds/);
+  assert.match(move?.path ?? "", /\/grant-rounds$/);
+  assert.equal(move?.body.rounds, 2);
+  // The one move on this page that changes what a pull request is waiting for.
+  assert.match(move?.confirm?.body ?? "", /pull request cannot merge/);
+  assert.equal(runNoMoveReason(detail), null, "a move and a no-move sentence cannot both stand");
+});
+
+/*
+ * The grant moves ONE number, and the whole design rests on that being enough: every way a
+ * blocked run comes back refuses on `round > maxRepairRounds`, so a budget the run can
+ * afford hands it straight back to the existing resume move with no second revival path.
+ */
+test("a granted budget hands the run back to the ordinary resume move", () => {
+  const move = runNextMove(detailFor({
+    status: "blocked",
+    phase: "round_limit",
+    round: 6,
+    maxRepairRounds: 8,
+  }));
+  assert.notEqual(move, null, "a run inside its budget is not a dead end");
+  assert.notEqual(move?.kind, "grant-rounds", "the grant outstayed the shortage it answers");
+});
+
+/** The stale remedy, pinned as gone: it named the one fix guaranteed not to reach this run. */
+test("no run-detail sentence sends the operator to the binding for a spent budget", () => {
   const spent = runNoMoveReason(detailFor({
     status: "blocked",
     phase: "round_limit",
     round: 6,
+    bindingState: "orphaned",
   }));
-  assert.equal(spent?.cause, "This run has used every repair round its binding allows,");
-  assert.match(spent?.consequence ?? "", /A larger repair budget is a change to the binding/);
+  assert.ok(spent, "an unrevivable spent run must still say why");
+  assert.doesNotMatch(spent.consequence, /change to the binding/);
 });
 
 /** The refusal copy `resubmitAvailability` writes, promoted from a tooltip into the page. */

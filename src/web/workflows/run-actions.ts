@@ -5,6 +5,7 @@ import type {
 } from "@shared/workflow.ts";
 import {
   manualWorkflowTriggerRequestId,
+  workflowRunGaveUp,
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
 // One-directional: this module reads `run-model`'s derivations at runtime, and `run-model` takes
@@ -15,6 +16,16 @@ import {
   orderedSubmissions,
 } from "./run-model.ts";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
+
+/**
+ * How many rounds the run-detail grant hands over at once.
+ *
+ * Two rather than one, because one buys a single attempt and a round-limited run has just
+ * demonstrated that a single attempt was not enough - an operator who has to click through
+ * a confirmation for every retry learns to raise the binding instead, which is the setting
+ * that governs every FUTURE run rather than this stuck one.
+ */
+const GRANT_ROUNDS = 2;
 
 export type RunActionId = string;
 export type WorkflowDeliveryResolution =
@@ -310,6 +321,7 @@ export interface RunNextMove {
     | "prepare-pr"
     | "recheck-inspector"
     | "retry"
+    | "grant-rounds"
     | "run-again";
   label: string;
   tooltip: string;
@@ -321,8 +333,8 @@ export interface RunNextMove {
    * the terminal arm a second derivation.
    */
   path: string;
-  /** Everything the route needs beyond `requestId`. Empty for five of the six. */
-  body: Record<string, string | boolean>;
+  /** Everything the route needs beyond `requestId`. Empty for most arms. */
+  body: Record<string, string | boolean | number>;
   /** `null` fires immediately; a move that spends a round warns first. */
   confirm: WorkflowConfirmDescriptor | null;
 }
@@ -533,6 +545,53 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     };
   }
 
+  /*
+   * A run that spent its repair budget, which is the one block that never clears itself.
+   *
+   * It comes BEFORE the resubmission family because it is the reason that family refuses:
+   * `resubmitAvailability` turns `round > maxRepairRounds` into a refusal sentence, and for
+   * a round-limited run that sentence used to be the end of the page - a paragraph pointing
+   * at a binding edit that cannot reach this run's snapshot. The grant moves the number the
+   * refusal actually reads, so the very next render offers the resume move on its own.
+   *
+   * This is also the only move here that changes what a pull request is waiting for, so the
+   * confirmation says so: while the run is spent, Shipping reports a permanent block.
+   */
+  const spent = workflowRunGaveUp({
+    status,
+    phase: currentPhase,
+    round: detail.summary.round,
+    maxRepairRounds: detail.summary.maxRepairRounds,
+  });
+  /*
+   * Offered only when the BUDGET is the only thing stopping this run. `resubmitAvailability`
+   * refuses on three grounds and the grant answers exactly one of them, so a run whose
+   * session is gone or whose work came from an ensemble gets the refusal sentence instead:
+   * granting rounds there would raise a number nothing goes on to spend, which is a button
+   * that succeeds and changes nothing an operator can see. Those runs also hold no Shipping
+   * veto to release - `mergeGate` skips a binding that is not active - so the dead end this
+   * move exists to open is not one they are in.
+   */
+  if (spent && detail.binding.state === "active" && !detail.externalSource) {
+    return {
+      id: "grant-rounds",
+      kind: "grant-rounds",
+      label: `Grant ${GRANT_ROUNDS} more rounds`,
+      tooltip: "Raise this run's repair budget so the review can continue",
+      path: runPath(detail, "grant-rounds"),
+      body: { rounds: GRANT_ROUNDS },
+      confirm: {
+        title: `Grant ${GRANT_ROUNDS} more repair rounds`,
+        body: "This run used every repair round its budget allowed, so it stopped and will"
+          + " not restart on its own - and while it is stopped its pull request cannot merge."
+          + ` Granting ${GRANT_ROUNDS} more lets the review carry on from where it left off.`,
+        confirmLabel: "Grant the rounds",
+        confirmHint: "Raises this run's budget only",
+        danger: false,
+      },
+    };
+  }
+
   // Everything below is a resubmission, so the manager's own refusals decide first. Where it
   // refuses, the move is `null` and `runNoMoveReason` turns the refusal into the sentence.
   const availability = resubmitAvailability(detail, liveInspectorRepair(detail));
@@ -593,15 +652,27 @@ const NO_MOVE_SENTENCES: Record<string, RunNoMoveReason> = {
     consequence: "so it cannot take another round. Cancelling clears it from your queue; its"
       + " evidence and verdicts stay in history.",
   },
+  /*
+   * Reached only when something ELSE also refuses - an inactive binding, an external
+   * source - because a run that is merely out of rounds now gets the grant as its move.
+   *
+   * Neither sentence sends the reader to the binding any more, and that is a correction
+   * rather than a rewording: a run snapshots `maxRepairRounds` when its row is inserted and
+   * every guard compares against that snapshot, so raising the binding's budget changes
+   * what the NEXT run may spend and cannot reach this one. The old copy named the one
+   * remedy guaranteed not to work.
+   */
   round_limit: {
-    cause: "This run has used every repair round its binding allows,",
-    consequence: "so nothing here can open another one. A larger repair budget is a change to"
-      + " the binding; cancelling clears the run and keeps its history.",
+    cause: "This run has used every repair round it was given,",
+    consequence: "and the rest of its state means nothing here can open another one."
+      + " Cancelling clears the run, keeps its history, and releases the merge block its"
+      + " gate holds on the pull request.",
   },
   inspector_round_limit: {
-    cause: "This run has used every Inspector round its binding allows,",
-    consequence: "so nothing here can open another one. A larger repair budget is a change to"
-      + " the binding; cancelling clears the run and keeps its history.",
+    cause: "This run has used every Inspector round it was given,",
+    consequence: "and the rest of its state means nothing here can open another one."
+      + " Cancelling clears the run, keeps its history, and releases the merge block its"
+      + " gate holds on the pull request.",
   },
   inspector_findings: {
     cause: "Inspector left findings that have to be resolved.",

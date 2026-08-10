@@ -3297,6 +3297,41 @@ export class WorkflowStore {
     });
   }
 
+  /**
+   * Raise one run's repair budget and append its audit event, in one transaction.
+   *
+   * The run carries its OWN `max_repair_rounds`, snapshotted from the binding when the row
+   * was inserted, and every round-limit guard in the manager reads that snapshot. Until
+   * this method existed nothing ever updated the column, so the remedy the dashboard
+   * advertised - "a larger repair budget is a change to the binding" - could not work on
+   * the run it was advertised on: `updateBinding` writes `workflow_bindings` only, and the
+   * blocked run went on comparing against the number it was born with. This is the one
+   * writer that moves it.
+   *
+   * Deliberately NOT a parameter on `setRunState`: the budget outlives any single
+   * transition, and a run whose status a concurrent sweep is rewriting must still take the
+   * grant. The guarded UPDATE is the authority on the terminal race for the same reason
+   * `setRunDisabledNodes` gives - a grant reported as applied to a finished run would put
+   * a line in its history about a budget it never spent.
+   */
+  grantRunRepairRounds(
+    id: string,
+    maxRepairRounds: number,
+    event: { kind: string; payload: WorkflowJson },
+    now = Date.now(),
+  ): WorkflowRun | null {
+    return transaction(this.db, () => {
+      const result = this.db.prepare(
+        `UPDATE workflow_runs
+            SET max_repair_rounds = ?, updated_at = ?
+          WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+      ).run(maxRepairRounds, now, id);
+      if (Number(result.changes) !== 1) return null;
+      this.appendEvent(id, event.kind, event.payload, now);
+      return this.mustRun(id);
+    });
+  }
+
   /** Set or replace one active, run-scoped Persona directive with its audit event. */
   setRunPersonaDirective(
     id: string,

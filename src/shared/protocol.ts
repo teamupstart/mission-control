@@ -3052,6 +3052,20 @@ export const ResubmitWorkflowSchema = z.object({
 });
 export type ResubmitWorkflow = z.infer<typeof ResubmitWorkflowSchema>;
 
+/**
+ * How many EXTRA repair rounds to add to a run that spent its budget.
+ *
+ * A delta rather than an absolute ceiling, because the operator is answering "give it
+ * another go", not "set this run's budget to seven" - and an absolute would race a
+ * concurrent grant into silently undoing it. The manager clamps the sum at
+ * `WORKFLOW_LIMITS.repairRoundsMax`, the same ceiling the binding form enforces.
+ */
+export const GrantWorkflowRepairRoundsSchema = z.object({
+  requestId: z.string().min(1).max(200),
+  rounds: z.number().int().min(1).max(WORKFLOW_LIMITS.repairRoundsMax),
+});
+export type GrantWorkflowRepairRounds = z.infer<typeof GrantWorkflowRepairRoundsSchema>;
+
 export const RetryWorkflowRunSchema = z.object({
   requestId: z.string().min(1).max(200),
   nodeAttemptId: WorkflowIdSchema.optional(),

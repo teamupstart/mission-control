@@ -693,8 +693,13 @@ test("a blocked run whose binding was orphaned says why in prose, with no dead s
   assertNoGraphIds(html);
 });
 
-/** A run past its configured rounds is refused by the server, so the header must not offer it. */
-test("a blocked run out of repair rounds says so and names where the budget lives", () => {
+/*
+ * A run past its rounds is the one stop that never clears itself, and its pull request
+ * cannot merge until somebody acts, so the header owes the operator a button rather than a
+ * paragraph. It used to render the paragraph - and the paragraph named the binding, which
+ * is the one place a fix cannot reach this run from.
+ */
+test("a blocked run out of repair rounds offers the grant in the header", () => {
   const base = runningDetail();
   const html = render({
     ...base,
@@ -702,9 +707,9 @@ test("a blocked run out of repair rounds says so and names where the budget live
     run: { ...base.run, status: "blocked", currentPhase: "round_limit" },
   });
   const header = headerOf(html);
-  assert.match(header, /<b>This run has used every repair round its binding allows,<\/b>/);
-  assert.match(header, /A larger repair budget is a change to the binding/);
-  assert.doesNotMatch(header, /btn-primary/);
+  assert.match(header, /btn-primary/, "the one stop that needs an operator has no primary");
+  assert.match(header, /Grant \d+ more rounds/);
+  assert.doesNotMatch(header, /A larger repair budget is a change to the binding/);
   assertNoGraphIds(html);
 });
 

@@ -105,7 +105,7 @@ test("the operator's config: armed for shipping, unpublished by the Inspector, d
     // A completed, clean review of exactly this head - which dry run produces.
     reviewedSha: "deadbeef",
     reviewPosture: "dry-run",
-    workflowGatePending: false,
+    workflowGate: "none",
     rounds: 1,
     openFindings: 0,
     now: NOW,

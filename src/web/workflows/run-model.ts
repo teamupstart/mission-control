@@ -1605,10 +1605,15 @@ export function runRemedy(
   }
 
   // The two blocks nothing argument-free revives. `session_disappeared` needs a Reattach,
-  // which needs a session picker; `round_limit` needs a bigger repair budget, which is a
-  // binding edit. Both are a click away through "Open run" - so what the drawer offers is
-  // the other honest move: stop counting a run that is never going to move again.
+  // which needs a session picker; `round_limit` needs a bigger repair budget, which is the
+  // run page's grant. Both are a click away through "Open run" - so what the drawer offers
+  // is the other honest move: stop counting a run that is never going to move again.
   if (run.phase === "session_disappeared" || run.phase === "round_limit") {
+    // Cancelling a run out of rounds is not only tidying a queue - it is the act that
+    // RELEASES the Shipping veto its gate holds, and doing that to somebody's pull request
+    // without saying so is how a confirmation becomes a trap. Said only where it is true:
+    // a `session_disappeared` run reaching this line may hold no gate at all.
+    const releasesGate = run.phase === "round_limit" && run.gatePrNumber !== null;
     return {
       kind: "dismiss",
       label: "Dismiss",
@@ -1618,9 +1623,13 @@ export function runRemedy(
       confirm: {
         title: "Cancel this run",
         body: `Stop ${run.workflowName} v${run.workflowVersion} on ${name}?`
-          + " It will not resume, and its evidence and verdicts stay in history.",
+          + " It will not resume, and its evidence and verdicts stay in history."
+          + (releasesGate
+            ? ` It also lifts the merge block this run holds on #${run.gatePrNumber},`
+              + " which no longer waits on a review that has stopped."
+            : ""),
         confirmLabel: "Cancel run",
-        confirmHint: "Stops the run for good",
+        confirmHint: releasesGate ? "Stops the run and unblocks the PR" : "Stops the run for good",
         danger: true,
       },
     };

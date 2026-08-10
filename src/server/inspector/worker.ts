@@ -13,6 +13,7 @@ import { createLimiter, parseModelJson, runStructured } from "../llm/structured.
 import { llmRunner } from "../llm/index.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 import type { LlmSpendRole } from "@shared/llm-spend.ts";
+import type { WorkflowGateStanding } from "@shared/shipping.ts";
 import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
 import {
@@ -508,7 +509,7 @@ async function processPr(
   pr: InspectorPr,
   now: number,
   onObserved: ((snapshot: PrSnapshot, observedAt: number) => void) | null = null,
-  workflowGatePending: (prKey: string) => boolean = () => false,
+  workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
 ): Promise<boolean> {
   const tick: TickState = { failed: false };
   const backedOff = pr.nextAttemptAt !== null && now < pr.nextAttemptAt;
@@ -656,7 +657,7 @@ async function processPr(
   // inside `mergeVerdict`, so a PR with an unreviewed push waits for the review below and
   // the next sweep. `rows` is passed rather than re-read: it is this tick's ledger, and
   // the reply step above may already have moved it.
-  if (await maybeMerge(cfg, pr, dir, s, rows, now, workflowGatePending)) return true;
+  if (await maybeMerge(cfg, pr, dir, s, rows, now, workflowGate)) return true;
 
   // 3. Nothing pushed since the last review: there is nothing new to say.
   //
@@ -1078,7 +1079,7 @@ function reconcilePosting(
  * PR opened before the feature was switched on permanently unreachable.
  */
 export interface InspectorStartOptions {
-  workflowGatePending?: (prKey: string) => boolean;
+  workflowGate?: (prKey: string) => WorkflowGateStanding;
 }
 
 export function startInspector(registry: Registry, options: InspectorStartOptions = {}): () => void {
@@ -1136,7 +1137,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
               observed.value = { headSha: snapshot.headSha, state: snapshot.state, at: observedAt };
               notifyInspection(registry, fresh.key, snapshot.headSha, snapshot.state, observedAt);
             },
-            options.workflowGatePending ?? (() => false),
+            options.workflowGate ?? (() => "none"),
           ));
           // Re-read after every completed review or failure. The immediate signal above
           // reports the fetched GitHub head; this one carries the resulting durable ledger.

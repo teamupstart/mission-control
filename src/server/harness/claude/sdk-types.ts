@@ -152,7 +152,10 @@ export interface ClaudeSdkQueryOptions {
   includePartialMessages: boolean;
 }
 
-/** The smaller options surface used by one fresh, tool-less query. */
+/**
+ * The smaller options surface used by one fresh query. Calls are tool-less by default;
+ * a validated grant may populate tools and inline deny settings.
+ */
 export interface ClaudeSdkOneShotQueryOptions {
   cwd: string;
   pathToClaudeCodeExecutable: string;

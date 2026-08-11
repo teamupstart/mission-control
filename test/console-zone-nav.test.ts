@@ -126,7 +126,7 @@ test("the rail group count splits into free and held, like the board head", () =
       ConsoleView,
       props({
         sessions: [free, held],
-        workflowRunBySession: new Map([[held.id, run]]),
+        workflowRunsBySession: new Map([[held.id, [run]]]),
       }),
     ),
   );

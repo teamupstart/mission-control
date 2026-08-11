@@ -152,6 +152,26 @@
   border-color: var(--working);
 }
 
+/*
+ * The repository a chip's run reviews, drawn only when a conversation carries more than one.
+ *
+ * Muted and bounded, because it is the DISAMBIGUATOR and not the point: the status word after
+ * it is what an operator is scanning for, and two chips reading "second-repo Review changes"
+ * and "demo-repo Approved" have to differ at a glance on the second half. Bounded at 12ch so
+ * a long repository name cannot push the status off a card; the full path is in the tooltip.
+ * Inline-block rather than flex for `.wbc-name`'s reason - a flex row would eat the space
+ * between the name and the label out of the accessible name.
+ */
+.workflow-chip-repo {
+  color: var(--muted);
+  display: inline-block;
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
 .workflow-running { color: var(--working); }
 .workflow-waiting { color: var(--attention); }
 .workflow-blocked,
@@ -455,11 +475,20 @@
 }
 
 .wf-run-row-session,
+.wf-run-row-repo,
 .wf-run-row-gate,
 .wf-run-row small {
   color: var(--muted);
   font-size: 10.5px;
   overflow-wrap: anywhere;
+}
+
+/* One run is one repository. On the run page it sits beside the session for the same reason
+   the row shows it under the note key: a multi-repo task's two runs share a conversation, a
+   workflow and a version, and this is the only fact that tells them apart. */
+.wf-run-repo {
+  color: var(--muted);
+  font-size: 11.5px;
 }
 
 /* Element-agnostic on purpose: on the run page the badge IS the link to the composer, so this

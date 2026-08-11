@@ -35,6 +35,12 @@ was cut at is exempt, and a pull request closed without merging never satisfies 
 the task stays visible for you to deal with. Merging itself is unchanged: each pull request
 still merges on its own verdict, whenever it alone is ready.
 
+**Every repository it changed gets its own full review, too.** One review run per changed
+repo, running at the same time, each reading that repo's worktree, pinning that repo's pull
+request and spending its own repair budget - so a finding in one repo restarts that repo's
+review alone and never holds up a sibling's merge. A repo the task never touched gets no run
+at all. The card shows one workflow chip per review, each naming its repository.
+
 ![Mission Control dispatch](docs/images/dispatch.png)
 
 ## Build the operating system around the work

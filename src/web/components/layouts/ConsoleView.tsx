@@ -1,6 +1,6 @@
 import type { Session } from "@shared/types.ts";
 import { clusterFallbackLabel, fleetRows, orderSessions } from "../../lib/fleet-order.ts";
-import { heldSessionIds } from "../../lib/held.ts";
+import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { blockedMembersIn, EnsembleRailGroup, FleetSectionHead } from "../session-bits.tsx";
@@ -30,7 +30,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   // column arrays depend on the indices lining up whether or not a column is on screen).
   const groups = orderSessions(
     props.sessions,
-    heldSessionIds(props.workflowRunBySession),
+    heldSessionIds(props.workflowRunsBySession),
   ).groups.filter((g) => g.sessions.length > 0);
 
   // The zone only reads on screen once a session is open beside the rail; with an empty
@@ -44,7 +44,8 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
       selected={s.id === props.selectedId}
       onSelect={() => props.onSelect(s.id)}
       registerEl={props.registerEl}
-      workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
+      workflowRuns={props.workflowRunsBySession?.get(s.id) ?? null}
+      workflowRun={newestSessionRun(props.workflowRunsBySession?.get(s.id))}
       onOpenWorkflowRun={props.onOpenWorkflowRun}
       onOpenSchedule={props.onOpenSchedule}
       scheduleNameById={props.scheduleNameById}

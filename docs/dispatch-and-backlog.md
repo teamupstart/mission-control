@@ -90,8 +90,24 @@ Merging itself is unchanged. Each pull request still merges on its own verdict, 
 alone is ready - there is no coordinated cross-repo merge, so siblings can land minutes apart
 and the task's own completion is what tells you the whole piece of work is in.
 
-Review workflows still behave as they do for a single-repo task in this release: one run per
-session, pinned to one pull request.
+**Every repository you changed gets its own full review.** When the session's work reaches a
+workflow - the Foreman completion boundary, or your own submit - Mission Control starts one
+review run per repository the task changed, and they run at the same time. A repository the
+task never touched gets no run at all, and never appears as one. Each run reviews that
+repository's worktree, pins that repository's pull request, spends its own repair budget, and
+gates that repository's merge and nothing else: a finding in one repository restarts that
+repository's review alone, and a review still in progress never holds up a sibling
+repository's pull request. Which repositories count as changed is the same rule completion
+uses, with one deliberate difference - a worktree nothing has read yet is reviewed rather
+than skipped, because shipping unreviewed work is the worse mistake.
+
+The card and the console header then show **one workflow chip per review**, each naming its
+repository, so two reviews of one session are never mistaken for one. A single-repo task's
+chip is unchanged and carries no repository name.
+
+The one thing the reviews share is the agent's turn. They deliver into one pane, so at most
+one of them types into the session at a time and the others queue explicitly until the turn
+is free - a queued review says so rather than appearing stalled.
 
 **Model** starts on the default configured for the chosen harness (see [Default
 model](#default-model)) and names it, so you can see what the task will run on without

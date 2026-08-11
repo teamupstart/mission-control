@@ -804,6 +804,49 @@ anything, so it takes one click to confirm rather than a typed phrase.
 With no runs at all the tab offers **Bind to a session…**, the same dialog the builder's
 right rail opens.
 
+### One review per repository
+
+A conversation owns one active binding **per repository**, and a run is always about exactly
+one of them. For nearly every session that is the arithmetic it always was: one repository,
+one binding, one run, and nothing below this paragraph applies.
+
+A [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) is where it
+matters. Its session works in several checkouts, and when its work reaches a workflow -
+Foreman's completion boundary, **Ship it**, or a submit on the conversation's own binding -
+Mission Control starts one review per repository the task **changed**, concurrently. A
+repository the task never touched gets no run and never shows one. If nothing looks changed
+anywhere, the conversation still gets its one review, because a session that finished with no
+review at all is the worse outcome.
+
+Each run is an ordinary single-repository review, and every rule on this page applies to it
+unchanged:
+
+- Its evidence - the diff, the working tree, the repository standards - is read from **its
+  own** worktree. The goal, the transcript and your decisions are shared, because the
+  conversation is one.
+- Its Inspector gate pins **its own** repository's pull request. A review of one repository
+  never pins or vetoes a sibling's, which is what keeps the two pull requests merging
+  independently.
+- Its repair budget is its own. A finding in one repository restarts that repository's graph
+  and spends one of that run's rounds; the sibling's rounds are untouched.
+- Its checks run in its own checkout.
+
+Two things are shared, and both are the session itself. The **turn**: all of a conversation's
+reviews deliver into one pane, so at most one repair packet or session action is outstanding
+at a time and the rest wait in an explicit queued state until the turn frees up - within a
+single run, two actions ready at once are still refused rather than serialized. And the
+**conversation**: a cleared conversation pauses every one of its bindings together, and a
+disappearing session orphans them all.
+
+A submission names its repository by naming its binding. Submitting on the conversation's own
+binding fans out to every changed repository; submitting on one repository's binding reviews
+that repository alone, and resubmitting a run repairs that run. Nothing is ever guessed.
+
+Tightly coupled repositories can stale each other's evidence - a repair in one that also
+touches the other. Each run's own head-mismatch and fresh-observation machinery catches it
+and asks for a resubmission, and the per-pull-request merge verdict is the backstop that
+keeps anything stale from merging.
+
 ### Runs Mission Control started for itself
 
 Almost every run is one an operator submitted. A run can also be started by Mission Control

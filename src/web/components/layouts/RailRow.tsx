@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { sessionIsHeld } from "../../lib/held.ts";
+import { heldByRun } from "../../lib/held.ts";
 import {
   AgentDot,
   InspectorRailMark,
@@ -31,6 +31,7 @@ export function RailRow({
   onSelect,
   registerEl,
   workflowRun = null,
+  workflowRuns = null,
   onOpenWorkflowRun,
   onOpenSchedule,
   scheduleNameById,
@@ -42,6 +43,8 @@ export function RailRow({
   onSelect: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   workflowRun?: WorkflowRunSummary | null;
+  /** Every review this conversation carries; the rail's one glyph still marks the newest. */
+  workflowRuns?: readonly WorkflowRunSummary[] | null;
   onOpenWorkflowRun?: (runId: string) => void;
   /** Open Recurring Missions from a scheduled task's rail glyph. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -55,7 +58,8 @@ export function RailRow({
   // The same shared sentence the Board tile and the Cards card read. The rail shows more
   // rows per screen than either, so it is the surface where "the section rule scrolled
   // away" happens soonest - the row has to carry its own answer here most of all.
-  const held = sessionIsHeld(workflowRun, st.tone);
+  const heldBy = heldByRun(workflowRuns, st.tone);
+  const held = heldBy !== null;
   const ref = useRef<HTMLButtonElement>(null);
   const setRef = useCallback(
     (el: HTMLButtonElement | null) => {
@@ -115,7 +119,7 @@ export function RailRow({
           <span className="rail-state-line">
             {held && (
               <Tooltip
-                label={`Held by ${workflowRun!.workflowName} - the run owns this session's next turn`}
+                label={`Held by ${heldBy?.workflowName ?? "a workflow"} - the run owns this session's next turn`}
               >
                 <span className="rail-held">held</span>
               </Tooltip>

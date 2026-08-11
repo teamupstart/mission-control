@@ -404,9 +404,11 @@ function BacklogCard({
  * A session an OPEN workflow run holds refuses the drop outright. The drop is a reset -
  * `dropTaskOnSession` assigns with `reset: true` - and resetting an agent whose next turn
  * belongs to a run would yank it out from under that run the moment the board has started
- * calling it "held". The caller passes the run it already renders (the tile's `workflowRun`)
+ * calling it "held". The caller passes the runs it already renders (the tile's `workflowRuns`)
  * rather than this predicate doing a second lookup, for the same reason the held tag reads
- * off it: the rule, the tag and the drop must agree about one session, and one source is how.
+ * off them: the rule, the tag and the drop must agree about one session, and one source is
+ * how. ANY open run refuses, which matters for a multi-repo task's session - its repositories'
+ * reviews finish at different times, and the last one still owns the pane.
  * `workflowRunIsOpen` decides, so a terminal run releases the drop target the same instant
  * it releases the section rule.
  *
@@ -416,11 +418,11 @@ function BacklogCard({
 export function canAcceptTask(
   session: Session,
   repoRoot: string | null,
-  workflowRun?: WorkflowRunSummary | null,
+  workflowRuns?: readonly WorkflowRunSummary[] | null,
 ): boolean {
   if (!repoRoot) return false;
   if (!session.instrumented) return false;
-  if (workflowRun != null && workflowRunIsOpen(workflowRun.status)) return false;
+  if (workflowRuns != null && workflowRuns.some((run) => workflowRunIsOpen(run.status))) return false;
   if (stateDisplay(session).tone !== "idle") return false;
   return session.repoRoot != null && session.repoRoot === repoRoot;
 }

@@ -9,7 +9,7 @@ import {
   type FleetBlock,
   type FleetToneGroup,
 } from "../../lib/fleet-order.ts";
-import { heldSessionIds } from "../../lib/held.ts";
+import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
@@ -94,7 +94,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // than threaded down - `orderSessions` is idempotent, so re-running it on the list App
   // already ordered returns that order, and both sides stay one fact. (This is exactly the
   // `groupByTone` arrangement it replaces, now with the cluster spans the frames need.)
-  const groups = orderSessions(props.sessions, heldSessionIds(props.workflowRunBySession)).groups;
+  const groups = orderSessions(props.sessions, heldSessionIds(props.workflowRunsBySession)).groups;
   // The dialog's target, resolved fresh every render: `null` here retires a confirm whose
   // agent has since disappeared, rather than leaving a dialog up over a session that is
   // no longer on the board.
@@ -132,7 +132,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       onDropped={() => setDraggingRepo(null)}
       onDropError={setDropError}
       onDropConfirm={(p) => setPendingDrop({ ...p, sessionId: s.id })}
-      workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
+      workflowRuns={props.workflowRunsBySession?.get(s.id) ?? null}
+      workflowRun={newestSessionRun(props.workflowRunsBySession?.get(s.id))}
       onOpenWorkflowRun={props.onOpenWorkflowRun}
       onOpenSchedule={props.onOpenSchedule}
       scheduleNameById={props.scheduleNameById}
@@ -166,7 +167,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       // Register the element like the console rail does, so Shift+Tab/Escape out of the
       // reader can land focus back on the selected row here.
       registerEl={props.registerEl}
-      workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
+      workflowRuns={props.workflowRunsBySession?.get(s.id) ?? null}
+      workflowRun={newestSessionRun(props.workflowRunsBySession?.get(s.id))}
       onOpenWorkflowRun={props.onOpenWorkflowRun}
       onOpenSchedule={props.onOpenSchedule}
       scheduleNameById={props.scheduleNameById}

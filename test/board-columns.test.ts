@@ -177,13 +177,19 @@ test("a session an open workflow run holds refuses the drop", () => {
   // Idle, instrumented, and in the right repo - droppable in every way except that a run
   // owns its next turn. The drop is a reset (`dropTaskOnSession` assigns with reset), and
   // the reset would yank the agent out from under the run the board just marked "held".
-  assert.equal(canAcceptTask(session(), "/repo", run("waiting_for_session")), false);
-  assert.equal(canAcceptTask(session(), "/repo", run("running")), false);
-  assert.equal(canAcceptTask(session(), "/repo", run("blocked")), false);
+  assert.equal(canAcceptTask(session(), "/repo", [run("waiting_for_session")]), false);
+  assert.equal(canAcceptTask(session(), "/repo", [run("running")]), false);
+  assert.equal(canAcceptTask(session(), "/repo", [run("blocked")]), false);
   // A finished run releases the drop target the same instant it releases the section rule.
-  assert.equal(canAcceptTask(session(), "/repo", run("completed")), true);
-  assert.equal(canAcceptTask(session(), "/repo", run("cancelled")), true);
-  assert.equal(canAcceptTask(session(), "/repo", run("failed")), true);
+  assert.equal(canAcceptTask(session(), "/repo", [run("completed")]), true);
+  assert.equal(canAcceptTask(session(), "/repo", [run("cancelled")]), true);
+  assert.equal(canAcceptTask(session(), "/repo", [run("failed")]), true);
   // No run bound at all reads exactly as it did before runs existed.
   assert.equal(canAcceptTask(session(), "/repo", null), true);
+  // A multi-repo task's session: ANY open review refuses, even beside a finished sibling.
+  assert.equal(
+    canAcceptTask(session(), "/repo", [run("completed"), run("waiting_for_session")]),
+    false,
+  );
+  assert.equal(canAcceptTask(session(), "/repo", [run("completed"), run("completed")]), true);
 });

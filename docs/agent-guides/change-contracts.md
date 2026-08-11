@@ -122,6 +122,43 @@ One receipt may cross submissions, and only one: the attempt a child segment nam
 cross-submission source would let a node activated on one evidence snapshot advance a graph
 running on another.
 
+## One workflow run is one repository
+
+Concurrency lives at the binding and run layer. Nothing below a run knows a session can review
+more than one repository, and nothing below a run may be taught it: the `pull_request`
+adapter's proof rules, evidence identity `(round, segment)`, and the gate's wait/block
+vocabulary stay single-repo per run. A single-repo session must behave byte-identically
+through every rule here.
+
+- **Binding uniqueness is `(note_key, repo_root)`**, enforced by
+  `idx_workflow_bindings_active_note_repo`. `workflow_bindings.repo_root` is `NOT NULL` with an
+  empty-string default meaning "this session's own checkout" - non-null because SQLite treats
+  nulls as distinct in a unique index, and a null there would let two active bindings own one
+  conversation. `session_repo_root` is nullable and can never be the key. A binding with a
+  non-empty `repo_root` reviews a secondary repository of the session's task, and its
+  `session_cwd`/`session_repo_root` hold that repository's worktree and root - which is what
+  scopes evidence capture, check execution, the capture root and the gate's adoption match
+  without any of them knowing why.
+- **`activeBindingForNote` means the session's OWN binding** and must keep meaning it: the
+  create conflict check, dispatch arming, the Foreman claim and reattach all ask that question.
+  `activeBindingsForNote` sees the siblings.
+- **Run creation reads the shared changed-set predicate** (`@shared/task-repos.ts`), the same
+  one the completion quorum reads, so the two can never disagree about what "changed" means.
+  It covers the primary, whose baseline is `tasks.base_sha` rather than a `task_repos` row.
+  The one divergence is deliberate and documented at both call sites: an `unknown` verdict -
+  a head nothing has read yet - HOLDS completion and REVIEWS at run creation, because each is
+  the conservative arm for its own irreversibility.
+- **A run never vetoes a sibling repository's pull request.** `mergeGate`'s live
+  `Session.prUrl` hint is repository-scoped through `gateCandidateUrl`: the session's own
+  binding reads the scalar, a secondary binding resolves from the adoption ledger by
+  repository. Independent per-PR merges are adopted decision 4.
+- **One outstanding delivery per session.** A conversation's runs share one pane and one turn,
+  so at most one may have a packet the session still owes a turn for; the rest hold as
+  `prepared` with `queued_for_conversation` on a waiting action. Within a run, two ready
+  actions are still REFUSED rather than serialized - that contract is unchanged. The queue is
+  re-derived from persisted delivery and attempt state, so a restart rebuilds it and a refused
+  packet is still never re-prepared.
+
 ## Session actions
 
 A SessionAction is a durable side effect, not an evaluator:

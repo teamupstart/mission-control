@@ -828,6 +828,12 @@ test("run detail carries display provenance and never the opaque idempotency key
     "noteKey",
     "phase",
     "refusedDeliveryCount",
+    // The repository this run reviews, and the third field on this list paid for
+    // deliberately. One workflow run is one repository, and a multi-repo task's session
+    // carries several - sharing a conversation, a workflow, a version and usually a status,
+    // so this is the only thing that tells two of its chips apart. Conditionally spread like
+    // the two above it, so a run whose binding named no repository carries no key at all.
+    "repoRoot",
     "reviewPosture",
     "round",
     "segment",

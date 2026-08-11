@@ -261,6 +261,101 @@ test("a run out of repair rounds offers the grant, and the grant revives it", as
 });
 
 /**
+ * Pin an Inspector gate onto a run, standing in for the adoption this fixture cannot do.
+ *
+ * Reaching a gate for real needs a passing reviewer, an adopted pull request and an
+ * Inspector poll that shells out to `gh` - none of which exists here. This writes the one
+ * column the operator-visible consequence reads (`gate_state_json.prKey`, which the run
+ * summary turns into `gatePrNumber`), the same single sanctioned fabrication
+ * `workflow-pull-request-mismatch.spec.ts` makes when it writes an observed head.
+ */
+function pinGate(daemon: DaemonHandle, runId: string, prNumber: number): void {
+  const db = new DatabaseSync(join(daemon.home, "harness.db"));
+  try {
+    db.prepare("UPDATE workflow_runs SET gate_state_json = ? WHERE id = ?").run(
+      JSON.stringify({
+        prKey: `owner/repo#${prNumber}`,
+        prUrl: `https://github.example/owner/repo/pull/${prNumber}`,
+        targetHeadSha: "sha1",
+        failedHeadSha: "sha1",
+        enteredAt: 1_700_000_000_000,
+        lastObservedAt: null,
+        observedHeadSha: null,
+        reviewPosture: null,
+        waitReason: "findings",
+        findingFingerprints: [],
+      }),
+      runId,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The RETIRE half of the two controls that clear a spent gate.
+ *
+ * The Merge queue sends an operator here in as many words - "open the run to grant more
+ * rounds or retire it" - and retiring is the destructive one: it does not just tidy a queue,
+ * it releases the Shipping veto this run holds over somebody's pull request. A confirmation
+ * that stayed silent about that would be a trap, so the sentence is asserted where a person
+ * reads it, in the dialog, rather than only in a render test.
+ */
+test("retiring a round-limited gate says what it unblocks, then releases it", async ({
+  dashboard,
+  daemon,
+}) => {
+  const runId = await seedRoundLimitedRun(dashboard, daemon);
+  pinGate(daemon, runId, 486);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  // Both controls stand together on a spent run: grant to carry on, retire to let the pull
+  // request go. Asserting the pair is the point - the reported dead end had neither.
+  await expect(header.getByRole("button", { name: /Grant .* rounds?/ })).toBeVisible({ timeout: 40_000 });
+  const retire = header.getByRole("button", { name: "Cancel run" });
+  await expect(retire).toBeVisible();
+  await dashboard.mouse.move(0, 0);
+  await shoot(header, "04-grant-and-retire-stand-together");
+
+  await retire.click();
+  const confirm = dashboard.getByRole("dialog");
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText("It will not resume");
+  // The half that was silent. Naming the number matters: an operator retiring one run of
+  // several needs to know WHICH pull request they just let through.
+  await expect(confirm).toContainText("lifts the merge block this run holds on #486");
+  // Off the control before the capture: `Tooltip` portals a bubble under a resting pointer,
+  // and the pointer is still on the button that opened this dialog.
+  await dashboard.mouse.move(0, 0);
+  await shoot(dashboard, "05-retire-names-what-it-unblocks");
+  await confirm.getByRole("button", { name: "Cancel run" }).click();
+  await expect(confirm).toBeHidden();
+
+  /*
+   * And the veto is genuinely gone, not merely described as gone. `mergeGate` walks active
+   * bindings and takes `activeRunForBinding`, which excludes exactly the three terminal
+   * statuses in SQL - so a cancelled run is one no gate can veto from, and the next
+   * Inspector sweep recomputes the block without it.
+   */
+  await expect
+    .poll(async () => statusOf(daemon, runId), {
+      message: "retiring the gate should end the run that holds the veto",
+      timeout: 20_000,
+    })
+    .toBe("cancelled");
+
+  // The binding keeps the run in history and stops offering it as the active one, which is
+  // the whole mechanism: no active run, no veto, and the row is still there to read.
+  const runs = await api<{ items: Array<{ id: string; status: string }> }>(
+    daemon,
+    "/api/workflow-runs",
+  );
+  const row = runs.items.find((item) => item.id === runId);
+  expect(row?.status, "the retired run vanished from history instead of ending").toBe("cancelled");
+});
+
+/**
  * The other half, on the surface where an operator actually hits the wall.
  *
  * Somebody looking at a stuck pull request reads the Merge queue, not the run page, and what

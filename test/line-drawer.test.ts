@@ -454,6 +454,28 @@ test("a remedy is offered only where the summary proves the daemon would accept 
     /Durable task completion/,
   );
 
+  /*
+   * Retiring a spent gate says which pull request it lets through, and only where that is
+   * true. Cancelling a round-limited run is not merely tidying a queue - it releases the
+   * Shipping veto the run holds, which is the "or retire it" the Merge queue's own
+   * `workflow-gate-spent` sentence sends the operator here for. A confirmation silent about
+   * that is a trap: an operator clearing several stopped runs would be merging pull requests
+   * without being told.
+   */
+  const retiring = runRemedy(
+    run({ status: "blocked", phase: "round_limit", gatePrNumber: 486 }),
+    "Durable task completion",
+  );
+  assert.match(retiring!.confirm!.body, /lifts the merge block this run holds on #486/);
+  assert.equal(retiring!.confirm!.confirmHint, "Stops the run and unblocks the PR");
+  // And silent where it is not: a run holding no gate releases nothing by stopping, and a
+  // gone session reaching the same dismiss may never have had one.
+  assert.doesNotMatch(blocked("round_limit")!.confirm!.body, /merge block/);
+  assert.doesNotMatch(
+    blocked("session_disappeared", { gatePrNumber: 486 })!.confirm!.body,
+    /merge block/,
+  );
+
   // Retry is available for exactly the phase `manager.retry` accepts, and it sends no
   // `nodeAttemptId` - that comes off run detail, and omitting it makes the daemon pick the
   // newest errored attempt, which is the run page's own default.

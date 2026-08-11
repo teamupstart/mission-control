@@ -923,8 +923,12 @@ reports `workflow-gate-pending` - "an active workflow still owns the Inspector f
 and waiting is correct. A gate that spent its budget reports **`workflow-gate-spent`**, which
 says the stop is permanent and names the way out, because no further push can clear it: the
 gate re-tests the budget on every new head, so the operator cannot push their way out. The two
-controls that do clear it are **Grant 2 more rounds** and cancelling the run, and cancelling
-now says in its confirmation that it lifts the merge block on the pull request.
+controls that do clear it are **Grant 2 more rounds** and **Cancel run** - carry on, or let
+the pull request go. Retiring is the destructive one, so both places that offer it - run
+detail's `Cancel run` and the Review drawer's `Dismiss` - now name the pull request they
+unblock: *"It also lifts the merge block this run holds on #486, which no longer waits on a
+review that has stopped."* They read it from one derivation rather than spelling it twice,
+so the two cannot come to disagree about whether stopping a run touches a pull request.
 
 ### Live repair delivery and Foreman completion
 

@@ -10,6 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import type {
@@ -637,6 +638,32 @@ test("a run whose version is missing cannot navigate to a composer that has noth
     /<button class="wf-run-version" aria-label="Open workflow version 2 in the composer"[^>]*disabled/,
   );
   assert.ok(hasTooltip(html, "The immutable published version is missing or corrupt"));
+});
+
+/*
+ * Run detail's `Cancel run` is the RETIRE half of the two controls that clear a spent gate,
+ * and the Merge queue names it in as many words - "open the run to grant more rounds or
+ * retire it". Retiring releases the Shipping veto the run holds over a pull request, so its
+ * confirmation has to say so, exactly as the drawer's `Dismiss` does.
+ *
+ * Asserted on the SOURCE rather than the markup because the confirmation body is built in an
+ * onClick handler, which `renderToStaticMarkup` never runs - the browser spec drives the
+ * dialog itself. What this pins is the thing a render test can pin and a spec cannot: that
+ * the two surfaces go through one derivation instead of spelling the sentence twice, which
+ * is how they would come to disagree about whether stopping a run touches a pull request.
+ */
+test("run detail's cancel takes its gate sentence from the shared derivation", () => {
+  const source = readFileSync(
+    new URL("../src/web/workflows/WorkflowRuns.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /cancelGateSentence\(cancelReleasesGate\(/);
+  assert.match(source, /confirmHint: cancelGateHint\(cancelReleasesGate\(/);
+  assert.doesNotMatch(
+    source,
+    /lifts the merge block/,
+    "run detail spells its own copy of the drawer's sentence",
+  );
 });
 
 /**

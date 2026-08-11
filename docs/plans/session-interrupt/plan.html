@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session interrupt - stop a running agent with Ctrl+C</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1c1c1a;
+    --muted: #63635e;
+    --rule: #e3e2dd;
+    --accent: #9a5b2c;
+    --accent-soft: #f4ece4;
+    --code-bg: #f2f1ed;
+    --ok: #3f6f4a;
+    --warn: #8a5a12;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14140f;
+      --panel: #1b1b17;
+      --ink: #ecebe4;
+      --muted: #9c9b91;
+      --rule: #2e2e28;
+      --accent: #d99a63;
+      --accent-soft: #2a2119;
+      --code-bg: #232320;
+      --ok: #8fc39b;
+      --warn: #d7ab63;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+    padding: 3.5rem 1.25rem 6rem;
+  }
+  .wrap { max-width: 56rem; margin: 0 auto; }
+  header.hero { border-bottom: 1px solid var(--rule); padding-bottom: 1.75rem; margin-bottom: 2.5rem; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 .6rem; letter-spacing: -.02em; }
+  .lede { color: var(--muted); font-size: 1.08rem; margin: 0; max-width: 46rem; }
+  h2 {
+    font-size: 1.35rem; margin: 3rem 0 .9rem; letter-spacing: -.01em;
+    padding-top: 1.4rem; border-top: 1px solid var(--rule);
+  }
+  h2:first-of-type { border-top: 0; padding-top: 0; }
+  h3 { font-size: 1.05rem; margin: 2rem 0 .6rem; letter-spacing: -.005em; }
+  p { margin: 0 0 1rem; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.35rem; }
+  li { margin-bottom: .45rem; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  strong { font-weight: 650; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: .875em; background: var(--code-bg);
+    padding: .12em .38em; border-radius: 4px;
+  }
+  .scroll { overflow-x: auto; margin: 0 0 1.4rem; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; font-size: .94rem; }
+  th, td { text-align: left; padding: .6rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 620; color: var(--muted); font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .card {
+    background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 10px; padding: 1.15rem 1.35rem; margin: 0 0 1.4rem;
+  }
+  .card.accent { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+  .card h3 { margin-top: 0; }
+  figure { margin: 1.5rem 0 2rem; }
+  figure .scroll { margin-bottom: .6rem; }
+  figcaption { color: var(--muted); font-size: .88rem; }
+  svg { display: block; }
+  .finding { margin-bottom: 1.5rem; }
+  .finding > .t { font-weight: 640; display: block; margin-bottom: .2rem; }
+  .kbd {
+    display: inline-block; font-family: ui-monospace, Menlo, monospace; font-size: .8em;
+    border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 5px;
+    padding: .08em .42em; background: var(--panel);
+  }
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Session interrupt</h1>
+  <p class="lede">Give the operator one gesture - <span class="kbd">Ctrl</span><span class="kbd">C</span> - that stops whatever the selected agent is doing right now, clears what was queued behind it, and puts the cursor in the composer, so the next instruction can be typed immediately instead of after the agent finishes work nobody wants any more.</p>
+</header>
+
+<h2>The problem</h2>
+<p>Today the dashboard has exactly two ways to make an agent stop: wait, or kill the whole session. <code>POST /api/sessions/:id/kill</code> terminates the session - it does not interrupt a turn. There is nothing between "let it run" and "end it".</p>
+<p>That gap is felt every time an agent is sent down the wrong path. The operator watches it spend minutes on work that is already known to be wrong, because the only alternative destroys the conversation that holds all the context worth keeping.</p>
+
+<h2>The approved shape</h2>
+
+<div class="card accent">
+  <h3>Ctrl+C is the dashboard gesture. The wire action is per-runtime, and it is not Ctrl+C.</h3>
+  <p style="margin-bottom:0">In both the Claude Code and Codex TUIs, <span class="kbd">Esc</span> interrupts the running turn while <span class="kbd">Ctrl</span><span class="kbd">C</span> clears the input line and, pressed twice, quits the CLI. Forwarding the operator's literal Ctrl+C to a terminal pane would kill the session it was meant to interrupt. The repository already knows this - <code>codex/sdk.ts:466</code> refers in passing to "the pane path's Escape".</p>
+</div>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Runtime</th><th>Mechanism</th><th>Status today</th></tr></thead>
+  <tbody>
+    <tr><td><code>sdk</code></td><td>the driver's own interrupt primitive</td><td><strong>already implemented</strong>, private</td></tr>
+    <tr><td><code>terminal</code></td><td><code>Escape</code> into the bound pane</td><td>key does not exist in the vocabulary</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Submitted decisions</h3>
+<p>These were selected by the operator and are requirements, not open questions:</p>
+<ol>
+  <li><strong>Scope: both runtimes, SDK first.</strong> Two merge units. The SDK path is a route and a control over drivers that already work; the terminal path is a vocabulary change that touches four backends. Splitting them keeps each pull request reviewable, and the first is independently useful the day it lands.</li>
+  <li><strong>Binding: <code>ctrl+c</code>, yielding to an active text selection.</strong> Ctrl+C is copy on Windows and Linux, which the Electron shell inherits. When there is a live selection the browser keeps the keystroke; otherwise it stops the agent. Rebindable like every other action.</li>
+  <li><strong>Follow-through: stop, drop the queue, focus the composer.</strong> Interrupting while leaving queued turns to fire afterwards would restart the work the operator just stopped. The queue is cleared and the composer takes focus, because typing the replacement instruction is the reason the gesture exists.</li>
+  <li><strong>Feedback: a transient "interrupting" presentation.</strong> The terminal path is fire-and-forget - an <code>Escape</code> written into a pane cannot be confirmed - so the card shows an optimistic interrupting state that resolves on the next real reading or times out back to working.</li>
+</ol>
+
+<h2>Request flow</h2>
+<p>The new path reuses the existing runtime fan-out rather than adding a second one. <code>injectPromptForRuntime</code> (<code>src/server/sdk/deliver.ts</code>) and <code>requestSessionStop</code> (<code>src/server/sdk/control.ts</code>) are the two templates; interrupt becomes the third helper of the same shape.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 900 470" width="900" height="470" role="img" aria-label="Flow: Ctrl+C in the dashboard posts to the interrupt route, which fans out by runtime to either the SDK supervisor and driver, or a pane Escape keystroke, and separately drops queued turns.">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <style>
+    .b { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; }
+    .b.hi { stroke: var(--accent); stroke-width: 2; }
+    .b.new { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .t { fill: var(--ink); font: 13px ui-sans-serif, -apple-system, sans-serif; text-anchor: middle; }
+    .t.sm { font-size: 11.5px; fill: var(--muted); }
+    .t.bold { font-weight: 640; }
+    .ln { stroke: var(--muted); stroke-width: 1.5; fill: none; color: var(--muted); }
+    .ln.dash { stroke-dasharray: 5 4; }
+    .lbl { fill: var(--muted); font: 11px ui-monospace, Menlo, monospace; text-anchor: middle; }
+  </style>
+
+  <rect class="b hi" x="330" y="14" width="240" height="46" rx="8"/>
+  <text class="t bold" x="450" y="35">Ctrl+C in the dashboard</text>
+  <text class="t sm" x="450" y="51">yields to an active text selection</text>
+
+  <line class="ln" x1="450" y1="60" x2="450" y2="88" marker-end="url(#ar)"/>
+
+  <rect class="b new" x="310" y="90" width="280" height="44" rx="8"/>
+  <text class="t bold" x="450" y="117">POST /api/sessions/:id/interrupt</text>
+
+  <line class="ln" x1="450" y1="134" x2="450" y2="162" marker-end="url(#ar)"/>
+  <rect class="b new" x="345" y="164" width="210" height="42" rx="8"/>
+  <text class="t bold" x="450" y="190">interruptForRuntime()</text>
+
+  <path class="ln" d="M 380 206 L 380 232 L 200 232 L 200 258" marker-end="url(#ar)"/>
+  <text class="lbl" x="252" y="226">runtime = sdk</text>
+  <path class="ln" d="M 520 206 L 520 232 L 700 232 L 700 258" marker-end="url(#ar)"/>
+  <text class="lbl" x="648" y="226">runtime = terminal</text>
+
+  <rect class="b" x="80" y="260" width="240" height="44" rx="8"/>
+  <text class="t" x="200" y="287">SdkSupervisor.interrupt(id)</text>
+  <line class="ln" x1="200" y1="304" x2="200" y2="330" marker-end="url(#ar)"/>
+  <rect class="b" x="80" y="332" width="240" height="46" rx="8"/>
+  <text class="t" x="200" y="353">handle.interrupt()</text>
+  <text class="t sm" x="200" y="369">already implemented</text>
+
+  <rect class="b" x="580" y="260" width="240" height="44" rx="8"/>
+  <text class="t" x="700" y="287">actions.interruptSession()</text>
+  <line class="ln" x1="700" y1="304" x2="700" y2="330" marker-end="url(#ar)"/>
+  <rect class="b" x="580" y="332" width="240" height="46" rx="8"/>
+  <text class="t" x="700" y="353">sendKeys(pane, ['escape'])</text>
+  <text class="t sm" x="700" y="369">Phase 2 adds this key</text>
+
+  <path class="ln" d="M 200 378 L 200 408 L 380 408 L 380 420" marker-end="url(#ar)"/>
+  <text class="lbl" x="268" y="402">turn_done</text>
+  <path class="ln dash" d="M 700 378 L 700 408 L 520 408 L 520 420" marker-end="url(#ar)"/>
+  <text class="lbl" x="640" y="402">no confirmation</text>
+
+  <rect class="b hi" x="300" y="422" width="300" height="42" rx="8"/>
+  <text class="t bold" x="450" y="448">session_upsert - card returns to idle</text>
+
+  <path class="ln" d="M 590 112 L 800 112 L 800 152" marker-end="url(#ar)"/>
+  <rect class="b" x="672" y="154" width="216" height="46" rx="8"/>
+  <text class="t" x="780" y="175">drop queued turns</text>
+  <text class="t sm" x="780" y="191">PendingTurnManager outbox</text>
+</svg>
+</div>
+<figcaption>The dashed arrow is the honest part of the picture: on the terminal runtime nothing reports back that the interrupt landed, which is what decision 4 exists to present.</figcaption>
+</figure>
+
+<h2>Verified findings</h2>
+<p>Checked against the repository at <code>eee83d2</code>.</p>
+
+<div class="finding">
+  <span class="t">The SDK drivers already interrupt.</span>
+  <p><code>SdkSessionHandle.interrupt()</code> is declared at <code>src/server/harness/types.ts:676</code> and implemented by both drivers - <code>claude/sdk.ts:412</code> calls the vendor SDK's <code>query.interrupt()</code>, and <code>codex/sdk.ts:463</code> issues a <code>turn/interrupt</code> RPC. Nothing above the driver reaches them: the only callers are <code>stop()</code> and <code>clearContext()</code>. There is no supervisor method, no route, no protocol type, no API client method, and no UI. Pi has no driver at all (<code>sdk: null</code>), so it is terminal-only by construction.</p>
+</div>
+
+<div class="finding">
+  <span class="t">The turn bookkeeping reconciles itself.</span>
+  <p>This corrects the assumption a first reading suggests. <code>sdk_sessions.turn_in_progress</code> and the supervisor's in-memory <code>unfinishedTurns</code> drive restart recovery, and an interrupt that left them set would have the daemon re-drive the cancelled turn. But they are maintained by the event pump, not by the caller: a <code>turn_done</code> event decrements and rewrites both (<code>supervisor.ts:772-777</code>). Both drivers emit <code>turn_done</code> after an interrupt - Claude on the CLI's <code>result</code> message (<code>claude/sdk.ts:849</code>), Codex through <code>turn/completed</code> into <code>finishTurn</code> (<code>codex/sdk.ts:858</code>, <code>:1083</code>). So the interrupt control must <strong>not</strong> adjust that bookkeeping by hand; doing so would double-decrement. The phase's job is to pin the self-reconciliation with a test.</p>
+</div>
+
+<div class="finding">
+  <span class="t">Not serializing the interrupt has a precedent.</span>
+  <p><code>SdkSupervisor.send()</code> runs through a per-session FIFO (<code>serialize()</code>), and an interrupt queued behind the turn it is meant to stop is useless by definition. <code>stop(id)</code> is already documented as "deliberately NOT queued behind pending sends" (<code>supervisor.ts:472</code>) for exactly this reason. Interrupt follows <code>stop</code>, not <code>send</code>.</p>
+</div>
+
+<div class="finding">
+  <span class="t">The terminal key vocabulary has eight keys and no escape.</span>
+  <p><code>src/server/terminal/types.ts:105</code> defines <code>KEYS</code> as <code>enter</code>, four arrows, <code>shift-up</code>, <code>shift-down</code>, <code>shift-tab</code>. Every backend renders a total <code>Record&lt;Key, string&gt;</code>, so adding one key fails typecheck in tmux, wezterm, ghostty, and cmux until each declares what it looks like. Three test files iterate <code>ALL_KEYS</code> and will require the same.</p>
+</div>
+
+<div class="finding">
+  <span class="t">The queue to drop is Mission Control's outbox, and only that one.</span>
+  <p>A first reading of the vendor SDK suggests otherwise, so this is worth stating precisely. The Claude Agent SDK does maintain a driver-side command queue and its wire protocol does expose <code>cancel_queued</code> - described in the vendored types as what "a remote UI's Stop button" sets. But the public <code>Query.interrupt()</code> in the pinned version (0.3.220) <strong>takes no arguments</strong> (<code>sdk.d.ts:2293</code>), so <code>cancel_queued</code> is not reachable through the API this driver uses, and neither is the <code>cancel_async_message</code> follow-up.</p>
+  <p>That turns out not to matter, because Mission Control never builds a driver-side queue. There are exactly two send paths: <code>deliver.ts:57</code> calls <code>supervisor.send()</code>, which is serialized and whose mid-turn deliveries <em>steer</em> into the active turn rather than queue behind it; and <code>pending-turns.ts:538</code> calls <code>sendWhenIdle()</code>, which by construction only delivers to an idle session. Queued work lives in <code>PendingTurnManager</code>, which has per-turn <code>recall</code>. So decision 3 is satisfied by dropping the outbox rows. The interrupt receipt's <code>still_queued</code> should be logged rather than acted on - the local wrapper type currently discards it (<code>claude/sdk-types.ts:86</code> declares <code>interrupt(): Promise&lt;unknown&gt;</code>) - and a non-empty list would be a genuine surprise worth seeing.</p>
+</div>
+
+<div class="finding">
+  <span class="t">Ctrl+C reaches the handler from inside the composer, which is wanted.</span>
+  <p>App.tsx's keydown handler skips shortcuts while typing, except for chords carrying ⌘ or ⌃ (<code>chordHasCommandModifier</code>, <code>keybindings.ts:399</code>). Ctrl+C qualifies, so the gesture works mid-sentence while composing the replacement instruction. That is also precisely where copy lives, which is what the selection check in decision 2 protects.</p>
+</div>
+
+<div class="finding">
+  <span class="t">Escape cannot be the binding.</span>
+  <p><code>RESERVED_KEYS</code> (<code>keybindings.ts:285</code>) blocks Escape from being bound at all - it owns the overlay-peel ladder. This constrains only the dashboard chord; Escape remains the byte written into the pane.</p>
+</div>
+
+<div class="finding">
+  <span class="t">A new SessionState is the expensive way to show "interrupting".</span>
+  <p>The union at <code>src/shared/types.ts:59</code> is a wire contract with exhaustive records over it in <code>session-contracts.test.ts</code>, <code>format.ts</code> tone mapping, board columns, and the console rail. The existing <code>stopping</code> state is close but means eviction is coming, which is a different promise. Decision 4 is therefore satisfied with client-side optimistic state cleared by the next <code>session_upsert</code>, leaving the durable union untouched.</p>
+</div>
+
+<div class="finding">
+  <span class="t">The capability must split across the shared/server boundary.</span>
+  <p><code>HarnessCapabilities</code> (<code>src/shared/harness-capabilities.ts:338</code>) is browser-safe and cannot import <code>Key</code> from <code>src/server/terminal/</code>. It carries only what the browser asks - whether to offer the control - while the concrete keystroke lives beside <code>ControlSpec</code> in each <code>src/server/harness/*/control.ts</code>. This is the split <code>runtimes</code>/<code>sdk</code> and <code>resumes</code>/<code>resume</code> already use, including their "one fact in two files" agreement tests.</p>
+</div>
+
+<h2>Scope</h2>
+<p><strong>In scope:</strong> interrupting the current turn on both runtimes; dropping the session's queued turns; the <code>ctrl+c</code> binding with selection yielding, including from inside the composer; the transient interrupting presentation; a visible control in the action bar so the gesture is discoverable; Playwright coverage on both runtimes.</p>
+<p><strong>Out of scope:</strong> interrupting from the conversation transcript's own reply box beyond what the global binding already provides; interrupting a session that is not the selected one; any change to <code>kill</code> semantics; queue-aware interrupt for the Foreman or workflow origins beyond dropping their outbox rows like any other.</p>
+
+<h2>Phasing</h2>
+<p>Split into two merge units, indexed in <a href="phased-plan.md">phased-plan.md</a>:</p>
+<ol>
+  <li><strong>SDK runtime interrupt, end to end</strong> - the capability slot, the supervisor control, the route, the queue drop, the binding, the presentation, and the action-bar control. Terminal sessions get the control in a disabled state with a reason.</li>
+  <li><strong>Terminal runtime Escape path</strong> - the <code>escape</code> key across four backends, the guarded pane writer, and the capability declaration that lights the control up for terminal sessions.</li>
+</ol>
+
+<footer>
+  Rendering of <code>docs/plans/session-interrupt/plan.md</code>, which stays the source of truth.
+  Implementation phases: <a href="phased-plan.md">phased-plan.md</a>.
+</footer>
+
+</div>
+</body>
+</html>

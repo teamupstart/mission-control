@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session interrupt - phased implementation plan</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #1c1c1a; --muted: #63635e;
+    --rule: #e3e2dd; --accent: #9a5b2c; --accent-soft: #f4ece4; --code-bg: #f2f1ed;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14140f; --panel: #1b1b17; --ink: #ecebe4; --muted: #9c9b91;
+      --rule: #2e2e28; --accent: #d99a63; --accent-soft: #2a2119; --code-bg: #232320;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+    padding: 3.5rem 1.25rem 6rem;
+  }
+  .wrap { max-width: 56rem; margin: 0 auto; }
+  header.hero { border-bottom: 1px solid var(--rule); padding-bottom: 1.75rem; margin-bottom: 2.5rem; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .6rem; letter-spacing: -.02em; }
+  .lede { color: var(--muted); font-size: 1.05rem; margin: 0; max-width: 46rem; }
+  h2 { font-size: 1.3rem; margin: 3rem 0 .9rem; letter-spacing: -.01em; padding-top: 1.4rem; border-top: 1px solid var(--rule); }
+  h2:first-of-type { border-top: 0; padding-top: 0; }
+  h3 { font-size: 1.02rem; margin: 1.8rem 0 .5rem; }
+  p { margin: 0 0 1rem; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.35rem; }
+  li { margin-bottom: .5rem; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  strong { font-weight: 650; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875em; background: var(--code-bg); padding: .12em .38em; border-radius: 4px; }
+  .scroll { overflow-x: auto; margin: 0 0 1.4rem; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; min-width: 40rem; font-size: .93rem; }
+  th, td { text-align: left; padding: .65rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 620; color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 1.1rem 1.3rem; margin: 0 0 1.4rem; }
+  .card.accent { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+  figure { margin: 1.4rem 0 2rem; }
+  figcaption { color: var(--muted); font-size: .88rem; margin-top: .5rem; }
+  svg { display: block; }
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Session interrupt - phased plan</h1>
+  <p class="lede">Source plan: <a href="plan.html">plan.html</a> (markdown: <a href="plan.md">plan.md</a>, which stays the source of truth). This index turns the approved design into implementation units that separate agents can execute and merge safely.</p>
+</header>
+
+<h2>Incorporated human decisions</h2>
+<p>Submitted via Mission Control. These are requirements, not open questions:</p>
+<ol>
+  <li><strong>Scope: both runtimes, SDK first.</strong> Two phases, serial. The SDK path lands and is useful on its own; the terminal path follows.</li>
+  <li><strong>Binding: <code>ctrl+c</code>, yielding to an active text selection.</strong> Rebindable like every other action.</li>
+  <li><strong>Follow-through: stop, drop the queued turns, focus the composer.</strong></li>
+  <li><strong>Feedback: a transient "interrupting" presentation</strong>, not a new durable <code>SessionState</code>.</li>
+</ol>
+
+<h2>Investigated findings the phases rely on</h2>
+<p>Verified against the repository at commit <code>eee83d2</code>.</p>
+
+<div class="card accent">
+  <p style="margin:0"><strong>Both SDK drivers already implement the primitive.</strong> <code>SdkSessionHandle.interrupt()</code> (<code>src/server/harness/types.ts:676</code>) is implemented at <code>claude/sdk.ts:412</code> and <code>codex/sdk.ts:463</code>. Its only callers today are <code>stop()</code> and <code>clearContext()</code>. Phase 1 exposes what exists rather than writing a driver control.</p>
+</div>
+
+<ul>
+  <li><strong>Turn bookkeeping self-reconciles; do not touch it by hand.</strong> <code>unfinishedTurns</code> and <code>sdk_sessions.turn_in_progress</code> are maintained by the event pump on <code>turn_done</code> (<code>supervisor.ts:772-777</code>), and both drivers emit <code>turn_done</code> after an interrupt (<code>claude/sdk.ts:849</code>; <code>codex/sdk.ts:858</code> → <code>finishTurn</code> → <code>:1083</code>). A manual decrement would double-count and corrupt restart recovery. Phase 1 pins this with a test instead.</li>
+  <li><strong>Interrupt must bypass the per-session send FIFO.</strong> <code>send()</code> serializes (<code>supervisor.ts:298</code>); an interrupt queued behind the turn it stops is inert. <code>stop(id)</code> is already documented as deliberately unqueued (<code>supervisor.ts:472</code>) - interrupt copies <code>stop</code>, not <code>send</code>.</li>
+  <li><strong><code>cancel_queued</code> is unreachable, and unnecessary.</strong> The pinned Agent SDK (0.3.220) declares <code>interrupt()</code> with no parameters (<code>sdk.d.ts:2293</code>), so the queue-cancelling flag on the wire protocol has no API surface. It is moot: Mission Control never builds a driver-side queue - its only two send paths are <code>supervisor.send()</code> (serialized; mid-turn sends <em>steer</em>) and <code>sendWhenIdle()</code> (idle-only). The queue decision 3 names is the <code>PendingTurnManager</code> outbox.</li>
+  <li><strong>The capability record is exhaustive and its null paths are policed.</strong> <code>harness-capabilities.test.ts:102</code> requires every <code>AgentType</code> to answer every slot; <code>:110</code> requires the shared and server records to agree; <code>:155</code> requires every nullable slot to have a real null declarer or a named fixture, and fails if the two lists drift. <code>harness-sdk.test.ts</code> is the model for the agreement test.</li>
+  <li><strong><code>HarnessCapabilities</code> cannot name a terminal <code>Key</code>.</strong> It is browser-safe (<code>harness-capabilities.ts:338</code>) and <code>Key</code> lives in <code>src/server/terminal/</code>. The slot carries only what the browser asks; the keystroke lives server-side beside <code>ControlSpec</code>.</li>
+  <li><strong>The terminal key vocabulary is eight keys with no escape</strong> (<code>src/server/terminal/types.ts:105</code>). Each backend renders a total <code>Record&lt;Key, string&gt;</code> and three test files iterate <code>ALL_KEYS</code>, so Phase 2's single added key is a four-backend change enforced by the compiler.</li>
+  <li><strong><code>Escape</code> is unbindable in the dashboard</strong> (<code>RESERVED_KEYS</code>, <code>keybindings.ts:285</code>), so the chord cannot be Escape even though Escape is the byte written into the pane.</li>
+  <li><strong>The typing guard blocks <code>BAR_ACTIONS</code>, so the composer case needs explicit work.</strong> <code>App.tsx:1554</code> returns on <code>typing</code> <em>above</em> the <code>BAR_ACTIONS</code> dispatch at <code>:1834</code>, and the <code>chordHasCommandModifier</code> bypass at <code>:1441</code> serves exactly one action (the palette). Adding a <code>BAR_ACTIONS</code> row alone gives a chord that is dead inside the composer - which is the case decision 3 is about. Phase 1 owns the bypass and the selection check.</li>
+  <li><strong>The board overview drills in unless told otherwise.</strong> <code>App.tsx:1843-1863</code> opens the drill-in for any <code>BAR_ACTIONS</code> chord with no mounted bar, except <code>cycleMode</code>. Interrupt is a live control like <code>cycleMode</code> and needs the same in-place arm.</li>
+  <li><strong>tmux copy-mode refuses writes on purpose, and Escape is the key that exits it.</strong> <code>paneWriteBlock</code> (<code>actions.ts:275</code>) blocks rather than cancels, by a documented decision restated in <code>test/pane-copy-mode.test.ts:31</code>. Phase 2 keeps the refusal and surfaces it as a 409, because an ungated Escape would exit copy-mode instead of reaching the agent.</li>
+  <li><strong>Ghostty cannot express Escape as a CSI</strong> (<code>via: "csi"</code> always emits <code>ESC [ …</code>), so it needs <code>via: "named"</code> - and both Ghostty and cmux reject unknown key names, so those two spellings must be measured live rather than assumed.</li>
+  <li><strong>Documentation surfaces are explicit lists.</strong> <code>docs/ui.md</code> carries the shortcut table and a "Keycaps on the buttons" enumeration naming every control that prints its chord; a new control has to join both.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Phase</th><th>Delivers</th><th>Direct prerequisites</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>1</strong><br><a href="phase-1-sdk-interrupt.md">phase-1-sdk-interrupt.md</a></td>
+      <td>Ctrl+C stops a running SDK-runtime agent: capability slot, supervisor control, route, outbox drop, binding with selection yielding, transient presentation, action-bar control. Terminal cards show the control disabled with a reason.</td>
+      <td>none</td>
+    </tr>
+    <tr>
+      <td><strong>2</strong><br><a href="phase-2-terminal-interrupt.md">phase-2-terminal-interrupt.md</a></td>
+      <td>The same gesture on terminal-runtime sessions: <code>escape</code> added to the key vocabulary across four backends, a guarded pane writer, and the capability declaration that enables the control.</td>
+      <td>Phase 1</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Dependency graph and merge order</h2>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 720 130" width="720" height="130" role="img" aria-label="Phase 1 precedes Phase 2. Serial, no concurrency groups.">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <style>
+    .bx { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .tx { fill: var(--ink); font: 13.5px ui-sans-serif, -apple-system, sans-serif; text-anchor: middle; font-weight: 640; }
+    .tx.sm { font-size: 11.5px; fill: var(--muted); font-weight: 400; }
+    .l { stroke: var(--muted); stroke-width: 2; fill: none; color: var(--muted); }
+  </style>
+  <rect class="bx" x="30" y="28" width="280" height="70" rx="9"/>
+  <text class="tx" x="170" y="56">Phase 1 - SDK interrupt</text>
+  <text class="tx sm" x="170" y="76">gesture, route, capability, UI</text>
+  <line class="l" x1="312" y1="63" x2="404" y2="63" marker-end="url(#a2)"/>
+  <rect class="bx" x="408" y="28" width="282" height="70" rx="9"/>
+  <text class="tx" x="549" y="56">Phase 2 - Terminal Escape</text>
+  <text class="tx sm" x="549" y="76">key vocabulary, pane writer</text>
+</svg>
+</div>
+<figcaption>Serial, with no concurrency groups. Merge order equals phase order.</figcaption>
+</figure>
+
+<p>Phase 2 consumes the capability slot, the route, the runtime fan-out helper, the binding, and the presentation - all owned by Phase 1 - and changes only which mechanism the fan-out selects for a terminal session.</p>
+<p>Phase 1 deliberately ships a control that is disabled on terminal cards rather than absent: the disabled state is driven by the capability slot, so Phase 2 turns it on by declaring the capability rather than by adding UI.</p>
+
+<h2>Cross-phase contracts</h2>
+<p>Phase 1 fixes these. Phase 2 consumes them and must not change them:</p>
+<ul>
+  <li><strong>Capability slot.</strong> <code>HarnessCapabilities.interrupt: InterruptSpec | null</code>, carrying the runtimes a harness can be interrupted on and nothing more - it cannot name a terminal <code>Key</code>. Phase 1 sets the shape and adds <code>canInterrupt(agent, runtime)</code>; Phase 2 widens the declarations but does not re-shape the slot. Phase 1 declares <code>pi: null</code>, the slot's real null declarer; Phase 2 flips it onto <code>BY_FIXTURE</code> if pi gains the capability.</li>
+  <li><strong>Route.</strong> <code>POST /api/sessions/:id/interrupt</code>, no request body, returning the <code>ActionResult</code>-shaped envelope the sibling session routes return. Phase 2 does not add a second route or a body.</li>
+  <li><strong>Runtime fan-out.</strong> One helper beside <code>injectPromptForRuntime</code>. Phase 1 writes both arms; the terminal arm returns a "not supported on this runtime" result. Phase 2 replaces the body of that arm only.</li>
+  <li><strong>Queue semantics.</strong> Interrupt drops this session's <code>PendingTurnManager</code> outbox rows. Phase 1 owns that behavior for both runtimes - it is runtime-independent - so Phase 2 inherits it and adds nothing.</li>
+  <li><strong>Binding and action id.</strong> One <code>ActionId</code> (<code>interrupt</code>), one <code>ACTIONS</code> entry defaulting to <code>ctrl+c</code>, one <code>BAR_ACTIONS</code> pair, one <code>ActionBarHandle</code> method. Phase 2 adds none of these.</li>
+  <li><strong>Presentation.</strong> The transient interrupting state is client-side, cleared by the next <code>session_upsert</code> or a timeout. Neither phase adds a member to <code>SessionState</code>.</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+<p>Each phase runs <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, and - because both change UI - <code>npm run build</code> followed by <code>npm run test:e2e</code> with a new spec.</p>
+<p>The end state is verified when a Ctrl+C on a working session of each runtime returns the card to idle, leaves no queued turn behind, leaves the composer focused, and leaves <code>sdk_sessions.turn_in_progress</code> clear for the SDK runtime so a daemon restart does not re-drive the cancelled turn.</p>
+
+<footer>
+  Rendering of <code>docs/plans/session-interrupt/phased-plan.md</code>, which stays the source of truth.
+  Phase detail: <a href="phase-1-sdk-interrupt.md">phase 1</a>, <a href="phase-2-terminal-interrupt.md">phase 2</a>.
+</footer>
+
+</div>
+</body>
+</html>

@@ -128,11 +128,30 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
     })();
     expect(agentSessionId).toBeTruthy();
 
+    // Both launchers share the same backend rows, but their help text must describe the
+    // action this particular menu takes. The Terminal control opens a shell; it does not
+    // resume the agent conversation merely because the neighbouring control does.
+    const terminalChooser = card.locator(".conv-launch").getByRole("button", {
+      name: "t Terminal",
+      exact: true,
+    });
+    await terminalChooser.click();
+    const terminalMenu = card.getByRole("menu", { name: "Open a shell in the worktree with" });
+    const terminalRow = terminalMenu.getByRole("menuitem").filter({ hasText: "cmux" });
+    await expect(terminalRow.locator(".launch-note")).toHaveText(
+      "Open a shell in cmux. New workspace in the worktree.",
+    );
+    await dashboard.keyboard.press("Escape");
+    await expect(terminalMenu).toBeHidden();
+
     await chooser.click();
     const menu = card.getByRole("menu", { name: /resume this conversation in/ });
     await expect(menu).toBeVisible();
     const row = menu.getByRole("menuitem").filter({ hasText: "cmux" });
     await expect(row).toBeEnabled();
+    await expect(row.locator(".launch-note")).toHaveText(
+      "Resume this conversation in cmux. New workspace in the worktree.",
+    );
     if (process.env.MC_E2E_EVIDENCE) {
       console.log(
         `OBSERVED the ${agent} card reads mode "${chip}" and offers "resume this conversation in" with cmux available`,

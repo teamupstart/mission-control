@@ -35,13 +35,26 @@ const render = (targets: TerminalTargetView[] | null, failed = false): string =>
     createElement(LaunchList, { targets, failed, verb: "Open a shell in", onChoose: () => {} }),
   );
 
-test("an available backend names what it will run", () => {
+test("an available backend says which action it takes and names what it will run", () => {
   const html = render([view()]);
   assert.match(html, /tmux/);
-  assert.match(html, /A named session that survives/);
+  assert.match(html, /Open a shell in tmux\. A named session that survives/);
   assert.match(html, /<em>new-session -c<\/em>/);
   assert.match(html, /role="menuitem"/);
   assert.doesNotMatch(html, /disabled/);
+});
+
+test("the same backend describes resuming the conversation in the agent menu", () => {
+  const html = renderToStaticMarkup(
+    createElement(LaunchList, {
+      targets: [view()],
+      failed: false,
+      verb: "Resume this conversation in",
+      onChoose: () => {},
+    }),
+  );
+  assert.match(html, /Resume this conversation in tmux\. A named session that survives/);
+  assert.doesNotMatch(html, /Open a shell in tmux/);
 });
 
 test("an unavailable backend is disabled and says why, in place of its blurb", () => {

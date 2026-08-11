@@ -5,6 +5,7 @@ import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
+import { taskPillParts } from "@shared/task.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { heldByRun, sessionCanBindWorkflow, workflowBindChipTitle } from "../lib/held.ts";
 import { queueChipVisible, queueChipView } from "../lib/queue.ts";
@@ -228,6 +229,9 @@ export function SessionCard({
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
+  // The shared reduction, so this pill and the console detail's cannot drift on what a
+  // kind badge or a repeated title is worth.
+  const pill = taskPillParts(session);
   // The work queue is a drawer, not part of the card: it opens on Queue / the shortcut
   // / the queued chip and stays open until you close it. Deliberately independent of
   // `expanded` - a queue is worth a glance without surrendering the grid to one card,
@@ -418,13 +422,19 @@ export function SessionCard({
 
       {session.task && (
         <>
+        {/* The chip itself is unconditional even when both parts below go quiet: it
+            carries the task's status as its tone and hosts the schedule-origin mark. */}
         <div className={`task-chip task-${session.task.status}`}>
-          <Tooltip label={`${session.task.kind} task`}>
-            <span className="task-kind">{session.task.kind}</span>
-          </Tooltip>
-          <Tooltip label={session.task.title}>
-            <span className="task-title">{session.task.title}</span>
-          </Tooltip>
+          {pill.kind && (
+            <Tooltip label={`${pill.kind} task`}>
+              <span className="task-kind">{pill.kind}</span>
+            </Tooltip>
+          )}
+          {pill.title && (
+            <Tooltip label={pill.title}>
+              <span className="task-title">{pill.title}</span>
+            </Tooltip>
+          )}
           {session.task.status === "dispatching" && <span className="task-status">dispatching…</span>}
           {session.task.status === "failed" && <span className="task-status">failed</span>}
           <ScheduleOriginChip

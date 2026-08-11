@@ -3006,12 +3006,17 @@ body {
 /* The board tile puts the chip in a row of `.rt-pill`s rather than in a footer of text,
    so it takes their metrics and their tinted border there: at the footer's 10.5px, with
    no border until hover, it read as an undersized flat chip wedged between the effort and
-   cost pills. Scoped to that row rather than lifted onto `.mode`, because the card and
-   console footers ARE rows of text, where the quieter scale is the right one. The border
+   cost pills. Scoped to those rows rather than lifted onto `.mode`, because the card
+   footer IS a row of text, where the quieter scale is the right one. The border
    goes on `.mode` so the read-only span a paneless session draws measures the same as the
    button, and the hover/open lift is restated here (like `.rt-think-btn`'s) so it wins by
-   being equally specific rather than by where this block happens to sit in the file. */
-.tile-runtime-line .mode {
+   being equally specific rather than by where this block happens to sit in the file.
+
+   The console detail's header cluster is the same situation as the tile's row and takes
+   the same treatment: the chip leads `mode · model · context · cost`, so it stands beside
+   `.rt-pill`s there too and has to measure like one. */
+.tile-runtime-line .mode,
+.detail-head .mode {
   font-size: 11px;
   line-height: 1;
   padding: 3px 7px;
@@ -3019,7 +3024,9 @@ body {
   border-radius: 6px;
 }
 .tile-runtime-line .mode-btn:hover,
-.tile-runtime-line .mode-btn.open {
+.tile-runtime-line .mode-btn.open,
+.detail-head .mode-btn:hover,
+.detail-head .mode-btn.open {
   border-color: color-mix(in oklab, currentcolor 48%, var(--border-soft));
 }
 
@@ -18089,7 +18096,20 @@ span.line-run-prov {
 .detail-head .agent-dot {
   flex: none;
 }
+/* A COLUMN, not a row: the identity block carries the name and the objective under it, so
+   the durable facts about this session read together instead of the objective sitting in a
+   band of its own above the transcript. The name and its source keep their own baseline
+   row inside. */
 .detail-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  /* Grows into the free space the spacer would otherwise take, so a long objective has
+     somewhere to be read on a wide pane and gives it back on a narrow one. */
+  flex: 1 1 auto;
+}
+.detail-title-line {
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -18099,6 +18119,28 @@ span.line-run-prov {
   margin: 0;
   font-size: 16px;
   font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* One line here, unlike the card's two-line clamp: this band exists to give height back to
+   the conversation, and the full sentence is already in `GoalLine`'s own tooltip - which is
+   state-specific prose, not a repeat of the text, so it is not substitutable by a `title`.
+   Colour is left to the `goal-{state}` rules, which still reach the element.
+
+   `width: 0` with `min-width: 100%` is what keeps it from widening the header. The
+   objective is bounded at 180 characters (`GOAL_MAX_CHARS`), which is about a thousand
+   pixels here - as an ordinary auto-width child it would set the identity block's
+   max-content width, and since `.detail-head` wraps rather than shrinks, that pushes every
+   chip after it onto a second row. A header that grew a row to save one is not the trade
+   this change is making. Zero width contributes nothing to that intrinsic measurement, and
+   the percentage minimum then fills whatever width the block was actually given. */
+.detail-title .goal {
+  display: block;
+  width: 0;
+  min-width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -18208,8 +18250,10 @@ span.line-run-prov {
   flex-direction: column;
   overflow: hidden;
 }
-/* Conversation: fill and pin. The leading bits (goal, note, gate strip) stay put and
-   the transcript scrolls inside itself, so the reply box never leaves the pane. */
+/* Conversation: fill and pin. The leading bits (activity, note, gate strip) stay put and
+   the transcript scrolls inside itself, so the reply box never leaves the pane. The
+   objective is no longer among them - it reads with the name it belongs to, in
+   `.detail-title`. */
 .detail-conv {
   flex: 1;
   min-height: 0;

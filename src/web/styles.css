@@ -6370,9 +6370,17 @@ mark.find-hit.is-current {
 }
 
 /* ---- One pull request per changed repo (multi-repo tasks only) ---- */
-/* Its own row under the task chip, because the list is as wide as the repo count and the
-   outcome link in that chip is pinned right. Absent entirely for a single-repo task: the
-   list it draws from is empty, and the component renders nothing. */
+/* Its own row rather than more chips inside the task pill, because the list is as wide as
+   the repo count and the outcome link in that pill is pinned right. Absent entirely for a
+   single-repo task: the list it draws from is empty, and the component renders nothing.
+
+   It does NOT depend on the pill being drawn above it. A multi-repo `ship` task on the
+   session it named, before anything has merged, has nothing to put in the pill - so this
+   row stands on its own there, and that is deliberate rather than an oversight. Each chip
+   names its repo and that repo's pull-request state, so the row says what it is without a
+   heading, and the alternative was measured: folding `repoPrs` into `taskPillParts`'s
+   silence test draws a 14px empty stub above this row. `test/task-pill.test.ts` and
+   `e2e/specs/console-header-identity.spec.ts` both pin the headless case. */
 .task-repo-prs {
   display: flex;
   flex-wrap: wrap;

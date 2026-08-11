@@ -106,6 +106,7 @@ async function dispatch(
   daemon: DaemonHandle,
   task: { title: string; intent: string },
   kind: "ship" | "scout",
+  extraRepos: string[] = [],
 ): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
@@ -113,6 +114,13 @@ async function dispatch(
 
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
+  // Each attached repo needs its own Escape for the same reason the primary does.
+  for (const repo of extraRepos) {
+    await dialog.getByRole("button", { name: "Add another repo" }).click();
+    await dialog.getByPlaceholder("repo to attach…").fill(repo);
+    await page.keyboard.press("Escape");
+    await dialog.getByRole("button", { name: "Attach repo" }).click();
+  }
   await dialog.getByPlaceholder("What should this agent do?").fill(task.intent);
   // Title lives inside the Backlog details fold, which a fresh dispatch opens closed. The
   // summary line is part of the control's accessible name, so this cannot be `exact`.
@@ -232,6 +240,38 @@ test("the kind badge is a scout's alone, and the pill stops repeating the sessio
   const shipDetail = dashboard.locator(".cdetail");
   await expect(shipDetail.getByRole("heading", { name: SHIP.title })).toBeVisible();
   await expect(shipDetail.locator(".task-chip")).toHaveCount(0);
+});
+
+test("a silent pill does not take a multi-repo task's pull-request row with it", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The pill's parts and the per-repo list are different rows, and only the pill went
+  // conditional. A multi-repo ship task on the session it named, before anything has
+  // merged, is the case where that distinction is load-bearing: the pill has nothing to
+  // say and the row still has two repositories to name.
+  await dispatch(dashboard, daemon, SHIP, "ship", [daemon.secondRepo]);
+  await sessions(daemon, 1);
+
+  const card = dashboard.locator("article.card").first();
+  await expect(card).toBeVisible();
+
+  // The row is there, naming both repositories and each one's pull-request state.
+  const repoRow = card.locator(".task-repo-prs");
+  await expect(repoRow).toBeVisible();
+  await expect(repoRow.locator(".task-repo-pr")).toHaveCount(2);
+  await expect(repoRow).toContainText("no PR");
+
+  // And the pill above it is absent rather than empty. Standing on its own is the intended
+  // shape here: each chip in the row names its own repo, so the row says what it is without
+  // a heading, and drawing the pill for it would put an empty stub over the top.
+  await expect(card.locator(".task-chip")).toHaveCount(0);
+
+  await shot(
+    card,
+    "multi-repo-row-without-a-pill",
+    "a multi-repo card keeps its per-repo PR row with no empty pill above it",
+  );
 });
 
 test("the objective reads under the session's name instead of above the transcript", async ({

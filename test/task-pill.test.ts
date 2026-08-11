@@ -114,6 +114,28 @@ test("a silent pill is not drawn at all on either layout", () => {
   }
 });
 
+test("a silent pill does not take the multi-repo pull-request row with it", () => {
+  // The row is a SIBLING of the pill, not pill content, and it gates itself on having
+  // entries - so a multi-repo ship task named after its own session, before anything has
+  // merged, draws the row with no pill above it. That is the intended shape: each chip
+  // names its repo and that repo's PR state, and the alternative (folding `repoPrs` into
+  // `silent`) draws an empty stub over the row instead of a heading.
+  const summary = mkTaskSummary({
+    repoPrs: [
+      { repoRoot: "/repos/demo", primary: true, prUrl: null, prState: null, mergedAt: null },
+      { repoRoot: "/repos/second", primary: false, prUrl: null, prState: null, mergedAt: null },
+    ],
+  });
+  const session = mkSession({ name: summary.title, task: summary });
+  assert.equal(taskPillParts(session).silent, true, "the pill itself still has nothing to say");
+
+  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
+    assert.ok(!html.includes("task-chip"), `${name} should still draw no empty pill`);
+    assert.ok(html.includes("task-repo-prs"), `${name} should keep the per-repo list`);
+    assert.ok(html.includes("demo") && html.includes("second"), `${name} should name both repos`);
+  }
+});
+
 test("the card keeps a pill for the transient status only it draws", () => {
   // `dispatching…` / `failed` are the card's alone, so the card ORs them into the gate at
   // the point it draws them rather than the shared helper asserting them for everyone.

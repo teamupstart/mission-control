@@ -106,6 +106,16 @@ export interface TaskPillParts {
    * A surface that draws something of its OWN inside the pill has to say so: the card
    * adds a `dispatching…` / `failed` word that the console detail does not, and it ORs
    * that in at the point it draws it rather than being asserted here.
+   *
+   * `repoPrs` is deliberately NOT one of the operands, and it is the one a reader will
+   * reach for. A multi-repo task's per-repo pull-request list is a SIBLING row, not
+   * pill content - it is a separate row precisely because it is as wide as the repo
+   * count while the pill's outcome link is pinned right - and it gates itself on being
+   * non-empty. Folding it in here would draw a pill with nothing in it above that row,
+   * which was measured in a browser: the pill hugs its content on a card, so an empty
+   * one is a 14px stub rather than a bar, and the row reads better with nothing above it
+   * than with that. The row is self-describing (each chip names its repo and its PR
+   * state) and it still sits under the session's own title.
    */
   silent: boolean;
 }

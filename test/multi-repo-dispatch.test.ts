@@ -22,8 +22,12 @@ import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-multirepo-dispatch-"));
 process.env.HARNESS_HOME = home;
-// A binary that exists, so bin resolution cannot be what fails below.
+// Binaries that exist, so bin resolution cannot be what fails below. Both harnesses that
+// these tests dispatch need one: `resolveBinPath` runs at the top of `dispatch`, before any
+// of the behaviour under test, and a runner without the real CLI installed would otherwise
+// fail every case here for a reason none of them are about.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
+process.env.MISSION_PI_BIN = "/bin/echo";
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
@@ -33,6 +37,7 @@ const { WORKTREES_DIR } = await import("../src/server/config.ts");
 after(() => {
   rmSync(home, { recursive: true, force: true });
   delete process.env.MISSION_CLAUDE_BIN;
+  delete process.env.MISSION_PI_BIN;
 });
 
 function mkRepo(name: string): string {

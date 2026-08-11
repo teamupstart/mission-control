@@ -49,6 +49,8 @@ interface Shape {
   bindingState?: WorkflowBindingState;
   round?: number;
   maxRepairRounds?: number;
+  /** The pull request this run's gate pins, when it has one. Drives the cancel copy. */
+  gatePrNumber?: number | null;
   externalSource?: boolean;
   /** `manager.retry` refuses without an errored attempt, so the move is gated on one. */
   erroredAttempt?: boolean;
@@ -88,6 +90,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
     triggerSource = "manual",
     triggerKey = manualWorkflowTriggerKey("binding", "request-1"),
     boundVersionId = "version",
+    gatePrNumber = null,
   } = shape;
   const inspectorGate: WorkflowInspectorGateDetail | null = gate
     ? {
@@ -117,6 +120,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
       maxRepairRounds,
       workflowName: "Release review",
       workflowVersion: 2,
+      gatePrNumber,
     },
     binding: {
       id: "binding",
@@ -574,6 +578,40 @@ test("a run already at the repair ceiling is not offered a grant it cannot take"
     maxRepairRounds: 20,
   }));
   assert.notEqual(move?.kind, "grant-rounds", "a button that can only answer 409");
+});
+
+/*
+ * The no-move sentence may claim a merge-block release only when there is one to release.
+ *
+ * `round_limit` is the GENERIC round-exhaustion phase - every workflow type reaches it, and a
+ * version whose completion policy is not `inspector` never populates gate state at all. A run
+ * reaching this sentence has also already failed some other test (an orphaned binding, the
+ * repair ceiling), which is exactly when `mergeGate` stops walking it. Saying "cancelling
+ * releases the merge block" there tells the operator something false about a pull request the
+ * run does not hold - the precise class of lie the rest of this change removes.
+ */
+test("a spent run with no gate does not claim cancelling frees a pull request", () => {
+  const spent = runNoMoveReason(detailFor({
+    status: "blocked",
+    phase: "round_limit",
+    round: 6,
+    bindingState: "orphaned",
+  }));
+  assert.ok(spent, "an unrevivable spent run must still say why");
+  assert.doesNotMatch(spent.consequence, /merge block/);
+  assert.doesNotMatch(spent.consequence, /pull request/);
+});
+
+/** And says it, by number, when the run really is holding one hostage. */
+test("a spent run holding a gate names the pull request cancelling would free", () => {
+  const spent = runNoMoveReason(detailFor({
+    status: "blocked",
+    phase: "round_limit",
+    round: 6,
+    bindingState: "orphaned",
+    gatePrNumber: 486,
+  }));
+  assert.match(spent!.consequence, /lifts the merge block this run holds on #486/);
 });
 
 /** The stale remedy, pinned as gone: it named the one fix guaranteed not to reach this run. */

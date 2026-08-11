@@ -22,7 +22,11 @@ import type {
   WorkflowRunSummary,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
-import { isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
+import {
+  WORKFLOW_RUN_SPENT_PHASES,
+  isVerdictNode,
+  verdictAuthor,
+} from "@shared/workflow.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   SessionActionAttemptStateSchema,
@@ -1553,7 +1557,12 @@ export function cancelReleasesGate(run: {
   phase: string;
   gatePrNumber: number | null;
 }): number | null {
-  return run.phase === "round_limit" ? run.gatePrNumber : null;
+  // Both spent spellings, from the shared list, rather than the one string the gate happens
+  // to write today - the whole point of this predicate is that no surface carries its own
+  // idea of which runs are holding a pull request hostage.
+  return (WORKFLOW_RUN_SPENT_PHASES as readonly string[]).includes(run.phase)
+    ? run.gatePrNumber
+    : null;
 }
 
 /** The clause the two cancel confirmations append when a gate veto goes with the run. */

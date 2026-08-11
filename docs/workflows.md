@@ -927,8 +927,14 @@ controls that do clear it are **Grant 2 more rounds** and **Cancel run** - carry
 the pull request go. Retiring is the destructive one, so both places that offer it - run
 detail's `Cancel run` and the Review drawer's `Dismiss` - now name the pull request they
 unblock: *"It also lifts the merge block this run holds on #486, which no longer waits on a
-review that has stopped."* They read it from one derivation rather than spelling it twice,
-so the two cannot come to disagree about whether stopping a run touches a pull request.
+review that has stopped."*
+
+That clause is earned rather than assumed, and the run page's no-move paragraph earns it the
+same way. `round_limit` is the generic round-exhaustion phase that every workflow type
+reaches, and a version whose completion policy is not `inspector` never pins a pull request at
+all - so all three surfaces read one derivation, which answers "which pull request, if any"
+rather than assuming there is one. A run holding no gate is told plainly that cancelling
+clears the run and keeps its history, and nothing more.
 
 ### Live repair delivery and Foreman completion
 

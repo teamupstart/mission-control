@@ -13,6 +13,8 @@ import {
 // only a TYPE from here, so there is no cycle to resolve at load.
 import {
   blockedPhaseClause,
+  cancelGateSentence,
+  cancelReleasesGate,
   gateWaitSentence,
   orderedSubmissions,
 } from "./run-model.ts";
@@ -689,14 +691,12 @@ const NO_MOVE_SENTENCES: Record<string, RunNoMoveReason> = {
   round_limit: {
     cause: "This run has used every repair round it was given,",
     consequence: "and the rest of its state means nothing here can open another one."
-      + " Cancelling clears the run, keeps its history, and releases the merge block its"
-      + " gate holds on the pull request.",
+      + " Cancelling clears the run and keeps its history.",
   },
   inspector_round_limit: {
     cause: "This run has used every Inspector round it was given,",
     consequence: "and the rest of its state means nothing here can open another one."
-      + " Cancelling clears the run, keeps its history, and releases the merge block its"
-      + " gate holds on the pull request.",
+      + " Cancelling clears the run and keeps its history.",
   },
   inspector_findings: {
     cause: "Inspector left findings that have to be resolved.",
@@ -799,7 +799,25 @@ export function runNoMoveReason(detail: WorkflowRunDetail): RunNoMoveReason | nu
   ) return null;
 
   const mapped = NO_MOVE_SENTENCES[currentPhase];
-  if (mapped) return mapped;
+  if (mapped) {
+    /*
+     * The merge-block clause is EARNED, not assumed - and the same predicate the two cancel
+     * confirmations use earns it.
+     *
+     * `round_limit` is the generic round-exhaustion phase, shared by every workflow type. A
+     * version whose completion policy is not `inspector` never populates gate state at all,
+     * and a spent run reaching this sentence has already failed some other test - an
+     * orphaned binding, the repair ceiling - which is exactly when `mergeGate` stops walking
+     * it. Appending "cancelling releases the merge block" to a static string told those runs
+     * something plainly false about a pull request they do not hold. Conditional here, and
+     * naming the number rather than "the pull request", because a sentence that cannot say
+     * WHICH one is a sentence that does not know there is one.
+     */
+    const release = cancelReleasesGate(detail.summary);
+    return release === null
+      ? mapped
+      : { ...mapped, consequence: mapped.consequence + cancelGateSentence(release) };
+  }
 
   // An Inspector-only repair withholds the resubmission on purpose rather than by refusal: it
   // owns `Restart full workflow`, and two competing recoveries side by side is how an operator

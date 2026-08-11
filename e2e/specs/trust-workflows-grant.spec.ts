@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { basename } from "node:path";
 
 import type { Page } from "@playwright/test";
 
@@ -37,9 +38,22 @@ const EVIDENCE = artifactsDir("trust-workflows-grant");
  * Behind `MC_E2E_EVIDENCE` like every other capture in this suite: an ordinary
  * `npm run test:e2e` would rewrite the binaries for no added signal.
  */
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(
+  page: Page,
+  name: string,
+  { preserveHover = false }: { preserveHover?: boolean } = {},
+): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
+  if (preserveHover) {
+    // This capture is the tooltip itself. Moving the pointer or resizing first would dismiss
+    // the exact visual state the surrounding assertions just proved was present.
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+    // eslint-disable-next-line no-console
+    console.log(`CAPTURED e2e/.artifacts/trust-workflows-grant/${name}.png`);
+    return;
+  }
   const original = page.viewportSize() ?? { width: 1280, height: 720 };
   // Off every control first: `Tooltip` portals a bubble under a resting pointer, and the
   // cells being photographed are exactly what the pointer was last clicking.
@@ -78,8 +92,50 @@ async function openSettings(page: Page, category: string, heading: RegExp): Prom
 async function stageRepo(page: Page, repo: string): Promise<void> {
   await page.getByRole("combobox", { name: /search repos or type a path/i }).fill(repo);
   await page.getByRole("button", { name: "Add", exact: true }).click();
-  await expect(page.getByText(repo, { exact: true }).first()).toBeVisible();
+  await expect(
+    page.getByRole("table", { name: "Repository trust grants" }).locator(".trust-repo-path"),
+  ).toHaveText(basename(repo));
 }
+
+test("repository labels use directory names and reveal full paths on hover", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openSettings(dashboard, "trust", /Every grant that lets Mission Control act outside/);
+  await stageRepo(dashboard, daemon.repo);
+
+  const label = dashboard
+    .getByRole("table", { name: "Repository trust grants" })
+    .locator(".trust-repo-path");
+  await expect(label).toHaveText(basename(daemon.repo));
+  await expect(label).toHaveAccessibleDescription(daemon.repo);
+
+  await label.hover();
+  const tooltip = dashboard.locator(".tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toHaveText(daemon.repo);
+  await shoot(dashboard, "repository-path-tooltip", { preserveHover: true });
+});
+
+test("warning lists disambiguate repositories that share a directory name", async ({
+  dashboard,
+  daemon,
+}) => {
+  const repos = ["/workspaces/one/api", "/workspaces/two/api"];
+  const current = await storedConfig(daemon.baseURL);
+  const saved = await dashboard.request.put(`${daemon.baseURL}/api/workflows/config`, {
+    data: { ...current, checksEnabled: true, repoAllowlist: repos },
+  });
+  expect(saved.ok(), await saved.text()).toBe(true);
+
+  await openSettings(dashboard, "trust", /Every grant that lets Mission Control act outside/);
+  const warning = dashboard.locator("p.trust-arm-note");
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText(repos[0]);
+  await expect(warning).toContainText(repos[1]);
+  await expect(warning).not.toContainText("in api, api");
+  await shoot(dashboard, "colliding-repository-warning");
+});
 
 test("granting the Workflows cell writes the daemon's workflow allowlist", async ({
   dashboard,
@@ -218,7 +274,8 @@ test("armed check execution flags the granted cell, and Turn checks off clears i
   await expect(note).toBeVisible();
   await expect(note).toContainText("branch-authored code");
   await expect(note).toContainText("It is not a sandbox");
-  await expect(note).toContainText(daemon.repo);
+  await expect(note).toContainText(basename(daemon.repo));
+  await expect(note).not.toContainText(daemon.repo);
 
   await shoot(dashboard, "checks-armed-footnote");
 

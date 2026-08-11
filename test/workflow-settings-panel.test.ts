@@ -687,7 +687,8 @@ test("a configured command is listed by root, slot and the argv that will run", 
     },
     status: STATUS,
   });
-  assert.ok(html.includes("/src/mission-control"));
+  assert.match(html, /class="wf-settings-check-root"><span[^>]*>mission-control<\/span>/);
+  assert.match(html, /class="tt-desc">\/src\/mission-control<\/span>/);
   assert.ok(html.includes("test"));
   // Printed back the way the parser reads it, so what is listed re-parses to what runs.
   assert.ok(

@@ -213,14 +213,12 @@ export function fmtRunway(ms: number): string {
 }
 
 /**
- * The last path segment of a repo root, for a chip that has to stay narrow.
+ * The last path segment of a repo root, for its compact display name.
  *
- * One definition, because three surfaces shorten a repo the same way and a fourth was about
- * to: the dispatch modal's attached-repo chips, the schedule catalog's columns, and now the
- * per-repo pull request lines. The full path is never lost where this is used - it is the
- * chip's tooltip and the accessible name of any control beside it - because two attached
- * repos can share a basename (`~/a/api` and `~/b/api`) and the short form alone would draw
- * them as the same chip twice.
+ * One definition because every read-only repository label uses the directory name while the
+ * full path stays in a tooltip or the accessible name of the surrounding control. Two repos
+ * can share a basename (`~/a/api` and `~/b/api`), so the short form is presentation only and
+ * never becomes repository identity.
  */
 export function repoLeaf(repoRoot: string | null | undefined): string {
   if (!repoRoot) return "-";

@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import {
   cadenceLabel,
-  formatInstant,
   scheduleHealthLabel,
   scheduleHealthTone,
   scheduleMatchesFilter,
@@ -137,7 +136,13 @@ function ScheduleRow({
   onSelect: () => void;
 }): React.JSX.Element {
   return (
-    <Tooltip label={`Open ${schedule.name}`}>
+    <Tooltip
+      label={
+        schedule.template?.repoRoot
+          ? `${schedule.template.repoRoot} - open ${schedule.name}`
+          : `Open ${schedule.name}`
+      }
+    >
       <button
         className={`rm-row${selected ? " is-selected" : ""}`}
         onClick={onSelect}

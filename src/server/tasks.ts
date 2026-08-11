@@ -1913,6 +1913,20 @@ export class TaskManager {
       worktreePath: teardownError === null ? null : cur.worktreePath,
       branch: teardownError === null ? null : cur.branch,
       provider: teardownError === null ? null : cur.provider,
+      // Cleared on the SAME condition as the fields above, and for the same reason: the
+      // teardown above returns every tree the task holds - `teardownWorktree` loops the
+      // collection - so on success the secondaries' recorded paths name trees that are back
+      // in their pools, and the baselines name commits for worktrees that no longer exist.
+      //
+      // Leaving them is not merely untidy. `poolPins` folds `registry.listTasks()` without
+      // filtering on status and pins every non-null `worktreePath` it finds, secondaries
+      // included, so a cancelled multi-repo task would go on pinning already-returned trees
+      // for as long as the row survives - capacity the reaper can never see through.
+      //
+      // On a teardown FAILURE they are kept, exactly like the paths above: the trees may
+      // still be standing, and a row that stopped naming them is a row nothing can reclaim.
+      baseSha: teardownError === null ? null : cur.baseSha,
+      extraRepos: teardownError === null ? releasedRepoEntries(cur.extraRepos) : cur.extraRepos,
       homeName: teardownError === null ? null : cur.homeName,
       terminalResourceId: teardownError === null ? null : cur.terminalResourceId,
       completedAt: now,

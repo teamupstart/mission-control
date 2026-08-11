@@ -30,7 +30,7 @@ process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_PI_BIN = "/bin/echo";
 
 const { Registry } = await import("../src/server/registry.ts");
-const { Dispatcher } = await import("../src/server/dispatcher.ts");
+const { Dispatcher, provisionWorktree } = await import("../src/server/dispatcher.ts");
 const { poolPins } = await import("../src/server/pool.ts");
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
 
@@ -39,6 +39,10 @@ after(() => {
   delete process.env.MISSION_CLAUDE_BIN;
   delete process.env.MISSION_PI_BIN;
 });
+
+// Nothing here opts into treehouse, so provisioning is the git fallback: nothing leased,
+// nothing held, and a reap has nothing to consider.
+const NO_PINS = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
 
 function mkRepo(name: string): string {
   const repo = join(home, name);
@@ -329,4 +333,73 @@ test("reclaiming a task's resources clears the primary's baseline with its tree"
   );
   // The repo SET survives, so the task can be dispatched again as the task it was filed as.
   assert.deepEqual(cleared?.extraRepos.map((e) => e.repoRoot), ["/repo/web"]);
+});
+
+test("cancelling a multi-repo task stops it pinning the trees it just handed back", async () => {
+  // `poolPins` folds every task's worktrees WITHOUT filtering on status, so a cancelled row
+  // that still names its secondaries goes on sparing trees that are already back in their
+  // pools - capacity the reaper can never see through, for as long as the row survives.
+  //
+  // Real repos and real worktrees, because `cancel` reaches the module-level
+  // `teardownWorktree` rather than an injectable seam: stubbing it is not available here, and
+  // using it for real means this also covers the teardown LOOP reclaiming both trees.
+  const { TaskManager } = await import("../src/server/tasks.ts");
+  const api = mkRepo("cancel-api");
+  const web = mkRepo("cancel-web");
+  const primary = await provisionWorktree(api, "cancel-multi", "slug", "ccl111", NO_PINS, null, 0);
+  const secondary = await provisionWorktree(web, "cancel-multi", "slug", "ccl111", NO_PINS, null, 1);
+
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "cancel-multi",
+      status: "running",
+      repoRoot: api,
+      worktreePath: primary.path,
+      branch: primary.branch,
+      provider: primary.provider,
+      baseSha: primary.baseSha,
+      homeName: null,
+      sessionId: null,
+      extraRepos: [
+        {
+          ...entry(web),
+          worktreePath: secondary.path,
+          branch: secondary.branch,
+          provider: secondary.provider,
+          baseSha: secondary.baseSha,
+        },
+      ],
+    }),
+  );
+  const manager = Object.create(TaskManager.prototype) as InstanceType<typeof TaskManager>;
+  Object.assign(manager, {
+    registry,
+    autoCompleted: new Set<string>(),
+    reschedulingTasks: new Set<string>(),
+    stopEmbeddedAgentBeforeReclaim: async () => {},
+  });
+
+  const outcome = await manager.cancel("cancel-multi");
+  assert.equal(outcome.ok, true, outcome.ok === false ? outcome.error : "");
+
+  // Both trees really are gone - the teardown loop, not just the row edit.
+  assert.equal(existsSync(primary.path), false);
+  assert.equal(existsSync(secondary.path), false);
+
+  const cancelled = registry.getTask("cancel-multi");
+  assert.equal(cancelled?.status, "cancelled");
+  assert.equal(cancelled?.worktreePath, null);
+  assert.equal(cancelled?.baseSha, null);
+  assert.deepEqual(
+    cancelled?.extraRepos.map((e) => [e.repoRoot, e.worktreePath, e.baseSha]),
+    [[web, null, null]],
+    "the repo set survives; its provisioning facts do not",
+  );
+  // The point of all of the above: neither tree is pinned any more. Asserted as ABSENCE
+  // from the pin set rather than an empty set - the registry is shared with the other cases
+  // in this file, and what matters is that these two trees stopped being spared.
+  const pinned = poolPins(registry).taskWorktrees;
+  assert.equal(pinned.includes(primary.path), false, "the primary is no longer pinned");
+  assert.equal(pinned.includes(secondary.path), false, "nor is the secondary");
 });

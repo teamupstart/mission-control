@@ -71,7 +71,7 @@ depends on an unmerged later phase to repair an intermediate state.
 
 | Contract | Introduced by | Consumed by | Rule |
 | --- | --- | --- | --- |
-| `.detail-title` is a column that holds the `h2` and an optional `.objective` | Phase 1 | Phase 3 | Phase 3 may re-flow the head row but must not flatten this back to a single line. |
+| `.detail-title` is a column that holds the `h2` and the relocated `GoalLine` | Phase 1 | Phase 3 | Phase 3 may re-flow the head row but must not flatten this back to a single line, and must not reduce `GoalLine` to plain text - it carries the `goal-{state}` classes, a state-specific tooltip, and the `GOAL_UNSUPPORTED` empty state. |
 | The header cluster order is mode, model, context, cost | Phase 1 | Phase 3 | Phase 3's give-way ladder sheds from this cluster last, and never sheds the mode chip's accessible name. |
 | `.detail-conv` keeps its leading children removed and `.transcript` as a direct child | Phase 2 | Phase 3 | `.detail-conv > .pane-dialog` and `.detail-conv > .transcript` are child combinators in shipped CSS and a passing test; no phase may introduce a wrapper. |
 | The trailing log row is the current turn's in-progress state, not a second activity feed | Phase 2 | Phase 3 | Phase 3 must not reintroduce `session.activity` into the header while relaying out the bands. |
@@ -99,6 +99,11 @@ Across the set, after phase 3 merges:
 - **After phase 2** - moved the "no wrapper inside `.detail-conv`" rule from phase 3 into phase 2,
   because phase 2 is the phase that edits those children and would be the one to break the child
   combinator. Phase 3 now consumes the rule instead of restating it.
+- **Inspector review, round 1** - phase 1's objective relocation was rewritten to move the `GoalLine`
+  component rather than its text, after review showed the original wording would have dropped the
+  goal state classes, the state-specific tooltip and the `GOAL_UNSUPPORTED` empty state. The
+  `.detail-title` contract above was tightened to carry that forward into phase 3. Phase 2 is
+  unaffected, and decision D4 is unchanged.
 - **After phase 3** - confirmed phase 3 does not need to re-open the task pill or the mode chip.
   Checked that the give-way ladder sheds only labels phase 1 introduced as text, never the mode
   chip's accessible name, and recorded that constraint in the cluster-order contract above.

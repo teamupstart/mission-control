@@ -146,7 +146,7 @@ a{color:var(--accent)}
 <h2>Cross-phase contracts</h2>
 <div class="scroll"><table>
 <tr><th>Contract</th><th>Introduced by</th><th>Consumed by</th><th>Rule</th></tr>
-<tr><td><code>.detail-title</code> is a column holding the <code>h2</code> and an optional <code>.objective</code></td><td>Phase 1</td><td>Phase 3</td><td>Phase 3 may re-flow the head row but must not flatten this back to a single line.</td></tr>
+<tr><td><code>.detail-title</code> is a column holding the <code>h2</code> and the relocated <code>GoalLine</code></td><td>Phase 1</td><td>Phase 3</td><td>Phase 3 may re-flow the head row but must not flatten this back to a single line, and must not reduce <code>GoalLine</code> to plain text - it carries the <code>goal-{state}</code> classes, a state-specific tooltip, and the <code>GOAL_UNSUPPORTED</code> empty state.</td></tr>
 <tr><td>Header cluster order is mode, model, context, cost</td><td>Phase 1</td><td>Phase 3</td><td>Phase 3's give-way ladder sheds from this cluster last, and never sheds the mode chip's accessible name.</td></tr>
 <tr><td><code>.detail-conv</code> keeps its leading children removed and <code>.transcript</code> as a direct child</td><td>Phase 2</td><td>Phase 3</td><td><code>.detail-conv &gt; .pane-dialog</code> and <code>.detail-conv &gt; .transcript</code> are child combinators in shipped CSS and a passing test; no phase may introduce a wrapper.</td></tr>
 <tr><td>The trailing log row is the current turn's in-progress state, not a second activity feed</td><td>Phase 2</td><td>Phase 3</td><td>Phase 3 must not reintroduce <code>session.activity</code> into the header while relaying out the bands.</td></tr>
@@ -167,6 +167,7 @@ a{color:var(--accent)}
 <ul>
 <li><strong>After phase 1</strong> - no earlier phases to reconcile. Confirmed phase 1 owns the <code>.detail-title</code> column and the cluster order, both of which phase 3 inherits rather than redefines.</li>
 <li><strong>After phase 2</strong> - moved the "no wrapper inside <code>.detail-conv</code>" rule from phase 3 into phase 2, because phase 2 is the phase that edits those children and would be the one to break the child combinator. Phase 3 now consumes the rule instead of restating it.</li>
+<li><strong>Inspector review, round 1</strong> - phase 1's objective relocation was rewritten to move the <code>GoalLine</code> component rather than its text, after review showed the original wording would have dropped the goal state classes, the state-specific tooltip and the <code>GOAL_UNSUPPORTED</code> empty state. The <code>.detail-title</code> contract above was tightened to carry that forward into phase 3. Phase 2 is unaffected, and decision D4 is unchanged.</li>
 <li><strong>After phase 3</strong> - confirmed phase 3 does not need to re-open the task pill or the mode chip. Checked that the give-way ladder sheds only labels phase 1 introduced as text, never the mode chip's accessible name, and recorded that constraint in the cluster-order contract above.</li>
 <li><strong>Final</strong> - every decision D1-D4 is owned by exactly one phase: D2 and D3 by phase 1, D4 split across phase 1 (objective) and phase 2 (activity) as the decision itself splits, D1 by phase 3. Every consumer follows its prerequisite. No phase depends on undocumented cleanup by another.</li>
 </ul>

@@ -55,6 +55,18 @@ None. This phase is first in the chain and depends on nothing unmerged.
 - Sizing: `styles.css:2984` (`.tile-runtime-line .mode`) is the treatment that makes the chip measure
   like an `.rt-pill` - 11px, `padding: 3px 7px`, `radius 6px`, tinted 1px border. Reuse it rather
   than inventing header metrics.
+- **`GoalLine` is not a text renderer, and relocating it must not reduce it to one.**
+  `session-bits.tsx:937-963` carries three signals beyond the sentence itself, all of which a naive
+  "move the text into the title block" would silently drop:
+  - **An unsupported-agent case that fires with no text at all.** When `GOAL_UNSUPPORTED[session.agent]`
+    is set it returns `No goal · {reason}` with `.goal-none` *before* the `!session.goal?.text` guard.
+    A relocation gated on "has text" removes the honest empty state for those harnesses and leaves a
+    blank gap.
+  - **A state class.** `resolving` (the objective is reconciling against a newer prompt), `unclear`
+    (the latest instruction may change it) or `source ?? "heuristic"` (raw prompt, not yet refined),
+    rendered in distinct colours at `styles.css:2841-2857`.
+  - **A state-dependent tooltip**, not merely the full text. The `unclear` variant reads
+    "automatic wrap-up is paused", which is an operational fact about Foreman, not styling.
 
 ## Implementation steps
 
@@ -71,10 +83,17 @@ None. This phase is first in the chain and depends on nothing unmerged.
 5. **`styles.css`** - give the header-cluster mode chip the `.tile-runtime-line .mode` metrics. Add
    the selector alongside the existing one rather than duplicating the declarations. Remove any
    footer-specific mode spacing left dangling at `styles.css:18506-18535`.
-6. **`.detail-title` becomes a column.** In `ConsoleDetail.tsx`, move `GoalLine`'s text into the
-   title block as a second line, and remove `<GoalLine session={session} />` from `.detail-conv:524`.
-   The objective line is single-line with `text-overflow: ellipsis` and carries the full text as a
-   tooltip using the shared `Tooltip`, not a `title` attribute.
+6. **`.detail-title` becomes a column.** In `ConsoleDetail.tsx`, relocate the objective into the title
+   block as a second line and remove `<GoalLine session={session} />` from `.detail-conv:524`.
+   **Move the component, do not re-implement it.** Per the finding above, `GoalLine` owns the
+   unsupported-agent case, the `goal-{state}` class and the state-dependent tooltip; a hand-rolled
+   paragraph in the new location drops all three. Render `GoalLine` itself inside `.detail-title`,
+   and if it needs to look different there, give it a variant or let the new parent's CSS restyle
+   `.goal` rather than forking the logic. All of `goal-resolving`, `goal-unclear`, `goal-heuristic`
+   and `goal-none` must still reach the DOM, and `goal-none` must still render when there is no text.
+   The line is single-line with `text-overflow: ellipsis`; keep `GoalLine`'s own `Tooltip`, which
+   already carries the state-specific detail, rather than substituting a plain full-text tooltip or
+   a `title` attribute.
    **Do not introduce a wrapper element around the remaining children of `.detail-conv`** - see the
    cross-phase contract; `.detail-conv > .pane-dialog` and `.detail-conv > .transcript` are child
    combinators in shipped CSS and in `test/pane-dialog-scroll.test.ts`.
@@ -89,6 +108,11 @@ None. This phase is first in the chain and depends on nothing unmerged.
   `ship` task and present for a `scout` one; the pill container and `ScheduleOriginChip` survive both.
 - Keep `test/task-multi-session.test.ts` passing **without editing it**. If it fails, the conditional
   in step 1 is wrong - that test is the specification for F3, not an obstacle.
+- `renderToStaticMarkup` assertions that the relocated objective keeps every `GoalLine` signal in
+  the console detail: `goal-resolving`, `goal-unclear` and `goal-heuristic` each reach the DOM for
+  the state that produces them, and an agent in `GOAL_UNSUPPORTED` renders `goal-none` with no goal
+  text present. These are new assertions and there is no existing coverage of `GoalLine` inside
+  `ConsoleDetail` to lean on - that absence is why this was easy to drop.
 - **New Playwright spec** in `e2e/`, modelled on `e2e/specs/foreman-invite.spec.ts:141` for the
   console layout switch. Assert the mode chip is reachable in the console detail header by its
   accessible name, that it is no longer in the footer, and that a `ship` session shows no `SHIP`
@@ -102,8 +126,11 @@ None. This phase is first in the chain and depends on nothing unmerged.
 - The footer no longer renders `ModePicker`.
 - A `ship` task shows no kind badge anywhere; a `scout` task shows one on both card and detail.
 - A session whose name equals its task title shows the title once, not twice.
-- The objective is visible under the title in the console detail, ellipsed when long, with the full
-  text on hover.
+- The objective is visible under the title in the console detail, ellipsed when long, with
+  `GoalLine`'s state-specific tooltip on hover.
+- **No goal signal was lost in the move.** A session whose objective is resolving, unclear or
+  heuristic still carries the matching `goal-{state}` class in the console detail, and a harness in
+  `GOAL_UNSUPPORTED` still renders its `goal-none` empty state there even with no goal text.
 - Full suite green including a new e2e spec.
 
 ## Downstream handoff
@@ -124,3 +151,13 @@ the no-wrapper rule.
 
 - Initial: no earlier phases. Confirmed that the two contracts phase 3 inherits (`.detail-title`
   column, cluster order) are introduced here and stated in the handoff above.
+- **Inspector review, round 1 (`major`)** - the original step 6 said to move `GoalLine`'s *text* into
+  the title block and build a new paragraph with a plain full-text tooltip. Verified against
+  `session-bits.tsx:937-963` and `styles.css:2841-2857`: that would have silently dropped the
+  `goal-{state}` classes, the state-specific tooltip (including the `unclear` variant's "automatic
+  wrap-up is paused"), and the `GOAL_UNSUPPORTED` empty state, which renders *before* the has-text
+  guard and so would have vanished entirely for those harnesses. Step 6 now requires moving the
+  component rather than re-implementing it, with the signals named in the exit criteria and pinned by
+  new assertions. No cross-phase contract changed: phase 3 already inherits `.detail-title` as a
+  column and now inherits it carrying `GoalLine` itself. Decision D4 is unaffected - the objective
+  still joins the identity block; it simply arrives with everything it already carried.

@@ -184,6 +184,30 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
   await expect(card).toContainText("Claude e2e Mock");
 });
 
+test("the dispatch shortcut works after focus leaves the task description", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+
+  // Reproduce the reported boundary: the task textarea no longer owns DOM focus. The
+  // shortcut belongs to the dialog, so moving into another field must not disable it.
+  const kind = dialog.getByLabel("Kind");
+  await kind.focus();
+  await expect(kind).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  await dashboard.keyboard.press("Control+Enter");
+
+  await expect(dialog).toBeHidden();
+  await expect(dashboard.locator("article.card")).toHaveCount(1);
+});
+
 test("an Agent SDK Fable 5 session uses its 1M context window", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon, { model: "claude-fable-5" });
 

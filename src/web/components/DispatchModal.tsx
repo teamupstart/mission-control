@@ -675,6 +675,10 @@ function DispatchModal({
   const busy = pending !== null;
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
+  // The overlay owns the dispatch chord, but its listener is intentionally stable (see
+  // `Overlay`). Point it at the current submit closure so a field edit does not leave the
+  // shortcut submitting the previous render's draft.
+  const submitRef = useRef<(dispatchNow: boolean) => Promise<void>>(async () => {});
   const drop = useImageDrop({ attachments: draft.attachments, onChange: onAttachmentsChange });
   // Parsed once per render: the preview below and the submit body must never disagree
   // about what the typed text means.
@@ -1121,6 +1125,21 @@ function DispatchModal({
     else onSubmitted(submitted);
   }
 
+  submitRef.current = submit;
+  const onOverlayKeyDown = useCallback((event: KeyboardEvent): void => {
+    // This is the dialog's primary action, not a textarea editing command. Keeping it on
+    // the topmost overlay makes it work after the operator moves through Crew, Backlog
+    // details, or the footer, while Overlay's stack still prevents a covered dialog from
+    // acting. Ensemble keeps its deliberate Review-then-Launch flow.
+    if (
+      event.key !== "Enter" ||
+      (!event.metaKey && !event.ctrlKey) ||
+      ensembleMode
+    ) return;
+    event.preventDefault();
+    void submitRef.current(true);
+  }, [ensembleMode]);
+
   // The brief - repo, title, task - is shared by both modes but arranged differently:
   // Single leads repo-then-task with the title folded into Backlog details, Ensemble puts
   // repo and title side by side above the shared composer. One JSX definition each, so the
@@ -1188,11 +1207,6 @@ function DispatchModal({
           value={draft.intent}
           onChange={(e) => update({ intent: e.target.value })}
           onPaste={drop.onPaste}
-          onKeyDown={(e) => {
-            // In Ensemble mode the launch is a deliberate review-then-confirm, so the
-            // dispatch chord does not short-circuit it.
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !ensembleMode) void submit(true);
-          }}
         />
         <AttachmentStrip attachments={draft.attachments} onRemove={drop.remove} />
         {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
@@ -1231,6 +1245,7 @@ function DispatchModal({
       className={`modal dispatch-modal${ensembleMode ? " dispatch-modal-ensemble" : ""}`}
       role="dialog"
       ariaLabel={editing ? "Edit a backlog task" : "Dispatch an agent"}
+      onKeyDown={onOverlayKeyDown}
       // Sealed while a submit is in flight, all four dismiss routes at once. A modal
       // dismissed mid-save unmounts the only thing that can report the answer, so a
       // refusal - a repo that no longer resolves, a task the autopilot just started -

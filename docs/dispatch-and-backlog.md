@@ -186,9 +186,15 @@ after its task, so the title is usually already the heading above the chip and i
 repeated inside it; you see it there when the two differ, which is what an agent that has
 finished one task and taken another looks like. The **kind** is drawn only for a
 **scout** - `ship` is the default every dispatch, sweep, Recurring Mission and MCP call
-takes, so a badge on every card said nothing, and no badge now means `ship`. The chip
-itself is always there while a task is bound: it carries the task's status as its colour,
-and the recurring-mission origin mark rides inside it.
+takes, so a badge on every card said nothing, and no badge now means `ship`.
+
+Which means the chip is often not drawn at all, and that is the point rather than an
+omission: an ordinary running ship task on the session it named has nothing to add to the
+name above it, and an empty tinted bar says less than no bar. It appears as soon as it is
+carrying something - a scout's kind, a title the session's name does not hold, the
+[recurring-mission](recurring-missions.md) origin mark, the merge outcome, or (on Cards)
+a `dispatching…` or `failed` word - and it carries the task's status as its colour
+whenever it is there.
 
 The form leads with the brief: repo, then the task composer, with the crew row (Agent,
 Kind, Model, Effort) beneath them and one shared hint in place of per-field boilerplate.

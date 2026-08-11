@@ -6313,6 +6313,18 @@ mark.find-hit.is-current {
   border-radius: 8px;
   min-width: 0;
 }
+/* Hugs its content on the card instead of stretching the column's full width.
+   The stretch was invisible for as long as a task title filled the bar. Now that the title
+   is dropped whenever the session's own name already carries it, the common remaining
+   content is a lone `SCOUT` badge - and a full-width bar holding one 40px badge reads as
+   something that failed to load. The console detail has always drawn this chip
+   content-sized, because its `.detail-sub` is a flex ROW, so this is the two layouts
+   agreeing rather than a new look. `max-width` keeps a long title ellipsising against the
+   card's width instead of overflowing it. */
+.card > .task-chip {
+  align-self: flex-start;
+  max-width: 100%;
+}
 .task-kind {
   flex: none;
   font-size: 10px;

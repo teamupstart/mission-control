@@ -453,8 +453,12 @@ export function ConsoleDetail({
         )}
         {session.task && (
           <>
-          {/* The chip itself is unconditional even when both parts below go quiet: it
-              carries the task's status as its tone and hosts the schedule-origin mark. */}
+          {/* The chip survives as long as it is hosting something - a kind, a title, the
+              schedule-origin mark or the outcome link - and stands down when it is not.
+              It has a background, a border and a tone-coloured left edge, so an empty one
+              is a bar of chrome saying less than nothing, which is the very thing this
+              band was tightened to stop drawing. */}
+          {!pill.silent && (
           <div className={`task-chip task-${session.task.status}`}>
             {pill.kind && (
               <Tooltip label={`${pill.kind} task`}>
@@ -483,6 +487,7 @@ export function ConsoleDetail({
                 <span className="task-outcome">{session.task.outcome}</span>
               ))}
           </div>
+          )}
           {/* The same shared leaf the card draws, for the same reason it is a leaf: this
               detail is served by two layouts, so a private copy misses one of them.
               Renders nothing at all for a single-repo task. */}

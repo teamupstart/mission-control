@@ -1,9 +1,10 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -17,9 +18,10 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  *
  * - The permission mode leads `mode · model · context · cost` in the header, and the footer
  *   has given it up rather than keeping a second copy.
- * - The task pill draws a kind badge only for a `scout`, and drops the title the session's
- *   own name already carries.
- * - The objective reads under that name instead of in a band of its own above the transcript.
+ * - The task pill draws a kind badge only for a `scout`, drops the title the session's own
+ *   name already carries, and is not drawn at all once it has neither.
+ * - The objective reads under that name instead of in a band of its own above the transcript,
+ *   clipped to one line so a full-length one cannot cost the header a second row.
  *
  * Every dispatch here names its task explicitly. That is not decoration: with the Title
  * field blank the daemon asks the model for one, and the fake answers `E2E Mock Session` for
@@ -30,6 +32,19 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 /** The task the fleet is dispatched with; the Title field is what the card is named by. */
 const SHIP = { title: "Ship the header band", intent: "tighten the console detail header" };
 const SCOUT = { title: "Scout the header band", intent: "survey where the detail spends height" };
+
+const EVIDENCE = artifactsDir("console-header-identity");
+
+/** One reviewer-facing frame, only when capture is asked for. */
+async function shot(locator: Locator, name: string, observed: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await locator.screenshot({ path: join(EVIDENCE, `${name}.png`) });
+  // eslint-disable-next-line no-console
+  console.log(`OBSERVED ${observed}`);
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/console-header-identity/${name}.png`);
+}
 
 /** The daemon's loopback token, which the hook ingest route requires. */
 function token(daemon: DaemonHandle): string {
@@ -54,17 +69,25 @@ interface FleetSession {
   runtime: string;
 }
 
-/** The dispatched SDK sessions this daemon has, once `count` of them have been adopted. */
+/**
+ * The dispatched SDK sessions this daemon has, once `count` of them have bound a
+ * conversation.
+ *
+ * Waiting for `agentSessionId` is not belt-and-braces. A goal row is keyed by that id and
+ * falls back to the session id while it is still null, so a hook posted in the window
+ * before the binding lands writes the objective under a key the session stops reading the
+ * moment it binds - and the line appears, then silently vanishes a beat later.
+ */
 async function sessions(daemon: DaemonHandle, count: number): Promise<FleetSession[]> {
   let found: FleetSession[] = [];
   await expect
     .poll(
       async () => {
         const all = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as FleetSession[];
-        found = all.filter((s) => s.runtime === "sdk");
+        found = all.filter((s) => s.runtime === "sdk" && s.agentSessionId !== null);
         return found.length;
       },
-      { message: `${count} dispatched session(s) should reach the registry`, timeout: 30_000 },
+      { message: `${count} dispatched session(s) should bind a conversation`, timeout: 30_000 },
     )
     .toBe(count);
   return found;
@@ -161,6 +184,8 @@ test("the permission mode leads the header cluster and the footer has given it u
   expect(modeBox, "the mode chip should be laid out").not.toBeNull();
   expect(modelBox, "the model pill should be laid out").not.toBeNull();
   expect(modeBox!.x, "the mode chip should lead the runtime cluster").toBeLessThan(modelBox!.x);
+
+  await shot(head, "header-cluster", "the console header reads mode -> model -> cost");
 });
 
 test("the kind badge is a scout's alone, and the pill stops repeating the session's name", async ({
@@ -178,19 +203,22 @@ test("the kind badge is a scout's alone, and the pill stops repeating the sessio
   const shipCard = cards.filter({ has: dashboard.getByRole("heading", { name: SHIP.title }) });
   const scoutCard = cards.filter({ has: dashboard.getByRole("heading", { name: SCOUT.title }) });
 
-  for (const [layout, ship, scout] of [["card", shipCard, scoutCard]] as const) {
-    await expect(scout.locator(".task-chip .task-kind"), `${layout}: a scout says so`)
-      .toHaveText("scout");
-    await expect(ship.locator(".task-chip"), `${layout}: the ship pill is still drawn`)
-      .toBeVisible();
-    await expect(ship.locator(".task-chip .task-kind"), `${layout}: and says nothing`)
-      .toHaveCount(0);
-    // The title the header already carries is not repeated inside the pill.
-    await expect(ship.locator(".task-chip"), `${layout}: no duplicate title`)
-      .not.toContainText(SHIP.title);
-    await expect(scout.locator(".task-chip"), `${layout}: no duplicate title`)
-      .not.toContainText(SCOUT.title);
-  }
+  // The scout's pill has something to say, so it is drawn and says it. It does NOT repeat
+  // the session's name, which is the heading directly above it.
+  await expect(scoutCard.locator(".task-chip .task-kind")).toHaveText("scout");
+  await expect(scoutCard.locator(".task-chip")).not.toContainText(SCOUT.title);
+
+  // The ship session's pill has nothing left: `ship` is what every task is, and its title
+  // is the heading above. So there is no bar at all rather than an empty one. The scout's
+  // chip on the same screen is what makes this a claim about content and not a selector
+  // that never matched.
+  await expect(shipCard.locator(".task-chip")).toHaveCount(0);
+
+  await shot(
+    dashboard.locator("main.grid"),
+    "both-kinds-on-cards",
+    "the scout card badges its kind and the ship card does not, neither repeating its name",
+  );
 
   // The same two facts on the other layout that draws this pill. A rule applied to the card
   // alone would look right here and be wrong one click away.
@@ -203,9 +231,7 @@ test("the kind badge is a scout's alone, and the pill stops repeating the sessio
     .click();
   const shipDetail = dashboard.locator(".cdetail");
   await expect(shipDetail.getByRole("heading", { name: SHIP.title })).toBeVisible();
-  await expect(shipDetail.locator(".task-chip")).toBeVisible();
-  await expect(shipDetail.locator(".task-chip .task-kind")).toHaveCount(0);
-  await expect(shipDetail.locator(".task-chip")).not.toContainText(SHIP.title);
+  await expect(shipDetail.locator(".task-chip")).toHaveCount(0);
 });
 
 test("the objective reads under the session's name instead of above the transcript", async ({
@@ -248,4 +274,70 @@ test("the objective reads under the session's name instead of above the transcri
   // still a DIRECT child of `.detail-conv` - shipped CSS and `pane-dialog-scroll.test.ts`
   // both select through that combinator, so no wrapper may appear where the objective was.
   await expect(detail.locator(".detail-conv > .transcript")).toHaveCount(1);
+
+  await shot(
+    detail.locator("header.detail-head"),
+    "objective-under-the-name",
+    "the objective reads under the session name, in the identity block",
+  );
+  await shot(detail, "detail-pane", "the whole pane: identity band, tabs, transcript, footer");
+});
+
+test("a full-length objective clips to one line and does not cost the header a row", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The risk this relocation carries, and the one no markup assertion can see. An objective
+  // is bounded at 180 characters (`GOAL_MAX_CHARS`), which is about a thousand pixels of
+  // text - and `.detail-head` wraps rather than shrinks, so an objective allowed to set the
+  // identity block's intrinsic width would push every chip after it onto a second row. A
+  // header that grew a row to save one is not the trade this change makes.
+  await dispatch(dashboard, daemon, SHIP, "ship");
+  const [session] = await sessions(daemon, 1);
+  const detail = await openDetail(dashboard, daemon, SHIP.title);
+
+  const head = detail.locator("header.detail-head");
+  const headingBox = await detail.getByRole("heading", { name: SHIP.title }).boundingBox();
+  const chipBefore = await head.locator(".rt-model").boundingBox();
+  expect(headingBox, "the heading should be laid out").not.toBeNull();
+  expect(chipBefore, "the model pill should be laid out").not.toBeNull();
+  // Same row to begin with: this is the state the assertion below has to preserve.
+  expect(Math.abs(chipBefore!.y - headingBox!.y)).toBeLessThan(24);
+
+  const long =
+    "Give the conversation back the height the console detail header was spending on constants, "
+    + "duplicates and a control that had drifted into the footer where nobody ever looked for it";
+  const hook = await fetch(`${daemon.baseURL}/hooks/UserPromptSubmit`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token(daemon) },
+    body: JSON.stringify({
+      agent: session.agent,
+      sessionId: session.agentSessionId,
+      cwd: session.cwd,
+      env: {},
+      prompt: long,
+    }),
+  });
+  expect(hook.status, await hook.clone().text()).toBe(204);
+
+  const objective = detail.locator(".detail-title .goal");
+  await expect(objective).toBeVisible();
+
+  // One line, clipped rather than wrapped: the box is a single line tall and the text
+  // inside it is wider than the box, which is what the ellipsis is drawn from.
+  const line = await objective.boundingBox();
+  expect(line, "the objective should be laid out").not.toBeNull();
+  expect(line!.height, "the objective should take one line").toBeLessThan(24);
+  const overflows = await objective.evaluate((el) => el.scrollWidth > el.clientWidth);
+  expect(overflows, "a 180-character objective should be clipped, not wrapped").toBe(true);
+
+  // And the chips it sits beside have not been pushed anywhere.
+  const chipAfter = await head.locator(".rt-model").boundingBox();
+  expect(chipAfter, "the model pill should still be laid out").not.toBeNull();
+  expect(
+    Math.abs(chipAfter!.y - headingBox!.y),
+    "a long objective must not push the runtime cluster onto a second row",
+  ).toBeLessThan(24);
+
+  await shot(head, "long-objective-one-row", "a 180-character objective still fits one row");
 });

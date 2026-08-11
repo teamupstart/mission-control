@@ -232,6 +232,14 @@ export function SessionCard({
   // The shared reduction, so this pill and the console detail's cannot drift on what a
   // kind badge or a repeated title is worth.
   const pill = taskPillParts(session);
+  // The one part of the pill only the card draws: a transient status the console detail
+  // reads off its own state badge instead. Named here because it is also a reason for the
+  // pill to exist at all - see the gate below.
+  const statusWord = session.task?.status === "dispatching"
+    ? "dispatching…"
+    : session.task?.status === "failed"
+      ? "failed"
+      : null;
   // The work queue is a drawer, not part of the card: it opens on Queue / the shortcut
   // / the queued chip and stays open until you close it. Deliberately independent of
   // `expanded` - a queue is worth a glance without surrendering the grid to one card,
@@ -422,8 +430,12 @@ export function SessionCard({
 
       {session.task && (
         <>
-        {/* The chip itself is unconditional even when both parts below go quiet: it
-            carries the task's status as its tone and hosts the schedule-origin mark. */}
+        {/* The chip survives as long as it is hosting something and stands down when it is
+            not - an empty one is a bar of background, border and tone-coloured left edge
+            saying less than nothing. `taskPillParts` answers for the parts every surface
+            hosts; the transient status word below is the card's alone, so the card is
+            where it is ORed in. */}
+        {(!pill.silent || statusWord !== null) && (
         <div className={`task-chip task-${session.task.status}`}>
           {pill.kind && (
             <Tooltip label={`${pill.kind} task`}>
@@ -435,8 +447,7 @@ export function SessionCard({
               <span className="task-title">{pill.title}</span>
             </Tooltip>
           )}
-          {session.task.status === "dispatching" && <span className="task-status">dispatching…</span>}
-          {session.task.status === "failed" && <span className="task-status">failed</span>}
+          {statusWord && <span className="task-status">{statusWord}</span>}
           <ScheduleOriginChip
             task={session.task}
             scheduleNames={scheduleNameById}
@@ -461,6 +472,7 @@ export function SessionCard({
               </Tooltip>
             ))}
         </div>
+        )}
         {/* Its own row rather than another chip inside the one above: a multi-repo task's
             list is as wide as its repo count, and the outcome link in that row is pinned
             right by `margin-left: auto`. Renders nothing at all for a single-repo task. */}

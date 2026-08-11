@@ -66,12 +66,70 @@ test("the predicate keeps the title only when the session's name does not carry 
 });
 
 test("a session with no task has no pill to draw", () => {
-  assert.deepEqual(taskPillParts(mkSession({ task: null })), { kind: null, title: null });
+  assert.deepEqual(taskPillParts(mkSession({ task: null })), {
+    kind: null,
+    title: null,
+    silent: true,
+  });
+});
+
+test("the predicate reports a pill with nothing left in it as silent", () => {
+  // The common case once both text parts went conditional: an ordinary running ship task
+  // on the session it named. The chip is not an empty frame - it has a background, a
+  // border and a tone-coloured left edge - so an empty one is chrome saying less than
+  // nothing, which is what this band was tightened to stop drawing.
+  assert.equal(taskPillParts(dispatched()).silent, true);
+});
+
+test("anything the pill hosts keeps it, one at a time", () => {
+  // Each of the four parts on its own, because "silent" is an AND and a wrong operand
+  // would only show up for the case that has exactly that one thing to say.
+  assert.equal(taskPillParts(dispatched({ kind: "scout" })).silent, false, "a scout badge");
+  assert.equal(
+    taskPillParts(mkSession({ name: "Ship A", task: mkTaskSummary({ title: "Ship B" }) })).silent,
+    false,
+    "a title the name does not carry",
+  );
+  assert.equal(
+    taskPillParts(dispatched({ outcome: "merged https://example.test/pr/7" })).silent,
+    false,
+    "an outcome",
+  );
+  // `scheduleId` is exactly the field `scheduleProvenance` gates the chip on, so these two
+  // answer together - the helper cannot import the component to ask it.
+  const scheduled = dispatched({ scheduleId: "sched-1", scheduleOccurrenceId: "occ-1" });
+  assert.equal(taskPillParts(scheduled).silent, false, "a schedule origin");
+  assert.ok(
+    renderToStaticMarkup(
+      createElement(ScheduleOriginChip, { task: scheduled.task!, scheduleNames: new Map() }),
+    ),
+    "and the chip that field gates really does draw for it",
+  );
+});
+
+test("a silent pill is not drawn at all on either layout", () => {
+  const session = dispatched();
+  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
+    assert.ok(!html.includes("task-chip"), `${name} should draw no empty pill`);
+  }
+});
+
+test("the card keeps a pill for the transient status only it draws", () => {
+  // `dispatching…` / `failed` are the card's alone, so the card ORs them into the gate at
+  // the point it draws them rather than the shared helper asserting them for everyone.
+  const session = dispatched({ status: "failed" });
+  assert.equal(taskPillParts(session).silent, true, "nothing the shared parts host");
+  const html = card(session);
+  assert.ok(html.includes("task-chip task-failed"), "the card should keep the pill");
+  assert.match(html, /class="task-status">failed</, "for the word it has to draw in it");
 });
 
 test("a ship task draws no kind badge on either layout", () => {
-  const session = dispatched({ kind: "ship" });
+  // A task whose title the session does NOT carry, so the pill is drawn and the badge's
+  // absence is a fact about the badge rather than about the whole chip having stood down.
+  const session = mkSession({ name: "agent-1", task: mkTaskSummary({ kind: "ship" }) });
   for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
+    assert.ok(html.includes("task-chip"), `${name} should draw the pill for this fixture`);
     assert.ok(!html.includes('class="task-kind"'), `${name} should draw no kind badge for a ship task`);
     // And the word itself is nowhere near the pill, tooltip included - the tooltip used to
     // read "ship task", which is the same constant in a second place.
@@ -91,8 +149,16 @@ test("a scout task draws its kind badge on both layouts", () => {
 });
 
 test("a session named after its task shows that title once, not twice", () => {
-  const session = dispatched({ title: "Fix the parser" });
+  // Given a reason to draw the pill anyway (this task came from a recurring mission), so
+  // the missing title is the reduction rather than the absent chip.
+  const summary = mkTaskSummary({
+    title: "Fix the parser",
+    scheduleId: "sched-1",
+    scheduleOccurrenceId: "occ-1",
+  });
+  const session = mkSession({ name: summary.title, task: summary });
   for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
+    assert.ok(html.includes("task-chip"), `${name} should still draw the pill`);
     assert.ok(!html.includes('class="task-title"'), `${name} should not repeat the title in the pill`);
     // Still on screen - it is the session's name, which is what made the pill a duplicate.
     assert.ok(html.includes("Fix the parser"), `${name} should still name the work`);
@@ -109,10 +175,10 @@ test("a session working on a task its name does not carry keeps the pill's title
   }
 });
 
-test("the pill container survives even when both of its parts go quiet", () => {
-  // It is not decoration: the chip carries the task's status as its tone, and it is the
-  // host for the schedule-origin mark that `session-leaf-parity.test.ts` pins on all four
-  // surfaces. Suppressing the container along with its text would take that with it.
+test("the pill survives its own text going quiet when it is still hosting something", () => {
+  // The half of the reduction that must NOT overreach: the chip is the host for the
+  // schedule-origin mark `session-leaf-parity.test.ts` pins on all four surfaces, so
+  // suppressing the container along with its text would take that with it.
   const summary = mkTaskSummary({
     kind: "ship",
     status: "running",

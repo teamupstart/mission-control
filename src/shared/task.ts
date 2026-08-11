@@ -93,10 +93,25 @@ export interface TaskPillParts {
   kind: TaskKind | null;
   /** The task's title, or null when the session's own name already carries it. */
   title: string | null;
+  /**
+   * True when nothing the pill hosts on EVERY surface has anything to say - no kind
+   * badge, no title, no outcome and no schedule origin.
+   *
+   * The pill is not an empty frame: it has a background, a border and a tone-coloured
+   * left edge, so drawing one with nothing in it is a bar of chrome that says less than
+   * nothing. That is the common case now that the two text parts above went conditional -
+   * an ordinary running `ship` task on a session named after it - so the reduction is not
+   * finished until the container goes with them.
+   *
+   * A surface that draws something of its OWN inside the pill has to say so: the card
+   * adds a `dispatching…` / `failed` word that the console detail does not, and it ORs
+   * that in at the point it draws it rather than being asserted here.
+   */
+  silent: boolean;
 }
 
 /** A session with no task at all: nothing to draw, and no pill either. */
-const NO_PILL: TaskPillParts = { kind: null, title: null };
+const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
 
 /**
  * What the task pill should draw for a session.
@@ -121,8 +136,14 @@ const NO_PILL: TaskPillParts = { kind: null, title: null };
 export function taskPillParts(session: Pick<Session, "name" | "task">): TaskPillParts {
   const task = session.task;
   if (!task) return NO_PILL;
+  const kind = task.kind === "scout" ? task.kind : null;
+  const title = task.title === session.name ? null : task.title;
   return {
-    kind: task.kind === "scout" ? task.kind : null,
-    title: task.title === session.name ? null : task.title,
+    kind,
+    title,
+    // `scheduleId` rather than a call into `ScheduleOriginChip`: this module is browser-safe
+    // shared logic and cannot import a component, and the chip's own gate is that one field
+    // (`scheduleProvenance`). `task-pill.test.ts` pins the two answering together.
+    silent: !kind && !title && !task.outcome && !task.scheduleId,
   };
 }

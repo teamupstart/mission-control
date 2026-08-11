@@ -483,6 +483,75 @@ test("an attached repo's abandoned pull request does not strand the task for eve
   assert.equal(t.outcome, `merged ${PR_A}`, "the abandoned pull request is not part of the outcome");
 });
 
+// ---- the live, idle agent ------------------------------------------------------------------
+//
+// The other completion path, and the one none of the cases above touch: every one of them
+// hands the decision over by letting the agent depart. While an agent is still connected and
+// idle, `settleIfEpisodeFinished` decides - and it is the path an operator actually watches,
+// because it is what frees the agent for its next task.
+
+test("a live idle agent finishes a task whose PRIMARY it never touched", async () => {
+  // The case gating on the primary's own binding could never reach: there IS no primary pull
+  // request to merge, because the primary was not changed. Every repo the task did change has
+  // landed, so it is over - and until this, it sat `running` holding the agent's slot until
+  // the session went away, contradicting the exemption every other path grants.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fixture("live-primary-untouched");
+  extraPr(f, PR_B);
+  f.registry.recordWorktreeHeads(new Map([[f.cwd, PRIMARY_BASE], [f.extraCwd, MOVED]]));
+
+  extraPr(f, PR_B, NOW);
+
+  // No `departs(f)`: the agent is still here, still idle.
+  assert.ok(f.registry.getSession(f.id), "the agent is still connected");
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcome, `merged ${PR_B}`);
+  assert.equal(t.outcomeUrl, PR_B);
+});
+
+test("a live idle agent does NOT finish while a sibling is still open", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fixture("live-one-open");
+  primaryPr(f, PR_A);
+  extraPr(f, PR_B);
+  f.registry.recordWorktreeHeads(new Map([[f.cwd, MOVED], [f.extraCwd, MOVED]]));
+
+  primaryPr(f, PR_A, NOW);
+
+  assert.notEqual(
+    f.registry.getTask(f.taskId)?.status,
+    "done",
+    "the primary landing is one repository's news, not the task's",
+  );
+});
+
+test("a live agent that rolled onto new work is not concluded by the previous episode", async () => {
+  // The narrowness this path keeps and `mergedPrFor` deliberately does not: a present agent
+  // that got a follow-up prompt may still be mid-turn, so evidence from an episode the task
+  // has already rolled past is not yet its outcome while the agent is HERE.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fixture("live-rolled-over");
+  extraPr(f, PR_B);
+  f.registry.recordWorktreeHeads(new Map([[f.cwd, PRIMARY_BASE], [f.extraCwd, MOVED]]));
+  // Move the merged row onto an episode this task has rolled off, leaving the CURRENT one
+  // with nothing landed.
+  extraPr(f, PR_B, NOW);
+  openDb()
+    .prepare(`UPDATE work_episode_prs SET episode_id = 'rolled-past' WHERE task_id = ?`)
+    .run(f.taskId);
+  const reopened = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({ ...reopened, status: "running", outcome: null, outcomeUrl: null, completedAt: null });
+
+  // Nudge the live path again; this episode has shipped nothing, so it must not conclude.
+  f.registry.emit("event", { type: "session_upsert", session: f.registry.getSession(f.id)! });
+
+  assert.notEqual(f.registry.getTask(f.taskId)?.status, "done");
+  // The DEPARTED paths still land it, which is the asymmetry stated rather than an accident.
+  departs(f);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+});
+
 test("a single-repo task still completes on its own merge, unchanged", async () => {
   // The regression that matters most: everything above is reached only through
   // `extraRepos.length > 0`, and a single-repo task must take the branch it always took.

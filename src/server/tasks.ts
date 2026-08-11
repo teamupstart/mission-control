@@ -43,8 +43,31 @@ import {
   primaryRepoPrForTask,
   taskReposFor,
   taskWorkEpisodeForTask,
+  workEpisodeRepoPrsForTask,
+  type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { taskMergeQuorum, type QuorumVerdict } from "@shared/task-repos.ts";
+
+/**
+ * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
+ * repo order, behind the one link every existing consumer of `outcomeUrl` means by it.
+ *
+ * Shared by both completion paths rather than spelled at each, because they would otherwise
+ * be free to disagree about what a finished multi-repo task is called - and one of them runs
+ * while the agent is still watching.
+ *
+ * `outcomeUrl` is the PRIMARY's pull request, falling back to the first that landed only when
+ * the primary was not one of the repositories that changed.
+ */
+function quorumOutcome(
+  quorum: QuorumVerdict,
+  fallbackUrl: string | null,
+): { outcome: string; url: string } | null {
+  const primary = quorum.merged.find((entry) => entry.role === "primary");
+  const url = primary?.prUrl ?? quorum.merged[0]?.prUrl ?? fallbackUrl;
+  if (!url) return null;
+  return { outcome: `merged ${quorum.merged.map((entry) => entry.prUrl).join(", ")}`, url };
+}
 import {
   driverClearFor,
   resetSession,
@@ -445,23 +468,25 @@ export class TaskManager {
     const t = this.executingTaskOn(s.id);
     if (!t) return;
     const binding = taskWorkEpisodeForTask(t.id);
-    if (!binding?.mergedAt || !binding.prUrl) return;
+    if (!binding) return;
     // Rolled onto new work since the merge - not ours to conclude while the agent is still
     // HERE. This is deliberately narrower than `mergedPrFor`, and the asymmetry is the point:
     // a present agent that got a follow-up prompt may still be mid-turn, so an intermediate
     // merge is not yet its outcome; a DEPARTED agent (which is what `mergedPrFor`/`agentWentAway`
     // answer for) has no such turn left, so any merge it produced IS the outcome. So this
-    // path keeps the episode-currency gate and reads only the current binding.
+    // path keeps the episode-currency gate and reads only THIS episode's evidence.
     const current = this.registry.workEpisodeForSession(s.id);
     if (current && current.episodeId !== binding.episodeId) return;
-    // A multi-repo task's primary landing is one repository's news, not the task's. The
-    // episode-currency gate above stays exactly as it is - this only adds the siblings.
-    const quorum = t.extraRepos.length === 0 ? null : this.mergeQuorumFor(t);
-    if (quorum && !quorum.satisfied) return;
-    const outcome = quorum
-      ? `merged ${quorum.merged.map((entry) => entry.prUrl).join(", ")}`
-      : `merged ${binding.prUrl}`;
-    const completed = this.complete(t.id, outcome, binding.prUrl);
+    // This episode's own work has to have landed, and for a multi-repo task that is any repo
+    // it shipped rather than the PRIMARY specifically. Gating on the primary's own binding -
+    // the only thing this line used to read - meant a task that never touched the primary
+    // could not finish here at all: it had no primary pull request to merge, so it sat
+    // `running` holding its agent's slot until the session went away, contradicting the
+    // exemption every other path grants an untouched repo.
+    if (!this.currentEpisodeLanded(t, binding)) return;
+    const outcome = this.liveEpisodeOutcome(t, binding);
+    if (!outcome) return;
+    const completed = this.complete(t.id, outcome.outcome, outcome.url);
     // `complete` broadcasts synchronously and may evict this row from the bounded
     // in-memory task list before it returns. Do not recreate provenance after the
     // corresponding `task_remove` already cleared it.
@@ -608,11 +633,41 @@ export class TaskManager {
       return merged ? { outcome: `merged ${merged}`, url: merged } : null;
     }
     const quorum = this.mergeQuorumFor(t);
-    if (!quorum.satisfied) return null;
-    const primary = quorum.merged.find((entry) => entry.role === "primary");
-    const url = primary?.prUrl ?? quorum.merged[0]?.prUrl ?? merged;
-    if (!url) return null;
-    return { outcome: `merged ${quorum.merged.map((entry) => entry.prUrl).join(", ")}`, url };
+    return quorum.satisfied ? quorumOutcome(quorum, merged) : null;
+  }
+
+  /**
+   * Did the episode this agent is on right now actually ship something?
+   *
+   * The generalisation of the single-repo rule this used to be spelled as - "the current
+   * binding's own pull request merged" - to a task with several. It is what keeps a LIVE
+   * agent's intermediate merge from concluding work it is still in the middle of: evidence
+   * from an episode the task has already rolled past is enough for a departed agent
+   * (`mergedPrFor` reads it) and deliberately not enough here.
+   *
+   * The primary's merge lives on the binding; a secondary's lives on the episode's own row,
+   * and either one counts. Requiring the PRIMARY's specifically is the bug this replaced.
+   */
+  private currentEpisodeLanded(t: Task, binding: TaskWorkEpisodeBinding): boolean {
+    if (binding.mergedAt !== null && binding.prUrl) return true;
+    if (t.extraRepos.length === 0) return false;
+    return workEpisodeRepoPrsForTask(t.id).some(
+      (row) => row.episodeId === binding.episodeId && row.mergedAt !== null,
+    );
+  }
+
+  /** The outcome to record for a task settled while its agent is still here and idle. */
+  private liveEpisodeOutcome(
+    t: Task,
+    binding: TaskWorkEpisodeBinding,
+  ): { outcome: string; url: string } | null {
+    if (t.extraRepos.length === 0) {
+      return binding.prUrl && binding.mergedAt !== null
+        ? { outcome: `merged ${binding.prUrl}`, url: binding.prUrl }
+        : null;
+    }
+    const quorum = this.mergeQuorumFor(t);
+    return quorum.satisfied ? quorumOutcome(quorum, binding.prUrl) : null;
   }
 
   /**

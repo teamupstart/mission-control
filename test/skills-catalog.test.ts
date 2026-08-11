@@ -254,6 +254,31 @@ test("the shipped html-plans skill is a real, loadable Claude skill", () => {
   assert.match(text, /Invoke the `phased-plan` skill/);
 });
 
+test("the shipped html-report skill names the path contract the Files tab actually honors", () => {
+  const skill = readCatalog().skills.find((s) => s.id === "html-report");
+  assert.ok(skill, "html-report should be in the catalog");
+  assert.equal(skill.name, "html-report");
+  assert.equal(skill.enforcement, "triggered");
+  // The description is the whole trigger for a model-invoked skill, so it has to carry
+  // the words a human uses to ask for one of these.
+  assert.ok(skill.description.length > 40);
+  assert.match(skill.description, /investigat/i);
+  assert.match(skill.description, /scout/i);
+
+  const text = readFileSync(new URL("../skills/html-report/SKILL.md", import.meta.url), "utf8");
+  assert.ok(text.split("---")[2]!.trim().length > 200);
+  // Three claims the dashboard makes true and a rewrite must not quietly drop. The path
+  // shape is what `matchCheckoutPaths` links and `pathDefaultsToPreview` opens rendered;
+  // the no-JavaScript rule is the preview's CSP, which allows two hashed bridges and
+  // nothing else; and an href inside the report resolves against the report's directory
+  // (`workspaceAssetPath`), not the checkout root.
+  assert.match(text, /docs\/reports\/<slug>\/report\.html/);
+  assert.match(text, /\*\*No JavaScript\.\*\*/);
+  assert.match(text, /\.\.\/\.\.\/\.\.\/src\/server\/registry\.ts/);
+  // And it must not teach a link form the resolver refuses.
+  assert.doesNotMatch(text, /Report: \/|Report: file:/);
+});
+
 test("the shipped phased-plan skill audits compatibility and schedules direct task dependencies", () => {
   const skill = readCatalog().skills.find((s) => s.id === "phased-plan");
   assert.ok(skill, "phased-plan should be in the catalog");

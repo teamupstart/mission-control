@@ -47,7 +47,7 @@ export function LaunchList({
 }: {
   targets: TerminalTargetView[] | null;
   failed: boolean;
-  /** What the tooltip says will happen ("Open a shell in"). */
+  /** The action each row promises ("Open a shell in"). */
   verb: string;
   onChoose: (target: TerminalTargetView) => void;
 }): React.JSX.Element {
@@ -75,7 +75,9 @@ export function LaunchList({
                 {target.label}
                 {target.detail && <em>{target.detail}</em>}
               </span>
-              <span className="launch-note">{target.unavailable ?? target.blurb}</span>
+              <span className="launch-note">
+                {target.unavailable ?? `${verb} ${target.label}. ${target.blurb}`}
+              </span>
             </span>
           </button>
         </Tooltip>

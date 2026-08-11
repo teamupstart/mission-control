@@ -88,6 +88,15 @@ phase. The HTML Plans review always offers this as its final selectable follow-u
 passes the approved plan and submitted decisions into
 [`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
 
+The opt-in **HTML Report** row applies to the other half of the work - the sessions that are
+asked to find something out rather than to change something. An investigation, scout, audit or
+research answer is written as one self-contained page at `docs/reports/<slug>/report.html` and
+the session logs its checkout-relative path, which the conversation turns into a link that opens
+the report in the Files tab, rendered rather than as source. The page carries no JavaScript on
+purpose: the Files preview is a sandboxed iframe that runs only its own two bridge scripts, so a
+report that built itself at runtime would be blank in the one place it is most likely to be read.
+The contract lives in [`skills/html-report/SKILL.md`](../skills/html-report/SKILL.md).
+
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`
 into its pane when it next goes quiet. Codex declares no reload command, because it

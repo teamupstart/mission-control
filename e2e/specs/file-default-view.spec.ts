@@ -1,0 +1,191 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import type { Page } from "@playwright/test";
+
+import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+
+const EVIDENCE = artifactsDir("file-default-view");
+
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/file-default-view/${name}.png`);
+}
+
+function observed(what: string): void {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  // eslint-disable-next-line no-console
+  console.log(`OBSERVED ${what}`);
+}
+
+/**
+ * Which view a file OPENS in, per type, and that the preview runs no page script.
+ *
+ * This is the contract the `html-report` skill is written against: a session finishes an
+ * investigation by logging `docs/reports/<slug>/report.html`, and the click on that path
+ * has to land on the rendered page rather than on its source, or the report is markup in
+ * an editor. The same rule sends every ordinary source file the other way, to the editor,
+ * with no view toggle offered at all.
+ *
+ * Only a browser can assert it. `pathDefaultsToPreview` is a pure function a unit test
+ * already covers; what it cannot see is the selection reaching the store, the document
+ * arriving with a server-assigned kind that could disagree with the extension, and the
+ * pane that renders as a result. The no-JavaScript half is browser-only by construction:
+ * the preview's CSP admits two hashed bridge scripts and nothing else, so proving a
+ * report's own script never runs means running one.
+ */
+
+const TASK = "read a generated report in the files tab";
+
+/** A report shaped like the skill's output, plus a script that must not run. */
+const REPORT_HTML = `<!doctype html>
+<html><body>
+  <h1>SSE reconnect audit</h1>
+  <p id="verdict">Reconnects are bounded</p>
+  <script>document.getElementById("verdict").textContent = "SCRIPT RAN";</script>
+</body></html>
+`;
+
+const NOTES_MD = `# Reconnect notes
+
+The markdown twin still renders.
+`;
+
+const SOURCE_TS = `export const reconnectBudgetMs = 30_000;
+`;
+
+async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  // The repo combobox portals its listbox over the Task field and reopens on every
+  // keystroke; without this the next fill lands on a covered control.
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
+  await dialog
+    .locator("select")
+    .filter({ hasText: "finish without a Workflow" })
+    .selectOption("__none");
+
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+}
+
+/** See diff-open-in-files.spec.ts - the Files TAB lives in the Console layout. */
+async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "console" }),
+  });
+  const body = (await response.json()) as { config?: { layout?: string } };
+  expect(body.config?.layout, "the daemon accepted the Console layout").toBe("console");
+  await page.reload();
+  await expect(page.getByRole("navigation", { name: "Sessions" })).toBeVisible();
+}
+
+async function sessionCwd(daemon: DaemonHandle): Promise<string> {
+  await expect
+    .poll(async () => {
+      const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
+        cwd: string | null;
+      }[];
+      return sessions[0]?.cwd ?? null;
+    }, { message: "the dispatched session never reported a working directory" })
+    .not.toBeNull();
+
+  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
+    cwd: string | null;
+  }[];
+  return sessions[0]!.cwd!;
+}
+
+/** Dispatch, seed one report of each kind, and open the session's Files tab. */
+async function openFilesTab(page: Page, daemon: DaemonHandle): Promise<void> {
+  await dispatch(page, daemon);
+  const cwd = await sessionCwd(daemon);
+
+  // Exactly where the skill puts a report: nested, untracked, and NOT ignored, which is
+  // what keeps it in `git ls-files --others --exclude-standard` and therefore in the list.
+  mkdirSync(join(cwd, "docs", "reports", "sse-reconnect-audit"), { recursive: true });
+  writeFileSync(join(cwd, "docs", "reports", "sse-reconnect-audit", "report.html"), REPORT_HTML);
+  writeFileSync(join(cwd, "docs", "reports", "sse-reconnect-audit", "notes.md"), NOTES_MD);
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src", "reconnect.ts"), SOURCE_TS);
+
+  await useConsoleLayout(page, daemon);
+
+  await page
+    .getByRole("navigation", { name: "Sessions" })
+    .getByRole("button", { name: /Read a Generated Report/i })
+    .click();
+  await page
+    .getByRole("tablist", { name: "Session detail" })
+    .getByRole("tab", { name: /Files$/ })
+    .click();
+  await expect(page.getByRole("listbox", { name: "Session files" })).toBeVisible();
+}
+
+const REPORT = "docs/reports/sse-reconnect-audit/report.html";
+const NOTES = "docs/reports/sse-reconnect-audit/notes.md";
+const SOURCE = "src/reconnect.ts";
+
+test("an HTML report opens rendered, and its source only on request", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+
+  await dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT })
+    .click();
+
+  // Rendered, with no click on the toggle to get there.
+  const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
+  await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  await expect(modes.getByRole("button", { name: "Preview" })).toHaveAttribute("aria-pressed", "true");
+  await expect(modes.getByRole("button", { name: "Editor" })).toHaveAttribute("aria-pressed", "false");
+  observed(`${REPORT} opened in Preview without the toggle being touched`);
+  await shoot(dashboard, "html-report-opens-rendered");
+
+  // The report's own script did not run - the reason the skill forbids one. A page that
+  // assembles itself at runtime is blank in the pane it was written for.
+  await expect(report.getByText("Reconnects are bounded")).toBeVisible();
+  await expect(report.getByText("SCRIPT RAN")).toHaveCount(0);
+
+  // Preview is the default, not the only view: the source is one click away.
+  await modes.getByRole("button", { name: "Editor" }).click();
+  await expect(dashboard.getByLabel(`Editor for ${REPORT}`)).toContainText("SSE reconnect audit");
+  await expect(modes.getByRole("button", { name: "Editor" })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("source opens in the editor, with no view to toggle to", async ({ dashboard, daemon }) => {
+  await openFilesTab(dashboard, daemon);
+  const files = dashboard.getByRole("listbox", { name: "Session files" });
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+
+  // Markdown first, both because it is the other previewable kind and because the toggle
+  // has to be PRESENT before its absence below means anything.
+  await files.getByRole("option", { name: NOTES }).click();
+  await expect(dashboard.getByRole("heading", { name: "Reconnect notes" })).toBeVisible();
+  await expect(modes.getByRole("button", { name: "Preview" })).toHaveAttribute("aria-pressed", "true");
+  await expect(dashboard.getByTitle(/^Preview of /)).toHaveCount(0);
+
+  await files.getByRole("option", { name: SOURCE }).click();
+  await expect(dashboard.getByLabel(`Editor for ${SOURCE}`)).toContainText("reconnectBudgetMs");
+  // Nothing to render, so nothing is offered: the toggle that was there a moment ago is
+  // gone rather than sitting there disabled or lying about a preview.
+  await expect(modes).toHaveCount(0);
+  await expect(dashboard.getByTitle(/^Preview of /)).toHaveCount(0);
+  observed(`${SOURCE} opened in the editor with no File view mode group`);
+});

@@ -3766,10 +3766,20 @@ export interface TaskRepoPrRecord {
  * and the binding rows that mirror it - so this is where a per-repo reader gets it, and it
  * is why nothing may build a repo list by iterating `task_repos` alone.
  *
- * Current AND historical bindings, for the reason `mergedPrFor` gives: a merge on an episode
- * the task has already rolled off is still the outcome. A merged binding wins over an
- * unmerged one and the newest merge wins among those; with nothing merged, the current
- * binding's open pull request is what there is to show.
+ * Two passes, and the asymmetry between them is the whole rule.
+ *
+ * A MERGED pull request counts from ANY of the task's episodes, current or rolled-off, for
+ * the reason `mergedPrFor` gives: a merge on an episode the task has already rolled past is
+ * still the outcome, and the newest one wins among several.
+ *
+ * An UNMERGED one counts only from the CURRENT episode. A rolled-off episode's open pull
+ * request is work this task walked away from - the agent restarted, cut a new branch, and the
+ * poller's branch-based re-association will never re-attach the old one - so reporting it as
+ * what the primary repo holds is wrong twice over: the card names a pull request nobody is
+ * working on, and the completion quorum says the task is waiting for a url that is never
+ * going to move. "No pull request opened here yet" is the true answer in that window, and
+ * the quorum then decides the primary's membership from its head against its baseline, which
+ * is the clause that exists for exactly this - changes with no live pull request.
  *
  * `prState` is derived rather than stored: a binding exists only for a pull request this
  * task opened, and the only transition the daemon records against it is the merge. A pull
@@ -3778,21 +3788,19 @@ export interface TaskRepoPrRecord {
  */
 export function primaryRepoPrForTask(taskId: string): TaskRepoPrRecord {
   const current = taskWorkEpisodeForTask(taskId);
-  const candidates = [
+  let merged: TaskWorkEpisodeBinding | null = null;
+  for (const binding of [
     ...(current ? [current] : []),
     ...historicalTaskWorkEpisodeBindingsForTask(taskId),
-  ].filter((binding) => binding.prUrl !== null);
-  let best: TaskWorkEpisodeBinding | null = null;
-  for (const binding of candidates) {
-    if (best === null) { best = binding; continue; }
-    if (binding.mergedAt === null) continue;
-    if (best.mergedAt === null || binding.mergedAt > best.mergedAt) best = binding;
+  ]) {
+    if (binding.prUrl === null || binding.mergedAt === null) continue;
+    if (merged === null || binding.mergedAt > (merged.mergedAt ?? 0)) merged = binding;
   }
-  return {
-    prUrl: best?.prUrl ?? null,
-    prState: best === null ? null : best.mergedAt === null ? "open" : "merged",
-    mergedAt: best?.mergedAt ?? null,
-  };
+  if (merged !== null) {
+    return { prUrl: merged.prUrl, prState: "merged", mergedAt: merged.mergedAt };
+  }
+  if (current?.prUrl) return { prUrl: current.prUrl, prState: "open", mergedAt: null };
+  return { prUrl: null, prState: null, mergedAt: null };
 }
 
 export function recordWorkEpisodePrompt(

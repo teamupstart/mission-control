@@ -35,6 +35,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
+const { openDb } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -420,6 +421,38 @@ test("a cancelled multi-repo task is upgraded only by the FULL quorum", async ()
   assert.equal(t.status, "done");
   assert.equal(t.outcome, `merged ${PR_A}, ${PR_B}`);
   assert.equal(t.error, null);
+});
+
+test("a pull request the task rolled off does not hold the quorum for ever", async () => {
+  // The agent opened a pull request in the primary, restarted onto a new branch, and left the
+  // old one unmerged - so the task's CURRENT episode holds no pull request at all. The old url
+  // can never move again: re-association is branch-based and that branch is gone.
+  //
+  // Read as the primary's current pull request, it would make the quorum wait on it for ever
+  // while the secondary's work sat merged, and the card would name a pull request nobody is
+  // working on. The primary's membership is decided by its head against its baseline instead,
+  // which is the clause that exists for exactly this - changes with no live pull request.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fixture("rolled-off");
+  extraPr(f, PR_B);
+  openDb()
+    .prepare(
+      `INSERT INTO historical_task_work_episode_bindings
+         (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
+          merged_at, bound_at, updated_at)
+       VALUES (?, 'abandoned-episode', ?, ?, 'feat/abandoned', ?, 'sha', NULL, 1, 1)`,
+    )
+    .run(f.taskId, f.id, `${f.id}-episode`, PR_A);
+  // The primary's tree is back where its branch was cut: nothing of this task is in it.
+  f.registry.recordWorktreeHeads(new Map([[f.cwd, PRIMARY_BASE], [f.extraCwd, MOVED]]));
+  extraPr(f, PR_B, NOW);
+
+  departs(f);
+
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcome, `merged ${PR_B}`, "the abandoned pull request is not part of the outcome");
+  assert.equal(t.outcomeUrl, PR_B);
 });
 
 test("a single-repo task still completes on its own merge, unchanged", async () => {

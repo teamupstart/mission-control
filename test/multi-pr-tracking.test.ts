@@ -25,7 +25,8 @@ const home = mkdtempSync(join(tmpdir(), "mission-multi-pr-tracking-"));
 process.env.HARNESS_HOME = home;
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
-const { getInspectorPr, workEpisodeRepoPrsForTask } = await import("../src/server/db.ts");
+const { getInspectorPr, openDb, primaryRepoPrForTask, workEpisodeRepoPrsForTask } =
+  await import("../src/server/db.ts");
 const { adoptPr } = await import("../src/server/inspector/worker.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -364,4 +365,89 @@ test("finding a pull request in an attached worktree corrects the checkout it wa
   const row = getInspectorPr("example/other#20");
   assert.equal(row?.repoRoot, "/other");
   assert.equal(row?.cwd, "/wt/adopt-1");
+});
+
+// ---- the primary repo's own pull request ---------------------------------------------------
+
+/** A rolled-off binding written straight to the store - what a rollover leaves behind. */
+function insertHistorical(b: {
+  taskId: string;
+  episodeId: string;
+  prUrl: string;
+  mergedAt: number | null;
+}): void {
+  openDb()
+    .prepare(
+      `INSERT INTO historical_task_work_episode_bindings
+         (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
+          merged_at, bound_at, updated_at)
+       VALUES (?, ?, 'sess', 'agent', 'feat/old', ?, 'sha', ?, 1, 1)`,
+    )
+    .run(b.taskId, b.episodeId, b.prUrl, b.mergedAt);
+}
+
+test("a rolled-off episode's UNMERGED pull request is not the primary's current one", () => {
+  // The window this is about: the agent opened a pull request, restarted onto a new branch,
+  // and the poller has not yet found a pull request on that one. `acceptPrForEpisode` is
+  // branch-based and will never re-attach the old one, so it is work the task walked away
+  // from. Reporting it would name a pull request nobody is working on - and would tell the
+  // completion quorum the task is waiting for a url that is never going to move.
+  const f = fixture("rolled-off", []);
+  insertHistorical({
+    taskId: f.taskId,
+    episodeId: "rolled-past-episode",
+    prUrl: PR_A,
+    mergedAt: null,
+  });
+
+  assert.deepEqual(primaryRepoPrForTask(f.taskId), {
+    prUrl: null,
+    prState: null,
+    mergedAt: null,
+  });
+});
+
+test("a rolled-off episode's MERGED pull request IS the primary's outcome", () => {
+  // The other half, and why the two passes are asymmetric: a merge on an episode the task has
+  // already rolled past is still what landed - the same rule `mergedPrFor` applies, and the
+  // rule the durable-completion contract rests on.
+  const f = fixture("rolled-off-merged", []);
+  insertHistorical({
+    taskId: f.taskId,
+    episodeId: "merged-past-episode",
+    prUrl: PR_A,
+    mergedAt: 7_000,
+  });
+
+  assert.deepEqual(primaryRepoPrForTask(f.taskId), {
+    prUrl: PR_A,
+    prState: "merged",
+    mergedAt: 7_000,
+  });
+});
+
+test("the CURRENT episode's open pull request is shown when nothing has merged", () => {
+  const f = fixture("current-open", []);
+  f.registry.reconcilePrs(
+    new Map([[f.id, {
+      url: PR_A,
+      number: 10,
+      state: "open" as const,
+      checks: null,
+      branch: "feat/work",
+      agentSessionId: `${f.id}-episode`,
+      episodeId: f.episode.episodeId,
+      createdAt: f.episode.startedAt,
+      mergedAt: null,
+      headSha: "head",
+      worktreeHeadSha: "head",
+    }]]),
+    new Set(),
+  );
+
+  assert.deepEqual(primaryRepoPrForTask(f.taskId), {
+    prUrl: PR_A,
+    prState: "open",
+    mergedAt: null,
+  });
 });

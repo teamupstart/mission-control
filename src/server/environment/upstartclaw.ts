@@ -228,9 +228,9 @@ async function pluginInstalled(deps: EnvironmentDeps): Promise<boolean> {
   return pluginDirPresent(root, deps);
 }
 
-/** What every warning ends with: the one command that resolves it. */
+/** The action-first instruction for a setup state the operator can resolve normally. */
 function fix(verb: string): string {
-  return `${verb} ${SETUP_COMMAND} in an interactive Claude Code session - its sign-in flows cannot complete in a dispatched one.`;
+  return `${verb} ${SETUP_COMMAND} in an interactive Claude Code session before dispatching.`;
 }
 
 /**
@@ -240,7 +240,7 @@ function fix(verb: string): string {
  * `check-setup.sh` reads a missing file as `no_setup` - they are one state, not two.
  */
 function blockedWarning(): string {
-  return `Setup has not finished on this machine, so UpstartClaw's own tool gate refuses the core MCP calls an agent makes (Glean, Jira, Confluence, Slack). An unattended dispatched agent stalls on its first one instead of finishing the task. ${fix("Run")}`;
+  return `${fix("Run")} UpstartClaw requires an interactive sign-in before agents can use its tools.`;
 }
 
 export const upstartclawSetupCheck: EnvironmentCheckImpl = {
@@ -271,9 +271,8 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
       if (value === IN_PROGRESS) {
         return {
           warning:
-            "Setup was started and never finished. UpstartClaw lets tool calls through while setup is in progress, so a dispatched agent reaches the core MCP servers unauthenticated and fails on the credential rather than being told why. "
-            + fix("Finish"),
-          detail,
+            `${fix("Finish")} UpstartClaw requires its interactive sign-ins to finish before agents can reliably use its tools.`,
+          detail: null,
         };
       }
       if (isNearMiss(value)) {
@@ -286,9 +285,14 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
           detail,
         };
       }
-      // Any other value - `no_setup`, empty, or something nobody expected - is the gate's
-      // `*` branch, which exits 2. Reported as the blocked case rather than as an unknown
-      // state, because that is what the machine will actually do.
+      // `no_setup` is the ordinary first-run state. Keep its operator-facing note focused on
+      // the action instead of exposing the state file implementation detail.
+      if (value === "no_setup") return { warning: blockedWarning(), detail: null };
+
+      // Any other value - empty or something nobody expected - is the gate's `*` branch,
+      // which exits 2. Reported as the blocked case rather than as an unknown state, because
+      // that is what the machine will actually do. Its detail remains useful because setup
+      // cannot produce these values normally.
       return { warning: blockedWarning(), detail };
     }
 
@@ -305,11 +309,11 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
 
     // No state file, and the plugin is installed - a freshly installed plugin nobody has set
     // up, which is precisely the stall case: `check-setup.sh` reads a missing file as
-    // `no_setup` and exits 2. The detail names both halves, because "there is no file" alone
-    // does not explain why that is worth saying.
+    // `no_setup` and exits 2. This is an ordinary first-run state, so the UI needs the action
+    // rather than the implementation detail.
     return {
       warning: blockedWarning(),
-      detail: `no ${path}, and ${PLUGIN} is installed under ${join(deps.homeDir, ...PLUGINS_DIR)}`,
+      detail: null,
     };
   },
 };

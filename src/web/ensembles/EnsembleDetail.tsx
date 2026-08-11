@@ -10,6 +10,7 @@ import type {
 import { aggregateEnsembleAgentCost } from "@shared/ensemble.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import { fmtUsd } from "../lib/format.ts";
+import { RepositoryName } from "../components/RepositoryName.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleArtifactPatch, EnsembleRunDetailResponse } from "./types.ts";
 import {
@@ -225,7 +226,7 @@ export function EnsembleDetail({
         <div className="ensemble-detail-title">
           <h3>{run.title}</h3>
           <p className="ensemble-detail-sub">
-            {run.strategyLabel} v{run.strategyVersion} · <code>{run.repoRoot}</code>
+            {run.strategyLabel} v{run.strategyVersion} · <code><RepositoryName path={run.repoRoot} /></code>
           </p>
         </div>
         <span className={`ensemble-state ensemble-tone-${tone}`}>{ensembleStatusLabel(run)}</span>

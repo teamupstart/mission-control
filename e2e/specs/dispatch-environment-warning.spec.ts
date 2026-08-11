@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -111,9 +111,15 @@ async function closeDispatch(page: Page): Promise<void> {
   await expect(page.getByRole("dialog", { name: "Dispatch an agent" })).toBeHidden();
 }
 
-/** The note's own words, matched on the half that names the consequence. */
-const STALL_NOTE = /stalls on its first one/;
-const UNFINISHED_NOTE = /Setup was started and never finished/;
+/** The action-first copy an operator sees for the two ordinary incomplete states. */
+const SETUP_NOTE =
+  "Run /upstartclaw-core:setup in an interactive Claude Code session before dispatching. UpstartClaw requires an interactive sign-in before agents can use its tools.";
+const FINISH_SETUP_NOTE =
+  "Finish /upstartclaw-core:setup in an interactive Claude Code session before dispatching. UpstartClaw requires its interactive sign-ins to finish before agents can reliably use its tools.";
+
+function environmentNote(dialog: Locator, message: string): Locator {
+  return dialog.locator(".dispatch-env-note").filter({ hasText: message });
+}
 
 test("an unfinished UpstartClaw setup warns at dispatch time, and a finished one does not", async ({
   dashboard,
@@ -127,18 +133,16 @@ test("an unfinished UpstartClaw setup warns at dispatch time, and a finished one
   await closeDispatch(dashboard);
 
   // Setup started and abandoned. Claw's gate lets tool calls through in this state, so the
-  // note must say what actually goes wrong - unauthenticated servers - not claim a stall.
+  // action is to finish the interactive sign-ins rather than begin setup from scratch.
   installPlugin(daemon);
   writeState(daemon, "in_progress\n");
   dialog = await openDispatch(dashboard);
-  const note = dialog.getByText(UNFINISHED_NOTE);
+  const note = environmentNote(dialog, FINISH_SETUP_NOTE);
   await expect(note).toBeVisible();
   // The subject, so the reader can attribute the note to a tool they installed.
   await expect(dialog.getByText(/UpstartClaw core setup/)).toBeVisible();
-  // The fix, named in the note rather than left for them to find.
-  await expect(note).toContainText("/upstartclaw-core:setup");
-  // And the evidence: which file was read, and what it said.
-  await expect(dialog.getByText(stateFile(daemon), { exact: false })).toBeVisible();
+  // Routine setup state stays concise instead of exposing its implementation detail.
+  await expect(dialog.getByText(stateFile(daemon), { exact: false })).toBeHidden();
   await shoot(dashboard, "setup-unfinished");
   await closeDispatch(dashboard);
 
@@ -146,7 +150,7 @@ test("an unfinished UpstartClaw setup warns at dispatch time, and a finished one
   // any of this and a cached answer would go on naming a problem they just fixed.
   writeState(daemon, "completed\n");
   dialog = await openDispatch(dashboard);
-  await expect(dialog.getByText(UNFINISHED_NOTE)).toBeHidden();
+  await expect(environmentNote(dialog, FINISH_SETUP_NOTE)).toBeHidden();
   await expect(dialog.getByText(/UpstartClaw core setup/)).toBeHidden();
   await closeDispatch(dashboard);
 
@@ -154,7 +158,7 @@ test("an unfinished UpstartClaw setup warns at dispatch time, and a finished one
   // the note comes back without a restart when the machine regresses.
   writeState(daemon, "no_setup\n");
   dialog = await openDispatch(dashboard);
-  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeVisible();
   await shoot(dashboard, "setup-blocked");
 });
 
@@ -173,13 +177,13 @@ test("a leftover state file after an uninstall shows no note", async ({ dashboar
 
   // Present first, so the absence below is a change and not an empty assertion.
   let dialog = await openDispatch(dashboard);
-  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeVisible();
   await closeDispatch(dashboard);
 
   uninstallPlugin(daemon);
 
   dialog = await openDispatch(dashboard);
-  await expect(dialog.getByText(STALL_NOTE)).toBeHidden();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeHidden();
   await expect(dialog.getByText(/UpstartClaw core setup/)).toBeHidden();
   // The file is still exactly where it was - the note went away because the plugin did, not
   // because anything cleaned up after it.
@@ -230,7 +234,7 @@ test("the state file's contents never reach the dialog", async ({ dashboard, dae
 
   const dialog = await openDispatch(dashboard);
   // The finding still lands: the gate refuses this file, so the note has to say so.
-  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeVisible();
   await expect(dialog.getByText(/not shown here/)).toBeVisible();
   // And the path is still named, so the operator can go read the file themselves.
   await expect(dialog.getByText(stateFile(daemon), { exact: false })).toBeVisible();
@@ -257,13 +261,13 @@ test("a failed environment read shows nothing and still lets the dispatch go", a
   writeState(daemon, "no_setup\n");
 
   let dialog = await openDispatch(dashboard);
-  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeVisible();
   await closeDispatch(dashboard);
 
   // A request that never completes.
   await dashboard.route("**/api/environment/checks", (route) => route.abort());
   dialog = await openDispatch(dashboard);
-  await expect(dialog.getByText(STALL_NOTE)).toBeHidden();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeHidden();
   await expect(dialog.getByText(/UpstartClaw core setup/)).toBeHidden();
   // The form is whole: a failed optional read must not cost the operator the dialog.
   await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeVisible();
@@ -274,7 +278,7 @@ test("a failed environment read shows nothing and still lets the dispatch go", a
   await dashboard.unroute("**/api/environment/checks");
   await dashboard.route("**/api/environment/checks", (route) => route.fulfill({ status: 500 }));
   dialog = await openDispatch(dashboard);
-  await expect(dialog.getByText(STALL_NOTE)).toBeHidden();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeHidden();
   await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeVisible();
   await closeDispatch(dashboard);
 
@@ -282,7 +286,7 @@ test("a failed environment read shows nothing and still lets the dispatch go", a
   // failed reads and not something else having silenced the check for the rest of the test.
   await dashboard.unroute("**/api/environment/checks");
   dialog = await openDispatch(dashboard);
-  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeVisible();
 });
 
 test("the warning never blocks a dispatch - the agent still goes out", async ({
@@ -292,7 +296,7 @@ test("the warning never blocks a dispatch - the agent still goes out", async ({
   installPlugin(daemon);
   writeState(daemon, "no_setup\n");
   const dialog = await openDispatch(dashboard);
-  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeVisible();
 
   // A filled-in form, so the footer is judged on the warning and not on an empty draft.
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
@@ -312,7 +316,7 @@ test("the warning never blocks a dispatch - the agent still goes out", async ({
 
   // Both footer paths remain open, with the note on screen the whole time - that pair is the
   // claim. An operator who knows their agent may stall is still allowed to send it.
-  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Add to backlog" })).toBeEnabled();
   const go = dialog.getByRole("button", { name: "Dispatch now" });
   await expect(go).toBeEnabled();
@@ -338,5 +342,5 @@ test("an unreadable state file is reported as its own problem", async ({ dashboa
 
   const dialog = await openDispatch(dashboard);
   await expect(dialog.getByText(/cannot be read/)).toBeVisible();
-  await expect(dialog.getByText(STALL_NOTE)).toBeHidden();
+  await expect(environmentNote(dialog, SETUP_NOTE)).toBeHidden();
 });

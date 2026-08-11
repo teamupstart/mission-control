@@ -12,8 +12,8 @@ import {
   overlapPolicyLabel,
   scheduleHealthLabel,
   scheduleHealthTone,
-  shortRepo,
 } from "../../lib/schedules.ts";
+import { RepositoryName } from "../RepositoryName.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { ScheduleSpine } from "./ScheduleSpine.tsx";
 
@@ -114,7 +114,7 @@ export function ScheduleDetail({
             {cadenceSentence(schedule.expression, schedule.timezone)}
           </p>
           <div className="rm-detail-chips">
-            <span className="rm-chip">{shortRepo(template?.repoRoot)}</span>
+            <RepositoryName path={template?.repoRoot} className="rm-chip" />
             {template && <span className="rm-chip">{template.agent}</span>}
             {template && <span className="rm-chip">{template.kind}</span>}
             {template?.model && <span className="rm-chip">{template.model}</span>}
@@ -223,7 +223,9 @@ export function ScheduleDetail({
             {template && (
               <>
                 <dt>Repository</dt>
-                <dd className="rm-mono">{template.repoRoot}</dd>
+                <dd className="rm-mono">
+                  <RepositoryName path={template.repoRoot} />
+                </dd>
                 <dt>Task defaults</dt>
                 <dd>
                   {template.agent} · {template.kind}

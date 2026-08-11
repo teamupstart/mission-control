@@ -105,6 +105,10 @@ test("a configured source is a compact overview row with its health", () => {
   assert.match(html, /Paused/);
   assert.match(html, /Configured task sources/);
   assert.match(html, /role="listitem"><button class="ts-directory-row"/);
+  assert.match(
+    html,
+    /class="tt-desc">Open widgets bugs - paused - \/repo\/widgets<\/span>/,
+  );
   assert.doesNotMatch(html, /<button[^>]*role="listitem"/);
 });
 
@@ -171,7 +175,11 @@ test("a jira source is named by its own kind, and the type filter offers it", ()
   const html = render(viewOf([mkSource({ id: "src-2", kind: "jira", label: "platform queue" })]));
   assert.match(html, /platform queue/);
   assert.match(html, /<option value="jira">Jira<\/option>/);
-  assert.match(html, /Jira · \/repo\/widgets · every 15 min/);
+  assert.match(html, /Jira · widgets · every 15 min/);
+  assert.match(
+    html,
+    /class="tt-desc">Open platform queue - paused - \/repo\/widgets<\/span>/,
+  );
   assert.doesNotMatch(html, /GitHub issues · /, "the row must not name the other kind's upstream");
 });
 

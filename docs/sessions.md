@@ -627,7 +627,10 @@ native **Ask for approval**, **Approve for me**, **Full Access**, and **Read Onl
 through `/permissions`.
 Clicking either chip opens the same dashboard picker and drives the harness's own control.
 Like the thinking badge, it appears on Cards, in Console detail, and on Board tiles, so
-triaging from the board does not mean opening a session to change its permissions. Before
+triaging from the board does not mean opening a session to change its permissions. In
+**Console detail it leads the header's runtime cluster** - mode, model, context, cost -
+rather than sitting in the pane's footer: the posture governs the session, while the three
+readings beside it are consequences of running under it. Before
 Codex writes its first observable mode, the neutral `permissions` chip still opens the
 picker. When the pane cannot be written the chip stays read-only.
 
@@ -937,6 +940,12 @@ backed by days of data rather than one sample.
 Every instrumented card with a captured prompt carries a one-sentence **Goal** under its
 title, visible even while the card is collapsed. The Goal is the session's durable completion
 objective, not a copy of the newest prompt or the step the agent happens to be working on.
+
+**Console detail draws it in the same place** - under the session's name, with the other
+facts that change rarely - rather than in a band above the transcript. There it takes one
+line and ellipses, and hovering gives you the whole sentence along with whatever the Goal's
+state has to add ("being refined", "automatic wrap-up is paused"). A harness that can never
+carry a Goal still says so there, in the same slot.
 
 The first substantive instruction establishes an immediate provisional objective with no
 model call. Every substantive instruction, including that first one, enters a durable queue;

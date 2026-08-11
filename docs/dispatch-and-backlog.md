@@ -175,11 +175,26 @@ updates to the model's a beat later. If `claude` is
 missing, logged out, or slow, that first-line title just stands - nothing breaks, and the
 dispatch still goes.
 
-The new session then shows up on the grid like any other, with an **intent chip** naming
-what it's working on. A terminal-runtime session stays out of the way until you click
+The new session then shows up on the grid like any other, with an **intent chip** for the
+task it is running. A terminal-runtime session stays out of the way until you click
 **Focus**; an Agent SDK session has no tab and offers **Continue in terminal** instead.
 Choose **Add to backlog** instead of **Dispatch now** to shelve a task without launching
 it yet.
+
+That chip states only what the session's own name does not. A dispatch names the session
+after its task, so the title is usually already the heading above the chip and is not
+repeated inside it; you see it there when the two differ, which is what an agent that has
+finished one task and taken another looks like. The **kind** is drawn only for a
+**scout** - `ship` is the default every dispatch, sweep, Recurring Mission and MCP call
+takes, so a badge on every card said nothing, and no badge now means `ship`.
+
+Which means the chip is often not drawn at all, and that is the point rather than an
+omission: an ordinary running ship task on the session it named has nothing to add to the
+name above it, and an empty tinted bar says less than no bar. It appears as soon as it is
+carrying something - a scout's kind, a title the session's name does not hold, the
+[recurring-mission](recurring-missions.md) origin mark, the merge outcome, or (on Cards)
+a `dispatching…` or `failed` word - and it carries the task's status as its colour
+whenever it is there.
 
 The form leads with the brief: repo, then the task composer, with the crew row (Agent,
 Kind, Model, Effort) beneath them and one shared hint in place of per-field boilerplate.

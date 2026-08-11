@@ -7,7 +7,7 @@
 // Nothing in the product infers either one - a task carries a priority because a human
 // or a task source said so, never because we guessed from its text.
 
-import type { Task, TaskPriority } from "./types.ts";
+import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
 
 /**
  * The priorities, in ascending urgency. Array order is picker order, sort order, and
@@ -81,4 +81,79 @@ export function normalizeLabels(raw: readonly string[]): string[] {
 export function byPriorityThenAge(a: Task, b: Task): number {
   const rank = priorityRank(b.priority) - priorityRank(a.priority);
   return rank !== 0 ? rank : a.createdAt - b.createdAt;
+}
+
+/** What a session's task pill has left to say once the constants and duplicates are dropped. */
+export interface TaskPillParts {
+  /**
+   * The kind badge, or null when the kind is the one every writer defaults to. Absence
+   * means `ship` unambiguously: `kind` is `NOT NULL`, so the pill only exists when there
+   * is a task, and a task always has a kind.
+   */
+  kind: TaskKind | null;
+  /** The task's title, or null when the session's own name already carries it. */
+  title: string | null;
+  /**
+   * True when nothing the pill hosts on EVERY surface has anything to say - no kind
+   * badge, no title, no outcome and no schedule origin.
+   *
+   * The pill is not an empty frame: it has a background, a border and a tone-coloured
+   * left edge, so drawing one with nothing in it is a bar of chrome that says less than
+   * nothing. That is the common case now that the two text parts above went conditional -
+   * an ordinary running `ship` task on a session named after it - so the reduction is not
+   * finished until the container goes with them.
+   *
+   * A surface that draws something of its OWN inside the pill has to say so: the card
+   * adds a `dispatching…` / `failed` word that the console detail does not, and it ORs
+   * that in at the point it draws it rather than being asserted here.
+   *
+   * `repoPrs` is deliberately NOT one of the operands, and it is the one a reader will
+   * reach for. A multi-repo task's per-repo pull-request list is a SIBLING row, not
+   * pill content - it is a separate row precisely because it is as wide as the repo
+   * count while the pill's outcome link is pinned right - and it gates itself on being
+   * non-empty. Folding it in here would draw a pill with nothing in it above that row,
+   * which was measured in a browser: the pill hugs its content on a card, so an empty
+   * one is a 14px stub rather than a bar, and the row reads better with nothing above it
+   * than with that. The row is self-describing (each chip names its repo and its PR
+   * state) and it still sits under the session's own title.
+   */
+  silent: boolean;
+}
+
+/** A session with no task at all: nothing to draw, and no pill either. */
+const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
+
+/**
+ * What the task pill should draw for a session.
+ *
+ * Both parts are usually silent, and for different reasons. `TaskKind` has two values and
+ * every automated writer defaults to `ship` - the MCP `create_task` tool cannot even
+ * produce a `scout` - so a badge rendered unconditionally reads `SHIP` in almost every
+ * session, is not colour-differentiated in the console header, is frozen once the task
+ * leaves `backlog`, and repeats the chip on the card you clicked through. Only `scout`
+ * says anything, so only `scout` is drawn.
+ *
+ * The title is a duplicate because `dispatcher.ts` names a dispatched session after its
+ * task, so the pill usually repeats the `h2` two rows above it. It is NOT always a
+ * duplicate, which is why this is a comparison rather than a deletion: a session
+ * re-assigned to a later task keeps the first task's title as its name, and the pill is
+ * then the only place the task now executing appears (`test/task-multi-session.test.ts`).
+ *
+ * Shared rather than inlined at each call site because a session is drawn by four
+ * components: the console detail and the card both render this pill, and a rule applied
+ * to one of them would look right in one layout and wrong in the other.
+ */
+export function taskPillParts(session: Pick<Session, "name" | "task">): TaskPillParts {
+  const task = session.task;
+  if (!task) return NO_PILL;
+  const kind = task.kind === "scout" ? task.kind : null;
+  const title = task.title === session.name ? null : task.title;
+  return {
+    kind,
+    title,
+    // `scheduleId` rather than a call into `ScheduleOriginChip`: this module is browser-safe
+    // shared logic and cannot import a component, and the chip's own gate is that one field
+    // (`scheduleProvenance`). `task-pill.test.ts` pins the two answering together.
+    silent: !kind && !title && !task.outcome && !task.scheduleId,
+  };
 }

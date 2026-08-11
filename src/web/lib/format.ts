@@ -212,6 +212,23 @@ export function fmtRunway(ms: number): string {
   return m ? `~${h}h ${m}m` : `~${h}h`;
 }
 
+/**
+ * The last path segment of a repo root, for a chip that has to stay narrow.
+ *
+ * One definition, because three surfaces shorten a repo the same way and a fourth was about
+ * to: the dispatch modal's attached-repo chips, the schedule catalog's columns, and now the
+ * per-repo pull request lines. The full path is never lost where this is used - it is the
+ * chip's tooltip and the accessible name of any control beside it - because two attached
+ * repos can share a basename (`~/a/api` and `~/b/api`) and the short form alone would draw
+ * them as the same chip twice.
+ */
+export function repoLeaf(repoRoot: string | null | undefined): string {
+  if (!repoRoot) return "-";
+  const trimmed = repoRoot.replace(/\/+$/, "");
+  const leaf = trimmed.split("/").pop();
+  return leaf && leaf.length > 0 ? leaf : trimmed;
+}
+
 export function shortenCwd(cwd: string | null): string {
   if (!cwd) return "-";
   const home = "/Users/";

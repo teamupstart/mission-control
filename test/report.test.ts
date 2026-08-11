@@ -66,6 +66,7 @@ const shipSummary: TaskSummary = {
   scheduleOccurrenceId: null,
   scheduledFor: null,
   ensemble: null,
+  repoPrs: [],
 };
 
 test("buildReport buckets sessions the same way the shared helper does", () => {

@@ -105,6 +105,7 @@ function mkTask(over: Partial<TaskSummary> = {}): TaskSummary {
     scheduleOccurrenceId: null,
     scheduledFor: null,
     ensemble: null,
+    repoPrs: [],
     ...over,
   };
 }

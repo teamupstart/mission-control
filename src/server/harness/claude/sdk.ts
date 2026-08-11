@@ -11,7 +11,7 @@ import type {
   SessionRequestQuestion,
   ThinkingLevel,
 } from "@shared/types.ts";
-import { opensPullRequest, pullRequestUrlIn } from "@shared/pr-command.mjs";
+import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import type {
   SdkEvent,
   SdkLaunchOptions,
@@ -752,6 +752,9 @@ class ClaudeSdkSession implements SdkSessionHandle {
    * URL the command printed. Neither alone reaches `adoptPr`; the phase file names only the
    * first, but `applyDriverEvent` ignores a `pr_created` with no url, so the pre-hook on its
    * own would be a signal nothing consumes.
+   *
+   * EVERY url the response carried, because one command routinely opens one pull request per
+   * repository on a multi-repo task and the first-match reader left the rest unannounced.
    */
   hooks(): Record<string, unknown> {
     const pre = async (input: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -767,8 +770,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
       if (!toolUseId || !this.prPending.delete(toolUseId)) return {};
       const response = input.tool_response;
       const text = typeof response === "string" ? response : JSON.stringify(response ?? "");
-      const url = pullRequestUrlIn(text);
-      if (url) this.out.emit({ kind: "pr_created", url });
+      const urls = pullRequestUrlsIn(text);
+      if (urls.length > 0) this.out.emit({ kind: "pr_created", urls });
       return {};
     };
     return {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { writeFakeAgents } from "./fake-agents.ts";
+import { ghPullRequestsPath, writeFakeAgents } from "./fake-agents.ts";
 
 /**
  * A real Mission Control daemon, isolated from the operator's machine, for a browser to drive.
@@ -36,6 +36,13 @@ export interface DaemonHandle {
    * nothing.
    */
   secondRepo: string;
+  /**
+   * Where a spec scripts what the fake `gh` reports, for THIS daemon.
+   *
+   * On the handle rather than derived in each spec because the daemon has to be told about it
+   * at spawn time - the fake reads one env var, and a spec cannot add one afterwards.
+   */
+  ghPrsPath: string;
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -152,7 +159,7 @@ export function seedRepo(workspace: string, name: string): string {
  * also why this suite lives outside `test/`: everything in `test/` must pass on a fresh
  * checkout without one, and `scripts/smoke-bundles.mjs` already draws that same line.
  */
-export async function startDaemon(): Promise<DaemonHandle> {
+export async function startDaemon(extraEnv: Record<string, string> = {}): Promise<DaemonHandle> {
   // `realpathSync` because macOS resolves /var -> /private/var, and the daemon reports the
   // resolved cwd for a session. The transcript path is derived from that cwd, so an
   // unresolved fixture path and the daemon's own view would disagree by a prefix and the
@@ -199,6 +206,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
     // are covered by this one variable rather than each needing its own.
     MISSION_GH_BIN: bins.gh,
     MC_E2E_RECORD_DIR: recordDir,
+    // Where that fake reads its scripted pull requests from. Set for every daemon so a spec
+    // only has to write the file; absent content simply means "no pull requests anywhere",
+    // which is what every spec that does not script one already expects.
+    MC_E2E_GH_PRS: ghPullRequestsPath(home),
     // The pool sweep is NOT scoped to MISSION_HOME - it reaps the shared treehouse
     // worktree pool, so an isolated daemon will still delete a sibling checkout's work.
     // 0 switches the sweep off entirely.
@@ -233,6 +244,9 @@ export async function startDaemon(): Promise<DaemonHandle> {
     ANTHROPIC_API_KEY: "",
     // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
     ...DAEMON_TERMINAL_IDENTITY,
+    // Last, so a spec that needs a different cadence or feature switch can say so through
+    // the `daemonEnv` fixture option rather than by editing this shared list.
+    ...extraEnv,
   };
 
   let log = "";
@@ -420,6 +434,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     workspace,
     repo,
     secondRepo,
+    ghPrsPath: ghPullRequestsPath(home),
     readLog: () => log,
     startForeman,
     crash,

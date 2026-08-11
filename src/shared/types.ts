@@ -1497,10 +1497,11 @@ export type TaskDependency =
  * its tree: teardown and startup reconciliation read the recorded `worktreePath` rather
  * than recomputing it.
  *
- * `prUrl`/`prState`/`mergedAt` are declared here and always null in this build. They are
- * reserved deliberately rather than added later: the registry will project per-repo pull
- * request state onto them, and declaring them now means the wire shape does not change
- * under consumers when it starts being populated.
+ * `prUrl`/`prState`/`mergedAt` carry this repository's own pull request, projected on read
+ * from the episode's per-repo record. They were declared - and left null - one phase before
+ * anything wrote them, so the wire shape did not change under consumers when it started
+ * being populated. The PRIMARY repo's pull request is deliberately not among them: it is not
+ * one of these entries, and a card reads the whole set through `TaskSummary.repoPrs`.
  */
 export interface TaskRepoEntry {
   /** Absolute path of the attached repo's main checkout, as `resolveTaskRepoRoot` returns it. */
@@ -1513,11 +1514,11 @@ export interface TaskRepoEntry {
   provider: WorktreeProvider | null;
   /** Full 40-character commit this repo's branch was cut at, recorded at provisioning time. */
   baseSha: string | null;
-  /** Reserved for per-repo pull request tracking. Always null in this build. */
+  /** The pull request this task opened in THIS repository, or null if none yet. */
   prUrl: string | null;
-  /** Reserved for per-repo pull request tracking. Always null in this build. */
+  /** `open` or `merged` as of the last observation, or null while unknown. */
   prState: string | null;
-  /** Reserved for per-repo pull request tracking. Always null in this build. */
+  /** When that pull request was observed merged, or null. */
   mergedAt: number | null;
 }
 
@@ -1757,6 +1758,35 @@ export interface TaskSummary {
    * task to its member row; nothing in the browser derives it.
    */
   ensemble: TaskEnsembleLink | null;
+  /**
+   * One entry per repository this MULTI-repo task is attached to, primary first, with the
+   * pull request each one has produced.
+   *
+   * **Empty for a single-repo task**, which is nearly all of them, and that emptiness is a
+   * contract rather than an optimisation: every surface renders this list only when it is
+   * non-empty, so a single-repo card's markup is byte-identical to what it was before this
+   * field existed.
+   *
+   * Here rather than reaching for `Task.extraRepos` from a card because a card is handed a
+   * `TaskSummary`, not a `Task` - and because `extraRepos` deliberately excludes the
+   * primary, which is exactly the repository whose pull request an operator most expects to
+   * see. This list includes it.
+   */
+  repoPrs: TaskRepoPrSummary[];
+}
+
+/** One repository of a multi-repo task, and the pull request it has produced so far. */
+export interface TaskRepoPrSummary {
+  /** Absolute repo root, as the task recorded it. */
+  repoRoot: string;
+  /** True for the task's own repo - the one the session's cwd is a worktree of. */
+  primary: boolean;
+  /** The pull request adopted for this repository on this task, or null if none yet. */
+  prUrl: string | null;
+  /** `open` or `merged` as of the last observation, or null while unknown. */
+  prState: string | null;
+  /** When that pull request was observed merged, or null. */
+  mergedAt: number | null;
 }
 
 export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";

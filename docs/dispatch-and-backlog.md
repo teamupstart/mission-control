@@ -71,9 +71,27 @@ Two consequences worth knowing:
   already running. The extra worktrees, and the agent's write access to them, are granted
   when a session launches, and neither harness can widen a running session's write scope.
 
-Pull request tracking, review workflows and completion still behave as they do for a
-single-repo task in this release: the session's first pull request is the one Mission
-Control tracks.
+**Every repository's pull request is tracked separately.** All the urls a `gh pr create`
+prints are read, not just the first, and the branch poller asks `gh` inside each attached
+worktree as well as the primary's - so a pull request opened in the second repository is
+adopted for review and counted for completion exactly like the primary's. The card and the
+console show one line per repository, naming that repo's pull request and whether it is open
+or merged; a repository with none yet says so rather than being left out.
+
+**A multi-repo task completes only when every repository it CHANGED has merged.** A
+repository counts as changed when it has a pull request on this task, or when its worktree's
+head has moved off the commit its branch was cut at - the primary included, on the baseline
+recorded for it when the task was dispatched. A repo whose branch never moved is exempt and
+holds nothing up; a pull request closed without merging never satisfies the rule, so the task
+stays visible for you to deal with rather than quietly finishing. `Outcome` then names every
+pull request that landed, and the outcome link stays the primary's.
+
+Merging itself is unchanged. Each pull request still merges on its own verdict, whenever it
+alone is ready - there is no coordinated cross-repo merge, so siblings can land minutes apart
+and the task's own completion is what tells you the whole piece of work is in.
+
+Review workflows still behave as they do for a single-repo task in this release: one run per
+session, pinned to one pull request.
 
 **Model** starts on the default configured for the chosen harness (see [Default
 model](#default-model)) and names it, so you can see what the task will run on without

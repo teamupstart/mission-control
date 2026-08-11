@@ -155,6 +155,18 @@ export const HookIngestSchema = z.object({
   // link `gh pr create` prints). Optimistically decorates the session's card;
   // the PR poller is the source of truth that later confirms or clears it.
   prUrl: z.string().url().optional(),
+  // EVERY PR URL that same tool result carried, in the order they were printed, with
+  // `prUrl` above as its first element.
+  //
+  // Both, rather than replacing the scalar, because they answer different questions and
+  // one of them is older than this field. `prUrl` is what decorates THIS CARD, and a card
+  // has one chip; `prUrls` is what the agent opened, which on a multi-repo task is one per
+  // repository it changed. Only the plural is fanned out to adoption, so a second
+  // repository's pull request stops being invisible to the Inspector and to completion.
+  //
+  // Optional so a hook installed before this field existed keeps ingesting: the daemon
+  // falls back to `[prUrl]`, which is exactly what it used to do.
+  prUrls: z.array(z.string().url()).optional(),
   // True when the hook saw the agent RUN `gh pr create` - not merely print a PR URL.
   //
   // The distinction is the whole of the Inspector's consent model. `prUrl` above is a

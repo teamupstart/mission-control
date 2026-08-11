@@ -125,6 +125,7 @@ test("schedule provenance rides inside Session.task, and a change to it still em
     scheduleOccurrenceId: null,
     scheduledFor: null,
     ensemble: null,
+    repoPrs: [],
   };
   assert.equal(sessionEqual(mkSession({ task: summary }), mkSession({ task: summary })), true);
   assert.equal(

@@ -88,15 +88,15 @@ test("authorship is announced once per session per PR, on either evidence path",
   // The driver path: the same claim, from a session with no pane at all.
   const sdkId = `${SDK_SESSION_ID_PREFIX}22222222-2222-4222-8222-222222222222`;
   r.registerSdkSession({ id: sdkId, agent: "claude", name: "embedded", cwd: "/wt/b" });
-  r.applyDriverEvent(sdkId, { kind: "pr_created", url: URL_2 });
-  r.applyDriverEvent(sdkId, { kind: "pr_created", url: URL_2 });
+  r.applyDriverEvent(sdkId, { kind: "pr_created", urls: [URL_2] });
+  r.applyDriverEvent(sdkId, { kind: "pr_created", urls: [URL_2] });
   assert.deepEqual(opened.slice(1), [{ url: URL_2, sessionId: sdkId }], "nor is a replayed driver event");
 
   // What is suppressed is a REPEAT, not a sequence: an agent that opens a second pull
   // request is still its author, and a PR two different sessions both claim is a claim each
   // of them made. Adoption itself de-duplicates on the PR key, which is a separate rule
   // (see "adopting twice is a no-op" below).
-  r.applyDriverEvent(sdkId, { kind: "pr_created", url: URL_1 });
+  r.applyDriverEvent(sdkId, { kind: "pr_created", urls: [URL_1] });
   assert.deepEqual(opened.at(-1), { url: URL_1, sessionId: sdkId });
 });
 
@@ -480,7 +480,7 @@ test("a driver's pr_created adopts; a bare prUrl sighting on the same session do
   assert.equal(opensPullRequest("gh pr view 56 --json url"), false);
   assert.ok(opensPullRequest("gh pr create --fill"));
 
-  r.applyDriverEvent(sdkId, { kind: "pr_created", url: URL_1 });
+  r.applyDriverEvent(sdkId, { kind: "pr_created", urls: [URL_1] });
   assert.deepEqual(opened, [{ url: URL_1, sessionId: sdkId }]);
 
   // What the listener does with it is the ordinary adoption, keyed on the repo rather than

@@ -47,7 +47,30 @@ export function opensPullRequest(command) {
  */
 export const PR_URL_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
 
-/** The first PR URL in `text`, or null. Non-strings are stringified by the caller. */
+/**
+ * EVERY distinct PR URL in `text`, in the order they appear. Non-strings yield none.
+ *
+ * One command can open more than one pull request, and on a multi-repo task it routinely
+ * does - the agent is asked for one per repository it changed, and `cd b && gh pr create`
+ * after `cd a && gh pr create` in a single tool call prints both URLs into one output. The
+ * first-match reader below saw only the first, so the second repository's pull request was
+ * never announced, never adopted, and never counted by the completion quorum.
+ *
+ * Deduped, because the same URL printed twice (a `gh pr create` that a `gh pr view` then
+ * echoes) is one pull request, and the announcement downstream is once-per-PR anyway.
+ */
+export function pullRequestUrlsIn(text) {
+  if (typeof text !== "string") return [];
+  return [...new Set(text.match(new RegExp(PR_URL_RE, "g")) ?? [])];
+}
+
+/**
+ * The first PR URL in `text`, or null. Non-strings are stringified by the caller.
+ *
+ * Kept, and defined in terms of `pullRequestUrlsIn`, for the callers that genuinely want ONE
+ * - `Session.prUrl` is the scalar "this session's current-branch pull request", and a card
+ * chip has one slot. Callers that own a SET use the plural directly.
+ */
 export function pullRequestUrlIn(text) {
-  return typeof text === "string" ? (PR_URL_RE.exec(text)?.[0] ?? null) : null;
+  return pullRequestUrlsIn(text)[0] ?? null;
 }

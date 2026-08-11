@@ -55,6 +55,6 @@ test("the HTML database guide catalogs every application table exactly once", ()
     .map((match) => match[1]!)
     .sort();
 
-  assert.equal(schemaTables.length, 51);
+  assert.equal(schemaTables.length, 52);
   assert.deepEqual(documentedTables, schemaTables);
 });

@@ -27,6 +27,14 @@ support this; the dispatch modal offers the control only for a harness that does
 tasks are dispatch-only - they cannot be dropped onto an agent that is already running,
 because the extra worktrees and the write access to them are granted when a session starts.
 
+Each of those pull requests is tracked on its own. The card and the console list one line per
+repository with that repository's pull request and its state, so a task spanning three repos
+never collapses to a single link. **A multi-repo task completes only when every repository it
+changed has had its pull request merged** - a repo whose branch never moved off the commit it
+was cut at is exempt, and a pull request closed without merging never satisfies the rule, so
+the task stays visible for you to deal with. Merging itself is unchanged: each pull request
+still merges on its own verdict, whenever it alone is ready.
+
 ![Mission Control dispatch](docs/images/dispatch.png)
 
 ## Build the operating system around the work

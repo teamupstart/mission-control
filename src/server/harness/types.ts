@@ -835,8 +835,14 @@ export type SdkEvent =
   | { kind: "request"; request: SessionRequest }
   | { kind: "request_resolved"; requestId: string }
   | { kind: "turn_done"; usage: SdkUsage | null }
-  /** `gh pr create` observed on the tool stream - authorship evidence, not a url sniff. */
-  | { kind: "pr_created"; url: string | null }
+  /**
+   * `gh pr create` observed on the tool stream - authorship evidence, not a url sniff.
+   *
+   * A LIST because one command can open one pull request per repository a multi-repo task
+   * attached, and each of them needs announcing separately. The first is also the one that
+   * decorates the card, which is the scalar this used to carry.
+   */
+  | { kind: "pr_created"; urls: string[] }
   | { kind: "exited"; reason: string; resumable: boolean };
 
 /**

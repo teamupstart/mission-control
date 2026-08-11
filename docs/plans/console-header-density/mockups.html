@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Console detail - header density mockups</title>
+<style>
+:root{
+  --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+  --border:#232a33; --border-soft:#1b2129;
+  --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+  --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+  --purple:#a371f7; --foreman:var(--purple); --pr-open:#3fb950;
+  --syntax-type:#d97757;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --frame-h:600px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#06080a;color:var(--fg);font-family:var(--sans);padding:40px 32px 80px}
+h1{font-size:22px;margin:0 0 6px}
+.lede{color:var(--muted);font-size:13.5px;max-width:980px;line-height:1.55;margin:0 0 6px}
+.lede b{color:var(--fg);font-weight:600}
+h2{font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+.save{font:600 11px/1 var(--mono);padding:4px 7px;border-radius:999px;background:color-mix(in srgb,var(--idle) 14%,transparent);color:var(--idle);border:1px solid color-mix(in srgb,var(--idle) 34%,var(--border))}
+.save.zero{background:color-mix(in srgb,var(--dim) 12%,transparent);color:var(--dim);border-color:var(--border)}
+.save.big{background:color-mix(in srgb,var(--purple) 15%,transparent);color:var(--purple);border-color:color-mix(in srgb,var(--purple) 38%,var(--border))}
+.note{color:var(--muted);font-size:12.5px;line-height:1.6;max-width:980px;margin:6px 0 14px}
+.note .cost{color:var(--attention)}
+.note code{font-family:var(--mono);font-size:11.5px;color:var(--fg);background:var(--panel);padding:1px 5px;border-radius:4px}
+section{margin:0 0 46px}
+.wrap{display:flex;gap:14px;align-items:flex-start}
+
+/* ---- ruler ---- */
+.ruler{width:74px;flex:none;height:var(--frame-h);position:relative;font:10px/1 var(--mono);color:var(--dim)}
+.ruler i{position:absolute;left:0;right:0;display:flex;align-items:center;justify-content:flex-end;padding-right:8px;font-style:normal;border-right:2px solid var(--border)}
+.ruler i.chrome{background:repeating-linear-gradient(135deg,transparent 0 5px,color-mix(in srgb,var(--danger) 13%,transparent) 5px 10px);border-right-color:var(--danger);color:#f19a94}
+.ruler i.conv{background:color-mix(in srgb,var(--idle) 9%,transparent);border-right-color:var(--idle);color:var(--idle)}
+
+/* ---- the app frame ---- */
+.frame{flex:1;min-width:0;height:var(--frame-h);display:flex;flex-direction:column;overflow:hidden;
+  background:var(--bg);border:1px solid var(--border);border-radius:11px}
+.cdetail{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+
+/* row 1 */
+.detail-head{flex:none;display:flex;align-items:center;gap:10px;padding:14px 22px 12px;border-bottom:1px solid var(--border-soft)}
+.detail-head.tight{padding:10px 18px 9px}
+.agent-dot{width:9px;height:9px;border-radius:50%;background:var(--syntax-type);flex:none}
+/* Title + objective stack as one identity block. The objective is durable, so it belongs
+   with the other durable facts rather than in a band of its own above the transcript. */
+.detail-title{display:flex;flex-direction:column;gap:2px;min-width:0}
+.detail-title h2{font-size:16px;margin:0;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.detail-title .objective{margin:0;font-size:12px;line-height:1.3;color:var(--dim)}
+.detail-head.tight .detail-title h2{font-size:14.5px}
+.sp{flex:1}
+.runtime-chip{font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:4px 9px;background:var(--panel);white-space:nowrap}
+.pr-chip{font:11px/1 var(--mono);color:var(--pr-open);border:1px solid color-mix(in srgb,var(--pr-open) 32%,var(--border));border-radius:999px;padding:5px 8px;background:color-mix(in srgb,var(--pr-open) 10%,var(--panel));white-space:nowrap}
+.insp-chip{font:11px/1 var(--mono);color:var(--attention);border:1px solid color-mix(in srgb,var(--attention) 32%,var(--border));border-radius:999px;padding:5px 7px;background:color-mix(in srgb,var(--attention) 10%,var(--panel))}
+.wbc{font-size:11px;color:var(--fg);border:1px solid color-mix(in srgb,var(--working) 35%,var(--border));border-radius:999px;padding:5px 8px;background:color-mix(in srgb,var(--working) 9%,var(--panel));white-space:nowrap}
+.wbc b{color:var(--working);font-weight:500}
+.badge{font-size:11px;color:var(--working);border:1px solid color-mix(in srgb,var(--working) 30%,var(--border));border-radius:999px;padding:5px 9px 5px 7px;background:color-mix(in srgb,var(--working) 10%,var(--panel));display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.badge::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--working)}
+.rt-pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:4px 8px;background:var(--panel);white-space:nowrap}
+.rt-1m{font:9.5px/1 var(--mono);color:var(--dim);background:var(--panel-2);border-radius:4px;padding:2px 4px}
+.rt-ctx{display:inline-flex;align-items:center;gap:7px}
+.rt-meter{width:44px;height:5px;border-radius:3px;background:var(--panel-2);overflow:hidden}
+.rt-meter b{display:block;height:100%;width:45%;background:var(--idle);border-radius:3px}
+.rt-num{font:11px/1 var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+/* CostChip - ships in the header today (ConsoleDetail.tsx:404); my first draft omitted it. */
+.cost-chip{font:11px/1 var(--mono);font-weight:550;color:var(--purple);border:1px solid color-mix(in srgb,var(--purple) 30%,var(--border));
+  border-radius:6px;padding:3px 7px;background:color-mix(in srgb,var(--purple) 10%,var(--panel));white-space:nowrap}
+/* ModePicker, at the `.tile-runtime-line .mode` metrics that make it measure like an .rt-pill. */
+.mode{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:560;line-height:1;padding:3px 7px;border-radius:6px;
+  background:transparent;font-family:inherit;cursor:pointer;white-space:nowrap;
+  border:1px solid color-mix(in oklab,currentcolor 32%,var(--border-soft))}
+.mode-accept{color:var(--working);background:color-mix(in oklab,var(--working) 12%,transparent)}
+.mode-plan{color:var(--purple);background:color-mix(in oklab,var(--purple) 12%,transparent)}
+.mode-caret{font-size:8px;opacity:.7;transform:translateY(-1px)}
+/* Live status pieces */
+.turn.ghost p{color:var(--muted)}
+.turn.ghost .spin{color:var(--working);margin-right:5px}
+.badge-act{color:var(--muted);font-weight:400}
+.objective{font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.study{display:grid;grid-template-columns:1fr 1fr;gap:16px 18px}
+.study .frame{height:330px}
+.study h3{font-size:13.5px;margin:0 0 3px;display:flex;align-items:center;gap:9px}
+.study .cost-lbl{font:600 10px/1 var(--mono);padding:3px 6px;border-radius:999px;border:1px solid var(--border);color:var(--dim)}
+.study .cost-lbl.good{color:var(--idle);border-color:color-mix(in srgb,var(--idle) 34%,var(--border));background:color-mix(in srgb,var(--idle) 12%,transparent)}
+.study .cost-lbl.bad{color:#f19a94;border-color:color-mix(in srgb,var(--danger) 34%,var(--border));background:color-mix(in srgb,var(--danger) 12%,transparent)}
+.study p.sn{color:var(--muted);font-size:11.5px;line-height:1.55;margin:0 0 8px;max-width:660px}
+.mode-new{position:relative}
+.mode-new::after{content:"";position:absolute;inset:-3px;border-radius:8px;border:1px dashed color-mix(in srgb,var(--idle) 55%,transparent);pointer-events:none}
+
+/* Footer - real chrome I was not drawing. It holds the ActionBar, so it cannot be deleted. */
+.detail-foot{flex:none;display:flex;align-items:center;gap:9px;padding:10px 22px;border-top:1px solid var(--border-soft);font-size:11.5px;color:var(--muted)}
+.detail-agent{color:var(--fg);font-weight:550}
+.dot-sep{color:var(--dim)}
+.foot-mono{font-family:var(--mono);font-size:11px;color:var(--dim)}
+
+/* row 2 */
+.detail-sub{flex:none;display:flex;align-items:center;gap:14px;margin:0;padding:10px 22px;border-bottom:1px solid var(--border-soft);background:color-mix(in oklab,var(--bg-2) 55%,transparent)}
+.kv{display:inline-flex;align-items:baseline;gap:7px;font-size:11.5px;min-width:0}
+.kv dt{font:10px/1 var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--dim)}
+.kv dd{margin:0;font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kv dd.branch{color:var(--idle)}
+.task-chip{display:inline-flex;align-items:center;gap:9px;margin:2px 0 6px;padding:5px 9px;border:1px solid color-mix(in srgb,var(--working) 30%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--working) 8%,var(--panel));min-width:0}
+.task-kind{font:9.5px/1 var(--mono);letter-spacing:.1em;color:var(--working);border:1px solid color-mix(in srgb,var(--working) 34%,var(--border));border-radius:4px;padding:3px 5px}
+.task-title{font-size:12px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* What is LEFT of the task pill once the constant SHIP badge and the duplicate title go:
+   the outcome link. One line of text, no box, no margin - so row 2 loses its tallest element. */
+.task-outcome{font-size:11.5px;color:var(--idle);text-decoration:none;border-bottom:1px solid transparent}
+.task-outcome:hover{border-bottom-color:currentColor}
+
+/* row 3 */
+.detail-tabs{flex:none;display:flex;gap:2px;padding:0 22px;border-bottom:1px solid var(--border-soft);align-items:stretch}
+.detail-tab{display:inline-flex;align-items:center;gap:7px;padding:10px 13px;font-size:12.5px;color:var(--muted);background:none;border:0;position:relative;cursor:pointer;font-family:inherit}
+.detail-tab.on{color:var(--fg)}
+.detail-tab.on::after{content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;border-radius:2px 2px 0 0;background:var(--working)}
+.kb{font:9.5px/1 var(--mono);color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:2px 3px;background:var(--panel)}
+/* Freed horizontal room converted to vertical: with the SHIP badge and duplicate title gone,
+   the toolbar row has slack to spend, so its tabs give back 2px top and bottom. */
+.tabs-tight .detail-tab{padding:8px 12px}
+.foreman-rail{margin-left:auto;align-self:center;font:10px/1 var(--mono);letter-spacing:.09em;color:var(--muted);border:1px solid var(--border);border-radius:7px;padding:6px 10px;background:var(--panel);white-space:nowrap}
+
+/* row 4 */
+.detail-conv{flex:1;min-height:0;display:flex;flex-direction:column;gap:13px;padding:16px 22px}
+.goal{margin:0;font-size:13px;line-height:1.45;color:var(--fg);flex:none;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.activity{margin:0;font-size:12.5px;color:var(--muted);border-left:2px solid var(--border);padding-left:10px;flex:none}
+
+/* row 5 */
+.transcript{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}
+.conv-launch{flex:none;display:flex;align-items:center;gap:9px;padding:6px 8px;border:1px solid var(--border);border-radius:9px;background:var(--panel-2)}
+.cl-lbl{font:10px/1 var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--dim)}
+.cl-path{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.btn{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:5px 9px;background:var(--panel);white-space:nowrap;font-family:inherit;cursor:pointer}
+.btn .kb{padding:1px 3px}
+.btn.on{border-color:color-mix(in srgb,var(--working) 45%,var(--border));background:color-mix(in srgb,var(--working) 12%,var(--panel));color:var(--fg)}
+.btn small{color:var(--dim);font-size:10px}
+
+/* transcript body */
+/* A live transcript sits scrolled to the BOTTOM, so the frames show the tail and let the
+   older turns clip off the top. Without this the ghost turn - the whole point of the
+   live-status redesign - is never visible. */
+.log{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;gap:11px;padding-right:4px}
+.turn{display:flex;gap:10px;font-size:12.5px;line-height:1.5}
+.who{font:10px/1.6 var(--mono);letter-spacing:.08em;color:var(--dim);flex:none;width:52px;text-align:right}
+.turn p{margin:0;color:var(--muted)}
+.turn.a p{color:var(--fg)}
+.turn .tool{font-family:var(--mono);font-size:11.5px;color:var(--syntax-type)}
+.more{font:10px/1 var(--mono);color:var(--idle);padding:2px 0 0 62px}
+
+/* diff-highlight for changed rows */
+.hl{position:relative}
+.hl::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--idle)}
+.hl.rm::before{background:var(--danger)}
+.tag{position:absolute;right:8px;top:50%;transform:translateY(-50%);font:9px/1 var(--mono);letter-spacing:.06em;color:var(--idle);background:color-mix(in srgb,var(--idle) 13%,var(--bg));border:1px solid color-mix(in srgb,var(--idle) 32%,var(--border));border-radius:4px;padding:3px 5px;pointer-events:none}
+.tag.rm{color:var(--danger);background:color-mix(in srgb,var(--danger) 13%,var(--bg));border-color:color-mix(in srgb,var(--danger) 32%,var(--border))}
+.tag.nu{color:var(--purple);background:color-mix(in srgb,var(--purple) 13%,var(--bg));border-color:color-mix(in srgb,var(--purple) 32%,var(--border))}
+
+/* mockup 4 - scrolled state */
+.collapsed-head{flex:none;display:flex;align-items:center;gap:9px;padding:7px 18px;border-bottom:1px solid var(--border-soft);background:color-mix(in oklab,var(--bg-2) 70%,transparent)}
+.collapsed-head h2{font-size:13px;margin:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini{font:10px/1 var(--mono);color:var(--dim)}
+.chev{font-size:10px;color:var(--dim);border:1px solid var(--border);border-radius:6px;padding:4px 6px;background:var(--panel)}
+
+/* mockup 5 - popover */
+.pop{position:absolute;right:14px;top:92px;width:322px;background:var(--panel);border:1px solid var(--border);border-radius:10px;
+  box-shadow:0 2px 4px rgba(0,0,0,.55),0 16px 44px rgba(0,0,0,.6);padding:11px 13px;display:flex;flex-direction:column;gap:10px;z-index:5}
+/* Caret + heavy shadow so the panel reads as floating ABOVE the pane rather than as another
+   stacked row - without it, it looked like the launcher row had been clipped in half. */
+.pop::before{content:"";position:absolute;top:-6px;right:78px;width:10px;height:10px;background:var(--panel);
+  border-left:1px solid var(--border);border-top:1px solid var(--border);transform:rotate(45deg)}
+.pop .kv{display:flex;justify-content:space-between;gap:12px}
+.pop .kv dd{max-width:210px}
+.pop hr{border:0;border-top:1px solid var(--border-soft);margin:1px 0}
+.pop-row{display:flex;gap:7px}
+.rel{position:relative}
+
+.legend{display:flex;gap:18px;align-items:center;margin:14px 0 26px;font-size:11.5px;color:var(--dim)}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.sw{width:22px;height:9px;border-radius:3px;display:inline-block}
+.sw.c{background:repeating-linear-gradient(135deg,transparent 0 5px,color-mix(in srgb,var(--danger) 30%,transparent) 5px 10px);border:1px solid var(--danger)}
+.sw.v{background:color-mix(in srgb,var(--idle) 22%,transparent);border:1px solid var(--idle)}
+table.sum{border-collapse:collapse;font-size:12.5px;margin:10px 0 0;width:100%;max-width:1050px}
+table.sum th,table.sum td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border-soft)}
+table.sum th{color:var(--dim);font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+table.sum td:first-child{color:var(--fg);font-weight:600}
+table.sum td.n{font-family:var(--mono);color:var(--idle)}
+table.sum td.n.z{color:var(--dim)}
+table.sum tr.rec td{background:color-mix(in srgb,var(--purple) 8%,transparent)}
+</style>
+</head>
+<body>
+
+<h1>Console detail - reclaiming vertical space for the conversation</h1>
+<p class="lede">
+Today the transcript starts <b>~300px</b> down the pane. Five stacked bands of chrome, each <code>flex:none</code>, and the transcript takes what is left.
+Every frame below is <b>the same height (600px)</b> and holds <b>the same conversation</b>, so the gain is the number of turns you can actually read, not a number I am asserting.
+</p>
+<p class="lede">
+Three facts drive most of these. The working-copy path is rendered <b>twice</b> (<code>PATH</code> in row 2, <code>WORKTREE</code> in row 5). There is <b>36px of pure separator</b>
+between the activity line and the first transcript line (<code>13px gap + 12px margin + 1px border + 10px padding</code>). And the task pill is <b>almost entirely duplicate</b>:
+<code>dispatcher.ts:430</code> sets a dispatched session's name to <code>task.title</code>, so the pill's title is the same string as the <code>h2</code> two rows above it, and the
+<code>SHIP</code> badge beside it is a constant - every automated writer defaults to <code>ship</code>, and the MCP <code>create_task</code> tool cannot produce a <code>scout</code> at all.
+</p>
+<p class="lede">
+So <b>every option below drops the SHIP badge and the duplicate task title</b>, keeping only what the pill uniquely carried: the outcome PR link and the schedule-origin chip, both usually absent.
+The baseline is left exactly as it ships, as the control. Nothing here invents a new control - the rest rearrange, merge, or defer what is already there.
+</p>
+
+<p class="lede" style="border-left:2px solid var(--working);padding-left:14px;margin-top:18px">
+<b>In scope, new:</b> the permission-mode chip (<span class="mode mode-accept" style="cursor:default">auto<span class="mode-caret">⌄</span></span>) moves up to <b>lead</b> the right-hand cluster -
+<code>auto · Opus 5 · context · cost</code>. It reads first because the posture governs the whole session, where model, context and spend are all consequences of running under it.
+It is <b>not a new component</b> - <code>ModePicker</code> already ships on session cards, board tiles, and in this very pane's <em>footer</em> (<code>ConsoleDetail.tsx:619</code>).
+This promotes it into the header cluster, where the other live per-turn facts already are. Marked with a dashed outline in every frame below; the baseline keeps it in the footer, where it is today.
+<br><br>
+Two corrections to the earlier drafts came out of this. The <b>cost chip</b> ships in the header today (<code>ConsoleDetail.tsx:404</code>) and I had not drawn it. And I had not drawn the
+<b>footer</b> at all, so every conversation number before this was ~40px too generous. Both are now in all seven frames, which is why the pixel counts here are lower than the ones I quoted earlier -
+the ranking is unchanged.
+</p>
+
+<div class="legend">
+  <span><i class="sw c"></i> chrome (fixed)</span>
+  <span><i class="sw v"></i> conversation (what you came for)</span>
+  <span>green/red bars mark what moved or went away</span>
+</div>
+
+<!-- ============================= BASELINE ============================= -->
+<section>
+  <h2>Baseline - what ships today <span class="save zero">~300px chrome</span></h2>
+  <p class="note">Five bands. Rows 2 and 5 both print the same path. Conversation gets 300px of a 600px pane - half the screen is furniture.</p>
+  <div class="wrap">
+    <div class="ruler">
+      <i class="chrome" style="top:0;height:300px">300px<br>chrome</i>
+      <i class="conv" style="top:300px;height:300px">300px<br>conv</i>
+    </div>
+    <div class="frame"><div class="cdetail">
+      <header class="detail-head">
+        <span class="agent-dot"></span>
+        <div class="detail-title"><h2>Implement multi-repo tasks - Phase 1: Multi-repo dispatch</h2></div>
+        <span class="runtime-chip">◈ Agent SDK</span>
+        <span class="pr-chip">⑂ #491</span>
+        <span class="insp-chip">⌕ 3</span>
+        <span class="wbc">⌘ <b>No-Mistakes Review v8</b></span>
+        <span class="badge">working</span>
+        <span class="sp"></span>
+        <span class="rt-pill">Opus 5 <i class="rt-1m">1M</i></span>
+        <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+      </header>
+      <dl class="detail-sub">
+        <div class="kv"><dt>Path</dt><dd>~/.treehouse/ai-harness-c7356c/29/ai-harness</dd></div>
+        <div class="kv"><dt>Branch</dt><dd class="branch">⑂ multi-repo-dispatch</dd></div>
+        <div class="task-chip"><span class="task-kind">SHIP</span><span class="task-title">Implement multi-repo tasks - Phase 1: Multi-repo dispatch</span></div>
+      </dl>
+      <div class="detail-tabs">
+        <button class="detail-tab on"><i class="kb">g</i> Conversation</button>
+        <button class="detail-tab"><i class="kb">q</i> Work queue</button>
+        <button class="detail-tab"><i class="kb">y</i> Workflows</button>
+        <button class="detail-tab"><i class="kb">d</i> Diff</button>
+        <button class="detail-tab"><i class="kb">⇧F</i> Files</button>
+        <span class="foreman-rail">FOREMAN INTENT</span>
+      </div>
+      <div class="detail-conv">
+        <p class="goal">Let me attach secondary repositories to a task in the dispatch modal and dispatch it as a single agent session: cwd in the primary repo's worktree, one provisioned worktree per…</p>
+        <p class="activity">running Bash</p>
+        <div class="transcript">
+          <div class="conv-launch">
+            <span class="cl-lbl">worktree</span>
+            <span class="cl-path">/Users/jordanmance/.treehouse/ai-harness-c7356c/29/ai-harness</span>
+            <span class="sp"></span>
+            <button class="btn on">▣ Terminal view</button>
+            <button class="btn">❯_ <i class="kb">t</i> Terminal <small>▾</small></button>
+            <button class="btn">◆ <i class="kb">a</i> Claude Code <small>▾</small></button>
+          </div>
+          <div class="log">
+            <div class="turn"><i class="who">YOU</i><p>Phase 1 is the dispatch path only - do not touch the reaper yet.</p></div>
+            <div class="turn a"><i class="who">CLAUDE</i><p>Reading <span class="tool">provisionWorktree()</span> to see how the primary repo is resolved…</p></div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================= 1 ============================= -->
+<section>
+  <h2>1 · Dedupe and absorb <span class="save">-55px · 245px chrome</span></h2>
+  <p class="note">
+    The most conservative move: <b>row 2 disappears entirely</b>, because everything in it already has a home.
+    <code>PATH</code> was a duplicate of the WORKTREE row - deleted. <code>BRANCH</code> joins the worktree row, where the path it belongs to already lives.
+    The task pill does not move up beside the title as it did in the first draft - once the constant <code>SHIP</code> badge and the duplicate title are stripped, there is nothing left to move.
+    Three bands, no lost information, no new controls.
+    <span class="cost">Cost:</span> the title row is busier and wraps to two lines sooner on a narrow pane. Worth knowing before this scares anyone off:
+    measured at an 848px pane, <b>today's header already wraps</b> to 61px. This does not introduce the wrap, it reaches it earlier.
+  </p>
+  <div class="wrap">
+    <div class="ruler">
+      <i class="chrome" style="top:0;height:245px">245px<br>chrome</i>
+      <i class="conv" style="top:245px;height:355px">355px<br>conv</i>
+    </div>
+    <div class="frame"><div class="cdetail">
+      <header class="detail-head">
+        <span class="agent-dot"></span>
+        <div class="detail-title"><h2>Implement multi-repo tasks - Phase 1</h2></div>
+        <span class="runtime-chip">◈ Agent SDK</span>
+        <span class="pr-chip">⑂ #491</span>
+        <span class="insp-chip">⌕ 3</span>
+        <span class="wbc">⌘ <b>No-Mistakes Review v8</b></span>
+        <span class="badge">working</span>
+        <span class="sp"></span>
+        <span class="rt-pill">Opus 5 <i class="rt-1m">1M</i></span>
+        <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+      </header>
+      <div class="detail-tabs">
+        <button class="detail-tab on"><i class="kb">g</i> Conversation</button>
+        <button class="detail-tab"><i class="kb">q</i> Work queue</button>
+        <button class="detail-tab"><i class="kb">y</i> Workflows</button>
+        <button class="detail-tab"><i class="kb">d</i> Diff</button>
+        <button class="detail-tab"><i class="kb">⇧F</i> Files</button>
+        <span class="foreman-rail">FOREMAN INTENT</span>
+      </div>
+      <div class="detail-conv" style="gap:0;padding:10px 22px">
+        <div class="transcript" style="margin-top:0;padding-top:0;border-top:0">
+          <div class="conv-launch hl" style="position:relative">
+            <span class="cl-lbl">worktree</span>
+            <span class="cl-path">~/.treehouse/ai-harness-c7356c/29/ai-harness</span>
+            <span class="kv" style="gap:5px"><dt style="font:10px/1 var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--dim)">on</dt><dd class="branch" style="margin:0;font-family:var(--mono);font-size:11.5px">⑂ multi-repo-dispatch</dd></span>
+            <span class="sp"></span>
+            <button class="btn on">▣ Terminal view</button>
+            <button class="btn">❯_ <i class="kb">t</i> Terminal <small>▾</small></button>
+            <button class="btn">◆ <i class="kb">a</i> Claude Code <small>▾</small></button>
+          </div>
+          <div class="log" data-ghost></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================= 2 ============================= -->
+<section>
+  <h2>2 · Tabs are the toolbar <span class="save">-97px · 203px chrome</span></h2>
+  <p class="note">
+    <b>The other single move</b>, and the mirror of option 1. Where 1 deletes the PATH/BRANCH row and keeps the worktree row, this <b>keeps the PATH/BRANCH row and deletes the worktree row</b>,
+    folding the launchers into the tab strip - which already runs the full width with dead space after "Files", and whose job is adjacent anyway: the launchers choose <em>how</em> you view
+    this session exactly as the tabs choose <em>what</em>. Three bands.
+    <span class="cost">Cost:</span> the tab row has to carry five tabs, three launchers and Foreman. Moving the path back to row 2 helped but <b>did not solve it</b> - measured, the overflow
+    at an 848px pane went from 125px to <b>101px</b>. This still needs the same give-way order option 6 needs (launchers collapse to icons before anything else gives way).
+    FOREMAN INTENT also loses its far-right anchor.
+  </p>
+  <p class="note" style="border-left:2px solid var(--working);padding-left:12px">
+    <b>1, 2 and 6 are a lattice, not three flavours.</b> There are exactly two independent moves available here, and 6 is simply both of them at once:<br>
+    <code>1</code> kill row 2, keep the worktree row &nbsp;·&nbsp; <code>2</code> keep row 2, kill the worktree row &nbsp;·&nbsp; <code>6</code> kill both
+    <span id="lattice-math"></span>
+  </p>
+  <div class="wrap">
+    <div class="ruler">
+      <i class="chrome" style="top:0;height:203px">203px<br>chrome</i>
+      <i class="conv" style="top:203px;height:397px">397px<br>conv</i>
+    </div>
+    <div class="frame"><div class="cdetail">
+      <header class="detail-head" style="padding:10px 20px 9px">
+        <span class="agent-dot"></span>
+        <div class="detail-title"><h2 style="font-size:15px">Implement multi-repo tasks - Phase 1: Multi-repo dispatch</h2></div>
+        <span class="runtime-chip">◈ Agent SDK</span>
+        <span class="pr-chip">⑂ #491</span>
+        <span class="insp-chip">⌕ 3</span>
+        <span class="wbc">⌘ <b>No-Mistakes Review v8</b></span>
+        <span class="badge">working</span>
+        <span class="sp"></span>
+        <span class="rt-pill">Opus 5 <i class="rt-1m">1M</i></span>
+        <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+      </header>
+      <dl class="detail-sub">
+        <div class="kv"><dt>Path</dt><dd>~/.treehouse/ai-harness-c7356c/29/ai-harness</dd></div>
+        <div class="kv"><dt>Branch</dt><dd class="branch">⑂ multi-repo-dispatch</dd></div>
+        <a class="task-outcome" href="#">PR #491 open ↗</a>
+      </dl>
+      <div class="detail-tabs tabs-tight hl" style="position:relative;padding-right:14px">
+        <button class="detail-tab on"><i class="kb">g</i> Conversation</button>
+        <button class="detail-tab"><i class="kb">q</i> Work queue</button>
+        <button class="detail-tab"><i class="kb">y</i> Workflows</button>
+        <button class="detail-tab"><i class="kb">d</i> Diff</button>
+        <button class="detail-tab"><i class="kb">⇧F</i> Files</button>
+        <span class="sp"></span>
+        <span style="align-self:center;display:inline-flex;align-items:center;gap:7px">
+          <button class="btn on">▣ Terminal view</button>
+          <button class="btn">❯_ <i class="kb">t</i> Terminal <small>▾</small></button>
+          <button class="btn">◆ <i class="kb">a</i> Claude Code <small>▾</small></button>
+          <span class="foreman-rail" style="margin:0">FOREMAN</span>
+        </span>
+      </div>
+      <div class="detail-conv" style="gap:0;padding:10px 22px">
+        <div class="transcript" style="margin-top:0;padding-top:0;border-top:0">
+          <div class="log" data-ghost>
+            <div class="turn"><i class="who">YOU</i><p>Phase 1 is the dispatch path only - do not touch the reaper yet.</p></div>
+            <div class="turn a"><i class="who">CLAUDE</i><p>Reading <span class="tool">provisionWorktree()</span> to see how the primary repo is resolved…</p></div>
+            <div class="turn a"><i class="who"></i><p class="tool">Bash · git worktree list --porcelain</p></div>
+            <div class="turn"><i class="who">YOU</i><p>Right. The secondary ones need to be siblings, not nested.</p></div>
+            <div class="turn a"><i class="who">CLAUDE</i><p>Understood. <span class="tool">provisionWorktree()</span> already takes a parent dir, so the sibling layout falls out of passing the pool root instead of the primary worktree.</p></div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================= 3 ============================= -->
+<section>
+  <h2>3 · Live status, relocated - and nothing else <span class="save">-63px · 237px chrome</span></h2>
+  <p class="note">
+    The minimal option, and now the cheapest real change on the page: leave the head row, row 2 and the tab row <b>exactly as they ship</b>, and apply only the live-status redesign
+    (variant C from the study below). The activity line becomes the ghosted tail of the log, the objective moves to the title's tooltip, and the whole band - two blocks plus
+    36px of separator - stops existing. It also picks up the task-pill removal, which was row 2's tallest element by a wide margin.
+    <span class="cost">Cost:</span> the head row grows by about 18px to carry the objective under the title, so the net saving is smaller than the band it retires. Nothing is hidden
+    and nothing moves behind a hover.
+  </p>
+  <div class="wrap">
+    <div class="ruler">
+      <i class="chrome" style="top:0;height:237px">237px<br>chrome</i>
+      <i class="conv" style="top:237px;height:363px">363px<br>conv</i>
+    </div>
+    <div class="frame"><div class="cdetail">
+      <header class="detail-head">
+        <span class="agent-dot"></span>
+        <div class="detail-title"><h2>Implement multi-repo tasks - Phase 1: Multi-repo dispatch</h2></div>
+        <span class="runtime-chip">◈ Agent SDK</span>
+        <span class="pr-chip">⑂ #491</span>
+        <span class="insp-chip">⌕ 3</span>
+        <span class="wbc">⌘ <b>No-Mistakes Review v8</b></span>
+        <span class="badge">working</span>
+        <span class="sp"></span>
+        <span class="rt-pill">Opus 5 <i class="rt-1m">1M</i></span>
+        <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+      </header>
+      <dl class="detail-sub">
+        <div class="kv"><dt>Path</dt><dd>~/.treehouse/ai-harness-c7356c/29/ai-harness</dd></div>
+        <div class="kv"><dt>Branch</dt><dd class="branch">⑂ multi-repo-dispatch</dd></div>
+        <a class="task-outcome" href="#">PR #491 open ↗</a>
+      </dl>
+      <div class="detail-tabs">
+        <button class="detail-tab on"><i class="kb">g</i> Conversation</button>
+        <button class="detail-tab"><i class="kb">q</i> Work queue</button>
+        <button class="detail-tab"><i class="kb">y</i> Workflows</button>
+        <button class="detail-tab"><i class="kb">d</i> Diff</button>
+        <button class="detail-tab"><i class="kb">⇧F</i> Files</button>
+        <span class="foreman-rail">FOREMAN INTENT</span>
+      </div>
+      <div class="detail-conv" style="gap:0;padding:10px 22px">
+        <div class="transcript hl" style="margin-top:0;padding-top:0;border-top:0;position:relative">
+          <div class="conv-launch">
+            <span class="cl-lbl">worktree</span>
+            <span class="cl-path">/Users/jordanmance/.treehouse/ai-harness-c7356c/29/ai-harness</span>
+            <span class="sp"></span>
+            <button class="btn on">▣ Terminal view</button>
+            <button class="btn">❯_ <i class="kb">t</i> Terminal <small>▾</small></button>
+            <button class="btn">◆ <i class="kb">a</i> Claude Code <small>▾</small></button>
+          </div>
+          <div class="log" data-ghost></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================= 4 ============================= -->
+<section>
+  <h2>4 · Collapse on scroll <span class="save">-142px while reading · 158px chrome</span></h2>
+  <p class="note">
+    The only option where <b>nothing is removed at all</b>. The pane opens exactly as it ships today; the moment you scroll the transcript down, rows 1-2 fuse into a single
+    dense identity line and the goal/activity strip lifts away. Scroll back to top, or hover the line, and the full header returns. This is the standard reader pattern -
+    header is orientation, and you only need orienting when you arrive.
+    <span class="cost">Cost:</span> the only option with motion and state. Needs a scroll threshold with hysteresis or it will judder, and header height changing under the scroller
+    is exactly the kind of thing that fights <code>scroll-anchoring</code>. The most expensive to build and the only one that can feel broken.
+  </p>
+  <div class="wrap">
+    <div class="ruler">
+      <i class="chrome" style="top:0;height:158px">158px<br>chrome</i>
+      <i class="conv" style="top:158px;height:442px">442px<br>conv</i>
+    </div>
+    <div class="frame"><div class="cdetail">
+      <div class="collapsed-head hl" style="position:relative">
+        <span class="agent-dot"></span>
+        <h2>Implement multi-repo tasks - Phase 1: Multi-repo dispatch</h2>
+        <span class="mini">⑂ multi-repo-dispatch</span>
+        <span class="pr-chip" style="padding:3px 6px;font-size:10px">#491</span>
+        <span class="badge" style="padding:3px 7px 3px 6px;font-size:10px">working</span>
+        <span class="sp"></span>
+        <span class="mini">Opus 5</span>
+        <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num" style="font-size:10px">45%</i></span>
+        <span class="chev">▾ expand</span>
+        <span class="tag" style="right:-2px;top:-9px;transform:none">rows 1+2 fused · goal strip lifted</span>
+      </div>
+      <div class="detail-tabs">
+        <button class="detail-tab on" style="padding:8px 13px"><i class="kb">g</i> Conversation</button>
+        <button class="detail-tab" style="padding:8px 13px"><i class="kb">q</i> Work queue</button>
+        <button class="detail-tab" style="padding:8px 13px"><i class="kb">y</i> Workflows</button>
+        <button class="detail-tab" style="padding:8px 13px"><i class="kb">d</i> Diff</button>
+        <button class="detail-tab" style="padding:8px 13px"><i class="kb">⇧F</i> Files</button>
+        <span class="foreman-rail">FOREMAN INTENT</span>
+      </div>
+      <div class="detail-conv" style="gap:8px;padding:10px 22px">
+        <div class="transcript" style="margin-top:0;padding-top:0;border-top:0">
+          <div class="conv-launch">
+            <span class="cl-lbl">worktree</span>
+            <span class="cl-path">/Users/jordanmance/.treehouse/ai-harness-c7356c/29/ai-harness</span>
+            <span class="sp"></span>
+            <button class="btn on">▣ Terminal view</button>
+            <button class="btn">❯_ <i class="kb">t</i> Terminal <small>▾</small></button>
+            <button class="btn">◆ <i class="kb">a</i> Claude Code <small>▾</small></button>
+          </div>
+          <div class="log" data-ghost></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================= 5 ============================= -->
+<section>
+  <h2>5 · Defer the reference data <span class="save big">-118px · 182px chrome</span></h2>
+  <p class="note">
+    Sorts the chrome by <b>how often it changes</b>. Path, branch and the task pill are effectively constant for the life of a session - you read them once when you arrive
+    and never again - so they move behind one <code>⌥i</code> info chip in the tab row, shown here open. Everything that <em>does</em> change (state, model, context %, goal, activity) stays on screen.
+    The launchers stay put, since those are actions, not reference. The Inspector count stays in the header too - an earlier draft filed it into the popover, which was wrong by this
+    option's own rule: it changes on every push and is amber precisely because it wants your eye.
+    <span class="cost">Cost:</span> the only option that puts existing information behind a click. Branch in particular is a glance-check before you tell an agent to push, so consider keeping it inline.
+  </p>
+  <div class="wrap">
+    <div class="ruler">
+      <i class="chrome" style="top:0;height:182px">182px<br>chrome</i>
+      <i class="conv" style="top:182px;height:418px">418px<br>conv</i>
+    </div>
+    <div class="frame"><div class="cdetail rel">
+      <header class="detail-head">
+        <span class="agent-dot"></span>
+        <div class="detail-title"><h2>Implement multi-repo tasks - Phase 1: Multi-repo dispatch</h2></div>
+        <span class="pr-chip">⑂ #491</span>
+        <span class="insp-chip">⌕ 3</span>
+        <span class="wbc">⌘ <b>No-Mistakes Review v8</b></span>
+        <span class="badge">working</span>
+        <span class="sp"></span>
+        <span class="rt-pill">Opus 5 <i class="rt-1m">1M</i></span>
+        <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+      </header>
+      <div class="detail-tabs">
+        <button class="detail-tab on"><i class="kb">g</i> Conversation</button>
+        <button class="detail-tab"><i class="kb">q</i> Work queue</button>
+        <button class="detail-tab"><i class="kb">y</i> Workflows</button>
+        <button class="detail-tab"><i class="kb">d</i> Diff</button>
+        <button class="detail-tab"><i class="kb">⇧F</i> Files</button>
+        <span class="sp"></span>
+        <span class="foreman-rail" style="margin:0">FOREMAN INTENT</span>
+        <button class="btn hl" style="align-self:center;margin-left:7px;position:relative;border-color:color-mix(in srgb,var(--working) 45%,var(--border));background:color-mix(in srgb,var(--working) 12%,var(--panel))">ⓘ <i class="kb">⌥i</i> Session</button>
+      </div>
+      <div class="pop">
+        <div class="kv"><dt>Path</dt><dd>~/.treehouse/…/29/ai-harness</dd></div>
+        <div class="kv"><dt>Branch</dt><dd class="branch">⑂ multi-repo-dispatch</dd></div>
+        <div class="kv"><dt>Runtime</dt><dd>Agent SDK</dd></div>
+        <div class="kv"><dt>Outcome</dt><dd style="color:var(--idle)">PR #491 open</dd></div>
+        <hr>
+        <div class="pop-row"><button class="btn" style="flex:1;justify-content:center">Copy path</button><button class="btn" style="flex:1;justify-content:center">Open task</button></div>
+      </div>
+      <div class="detail-conv" style="gap:0;padding:10px 22px">
+        <div class="transcript" style="margin-top:0;padding-top:0;border-top:0">
+          <div class="conv-launch">
+            <span class="cl-lbl">worktree</span>
+            <span class="cl-path">~/.treehouse/ai-harness-c7356c/29/ai-harness</span>
+            <span class="sp"></span>
+            <button class="btn on">▣ Terminal view</button>
+            <button class="btn">❯_ <i class="kb">t</i> Terminal <small>▾</small></button>
+            <button class="btn">◆ <i class="kb">a</i> Claude Code <small>▾</small></button>
+          </div>
+          <div class="log" data-ghost></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================= 6 ============================= -->
+<section>
+  <h2>6 · Two bands - the composite <span class="save big">-160px · 140px chrome</span></h2>
+  <p class="note">
+    <b>Both moves at once</b> - option 1's deletion of the PATH/BRANCH row and option 2's deletion of the worktree row - plus the live-status redesign. This is the bottom of the lattice,
+    and the only option here that reaches two bands. <b>Band one</b> is identity: dot, title, objective, badges, state, mode, model, context, cost.
+    <b>Band two</b> is the toolbar: tabs, path, branch, launchers, Foreman. Then a one-line live-status rail sitting <em>inside</em> the transcript, where it belongs -
+    it is the newest line of the conversation, not a header. Every control that exists today still exists, in the same reading order, one click deep at most.
+    <span class="cost">Cost:</span> band two is doing a lot at once and inherits option 2's unsolved problem - measured, it overflows an 848px pane by 117px.
+    The give-way order (path truncates to nothing, then launchers collapse to icons) is the one piece of real design work this option still needs.
+  </p>
+  <div class="wrap">
+    <div class="ruler">
+      <i class="chrome" style="top:0;height:140px">140px<br>chrome</i>
+      <i class="conv" style="top:140px;height:460px">460px<br>conv</i>
+    </div>
+    <div class="frame"><div class="cdetail">
+      <header class="detail-head" style="padding:9px 20px 8px">
+        <span class="agent-dot"></span>
+        <div class="detail-title"><h2 style="font-size:15px">Implement multi-repo tasks - Phase 1: Multi-repo dispatch</h2></div>
+        <span class="runtime-chip">◈ Agent SDK</span>
+        <span class="pr-chip">⑂ #491</span>
+        <span class="insp-chip">⌕ 3</span>
+        <span class="wbc">⌘ <b>No-Mistakes Review v8</b></span>
+        <span class="badge">working</span>
+        <span class="sp"></span>
+        <span class="rt-pill">Opus 5 <i class="rt-1m">1M</i></span>
+        <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+      </header>
+      <div class="detail-tabs" style="padding-right:14px">
+        <button class="detail-tab on" style="padding:9px 12px"><i class="kb">g</i> Conversation</button>
+        <button class="detail-tab" style="padding:9px 12px"><i class="kb">q</i> Work queue</button>
+        <button class="detail-tab" style="padding:9px 12px"><i class="kb">y</i> Workflows</button>
+        <button class="detail-tab" style="padding:9px 12px"><i class="kb">d</i> Diff</button>
+        <button class="detail-tab" style="padding:9px 12px"><i class="kb">⇧F</i> Files</button>
+        <span style="width:1px;background:var(--border-soft);margin:8px 10px"></span>
+        <span style="align-self:center;display:inline-flex;align-items:center;gap:8px;min-width:0">
+          <span class="cl-path">~/…/29/ai-harness</span>
+          <span class="cl-path" style="color:var(--idle)">⑂ multi-repo-dispatch</span>
+        </span>
+        <span class="sp"></span>
+        <span style="align-self:center;display:inline-flex;align-items:center;gap:7px">
+          <button class="btn on" style="padding:4px 8px">▣ Terminal view</button>
+          <button class="btn" style="padding:4px 8px">❯_ <i class="kb">t</i> Terminal <small>▾</small></button>
+          <button class="btn" style="padding:4px 8px">◆ <i class="kb">a</i> Claude Code <small>▾</small></button>
+          <span class="foreman-rail" style="margin:0;padding:5px 9px">FOREMAN</span>
+        </span>
+      </div>
+      <div class="detail-conv" style="gap:0;padding:0">
+        <div class="transcript" style="margin-top:0;padding-top:0;border-top:0;gap:0">
+          <div class="log" data-ghost style="padding:12px 22px 0"></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<section data-study>
+  <h2>Live status - a placement study</h2>
+  <p class="note">
+    The band holding <code>Let me attach secondary repositories…</code> and <code>running Bash</code> is two <em>different</em> things wearing one costume, which is why no option above placed it well.
+    <b>The objective</b> (<code>session.goal.text</code>) is a refined, durable statement of what the session is for - it changes rarely, and it is denormalized onto cards precisely because a card has no transcript.
+    <b>The activity</b> (<code>session.activity</code>, "free-form one-liner from the last hook") is per-turn and changes constantly.
+    One is an anchor, the other is a heartbeat. Stacking them in a fixed block 36px above the transcript serves neither: the durable thing takes prime space it does not need,
+    and the live thing sits as far as possible from where new content actually appears.
+  </p>
+  <div class="study">
+
+    <div>
+      <h3>A · As it ships <span class="cost-lbl bad">86px</span></h3>
+      <p class="sn">Two stacked blocks plus the 36px separator. The heartbeat is pinned to the top of the pane while the turns it describes arrive at the bottom.</p>
+      <div class="frame"><div class="cdetail">
+        <header class="detail-head" style="padding:10px 18px 9px">
+          <span class="agent-dot"></span><div class="detail-title"><h2 style="font-size:14px">Multi-repo dispatch</h2></div>
+          <span class="badge">working</span><span class="sp"></span>
+          <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+        </header>
+        <div class="detail-tabs"><button class="detail-tab on" style="padding:8px 12px">Conversation</button><button class="detail-tab" style="padding:8px 12px">Diff</button></div>
+        <div class="detail-conv">
+          <p class="goal hl" style="position:relative">Let me attach secondary repositories to a task in the dispatch modal and dispatch it as a single agent session: cwd in the primary repo's worktree, one provisioned worktree per…</p>
+          <p class="activity hl" style="position:relative">running Bash</p>
+          <div class="transcript"><div class="log"></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div>
+      <h3>B · Folded into the state badge <span class="cost-lbl good">~0px</span></h3>
+      <p class="sn">The heartbeat becomes the badge's own detail - <code>working · Bash</code> - reusing an element that already exists and already means "what is this session doing". The objective stays as one quiet line.</p>
+      <div class="frame"><div class="cdetail">
+        <header class="detail-head" style="padding:10px 18px 9px">
+          <span class="agent-dot"></span><div class="detail-title"><h2 style="font-size:14px">Multi-repo dispatch</h2></div>
+          <span class="badge hl" style="position:relative">working <span class="badge-act">· Bash</span></span><span class="sp"></span>
+          <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+        </header>
+        <div class="detail-tabs"><button class="detail-tab on" style="padding:8px 12px">Conversation</button><button class="detail-tab" style="padding:8px 12px">Diff</button></div>
+        <div class="detail-conv" style="gap:8px;padding:10px 18px">
+          <p class="objective hl" style="position:relative">Attach secondary repos to a task and dispatch as one session</p>
+          <div class="transcript" style="margin-top:0;padding-top:0;border-top:0"><div class="log"></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div>
+      <h3>C · Split by character <span class="cost-lbl good">~18px</span> <span class="cost-lbl">recommended</span></h3>
+      <p class="sn">Each half goes where its tempo belongs. The heartbeat becomes a ghosted turn at the <em>end of the log</em>, where the next real turn replaces it - the typing-indicator pattern, costing no fixed chrome. The objective, being durable, joins the identity block under the title.</p>
+      <div class="frame"><div class="cdetail">
+        <header class="detail-head" style="padding:10px 18px 9px">
+          <span class="agent-dot"></span>
+          <div class="detail-title">
+            <h2 style="font-size:14px">Multi-repo dispatch</h2>
+            <p class="objective hl" style="position:relative">Attach secondary repos to a task and dispatch it as one session</p>
+          </div>
+          <span class="badge">working</span><span class="sp"></span>
+          <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+        </header>
+        <div class="detail-tabs"><button class="detail-tab on" style="padding:8px 12px">Conversation</button><button class="detail-tab" style="padding:8px 12px">Diff</button></div>
+        <div class="detail-conv" style="gap:0;padding:0">
+          <div class="transcript" style="margin-top:0;padding-top:0;border-top:0;gap:0"><div class="log" data-ghost style="padding:11px 18px 0"></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div>
+      <h3>D · Pinned bottom rail <span class="cost-lbl">39px</span></h3>
+      <p class="sn">Both lines on one strip pinned above the footer. Adjacent to the newest turn, which is right - but it is still permanent chrome, and it competes with the footer directly beneath it.</p>
+      <div class="frame"><div class="cdetail">
+        <header class="detail-head" style="padding:10px 18px 9px">
+          <span class="agent-dot"></span><div class="detail-title"><h2 style="font-size:14px">Multi-repo dispatch</h2></div>
+          <span class="badge">working</span><span class="sp"></span>
+          <span class="rt-ctx"><i class="rt-meter"><b></b></i><i class="rt-num">45%</i></span>
+        </header>
+        <div class="detail-tabs"><button class="detail-tab on" style="padding:8px 12px">Conversation</button><button class="detail-tab" style="padding:8px 12px">Diff</button></div>
+        <div class="detail-conv" style="gap:0;padding:0">
+          <div class="transcript" style="margin-top:0;padding-top:0;border-top:0;gap:0">
+            <div class="log" style="padding:11px 18px 0"></div>
+            <div class="hl" style="position:relative;flex:none;display:flex;align-items:center;gap:9px;padding:8px 18px;margin-top:5px;border-top:1px solid var(--border);background:color-mix(in oklab,var(--bg-2) 60%,transparent)">
+              <span style="width:6px;height:6px;border-radius:50%;background:var(--working);flex:none"></span>
+              <span class="objective">Attach secondary repos to a task and dispatch as one session</span>
+              <span style="flex:none;font-size:11px;color:var(--muted);font-family:var(--mono)">running Bash</span>
+            </div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+  </div>
+  <p class="note" style="margin-top:16px">
+    <b>C is the one to take, and it keeps both halves.</b> A live signal belongs next to live content, so the heartbeat becomes the tail of the log and costs nothing - it occupies space
+    the transcript was already going to use and disappears the moment the real turn lands. The objective is the opposite kind of fact, so it joins the identity block under the title,
+    where the other durable facts already are. That costs about 18px of head-row height and retires an 86px band: roughly <b>68px net</b>, with nothing hidden and nothing behind a hover.
+    <br><br>
+    An earlier draft of C sent the objective to the title's tooltip instead, which is where this note previously said "the objective stops being visible." That was over-applying one
+    idea to two different problems - the tail-of-log insight is about the <em>heartbeat</em>, and it says nothing about where a durable objective should live.
+    <b>B remains the fallback</b> if you would rather not add any height to the head row at all: it folds the heartbeat into the <code>working</code> badge for free and keeps the
+    objective on its own line.
+  </p>
+</section>
+
+<section>
+  <h2>Side by side</h2>
+  <table class="sum">
+    <tr><th>Option</th><th>Chrome</th><th>Reclaimed</th><th>Bands</th><th>What it costs you</th></tr>
+    <tr><td>Baseline</td><td class="n z">300px</td><td class="n z">-</td><td>5</td><td>-</td></tr>
+    <tr><td>1 · Dedupe and absorb</td><td class="n">245px</td><td class="n">55px</td><td>4</td><td>Busier title row; wrap risk when narrow</td></tr>
+    <tr><td>2 · Tabs are the toolbar</td><td class="n">203px</td><td class="n">97px</td><td>3</td><td>One row carries a lot; needs truncation order</td></tr>
+    <tr><td>3 · Collapse status strip</td><td class="n">237px</td><td class="n">63px</td><td>5</td><td>Loses the 2nd goal line</td></tr>
+    <tr><td>4 · Collapse on scroll</td><td class="n">158px</td><td class="n">142px</td><td>5→3</td><td>Motion + state; judder and scroll-anchor risk</td></tr>
+    <tr><td>5 · Defer reference data</td><td class="n">182px</td><td class="n">118px</td><td>3</td><td>Puts branch behind a click</td></tr>
+    <tr class="rec"><td>6 · Two bands (composite)</td><td class="n">140px</td><td class="n">160px</td><td>2</td><td>Toolbar row density at narrow widths</td></tr>
+  </table>
+  <p class="note" style="margin-top:16px">
+    <b>Reading of the set:</b> 1 and 3 are nearly free and independent of each other - neither loses an affordance or adds any state, and they compose straight into 6.
+    4 is the biggest single win but the only one that can feel broken, and it is worth doing <em>after</em> the static wins, since it then collapses an already-cheap header.
+    5 is the one to be most careful with: it trades a glanceable branch name for pixels, and branch is the thing you check before telling an agent to push.
+  </p>
+  <p class="note"><em>Every number on this page is measured from the rendered frames on load, not typed in.</em></p>
+</section>
+
+<script>
+// Measure the frames rather than trusting hand-written numbers: chrome is whatever is NOT
+// the conversation log, counted above AND below it (mockup 6 puts a status rail underneath).
+(() => {
+  // Every frame gets the IDENTICAL conversation, clipped by overflow. Handing the roomier
+  // layouts extra turns would flatter them; the only honest comparison is same content,
+  // different amount of it visible.
+  const TURNS = [
+    ['YOU', 'Phase 1 is the dispatch path only - do not touch the reaper yet.', ''],
+    ['CLAUDE', 'Reading <span class="tool">provisionWorktree()</span> to see how the primary repo is resolved…', 'a'],
+    ['', '<span class="tool">Bash · git worktree list --porcelain</span>', 'a'],
+    ['YOU', 'Right. The secondary ones need to be siblings, not nested.', ''],
+    ['CLAUDE', 'Understood. <span class="tool">provisionWorktree()</span> already takes a parent dir, so the sibling layout falls out of passing the pool root instead of the primary worktree.', 'a'],
+    ['', '<span class="tool">Edit · src/server/worktree.ts</span>', 'a'],
+    ['YOU', 'Good. Now the dispatch modal needs a repo picker.', ''],
+    ['CLAUDE', 'Adding a multi-select to <span class="tool">DispatchModal</span>, defaulting to the primary repo…', 'a'],
+    ['', '<span class="tool">Edit · src/web/components/DispatchModal.tsx</span>', 'a'],
+    ['YOU', 'Does the session get one cwd or one per repo?', ''],
+    ['CLAUDE', 'One cwd, in the primary worktree. The secondaries are provisioned beside it and passed as additional roots.', 'a'],
+    ['', '<span class="tool">Bash · npm run typecheck</span>', 'a'],
+    ['CLAUDE', 'Typecheck is clean. Writing the dispatch contract test now.', 'a'],
+    ['', '<span class="tool">Write · test/multi-repo-dispatch.test.ts</span>', 'a'],
+    ['YOU', 'Add one for the case where a secondary repo is already checked out somewhere.', ''],
+    ['CLAUDE', 'Good catch - that path currently throws. Adding the case and the guard.', 'a'],
+  ];
+  const turnHtml = TURNS.map(([who, body, cls]) =>
+    '<div class="turn ' + cls + '"><i class="who">' + who + '</i><p>' + body + '</p></div>'
+  ).join('');
+  const GHOST =
+    '<div class="turn ghost"><i class="who">CLAUDE</i><p><span class="spin">◐</span>running <span class="tool">Bash</span> · git worktree list</p></div>';
+  document.querySelectorAll('.frame .log').forEach((log) => {
+    log.innerHTML = turnHtml + (log.hasAttribute('data-ghost') ? GHOST : '');
+  });
+
+  // CostChip + the footer ship today and were missing from the first draft, so every frame
+  // gets both. The ModePicker also already ships - in the FOOTER - so the baseline keeps it
+  // there and only the alternatives promote it into the header cluster.
+  const frames = [...document.querySelectorAll('.frame .cdetail')];
+  frames.forEach((cd, i) => {
+    const isBaseline = i === 0;
+    const isStudy = !!cd.closest('[data-study]'); // keep study frames focused on the status question
+    const ctx = isStudy ? null : cd.querySelector('.rt-ctx');
+    if (ctx) {
+      const cost = document.createElement('span');
+      cost.className = 'rt-pill cost-chip';
+      cost.textContent = '≈$4.12';
+      ctx.after(cost);
+      if (!isBaseline) {
+        const mode = document.createElement('button');
+        mode.className = 'mode mode-accept mode-new';
+        mode.innerHTML = 'auto<span class="mode-caret">⌄</span>';
+        mode.title = 'Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)';
+        // Leads the cluster: mode, model, context, cost. The posture governs the whole
+        // session, so it reads before the things it governs rather than trailing them.
+        const model = cd.querySelector('.rt-pill:not(.cost-chip)') || ctx.previousElementSibling;
+        (model || ctx).before(mode);
+      }
+    }
+    // The objective rejoins the identity block on every alternative. The baseline keeps its
+    // own separate goal band (that is what ships), and mockup 4's collapsed head has no
+    // .detail-title, which is correct - the collapsed state is meant to drop it.
+    const titleBlock = isStudy || isBaseline ? null : cd.querySelector('.detail-title');
+    if (titleBlock && !titleBlock.querySelector('.objective')) {
+      const obj = document.createElement('p');
+      obj.className = 'objective hl';
+      obj.style.position = 'relative';
+      obj.textContent = 'Attach secondary repos to a task and dispatch it as one session';
+      titleBlock.appendChild(obj);
+    }
+
+    const foot = document.createElement('footer');
+    foot.className = 'detail-foot';
+    foot.innerHTML =
+      '<span class="detail-agent">Claude Code</span>' +
+      (isBaseline
+        ? '<button class="mode mode-accept">auto<span class="mode-caret">⌄</span></button>'
+        : '') +
+      '<span class="dot-sep">·</span><span class="foot-mono">pid 48213</span>' +
+      '<span class="foot-mono">2m ago</span><span class="sp"></span>' +
+      '<button class="btn" style="padding:4px 9px">Reply</button>' +
+      '<button class="btn" style="padding:4px 9px">Diff</button>' +
+      '<button class="btn" style="padding:4px 9px">Complete</button>' +
+      '<button class="btn" style="padding:4px 9px">Kill</button>';
+    cd.appendChild(foot);
+  });
+
+  const rows = [];
+  document.querySelectorAll('section').forEach((sec) => {
+    if (sec.hasAttribute('data-study')) return; // placement study - not part of the ranking
+    const frame = sec.querySelector('.frame');
+    if (!frame) return;
+    const cdetail = frame.querySelector('.cdetail');
+    const log = frame.querySelector('.log');
+    const frameH = cdetail.getBoundingClientRect().height;
+    const top = cdetail.getBoundingClientRect().top;
+    const logBox = log.getBoundingClientRect();
+    const above = Math.round(logBox.top - top);
+    const conv = Math.round(logBox.height);
+    const below = Math.round(frameH - above - conv);
+    const chrome = above + below;
+
+    const ruler = sec.querySelector('.ruler');
+    if (ruler) {
+      ruler.innerHTML = '';
+      const seg = (cls, t, h, label) => {
+        if (h <= 1) return;
+        const i = document.createElement('i');
+        i.className = cls;
+        i.style.top = t + 'px';
+        i.style.height = h + 'px';
+        i.innerHTML = label;
+        ruler.appendChild(i);
+      };
+      seg('chrome', 0, above, above + 'px<br>chrome');
+      seg('conv', above, conv, conv + 'px<br>conv');
+      seg('chrome', above + conv, below, below + 'px');
+    }
+    rows.push({ sec, chrome, conv, name: sec.querySelector('h2').childNodes[0].textContent.trim() });
+  });
+
+  const base = rows[0];
+  rows.forEach((r) => {
+    r.gain = r.conv - base.conv;
+    const pill = r.sec.querySelector('.save');
+    if (!pill) return;
+    if (r === base) {
+      pill.textContent = base.conv + 'px conversation';
+    } else {
+      const pct = Math.round((r.gain / base.conv) * 100);
+      pill.textContent = '+' + r.gain + 'px conversation · +' + pct + '%';
+    }
+  });
+
+  // The lattice decomposes: options 1 and 2 are independent single moves, 6 is both. Whatever
+  // they share (the live-status redesign, the task pill, the objective) is counted once in each
+  // of 1 and 2 and once in 6, so `1 + 2 - 6` isolates it. Computed, never typed.
+  const math = document.getElementById('lattice-math');
+  if (math && rows.length > 6) {
+    const g = (i) => rows[i].conv - rows[0].conv;
+    const shared = g(1) + g(2) - g(6);
+    math.innerHTML =
+      '<br><br>The measurements decompose exactly. Everything the three share - the live-status' +
+      ' redesign, the task pill, the objective - is worth <b>' + shared + 'px</b>, isolated as' +
+      ' <code>1 + 2 - 6</code> (' + g(1) + ' + ' + g(2) + ' - ' + g(6) + '). On top of that,' +
+      ' killing row 2 is worth <b>' + (g(1) - shared) + 'px</b> and killing the worktree row is worth <b>' +
+      (g(2) - shared) + 'px</b>. They add back to 6 exactly: ' + shared + ' + ' + (g(1) - shared) +
+      ' + ' + (g(2) - shared) + ' = ' + g(6) + 'px. So the two moves are genuinely independent -' +
+      ' neither one steals the other\'s pixels, and you can take either alone.';
+  }
+
+  // Rebuild the summary table from the same measurements.
+  const tbl = document.querySelector('table.sum');
+  if (tbl) {
+    const costs = [
+      ['-', ''],
+      ['Busier title row; wrap risk when narrow', ''],
+      ['Tab row overflows a narrow pane by 101px', ''],
+      ['Head row grows ~18px to carry the objective', ''],
+      ['Motion + state; judder and scroll-anchor risk', ''],
+      ['Puts branch behind a click', ''],
+      ['Overflows a narrow pane by 117px; needs a give-way order', 'rec'],
+    ];
+    const bands = ['5', '4', '3', '5', '5 → 3', '3', '2'];
+    tbl.innerHTML = '<tr><th>Option</th><th>Conversation</th><th>Gained</th><th>Chrome</th><th>Bands</th><th>What it costs you</th></tr>';
+    rows.forEach((r, i) => {
+      const tr = document.createElement('tr');
+      if (costs[i] && costs[i][1]) tr.className = costs[i][1];
+      const gain = i === 0 ? '-' : '+' + r.gain + 'px';
+      tr.innerHTML =
+        '<td>' + r.name + '</td>' +
+        '<td class="n' + (i === 0 ? ' z' : '') + '">' + r.conv + 'px</td>' +
+        '<td class="n' + (i === 0 ? ' z' : '') + '">' + gain + '</td>' +
+        '<td class="n z">' + r.chrome + 'px</td>' +
+        '<td>' + (bands[i] || '') + '</td>' +
+        '<td style="color:var(--muted);font-weight:400">' + (costs[i] ? costs[i][0] : '') + '</td>';
+      tbl.appendChild(tr);
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

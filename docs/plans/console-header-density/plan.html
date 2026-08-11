@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Console detail: reclaim vertical space for the conversation</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#1a1d21; --muted:#5c6470; --dim:#767e8b;
+  --border:#e2e6ea; --soft:#f5f7f9; --code-bg:#f2f4f7;
+  --accent:#2563eb; --good:#15803d; --warn:#b45309; --bad:#b91c1c; --purple:#7c3aed;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0e1116; --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --border:#232a33; --soft:#14181e; --code-bg:#171c23;
+    --accent:#4a9eff; --good:#35c08a; --warn:#f6a733; --bad:#f85149; --purple:#a371f7;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.62;
+  font-size:15.5px;padding:44px 24px 100px}
+main{max-width:860px;margin:0 auto}
+h1{font-size:29px;line-height:1.25;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:21px;margin:42px 0 10px;padding-top:16px;border-top:1px solid var(--border);letter-spacing:-.01em}
+h3{font-size:16.5px;margin:26px 0 6px}
+p{margin:0 0 13px}
+ul,ol{margin:0 0 13px;padding-left:22px}
+li{margin:0 0 6px}
+code{font-family:var(--mono);font-size:.87em;background:var(--code-bg);padding:1.5px 5px;border-radius:4px}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:13px 15px;
+  overflow-x:auto;margin:0 0 15px}
+pre code{background:none;padding:0;font-size:12.5px;line-height:1.55}
+.scroll{overflow-x:auto;margin:0 0 16px;border-radius:9px;border:1px solid var(--border)}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:520px}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--border);vertical-align:top}
+th{background:var(--soft);font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:650}
+tr:last-child td{border-bottom:0}
+td strong{font-weight:650}
+blockquote{margin:0 0 15px;padding:2px 0 2px 16px;border-left:3px solid var(--border);color:var(--muted)}
+.lede{font-size:17px;color:var(--muted);margin:0 0 26px}
+.meta{font-size:13px;color:var(--dim);margin:0 0 30px}
+.meta a{color:var(--accent)}
+.tag{display:inline-block;font:600 11px/1 var(--mono);padding:4px 8px;border-radius:999px;border:1px solid var(--border);color:var(--dim);margin-right:6px}
+.tag.ok{color:var(--good);border-color:color-mix(in srgb,var(--good) 35%,var(--border));background:color-mix(in srgb,var(--good) 10%,transparent)}
+.tag.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,var(--border));background:color-mix(in srgb,var(--warn) 10%,transparent)}
+.callout{border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:0 9px 9px 0;
+  padding:14px 17px;margin:0 0 17px;background:var(--soft)}
+.callout.warn{border-left-color:var(--warn)}
+.callout h4{margin:0 0 6px;font-size:14.5px}
+.callout p:last-child{margin-bottom:0}
+figure{margin:0 0 22px}
+figcaption{font-size:12.5px;color:var(--dim);margin-top:8px}
+svg{max-width:100%;height:auto;display:block}
+.fig-wrap{border:1px solid var(--border);border-radius:11px;padding:16px;background:var(--soft);overflow-x:auto}
+</style>
+</head>
+<body>
+<main>
+
+<h1>Console detail: reclaim vertical space for the conversation</h1>
+<p class="lede">Give roughly half the console detail pane back to the conversation, without removing a control, hiding information behind a hover, or introducing a second source of truth.</p>
+<p class="meta">
+  Source of truth: <code>docs/plans/console-header-density/plan.md</code> ·
+  Mockups: <a href="mockups.html">mockups.html</a> ·
+  Phases: <a href="phased-plan.html">phased-plan.html</a>
+  <br><span class="tag ok">approved</span><span class="tag">option 2 - tabs are the toolbar</span>
+</p>
+
+<h2>Goal</h2>
+<p>The Conversation tab of the console detail pane spends roughly half its height on chrome before the first transcript line. Give that height back to the conversation without removing a control, hiding information behind a hover, or introducing a second source of truth.</p>
+<p>Measured on the shipped layout at a 600px pane: <strong>~294px of fixed chrome above the transcript, plus a 45px footer, leaving 243px of conversation.</strong> The approved design returns the conversation to 410px in the same pane - a 69% increase - by removing duplicated information and relocating two controls whose current placement predates the surfaces they now sit beside.</p>
+<p>The mockups are <a href="mockups.html">mockups.html</a> in this directory. Every number in them is measured from the rendered frames on load rather than typed, and all frames hold the identical conversation so the comparison is "how much of the same content can you see".</p>
+
+<h2>Approved decisions</h2>
+<p>These were selected by the human during the design review and are requirements, not open questions.</p>
+
+<h3>D1 - Take option 2, "Tabs are the toolbar"</h3>
+<p>Of six candidate layouts, option 2 was chosen. Options 1, 2 and 6 form a lattice over two independent moves, and the measurements decompose exactly:</p>
+<div class="scroll"><table>
+<tr><th></th><th><code>PATH</code>/<code>BRANCH</code> row</th><th>Worktree row</th><th>Conversation</th></tr>
+<tr><td>Ships today</td><td>kept</td><td>kept</td><td>243px</td></tr>
+<tr><td>Option 1</td><td>killed</td><td>kept</td><td>384px</td></tr>
+<tr><td><strong>Option 2 (approved)</strong></td><td><strong>kept</strong></td><td><strong>killed</strong></td><td><strong>410px</strong></td></tr>
+<tr><td>Option 6</td><td>killed</td><td>killed</td><td>465px</td></tr>
+</table></div>
+<p>Isolating what all three share via <code>1 + 2 - 6</code> gives 86px for the shared changes below; on top of that, killing the <code>PATH</code>/<code>BRANCH</code> row is worth 55px and killing the worktree row is worth 81px. The two moves are independent - neither steals the other's pixels.</p>
+<p>Option 2 keeps the <code>PATH</code>/<code>BRANCH</code> row and folds the worktree row's controls into the tab strip, which already runs the full width with dead space after "Files" and whose job is adjacent: the launchers choose <em>how</em> you view this session exactly as the tabs choose <em>what</em>.</p>
+
+<h3>D2 - Drop the constant <code>SHIP</code> badge and the duplicate task title</h3>
+<p><code>TaskKind</code> has two values, <code>ship</code> and <code>scout</code>. Every automated writer defaults to <code>ship</code> and the MCP <code>create_task</code> tool cannot produce a <code>scout</code> at all, so the badge reads <code>SHIP</code> in almost every session. It is not colour-differentiated in this header (<code>.task-kind</code> is <code>var(--working)</code> unconditionally), it is frozen once the task leaves <code>backlog</code>, and the identical chip is already on the card you clicked through. Render it <strong>only when the kind is <code>scout</code></strong>; absence means <code>ship</code>, unambiguously, because <code>kind</code> is <code>NOT NULL</code> and the pill only exists when there is a task.</p>
+<p>The pill's title is a duplicate of the <code>h2</code> two rows above it, because <code>dispatcher.ts:430</code> sets a dispatched session's name to <code>task.title</code>. Render it <strong>only when it differs from <code>session.name</code></strong> - see F3, which is why this is a conditional rather than a deletion.</p>
+
+<h3>D3 - Promote the permission-mode chip into the header cluster</h3>
+<p><code>ModePicker</code> already ships, and already appears in this pane - in the footer. Move it to <strong>lead</strong> the right-hand cluster, giving <code>auto · Opus 5 · context · cost</code>. The posture governs the session, while model, context fill and spend are consequences of running under it, so it reads before the things it governs. It also puts the one interactive control in that cluster at a stable position instead of last, where its neighbours change width as cost and context tick.</p>
+<p><strong>It leaves the footer.</strong> Keeping it in both places would create exactly the duplication this effort exists to remove.</p>
+
+<h3>D4 - Split live status by tempo</h3>
+<p>The band holding the objective and the activity line is two different things wearing one costume. <code>session.goal.text</code> is a refined, durable objective that changes rarely; <code>session.activity</code> is a free-form one-liner from the last hook that changes constantly. Stacking them in a fixed block 36px above the transcript serves neither.</p>
+<ul>
+<li><strong>The objective</strong> joins the identity block under the title, where the other durable facts already are.</li>
+<li><strong>The activity</strong> becomes a ghosted trailing row at the tail of the transcript log, where the next real turn replaces it.</li>
+</ul>
+<p>A rejected earlier draft sent the objective to the title's tooltip. That was over-applying one idea to two problems: the tail-of-log insight is about the heartbeat and says nothing about where a durable objective should live. Keeping the objective visible costs ~12px and hides nothing.</p>
+
+<h2>Repository findings that changed the design</h2>
+<p>Investigated against the code before decomposition. Each of these contradicts a naive reading of the approved design and is binding on implementation.</p>
+
+<h3>F1 - Moving the launcher strip is a deletion for the Cards layout</h3>
+<p><code>SessionLaunchers</code> is mounted once, from <code>TranscriptPanel.tsx:966-972</code>, and that single mount is deliberate - its own comment says it "reaches the expanded card, the console detail and the board drill-in from one mount rather than from three placements kept in step by hand". <code>TranscriptPanel</code> has exactly two mount sites: <code>SessionCard.tsx:502-530</code> and <code>ConsoleDetail.tsx:519-553</code>.</p>
+<p><code>.detail-tabs</code> belongs to <code>ConsoleDetail</code>, which <code>SessionCard</code> never renders. Moving the mount there would <strong>delete the launchers and the Terminal-view toggle from the Cards layout</strong>, kill three live e2e assertions in <code>e2e/specs/conversation-terminal-view.spec.ts</code> (<code>:210</code>, <code>:225</code>, <code>:312</code>), and break the <code>t</code> / <code>a</code> chords in Cards: <code>App.tsx:1757-1793</code> parks a <code>pendingLauncherAction</code> that is only cleared when a <code>SessionLaunchers</code> registers for that id, so in Cards the pending action would be set and never cleared, leaving a stale ref to fire on an unrelated later mount.</p>
+<div class="callout">
+<h4>Resolution</h4>
+<p>The conversation pane keeps owning its toolbar for hosts that do not provide one. The console detail becomes a host that <em>does</em> provide one, and suppresses the panel's own. No surface loses a control. There is no existing slot for this - <code>leading</code> slots a control <em>into</em> the strip, not the strip into a host - so the mount must be lifted and <code>registerLaunchers</code> re-threaded.</p>
+</div>
+
+<figure>
+<div class="fig-wrap">
+<svg viewBox="0 0 820 300" role="img" aria-label="Before and after: SessionLaunchers has one mount inside TranscriptPanel serving three surfaces; after the change, ConsoleDetail hosts its own strip while TranscriptPanel keeps owning the strip for SessionCard.">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g font-family="system-ui,sans-serif" font-size="11.5" color="currentColor">
+    <text x="14" y="20" font-size="12.5" font-weight="700" fill="currentColor">Today - one mount, three surfaces</text>
+    <g fill="none" stroke="currentColor" stroke-opacity=".35">
+      <rect x="14" y="36" width="128" height="34" rx="7"/>
+      <rect x="14" y="82" width="128" height="34" rx="7"/>
+      <rect x="14" y="128" width="128" height="34" rx="7"/>
+      <rect x="186" y="82" width="128" height="34" rx="7"/>
+      <rect x="186" y="176" width="150" height="48" rx="7" stroke="var(--accent)" stroke-opacity=".9"/>
+    </g>
+    <g fill="currentColor" text-anchor="middle">
+      <text x="78" y="57">SessionCard</text>
+      <text x="78" y="103">ConsoleDetail</text>
+      <text x="78" y="149">Board drill-in</text>
+      <text x="250" y="103">TranscriptPanel</text>
+    </g>
+    <g fill="var(--accent)" text-anchor="middle">
+      <text x="261" y="196">SessionLaunchers</text>
+      <text x="261" y="212" font-size="10.5" fill="var(--muted)">one mount</text>
+    </g>
+    <g stroke="currentColor" stroke-opacity=".45" fill="none" marker-end="url(#ar)">
+      <path d="M142,53 L186,95"/>
+      <path d="M142,99 L182,99"/>
+      <path d="M142,145 L182,112"/>
+      <path d="M250,116 L255,172" stroke="var(--accent)" stroke-opacity=".8"/>
+    </g>
+
+    <line x1="400" y1="30" x2="400" y2="270" stroke="currentColor" stroke-opacity=".18"/>
+
+    <text x="424" y="20" font-size="12.5" font-weight="700" fill="currentColor">After - host provides, or panel owns</text>
+    <g fill="none" stroke="currentColor" stroke-opacity=".35">
+      <rect x="424" y="36" width="120" height="34" rx="7"/>
+      <rect x="586" y="36" width="150" height="34" rx="7"/>
+      <rect x="586" y="86" width="150" height="34" rx="7" stroke="var(--accent)" stroke-opacity=".9"/>
+      <rect x="424" y="150" width="120" height="34" rx="7"/>
+      <rect x="424" y="200" width="120" height="34" rx="7"/>
+      <rect x="586" y="150" width="150" height="34" rx="7"/>
+      <rect x="586" y="200" width="150" height="34" rx="7" stroke="var(--accent)" stroke-opacity=".9"/>
+    </g>
+    <g fill="currentColor" text-anchor="middle">
+      <text x="484" y="57">SessionCard</text>
+      <text x="661" y="57">TranscriptPanel</text>
+      <text x="484" y="166">Board drill-in</text>
+      <text x="484" y="221">ConsoleDetail</text>
+      <text x="661" y="166">TranscriptPanel</text>
+      <text x="661" y="166" dy="13" font-size="10" fill="var(--muted)">own strip suppressed</text>
+    </g>
+    <g fill="var(--accent)" text-anchor="middle">
+      <text x="661" y="107">SessionLaunchers</text>
+      <text x="661" y="221">SessionLaunchers</text>
+      <text x="661" y="221" dy="13" font-size="10" fill="var(--muted)">hosted in .detail-tabs</text>
+    </g>
+    <g stroke="currentColor" stroke-opacity=".45" fill="none" marker-end="url(#ar)">
+      <path d="M544,53 L582,53"/>
+      <path d="M661,70 L661,82" stroke="var(--accent)" stroke-opacity=".8"/>
+      <path d="M544,167 L544,217 L582,217" stroke-opacity=".3"/>
+      <path d="M544,224 L582,213" stroke="var(--accent)" stroke-opacity=".8"/>
+      <path d="M544,210 L582,167"/>
+    </g>
+    <text x="424" y="262" font-size="10.5" fill="var(--muted)">Both arrangements must register launchers with App, or t / a break in that host.</text>
+  </g>
+</svg>
+</div>
+<figcaption>The mount ownership change behind F1. Cards keep the panel-owned strip; the console detail and board drill-in use a host-owned one. No surface loses a control.</figcaption>
+</figure>
+
+<h3>F2 - <code>.detail-tabs</code> is not a query container</h3>
+<p>The conversation pane's only pane-scoped responsive mechanism is the <code>container-type: inline-size</code> on <code>.transcript</code> (<code>styles.css:4738</code>) and the two <code>@container (max-width: 560px)</code> blocks that hang off it, one of which (<code>styles.css:5944-5975</code>) is already the precedent for a toolbar shedding controls. <code>.conv-launch</code> sits inside that container today; <code>.detail-tabs</code> does not, and nothing in the file declares <code>container-type</code> on it or any ancestor. Relocating the controls forfeits that mechanism.</p>
+<p>The repo's canonical answer to "this toolbar does not fit" is the measured ladder in <code>src/web/topbarLadder.ts</code>, whose design note argues against container queries for exactly this case: a rung fires on the width the bar <em>has</em>, but whether it needs to fire depends on the width its content <em>needs</em>, and the two are independent. Its hard rule is also binding: a shed label goes visually hidden, never <code>display: none</code>, so the control keeps its accessible name.</p>
+
+<h3>F3 - The task pill's title is not always a duplicate</h3>
+<p><code>task-multi-session.test.ts:404-407</code> asserts that the card, console detail and board tile all show the task <em>now executing</em> and not the finished one. A session can be re-assigned to a later task, at which point <code>session.name</code> still holds the original task's title while the pill holds the current one. The title is a duplicate in the common case only, which is why D2 makes it conditional on differing from <code>session.name</code> rather than deleting it.</p>
+
+<h3>F4 - A trailing ghost row breaks stick-to-bottom</h3>
+<p><code>TranscriptPanel.tsx:583-593</code> re-pins the log to the bottom in a <code>useLayoutEffect</code> keyed on <code>[messages, session.pendingTurns]</code>. A row driven by <code>session.activity</code> changes <code>scrollHeight</code> without re-running it, so a reader pinned to the bottom silently drifts off every time the activity text changes height. Separately, <code>onScroll</code> (<code>:600-608</code>) computes <code>atBottom</code> with a 48px threshold, so a row taller than that appearing under a bottom-pinned reader flips <code>atBottom</code> false and the pane stops following the tail.</p>
+
+<h3>F5 - "Activity" is already taken in this pane</h3>
+<p><code>ConversationActivity</code> - the "Observed activity" rail beside the transcript - is derived from <code>messages</code>, not from <code>session.activity</code>, and its own contract forbids implying a tool is <em>running</em>. A ghosted row six inches away saying "running Bash" sits directly against that. The ghost row is therefore framed as the in-progress state of the current turn, not as a second activity feed, and the docs must distinguish them.</p>
+
+<h3>F6 - Fewer tests pin this than expected</h3>
+<p>Moving <code>ModePicker</code> out of <code>.detail-foot</code> breaks <strong>zero</strong> tests - <code>detail-foot</code> appears nowhere in <code>test/</code> or <code>e2e/</code>, and <code>session-leaf-parity.test.ts:454-475</code> pins the tile and card only. Removing <code>.task-kind</code> breaks none either; it is entirely unpinned. Removing the goal/activity block from <code>.detail-conv</code> breaks none. The constraint is not the existing suite, it is the structural selectors: <code>.detail-conv &gt; .pane-dialog</code> (<code>pane-dialog-scroll.test.ts</code>) and <code>.detail-conv &gt; .transcript</code> (<code>styles.css:18086-18094</code>) are child combinators, so no wrapper may be introduced around the leading children of <code>.detail-conv</code>.</p>
+
+<h2>Scope</h2>
+<p>In scope:</p>
+<ol>
+<li>The task pill reduction, on both <code>ConsoleDetail</code> and <code>SessionCard</code>.</li>
+<li><code>ModePicker</code> promoted to the head of the header cluster and removed from the footer.</li>
+<li>The objective relocated into the identity block, in <code>ConsoleDetail</code> only.</li>
+<li>The activity line relocated to a trailing row in the transcript log, with the scroll-anchoring fixes F4 requires.</li>
+<li>The launcher strip and Terminal-view toggle hosted by the console detail's tab row, with the Cards layout keeping its own, and a give-way order for narrow panes.</li>
+<li>Documentation and Playwright coverage for each of the above.</li>
+</ol>
+<p>Out of scope:</p>
+<ul>
+<li>Options 1, 4, 5 and 6, and the collapse-on-scroll behaviour.</li>
+<li>Any change to <code>SessionTile</code>, <code>RailRow</code> or <code>EnsembleMembers</code>, which render the same facts in their own vocabulary and are deliberately left alone.</li>
+<li>Moving the objective on <code>SessionCard</code>. <code>session-card-goal.test.ts:123-129</code> records that "the goal takes the activity slot" was tried and rejected there; this change must not spill onto the card.</li>
+<li>An overflow-menu pattern. None exists in this codebase and this is not the change that should invent one.</li>
+</ul>
+
+<h2>Non-goals stated as risks</h2>
+<div class="callout warn">
+<p>The tab row in option 2 still overflows a narrow pane by 101px as drawn in the mockup. That is real unfinished design work and is owned by the phase that moves the controls, not deferred.</p>
+</div>
+
+</main>
+</body>
+</html>

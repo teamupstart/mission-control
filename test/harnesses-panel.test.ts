@@ -147,6 +147,13 @@ test("the switch is disabled until the first config read lands", () => {
   assert.match(html, /checked/);
 });
 
+test("the runtime card waits for the saved config instead of guessing a legacy default", () => {
+  const html = render(null);
+  assert.match(html, /Loading saved runtime default for Claude Code\./);
+  assert.doesNotMatch(html, /Session runtime for dispatched Claude Code sessions/);
+  assert.doesNotMatch(html, /<option value="sdk" selected/);
+});
+
 test("a rejected edit says so", () => {
   assert.match(
     render({ autoModeOnDispatch: false }, { error: "That didn't stick: no." }),

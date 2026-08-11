@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phased plan: console detail header density</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#1a1d21; --muted:#5c6470; --dim:#767e8b;
+  --border:#e2e6ea; --soft:#f5f7f9; --code-bg:#f2f4f7;
+  --accent:#2563eb; --good:#15803d; --warn:#b45309; --purple:#7c3aed;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0e1116; --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --border:#232a33; --soft:#14181e; --code-bg:#171c23;
+    --accent:#4a9eff; --good:#35c08a; --warn:#f6a733; --purple:#a371f7;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.62;
+  font-size:15.5px;padding:44px 24px 100px}
+main{max-width:860px;margin:0 auto}
+h1{font-size:29px;line-height:1.25;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:21px;margin:42px 0 10px;padding-top:16px;border-top:1px solid var(--border);letter-spacing:-.01em}
+h3{font-size:16.5px;margin:26px 0 6px}
+p{margin:0 0 13px}
+ul,ol{margin:0 0 13px;padding-left:22px}
+li{margin:0 0 6px}
+code{font-family:var(--mono);font-size:.87em;background:var(--code-bg);padding:1.5px 5px;border-radius:4px}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:13px 15px;overflow-x:auto;margin:0 0 15px}
+pre code{background:none;padding:0;font-size:12.5px;line-height:1.55}
+.scroll{overflow-x:auto;margin:0 0 16px;border-radius:9px;border:1px solid var(--border)}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:560px}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--border);vertical-align:top}
+th{background:var(--soft);font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:650}
+tr:last-child td{border-bottom:0}
+.lede{font-size:17px;color:var(--muted);margin:0 0 26px}
+.meta{font-size:13px;color:var(--dim);margin:0 0 30px}
+.meta a{color:var(--accent)}
+.callout{border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:0 9px 9px 0;
+  padding:14px 17px;margin:0 0 17px;background:var(--soft)}
+.callout.warn{border-left-color:var(--warn)}
+.callout h4{margin:0 0 6px;font-size:14.5px}
+.callout p:last-child{margin-bottom:0}
+figure{margin:0 0 22px}
+figcaption{font-size:12.5px;color:var(--dim);margin-top:8px}
+svg{max-width:100%;height:auto;display:block}
+.fig-wrap{border:1px solid var(--border);border-radius:11px;padding:16px;background:var(--soft);overflow-x:auto}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+
+<h1>Phased plan: console detail header density</h1>
+<p class="lede">Three phases, deliberately serial, each one an independently mergeable pull request that leaves the repository operable.</p>
+<p class="meta">
+  Source plan: <a href="plan.html">plan.html</a> (<code>plan.md</code>) ·
+  Mockups: <a href="mockups.html">mockups.html</a> ·
+  Source of truth: <code>docs/plans/console-header-density/phased-plan.md</code>
+</p>
+
+<h2>Incorporated human decisions</h2>
+<p>All four are requirements, taken from the design review recorded in the source plan.</p>
+<ul>
+<li><strong>D1</strong> - implement option 2, "Tabs are the toolbar": keep the <code>PATH</code>/<code>BRANCH</code> row, fold the worktree row's controls into the tab strip.</li>
+<li><strong>D2</strong> - the <code>SHIP</code> badge renders only for <code>scout</code>; the task title renders only when it differs from <code>session.name</code>.</li>
+<li><strong>D3</strong> - <code>ModePicker</code> leads the header cluster (<code>auto · model · context · cost</code>) and leaves the footer.</li>
+<li><strong>D4</strong> - live status splits by tempo: the objective joins the identity block, the activity becomes a trailing row in the transcript log.</li>
+</ul>
+
+<h2>Investigated findings that bind implementation</h2>
+<p>Full detail in the source plan under "Repository findings". The three that shape the phase boundaries:</p>
+<ul>
+<li><strong>F1</strong> - the launcher strip has a single deliberate mount in <code>TranscriptPanel</code> that serves three surfaces. Relocating it into <code>.detail-tabs</code> deletes it from Cards and breaks the <code>t</code>/<code>a</code> chords there. It must be lifted into a host-provides-toolbar arrangement, not moved.</li>
+<li><strong>F2</strong> - <code>.detail-tabs</code> is not a query container, so the move forfeits the pane's only responsive mechanism. The give-way must follow <code>topbarLadder.ts</code>, including its rule that shed labels go visually hidden rather than <code>display: none</code>.</li>
+<li><strong>F4</strong> - a trailing row in the log breaks stick-to-bottom in two distinct ways, both owned by the phase that introduces the row.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="scroll"><table>
+<tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr>
+<tr><td>1</td><td>Header identity band</td><td><code>phase-1-header-identity-band.md</code></td><td>none</td></tr>
+<tr><td>2</td><td>Live activity in the transcript</td><td><code>phase-2-live-activity-in-transcript.md</code></td><td>Phase 1</td></tr>
+<tr><td>3</td><td>Tabs are the toolbar</td><td><code>phase-3-tabs-are-the-toolbar.md</code></td><td>Phase 2</td></tr>
+</table></div>
+
+<figure>
+<div class="fig-wrap">
+<svg viewBox="0 0 780 190" role="img" aria-label="Serial dependency graph: phase 1 header identity band, then phase 2 live activity in the transcript, then phase 3 tabs are the toolbar.">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g font-family="system-ui,sans-serif" font-size="12" color="currentColor">
+    <g fill="none" stroke="var(--accent)" stroke-opacity=".75">
+      <rect x="16" y="44" width="210" height="62" rx="9"/>
+      <rect x="286" y="44" width="210" height="62" rx="9"/>
+      <rect x="556" y="44" width="208" height="62" rx="9"/>
+    </g>
+    <g fill="currentColor" text-anchor="middle" font-weight="650">
+      <text x="121" y="70">Phase 1</text>
+      <text x="391" y="70">Phase 2</text>
+      <text x="660" y="70">Phase 3</text>
+    </g>
+    <g fill="var(--muted)" text-anchor="middle" font-size="11">
+      <text x="121" y="88">task pill · ModePicker · objective</text>
+      <text x="391" y="88">activity row · scroll anchoring</text>
+      <text x="660" y="88">launchers in tabs · give-way</text>
+    </g>
+    <g stroke="currentColor" stroke-opacity=".5" fill="none" marker-end="url(#a2)">
+      <path d="M226,75 L282,75"/>
+      <path d="M496,75 L552,75"/>
+    </g>
+    <g fill="var(--dim)" text-anchor="middle" font-size="10.5">
+      <text x="254" y="64">merges</text>
+      <text x="524" y="64">merges</text>
+    </g>
+    <text x="16" y="26" font-size="12.5" font-weight="700" fill="currentColor">Dependency graph - serial by file ownership, not by logic</text>
+    <text x="16" y="150" font-size="11" fill="var(--muted)">All three edit ConsoleDetail.tsx and the single stylesheet. Phases 2 and 3 both edit TranscriptPanel.tsx.</text>
+    <text x="16" y="168" font-size="11" fill="var(--muted)">Splitting further would not buy concurrency, only conflicts.</text>
+  </g>
+</svg>
+</div>
+<figcaption>The chain is short by design. Numbering here is also execution order, because there are no concurrency groups.</figcaption>
+</figure>
+
+<h2>Concurrency groups</h2>
+<div class="callout">
+<h4>There are none, and that is deliberate</h4>
+<p>The reason is file ownership rather than logical dependency:</p>
+<ul>
+<li>All three phases edit <code>src/web/components/layouts/ConsoleDetail.tsx</code> and the single stylesheet <code>src/web/styles.css</code>. There is exactly one stylesheet in this project.</li>
+<li>Phases 2 and 3 both edit <code>src/web/components/TranscriptPanel.tsx</code> - phase 2 in the log body, phase 3 in the toolbar mount and the panel's prop contract.</li>
+<li>Phase 3 depends on phase 2 for a settled <code>.detail-conv</code> shape: phase 2 removes the leading children of that container, and phase 3 changes what sits above it. Landing them concurrently would put two agents in the same 40 lines.</li>
+</ul>
+</div>
+
+<h2>Merge order</h2>
+<p>1, then 2, then 3. Each leaves the repository operable, typechecking, and with a passing suite; none depends on an unmerged later phase to repair an intermediate state.</p>
+
+<h2>Cross-phase contracts</h2>
+<div class="scroll"><table>
+<tr><th>Contract</th><th>Introduced by</th><th>Consumed by</th><th>Rule</th></tr>
+<tr><td><code>.detail-title</code> is a column holding the <code>h2</code> and the relocated <code>GoalLine</code></td><td>Phase 1</td><td>Phase 3</td><td>Phase 3 may re-flow the head row but must not flatten this back to a single line, and must not reduce <code>GoalLine</code> to plain text - it carries the <code>goal-{state}</code> classes, a state-specific tooltip, and the <code>GOAL_UNSUPPORTED</code> empty state.</td></tr>
+<tr><td>Header cluster order is mode, model, context, cost</td><td>Phase 1</td><td>Phase 3</td><td>Phase 3's give-way ladder sheds from this cluster last, and never sheds the mode chip's accessible name.</td></tr>
+<tr><td><code>.detail-conv</code> keeps its leading children removed and <code>.transcript</code> as a direct child</td><td>Phase 2</td><td>Phase 3</td><td><code>.detail-conv &gt; .pane-dialog</code> and <code>.detail-conv &gt; .transcript</code> are child combinators in shipped CSS and a passing test; no phase may introduce a wrapper.</td></tr>
+<tr><td>The trailing log row is the current turn's in-progress state, not a second activity feed</td><td>Phase 2</td><td>Phase 3</td><td>Phase 3 must not reintroduce <code>session.activity</code> into the header while relaying out the bands.</td></tr>
+<tr><td><code>TranscriptPanel</code> renders its own toolbar unless the host provides one</td><td>Phase 3</td><td>-</td><td>Cards keep the panel-owned strip; console detail and board drill-in use the host-owned one. Both must register launchers so <code>t</code>/<code>a</code> work in every host.</td></tr>
+</table></div>
+
+<h2>Final verification strategy</h2>
+<p>Per phase: <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, and <code>npm run build</code> before the e2e suite. Every phase is a UI change, so every phase adds at least one Playwright spec under <code>e2e/</code> and runs <code>npm run test:e2e</code>; there are no exemptions in this repository.</p>
+<p>Across the set, after phase 3 merges:</p>
+<ul>
+<li>The Conversation tab shows a conversation area of ~410px in a 600px pane, up from 243px.</li>
+<li>No control that existed before the change has been removed from any surface. Specifically, Cards still have the launchers and the Terminal-view toggle, and <code>t</code> / <code>a</code> still work there.</li>
+<li><code>npm run test:e2e</code> passes with the three new specs, including the narrow-viewport give-way spec modelled on <code>e2e/specs/topbar-one-row.spec.ts</code>.</li>
+<li>The docs listed in the source plan's F-findings no longer contain false sentences.</li>
+</ul>
+
+<h2>Cross-phase audit record</h2>
+<ul>
+<li><strong>After phase 1</strong> - no earlier phases to reconcile. Confirmed phase 1 owns the <code>.detail-title</code> column and the cluster order, both of which phase 3 inherits rather than redefines.</li>
+<li><strong>After phase 2</strong> - moved the "no wrapper inside <code>.detail-conv</code>" rule from phase 3 into phase 2, because phase 2 is the phase that edits those children and would be the one to break the child combinator. Phase 3 now consumes the rule instead of restating it.</li>
+<li><strong>Inspector review, round 2</strong> - phase 3 described the worktree path as moving into the tab strip and as the give-way ladder's first rung. That was left over from an earlier draft of option 2; once the options were re-differentiated into a lattice, option 2 kept the <code>PATH</code>/<code>BRANCH</code> row and the path left the tab row. Phase 3 now states the path is dropped as a duplicate rather than relocated, and its ladder starts at the launcher labels. No contract changed and D1 is unaffected.</li>
+<li><strong>Inspector review, round 1</strong> - phase 1's objective relocation was rewritten to move the <code>GoalLine</code> component rather than its text, after review showed the original wording would have dropped the goal state classes, the state-specific tooltip and the <code>GOAL_UNSUPPORTED</code> empty state. The <code>.detail-title</code> contract above was tightened to carry that forward into phase 3. Phase 2 is unaffected, and decision D4 is unchanged.</li>
+<li><strong>After phase 3</strong> - confirmed phase 3 does not need to re-open the task pill or the mode chip. Checked that the give-way ladder sheds only labels phase 1 introduced as text, never the mode chip's accessible name, and recorded that constraint in the cluster-order contract above.</li>
+<li><strong>Final</strong> - every decision D1-D4 is owned by exactly one phase: D2 and D3 by phase 1, D4 split across phase 1 (objective) and phase 2 (activity) as the decision itself splits, D1 by phase 3. Every consumer follows its prerequisite. No phase depends on undocumented cleanup by another.</li>
+</ul>
+
+</main>
+</body>
+</html>

@@ -25,7 +25,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-multi-pr-tracking-"));
 process.env.HARNESS_HOME = home;
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
-const { getInspectorPr, openDb, primaryRepoPrForTask, workEpisodeRepoPrsForTask } =
+const { getInspectorPr, openDb, primaryRepoPrForTask, taskReposFor, workEpisodeRepoPrsForTask } =
   await import("../src/server/db.ts");
 const { adoptPr } = await import("../src/server/inspector/worker.ts");
 
@@ -450,4 +450,85 @@ test("the CURRENT episode's open pull request is shown when nothing has merged",
     prState: "open",
     mergedAt: null,
   });
+});
+
+// ---- an attached repo's own pull request, across episodes -----------------------------------
+
+/** A `work_episode_prs` row from some OTHER episode - what a rollover leaves behind. */
+function insertRepoPr(b: {
+  taskId: string;
+  episodeId: string;
+  repoRoot: string;
+  prUrl: string;
+  mergedAt: number | null;
+}): void {
+  openDb()
+    .prepare(
+      `INSERT INTO work_episode_prs
+         (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha,
+          merged_at, updated_at)
+       VALUES (?, ?, 'sess', ?, ?, ?, 'sha', ?, 9)`,
+    )
+    .run(
+      b.episodeId,
+      b.repoRoot,
+      b.taskId,
+      b.prUrl,
+      b.mergedAt === null ? "open" : "merged",
+      b.mergedAt,
+    );
+}
+
+test("an attached repo's pull request from a rolled-off episode is not its current one", () => {
+  // The secondary twin of the primary's rule, and it has to be the same rule or the two halves
+  // of one card disagree. Nothing prunes an old episode's row - deliberately, so a merge on a
+  // rolled-off episode still counts - so an unmerged one would otherwise be reported for ever,
+  // and the quorum would hold on a url that can never move.
+  const f = fixture("repo-rolled-off");
+  insertRepoPr({
+    taskId: f.taskId,
+    episodeId: "repo-rolled-past-episode",
+    repoRoot: "/other",
+    prUrl: PR_B,
+    mergedAt: null,
+  });
+
+  assert.deepEqual(
+    taskReposFor(f.taskId).map((e) => [e.repoRoot, e.prUrl, e.prState, e.mergedAt]),
+    [["/other", null, null, null]],
+  );
+});
+
+test("an attached repo's MERGED pull request still counts from a rolled-off episode", () => {
+  const f = fixture("repo-rolled-off-merged");
+  insertRepoPr({
+    taskId: f.taskId,
+    episodeId: "repo-merged-past-episode",
+    repoRoot: "/other",
+    prUrl: PR_B,
+    mergedAt: 8_000,
+  });
+
+  assert.deepEqual(
+    taskReposFor(f.taskId).map((e) => [e.prUrl, e.prState, e.mergedAt]),
+    [[PR_B, "merged", 8_000]],
+  );
+});
+
+test("a merge on any episode outranks the current episode's open pull request", () => {
+  // Same precedence the primary keeps: what LANDED is the answer, wherever it landed.
+  const f = fixture("repo-merged-outranks");
+  f.registry.reconcileRepoPrs(new Map([repoMatch(f, "/other")]), new Set());
+  insertRepoPr({
+    taskId: f.taskId,
+    episodeId: "repo-outranked-episode",
+    repoRoot: "/other",
+    prUrl: PR_C,
+    mergedAt: 8_000,
+  });
+
+  assert.deepEqual(
+    taskReposFor(f.taskId).map((e) => [e.prUrl, e.prState]),
+    [[PR_C, "merged"]],
+  );
 });

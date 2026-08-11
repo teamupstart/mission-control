@@ -455,6 +455,34 @@ test("a pull request the task rolled off does not hold the quorum for ever", asy
   assert.equal(t.outcomeUrl, PR_B);
 });
 
+test("an attached repo's abandoned pull request does not strand the task for ever", async () => {
+  // The secondary twin of the case above, and the sharper one: nothing prunes an old episode's
+  // `work_episode_prs` row, so an unmerged pull request the agent opened before restarting
+  // would be read as this repo's current one for ever. `repoChangeVerdict` reads any url as
+  // "changed" and that url can never merge, so the quorum would hold permanently - a task that
+  // can NEVER complete, however much of its work landed.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fixture("repo-abandoned");
+  primaryPr(f, PR_A);
+  openDb()
+    .prepare(
+      `INSERT INTO work_episode_prs
+         (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha,
+          merged_at, updated_at)
+       VALUES ('abandoned-repo-episode', '/other', ?, ?, ?, 'open', 'sha', NULL, 9)`,
+    )
+    .run(f.id, f.taskId, PR_B);
+  // The attached repo's tree is back where its branch was cut: nothing of this task is in it.
+  f.registry.recordWorktreeHeads(new Map([[f.cwd, MOVED], [f.extraCwd, EXTRA_BASE]]));
+  primaryPr(f, PR_A, NOW);
+
+  departs(f);
+
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcome, `merged ${PR_A}`, "the abandoned pull request is not part of the outcome");
+});
+
 test("a single-repo task still completes on its own merge, unchanged", async () => {
   // The regression that matters most: everything above is reached only through
   // `extraRepos.length > 0`, and a single-repo task must take the branch it always took.

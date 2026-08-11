@@ -2784,23 +2784,48 @@ interface TaskRepoRow {
  * The pull request to show for one repository, out of everything its task's episodes
  * recorded for it.
  *
- * A task can have several episodes (an agent that restarted, a fix-forward run), so one
- * repository can carry more than one row over a task's life. A MERGED one wins, because that
- * is the outcome; among equals the most recently written wins, which is the same
- * newest-merge-wins rule `mergedPrFor` applies to the primary. Rows arrive newest-first.
+ * `primaryRepoPrForTask`'s rule, on the other half of the data shape, and it has to be the
+ * SAME rule or the two halves of one card disagree about what "this repo's pull request"
+ * means. A task can have several episodes (an agent that restarted, a fix-forward run), so
+ * one repository can carry more than one row over its life, and nothing prunes the old ones -
+ * deliberately, because a merge on a rolled-off episode is still the outcome.
+ *
+ * So: a MERGED row counts from ANY episode, newest merge winning. An UNMERGED one counts only
+ * from the CURRENT episode. Without that second clause a repo the agent opened a pull request
+ * in, then restarted and never touched again, keeps reporting that abandoned pull request for
+ * ever - and because `repoChangeVerdict` reads any `prUrl` as "changed" while the url can
+ * never merge, the all-merged quorum would hold on it permanently and the task could never
+ * complete. Scoping it is what makes "no pull request opened here yet" the honest answer, and
+ * hands the repo's membership back to the head-against-baseline clause that exists for it.
  */
-function pickRepoPr(rows: readonly WorkEpisodeRepoPr[]): WorkEpisodeRepoPr | null {
-  let best: WorkEpisodeRepoPr | null = null;
+function pickRepoPr(
+  rows: readonly WorkEpisodeRepoPr[],
+  currentEpisodeId: string | null,
+): WorkEpisodeRepoPr | null {
+  let merged: WorkEpisodeRepoPr | null = null;
+  let current: WorkEpisodeRepoPr | null = null;
   for (const row of rows) {
-    if (best === null) { best = row; continue; }
-    if (row.mergedAt === null) continue;
-    if (best.mergedAt === null || row.mergedAt > best.mergedAt) best = row;
+    if (row.mergedAt !== null) {
+      if (merged === null || row.mergedAt > (merged.mergedAt ?? 0)) merged = row;
+      continue;
+    }
+    // Rows arrive newest-written first, so the first match is the one to keep.
+    if (current === null && currentEpisodeId !== null && row.episodeId === currentEpisodeId) {
+      current = row;
+    }
   }
-  return best;
+  return merged ?? current;
 }
 
-function rowToTaskRepo(r: TaskRepoRow, prs: readonly WorkEpisodeRepoPr[] = []): TaskRepoEntry {
-  const pr = pickRepoPr(prs.filter((entry) => entry.repoRoot === r.repo_root));
+function rowToTaskRepo(
+  r: TaskRepoRow,
+  prs: readonly WorkEpisodeRepoPr[] = [],
+  currentEpisodeId: string | null = null,
+): TaskRepoEntry {
+  const pr = pickRepoPr(
+    prs.filter((entry) => entry.repoRoot === r.repo_root),
+    currentEpisodeId,
+  );
   return {
     repoRoot: r.repo_root,
     worktreePath: r.worktree_path,
@@ -2823,7 +2848,8 @@ export function taskReposFor(taskId: string): TaskRepoEntry[] {
     .all(taskId) as unknown as TaskRepoRow[];
   if (rows.length === 0) return [];
   const prs = workEpisodeRepoPrsForTask(taskId);
-  return rows.map((row) => rowToTaskRepo(row, prs));
+  const currentEpisodeId = taskWorkEpisodeForTask(taskId)?.episodeId ?? null;
+  return rows.map((row) => rowToTaskRepo(row, prs, currentEpisodeId));
 }
 
 /**
@@ -2841,8 +2867,22 @@ function taskReposByTask(): Map<string, TaskRepoEntry[]> {
   const out = new Map<string, TaskRepoEntry[]>();
   if (rows.length === 0) return out;
   const prsByTask = workEpisodeRepoPrsByTask();
+  // One read for every task's current episode, for the same reason the pull requests are read
+  // whole: the batch reader must reach the same answer as `taskReposFor`, and a per-row lookup
+  // would put a statement behind every card on the board.
+  const currentEpisodeByTask = new Map(
+    (
+      openDb()
+        .prepare(`SELECT task_id, episode_id FROM task_work_episode_bindings`)
+        .all() as unknown as Array<{ task_id: string; episode_id: string }>
+    ).map((r) => [r.task_id, r.episode_id]),
+  );
   for (const row of rows) {
-    const entry = rowToTaskRepo(row, prsByTask.get(row.task_id) ?? []);
+    const entry = rowToTaskRepo(
+      row,
+      prsByTask.get(row.task_id) ?? [],
+      currentEpisodeByTask.get(row.task_id) ?? null,
+    );
     const list = out.get(row.task_id);
     if (list) list.push(entry);
     else out.set(row.task_id, [entry]);

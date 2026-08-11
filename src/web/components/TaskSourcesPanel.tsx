@@ -18,6 +18,7 @@ import {
 } from "@shared/task-source.ts";
 import type { TaskSourcesState } from "../useTaskSources.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
+import { repoLeaf } from "../lib/format.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { ago } from "./InspectorSettingsPanel.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -856,7 +857,9 @@ function SourceDirectory({
           const healthText = health === "attention" ? "Failed" : health === "paused" ? "Paused" : status?.sweeping ? "Sweeping" : health === "pending" ? status ? "Never swept" : "No status" : "Healthy";
           return (
             <div className="ts-directory-item" role="listitem" key={src.id}>
-              <Tooltip label={`Open ${nameOf(src, kindLabel)} - ${healthText.toLowerCase()}`}>
+              <Tooltip
+                label={`Open ${nameOf(src, kindLabel)} - ${healthText.toLowerCase()} - ${src.repoRoot}`}
+              >
                 <button
                   ref={(node) => {
                     if (node) rowRefs.current.set(src.id, node);
@@ -869,7 +872,7 @@ function SourceDirectory({
                   aria-current={selectedId === src.id}
                   onClick={() => onSelect(src.id)}
                 >
-                  <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {src.repoRoot} · every {minutesOf(src.intervalMs)} min</span></span>
+                  <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {repoLeaf(src.repoRoot)} · every {minutesOf(src.intervalMs)} min</span></span>
                   <span className={`ts-health ts-health-${health}`}><i />{healthText}</span>
                 </button>
               </Tooltip>

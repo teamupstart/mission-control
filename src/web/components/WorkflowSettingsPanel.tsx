@@ -15,6 +15,7 @@ import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
+import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import {
@@ -643,7 +644,9 @@ export function WorkflowSettingsPanel({
             {config.checkCommands.map((entry) => (
               <li key={`${entry.repoRoot}:${entry.slot}`}>
                 <span className="wf-settings-check-slot">{entry.slot}</span>
-                <code className="wf-settings-check-root">{entry.repoRoot}</code>
+                <code className="wf-settings-check-root">
+                  <RepositoryName path={entry.repoRoot} />
+                </code>
                 <code className="wf-settings-check-argv">{formatCheckCommand(entry.command)}</code>
                 <Tooltip label={`Stop running a ${entry.slot} check in ${entry.repoRoot}`}>
                   <button

@@ -291,11 +291,12 @@ function render(
 }
 
 test("the matrix renders one grant column per subsystem and the add row's anchor", () => {
+  const repo = "/Users/dev/work/harness";
   const html = render(
-    foreman({ repoAllowlist: ["/repo"] }),
-    inspector({ repoAllowlist: ["/repo"] }),
-    shipping({ repoAllowlist: ["/repo"] }),
-    workflowState({ repoAllowlist: ["/repo"] }),
+    foreman({ repoAllowlist: [repo] }),
+    inspector({ repoAllowlist: [repo] }),
+    shipping({ repoAllowlist: [repo] }),
+    workflowState({ repoAllowlist: [repo] }),
   );
   assert.match(html, /data-anchor="trust\/matrix"/);
   assert.match(html, /data-anchor="trust\/add"/);
@@ -303,8 +304,9 @@ test("the matrix renders one grant column per subsystem and the add row's anchor
   assert.match(html, /Workflows act/);
   assert.match(html, /Inspector posts reviews/);
   assert.match(html, /YOLO merges/);
-  // The one repo appears once, in the mono path cell - four grants, one row.
-  assert.match(html, /class="trust-repo-path"[^>]*>\/repo</);
+  // The one repo appears once by directory name, with its absolute path in the tooltip.
+  assert.match(html, /class="trust-repo-path"[^>]*>harness<\/span>/);
+  assert.match(html, /class="tt-desc">\/Users\/dev\/work\/harness<\/span>/);
   assert.equal((html.match(/class="trust-repo-path"/g) ?? []).length, 1);
 });
 
@@ -340,9 +342,29 @@ test("a merge-without-review, armed, flies the dagger footnote with both fixes",
   assert.match(html, /no pull request will ever qualify/);
   assert.match(html, /Grant the review/);
   assert.match(html, /revoke the merge/);
-  // The trapped merge pill is marked, and its repo is named in the footnote.
+  // The trapped merge pill is marked, and its repo is named compactly in the footnote.
   assert.match(html, /trust-grant is-on is-trapped/);
-  assert.match(html, /YOLO may merge in \/repo/);
+  assert.match(html, /YOLO may merge in <span[^>]*>repo<\/span>/);
+});
+
+test("warning lists show full paths when compact repository names collide", () => {
+  const repos = ["/workspaces/one/api", "/workspaces/two/api"];
+  const html = render(
+    foreman(),
+    inspector({ repoAllowlist: [] }),
+    shipping({ repoAllowlist: repos, autoMerge: true }),
+    workflowState({ repoAllowlist: repos, checksEnabled: true }),
+  );
+
+  assert.match(
+    html,
+    /trust-trap-note[\s\S]*class="trust-warning-repo"[^>]*>\/workspaces\/one\/api<\/span>[\s\S]*class="trust-warning-repo"[^>]*>\/workspaces\/two\/api<\/span>/,
+  );
+  assert.match(
+    html,
+    /trust-arm-note[\s\S]*class="trust-warning-repo"[^>]*>\/workspaces\/one\/api<\/span>[\s\S]*class="trust-warning-repo"[^>]*>\/workspaces\/two\/api<\/span>/,
+  );
+  assert.doesNotMatch(html, /in <span[^>]*>api<\/span>[\s\S]*, <span[^>]*>api<\/span>/);
 });
 
 test("with YOLO disarmed the same lists fly no footnote", () => {
@@ -367,7 +389,8 @@ test("a workflow grant with checks armed flies the double dagger and names the r
   assert.match(html, /Turn checks off/);
   // The pill carries the marker, and stays a GRANTED pill - amber, not revoked.
   assert.match(html, /trust-grant is-on is-armed/);
-  assert.match(html, /in \/repo with this daemon/);
+  assert.match(html, /in <span[^>]*>repo<\/span>/);
+  assert.match(html, /class="tt-desc">\/repo<\/span>/);
 });
 
 test("the same grant with checks off is silent - an inert grant must not train amber-blindness", () => {
@@ -439,7 +462,7 @@ test("the confirmed footnote and the unconfirmed one are mutually exclusive", ()
   );
   assert.match(html, /trust-arm-note/);
   assert.doesNotMatch(html, /trust-arm-unconfirmed/);
-  assert.match(html, /in \/repo with this daemon/);
+  assert.match(html, /in <span[^>]*>repo<\/span>/);
 });
 
 test("an unreachable subsystem renders the unknown warning, and names which - not 'off'", () => {

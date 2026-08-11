@@ -16,7 +16,9 @@ import {
   type TrustRow,
 } from "../lib/trust.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
+import { repoLeaf } from "../lib/format.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
+import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 // Trust: one repository x grant matrix over the four existing allowlists.
@@ -69,6 +71,40 @@ const COLUMNS = [
     title: "Clean, soaked PRs in this repo merge themselves to the base branch.",
   },
 ] as const;
+
+/**
+ * Compact repository names inside a warning, except where compacting would make two entries
+ * read as the same repository. In that collision only, the full paths stay visible as well
+ * as available on hover; `api, api` would otherwise look like a rendering error and leave the
+ * reader unable to tell which grant each occurrence names.
+ */
+function WarningRepositoryList({ repos }: { repos: string[] }): React.JSX.Element {
+  const leafCounts = new Map<string, number>();
+  for (const repo of repos) {
+    const leaf = repoLeaf(repo);
+    leafCounts.set(leaf, (leafCounts.get(leaf) ?? 0) + 1);
+  }
+
+  return (
+    <>
+      {repos.map((repo, index) => {
+        const ambiguous = (leafCounts.get(repoLeaf(repo)) ?? 0) > 1;
+        return (
+          <Fragment key={repo}>
+            {index > 0 ? ", " : null}
+            {ambiguous ? (
+              <Tooltip label={repo}>
+                <span className="trust-warning-repo">{repo}</span>
+              </Tooltip>
+            ) : (
+              <RepositoryName path={repo} className="trust-warning-repo" />
+            )}
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
 
 export function TrustPanel({
   foreman,
@@ -357,9 +393,7 @@ export function TrustPanel({
           {rows.map((row) => (
             <Fragment key={row.repo}>
               <div className="trust-c trust-repo">
-                <Tooltip label={row.repo}>
-                  <span className="trust-repo-path">{row.repo}</span>
-                </Tooltip>
+                <RepositoryName path={row.repo} className="trust-repo-path" />
               </div>
               {COLUMNS.map((c) => cell(row, c))}
               <div className="trust-c trust-remove-c">
@@ -386,7 +420,8 @@ export function TrustPanel({
 
       {blindSpots.length > 0 && (
         <p className="settings-warn trust-trap-note">
-          † YOLO may merge in {blindRepos.join(", ")}, but the Inspector may not review there
+          † YOLO may merge in <WarningRepositoryList repos={blindRepos} />, but the Inspector
+          may not review there
           - so no pull request will ever qualify.{" "}
           <Tooltip label="Add these repos to the Inspector's allowlist">
             <button type="button" className="settings-link" onClick={grantReview}>
@@ -406,7 +441,8 @@ export function TrustPanel({
       {checkGrants.length > 0 && (
         <p className="settings-warn trust-arm-note">
           ‡ Check commands are on, so a workflow may run <strong>branch-authored code</strong>{" "}
-          in {checkRepos.join(", ")} with this daemon's filesystem authority. It is not a
+          in <WarningRepositoryList repos={checkRepos} /> with this daemon's filesystem
+          authority. It is not a
           sandbox.{" "}
           <Tooltip label="Switch off workflow check commands everywhere">
             <button type="button" className="settings-link" onClick={disarmChecks}>

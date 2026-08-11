@@ -9,7 +9,7 @@ import {
 } from "@shared/session.ts";
 import { backlogIndex, declaredBlockers, deadBlockersFor } from "@shared/backlog.ts";
 import { api } from "../lib/api.ts";
-import { repoLeaf, shortenCwd } from "../lib/format.ts";
+import { repoLeaf } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import {
   AgentDot,
@@ -20,6 +20,7 @@ import {
   ScheduleSwitch,
 } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 function BacklogReportRow({
@@ -108,7 +109,7 @@ function BacklogReportRow({
         </span>
         <span className="report-line report-line-sub">
           <LabelChips labels={task.labels} max={3} />
-          <span className="report-sub mono">{shortenCwd(task.repoRoot)}</span>
+          <RepositoryName path={task.repoRoot} className="report-sub mono" />
           {/* The rest of the repo set, named rather than counted: this row has the width
               the board card does not, and the thing an operator is deciding here is whether
               a backlog item touches a repo they care about. Absent entirely for a

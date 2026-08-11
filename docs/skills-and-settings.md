@@ -297,6 +297,11 @@ radius first (Foreman, Workflows), then GitHub (Inspector, YOLO).
   first, so a typo is refused) stages an empty row and grants **nothing** - every cell starts
   off, one deliberate click each. A staged, ungranted repo is remembered per machine so it
   survives a reload before you come back to grant it.
+- **Repository labels use directory names.** Read-only repository labels normally show only
+  the final directory name; hover the label to see its complete path. If a Trust warning names
+  two repositories with the same directory name, it shows their full paths in the warning so
+  the entries remain distinguishable. Repository inputs keep the full path because that is the
+  value being edited.
 - **Worktrees count too.** A grant names the **repo**, so a session in any worktree of a
   granted repo is covered, wherever that worktree lives on disk.
 - **The blind spot is visible.** If YOLO may merge in a repo the Inspector may not review,

@@ -41,8 +41,8 @@ import {
   type DispatchDraft,
 } from "../lib/task-draft.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
-import { repoLeaf } from "../lib/format.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
+import { RepositoryName } from "./RepositoryName.tsx";
 import {
   AttachmentStrip,
   readyAttachments,
@@ -1252,9 +1252,7 @@ function DispatchModal({
               {/* The full path through the app's own tooltip, never a native `title` -
                   `tooltip-coverage.test.ts` enforces that, and it is what makes the
                   shortened chip readable without a browser-styled box. */}
-              <Tooltip label={root}>
-                <span className="repo-chip-name">{repoLeaf(root)}</span>
-              </Tooltip>
+              <RepositoryName path={root} className="repo-chip-name" />
               <Tooltip label="Detach this repo">
                 <button
                   type="button"
@@ -1337,8 +1335,8 @@ function DispatchModal({
       )}
       {collidingRepo !== null && (
         <span className="dispatch-workflow-warning">
-          {repoLeaf(collidingRepo)} is named twice. Detach it, or point the Repo field at a
-          different repo.
+          <RepositoryName path={collidingRepo} /> is named twice. Detach it, or point the Repo
+          field at a different repo.
         </span>
       )}
     </label>

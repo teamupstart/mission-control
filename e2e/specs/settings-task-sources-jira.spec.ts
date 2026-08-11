@@ -48,9 +48,22 @@ const EVIDENCE = artifactsDir("jira-task-source");
  * would rewrite the binaries for no added signal. Inside the regression rather than a staged
  * capture spec, so each frame is of a run whose assertions passed.
  */
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(
+  page: Page,
+  name: string,
+  { preserveHover = false }: { preserveHover?: boolean } = {},
+): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
+  if (preserveHover) {
+    // This capture is the tooltip itself. Moving the pointer or focus first would dismiss
+    // the exact visual state the surrounding assertions just proved was present.
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+    // oxlint-disable-next-line no-console
+    console.log(`CAPTURED e2e/.artifacts/jira-task-source/${name}.png`);
+    return;
+  }
   // Off every control, pointer AND focus: `Tooltip` opens on either, and a bubble over the
   // field group would be the one thing in the frame that is not what the spec is about.
   await page.mouse.move(0, 0);
@@ -81,6 +94,17 @@ test("a Jira source is addable from the panel, arrives off, and keeps its filter
 
   // Off, always: adding a source is configuration and turning it on is consent.
   await expect(page.getByRole("checkbox", { name: "Sweep Jira on a schedule" })).not.toBeChecked();
+
+  // Compacting the repository name must not cost the row the action and health description
+  // it already carried. The full path is appended to that description and painted on hover.
+  const sourceRow = page
+    .getByRole("list", { name: "Configured task sources" })
+    .getByRole("button");
+  const sourceDescription = `Open Jira - paused - ${daemon.repo}`;
+  await expect(sourceRow).toHaveAccessibleDescription(sourceDescription);
+  await sourceRow.hover();
+  await expect(page.locator(".tooltip")).toHaveText(sourceDescription);
+  await shoot(page, "task-source-row-tooltip", { preserveHover: true });
 
   // The Jira field group, and the shipped site default reaching the operator.
   await expect(page.getByLabel("Jira site")).toHaveValue("upstartnetwork.atlassian.net");

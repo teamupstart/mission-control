@@ -275,9 +275,12 @@ function renderDetail(over: Partial<EnsembleRunDetailResponse> = {}): string {
 }
 
 test("the generic detail renders the header, members with reported-vs-observed, and the timeline", () => {
-  const html = renderDetail();
+  const repoRoot = "/Users/dev/work/parser";
+  const html = renderDetail({ run: { ...run, repoRoot } });
   assert.match(html, /Fix the parser/);
   assert.match(html, /Best of N v1/);
+  assert.match(html, /<code><span[^>]*>parser<\/span>/);
+  assert.match(html, /class="tt-desc">\/Users\/dev\/work\/parser<\/span>/);
   assert.match(html, /Awaiting decision/);
   assert.match(html, /Pinned base/);
   assert.match(html, /abcdef0123/); // short base sha

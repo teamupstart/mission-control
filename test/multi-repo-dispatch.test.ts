@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { TaskRepoEntry } from "@shared/types.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 
 // Dispatching a task that attaches secondary repositories, and the two rules that make it
 // safe rather than merely working:
@@ -198,4 +199,47 @@ test("pool pins name every worktree a task holds, and only real ones", () => {
     [...poolPins(registry).taskWorktrees].sort(),
     ["/wt/pins-multi", "/wt/pins-multi-1", "/wt/pins-multi-2", "/wt/pins-solo"],
   );
+});
+
+// ---- the embedded-runtime guard --------------------------------------------------------
+
+test("a driver that cannot carry the grant refuses the dispatch instead of dropping repos", async () => {
+  // `MultiRepoDispatchSpec.sdk` enforced rather than merely declared. Both shipped harnesses
+  // answer true, so this drives the guard through the injectable runtime resolver against a
+  // harness whose spec says false - the state a future driver would arrive in.
+  //
+  // What must NOT happen is the silent version: an embedded session that starts healthily
+  // holding an intent naming repositories it cannot write to. And it must not quietly fall
+  // back to the terminal runtime either; the operator chose that runtime.
+  const api = mkRepo("sdkguard-api");
+  const web = mkRepo("sdkguard-web");
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "sdkguard",
+      status: "dispatching",
+      // pi is the harness with no `multiRepoDispatch` at all, which is the same refusal for
+      // a stricter reason - it cannot carry the grant on EITHER runtime.
+      agent: "pi",
+      repoRoot: api,
+      extraRepos: [entry(web)],
+    }),
+  );
+  const dispatcher = new Dispatcher(registry, undefined, { resolveRuntime: () => "sdk" });
+
+  await dispatcher.dispatch("sdkguard");
+
+  const failed = registry.getTask("sdkguard");
+  assert.equal(failed?.status, "failed");
+  assert.match(failed?.error ?? "", /cannot be given write access/);
+  // Refused BEFORE provisioning, which is the whole reason the runtime is resolved early:
+  // the guard costs an error message rather than two worktrees that have to be unwound.
+  assert.equal(existsSync(join(WORKTREES_DIR, "sdkguard")), false);
+  assert.equal(existsSync(join(WORKTREES_DIR, "sdkguard-1")), false);
+});
+
+test("a single-repo task on the same harness and runtime is not touched by the guard", () => {
+  // The guard is scoped to tasks that actually attach repos, so it cannot become a general
+  // restriction on which harnesses may run embedded.
+  assert.equal(capabilitiesFor("pi").multiRepoDispatch, null);
 });

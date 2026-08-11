@@ -40,17 +40,21 @@ One dispatch then produces **one** session, not one per repo:
 - Its working directory is the **primary** repo's worktree. Every existing correlation -
   the task/session join, hook and MCP ingest, the report panel - is unchanged, because the
   primary repo stays the task's `repoRoot`.
-- Each attached repo gets its **own worktree**, provisioned the same way the primary's is
-  (a pooled tree where the repo opted into treehouse, else a plain `git worktree`), on the
-  **same branch name**. One branch across the set is what makes the resulting pull requests
-  legible as a single piece of work.
+- Each attached repo gets its **own worktree**, provisioned the same way the primary's is:
+  a pooled tree where the repo opted into treehouse, else a plain `git worktree`. The plain
+  worktrees are all cut on the **same branch name**, which is what makes the resulting pull
+  requests legible as a single piece of work. A pooled tree is an exception worth knowing
+  about: it arrives on whatever branch its lease was already standing on, and Mission Control
+  does not rename it. So a task mixing a pooled repo with a plain one can genuinely hold two
+  branch names - which is why the manifest below states each repo's branch individually and
+  says plainly when they differ, rather than promising one shared name.
 - The agent is granted **write access** to all of them at launch: Claude through
   `--add-dir` (and the Agent SDK's equivalent), Codex through its sandbox writable roots.
   The dispatch modal offers the control only for a harness that can hold write access
   outside its own working directory, and the daemon refuses the request for one that
   cannot. Pi does not support it today.
 - The task's intent is **prefixed with a manifest**: where each repo's worktree is, which
-  one is primary, the shared branch name, and two standing instructions - read each repo's
+  one is primary, the branch each is on, and two standing instructions - read each repo's
   own `AGENTS.md`/`CLAUDE.md` before touching it (only the primary's loads automatically),
   and open one pull request per repository actually changed.
 

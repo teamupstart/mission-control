@@ -239,9 +239,11 @@ test("a multi-repo task's intent is prefixed with where each repo lives and what
   // Where each repo actually is - nothing in the primary worktree names the others.
   assert.match(manifest, /\/wt\/t1 - PRIMARY/);
   assert.match(manifest, /\/wt\/t1-1 - from \/repo\/web/);
-  // The branch, because it is the same in every repo and an agent that invented its own
-  // would break the one thing that makes the pull requests legible as a single task.
-  assert.match(manifest, /harness\/ship-it-abc123/);
+  // The branch, because it is the same in every repo here and an agent that invented its
+  // own would break the one thing that makes the pull requests legible as a single task.
+  // Asserted as the SHARED-branch sentence rather than a bare substring, so the case below -
+  // where the names genuinely differ - cannot pass this one by accident.
+  assert.match(manifest, /Every one of them is on the branch harness\/ship-it-abc123\./);
   // The two standing instructions the agent cannot infer from inside its cwd.
   assert.match(manifest, /AGENTS\.md \/ CLAUDE\.md/);
   assert.match(manifest, /ONE pull request per repository/);
@@ -345,4 +347,58 @@ test("the wire shape defaults to no attached repos, and an edit to them is provi
     isAnnotationOnlyUpdate(UpdateTaskSchema.parse({ priority: "high", extraRepoRoots: [] })),
     false,
   );
+});
+
+test("a set whose branches differ is told so, per repo, instead of promised one name", () => {
+  // The failure this closes. The git fallback cuts one branch name in every repo, but a
+  // treehouse-pooled repo arrives on whatever branch its LEASE was already standing on and
+  // nothing renames it - so a mixed set really can hold two names. A manifest that repeated
+  // the design's intent ("every one of them is on the branch X") would send the agent to
+  // push a branch that does not exist in the secondary.
+  const manifest = intentWithRepoManifest({
+    ...BASE_TASK,
+    branch: "harness/ship-it-abc123",
+    extraRepos: [
+      {
+        repoRoot: "/repo/web",
+        worktreePath: "/wt/t1-1",
+        // What a pool lease hands back: the tree's own branch, not ours.
+        branch: "pool/tree-7",
+        provider: "treehouse",
+        baseSha: "b".repeat(40),
+        prUrl: null,
+        prState: null,
+        mergedAt: null,
+      },
+    ],
+  });
+
+  // Each repo's real branch, on its own line.
+  assert.match(manifest, /\/wt\/t1 - PRIMARY[^\n]*on branch harness\/ship-it-abc123/);
+  assert.match(manifest, /\/wt\/t1-1 - from \/repo\/web, on branch pool\/tree-7/);
+  // And no claim of a shared one.
+  assert.doesNotMatch(manifest, /Every one of them is on the branch/);
+  assert.match(manifest, /NOT all on the same branch/);
+});
+
+test("a repo standing on no branch at all is described without inventing one", () => {
+  // A detached HEAD reads as null here, and "on branch null" would be worse than silence.
+  const manifest = intentWithRepoManifest({
+    ...BASE_TASK,
+    branch: null,
+    extraRepos: [
+      {
+        repoRoot: "/repo/web",
+        worktreePath: "/wt/t1-1",
+        branch: null,
+        provider: "git",
+        baseSha: null,
+        prUrl: null,
+        prState: null,
+        mergedAt: null,
+      },
+    ],
+  });
+  assert.doesNotMatch(manifest, /on branch null/);
+  assert.doesNotMatch(manifest, /Every one of them is on the branch/);
 });

@@ -306,6 +306,60 @@ test("a free agent in the right repo is preferred over cutting a new worktree", 
   assert.equal(a.kind === "assign" ? a.session.id : "", free.id);
 });
 
+test("a multi-repo task is never offered for assignment, and does not park the tick", () => {
+  // The livelock this closes. `TaskManager.assign` always refuses a task with attached
+  // repos (`scope: "task"`), and that refusal teaches the tick nothing: the worker clears
+  // the task from `recentlyActed` on the 409, and `assignRefusalParksSession("task")` is
+  // false so the session is not parked either. Offering the pair once means offering it
+  // every tick, forever.
+  //
+  // Worse than looping on itself: the assign search RETURNS on its first match, so the tick
+  // would never reach the dispatch fallback - one such task would park the whole backlog.
+  // Both halves are asserted here, which is why the free session and the second task are in
+  // the input at all.
+  const spanning = mkTask({ extraRepos: [{
+    repoRoot: "/repo/web",
+    worktreePath: null,
+    branch: null,
+    provider: null,
+    baseSha: null,
+    prUrl: null,
+    prState: null,
+    mergedAt: null,
+  }] });
+  const free = mkSession();
+  const a = decide({ tasks: [spanning], sessions: [free], plan: mkPlan([[spanning.id, []]]) });
+
+  // Dispatch, not assign: the one path that can actually start it.
+  assert.equal(a.kind, "dispatch");
+  assert.equal(a.kind === "dispatch" ? a.task.id : "", spanning.id);
+});
+
+test("a multi-repo task at the head does not block an assignable item behind it", () => {
+  // The blast radius half, stated separately because it is the expensive one: the head is
+  // unassignable by construction, and the tick still has to find the item that is not.
+  const spanning = mkTask({ extraRepos: [{
+    repoRoot: "/repo/web",
+    worktreePath: null,
+    branch: null,
+    provider: null,
+    baseSha: null,
+    prUrl: null,
+    prState: null,
+    mergedAt: null,
+  }] });
+  const ordinary = mkTask();
+  const free = mkSession();
+  const a = decide({
+    tasks: [spanning, ordinary],
+    sessions: [free],
+    plan: mkPlan([[spanning.id, []], [ordinary.id, []]]),
+  });
+
+  assert.equal(a.kind, "assign");
+  assert.equal(a.kind === "assign" ? a.task.id : "", ordinary.id);
+});
+
 test("assignment still happens AT the ceiling - it consumes no new session", () => {
   const t = mkTask();
   const free = mkSession();

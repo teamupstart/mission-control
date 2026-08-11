@@ -173,6 +173,31 @@ export class Dispatcher {
       // terminal home and an agent that has to be torn down again.
       const baseSha = options.baseSha ? await verifyPinnedBase(task.repoRoot, options.baseSha) : null;
 
+      // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
+      // the fork further down. Resolved here rather than after provisioning so the guard can
+      // refuse before any worktree exists - the same ordering, and the same reason, as the
+      // pinned-base check above. Reading a toggle flipped mid-batch still reaches the next
+      // session rather than the next restart, which is all the later position bought.
+      const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
+      // The `sdk` half of `multiRepoDispatch`, enforced rather than merely declared. A
+      // harness whose EMBEDDED driver cannot carry the write grant must not be dispatched
+      // embedded with secondary repos attached: it would start a healthy-looking session
+      // holding an intent that names repositories it cannot write to, which is exactly the
+      // silent failure the flag exists to name. Refused, never quietly downgraded to the
+      // terminal runtime - the operator chose that runtime, and a session that took the
+      // other one is not what they asked for (`dispatchEmbedded` refuses a missing
+      // supervisor on the same grounds).
+      if (runtime === "sdk" && task.extraRepos.length > 0) {
+        const spec = capabilitiesFor(task.agent).multiRepoDispatch;
+        if (!spec?.sdk) {
+          throw new Error(
+            `${task.agent}'s embedded driver cannot be given write access to this task's ` +
+              `other ${task.extraRepos.length === 1 ? "repo" : "repos"} - dispatch it on the ` +
+              `terminal runtime, or detach them`,
+          );
+        }
+      }
+
       // One worktree per attached repo, primary first. `provisionAll` is all-or-nothing:
       // a failure part-way through returns every tree it had already taken, provider-aware,
       // and rethrows - so a partial dispatch never leaves leased trees nothing will ever
@@ -224,14 +249,13 @@ export class Dispatcher {
       // for why it is passed here rather than written onto the task row.
       const model = resolveDispatchModel(task.agent, task.model, options.defaultModel ?? null);
       const effort = resolveDispatchEffort(task.agent, task.effort);
-      // Which of the two runtimes this launch takes, resolved here for the same reason the
-      // model and effort are: a toggle flipped mid-batch reaches the next session rather
-      // than the next restart. Everything above this line is identical on both paths -
-      // provisioning a worktree is not a runtime question. After the SDK return, EVERYTHING
-      // below is terminal-branch-only: the argv and ask-channel redirect, terminal home,
-      // `waitForSessionAtCwd`, `awaitReady`, and
+      // The fork. `runtime` was resolved before provisioning (see the multi-repo guard up
+      // there) but nothing between here and there depends on it: provisioning a worktree is
+      // not a runtime question, and everything above this line is identical on both paths.
+      // After the SDK return, EVERYTHING below is terminal-branch-only: the argv and
+      // ask-channel redirect, terminal home, `waitForSessionAtCwd`, `awaitReady`, and
       // `deliverIntent` exist because pane launch and delivery cannot be acknowledged.
-      if ((this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent) === "sdk") {
+      if (runtime === "sdk") {
         await this.dispatchEmbedded(
           taskId,
           task,
@@ -1001,6 +1025,10 @@ export async function provisionWorktree(
       }
       return {
         path,
+        // Whatever the leased tree is standing on - a pool lease is not given a branch of
+        // our choosing, and it is not renamed here. That is why a multi-repo task's branch
+        // names are read back from the provisioned entries rather than assumed to be the
+        // git fallback's `harness/<slug>-<shortId>`; see `intentWithRepoManifest`.
         branch: await currentBranch(path),
         provider: "treehouse",
         baseSha: baseSha ?? (await headCommit(path)),
@@ -1028,6 +1056,12 @@ export async function provisionWorktree(
   // Deliberately the SAME branch name in every repo the task touches. They live in
   // different repositories, so they cannot collide, and one name across the set is what
   // makes the resulting pull requests legible as one piece of work.
+  //
+  // This arm is the only one that can promise it. The pool arm above reports the branch its
+  // LEASE came on and does not rename it - renaming there would change what a single-repo
+  // pooled dispatch does, which this phase leaves untouched - so a set mixing the two can
+  // hold two names. `intentWithRepoManifest` reads the provisioned branches rather than
+  // assuming this one, and says so when they differ.
   const branch = `harness/${slug}-${shortId}`;
   const add = await run(
     "git",
@@ -1275,24 +1309,50 @@ async function teardownOneWorktree(
  *    single pull request in the one it happens to be standing in, leaving the rest of the
  *    work on unpushed local branches.
  *
- * The branch name is stated because it is the SAME in every repo, which is what makes the
- * resulting pull requests legible as one task, and an agent that invents its own would
- * break that. Repos with no worktree are omitted rather than listed as unavailable: this
- * text is delivered after provisioning, so an entry without one is a bug being reported to
- * the wrong audience.
+ * Each repo's branch is stated PER REPO and read from what was actually provisioned. The
+ * design's intent is one shared name across the set - that is what makes the resulting pull
+ * requests legible as one task - and the git fallback delivers it, but a treehouse-pooled
+ * repo arrives on whatever branch its lease was already on. Claiming a shared name the
+ * secondary does not have would send the agent to push a branch that does not exist there,
+ * so the manifest reports the set it got and says plainly when they differ.
+ *
+ * Repos with no worktree are omitted rather than listed as unavailable: this text is
+ * delivered after provisioning, so an entry without one is a bug being reported to the
+ * wrong audience.
  */
 export function intentWithRepoManifest(task: Task): string {
   const attached = task.extraRepos.filter((entry) => entry.worktreePath !== null);
   if (attached.length === 0) return task.intent;
+  const branchOf = (branch: string | null): string => (branch ? `, on branch ${branch}` : "");
+  // Whether the whole set really did land on one branch name. The git fallback cuts
+  // `harness/<slug>-<shortId>` in every repo, but a treehouse-pooled repo does NOT: its
+  // lease arrives on whatever branch the pooled tree was already standing on, and nothing
+  // in provisioning renames it (doing so would change single-repo pooled dispatch, which
+  // this phase leaves byte-identical). So a mixed set can genuinely hold two names, and
+  // this is READ from what was provisioned rather than asserted from the design's intent -
+  // a manifest that promised one shared branch would send the agent to push a branch that
+  // does not exist in the secondary.
+  const branches = [task.branch, ...attached.map((entry) => entry.branch)];
+  const shared = task.branch !== null && branches.every((b) => b === task.branch)
+    ? task.branch
+    : null;
   const lines = [
     "## Repositories for this task",
     "",
     "This task spans several repositories. You have write access to all of them.",
     "",
-    `- ${task.worktreePath ?? task.repoRoot} - PRIMARY (your working directory), from ${task.repoRoot}`,
-    ...attached.map((entry) => `- ${entry.worktreePath} - from ${entry.repoRoot}`),
+    `- ${task.worktreePath ?? task.repoRoot} - PRIMARY (your working directory), from ${task.repoRoot}${branchOf(task.branch)}`,
+    ...attached.map(
+      (entry) => `- ${entry.worktreePath} - from ${entry.repoRoot}${branchOf(entry.branch)}`,
+    ),
     "",
-    ...(task.branch ? [`Every one of them is on the branch \`${task.branch}\`.`, ""] : []),
+    ...(shared
+      ? [`Every one of them is on the branch ${shared}.`, ""]
+      : [
+          "They are NOT all on the same branch - each repo's branch is listed above. Work on the",
+          "branch each repo is already checked out on; do not assume one shared name.",
+          "",
+        ]),
     "Before you touch a repository, read its own AGENTS.md / CLAUDE.md - only the primary's",
     "loads automatically, so the others' conventions are invisible until you read them.",
     "",

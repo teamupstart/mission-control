@@ -1186,12 +1186,17 @@ export class WorkflowManager {
     if (!prepared.ok) return prepared;
     const { lead, siblings } = prepared.value;
     const value = { run: lead.run, submission: lead.submission };
+    // BEFORE the lead's idempotency is consulted, and never gated on it. `idempotent` here is
+    // the LEAD's own answer and says nothing about the siblings, which are only ever runs this
+    // call freshly created - `prepareSubmit` skips an idempotent non-lead entirely. Returning
+    // early on the lead therefore stranded a genuinely new sibling run in `capturing` for
+    // ever: durable, published, gating its repository's pull request, and never captured.
+    this.activateSiblingRuns(siblings);
     if (prepared.idempotent) return { ok: true, value, idempotent: true };
     // The lead is awaited, exactly as the one run always was, so a caller still gets an
     // activated run back. Siblings capture in the background: they are serialized behind the
     // lead by the conversation's capture lock anyway, and holding an operator's request open
     // for one git read per attached repository buys nothing.
-    this.activateSiblingRuns(siblings);
     return this.captureAndActivate(lead.binding, lead.run, lead.submission);
   }
 
@@ -1210,11 +1215,13 @@ export class WorkflowManager {
     if (!prepared.ok) return prepared;
     const { lead, siblings } = prepared.value;
     const value = { run: lead.run, submission: lead.submission };
+    // Before the lead's idempotency is consulted, for the reason `submit` gives above: these
+    // are freshly created runs whatever the lead's own answer was.
+    this.activateSiblingRuns(siblings);
     if (prepared.idempotent) return { ok: true, value, idempotent: true };
     this.trackBackgroundTask(
       this.captureAndActivate(lead.binding, lead.run, lead.submission).then(() => undefined),
     );
-    this.activateSiblingRuns(siblings);
     return { ok: true, value };
   }
 

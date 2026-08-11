@@ -88,6 +88,12 @@ function snapshot(cwd: string, headSha: string): WorkflowContextSnapshot {
 interface SeedOptions {
   /** Attached repos on the task. Empty means a single-repo task. */
   extras?: TaskRepoEntry[];
+  /**
+   * Attached repos named by root, each given a worktree of its own under this seed's slot.
+   * The ergonomic form for a case that needs more than one, since the worktree paths are
+   * derived from a serial the caller cannot know before seeding.
+   */
+  extraRoots?: string[];
   /** Observed worktree heads, keyed by worktree path. Absent means "nothing has looked". */
   heads?: Record<string, string>;
   /** Whether the task exists at all - a bound conversation with no task is the manual case. */
@@ -190,7 +196,10 @@ function seed(over: SeedOptions = {}) {
     env: { tmuxPane: `%${serial}` },
   });
 
-  const extras = (over.extras ?? [entry({ worktreePath: secondCwd })]);
+  const extras = over.extraRoots
+    ? over.extraRoots.map((repoRoot, index) =>
+        entry({ repoRoot, worktreePath: `/wt/${suffix}-${index + 1}` }))
+    : (over.extras ?? [entry({ worktreePath: secondCwd })]);
   if (over.withTask !== false) {
     registry.upsertTask(mkTask({
       id: taskId,
@@ -272,6 +281,8 @@ function seed(over: SeedOptions = {}) {
     taskId,
     primaryCwd,
     secondCwd,
+    /** The worktree of the nth attached repo, in attach order. */
+    extraCwd: (index: number) => `/wt/${suffix}-${index + 1}`,
     versionId,
     captures,
   };
@@ -478,6 +489,60 @@ test("submitting to an attached repo's own binding reviews that repo and nothing
   assert.equal(submitted.ok, true);
   await f.manager.stop();
   assert.deepEqual(reviewedRepos(f), [SECOND_ROOT]);
+});
+
+test("a retry that finds a NEW repo changed still captures it, idempotent lead or not", async () => {
+  // The lead's idempotency is the LEAD's answer and says nothing about its siblings, which are
+  // only ever runs this call freshly created. Returning early on it stranded a genuinely new
+  // sibling run in `capturing` for ever: durable, published, gating its repository's pull
+  // request, and never captured.
+  //
+  // Reaching it takes three repositories, and the reason is worth stating. `prepareSubmit`
+  // short-circuits at the top on the ANCHOR's trigger key, so a lead that IS the anchor never
+  // gets as far as the per-target idempotency. The lead is a secondary only when the primary
+  // is untouched - and only then can a replayed lead sit beside a newly changed sibling.
+  const f = seed({ extraRoots: [SECOND_ROOT, "/third"] });
+  const secondCwd = f.extraCwd(0);
+  const thirdCwd = f.extraCwd(1);
+  // First turn: the primary is untouched, so the FIRST attached repo leads.
+  f.registry.recordWorktreeHeads(new Map([
+    [f.primaryCwd, PRIMARY_BASE],
+    [secondCwd, MOVED],
+    [thirdCwd, SECOND_BASE],
+  ]));
+  const first = f.manager.enqueueSubmit(f.anchor.id, { requestId: "retry-me" });
+  assert.equal(first.ok, true);
+  await f.manager.stop();
+  assert.deepEqual(reviewedRepos(f), [SECOND_ROOT]);
+
+  // That review finishes, so its binding has no ACTIVE run - but its submission, and so its
+  // trigger key, are still there. That is what makes the retry read as a replay rather than
+  // as a run already in flight.
+  const leadRun = f.store.listRuns()[0]!;
+  f.store.setRunState(leadRun.id, "completed", "complete", null, Date.now());
+
+  // The third repository has changed by the time the retry lands.
+  f.registry.recordWorktreeHeads(new Map([
+    [f.primaryCwd, PRIMARY_BASE],
+    [secondCwd, MOVED],
+    [thirdCwd, MOVED],
+  ]));
+  const retry = f.manager.enqueueSubmit(f.anchor.id, { requestId: "retry-me" });
+  assert.equal(retry.ok, true);
+  assert.equal(retry.ok === true && retry.idempotent, true, "the lead really is the replayed one");
+  await f.manager.stop();
+
+  // The newly changed repository got a run, and that run was CAPTURED rather than left behind.
+  assert.deepEqual(reviewedRepos(f), [SECOND_ROOT, "/third"]);
+  const third = f.store.activeBindingForNoteRepo(f.agentSessionId, "/third");
+  assert.ok(third, "the newly changed repo got its binding");
+  const thirdRun = f.store.activeRunForBinding(third.id);
+  assert.ok(thirdRun, "the newly changed repo got its run");
+  assert.notEqual(
+    thirdRun.status,
+    "capturing",
+    "a run nobody captures never leaves `capturing`, and gates its repo's pull request for ever",
+  );
 });
 
 // ---- the Foreman completion boundary ----------------------------------------------------

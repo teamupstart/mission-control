@@ -133,6 +133,16 @@ export interface ClaudeSdkQueryOptions {
    * parameter for this. Launch is the only moment it can be declared.
    */
   allowDangerouslySkipPermissions?: boolean;
+  /**
+   * Absolute paths this session may work in BESIDES `cwd` - the secondary worktrees of a
+   * multi-repo task. Absent on an ordinary launch rather than sent empty, so a single-repo
+   * session's options object is exactly what it was before this existed.
+   *
+   * Launch-time only. The vendor's runtime `addDirectories` control request requires its
+   * argument to be a strict subdirectory of `cwd` or of a directory named here, so a
+   * sibling checkout cannot be added to a session that did not start with it.
+   */
+  additionalDirectories?: string[];
   resume?: string;
   mcpServers?: Record<string, unknown>;
   canUseTool: (

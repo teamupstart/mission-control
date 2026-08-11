@@ -5,7 +5,7 @@
 import { repoAllowlisted } from "./allowlist.ts";
 import type { EpisodeAuthor, NoteDisposition } from "./types.ts";
 
-export { cwdAllowlisted } from "./allowlist.ts";
+export { cwdAllowlisted, taskReposAllowlisted } from "./allowlist.ts";
 
 /**
  * Whether a note is one the human still owes an answer to.

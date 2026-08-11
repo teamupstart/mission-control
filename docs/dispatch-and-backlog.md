@@ -29,6 +29,48 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
 If either launch path cannot prove it started as requested, dispatch fails instead of
 calling an unverified task running.
 
+## Attaching more than one repository
+
+Some work does not fit in one repo: a contract change and its consumers, a lockstep API
+migration, an integration that has to land on both sides at once. **+ Add another repo**
+under the Repo field attaches secondary repositories to the task.
+
+One dispatch then produces **one** session, not one per repo:
+
+- Its working directory is the **primary** repo's worktree. Every existing correlation -
+  the task/session join, hook and MCP ingest, the report panel - is unchanged, because the
+  primary repo stays the task's `repoRoot`.
+- Each attached repo gets its **own worktree**, provisioned the same way the primary's is
+  (a pooled tree where the repo opted into treehouse, else a plain `git worktree`), on the
+  **same branch name**. One branch across the set is what makes the resulting pull requests
+  legible as a single piece of work.
+- The agent is granted **write access** to all of them at launch: Claude through
+  `--add-dir` (and the Agent SDK's equivalent), Codex through its sandbox writable roots.
+  The dispatch modal offers the control only for a harness that can hold write access
+  outside its own working directory, and the daemon refuses the request for one that
+  cannot. Pi does not support it today.
+- The task's intent is **prefixed with a manifest**: where each repo's worktree is, which
+  one is primary, the shared branch name, and two standing instructions - read each repo's
+  own `AGENTS.md`/`CLAUDE.md` before touching it (only the primary's loads automatically),
+  and open one pull request per repository actually changed.
+
+Provisioning is all-or-nothing. If any repo's worktree cannot be created, the ones already
+taken are handed back - pooled trees returned to their pools, plain worktrees removed - and
+the dispatch fails rather than starting an agent with half its repositories.
+
+Two consequences worth knowing:
+
+- **Foreman needs every repo allowlisted.** A multi-repo task is schedulable by the backlog
+  autopilot only when *all* of its repositories are in the Foreman allowlist, not just the
+  primary. Consent for one project is not consent for another.
+- **Multi-repo tasks are dispatch-only.** They cannot be dragged onto an agent that is
+  already running. The extra worktrees, and the agent's write access to them, are granted
+  when a session launches, and neither harness can widen a running session's write scope.
+
+Pull request tracking, review workflows and completion still behave as they do for a
+single-repo task in this release: the session's first pull request is the one Mission
+Control tracks.
+
 **Model** starts on the default configured for the chosen harness (see [Default
 model](#default-model)) and names it, so you can see what the task will run on without
 opening Settings. Pick a different one to override it for this task alone - more

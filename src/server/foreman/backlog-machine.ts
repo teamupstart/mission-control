@@ -1,7 +1,7 @@
 import type { AssignRefusalScope, BacklogPlan, Session, Task } from "@shared/types.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
-import { cwdAllowlisted, foremanAllowlisted } from "@shared/foreman.ts";
+import { cwdAllowlisted, foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
 import { hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
 
@@ -313,8 +313,8 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   // `foremanAllowlisted`, because a backlog task has no cwd yet - it has only the repo
   // it will be cut FROM, which is the exact thing the allowlist names. (The worktree it
   // eventually runs in is covered by the other half of `foremanAllowlisted` once it is a
-  // live session.)
-  const allowed = backlog.filter((t) => cwdAllowlisted(t.repoRoot, cfg.allowlist));
+  // live session.) EVERY repo, not just the primary - see `taskReposAllowlisted`.
+  const allowed = backlog.filter((t) => taskReposAllowlisted(t, cfg.allowlist));
 
   // The allowlist is answered BEFORE dependencies, and the order is the whole point: it
   // is the coarser fact, and it is the only one of the two the operator can act on
@@ -327,7 +327,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     return { kind: "none", why: "no backlog item is in a repo Foreman is trusted to act in" };
   }
 
-  const ready = readyBacklog(tasks, plan).filter((t) => cwdAllowlisted(t.repoRoot, cfg.allowlist));
+  const ready = readyBacklog(tasks, plan).filter((t) => taskReposAllowlisted(t, cfg.allowlist));
   if (ready.length === 0) {
     // Counted over the ALLOWED items, so the number matches the sentence: an item in an
     // untrusted repo is not "blocked", it is out of scope, and including it would have

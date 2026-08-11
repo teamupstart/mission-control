@@ -212,6 +212,74 @@ export type TaskRepoRoot = { ok: true; repoRoot: string } | { ok: false; error: 
  * human just typed, and answering that with a null would report "not a git repository"
  * about a checkout that plainly is one.
  */
+/** A task's whole repo set, resolved: the primary plus its secondaries in request order. */
+export type TaskRepoSet =
+  | { ok: true; repoRoot: string; extraRepoRoots: string[] }
+  | { ok: false; error: string };
+
+/**
+ * Resolve a task's PRIMARY repo together with its secondaries, as one answer.
+ *
+ * The single door for a multi-repo task, for the reason `resolveTaskRepoRoot` is the door
+ * for a single one: the three refusals below are only checkable once every entry has been
+ * walked back to its main checkout, so a caller resolving the primary and then looping the
+ * extras itself would compare typed paths and let two spellings of one repo through.
+ *
+ * Refuses, in order:
+ *
+ *  - anything `resolveTaskRepoRoot` refuses, per entry, naming that entry;
+ *  - a secondary that resolves to the primary - one repo attached twice is a task that
+ *    would provision two worktrees of the same checkout on one branch name;
+ *  - a duplicate among the secondaries, for the same reason.
+ *
+ * Order is preserved and is the entry's persisted `position`, which the git fallback
+ * derives its worktree path from. Resolution is sequential rather than concurrent: each
+ * entry is a couple of git subprocesses, the cap is small, and a stable first-failure
+ * message is worth more here than the latency.
+ */
+export async function resolveTaskRepoSet(
+  primary: string,
+  extras: readonly string[],
+): Promise<TaskRepoSet> {
+  const resolvedPrimary = await resolveTaskRepoRoot(primary);
+  if (!resolvedPrimary.ok) return resolvedPrimary;
+  const extraRepoRoots = await resolveTaskExtraRepoRoots(resolvedPrimary.repoRoot, extras);
+  if (!extraRepoRoots.ok) return extraRepoRoots;
+  return { ok: true, repoRoot: resolvedPrimary.repoRoot, extraRepoRoots: extraRepoRoots.repoRoots };
+}
+
+/**
+ * The secondaries half of `resolveTaskRepoSet`, against a primary that is ALREADY resolved.
+ *
+ * Split out for the task-edit route, which resolves the primary only when the edit actually
+ * moves it: re-resolving an untouched root there would make a task uneditable the moment
+ * its repo directory goes away, under an error about git that names neither the field the
+ * operator changed nor the task.
+ */
+export async function resolveTaskExtraRepoRoots(
+  repoRoot: string,
+  extras: readonly string[],
+): Promise<{ ok: true; repoRoots: string[] } | { ok: false; error: string }> {
+  const repoRoots: string[] = [];
+  for (const entry of extras) {
+    const resolved = await resolveTaskRepoRoot(entry);
+    if (!resolved.ok) return resolved;
+    if (resolved.repoRoot === repoRoot) {
+      return {
+        ok: false,
+        error:
+          `${resolved.repoRoot} is already this task's primary repo - attach a different ` +
+          `repo, or make it the primary`,
+      };
+    }
+    if (repoRoots.includes(resolved.repoRoot)) {
+      return { ok: false, error: `${resolved.repoRoot} is attached twice` };
+    }
+    repoRoots.push(resolved.repoRoot);
+  }
+  return { ok: true, repoRoots };
+}
+
 export async function resolveTaskRepoRoot(p: string): Promise<TaskRepoRoot> {
   const repoRoot = await resolveRepoRoot(p);
   if (!repoRoot) return { ok: false, error: `not a git repository: ${p}` };

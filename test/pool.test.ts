@@ -615,7 +615,7 @@ test("poolRepos sweeps a treehouse repo the workspace scan alone can name", asyn
   // which inside a linked worktree names the worktree, not the pool's owner.
   const registry = {
     liveSessions: () => [],
-    listTasks: () => [{ repoRoot: linked }],
+    listTasks: () => [{ repoRoot: linked, extraRepos: [] }],
   } as unknown as Registry;
   const prev = process.env.MISSION_WORKSPACE_DIRS;
   process.env.MISSION_WORKSPACE_DIRS = ws;

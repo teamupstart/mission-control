@@ -7,6 +7,7 @@ import type {
   ThinkingLevel,
 } from "@shared/types.ts";
 import { opensPullRequest, pullRequestUrlIn } from "@shared/pr-command.mjs";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import type {
   SdkEvent,
@@ -1351,7 +1352,16 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       const args = opts.mcp
         ? (await import("../../mission-mcp.ts")).codexMissionMcpArgs(opts.mcp)
         : [];
-      const transport = await deps.connect(args, opts.cwd);
+      // The multi-repo write grant rides the SAME `-c` channel, from the same measured
+      // capability the terminal launch renders - `codex app-server` documents the identical
+      // `-c <key=value>` override flag. Reusing that spelling is what keeps a Codex session
+      // on the embedded runtime from being the one dispatch that silently cannot write to
+      // the secondary worktrees its intent names.
+      const extraDirArgs =
+        opts.extraDirs.length > 0
+          ? (capabilitiesFor("codex").multiRepoDispatch?.launchArgs(opts.extraDirs) ?? [])
+          : [];
+      const transport = await deps.connect([...args, ...extraDirArgs], opts.cwd);
       const config: LaunchConfig = {
         cwd: opts.cwd,
         model: opts.model,

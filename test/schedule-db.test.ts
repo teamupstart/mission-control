@@ -177,6 +177,8 @@ function mkTask(over: Partial<Task> = {}): Task {
     effort: "xhigh",
     source: { sourceId: "gh", externalId: "org/repo#1", url: "https://example.invalid/1" },
     repoRoot: "/repo",
+    baseSha: null,
+    extraRepos: [],
     worktreePath: "/wt/x",
     branch: "harness/x",
     provider: "git",

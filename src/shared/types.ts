@@ -1484,6 +1484,43 @@ export type TaskDependency =
       satisfiedAt: number | null;
     };
 
+/**
+ * One SECONDARY repository attached to a multi-repo task.
+ *
+ * The primary repo is never one of these. It stays on `Task`'s own scalars
+ * (`repoRoot`/`worktreePath`/`branch`/`provider`/`baseSha`), so every single-repo consumer
+ * keeps a meaningful value and a single-repo task carries an EMPTY `extraRepos` - the
+ * invariant the persisted `task_repos` table states as "zero rows".
+ *
+ * Order is the entry's persisted `position`, which is also the worktree slot the git
+ * fallback derives its path from. Nothing may renumber a provisioned entry without moving
+ * its tree: teardown and startup reconciliation read the recorded `worktreePath` rather
+ * than recomputing it.
+ *
+ * `prUrl`/`prState`/`mergedAt` are declared here and always null in this build. They are
+ * reserved deliberately rather than added later: the registry will project per-repo pull
+ * request state onto them, and declaring them now means the wire shape does not change
+ * under consumers when it starts being populated.
+ */
+export interface TaskRepoEntry {
+  /** Absolute path of the attached repo's main checkout, as `resolveTaskRepoRoot` returns it. */
+  repoRoot: string;
+  /** Worktree provisioned for this repo (realpath), or null before dispatch. */
+  worktreePath: string | null;
+  /** Branch cut in this repo. Deliberately the SAME name as the primary's. */
+  branch: string | null;
+  /** How this repo's worktree was provisioned, so teardown returns a lease vs removing a tree. */
+  provider: WorktreeProvider | null;
+  /** Full 40-character commit this repo's branch was cut at, recorded at provisioning time. */
+  baseSha: string | null;
+  /** Reserved for per-repo pull request tracking. Always null in this build. */
+  prUrl: string | null;
+  /** Reserved for per-repo pull request tracking. Always null in this build. */
+  prState: string | null;
+  /** Reserved for per-repo pull request tracking. Always null in this build. */
+  mergedAt: number | null;
+}
+
 export interface Task {
   id: string;
   /** Short label - source of the terminal home name slug and the card title. */
@@ -1565,6 +1602,25 @@ export interface Task {
   branch: string | null;
   /** How the worktree was provisioned, so teardown returns a treehouse lease vs `git worktree remove`. */
   provider: WorktreeProvider | null;
+  /**
+   * The full 40-character commit the PRIMARY repo's branch was cut at, or null before
+   * dispatch (and on every task dispatched before this column existed).
+   *
+   * On `Task` rather than in a `task_repos` row, and that placement is load-bearing in two
+   * directions. It keeps "a single-repo task has zero `task_repos` rows" true, and it is
+   * the only place a reader can learn the primary's baseline - so a rule that iterates
+   * `extraRepos` alone silently excludes the primary. Recorded on single-repo dispatches
+   * too: it costs one column write and keeps one code path.
+   */
+  baseSha: string | null;
+  /**
+   * Secondary repositories attached to this task, in `position` order. Empty for the
+   * single-repo tasks that are nearly all of them.
+   *
+   * Rides the whole-`Task` `task_upsert` event, so there is no new `ServerEvent` and no
+   * `MissionState` collection to keep in step.
+   */
+  extraRepos: TaskRepoEntry[];
   /**
    * The name of the terminal home we created for this task, or null before dispatch.
    *

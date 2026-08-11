@@ -13,13 +13,14 @@ import type {
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
-import { supportsEffort } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import {
   Dispatcher,
   deriveTitle,
+  releasedRepoEntries,
   teardownWorktree,
   type TaskDispatchOptions,
 } from "./dispatcher.ts";
@@ -55,6 +56,12 @@ import { resolveTaskWorkflowId } from "./workflows/config.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
+  /**
+   * Secondary repositories to attach, already resolved through `resolveTaskRepoRoot`,
+   * deduped, and checked against the primary by the caller - the same contract `repoRoot`
+   * has. Omitted by every single-repo caller, which is nearly all of them.
+   */
+  extraRepoRoots?: string[];
   intent: string;
   title?: string;
   kind: TaskKind;
@@ -1088,6 +1095,21 @@ export class TaskManager {
       worktreePath: null,
       branch: null,
       provider: null,
+      baseSha: null,
+      // Already resolved and validated by the caller (the route), exactly as `repoRoot` is.
+      // Recorded at creation so a backlog task carries its full repo set before anything is
+      // provisioned - which is what lets Foreman answer the allowlist question about all of
+      // them, and what makes a repo-set edit a provisioning change the status guard refuses.
+      extraRepos: (input.extraRepoRoots ?? []).map((repoRoot) => ({
+        repoRoot,
+        worktreePath: null,
+        branch: null,
+        provider: null,
+        baseSha: null,
+        prUrl: null,
+        prState: null,
+        mergedAt: null,
+      })),
       homeName: null,
       terminalResourceId: null,
       sessionId: null,
@@ -1271,6 +1293,32 @@ export class TaskManager {
     if (effort !== null && !supportsEffort(agent, effort)) {
       return { ok: false, error: `reasoning effort ${effort} is not supported by ${agent}` };
     }
+    // The repo set is replaced wholesale when named, and left alone otherwise. Safe to
+    // rebuild the entries from roots because the status guard above has already refused
+    // any patch that is not annotation on a task that left the backlog - so nothing here
+    // has a provisioned worktree to lose.
+    const extraRepos =
+      patch.extraRepoRoots === undefined
+        ? t.extraRepos
+        : patch.extraRepoRoots.map((repoRoot) => ({
+            repoRoot,
+            worktreePath: null,
+            branch: null,
+            provider: null,
+            baseSha: null,
+            prUrl: null,
+            prState: null,
+            mergedAt: null,
+          }));
+    // Asked of the agent this edit RESULTS in, which is what catches the case a check on
+    // the incoming repo set alone would miss: switching a multi-repo task onto a harness
+    // whose write scope cannot leave its cwd, without touching the repos at all.
+    if (extraRepos.length > 0 && !capabilitiesFor(agent).multiRepoDispatch) {
+      return {
+        ok: false,
+        error: `${agent} cannot be given write access to more than one repo`,
+      };
+    }
     let dependencies = t.dependencies;
     try {
       if (patch.dependencies !== undefined) {
@@ -1283,6 +1331,7 @@ export class TaskManager {
     const next: Task = {
       ...t,
       repoRoot: patch.repoRoot ?? t.repoRoot,
+      extraRepos,
       intent,
       // Emptying the title asks for one to be derived again - and from the intent as it
       // now reads, not the one the task was first shelved under. Derived here rather than
@@ -1432,6 +1481,27 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
+    // Multi-repo tasks are DISPATCH-ONLY, and this is where that is enforced for every
+    // caller - the board's drag, Foreman's autopilot, the HTTP route.
+    //
+    // Not a policy preference: assignment hands a task to a session that already exists,
+    // and everything a secondary repo needs was decided when that session LAUNCHED. Its
+    // extra worktrees are provisioned by the dispatcher, and its write access to them is a
+    // launch-time grant that neither harness can widen afterwards (Claude's runtime
+    // directory control refuses anything outside the launch set; Codex's sandbox is fixed
+    // for a thread). Accepting one here would produce a session holding an intent that
+    // names repositories it cannot reach, which fails as confused agent output rather than
+    // as an error anybody can act on.
+    if (t.extraRepos.length > 0) {
+      return {
+        ok: false,
+        error:
+          `${t.title} attaches ${t.extraRepos.length} more ` +
+          `${t.extraRepos.length === 1 ? "repo" : "repos"} - a multi-repo task has to be ` +
+          `dispatched, because its extra worktrees and their write access are granted at launch`,
+        scope: "task",
+      };
     }
     // The same refusal `dispatch` applies, and it has to be here too: assigning onto a
     // running agent is the autopilot's OTHER way of starting a parked task, and a guard
@@ -1999,6 +2069,11 @@ export class TaskManager {
         worktreePath: null,
         branch: null,
         provider: null,
+        baseSha: null,
+        // The secondaries' trees went back with the primary's, so their recorded paths go
+        // too. The repo SET stays: which repos this task spans is durable operator intent,
+        // and a task returning to the backlog is still the task they filed.
+        extraRepos: releasedRepoEntries(cur.extraRepos),
         homeName: null,
         terminalResourceId: null,
         sessionId: null,
@@ -2040,6 +2115,8 @@ export class TaskManager {
       worktreePath: null,
       branch: null,
       provider: null,
+      baseSha: null,
+      extraRepos: releasedRepoEntries(cur.extraRepos),
       homeName: null,
       terminalResourceId: null,
       sessionId: null,
@@ -2175,6 +2252,8 @@ export class TaskManager {
       worktreePath: null,
       branch: null,
       provider: null,
+      baseSha: null,
+      extraRepos: releasedRepoEntries(t.extraRepos),
       homeName: null,
       terminalResourceId: null,
       sessionId: null,

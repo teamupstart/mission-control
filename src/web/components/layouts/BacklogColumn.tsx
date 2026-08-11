@@ -218,7 +218,14 @@ function BacklogCard({
         // decided in a render, not read off the DOM during one.
         e.dataTransfer.setData("application/x-mission-task", task.id);
         e.dataTransfer.effectAllowed = "move";
-        onDragging(task.repoRoot);
+        // A multi-repo task announces NO repo, so no tile lights up and none will take the
+        // drop - `canAcceptTask` refuses a null repo and `SessionTile` gates both dragover
+        // and drop on that answer. These tasks are dispatch-only: their extra worktrees and
+        // the agent's write access to them are granted when the session LAUNCHES, and no
+        // already-running session can be given either. `TaskManager.assign` refuses one
+        // server-side too, which is the enforcement; this is what stops the board offering
+        // a gesture that could only ever end in an error toast.
+        onDragging(task.extraRepos.length > 0 ? null : task.repoRoot);
       }}
       onDragEnd={() => onDragging(null)}
       // Anywhere on the card opens it, so the gesture matches what the whole card looks
@@ -297,6 +304,17 @@ function BacklogCard({
       <span className="bl-foot">
         <span className={`bl-kind bl-kind-${task.kind}`}>{task.kind}</span>
         <span className="bl-agent">{task.agent}</span>
+        {/* Counted, not listed: the card is the narrowest surface a task is drawn on, and
+            the repo set only has to be VISIBLE here - the modal that opens on click names
+            every one. It also explains, without a second chip saying so, why this card
+            refuses to drop onto an idle agent. */}
+        {task.extraRepos.length > 0 && (
+          <Tooltip
+            label={`Spans ${task.extraRepos.length + 1} repos: ${[task.repoRoot, ...task.extraRepos.map((e) => e.repoRoot)].join(", ")} - dispatch only`}
+          >
+            <span className="bl-repos">{task.extraRepos.length + 1} repos</span>
+          </Tooltip>
+        )}
         <span className="bl-added">{relativeTime(task.createdAt)}</span>
       </span>
       {/* A generated task's recurring-mission origin. The shared chip stops propagation so

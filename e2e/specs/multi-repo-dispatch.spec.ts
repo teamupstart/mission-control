@@ -1,0 +1,185 @@
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { expect, test } from "../fixtures/test.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+import type { Page } from "@playwright/test";
+import { recordsIn } from "../fixtures/records.ts";
+
+// One dispatch, several repositories.
+//
+// This is the only layer that can prove the feature: the chips are a browser control, the
+// worktrees are a filesystem effect of a daemon route, and the write grant is argv on a
+// process the daemon spawned. Nothing below a browser connects those three, and each of
+// them can be individually correct while the thing an operator asked for did not happen.
+//
+// No model tokens: every agent binary is redirected at a fake by `fake-agents.ts`, and the
+// fake claude records the argv it was launched with - which is what makes the write grant
+// assertable rather than merely intended.
+
+/** Every worktree the daemon cut, by directory name under the state dir. */
+function worktreeNames(daemon: DaemonHandle): string[] {
+  const dir = join(daemon.home, "worktrees");
+  return existsSync(dir) ? readdirSync(dir).sort() : [];
+}
+
+/**
+ * The argv of every fake-claude launch recorded so far.
+ *
+ * Through the shared `recordsIn`, which skips a file that is created but not yet filled -
+ * the daemon registers a card before the child it spawned has finished writing, so an
+ * unguarded read races the fixture rather than the behaviour under test.
+ */
+function launchArgvs(daemon: DaemonHandle): string[][] {
+  return recordsIn<{ argv?: string[] }>(join(daemon.recordDir, "claude")).map((r) => r.argv ?? []);
+}
+
+/**
+ * Fill the dispatch form and attach `extraRepos`, then launch.
+ *
+ * The `Escape` after each repo field is the same load-bearing step the single-repo helper
+ * documents: `RepoCombobox` portals its listbox over the fields below it and opens on focus
+ * AND on every keystroke, so the next `fill` would land on a covered control.
+ */
+async function dispatchAcross(
+  page: Page,
+  daemon: DaemonHandle,
+  extraRepos: string[],
+  task: string,
+): Promise<void> {
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+
+  for (const repo of extraRepos) {
+    await dialog.getByRole("button", { name: "Add another repo" }).click();
+    await dialog.getByPlaceholder("repo to attach…").fill(repo);
+    await page.keyboard.press("Escape");
+    await dialog.getByRole("button", { name: "Attach repo" }).click();
+  }
+
+  await dialog.getByPlaceholder("What should this agent do?").fill(task);
+  await dialog.getByLabel("Kind").selectOption("ship");
+  // Pinned to none for the reason the single-repo helper gives: left at the dispatch
+  // default, an unallowlisted repo is refused and the modal simply stays open.
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+
+  const go = dialog.getByRole("button", { name: "Dispatch now" });
+  await expect(go).toBeEnabled();
+  await go.click();
+  await expect(dialog).toBeHidden();
+}
+
+test("attaching a second repo dispatches one session with a worktree in each", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatchAcross(dashboard, daemon, [daemon.secondRepo], "Rename the shared field");
+
+  // ONE session. The whole design decision this phase implements is one agent in shared
+  // context, not one agent per repository.
+  const card = dashboard.locator("article.card").first();
+  await expect(card).toBeVisible();
+  await expect(dashboard.locator("article.card")).toHaveCount(1);
+
+  // Two worktrees, and specifically the slot scheme later phases are promised: the primary
+  // keeps the legacy `<taskId>` path and the secondary takes `<taskId>-1`.
+  await expect
+    .poll(() => worktreeNames(daemon), { message: "one worktree per attached repo" })
+    .toHaveLength(2);
+  // The primary is the one whose name another name EXTENDS. Not "the one without -1 in it":
+  // task ids are UUIDs and routinely contain that substring, which made an earlier version
+  // of this assertion pass or fail on the roll of a random id.
+  const names = worktreeNames(daemon);
+  const primary = names.find((n) => names.includes(`${n}-1`))!;
+  expect(primary, "one worktree's name extends the other's, by slot").toBeTruthy();
+
+  // Each tree really belongs to its own repository - the failure a shared destination path
+  // would have produced looks identical from the outside until you ask this.
+  expect(existsSync(join(daemon.home, "worktrees", primary, "README.md"))).toBe(true);
+  expect(existsSync(join(daemon.home, "worktrees", `${primary}-1`, "README.md"))).toBe(true);
+});
+
+test("the launched agent is granted write access to the secondary worktree", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatchAcross(dashboard, daemon, [daemon.secondRepo], "Rename the shared field");
+  await expect(dashboard.locator("article.card").first()).toBeVisible();
+
+  // The grant as it reaches the PROCESS, which is the only form of it that matters. A
+  // capability record that says `--add-dir` and a launch that never renders it look the
+  // same everywhere else.
+  await expect
+    .poll(() => launchArgvs(daemon).some((argv) => argv.includes("--add-dir")), {
+      message: "the launched agent was handed the secondary worktree",
+    })
+    .toBe(true);
+
+  const granted = launchArgvs(daemon).find((argv) => argv.includes("--add-dir"))!;
+  const dir = granted[granted.indexOf("--add-dir") + 1];
+  expect(dir, "the granted directory is the secondary WORKTREE, never the repo itself").toContain(
+    join(daemon.home, "worktrees"),
+  );
+  expect(dir).not.toBe(daemon.secondRepo);
+});
+
+test("a single-repo dispatch is granted nothing extra", async ({ dashboard, daemon }) => {
+  // The other half of the promise: a form nobody attached anything to sends no repos, and
+  // the resulting command line is exactly what it was before this feature existed.
+  await dispatchAcross(dashboard, daemon, [], "Write a haiku about flexbox");
+  await expect(dashboard.locator("article.card").first()).toBeVisible();
+
+  await expect.poll(() => worktreeNames(daemon).length).toBe(1);
+  expect(launchArgvs(daemon).some((argv) => argv.includes("--add-dir"))).toBe(false);
+});
+
+test("an attached repo can be read and detached before dispatching", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+
+  await dialog.getByRole("button", { name: "Add another repo" }).click();
+  await dialog.getByPlaceholder("repo to attach…").fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Attach repo" }).click();
+
+  // The chip is short (a basename), and the full path is what the operator can act on -
+  // two attached repos can share a basename, so the short form alone would be ambiguous.
+  await expect(dialog.getByText("second-repo", { exact: true })).toBeVisible();
+  const detach = dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` });
+  await expect(detach).toBeVisible();
+
+  await detach.click();
+  await expect(dialog.getByText("second-repo", { exact: true })).toBeHidden();
+  // Back to the plain single-repo form, with the adder still offered.
+  await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeVisible();
+});
+
+test("a harness that cannot hold write access outside its cwd is not offered the control", async ({
+  dashboard,
+  daemon,
+}) => {
+  // pi declares no `multiRepoDispatch` - the capability is unmeasured, and null is the only
+  // honest answer for it. The control disappearing is what stops an operator composing a
+  // task that would launch an agent unable to write to half of it.
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+
+  await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeVisible();
+  await dialog.getByLabel("Agent").selectOption("pi");
+  await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeHidden();
+
+  // And switching back brings it straight back, so this is the capability talking rather
+  // than a control that was torn down for good.
+  await dialog.getByLabel("Agent").selectOption("claude");
+  await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeVisible();
+});

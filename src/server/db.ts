@@ -32,6 +32,7 @@ import type {
   Task,
   TaskKind,
   TaskPriority,
+  TaskRepoEntry,
   TaskStatus,
   TrackedGap,
   WorkItem,
@@ -156,6 +157,11 @@ export function openDb(): DatabaseSync {
       worktree_path TEXT,
       branch        TEXT,
       provider      TEXT,
+      -- The full 40-char commit the PRIMARY repo's branch was cut at. Here rather than in a
+      -- task_repos row so "a single-repo task has zero task_repos rows" stays true; a reader
+      -- that iterates task_repos alone therefore cannot see the primary and must read this.
+      -- Nullable: every task dispatched before this column existed genuinely has no baseline.
+      base_sha      TEXT,
       home_name     TEXT,               -- name of the terminal home, any backend (was tmux_session)
       terminal_resource_id TEXT,
       session_id    TEXT,
@@ -179,6 +185,25 @@ export function openDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_worktree ON tasks(worktree_path);
+
+    -- The SECONDARY repositories attached to a multi-repo task, one row each. The primary
+    -- is never in here - it stays on the tasks row above - so a single-repo task has zero
+    -- rows and an old database upgrades by gaining an empty table.
+    --
+    -- position is the entry's slot as well as its display order: the git-fallback
+    -- worktree path is derived from it, so nothing may renumber a provisioned entry
+    -- without moving its tree.
+    CREATE TABLE IF NOT EXISTS task_repos (
+      task_id       TEXT NOT NULL,
+      repo_root     TEXT NOT NULL,
+      worktree_path TEXT,
+      branch        TEXT,
+      provider      TEXT,
+      base_sha      TEXT,
+      position      INTEGER NOT NULL,
+      PRIMARY KEY (task_id, repo_root)
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_repos_worktree ON task_repos(worktree_path);
 
     CREATE TABLE IF NOT EXISTS session_work_episodes (
       session_id       TEXT PRIMARY KEY,
@@ -1814,6 +1839,12 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "source_id", "TEXT");
   addColumn(d, "tasks", "external_id", "TEXT");
   addColumn(d, "tasks", "source_url", "TEXT");
+  // The primary repo's baseline for multi-repo tasks. Nullable with no default because
+  // that is the honest reading of an existing row: nothing recorded where its branch was
+  // cut, and a fabricated value would be indistinguishable from a measured one to every
+  // rule that later compares a head against it. `task_repos` needs no entry here - a new
+  // TABLE is covered by the CREATE TABLE IF NOT EXISTS block, which runs on every open.
+  addColumn(d, "tasks", "base_sha", "TEXT");
 
   // `home_name`: the terminal home a dispatched agent lives in, renamed from the
   // tmux-specific `tmux_session` now that the name is resolved against ANY backend
@@ -2691,6 +2722,7 @@ interface TaskRow {
   worktree_path: string | null;
   branch: string | null;
   provider: string | null;
+  base_sha: string | null;
   home_name: string | null;
   terminal_resource_id: string | null;
   session_id: string | null;
@@ -2705,6 +2737,74 @@ interface TaskRow {
   updated_at: number;
   dispatched_at: number | null;
   completed_at: number | null;
+}
+
+interface TaskRepoRow {
+  task_id: string;
+  repo_root: string;
+  worktree_path: string | null;
+  branch: string | null;
+  provider: string | null;
+  base_sha: string | null;
+  position: number;
+}
+
+function rowToTaskRepo(r: TaskRepoRow): TaskRepoEntry {
+  return {
+    repoRoot: r.repo_root,
+    worktreePath: r.worktree_path,
+    branch: r.branch,
+    provider: r.provider as WorktreeProvider | null,
+    baseSha: r.base_sha,
+    // Declared on the wire and deliberately not derived here. Nothing in this build writes
+    // per-repo pull request state, and inventing one from the primary's would report the
+    // wrong repository's pull request against every secondary.
+    prUrl: null,
+    prState: null,
+    mergedAt: null,
+  };
+}
+
+/** One task's secondary repos, in `position` order. Empty for a single-repo task. */
+export function taskReposFor(taskId: string): TaskRepoEntry[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM task_repos WHERE task_id = ? ORDER BY position`)
+    .all(taskId) as unknown as TaskRepoRow[];
+  return rows.map(rowToTaskRepo);
+}
+
+/**
+ * Every task's secondary repos in one read, grouped by task id.
+ *
+ * One query rather than one per row: `listTasks` and its siblings map whole tables, and a
+ * per-task lookup there would put a statement behind every card on the board. The whole
+ * table is read because it is empty on a single-repo install and small on any other - far
+ * cheaper than assembling an `IN (?, ?, …)` list that would also have to be chunked.
+ */
+function taskReposByTask(): Map<string, TaskRepoEntry[]> {
+  const rows = openDb()
+    .prepare(`SELECT * FROM task_repos ORDER BY task_id, position`)
+    .all() as unknown as TaskRepoRow[];
+  const out = new Map<string, TaskRepoEntry[]>();
+  for (const row of rows) {
+    const list = out.get(row.task_id);
+    if (list) list.push(rowToTaskRepo(row));
+    else out.set(row.task_id, [rowToTaskRepo(row)]);
+  }
+  return out;
+}
+
+/**
+ * Map task rows to `Task`s, attaching each one's secondary repos.
+ *
+ * Exists so no caller can write `rows.map(rowToTask)` and silently produce tasks whose
+ * `extraRepos` is empty - which for a multi-repo task is not a missing display detail but
+ * a set of worktrees the pool reaper would then be free to hard-reset.
+ */
+function rowsToTasks(rows: TaskRow[]): Task[] {
+  if (rows.length === 0) return [];
+  const byTask = taskReposByTask();
+  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? []));
 }
 
 /** Read a `tasks.labels` blob back as a clean string array; anything unusable is none. */
@@ -2784,7 +2884,12 @@ function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
     : null;
 }
 
-function rowToTask(r: TaskRow): Task {
+/**
+ * `extraRepos` is a REQUIRED argument with no default, which is what keeps
+ * `rows.map(rowToTask)` from compiling: `map` would pass the index there, and the
+ * resulting type error is the whole point - see `rowsToTasks`.
+ */
+function rowToTask(r: TaskRow, extraRepos: TaskRepoEntry[]): Task {
   return {
     id: r.id,
     title: r.title,
@@ -2816,6 +2921,8 @@ function rowToTask(r: TaskRow): Task {
     worktreePath: r.worktree_path,
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
+    baseSha: r.base_sha,
+    extraRepos,
     homeName: r.home_name,
     terminalResourceId: r.terminal_resource_id,
     sessionId: r.session_id,
@@ -2863,11 +2970,11 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, enabled, model, effort,
          workflow_id, source_id, external_id, source_url, repo_root, worktree_path, branch,
-         provider, home_name, terminal_resource_id, session_id,
+         provider, base_sha, home_name, terminal_resource_id, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -2876,7 +2983,7 @@ export function upsertTask(t: Task): string[] {
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
-         provider=excluded.provider, home_name=excluded.home_name,
+         provider=excluded.provider, base_sha=excluded.base_sha, home_name=excluded.home_name,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          schedule_id=excluded.schedule_id,
          schedule_occurrence_id=excluded.schedule_occurrence_id,
@@ -2896,12 +3003,36 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
-      t.repoRoot, t.worktreePath, t.branch, t.provider,
+      t.repoRoot, t.worktreePath, t.branch, t.provider, t.baseSha,
       t.homeName, t.terminalResourceId, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
       t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
     );
+    // The secondary repos are REPLACED, in this same transaction, because `Task` carries
+    // the whole collection: a caller that dropped an entry expects the row to go, and a
+    // stale row would keep pinning a worktree nothing is using. Delete-then-insert rather
+    // than an upsert per entry so a shrunk set actually shrinks. `position` is the array
+    // index, which is what the git-fallback worktree path is derived from - so this must
+    // stay a faithful rewrite of the same order, never a re-sort.
+    d.prepare(`DELETE FROM task_repos WHERE task_id = ?`).run(t.id);
+    if (t.extraRepos.length > 0) {
+      const insert = d.prepare(
+        `INSERT INTO task_repos (task_id, repo_root, worktree_path, branch, provider, base_sha, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      t.extraRepos.forEach((entry, position) => {
+        insert.run(
+          t.id,
+          entry.repoRoot,
+          entry.worktreePath,
+          entry.branch,
+          entry.provider,
+          entry.baseSha,
+          position,
+        );
+      });
+    }
     if (ownsTransaction) d.exec("COMMIT");
     return displaced;
   } catch (error) {
@@ -2914,7 +3045,7 @@ export function getTask(id: string): Task | undefined {
   const r = openDb().prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as unknown as
     | TaskRow
     | undefined;
-  return r ? rowToTask(r) : undefined;
+  return r ? rowToTask(r, taskReposFor(r.id)) : undefined;
 }
 
 export function taskIdForSession(sessionId: string): string | null {
@@ -3546,6 +3677,7 @@ export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
 
 export function deleteTask(id: string): void {
   const d = openDb();
+  d.prepare(`DELETE FROM task_repos WHERE task_id = ?`).run(id);
   d.prepare(`DELETE FROM task_work_episode_bindings WHERE task_id = ?`).run(id);
   d.prepare(`DELETE FROM historical_task_work_episode_bindings WHERE task_id = ?`).run(id);
   d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
@@ -3555,7 +3687,7 @@ export function listTasks(): Task[] {
   const rows = openDb()
     .prepare(`SELECT * FROM tasks ORDER BY created_at DESC`)
     .all() as unknown as TaskRow[];
-  return rows.map(rowToTask);
+  return rowsToTasks(rows);
 }
 
 /** Tasks still in flight (backlog/dispatching/running) - reloaded into the registry on start. */
@@ -3565,7 +3697,7 @@ export function loadActiveTasks(): Task[] {
       `SELECT * FROM tasks WHERE status IN ('backlog','dispatching','running') ORDER BY created_at ASC`,
     )
     .all() as unknown as TaskRow[];
-  return rows.map(rowToTask);
+  return rowsToTasks(rows);
 }
 
 /**
@@ -3580,7 +3712,7 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
        ORDER BY updated_at DESC LIMIT ?`,
     )
     .all(limit) as unknown as TaskRow[];
-  return rows.map(rowToTask);
+  return rowsToTasks(rows);
 }
 
 /**
@@ -3597,7 +3729,7 @@ export function loadResourceHoldingTerminalTasks(): Task[] {
          AND (worktree_path IS NOT NULL OR home_name IS NOT NULL)`,
     )
     .all() as unknown as TaskRow[];
-  return rows.map(rowToTask);
+  return rowsToTasks(rows);
 }
 
 /**
@@ -3631,7 +3763,7 @@ export function loadPrPendingTerminalTasks(): Task[] {
          )`,
     )
     .all() as unknown as TaskRow[];
-  return rows.map(rowToTask);
+  return rowsToTasks(rows);
 }
 
 /**

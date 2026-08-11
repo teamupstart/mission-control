@@ -808,6 +808,8 @@ export interface PushTaskResult extends ActionResult {
 
 export interface DispatchInput {
   repoRoot: string;
+  /** Secondary repos to attach; the daemon resolves, dedupes and refuses each one. */
+  extraRepoRoots?: string[];
   intent: string;
   title?: string;
   kind: "ship" | "scout";

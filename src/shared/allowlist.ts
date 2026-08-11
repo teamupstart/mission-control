@@ -27,6 +27,32 @@ export function cwdAllowlisted(cwd: string | null, allowlist: readonly string[])
 }
 
 /**
+ * Whether EVERY repository a task would dispatch into is allowlisted - an AND, not an any.
+ *
+ * A consent gate, and it ships with the capability it gates rather than after it. One
+ * dispatch of a multi-repo task provisions a worktree per attached repo and hands the
+ * agent write access to all of them, so a rule that asked only about the primary would let
+ * Foreman's autopilot start an agent inside a secondary repository the operator never
+ * trusted it to act in - consent obtained for one project, spent on another.
+ *
+ * AND is also the only reading that degrades safely. An any-match would make attaching a
+ * trusted repo a way to launder an untrusted one; with AND, the untrusted entry withholds
+ * the whole task, which is visible on the board and fixed by allowlisting it.
+ *
+ * Single-repo tasks are unaffected by construction: `extraRepos` is empty, so this is
+ * exactly `cwdAllowlisted(t.repoRoot, …)`.
+ */
+export function taskReposAllowlisted(
+  task: { repoRoot: string; extraRepos: readonly { repoRoot: string }[] },
+  allowlist: readonly string[],
+): boolean {
+  return (
+    cwdAllowlisted(task.repoRoot, allowlist)
+    && task.extraRepos.every((entry) => cwdAllowlisted(entry.repoRoot, allowlist))
+  );
+}
+
+/**
  * Whether a checkout is allowlisted, given where it sits (`cwd`) and which repo it
  * belongs to (`repoRoot`, from git's common dir - see `GitInfo`).
  *

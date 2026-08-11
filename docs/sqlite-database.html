@@ -530,9 +530,10 @@ LIMIT 20;
 
           <div class="catalog">
             <details class="family" open>
-              <summary><strong>Tasks and work episodes</strong><span>7 tables</span></summary>
+              <summary><strong>Tasks and work episodes</strong><span>8 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>tasks</code><p>The backlog and execution record: intent, harness choices, repository and worktree coordinates, current session binding, source or schedule provenance, status, and outcome.</p></div>
+                <div class="table-row"><code>task_repos</code><p>The secondary repositories attached to a multi-repo task, one row each, with the worktree, branch, provider and baseline commit provisioned for it. The primary repo is never in here - it stays on the tasks row - so a single-repo task has no rows at all.</p></div>
                 <div class="table-row"><code>session_work_episodes</code><p>The current unit of work associated with a live session, including branch and pull request provenance plus restart rebind state.</p></div>
                 <div class="table-row"><code>session_work_episode_prompts</code><p>Prompt timestamps for one session and episode, used to make prompting idempotent.</p></div>
                 <div class="table-row"><code>task_work_episode_bindings</code><p>The current one-to-one task and work-episode association. A unique session index prevents two active tasks from claiming the same session.</p></div>

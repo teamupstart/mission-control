@@ -27,7 +27,11 @@ import {
   fetchRepos,
   fetchTaskSources,
 } from "../lib/api.ts";
-import { readLastDispatchRepo, rememberDispatchRepo } from "../lib/lastRepo.ts";
+import {
+  readLastDispatchExtraRepos,
+  readLastDispatchRepo,
+  rememberDispatchRepo,
+} from "../lib/lastRepo.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
   draftFromTask,
@@ -67,7 +71,48 @@ import type { EnsembleStrategyId } from "@shared/ensemble.ts";
  * browser: `lib/task-draft.ts` stays a pure translation between a form and a task.
  */
 function freshDispatchDraft(): DispatchDraft {
-  return { ...EMPTY_DISPATCH_DRAFT, repoRoot: readLastDispatchRepo() };
+  return {
+    ...EMPTY_DISPATCH_DRAFT,
+    repoRoot: readLastDispatchRepo(),
+    extraRepoRoots: readLastDispatchExtraRepos(),
+  };
+}
+
+/**
+ * The last path segment of a repo root, for a chip that has to stay narrow.
+ *
+ * The full path is not lost - it is the chip's `title` and its Detach button's accessible
+ * name - because two attached repos can share a basename (`~/a/api` and `~/b/api`) and the
+ * short form alone would draw them as the same chip twice.
+ */
+function basename(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  return trimmed.split("/").pop() || trimmed || path;
+}
+
+/** Two attached-repo lists holding the same roots in the same order. */
+function sameRepoList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((root, i) => root === b[i]);
+}
+
+/**
+ * The secondary repos a draft would actually send: trimmed, blanks dropped, and neither
+ * repeated nor equal to the primary.
+ *
+ * A convenience, never the enforcement. The daemon resolves every path to a repo's main
+ * checkout before comparing, so it is the only layer that can tell two spellings of one
+ * repo apart and it refuses those itself. What this does is stop the form sending an entry
+ * the operator can see is redundant.
+ */
+function attachedRepoRoots(d: DispatchDraft): string[] {
+  const primary = d.repoRoot.trim();
+  const out: string[] = [];
+  for (const raw of d.extraRepoRoots) {
+    const root = raw.trim();
+    if (!root || root === primary || out.includes(root)) continue;
+    out.push(root);
+  }
+  return out;
 }
 
 /**
@@ -92,6 +137,9 @@ type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
 function isEmptyDispatchDraft(d: DispatchDraft): boolean {
   return (
     d.repoRoot.trim() === readLastDispatchRepo() &&
+    // Seeded, like the primary, so a form carrying only what the last dispatch left
+    // behind still counts as untouched and Clear stays greyed out.
+    sameRepoList(d.extraRepoRoots, readLastDispatchExtraRepos()) &&
     !d.intent.trim() &&
     !d.title.trim() &&
     !d.labels.trim() &&
@@ -615,6 +663,12 @@ function DispatchModal({
   const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
+  // The attach-a-repo control is a two-step (open, then pick) rather than a combobox that
+  // is always mounted: an empty repo picker sitting under the primary on every dispatch
+  // would read as a second required field. Local rather than drafted - a half-typed path
+  // in a picker that has not been confirmed is not part of the task.
+  const [addingRepo, setAddingRepo] = useState(false);
+  const [addRepoValue, setAddRepoValue] = useState("");
   // The configured per-harness defaults, so both pickers can name what "Default"
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
@@ -796,6 +850,25 @@ function DispatchModal({
     selectedWorkflowId
     && (!foremanEnabled || !capabilitiesFor(draft.agent).workQueue),
   );
+  // Whether this harness can hold write access outside its cwd. Read through
+  // `capabilitiesFor`, which is the browser-safe door to the same record the daemon reads,
+  // so the control that is offered and the request that is accepted cannot disagree.
+  const multiRepoSupported = capabilitiesFor(draft.agent).multiRepoDispatch !== null;
+  // The control is absent in ENSEMBLE mode: an ensemble is N sessions over ONE repo, and
+  // running one across several is deliberately out of scope for this release. The draft is
+  // shared between the two modes, so the attachments are kept rather than cleared - flipping
+  // back to a single dispatch brings the chips back exactly as they were - and the ensemble
+  // launch, which composes its own request from the primary alone, simply does not use them.
+  const multiRepoOffered = !ensembleMode && multiRepoSupported;
+  // The chips outlive the ADDER. A harness that cannot hold write access outside its cwd
+  // stops offering new attachments, but the ones already made stay on screen with their
+  // Detach buttons - otherwise the refusal below tells the operator to detach repos that
+  // are not drawn anywhere, and the only way out of a blocked form is to guess.
+  const repoChipsShown = !ensembleMode && (multiRepoSupported || draft.extraRepoRoots.length > 0);
+  // Blocks the SINGLE dispatch only, and only for the reason an operator can act on from
+  // this form. Blocking in ensemble mode would put an unreachable instruction on screen:
+  // its chips are not rendered, so there would be nothing to detach.
+  const multiRepoBlocked = !ensembleMode && !multiRepoSupported && draft.extraRepoRoots.length > 0;
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -1046,6 +1119,7 @@ function DispatchModal({
       !draft.intent.trim() ||
       busy ||
       drop.uploading ||
+      multiRepoBlocked ||
       (launchesNow && selectedWorkflowBlocked) ||
       Boolean(editing && dispatchNow && selectedDependenciesUnmet)
     ) return;
@@ -1087,6 +1161,7 @@ function DispatchModal({
         : { ok: true }
       : await api.dispatch({
           repoRoot: submitted.repoRoot.trim(),
+          extraRepoRoots: attachedRepoRoots(submitted),
           intent,
           kind: submitted.kind,
           agent: submitted.agent,
@@ -1115,7 +1190,9 @@ function DispatchModal({
     // Only from THIS form, not the editor. Reopening a task shelved last week and
     // saving it is a visit to an old decision, not a statement about what to dispatch
     // next, and letting it move the seed would strand the next task in that repo.
-    if (r.ok && !editing) rememberDispatchRepo(submitted.repoRoot.trim());
+    if (r.ok && !editing) {
+      rememberDispatchRepo(submitted.repoRoot.trim(), attachedRepoRoots(submitted));
+    }
     // Clear the draft and close only once the task row exists - the worktree and
     // terminal home are provisioned in the background after this reply, and any
     // failure there surfaces on the task card rather than here. A rejected submit
@@ -1159,6 +1236,103 @@ function DispatchModal({
         value={draft.repoRoot}
         onChange={(v) => update({ repoRoot: v })}
       />
+      {/* Attached secondary repos. The primary above stays exactly what it was - its own
+          combobox, its own value - rather than becoming the first of a list of chips: it
+          is the session's working directory and the task's repo everywhere else in the
+          app, and demoting it to "chip one" would make the one field every single-repo
+          dispatch fills in a different control for the sake of a case most tasks never
+          reach. The chips are strictly additive, and absent entirely for a harness that
+          cannot be granted write access beyond its cwd. */}
+      {repoChipsShown && (
+        <div className="repo-chips">
+          {draft.extraRepoRoots.map((root, index) => (
+            <span key={`${root}-${index}`} className="repo-chip">
+              {/* The full path through the app's own tooltip, never a native `title` -
+                  `tooltip-coverage.test.ts` enforces that, and it is what makes the
+                  shortened chip readable without a browser-styled box. */}
+              <Tooltip label={root}>
+                <span className="repo-chip-name">{basename(root)}</span>
+              </Tooltip>
+              <Tooltip label="Detach this repo">
+                <button
+                  type="button"
+                  className="dep-chip-x"
+                  aria-label={`Detach repo: ${root}`}
+                  onClick={() =>
+                    update({
+                      extraRepoRoots: draft.extraRepoRoots.filter((_, i) => i !== index),
+                    })
+                  }
+                >
+                  ✕
+                </button>
+              </Tooltip>
+            </span>
+          ))}
+          {!multiRepoOffered ? null : addingRepo ? (
+            <div className="repo-chip-add">
+              <RepoCombobox
+                repos={repos}
+                value={addRepoValue}
+                placeholder="repo to attach…"
+                onChange={setAddRepoValue}
+              />
+              <Tooltip label="Attach this repo to the task">
+                <button
+                  type="button"
+                  className="dep-add"
+                  aria-label="Attach repo"
+                  // Refuses the obviously redundant entry - the same path as the primary, or
+                  // one already attached. Deliberately STRING equality and nothing cleverer:
+                  // only the daemon resolves a path to a repo's main checkout, so it stays
+                  // the one authority on whether two spellings are one repo, and a second
+                  // half-implementation of that rule here would be a source of truth that
+                  // could disagree with it.
+                  disabled={
+                    !addRepoValue.trim()
+                    || addRepoValue.trim() === draft.repoRoot.trim()
+                    || draft.extraRepoRoots.includes(addRepoValue.trim())
+                  }
+                  onClick={() => {
+                    update({ extraRepoRoots: [...draft.extraRepoRoots, addRepoValue.trim()] });
+                    setAddRepoValue("");
+                    setAddingRepo(false);
+                  }}
+                >
+                  Attach
+                </button>
+              </Tooltip>
+            </div>
+          ) : (
+            <Tooltip label="Work across several repos in one session - each changed repo gets its own PR">
+              <button
+                type="button"
+                className="dep-add"
+                aria-label="Add another repo"
+                onClick={() => setAddingRepo(true)}
+              >
+                + Add another repo
+              </button>
+            </Tooltip>
+          )}
+        </div>
+      )}
+      {draft.extraRepoRoots.length > 0 && multiRepoOffered && (
+        <span className="field-hint">
+          One session, one worktree per repo. Each repo you change gets its own pull request.
+        </span>
+      )}
+      {/* Refused rather than silently dropped, which is what the equivalent workflow gate
+          above this form does and for the same reason: sending the dispatch minus the repos
+          the operator attached would launch a session that quietly does less than they
+          asked for. The submit is blocked; this sentence says why. */}
+      {multiRepoBlocked && (
+        <span className="dispatch-workflow-warning">
+          {draft.agent} cannot be given write access beyond one repo. Detach the{" "}
+          {draft.extraRepoRoots.length === 1 ? "attached repo" : "attached repos"} or choose
+          a harness that can.
+        </span>
+      )}
     </label>
   );
 
@@ -1761,6 +1935,7 @@ function DispatchModal({
                 || drop.uploading
                 || !draft.repoRoot.trim()
                 || !draft.intent.trim()
+                || multiRepoBlocked
               }
             >
             {editing
@@ -1813,6 +1988,7 @@ function DispatchModal({
                 drop.uploading ||
                 !draft.repoRoot.trim() ||
                 !draft.intent.trim() ||
+                multiRepoBlocked ||
                 (selectedWorkflowBlocked && !selectedDependenciesUnmet) ||
                 Boolean(editing && selectedDependenciesUnmet)
               }

@@ -145,6 +145,8 @@ export function mkTask(over: Partial<Task> = {}): Task {
     effort: null,
     source: null,
     repoRoot: "/repo",
+    baseSha: null,
+    extraRepos: [],
     worktreePath: null,
     branch: null,
     provider: null,

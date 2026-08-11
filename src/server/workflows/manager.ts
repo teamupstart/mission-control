@@ -1042,11 +1042,20 @@ export class WorkflowManager {
    * unmerged, and run creation reviews on unknown because skipping ships work unreviewed - so
    * each takes the conservative arm of the same predicate.
    *
-   * An empty changed set falls back to `[anchor]` rather than to no run at all. A turn that
-   * settled having apparently touched nothing is exactly when the review should still run:
-   * the completion boundary has an owner, the `pull_request` action can still ask for the
-   * pull request the agent has not opened, and the alternative - a session that completes
-   * with no review anywhere - is the failure this phase exists to prevent.
+   * Nothing REVIEWABLE falls back to `[anchor]` rather than to no run at all, and there are
+   * two ways to get there rather than one. The ordinary one is that nothing looks changed.
+   * The other is that every changed repository turned out to be unreviewable - a repository
+   * whose pull request is open but whose worktree has been reclaimed reads as changed and has
+   * no checkout left to read evidence from. Each unreviewable repository is reported on its
+   * own before that point, because "changed and cannot be reviewed" is a different fact from
+   * "not changed" and absorbing it into this fallback is how the primary's untouched checkout
+   * came to be reviewed in place of a repository that really had work.
+   *
+   * The fallback itself is deliberate either way: a turn that settled with nothing reviewable
+   * is exactly when the review should still run - the completion boundary keeps an owner, the
+   * `pull_request` action can still ask for the pull request the agent has not opened, and a
+   * session that completes with no review anywhere is the failure this phase exists to
+   * prevent.
    */
   private repoRunTargets(session: Session, anchor: WorkflowBinding): WorkflowBinding[] {
     // A sibling binding submitted directly reviews its own repository and nothing else. Only
@@ -1067,12 +1076,36 @@ export class WorkflowManager {
         : extraRepos[ref.position - 1]?.prUrl ?? null,
       headSha: this.registry.worktreeHead(ref.worktreePath),
     })).filter((status) => status.verdict !== "unchanged");
-    if (reviewable.length === 0) return [anchor];
     const targets: WorkflowBinding[] = [];
     for (const { ref } of reviewable) {
       const binding = ref.role === "primary" ? anchor : this.ensureRepoBinding(anchor, ref);
-      if (binding) targets.push(binding);
+      if (binding) {
+        targets.push(binding);
+        continue;
+      }
+      // A repository this task CHANGED that cannot be reviewed, which is not the same thing
+      // as a repository that was not changed and must not be folded into it silently.
+      //
+      // It is reachable: `repoChangeVerdict` reads an open pull request as changed before it
+      // looks at the worktree at all, and a worktree can be reclaimed while its pull request
+      // is still open - `releasedTaskResources` nulls `worktree_path` and leaves the
+      // `work_episode_prs` row alone. There is then genuinely nothing to review: evidence
+      // capture reads a checkout, and this repository no longer has one.
+      //
+      // So it is REPORTED rather than absorbed. The alternative this replaced was worse than
+      // useless - it fell through to reviewing the primary's untouched checkout, which is
+      // both a review of a repository that did not change and no review of the one that did.
+      console.error(
+        `[workflow] cannot review ${ref.repoRoot} for task ${task.id}: `
+        + "it has work on this task but no worktree is recorded for it",
+      );
     }
+    // The fallback, and now the ONLY reason for it: nothing on this task can be reviewed.
+    // Either nothing looks changed, or the only changed repositories are ones whose checkouts
+    // are gone. A turn that settled having apparently touched nothing is exactly when the
+    // review should still run - the completion boundary keeps an owner, the `pull_request`
+    // action can still ask for a pull request the agent has not opened, and a session that
+    // completes with no review anywhere is the failure this phase exists to prevent.
     return targets.length > 0 ? targets : [anchor];
   }
 

@@ -412,6 +412,53 @@ test("a task whose PRIMARY is untouched gets no primary run - and the attached r
   assert.equal(f.store.activeRunForBinding(f.anchor.id), null);
 });
 
+test("a changed repo with no checkout left is reported, not swapped for the primary", async () => {
+  // `repoChangeVerdict` reads an open pull request as changed BEFORE it looks at the
+  // worktree, and a worktree can be reclaimed while its pull request is still open. That
+  // repository is changed and unreviewable at once - there is no checkout to read evidence
+  // from - and the two facts must not collapse into "nothing changed".
+  //
+  // What that collapse did was worse than useless: with the primary untouched, the fallback
+  // reviewed the PRIMARY's unchanged checkout - a review of a repository that did not change,
+  // standing in for the one that did.
+  const f = seed({ extras: [entry({ worktreePath: null })] });
+  f.registry.recordWorktreeHeads(new Map([[f.primaryCwd, PRIMARY_BASE]]));
+  db.prepare(
+    `INSERT INTO work_episode_prs (
+       episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha,
+       merged_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'open', NULL, NULL, 1)`,
+  ).run(
+    f.registry.workEpisodeForSession(f.sessionId)!.episodeId,
+    SECOND_ROOT,
+    f.sessionId,
+    f.taskId,
+    "https://github.com/owner/second/pull/2",
+  );
+
+  const reported: string[] = [];
+  const realError = console.error;
+  console.error = (...args: unknown[]) => { reported.push(args.join(" ")); };
+  try {
+    f.manager.enqueueSubmit(f.anchor.id, { requestId: "r1" });
+    await f.manager.stop();
+  } finally {
+    console.error = realError;
+  }
+
+  // The repository that cannot be reviewed is NAMED, rather than disappearing into a
+  // fallback that reads as "this task changed nothing".
+  assert.equal(
+    reported.some((line) => line.includes(SECOND_ROOT) && line.includes("no worktree")),
+    true,
+    `the unreviewable repo should be reported; got ${JSON.stringify(reported)}`,
+  );
+  // No binding and no run were invented for a repository with nothing to read.
+  assert.equal(f.store.activeBindingForNoteRepo(f.agentSessionId, SECOND_ROOT), null);
+  // The conversation still keeps one review, so the completion boundary has an owner.
+  assert.deepEqual(reviewedRepos(f), [PRIMARY_ROOT]);
+});
+
 test("a repo whose head nobody has read yet is REVIEWED, never silently skipped", async () => {
   // The shared predicate's third verdict. Completion holds on it, because completing early
   // ships work unmerged; run creation reviews on it, because skipping ships work unreviewed.

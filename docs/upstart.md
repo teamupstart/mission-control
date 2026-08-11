@@ -44,10 +44,9 @@ Control's, and the daemon only passes it through.
 
 When the plugin is installed and its setup state file (`~/.claude/upstartclaw-core-setup`) does
 not read `completed`, the [dispatch form](dispatch-and-backlog.md#dispatch-an-agent) shows an amber note naming what
-will go wrong and the command that fixes it, with the file it read underneath. Two states, two
-different consequences: setup that never ran means Claw's gate refuses tool calls outright and
-an unattended agent stalls, while a setup left half-finished passes that gate and reaches the
-MCP servers unauthenticated instead.
+to run and briefly explaining why setup must finish before dispatch. Ordinary first-run and
+in-progress states do not expose the setup file's implementation details. Malformed or
+unreadable state files still include diagnostic detail because they require a different repair.
 
 **The note never blocks a dispatch** - not the button, not `⌘Enter`, not "Add to backlog". It
 is a machine-configuration fact you may knowingly accept, unlike an

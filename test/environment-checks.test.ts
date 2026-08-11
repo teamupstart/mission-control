@@ -134,25 +134,26 @@ test("a finished setup says nothing", async () => {
   assert.equal(view.detail, null);
 });
 
-test("no_setup warns that the gate will refuse the agent's tool calls, and names the fix", async () => {
+test("no_setup gives the setup action and a brief reason without file details", async () => {
   const view = await claw({ files: { [STATE]: text("no_setup\n") }, dirs: INSTALLED_LAYOUT });
-  assert.match(view.warning ?? "", /stalls/);
-  assert.match(view.warning ?? "", /\/upstartclaw-core:setup/);
-  // The evidence, so an operator who disagrees knows which file the daemon read.
-  assert.equal(view.detail, `${STATE} reads "no_setup"`);
+  assert.equal(
+    view.warning,
+    "Run /upstartclaw-core:setup in an interactive Claude Code session before dispatching. UpstartClaw requires an interactive sign-in before agents can use its tools.",
+  );
+  assert.equal(view.detail, null);
 });
 
 // `check-setup.sh` exits 0 for `in_progress` - so the honest warning for this state is NOT
 // the stall. Setup was abandoned half-done: the servers are wired and unauthenticated, and
 // the agent fails on a credential. A note claiming a stall here would send the operator
 // hunting for a hang that never happens.
-test("in_progress warns about an unfinished setup rather than a stall", async () => {
+test("in_progress tells the operator to finish setup and briefly explains why", async () => {
   const view = await claw({ files: { [STATE]: text("in_progress") }, dirs: INSTALLED_LAYOUT });
-  assert.match(view.warning ?? "", /never finished/);
-  assert.match(view.warning ?? "", /unauthenticated/);
-  assert.doesNotMatch(view.warning ?? "", /stalls/);
-  assert.match(view.warning ?? "", /\/upstartclaw-core:setup/);
-  assert.equal(view.detail, `${STATE} reads "in_progress"`);
+  assert.equal(
+    view.warning,
+    "Finish /upstartclaw-core:setup in an interactive Claude Code session before dispatching. UpstartClaw requires its interactive sign-ins to finish before agents can reliably use its tools.",
+  );
+  assert.equal(view.detail, null);
 });
 
 // The gate's `*` branch: anything it does not recognise exits 2, so an unexpected value is
@@ -167,7 +168,11 @@ test("an unrecognised or empty state file is reported as the blocked case", asyn
     ["   \n", `${STATE} reads "   "`],
   ] as const) {
     const view = await claw({ files: { [STATE]: text(value) }, dirs: INSTALLED_LAYOUT });
-    assert.match(view.warning ?? "", /stalls/, `${JSON.stringify(value)} should warn`);
+    assert.match(
+      view.warning ?? "",
+      /^Run \/upstartclaw-core:setup/,
+      `${JSON.stringify(value)} should warn`,
+    );
     assert.equal(view.detail, detail);
   }
 });
@@ -212,12 +217,11 @@ test("values the gate accepts stay silent, trailing newlines and all", async () 
 });
 
 // `in_progress` with trailing newlines is the same story on the other accepted value: the gate
-// lets it through, so the note has to be the unfinished-setup one and not the stall.
+// lets it through, so the note has to tell the operator to finish the setup.
 test("in_progress survives its trailing newlines as the unfinished-setup note", async () => {
   for (const value of ["in_progress", "in_progress\n", "in_progress\n\n"]) {
     const view = await claw({ files: { [STATE]: text(value) }, dirs: INSTALLED_LAYOUT });
-    assert.match(view.warning ?? "", /never finished/, JSON.stringify(value));
-    assert.doesNotMatch(view.warning ?? "", /stalls/);
+    assert.match(view.warning ?? "", /^Finish \/upstartclaw-core:setup/, JSON.stringify(value));
   }
 });
 
@@ -238,7 +242,11 @@ test("a state file holding something else is classified, never quoted", async ()
   ];
   for (const [value, size] of cases) {
     const view = await claw({ files: { [STATE]: text(value) }, dirs: INSTALLED_LAYOUT });
-    assert.match(view.warning ?? "", /stalls/, `${JSON.stringify(value)} still has to warn`);
+    assert.match(
+      view.warning ?? "",
+      /^Run \/upstartclaw-core:setup/,
+      `${JSON.stringify(value)} still has to warn`,
+    );
     assert.match(view.detail ?? "", size);
     assert.match(view.detail ?? "", /not shown here/);
     // The path is still named, so the operator can open the file they already own.
@@ -289,8 +297,7 @@ test("an installed plugin with no state file warns, by the plugin's directory", 
   const view = await claw({ dirs: INSTALLED_LAYOUT });
   const named = await claw({ files: { [STATE]: text("no_setup") }, dirs: INSTALLED_LAYOUT });
   assert.equal(view.warning, named.warning);
-  assert.match(view.detail ?? "", /no \/home\/tester\/\.claude\/upstartclaw-core-setup/);
-  assert.match(view.detail ?? "", /upstartclaw-core is installed/);
+  assert.equal(view.detail, null);
 });
 
 // The second, independent signal. Claude Code's install record is authoritative and cheap;
@@ -301,7 +308,7 @@ test("an installed plugin is also recognised from Claude Code's install record",
     plugins: { "upstartclaw-core@upstartclaw": [{ version: "1.1.7" }] },
   });
   const view = await claw({ files: { [RECORD]: text(record) } });
-  assert.match(view.warning ?? "", /stalls/);
+  assert.match(view.warning ?? "", /^Run \/upstartclaw-core:setup/);
 });
 
 // The record is read under a byte bound and grows with the number of installed plugins, so a
@@ -313,7 +320,7 @@ test("a record that does not name the plugin does not overrule the directory", a
     plugins: { "dev-tools@upstartclaw": [{ version: "1.9.0" }] },
   });
   const view = await claw({ files: { [RECORD]: text(truncated) }, dirs: INSTALLED_LAYOUT });
-  assert.match(view.warning ?? "", /stalls/);
+  assert.match(view.warning ?? "", /^Run \/upstartclaw-core:setup/);
 });
 
 // The marketplace's name is a PREFIX of the plugin's, and a machine that merely added the

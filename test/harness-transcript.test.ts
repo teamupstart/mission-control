@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Session } from "../src/shared/types.ts";
+import type { Session, TranscriptMessage } from "../src/shared/types.ts";
+// The browser-side fold, imported into a server-side test on purpose: the defect it pins lived
+// in neither layer but in the shape passed between them, so an assertion inside either one
+// would have kept passing.
+import { transcriptRows } from "../src/web/lib/tools.ts";
 
 // What is at stake: a harness that CANNOT read a session's conversation has to degrade
 // exactly the way a harness that simply hasn't got a file yet does - the shape every
@@ -26,7 +30,9 @@ process.env.HARNESS_HOME = join(home, "state");
 process.env.CODEX_HOME = join(home, "codex");
 
 const { HARNESSES, harnessFor, sessionMessages } = await import("../src/server/harness/index.ts");
-const { codexTranscript } = await import("../src/server/harness/codex/transcript.ts");
+const { codexTranscript, joinCodexBatches, parseCodexMessages } = await import(
+  "../src/server/harness/codex/transcript.ts"
+);
 const { buildApp } = await import("../src/server/routes.ts");
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { GOAL_UNSUPPORTED } = await import("../src/shared/goal.ts");
@@ -63,6 +69,80 @@ test("both shipped harnesses read messages, and each names its own metadata sour
   assert.equal(HARNESSES.codex.transcript?.metaSource, "codex-rollout");
   assert.ok(HARNESSES.claude.transcript?.messages, "Claude reads its transcript as messages");
   assert.equal(HARNESSES.claude.transcript?.metaSource, "transcript");
+});
+
+test("both harnesses hand the shared fold a run it can actually fold", () => {
+  // The contract that broke, stated across the seam it broke at. `transcriptRows` is the only
+  // fold in the app and by design it groups assistant turns that are TOOL-ONLY. Each reader
+  // decides, on its own, whether the turns it emits can ever be that shape - and Codex's said
+  // no: every command was appended to the preceding `agent_message`, so a stretch of work drew
+  // one block per command while Claude's drew a single record. Neither reader's own tests could
+  // see it, because nothing on either side of the boundary was wrong in isolation.
+  //
+  // Asserted on the ROW COUNT and not on the parse, because the row is what a person sees and
+  // it is the number that was wrong: three commands, one record.
+  const shape = (messages: TranscriptMessage[]) =>
+    transcriptRows(messages).map((row) => (row.kind === "tools" ? `run:${row.tools.length}` : "turn"));
+
+  const ts = new Date(1000).toISOString();
+  const codexRun = parseCodexMessages([
+    { type: "event_msg", timestamp: ts, payload: { type: "user_message", message: "ASK" } },
+    { type: "event_msg", timestamp: ts, payload: { type: "agent_message", message: "on it" } },
+    // Interleaved exactly as a rollout writes them: reasoning and output records between the
+    // calls. They carry no turn, so they must not break the run into pieces.
+    { type: "response_item", timestamp: ts, payload: { type: "reasoning", summary: [] } },
+    { type: "custom_tool_call", timestamp: ts, payload: { call_id: "a", name: "exec", arguments: "ls" } },
+    { type: "response_item", timestamp: ts, payload: { type: "custom_tool_call_output", call_id: "a", output: "x" } },
+    { type: "response_item", timestamp: ts, payload: { type: "reasoning", summary: [] } },
+    { type: "custom_tool_call", timestamp: ts, payload: { call_id: "b", name: "exec", arguments: "pwd" } },
+    { type: "custom_tool_call", timestamp: ts, payload: { call_id: "c", name: "exec", arguments: "git status" } },
+  ]);
+  assert.deepEqual(shape(codexRun), ["turn", "turn", "run:3"]);
+
+  // The same shape Claude's reader produces for the same work, which is the point: the fold is
+  // agent-agnostic and now has nothing to be agnostic ABOUT.
+  const claudeRun: TranscriptMessage[] = [
+    { id: "u", role: "user", text: "ASK", tools: [], ts: 1000 },
+    { id: "a", role: "assistant", text: "on it", tools: [], ts: 1000 },
+    { id: "t1", role: "assistant", text: "", tools: [{ name: "Bash", input: '{"command":"ls"}' }], ts: 1000 },
+    { id: "t2", role: "assistant", text: "", tools: [{ name: "Bash", input: '{"command":"pwd"}' }], ts: 1000 },
+    { id: "t3", role: "assistant", text: "", tools: [{ name: "Bash", input: '{"command":"git status"}' }], ts: 1000 },
+  ];
+  assert.deepEqual(shape(claudeRun), shape(codexRun));
+});
+
+test("a window seam rejoins one split run but never welds a run onto prose", () => {
+  // `joinCodexBatches` has two jobs and only one of them is a merge. Both are asserted here
+  // because the merge is the dangerous one: welding a run onto the prose above it is exactly how
+  // the fold was defeated, and a window boundary is the one place that could still do it after
+  // the parser stopped.
+  const run = (id: string, names: string[]): TranscriptMessage => ({
+    id: `tool:${id}`,
+    role: "assistant",
+    text: "",
+    tools: names.map((name) => ({ name })),
+    ts: 1000,
+  });
+  const prose: TranscriptMessage = { id: "p", role: "assistant", text: "on it", tools: [], ts: 1000 };
+
+  // Seam INSIDE a run: the halves are one turn and are merged, so a windowed read reconstructs
+  // what a whole-file parse produces.
+  const inside = joinCodexBatches([run("a", ["exec"])], [run("b", ["exec", "exec"])]);
+  assert.ok(inside, "a split run must join");
+  assert.deepEqual(inside.later, [], "the trailing half is consumed...");
+  assert.equal(inside.earlier.at(-1)?.tools.length, 3, "...into one turn of three commands");
+
+  // Seam BETWEEN prose and a run: joined, so the window still widens back to the narration -
+  // but the two stay separate turns, which is what keeps the run foldable.
+  const across = joinCodexBatches([prose], [run("b", ["exec"])]);
+  assert.ok(across, "the window must still reach back past the run to its narration");
+  assert.deepEqual(across.earlier, [prose], "the prose is untouched...");
+  assert.deepEqual(across.later.length, 1, "...and the run is still its own turn");
+  assert.deepEqual(across.earlier.at(-1)?.tools, [], "no command was welded onto the prose");
+
+  // A leading turn that is not a synthesized run means the window did not open mid-turn, so
+  // there is nothing to repair and the scan stops.
+  assert.equal(joinCodexBatches([prose], [prose]), null);
 });
 
 test("an agent that can never carry a goal is one whose harness reads no messages", () => {

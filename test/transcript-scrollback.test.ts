@@ -200,7 +200,15 @@ test("a rollout walks back correctly even though its synthesized ids cannot de-d
   assert.deepEqual(complete(walk.messages), complete(wholeCodex(path)));
 });
 
-test("a boundary between an agent message and tool call keeps one assistant turn", () => {
+test("a boundary between an agent message and tool call keeps the run its own turn", () => {
+  // A window that opens between the narration and the command it precedes must not merge them.
+  // This used to assert the opposite - one turn carrying both - and that merge is what stopped
+  // `transcriptRows` from ever folding a Codex run: the fold groups tool-ONLY turns, so a turn
+  // carrying prose kept every command on its own line while Claude's collapsed into one record.
+  //
+  // What has to hold either way, and is the actual seam property, is the deepEqual below: a
+  // windowed read agrees with a whole-file parse, so no command is dropped, duplicated, or
+  // reattached to the wrong turn by the repair.
   const path = join(dir, "tool-seam.jsonl");
   const text = "A".repeat(600 * 1024);
   const records = [
@@ -224,8 +232,11 @@ test("a boundary between an agent message and tool call keeps one assistant turn
 
   const init = codex.initial(path);
   assert.deepEqual(complete(init.messages), complete(parseCodexMessages(records)));
-  assert.equal(init.messages.length, 1);
-  assert.deepEqual(init.messages[0]?.tools, [{ name: "shell", input: "pwd" }]);
+  assert.equal(init.messages.length, 2, "the narration and the run are two turns");
+  assert.equal(init.messages[0]?.text, text, "the narration keeps its prose...");
+  assert.deepEqual(init.messages[0]?.tools, [], "...and none of the commands");
+  assert.equal(init.messages[1]?.text, "", "the run carries no prose, which is what lets it fold");
+  assert.deepEqual(init.messages[1]?.tools, [{ name: "shell", input: "pwd" }]);
 
   const window = codex.window(path, 12, 48);
   assert.deepEqual(complete(window.messages), complete(parseCodexMessages(records)));
@@ -312,13 +323,13 @@ test("a record larger than the scan ceiling cannot strand older history", () => 
   assert.equal(oldest.atStart, true);
 });
 
-test("a page that parses to nothing still leaves its tool call attached to its narration", () => {
-  // The seam repair walks BACKWARD from a page to attach a leading tool-only assistant to
-  // the turn it narrates, and it stops as soon as a batch will not join. The worry is what
-  // happens when the page itself parses to nothing - a rollout's tool OUTPUT records carry
-  // no turn - because then there is no leading message to join to, the walk stops on the
-  // `custom_tool_call` sitting just above, and it looks as though that tool can never
-  // reach the `agent_message` above THAT.
+test("a page that parses to nothing still reaches back past its tool call to the narration", () => {
+  // The seam repair walks BACKWARD from a page whose leading message is a tool-only assistant,
+  // and it stops as soon as a batch will not join. The worry is what happens when the page
+  // itself parses to nothing - a rollout's tool OUTPUT records carry no turn - because then
+  // there is no leading message to join to, the walk stops on the `custom_tool_call` sitting
+  // just above, and it looks as though the window can never reach the `agent_message` above
+  // THAT.
   //
   // It reaches it, and this pins the reason: a batch that fails to join is DISCARDED
   // rather than emitted, so those records stay unread and the next page parses the tool
@@ -348,13 +359,17 @@ test("a page that parses to nothing still leaves its tool call attached to its n
   assert.deepEqual(
     complete(walk.messages),
     complete(wholeCodex(path)),
-    "the tool stays on the assistant turn that narrated it, exactly as a whole-file parse groups it",
+    "the run lands directly after the turn it followed, exactly as a whole-file parse groups it",
   );
-  assert.equal(walk.messages.length, 2);
-  assert.deepEqual(walk.messages[1]?.tools, [{ name: "shell", input: "ls" }]);
-  assert.equal(
-    walk.messages.filter((m) => !m.text && m.tools.length > 0).length,
-    0,
-    "no orphaned tool-only turn is left behind at the boundary",
+  assert.equal(walk.messages.length, 3, "ASK, the narration, and the run");
+  assert.equal(walk.messages[1]?.text, "SAY");
+  assert.deepEqual(walk.messages[2]?.tools, [{ name: "shell", input: "ls" }]);
+  // The run is a turn of its own, which is the shape the fold needs - but it must sit BEHIND
+  // its narration rather than leading the window, or a reader scrolled to here would meet a
+  // stretch of commands with nothing saying what they were for. That is what the walk reaching
+  // back past the tool call buys, and asserting the order is how it stays bought.
+  assert.deepEqual(
+    walk.messages.map((m) => (m.text ? "prose" : "run")),
+    ["prose", "prose", "run"],
   );
 });

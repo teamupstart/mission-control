@@ -17,8 +17,9 @@ import {
 // model, the reasoning effort and a token count and nothing renderable as conversation.
 // That was a claim about the format, and it was wrong: a rollout's `event_msg` records
 // carry `user_message` / `agent_message` verbatim, and its tool calls arrive as separate
-// records that extend the turn before them. Hence `parseBatch` rather than `parse` - the
-// grouping needs the whole window, not a line at a time - and hence
+// records that accumulate into a turn of their own. Hence `parseBatch` rather than `parse` -
+// a run of calls is several records and one turn, so the grouping needs the whole window
+// rather than a line at a time - and hence
 // `GOAL_UNSUPPORTED.codex` (`@shared/goal.ts`) is null, which `harness-transcript.test.ts`
 // pins against this capability.
 //
@@ -124,7 +125,17 @@ export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
     const tool: ToolCall = { name: String(bp.name ?? "tool") };
     const input = cappedInput(bp.arguments ?? bp.input);
     if (input) tool.input = input;
-    if (!currentAssistant) {
+    // A run of commands is its OWN assistant turn, never an extension of the prose turn above
+    // it. This used to append to whichever `agent_message` came last, which made every Codex
+    // turn carry both prose and tools - and `transcriptRows` (`src/web/lib/tools.ts`) folds
+    // tool-ONLY turns, so the fold could not fire for this harness at all. A stretch of work
+    // that reads as one record on Claude read as one block per command here.
+    //
+    // The rollout agrees with the split: `custom_tool_call` is its own record, with `reasoning`
+    // records between calls, and the prose arrives as a separate `agent_message`. Consecutive
+    // calls still accumulate into ONE turn, so nothing downstream sees more turns than before -
+    // only turns of a single kind.
+    if (!currentAssistant || currentAssistant.text) {
       currentAssistant = { id: `tool:${id}`, role: "assistant", text: "", tools: [], ts };
       out.push(currentAssistant);
     }
@@ -133,6 +144,22 @@ export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
   return out;
 }
 
+/**
+ * Repair a window that opens part-way through an assistant turn.
+ *
+ * Two different jobs, and only one of them is a merge. A window whose first message is a
+ * synthesized tool-only run began mid-turn either way, so the answer is always "keep scanning
+ * back" - but what to DO with the two halves depends on what sits above the seam:
+ *
+ *   - Another tool-only run: the seam fell inside ONE run of commands, and the halves are
+ *     joined. The scroll-back contract requires a windowed walk to reconstruct the whole-file
+ *     parse exactly (`test/transcript-scrollback.test.ts`), so this cannot be left to the
+ *     browser-side fold even though that fold would draw the same thing.
+ *   - A prose turn: a different turn, and joining them is precisely the bug above. The join is
+ *     still ACCEPTED, so the window keeps widening far enough back to include the prose the run
+ *     followed; the two are simply returned unchanged. `repairLeadingBatch` re-tests the newly
+ *     prepended leading message on the next pass, so this terminates.
+ */
 export function joinCodexBatches(
   earlier: TranscriptMessage[],
   later: TranscriptMessage[],
@@ -150,6 +177,7 @@ export function joinCodexBatches(
   ) {
     return null;
   }
+  if (left.text !== "") return { earlier, later };
   return {
     earlier: [
       ...earlier.slice(0, -1),

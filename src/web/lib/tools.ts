@@ -33,7 +33,7 @@ const DETAIL_CAP = 40;
  * fallback still gets the answer whenever the field precedes the cut - which is the
  * common case, since the interesting field (`command`, `file_path`) is rarely last.
  */
-function strField(input: string, keys: readonly string[]): string | null {
+function strField(input: string, keys: readonly string[], bareKeys = false): string | null {
   let parsed: Record<string, unknown> | null = null;
   try {
     const o: unknown = JSON.parse(input);
@@ -45,7 +45,7 @@ function strField(input: string, keys: readonly string[]): string | null {
     const v = parsed?.[key];
     if (typeof v === "string" && v.trim()) return v.trim();
     if (!parsed) {
-      const raw = rawField(input, key);
+      const raw = rawField(input, key, bareKeys);
       if (raw) return raw;
     }
   }
@@ -61,11 +61,26 @@ function strField(input: string, keys: readonly string[]): string | null {
  * named. Measured on this machine's transcripts, the closed-only match left 88 `bash`
  * chips bare, nearly all of them a cut-off command. The head of a value is enough for
  * both things it feeds: a command name is its first token, and a title is a preview.
+ *
+ * `bareKeys` also accepts an UNQUOTED key, because not every harness writes JSON. Codex's
+ * `exec` input is a script, and the command inside it is an object literal - `cmd: "…"` as
+ * often as `"cmd": "…"`. Opt-in per key set rather than always on: the quoted form is the only
+ * one a JSON producer can emit, so relaxing it for the generic key list would let a common word
+ * like `name:` or `query:` match inside a VALUE and name a call after its own argument text.
+ *
+ * The unquoted form must still begin at a field boundary. Dropping the required leading quote
+ * also drops the only thing that kept `command` from matching the TAIL of a longer name, so
+ * `{ shell_command: "old", cmd: "git status" }` reported `old` - a real command line, from the
+ * wrong field, which is the worst way for this to be wrong. The lookbehind rejects any key
+ * preceded by an identifier character, which covers `shell_command`, `my_cmd` and `precommand`
+ * at once and still admits `{`, `,`, `(`, whitespace, a leading quote, and the start of input.
+ * No trailing assertion is needed: the required `:` already refuses `cmd_extra`.
  */
-function rawField(input: string, key: string): string | null {
-  const closed = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(input);
+function rawField(input: string, key: string, bareKeys = false): string | null {
+  const k = bareKeys ? `(?<![A-Za-z0-9_$])"?${key}"?` : `"${key}"`;
+  const closed = new RegExp(`${k}\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(input);
   if (closed) return unescape(closed[1] ?? "");
-  const open = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)$`).exec(input);
+  const open = new RegExp(`${k}\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)$`).exec(input);
   if (!open) return null;
   // Drop the cap's ellipsis and any half-written escape, then re-mark it as cut.
   const head = unescape((open[1] ?? "").replace(/…$/, "").replace(/\\+$/, ""));
@@ -226,6 +241,24 @@ const DETAIL_KEYS: Record<string, readonly string[]> = {
 /** Fallback for a tool we don't know (MCP servers, new built-ins). */
 const GENERIC_KEYS = ["description", "name", "file_path", "path", "pattern", "query", "url"];
 
+/**
+ * The tools that run a command line, across harnesses.
+ *
+ * Claude calls it `Bash`; Codex records `exec` (and `exec_command`, `shell`, `local_shell`
+ * depending on which tool the model reached for). They are one kind of call to a reader, and
+ * naming them here is what keeps that judgement in one place instead of in each rendering.
+ */
+const SHELL_TOOLS = new Set(["bash", "bashoutput", "exec", "exec_command", "shell", "local_shell"]);
+/**
+ * Where a shell call keeps its command line. First one present wins.
+ *
+ * `cmd` is Codex's: its `exec` input is a whole script, and the command is an argument inside a
+ * `tools.exec_command({ cmd: "…" })` call rather than a top-level field. Measured over 32 real
+ * rollouts, reading these two keys names 598 of 927 calls - about 80% of `exec` calls, the rest
+ * being `wait` (no command to name) and `apply_patch` payloads (a patch, not a command line).
+ */
+const SHELL_KEYS = ["command", "cmd"];
+
 /** Display name for a tool: `mcp__chrome-devtools__click` reads `chrome-devtools:click`. */
 function chipName(name: string): string {
   const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
@@ -244,8 +277,10 @@ export function toolChip(t: ToolCall): ToolChip {
   const name = chipName(t.name);
   if (!t.input) return { name, detail: null, title: t.name };
 
-  const isShell = name === "bash" || name === "bashoutput";
-  const source = strField(t.input, isShell ? ["command"] : (DETAIL_KEYS[name] ?? GENERIC_KEYS));
+  const isShell = SHELL_TOOLS.has(name);
+  const source = isShell
+    ? strField(t.input, SHELL_KEYS, true)
+    : strField(t.input, DETAIL_KEYS[name] ?? GENERIC_KEYS);
   if (!source) return { name, detail: null, title: t.name };
 
   // A shell call chips the command name (`ls`), not the command line - the line is the

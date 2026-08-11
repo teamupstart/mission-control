@@ -41,12 +41,22 @@ async function shoot(page: Page, card: Locator, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/conversation-terminal-view/${name}.png`);
 }
 
-async function dispatch(page: Page, daemon: DaemonHandle, goal: string): Promise<void> {
+async function dispatch(
+  page: Page,
+  daemon: DaemonHandle,
+  goal: string,
+  agent: "claude" | "codex" = "claude",
+): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill(goal);
+  // Left alone for Claude, which is the shipped default - so the existing tests keep
+  // dispatching through exactly the control path they always did.
+  if (agent !== "claude") {
+    await dialog.locator("select").filter({ hasText: "Claude Code" }).selectOption(agent);
+  }
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
@@ -187,6 +197,84 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   await reply.fill("second instruction");
   await reply.press("Enter");
   await expect(reopened.getByText("Mock reply to: second instruction")).toBeVisible();
+});
+
+test("a Codex run of commands folds into one record too", async ({ dashboard, daemon }) => {
+  // The claim the rendering makes is about a stretch of work, not about a vendor, and it was
+  // true of exactly one harness: Codex's reader hung every command off the prose turn that
+  // preceded it, so `transcriptRows` - which folds tool-ONLY turns - never had anything to
+  // fold. Each command therefore drew its own block, header and spine dot, and the run read as
+  // a column of gaps where Claude's reads as one line.
+  //
+  // Same probe as the Claude test above, and the same three commands, because "looks like
+  // Claude's" is the whole requirement. Both halves are asserted: the fold, and that the
+  // record opens onto real commands - Codex's `exec` puts the command inside a script, and a
+  // record that folded 3 lines of the bare word "exec" would satisfy the fold and still say
+  // nothing.
+  await dispatch(dashboard, daemon, "fold a codex run of commands", "codex");
+
+  // The chat log first, on the shipped default, because the reader that was fixed feeds BOTH
+  // renderings and the fold is shared. Here the run is one `turn-toolrun` row - "codex
+  // executed" and its chips - where it used to be three chips hanging off the preamble turn.
+  const chat = dashboard.locator("article.card").first();
+  await openConversation(chat);
+  await seedRun(chat, chat.getByPlaceholder(/^Reply to this session/));
+  const chatRun = chat.locator(".turn-toolrun");
+  await expect(chatRun).toHaveCount(1);
+  await expect(chatRun).toContainText("codex executed");
+  await expect(chatRun.locator(".tool-chip")).toHaveCount(3);
+  // A chip is a glance, so it names the command rather than the whole line - `exec rg`, the
+  // same shape a Claude `bash ls` chip has always had.
+  await expect(chatRun.locator(".tool-chip").first()).toHaveText(/exec\s*rg/);
+
+  // Both renderings are photographed, not just the terminal one. The fold reaches chat mode
+  // through the same reader, so it is a second visible surface this change alters, and a
+  // selector count is not something a person can look at and recognise as fixed.
+  await chatRun.scrollIntoViewIfNeeded();
+  await shoot(dashboard, chat, "05-codex-folded-run-chat");
+
+  await useRendering(dashboard, daemon, "terminal");
+  const card = dashboard.locator("article.card").first();
+  await openConversation(card);
+  const terminal = card.getByRole("region", { name: "Conversation terminal" });
+  await expect(terminal).toContainText("mission-control: conversation · codex");
+
+  // ONE record for the whole run, and the count is what proves the fold rather than the
+  // record's mere presence: unfolded, this was three records of one command each.
+  await expect(terminal.locator(".pty-toolrun")).toHaveCount(1);
+  const record = terminal.locator(".pty-toolrun");
+  await expect(record).toContainText("codex executed 3 commands");
+  await expect(record.locator(".turn-tools-lines")).toBeHidden();
+
+  // The preamble stayed prose in its own stdout block - the fold groups commands, it does not
+  // swallow what the agent said.
+  await expect(terminal.getByText("Mock reply before the run")).toBeVisible();
+
+  // Photographed CLOSED first, because this is the state the report was about: one line where
+  // there used to be one block per command, each with its own header and 17px of padding. The
+  // opened state below proves a different thing, so it gets its own picture rather than
+  // overwriting this one. Scrolled to the record because the log pins itself to the newest
+  // turn, and a picture of the thing this test is about has to contain it.
+  await record.scrollIntoViewIfNeeded();
+  await shoot(dashboard, card, "06-codex-folded-run-terminal-closed");
+
+  // Open, every line reads as one runnable command. `exec` and not `bash`, because this
+  // rendering reports the tool the transcript names; the command after it is the assertion
+  // that matters, and it is the thing that was entirely absent before.
+  await record.locator("summary").click();
+  await expect(record.locator(".tool-line")).toHaveText([
+    "exec rg PersonaDirective src test",
+    "exec git status --short",
+    "exec sed -n '1,40p' src/server/registry.ts",
+  ]);
+
+  // The record claims no result, on this harness as on the other: the rollout records
+  // `custom_tool_call_output`, but nothing in the normalized transcript carries an outcome, so
+  // the rendering must not imply one.
+  await expect(record).not.toContainText(/done|exit|succeeded|failed|passed/i);
+
+  await record.scrollIntoViewIfNeeded();
+  await shoot(dashboard, card, "07-codex-folded-run-terminal-open");
 });
 
 test("one session reads as a terminal while the rest stay on the chat log", async ({

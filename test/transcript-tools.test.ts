@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { commandName, toolChip, transcriptRows } from "../src/web/lib/tools.ts";
+import { commandName, toolChip, toolLineTarget, transcriptRows } from "../src/web/lib/tools.ts";
 import type { ToolCall, TranscriptMessage } from "../src/shared/types.ts";
 
 // The expanded card's tool-call presentation. The inputs below are real shapes lifted
@@ -65,6 +65,80 @@ test("commandName finds the command a shell line is about", () => {
 test("bash chips the command, not the tool name", () => {
   const chip = toolChip(call("Bash", { command: "ls -la", description: "List files" }));
   assert.deepEqual(chip, { name: "bash", detail: "ls", title: "ls -la" });
+});
+
+// Codex's shell tool. Its input is not a JSON object with a `command` field - it is a freeform
+// script, and the command sits inside a `tools.exec_command({ ... })` call within it. Every one
+// of these calls used to chip and line as the bare word `exec` with no command anywhere, which
+// made a folded run of them - "codex executed 18 commands" - open onto eighteen useless rows.
+test("codex's exec chips the command out of the script that wraps it", () => {
+  const chip = toolChip({
+    name: "exec",
+    input: 'const r = await tools.exec_command({"cmd":"rg PersonaDirective src test","workdir":"/repo"});',
+  });
+  assert.deepEqual(chip, { name: "exec", detail: "rg", title: "rg PersonaDirective src test" });
+});
+
+test("codex's exec is read from an object literal, not just from JSON", () => {
+  // The shape a real rollout carries most often: a JS object literal, so the key is UNQUOTED.
+  // Requiring the quoted form left about a tenth of all calls bare for no reason a reader could
+  // see - two calls written the same way by the same agent, one named and one not.
+  const chip = toolChip({
+    name: "exec",
+    input: 'const r = await tools.exec_command({\n  cmd: "git status --short",\n  workdir: "/repo",\n});',
+  });
+  assert.deepEqual(chip, { name: "exec", detail: "git", title: "git status --short" });
+});
+
+// Dropping the required leading quote also dropped the only thing stopping `command` from
+// matching the TAIL of a longer field name, and the failure was the bad kind: a real command
+// line lifted out of the wrong field, so the record looked right and said something false.
+test("an unquoted shell key only matches at a field boundary", () => {
+  const wrong = (input: string) => toolChip({ name: "exec", input });
+  // A key ENDING in the one being looked for.
+  assert.equal(wrong('tools.exec_command({ shell_command: "old", cmd: "git status" })').title, "git status");
+  // The same, quoted - the form that was always safe, kept safe.
+  assert.equal(wrong('tools.exec_command({"shell_command":"old","cmd":"git status"})').title, "git status");
+  // And a key ending in the SHORT one, which `_` alone would not have caught.
+  assert.equal(wrong('tools.exec_command({ my_cmd: "old", cmd: "git status" })').title, "git status");
+  assert.equal(wrong('tools.exec_command({ precommand: "old", command: "git status" })').title, "git status");
+  // The boundaries that must still be admitted: `{`, `(`, whitespace, and start of input.
+  assert.equal(wrong('tools.exec_command({cmd:"npm test"})').title, "npm test");
+  assert.equal(wrong('exec_command(cmd: "npm test")').title, "npm test");
+  assert.equal(wrong('cmd: "npm test"').title, "npm test");
+  // The trailing side needs no assertion of its own - the required `:` refuses a longer key.
+  assert.equal(wrong('tools.exec_command({ cmd_extra: "nope", cmd: "ok" })').title, "ok");
+});
+
+test("a codex command cut off by the input cap is still named", () => {
+  const chip = toolChip({ name: "exec", input: 'const r = await tools.exec_command({ cmd: "npm run build && npm run sm…' });
+  assert.equal(chip.detail, "npm");
+  assert.ok(chip.title.endsWith("…"), chip.title);
+});
+
+test("a codex call that is not a command line stays honestly bare", () => {
+  // `apply_patch` rides the same `exec` tool, and its payload is a patch rather than a command.
+  // There is no command to name, so the chip says the tool's name and stops - inventing one out
+  // of the diff body would put a line in the record that was never run.
+  const patch: ToolCall = {
+    name: "exec",
+    input: 'const patch = "*** Begin Patch\\n*** Update File: src/server/db.ts\\n@@\\n-const a = 1\\n";',
+  };
+  assert.deepEqual(toolChip(patch), { name: "exec", detail: null, title: "exec" });
+  // And the record's LINE omits it rather than printing `exec exec`, which is the rule that
+  // already governed a nameless Bash call.
+  assert.equal(toolLineTarget(patch), null);
+});
+
+test("relaxing the key quoting for shell tools does not leak into the others", () => {
+  // The unquoted-key match is opt-in per key set, and this is why: `name` and `query` are
+  // generic keys, and a tool whose VALUE happens to contain `name: "..."` must not be chipped
+  // after its own argument text.
+  const chip = toolChip({
+    name: "mcp__notes__append",
+    input: '{"body":"add a field name: \\"owner\\" to the row"}',
+  });
+  assert.equal(chip.detail, null, "no key matched, so nothing is claimed");
 });
 
 test("path tools chip the basename, keeping the full path on hover", () => {

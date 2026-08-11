@@ -680,6 +680,22 @@ export const SESSION_ACTION_WAIT_REASONS = [
    * pushed before the last checkout.
    */
   "pull_request_wrong_branch",
+  /**
+   * Prepared, and held because another repository's review is using this conversation's turn.
+   *
+   * A multi-repo task's session runs one review per repository it changed, and they share one
+   * pane and one turn. At most one of them may have a delivery outstanding at a time: two
+   * instructions typed into one conversation interleave into a turn neither expects, and the
+   * pickup anchor that proves an action was read cannot tell which of them the session
+   * answered. So the others hold HERE, explicitly, rather than racing.
+   *
+   * Its own reason rather than `awaiting_send`, which means "ready, and Preview never types"
+   * or "ready, waiting on authorization". This one is ready, authorized, and deliberately
+   * queued - it clears on its own the moment the sibling's turn is accounted for, and an
+   * operator who reads `awaiting_send` on a Live binding would go looking for a consent
+   * problem that is not there.
+   */
+  "queued_for_conversation",
 ] as const;
 export type SessionActionWaitReason = (typeof SESSION_ACTION_WAIT_REASONS)[number];
 
@@ -2061,7 +2077,34 @@ export interface WorkflowBinding {
   workflowVersionId: WorkflowVersionId;
   noteKey: string;
   sessionId: string | null;
-  /** Immutable compatibility facts captured when the binding was created or reattached. */
+  /**
+   * WHICH CHECKOUT this binding reviews, and the second half of the active-binding key.
+   *
+   * A conversation owns one active binding per repository - `(noteKey, repoRoot)` - because a
+   * multi-repo task's session makes changes in several checkouts and each one gets its own
+   * full review run. One workflow run is one repository, and this is where that starts.
+   *
+   * Empty string means "this session's own checkout", which is what every binding ever
+   * written was and what every single-repo binding still is. It is a SENTINEL rather than
+   * null because SQLite treats nulls as distinct in a unique index, so a null here would let
+   * two active bindings own one conversation - the exact invariant this column widens rather
+   * than removes. It is not the resolved repository path either: a session's repo root can be
+   * null (a checkout outside a repository) and can move under it, and neither may cost a
+   * conversation its one-binding guarantee.
+   *
+   * A non-empty value names a SECONDARY repository attached to the session's task. Then
+   * `sessionCwd` and `sessionRepoRoot` below hold THAT repository's worktree and root rather
+   * than the session's own - which is what makes every existing per-binding rule (evidence
+   * capture, check execution, the Inspector gate's adoption match, the capture root) scope
+   * itself to the right repository without knowing this feature exists.
+   */
+  repoRoot: string;
+  /**
+   * Immutable compatibility facts captured when the binding was created or reattached.
+   *
+   * `sessionCwd`/`sessionRepoRoot` are the BINDING'S CHECKOUT, which for a `repoRoot` binding
+   * is a secondary worktree rather than the session's cwd. See `repoRoot` above.
+   */
   sessionAgent: string;
   sessionName: string;
   sessionCwd: string | null;
@@ -2098,6 +2141,16 @@ export interface WorkflowBindingSummary {
   workflowVersion: number;
   noteKey: string;
   sessionId: string | null;
+  /**
+   * The repository this binding reviews, RESOLVED for display: a secondary repository's root,
+   * or the session's own root for the binding that follows its cwd.
+   *
+   * Resolved here rather than shipped raw so no surface has to know that the empty-string
+   * sentinel on `WorkflowBinding.repoRoot` means "ask the session". Null when the binding
+   * follows a session that has no repository at all, which is the one case with nothing to
+   * name. OPTIONAL and append-only: a summary written by an older daemon still parses.
+   */
+  repoRoot?: string | null;
   triggerMode: WorkflowTriggerMode;
   deliveryMode: WorkflowDeliveryMode;
   state: WorkflowBindingState;
@@ -2520,6 +2573,20 @@ export interface WorkflowRunSummary {
    * already durable on `workflow_bindings.session_name`; the summary just carries it now.
    */
   sessionName?: string;
+  /**
+   * The repository this run reviews, resolved exactly as `WorkflowBindingSummary.repoRoot` is.
+   *
+   * One workflow run is one repository. A session running a multi-repo task has one run per
+   * repository it changed, and this is the only thing that tells two of them apart on a
+   * surface: they share a conversation, a workflow, a version and usually a status.
+   *
+   * OPTIONAL and append-only for the reason every optional field here is - an older daemon's
+   * summary must still parse in a newer browser - and absent reads as "the session's own
+   * repository", which is what every run predating per-repo runs genuinely reviewed. Surfaces
+   * shorten it with `repoLeaf` and draw it only when a session has more than one run, so a
+   * single-repo session's markup is unchanged.
+   */
+  repoRoot?: string | null;
   status: WorkflowRunStatus;
   phase: string;
   round: number;

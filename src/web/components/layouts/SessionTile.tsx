@@ -54,6 +54,7 @@ export function SessionTile({
   onDropError,
   onDropConfirm,
   workflowRun = null,
+  workflowRuns = null,
   registerWorkflowDisclosure,
   onOpenWorkflowRun,
   onOpenSchedule,
@@ -72,6 +73,8 @@ export function SessionTile({
   /** The drop needs a yes: the handover would take something from this agent. */
   onDropConfirm: (pending: { taskId: string; confirm: AssignResetConfirm }) => void;
   workflowRun?: WorkflowRunSummary | null;
+  /** Every review this conversation carries - one per repository a multi-repo task changed. */
+  workflowRuns?: readonly WorkflowRunSummary[] | null;
   /** Register the same disclosure transition the Show/Collapse workflow button drives. */
   registerWorkflowDisclosure?: (id: string, handle: WorkflowDisclosureHandle | null) => void;
   onOpenWorkflowRun?: (runId: string) => void;
@@ -89,7 +92,7 @@ export function SessionTile({
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
   // above it and this tag have to agree about the same session, and one source is how they do.
   // `sessionIsHeld` is the shared sentence, so the Cards card cannot spell it differently.
-  const held = sessionIsHeld(workflowRun, st.tone);
+  const held = sessionIsHeld(workflowRuns, st.tone);
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
   const toggleWorkflowExpanded = useCallback(
@@ -110,7 +113,7 @@ export function SessionTile({
   // The run rides along so a held tile refuses the drop: handing work over resets the agent,
   // and the run owns its next turn. Same source as the `held` flag above, so the tag and the
   // refusal cannot disagree about one tile.
-  const droppable = canAcceptTask(session, draggingRepo, workflowRun);
+  const droppable = canAcceptTask(session, draggingRepo, workflowRuns);
 
   return (
     <div
@@ -182,7 +185,7 @@ export function SessionTile({
             by the arrow keys has to carry its own answer to "why can I not use this one". */}
         {held && (
           <Tooltip
-            label={`Held by ${workflowRun!.workflowName} - the run owns this session's next turn`}
+            label={`Held by ${workflowRun?.workflowName ?? "a workflow"} - the run owns this session's next turn`}
           >
             <span className="tile-held">held</span>
           </Tooltip>

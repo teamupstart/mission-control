@@ -31,7 +31,7 @@ import {
 import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRunTone } from "../components/session-bits.tsx";
 import { copyText } from "../lib/clipboard.ts";
-import { relativeTime } from "../lib/format.ts";
+import { relativeTime, repoLeaf } from "../lib/format.ts";
 import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
 import {
@@ -690,6 +690,15 @@ export function WorkflowRunView({
                 {detail.binding.sessionName}
               </button>
             </Tooltip>
+            {/* One run is one repository, and a conversation running a multi-repo task has a
+                sibling run reviewing a different one. Named beside the session rather than
+                instead of it: which conversation and which checkout are different facts, and
+                only the pair identifies this run. */}
+            {detail.summary.repoRoot && (
+              <Tooltip label={`This run reviews ${detail.summary.repoRoot}`}>
+                <span className="wf-run-repo">{repoLeaf(detail.summary.repoRoot)}</span>
+              </Tooltip>
+            )}
           </p>
           {/* The sentence that replaces a disabled button.
               A stopped run's reason belongs in the page, not in a tooltip on a control that
@@ -1946,6 +1955,9 @@ export function WorkflowRuns({
                 {runStatusLabel(run.status)}
               </span>
               <span className="wf-run-row-session">{run.noteKey}</span>
+              {run.repoRoot && (
+                <span className="wf-run-row-repo">{repoLeaf(run.repoRoot)}</span>
+              )}
               {run.gate !== "none" && (
                 <span className="wf-run-row-gate">
                   Inspector: {run.gate.replaceAll("_", " ")}

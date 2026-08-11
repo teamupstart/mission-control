@@ -357,6 +357,33 @@ function compatibleSession(binding: WorkflowBinding, session: Session): boolean 
 }
 
 /**
+ * The checkout one binding's evidence comes from.
+ *
+ * One workflow run is one repository, and this is the single place that says which. A
+ * binding with an empty `repoRoot` follows the session's own cwd - the LIVE one, not the
+ * copy frozen at bind time, exactly as every capture read before this existed, so a
+ * single-repo run's evidence is byte-identical. A binding that names a secondary repository
+ * of the session's multi-repo task reads that repository's worktree instead, which the
+ * binding captured when the run created it.
+ *
+ * Deliberately not "the frozen cwd, falling back to the session's": the session's cwd is
+ * mutable and the frozen copy exists to detect that it moved (`reattach` compares them). A
+ * primary run reading the stale copy would review a checkout the agent left.
+ *
+ * Any falsy `repoRoot` reads as the session's own, not just the empty string the store
+ * writes. That is the same rule the wire type states - absent means the session's own
+ * repository - and it is what keeps a binding row read by a build whose `migrate()` has not
+ * run, or one assembled without the field, following the session rather than falling through
+ * to a checkout it never named.
+ */
+export function workflowCheckoutPath(
+  binding: Pick<WorkflowBinding, "repoRoot" | "sessionCwd">,
+  session: Pick<Session, "cwd">,
+): string | null {
+  return binding.repoRoot ? binding.sessionCwd : session.cwd;
+}
+
+/**
  * Read one bounded raw snapshot and its capture boundary. The manager re-reads that boundary
  * and retries once before persisting the raw evidence and starting compaction.
  */
@@ -370,6 +397,11 @@ export async function readWorkflowContextRaw(
     throw new Error("The workflow binding is not attached to its durable conversation");
   }
   const goal = registry.getGoal(session.id);
+  // The BINDING'S checkout, which for a secondary-repository run is its own worktree and for
+  // every other run is the session's cwd unchanged. The transcript, goal and decisions below
+  // stay session-scoped on purpose: sibling runs review different repositories of the same
+  // conversation, and the conversation is one.
+  const checkout = workflowCheckoutPath(binding, session);
   const located = sessionMessages(session);
   const transcriptAnchor = located?.read.size(located.path) ?? null;
   const transcriptWindow = located?.read.window(located.path, 12, 68) ?? {
@@ -385,7 +417,7 @@ export async function readWorkflowContextRaw(
     statusFingerprint,
     standards,
     repositoryFingerprint,
-  } = await readRepositoryEvidence(session.cwd);
+  } = await readRepositoryEvidence(checkout);
   const decisions = boundedDecisions([
     ...loadResolvedWorkflowReviews(session.id).map(workflowReviewDecision),
     ...registry.listEpisodes(session.id)
@@ -417,7 +449,9 @@ export async function readWorkflowContextRaw(
     session: {
       agent: session.agent,
       name: session.name,
-      cwd: session.cwd,
+      // The reviewed checkout, so a Persona reading the snapshot is told which repository the
+      // diff beside it came from rather than the session's cwd in every case.
+      cwd: checkout,
       branch: diff.branch ?? session.gitBranch,
     },
     evidence: {
@@ -505,8 +539,9 @@ export async function readWorkflowEvidenceProbe(
   if (!session || !compatibleSession(binding, session)) {
     throw new Error("The workflow binding is not attached to its durable conversation");
   }
-  if (!session.cwd) throw new Error("The bound session has no working directory");
-  const work = await readRepositoryWorkEvidence(session.cwd);
+  const checkout = workflowCheckoutPath(binding, session);
+  if (!checkout) throw new Error("The bound session has no working directory");
+  const work = await readRepositoryWorkEvidence(checkout);
   return {
     headSha: work.diff.headSha,
     workingTreeStatus: work.status,
@@ -665,7 +700,7 @@ export async function captureBoundaryChanged(
   const located = sessionMessages(session);
   const size = located?.read.size(located.path) ?? null;
   if ((located?.path ?? null) !== boundary.transcriptPath || size !== boundary.transcriptSize) return true;
-  const repository = await readRepositoryEvidence(session.cwd);
+  const repository = await readRepositoryEvidence(workflowCheckoutPath(binding, session));
   return repository.diff.headSha !== boundary.headSha
     || repository.repositoryFingerprint !== boundary.repositoryFingerprint;
 }

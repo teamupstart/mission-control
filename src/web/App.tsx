@@ -59,7 +59,7 @@ import { detailLayer, useLayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
-import { heldSessionIds } from "./lib/held.ts";
+import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
 import {
   useKeybindingHints,
@@ -979,15 +979,55 @@ export function App(): React.JSX.Element {
     ],
   );
 
-  const workflowRunBySession = useMemo(() => {
-    const bySession = new Map<string, (typeof workflowRuns)[number]>();
+  /**
+   * The runs each conversation is carrying, in a stable order, keyed by session.
+   *
+   * A session running a multi-repo task has ONE RUN PER REPOSITORY it changed, and a surface
+   * that showed only the newest would silently hide a review. So the fold keeps them all, and
+   * `workflowRunsFor` below picks the newest per REPOSITORY rather than per session: a
+   * repository whose review finished and was run again should show its current run, not two.
+   *
+   * Ordered by repository so a card's chips do not reshuffle every time one run updates. The
+   * session's own repository sorts first because its `repoRoot` is resolved to the session's
+   * root and the sort is stable within a repository - and for the fleet's single-repo
+   * sessions, which have exactly one run, order is not a question.
+   */
+  const workflowRunsBySession = useMemo(() => {
+    const bySession = new Map<string, Map<string, (typeof workflowRuns)[number]>>();
     for (const run of workflowRuns) {
       if (!run.sessionId) continue;
-      const current = bySession.get(run.sessionId);
-      if (!current || run.updatedAt > current.updatedAt) bySession.set(run.sessionId, run);
+      const byRepo = bySession.get(run.sessionId) ?? new Map();
+      const key = run.repoRoot ?? "";
+      const current = byRepo.get(key);
+      if (!current || run.updatedAt > current.updatedAt) byRepo.set(key, run);
+      bySession.set(run.sessionId, byRepo);
+    }
+    const out = new Map<string, (typeof workflowRuns)[number][]>();
+    for (const [sessionId, byRepo] of bySession) {
+      out.set(
+        sessionId,
+        [...byRepo.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, run]) => run),
+      );
+    }
+    return out;
+  }, [workflowRuns]);
+
+  /**
+   * The one run per session the surfaces that genuinely want one still read.
+   *
+   * Kept beside the list rather than replaced by it: the retro offer, the board tile's
+   * ladder and the console's Workflows tab each speak about one run, and a multi-repo
+   * session's newest is the right one for all three. Every surface that must not miss a
+   * sibling - the held join, the bind affordance, the chips - reads the list.
+   */
+  const workflowRunBySession = useMemo(() => {
+    const bySession = new Map<string, (typeof workflowRuns)[number]>();
+    for (const [sessionId, runs] of workflowRunsBySession) {
+      const newest = runs.reduce((best, run) => (run.updatedAt > best.updatedAt ? run : best));
+      bySession.set(sessionId, newest);
     }
     return bySession;
-  }, [workflowRuns]);
+  }, [workflowRunsBySession]);
 
   /**
    * The workflow each live conversation is armed with, keyed by session.
@@ -998,15 +1038,13 @@ export function App(): React.JSX.Element {
    * it is where reattaching happens - which is the difference between a card's one-line claim
    * and a surface that exists to manage the binding.
    */
-  const workflowBindingBySession = useMemo(() => {
-    const bySession = new Map<string, (typeof workflowBindingSummaries)[number]>();
-    for (const binding of workflowBindingSummaries) {
-      if (!binding.sessionId || binding.state !== "active") continue;
-      const current = bySession.get(binding.sessionId);
-      if (!current || binding.updatedAt > current.updatedAt) bySession.set(binding.sessionId, binding);
-    }
-    return bySession;
-  }, [workflowBindingSummaries]);
+  const workflowBindingBySession = useMemo(
+    () => ownBindingBySession(
+      workflowBindingSummaries,
+      new Map(sessions.map((session) => [session.id, session.repoRoot])),
+    ),
+    [workflowBindingSummaries, sessions],
+  );
 
   // Nav-bar filter: live substring match over each card's title, status, and agent. Empty
   // filter shows everything.
@@ -1019,7 +1057,7 @@ export function App(): React.JSX.Element {
   // Which sessions an open workflow run owns, folded once here off the same map the tile reads.
   // It reaches `orderSessions` as an argument rather than being looked up inside it because
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
-  const heldIds = useMemo(() => heldSessionIds(workflowRunBySession), [workflowRunBySession]);
+  const heldIds = useMemo(() => heldSessionIds(workflowRunsBySession), [workflowRunsBySession]);
 
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -1247,7 +1285,7 @@ export function App(): React.JSX.Element {
     // other consumer here filters out. See `SessionViewProps.reviews`.
     reviews,
     onEditTask: openTaskEditor,
-    workflowRunBySession,
+    workflowRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,
     workflowBindingBySession,
     onBindWorkflow: (sessionId) => setWorkflowBindingTarget({ sessionId }),

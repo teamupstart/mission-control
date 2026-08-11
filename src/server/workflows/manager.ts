@@ -8,6 +8,7 @@ import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
 import { agentActive, reportBucket, settledIdle } from "@shared/session.ts";
+import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
 import type {
   CreateWorkflow,
   CreateWorkflowBinding,
@@ -105,6 +106,7 @@ import {
   readWorkflowEvidenceProbe,
   readWorkflowRepositoryHead,
   readWorkflowRepositoryId,
+  workflowCheckoutPath,
   workflowContextFingerprint,
 } from "./context.ts";
 import {
@@ -148,6 +150,9 @@ import {
   loadInspectorComments,
   loadAdoptedInspectorPrsSince,
   loadInspectorInspections,
+  loadOpenInspectorPrs,
+  primaryRepoPrForTask,
+  taskReposFor,
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
 import { parsePrUrl } from "../inspector/github.ts";
@@ -214,6 +219,17 @@ export type WorkflowRuntimeMutation<T> =
 export interface WorkflowSubmitResult {
   run: WorkflowRun;
   submission: WorkflowSubmission;
+}
+
+/**
+ * One durable run waiting to capture, and the binding whose repository it reviews.
+ *
+ * A trigger produces a LIST of these - one per repository the turn changed - and every one is
+ * an ordinary single-repository run. The binding rides along because capture needs it and
+ * because it is the only thing that says which checkout this run is about.
+ */
+interface PreparedWorkflowRun extends WorkflowSubmitResult {
+  binding: WorkflowBinding;
 }
 
 export interface WorkflowManagerOptions {
@@ -405,6 +421,15 @@ export class WorkflowManager {
   private inspectionUnsubscribe: (() => void) | null = null;
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
+  /**
+   * Deliveries already reported as queued behind a sibling repository's review.
+   *
+   * In memory and deliberately not durable: it exists only to keep the re-offer sweep from
+   * appending the same `delivery_queued` event every few seconds. The QUEUE itself is
+   * re-derived from persisted delivery and attempt state on every offer, so a restart loses
+   * nothing but the right to stay quiet about a hold it has already reported once.
+   */
+  private readonly queuedDeliveries = new Set<string>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly queues: QueueManager;
   private readonly inject: typeof injectPrompt;
@@ -555,6 +580,11 @@ export class WorkflowManager {
           }
         }
         this.scheduleGatesForSession(event.session.id);
+        // A conversation running several repositories' reviews serializes their deliveries,
+        // and this is the signal that the turn one of them was using has moved on. It leaves
+        // on its first line for every conversation with a single binding, which is every
+        // single-repo session in the fleet.
+        this.scheduleQueuedDeliveries(noteKeyFor(event.session));
         const task = this.registry
           .listTasks()
           .find((candidate) =>
@@ -980,6 +1010,112 @@ export class WorkflowManager {
     return { ok: true, value: created };
   }
 
+  /**
+   * Every repository this conversation's turn should review, in attach order, as the binding
+   * that reviews each one. One workflow run per entry.
+   *
+   * The shape of the answer is the whole design: concurrency lives HERE, at the binding
+   * layer, and never inside a run. Each returned binding gets an ordinary single-repository
+   * run whose adapter proofs, evidence identity and gate vocabulary are exactly today's.
+   *
+   * A SINGLE-REPO conversation - which is nearly all of them, and every conversation with no
+   * task at all - returns `[anchor]` and nothing below this line runs. That is not an
+   * optimisation; it is the guarantee that single-repo behaviour is byte-identical.
+   *
+   * What counts as changed comes from `@shared/task-repos.ts`, the one definition the
+   * completion quorum also reads, so run creation and completion cannot disagree about which
+   * repositories this task owes work for. The one judgement made here rather than there is
+   * what to do with its third verdict: `unknown` means nothing has read that worktree's head
+   * yet, and it is REVIEWED rather than skipped. The two consumers face opposite
+   * irreversibility - completion holds on unknown because completing early ships work
+   * unmerged, and run creation reviews on unknown because skipping ships work unreviewed - so
+   * each takes the conservative arm of the same predicate.
+   *
+   * An empty changed set falls back to `[anchor]` rather than to no run at all. A turn that
+   * settled having apparently touched nothing is exactly when the review should still run:
+   * the completion boundary has an owner, the `pull_request` action can still ask for the
+   * pull request the agent has not opened, and the alternative - a session that completes
+   * with no review anywhere - is the failure this phase exists to prevent.
+   */
+  private repoRunTargets(session: Session, anchor: WorkflowBinding): WorkflowBinding[] {
+    // A sibling binding submitted directly reviews its own repository and nothing else. Only
+    // the conversation's own binding fans out, so a manual resubmission of repo B's run can
+    // never quietly start repo A's. Falsy reads as the session's own, the same rule
+    // `workflowCheckoutPath` states: absent means the conversation's checkout.
+    if (anchor.repoRoot) return [anchor];
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!task || task.extraRepos.length === 0) return [anchor];
+    // Durable reads rather than the in-memory projection, and the same two the completion
+    // quorum uses: the primary's pull request lives on the work-episode binding and each
+    // secondary's on its own `work_episode_prs` row.
+    const extraRepos = taskReposFor(task.id);
+    const primaryPr = primaryRepoPrForTask(task.id);
+    const reviewable = taskRepoStatuses({ ...task, extraRepos }, (ref) => ({
+      prUrl: ref.role === "primary"
+        ? primaryPr.prUrl
+        : extraRepos[ref.position - 1]?.prUrl ?? null,
+      headSha: this.registry.worktreeHead(ref.worktreePath),
+    })).filter((status) => status.verdict !== "unchanged");
+    if (reviewable.length === 0) return [anchor];
+    const targets: WorkflowBinding[] = [];
+    for (const { ref } of reviewable) {
+      const binding = ref.role === "primary" ? anchor : this.ensureRepoBinding(anchor, ref);
+      if (binding) targets.push(binding);
+    }
+    return targets.length > 0 ? targets : [anchor];
+  }
+
+  /**
+   * The active binding that reviews one secondary repository of this conversation, created if
+   * this is the first turn that changed it.
+   *
+   * Everything but the repository is cloned from the conversation's own binding, and each
+   * clone matters. The immutable workflow VERSION, so sibling runs review against the same
+   * published graph an operator or the dispatch chose. The trigger mode, so the Foreman
+   * completion boundary claims all of them or none. The delivery mode, because delivery
+   * consent is a property of the PANE - one session, one allowlisted cwd - and not of the
+   * repository being read. And `maxRepairRounds`, which the run copies at creation, so each
+   * repository then spends its own budget: a finding in repo A restarts A's graph alone.
+   *
+   * `sessionCwd`/`sessionRepoRoot` are the secondary's worktree and root rather than the
+   * session's. That is what scopes evidence capture, check execution, the capture root and
+   * the Inspector gate's adoption match to this repository without any of them knowing why.
+   */
+  private ensureRepoBinding(anchor: WorkflowBinding, ref: TaskRepoRef): WorkflowBinding | null {
+    const existing = this.store.activeBindingForNoteRepo(anchor.noteKey, ref.repoRoot);
+    if (existing) return existing;
+    // No worktree means nothing to read evidence from. Skipped rather than bound to the
+    // session's cwd, which would review the primary's changes twice under another repo's name.
+    if (!ref.worktreePath || !anchor.sessionId) return null;
+    try {
+      const created = this.store.insertBinding({
+        id: randomUUID(),
+        workflowVersionId: anchor.workflowVersionId,
+        noteKey: anchor.noteKey,
+        sessionId: anchor.sessionId,
+        sessionAgent: anchor.sessionAgent,
+        sessionName: anchor.sessionName,
+        sessionCwd: ref.worktreePath,
+        sessionRepoRoot: ref.repoRoot,
+        repoRoot: ref.repoRoot,
+        triggerMode: anchor.triggerMode,
+        deliveryMode: anchor.deliveryMode,
+        maxRepairRounds: anchor.maxRepairRounds,
+        now: Date.now(),
+      });
+      this.publishBinding(created.id);
+      return created;
+    } catch (error) {
+      // Lost the insert to a concurrent trigger on the same conversation - the widened
+      // active-binding index refusing exactly what it exists to refuse. Re-read rather than
+      // fail: the sibling that won created the binding this call wanted.
+      if (String(error).includes("UNIQUE")) {
+        return this.store.activeBindingForNoteRepo(anchor.noteKey, ref.repoRoot);
+      }
+      throw error;
+    }
+  }
+
   updateBinding(
     id: string,
     input: UpdateWorkflowBinding,
@@ -1037,9 +1173,15 @@ export class WorkflowManager {
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
     const prepared = this.prepareSubmit(bindingId, input, now);
     if (!prepared.ok) return prepared;
-    const { binding, ...value } = prepared.value;
+    const { lead, siblings } = prepared.value;
+    const value = { run: lead.run, submission: lead.submission };
     if (prepared.idempotent) return { ok: true, value, idempotent: true };
-    return this.captureAndActivate(binding, value.run, value.submission);
+    // The lead is awaited, exactly as the one run always was, so a caller still gets an
+    // activated run back. Siblings capture in the background: they are serialized behind the
+    // lead by the conversation's capture lock anyway, and holding an operator's request open
+    // for one git read per attached repository buys nothing.
+    this.activateSiblingRuns(siblings);
+    return this.captureAndActivate(lead.binding, lead.run, lead.submission);
   }
 
   /**
@@ -1055,19 +1197,58 @@ export class WorkflowManager {
   ): WorkflowRuntimeMutation<WorkflowSubmitResult> {
     const prepared = this.prepareSubmit(bindingId, input, now);
     if (!prepared.ok) return prepared;
-    const { binding, ...value } = prepared.value;
+    const { lead, siblings } = prepared.value;
+    const value = { run: lead.run, submission: lead.submission };
     if (prepared.idempotent) return { ok: true, value, idempotent: true };
     this.trackBackgroundTask(
-      this.captureAndActivate(binding, value.run, value.submission).then(() => undefined),
+      this.captureAndActivate(lead.binding, lead.run, lead.submission).then(() => undefined),
     );
+    this.activateSiblingRuns(siblings);
     return { ok: true, value };
   }
 
+  /**
+   * Capture and activate the runs of a turn's other repositories, off the request.
+   *
+   * Each one is tracked and each one's failure is contained: a capture that throws in repo B
+   * must not take down repo A's review or the request that started both. The failure is loud
+   * in the log and visible as a run that never left `capturing`, which is what a capture
+   * failure has always looked like.
+   */
+  private activateSiblingRuns(siblings: readonly PreparedWorkflowRun[]): void {
+    for (const sibling of siblings) {
+      this.trackBackgroundTask(
+        this.captureAndActivate(sibling.binding, sibling.run, sibling.submission)
+          .then(() => undefined)
+          .catch((error) => {
+            console.error(
+              `[workflow] could not start the review of ${sibling.binding.repoRoot}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }),
+      );
+    }
+  }
+
+  /**
+   * Make one run durable per repository this turn should review.
+   *
+   * The LEAD is the run this submission answers with, and it is the first repository in
+   * attach order rather than always the primary: a multi-repo task whose primary is untouched
+   * gets no primary run at all, so the caller is handed the run that does exist.
+   *
+   * A target whose binding already has an active run is SKIPPED rather than refused - that
+   * repository is already under review, which is the answer this submission wanted. Only when
+   * every target is already running is the whole submission refused, which for a single-repo
+   * conversation is exactly today's `run_active`, from the same lookup, with the same run
+   * attached.
+   */
   private prepareSubmit(
     bindingId: string,
     input: SubmitWorkflow,
     now: number,
-  ): WorkflowRuntimeMutation<WorkflowSubmitResult & { binding: WorkflowBinding }> {
+  ): WorkflowRuntimeMutation<{ lead: PreparedWorkflowRun; siblings: PreparedWorkflowRun[] }> {
     const binding = this.store.getBinding(bindingId);
     if (!binding) return { ok: false, reason: "not_found", message: "No such workflow binding" };
     if (binding.state !== "active") {
@@ -1078,29 +1259,54 @@ export class WorkflowManager {
     if (existing) {
       const run = this.store.getRun(existing.runId);
       return run
-        ? { ok: true, value: { binding, run, submission: existing }, idempotent: true }
+        ? {
+            ok: true,
+            value: { lead: { binding, run, submission: existing }, siblings: [] },
+            idempotent: true,
+          }
         : { ok: false, reason: "not_found", message: "The idempotent run is missing" };
     }
-    const active = this.store.activeRunForBinding(binding.id);
-    if (active) {
-      return { ok: false, reason: "run_active", message: "This binding already has an active run", current: active };
+    const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    const targets = session && session.state !== "exited"
+      ? this.repoRunTargets(session, binding)
+      : [binding];
+    const prepared: PreparedWorkflowRun[] = [];
+    let alreadyRunning: WorkflowRun | null = null;
+    let leadWasIdempotent = false;
+    for (const target of targets) {
+      const active = this.store.activeRunForBinding(target.id);
+      if (active) {
+        alreadyRunning ??= active;
+        continue;
+      }
+      const targetKey = manualWorkflowTriggerKey(target.id, input.requestId);
+      const created = this.store.createInitialSubmission(
+        { id: randomUUID(), binding: target, triggerSource: "manual", triggerKey: targetKey, now },
+        { id: randomUUID(), triggerSource: "manual", triggerKey: targetKey, context: {}, evidence: {}, now },
+      );
+      if (created.idempotent) {
+        // Lost the insert to a concurrent caller holding the same request id. Only the lead's
+        // race is reportable - it is the run this answers with - and a sibling that lost is
+        // already being captured by whoever won.
+        if (prepared.length === 0) leadWasIdempotent = true;
+        else continue;
+      } else {
+        this.publishRun(created.run.id);
+      }
+      prepared.push({ binding: target, run: created.run, submission: created.submission });
     }
-    const created = this.store.createInitialSubmission(
-      { id: randomUUID(), binding, triggerSource: "manual", triggerKey: key, now },
-      { id: randomUUID(), triggerSource: "manual", triggerKey: key, context: {}, evidence: {}, now },
-    );
-    if (created.idempotent) {
+    const [lead, ...siblings] = prepared;
+    if (!lead) {
       return {
-        ok: true,
-        value: { binding, run: created.run, submission: created.submission },
-        idempotent: true,
+        ok: false,
+        reason: "run_active",
+        message: "This binding already has an active run",
+        current: alreadyRunning,
       };
     }
-    this.publishRun(created.run.id);
-    return {
-      ok: true,
-      value: { binding, run: created.run, submission: created.submission },
-    };
+    return leadWasIdempotent
+      ? { ok: true, value: { lead, siblings }, idempotent: true }
+      : { ok: true, value: { lead, siblings } };
   }
 
   /**
@@ -1641,6 +1847,42 @@ export class WorkflowManager {
   }
 
   /**
+   * The pull request one binding's gate is looking for, before it has pinned one.
+   *
+   * A HINT, never proof - `matchesUnpinnedGate` and `inspector_prs` decide adoption, and this
+   * only says which url to ask about. But which url is exactly what a session with several
+   * reviews cannot answer with one scalar.
+   *
+   * The conversation's own binding reads `Session.prUrl`, byte-for-byte the expression that
+   * was inline at all four gate sites before this existed. It is the current branch's pull
+   * request, which for a single-repo session is the only one there is.
+   *
+   * A binding reviewing a SECONDARY repository cannot use it: `Session.prUrl` follows the
+   * session's own checkout, so a secondary run reading it would pin - and then veto - the
+   * primary repository's pull request, which is the sibling-veto adopted decision 4 forbids.
+   * It reads the adoption ledger instead, filtered to this session and this repository, which
+   * is the same durable provenance `matchesUnpinnedGate` then re-checks. Newest adoption
+   * wins, matching "the current branch's pull request" as closely as a repository this
+   * session is not standing in allows.
+   */
+  private gateCandidateUrl(
+    binding: WorkflowBinding,
+    session: Session | undefined,
+  ): string | null {
+    if (!binding.repoRoot) {
+      return session?.state !== "exited" ? session?.prUrl ?? null : null;
+    }
+    if (!binding.sessionId || !binding.sessionRepoRoot) return null;
+    let newest: { url: string; adoptedAt: number } | null = null;
+    for (const pr of loadOpenInspectorPrs()) {
+      if (pr.sessionId !== binding.sessionId) continue;
+      if (pr.repoRoot !== binding.sessionRepoRoot) continue;
+      if (!newest || pr.adoptedAt > newest.adoptedAt) newest = { url: pr.url, adoptedAt: pr.adoptedAt };
+    }
+    return newest?.url ?? null;
+  }
+
+  /**
    * Claim a successful Persona End for the immutable Inspector completion policy.
    * Session PR state is a lookup hint only; adoption is proved exclusively by inspector_prs.
    */
@@ -1659,7 +1901,7 @@ export class WorkflowManager {
       return true;
     }
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
-    const candidateUrl = session?.state !== "exited" ? session?.prUrl ?? null : null;
+    const candidateUrl = this.gateCandidateUrl(binding, session);
     const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
     const adopted = candidate ? getInspectorPr(candidate.key) : null;
     const cfg = getInspectorConfig();
@@ -1770,10 +2012,13 @@ export class WorkflowManager {
       // SDK restart. The Inspector row is the durable proof that this session opened this PR,
       // so it must preserve the veto during that pinning window as well.
       if (gate && adopted && this.matchesUnpinnedGate(binding, gate, adopted)) { owns(run); continue; }
+      // Scoped to the binding's own repository, so a run reviewing repo A can never veto
+      // repo B's pull request. Independent per-PR merges are adopted decision 4, and this
+      // last arm - the live convenience hint, before the gate has pinned anything - is the
+      // one place a sibling repository's url could have leaked in.
       const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
-      const candidate = session?.state !== "exited" && session?.prUrl
-        ? parsePrUrl(session.prUrl)
-        : null;
+      const candidateUrl = this.gateCandidateUrl(binding, session);
+      const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
       if (candidate?.key === prKey) owns(run);
     }
     return standing;
@@ -2289,44 +2534,127 @@ export class WorkflowManager {
     // A claim offers a proof to an existing binding; it never creates one. An unbound
     // conversation answers `no_binding` so that completion has exactly one owner and two
     // PR-producing paths can never race on the same branch.
-    let binding = this.store.activeBindingForNote(noteKeyFor(session));
-    if (!binding) return { claimed: false, reason: "no_binding" };
-    if (binding.triggerMode !== "foreman_complete") {
+    const anchor = this.store.activeBindingForNote(noteKeyFor(session));
+    if (!anchor) return { claimed: false, reason: "no_binding" };
+    if (anchor.triggerMode !== "foreman_complete") {
       return { claimed: false, reason: "manual_trigger" };
     }
-    const stored = this.store.claimForemanCompletion({
-      binding,
-      completionKind: claim.completionKind,
-      marker: claim.marker,
-      summary: claim.summary,
-      evidenceFingerprint: claim.evidenceFingerprint,
-      expectedIntent: claim.expectedIntent,
-      runId: randomUUID(),
-      submissionId: randomUUID(),
-      now,
-    });
-    if (!stored.result.claimed) return stored.result;
-    if (!stored.run) throw new Error("Claimed Foreman completion has no workflow run");
-    binding = stored.binding;
-    this.queues.refresh(binding.noteKey);
-    this.publishRun(stored.run.id);
-    if (!stored.created || !stored.submission) return stored.result;
-    const activated = await this.captureAndActivate(
-      binding,
-      stored.run,
-      stored.submission,
-      stored.previousFingerprint,
-      false,
-    );
-    if (!activated.ok) {
-      return {
-        claimed: true,
-        runId: stored.run.id,
-        submissionId: stored.submission.id,
-        state: "blocked",
-      };
+    // One settled turn, one run per repository it changed. `repoRunTargets` returns
+    // `[anchor]` for every single-repo conversation, so everything below is one claim against
+    // one binding exactly as it always was.
+    const targets = this.repoRunTargets(session, anchor);
+    let answer: WorkflowCompletionClaimResult | null = null;
+    for (const [index, target] of targets.entries()) {
+      // The FIRST target spends the completion episode; the rest ride the same proof. One
+      // settled turn is one episode however many repositories it touched, and retiring the
+      // guard again would throw on a guard that is no longer armed. It is deliberately the
+      // first rather than the primary: a task whose primary is untouched has no primary run,
+      // and the episode must still be spent by the review that does exist.
+      const claimed = this.claimCompletionForRepo(target, claim, index === 0, session, now);
+      if (index === 0) {
+        answer = claimed.result;
+        // A refused lead is the whole answer - nothing was claimed, the guard is still armed,
+        // and starting sibling runs off an unclaimed proof would review a turn Foreman has
+        // not accepted.
+        if (!claimed.result.claimed) return claimed.result;
+        this.queues.refresh(target.noteKey);
+      }
+      if (claimed.activate) {
+        const activated = await this.captureAndActivate(
+          claimed.activate.binding,
+          claimed.activate.run,
+          claimed.activate.submission,
+          claimed.previousFingerprint,
+          false,
+        ).catch((error) => {
+          console.error(
+            `[workflow] could not capture the review of ${target.repoRoot || session.repoRoot}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          return { ok: false as const, reason: "capture_failed" as const, message: "" };
+        });
+        if (index === 0 && !activated.ok && claimed.result.claimed) {
+          answer = {
+            claimed: true,
+            runId: claimed.result.runId,
+            submissionId: claimed.result.submissionId,
+            state: "blocked",
+          };
+        }
+      }
     }
-    return stored.result;
+    if (!answer) throw new Error("Claimed Foreman completion produced no run");
+    return answer;
+  }
+
+  /**
+   * Offer one settled turn's proof to one repository's binding.
+   *
+   * Split out of `claimCompletion` so the fan-out reads as "the same claim, once per
+   * repository" rather than as two code paths. Every branch the store's transaction can take
+   * - a fresh run, another repair round on a waiting one, an already-claimed replay, a run
+   * that has run out of budget - applies per repository, which is what independent repair
+   * budgets mean in practice.
+   *
+   * A sibling's failure is contained rather than fatal. The lead has already spent the
+   * episode by the time one can happen, so throwing would leave the conversation with no
+   * review at all and a guard nobody can re-arm; a repository whose run failed to start is
+   * visible as a repository with no run, and the operator can start one.
+   */
+  private claimCompletionForRepo(
+    binding: WorkflowBinding,
+    claim: WorkflowCompletionClaim,
+    retireGuard: boolean,
+    session: Session,
+    now: number,
+  ): {
+    result: WorkflowCompletionClaimResult;
+    activate: PreparedWorkflowRun | null;
+    previousFingerprint: string | undefined;
+  } {
+    const nothing = {
+      result: { claimed: false, reason: "no_binding" } as WorkflowCompletionClaimResult,
+      activate: null,
+      previousFingerprint: undefined,
+    };
+    let stored;
+    try {
+      stored = this.store.claimForemanCompletion({
+        binding,
+        completionKind: claim.completionKind,
+        marker: claim.marker,
+        summary: claim.summary,
+        evidenceFingerprint: claim.evidenceFingerprint,
+        expectedIntent: claim.expectedIntent,
+        runId: randomUUID(),
+        submissionId: randomUUID(),
+        retireGuard,
+        // The CONVERSATION's checkout, never this repository's: a Foreman queue belongs to
+        // the session, and the lead binding here can be an attached repository's when the
+        // primary is the one that went untouched.
+        guardCwd: session.cwd,
+        now,
+      });
+    } catch (error) {
+      if (retireGuard) throw error;
+      console.error(
+        `[workflow] could not claim the review of ${binding.repoRoot}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return nothing;
+    }
+    if (!stored.result.claimed) return { ...nothing, result: stored.result };
+    if (!stored.run) throw new Error("Claimed Foreman completion has no workflow run");
+    this.publishRun(stored.run.id);
+    return {
+      result: stored.result,
+      activate: stored.created && stored.submission
+        ? { binding: stored.binding, run: stored.run, submission: stored.submission }
+        : null,
+      previousFingerprint: stored.previousFingerprint,
+    };
   }
 
   /**
@@ -2692,8 +3020,10 @@ export class WorkflowManager {
         this.scheduleGateEvaluation(run.id, event);
         continue;
       }
-      const session = binding?.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
-      const candidate = session?.prUrl ? parsePrUrl(session.prUrl) : null;
+      if (!binding) continue;
+      const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+      const candidateUrl = this.gateCandidateUrl(binding, session);
+      const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
       if (candidate?.key === event.prKey) this.scheduleGateEvaluation(run.id, event);
     }
   }
@@ -2777,8 +3107,7 @@ export class WorkflowManager {
       && this.matchesUnpinnedGate(binding, state, observation.ledger)
       ? observation.ledger
       : null;
-    const candidateUrl = durableCandidate?.url
-      ?? (session?.state !== "exited" ? session?.prUrl ?? null : null);
+    const candidateUrl = durableCandidate?.url ?? this.gateCandidateUrl(binding, session);
     const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
 
     if (state.prKey && candidate && candidate.key !== state.prKey) {
@@ -3992,8 +4321,13 @@ export class WorkflowManager {
     // cheaper answer, and an observer that shelled out to git for each waiting action on each
     // sweep would pay for three `rev-parse` calls per action per fifteen seconds to answer a
     // question that only matters at this line.
+    //
+    // The RUN'S checkout, which for a secondary-repository run is its own worktree. The
+    // `pull_request` adapter compares its repository identity and branch against the adoption
+    // ledger, so reading the session's cwd here would hold repo B's action to repo A's pull
+    // request - waiting forever on a proof that belongs to another review.
     const repository = await (this.options.readRepositoryHead ?? readWorkflowRepositoryHead)(
-      session.cwd,
+      workflowCheckoutPath(binding, session),
     ).catch(() => null);
     // The head a reserved child has already captured, if one has. See `capturedHeadOid`.
     const capturedChild = state.continuationSubmissionId
@@ -4395,6 +4729,133 @@ export class WorkflowManager {
     return this.registry.promptResourceBlockerForSession(session.id);
   }
 
+  /**
+   * The delivery another of this conversation's reviews is still owed a turn for, or null
+   * when the pane is free.
+   *
+   * A multi-repo task's session runs one review per repository it changed, and they share one
+   * pane, one transcript and one turn. At most one may have a packet outstanding: two
+   * instructions typed into one conversation interleave into a turn neither expects, and the
+   * transcript anchor that proves a packet was picked up cannot say which of them the session
+   * answered. Within a run, two ready actions are still REFUSED rather than serialized - that
+   * contract is per run and is unchanged; this one is between runs, where serializing is the
+   * only available answer because the runs are genuinely independent reviews.
+   *
+   * A conversation with one active binding - every single-repo session - returns null from
+   * the first line and pays one indexed read, so nothing about its delivery path moves.
+   *
+   * What counts as outstanding is "the session still owes this packet a turn":
+   *
+   *  - `sending`: being typed right now, and the only truly concurrent case.
+   *  - a delivered SESSION ACTION whose attempt is still waiting: the instruction has been
+   *    read and the action has not completed.
+   *  - a delivered REPAIR PACKET on a run still parked on the submission it was sent for:
+   *    the agent is repairing that repository, and handing it a second repository's findings
+   *    mid-repair is the interleaving this exists to prevent.
+   *
+   * Deliberately NOT outstanding: `refused`, `uncertain` and `cancelled`. Each of those
+   * belongs to a run that is blocked waiting on a person, and a queue that held every sibling
+   * behind a blocked run would turn one operator's unanswered question into a stalled fleet.
+   */
+  private conversationDeliveryHold(delivery: WorkflowDelivery): WorkflowDelivery | null {
+    const bindings = this.store.activeBindingsForNote(delivery.noteKey);
+    if (bindings.length < 2) return null;
+    for (const binding of bindings) {
+      const run = this.store.activeRunForBinding(binding.id);
+      if (!run || run.id === delivery.runId || runIsTerminal(run)) continue;
+      const latest = this.store.latestSubmission(run.id);
+      for (const other of this.store.listDeliveries(run.id)) {
+        if (other.state === "sending") return other;
+        if (other.state !== "delivered") continue;
+        if (other.kind === "session_action") {
+          const attempt = other.nodeAttemptId ? this.store.getAttempt(other.nodeAttemptId) : null;
+          if (attempt?.state === "waiting") return other;
+          continue;
+        }
+        if (run.status === "waiting_for_session" && other.submissionId === latest?.id) return other;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Hold a packet behind the sibling review currently using the conversation's turn.
+   *
+   * The packet stays `prepared`, which is exactly what it is: rendered, authorized, and not
+   * typed. Nothing is refused and nothing is discarded, so when the hold clears the same
+   * bytes are sent - `prepareDelivery` is content-addressed, and re-offering a prepared
+   * packet is the path daemon restart already uses.
+   *
+   * A session action additionally records `queued_for_conversation` on its waiting attempt,
+   * which is what puts the wait on the run's chip and in its detail rather than leaving an
+   * operator looking at a review that appears to be doing nothing.
+   */
+  private queueDeliveryBehind(delivery: WorkflowDelivery, hold: WorkflowDelivery): void {
+    const now = Date.now();
+    if (delivery.kind === "session_action" && delivery.nodeAttemptId) {
+      const attempt = this.store.getAttempt(delivery.nodeAttemptId);
+      const state = attempt ? this.store.sessionActionState(attempt) : null;
+      if (attempt?.state === "waiting" && state?.wait !== "queued_for_conversation") {
+        this.setSessionActionWait(attempt.id, "queued_for_conversation", {}, now);
+      }
+    }
+    // Once per hold episode. The re-offer sweep runs on ordinary session activity, so an
+    // unguarded append would write an event every couple of seconds for as long as a
+    // repository waits its turn.
+    if (this.queuedDeliveries.has(delivery.id)) return;
+    this.queuedDeliveries.add(delivery.id);
+    this.store.appendEvent(delivery.runId, "delivery_queued", {
+      deliveryId: delivery.id,
+      kind: delivery.kind,
+      heldByRunId: hold.runId,
+      heldByDeliveryId: hold.id,
+    }, now);
+    this.publishRun(delivery.runId);
+  }
+
+  /**
+   * Re-offer the packets this conversation's other reviews are holding.
+   *
+   * Called wherever a hold can end - a turn moving on, a repair being resubmitted - and cheap
+   * enough to call on ordinary session activity because it leaves immediately for any
+   * conversation with one active binding.
+   *
+   * Strictly the packets THIS process queued, never every prepared one. `prepared` is also
+   * the resting state of a Preview packet and of packets whose own conditions have not been
+   * met, and `recoverWaitingDeliveries` decides which of those may be sent with a much
+   * narrower rule than this sweep could restate. Re-offering an arbitrary prepared packet
+   * here would send one that rule deliberately holds.
+   *
+   * That is also why nothing needs to survive a restart. Recovery re-offers what it allows,
+   * each offer passes back through `conversationDeliveryHold`, and a packet still behind a
+   * sibling re-enters the queue there - the queue re-derived from persisted state rather
+   * than remembered.
+   *
+   * It re-offers rather than decides: `deliverPrepared` re-runs the consent gate and asks
+   * `conversationDeliveryHold` again, so a packet re-offered while the pane is still busy
+   * simply queues again.
+   */
+  private scheduleQueuedDeliveries(noteKey: string): void {
+    const bindings = this.store.activeBindingsForNote(noteKey);
+    if (bindings.length < 2) return;
+    for (const binding of bindings) {
+      if (binding.deliveryMode !== "live") continue;
+      const run = this.store.activeRunForBinding(binding.id);
+      if (!run || runIsTerminal(run)) continue;
+      for (const delivery of this.store.listDeliveries(run.id)) {
+        if (!this.queuedDeliveries.has(delivery.id)) continue;
+        // A packet that has left `prepared` was sent, refused or superseded, so the queue has
+        // no further claim on it. Dropped here rather than only on the send path, so a run
+        // that ended while one of its packets waited cannot leak an id for the process's life.
+        if (delivery.state !== "prepared") {
+          this.queuedDeliveries.delete(delivery.id);
+          continue;
+        }
+        this.schedulePreparedDelivery(delivery.id);
+      }
+    }
+  }
+
   private async deliverPrepared(deliveryId: string, explicitRetry: boolean): Promise<void> {
     const delivery = this.store.getDelivery(deliveryId);
     if (!delivery) return;
@@ -4432,6 +4893,15 @@ export class WorkflowManager {
       this.publishRun(delivery.runId);
       return;
     }
+    // AFTER the consent gate and before the first byte. A packet that is going to be refused
+    // should be refused now rather than after waiting its turn, and a packet that is going to
+    // be typed must not be typed while a sibling repository's review still owns the turn.
+    const hold = this.conversationDeliveryHold(delivery);
+    if (hold) {
+      this.queueDeliveryBehind(delivery, hold);
+      return;
+    }
+    this.queuedDeliveries.delete(delivery.id);
     const sending = this.store.claimDeliverySend(delivery.id, explicitRetry);
     if (!sending) return;
     const session = this.registry.getSession(sending.sessionId);
@@ -4547,6 +5017,11 @@ export class WorkflowManager {
     beforeActivate?: (captured: WorkflowSubmission) => boolean | Promise<boolean>,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
     try {
+      // A run leaving `waiting_for_session` releases the turn its repair packet was holding.
+      // Scheduled before the capture lock rather than after the capture, because a sibling
+      // that has been waiting should be offered the pane at the moment this run stops owing
+      // it one - not once this run has finished reading git.
+      this.scheduleQueuedDeliveries(binding.noteKey);
       return await this.withCaptureLock(binding.noteKey, async () => {
       if (!this.captureIsActive(run.id, submission.id)) {
         return {

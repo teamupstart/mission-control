@@ -82,6 +82,11 @@ function seedPreContinuationDb(): void {
       created_at          INTEGER NOT NULL,
       updated_at          INTEGER NOT NULL
     );
+    -- The one-active-binding-per-conversation index as it shipped, so the migration that
+    -- widens it to (note_key, repo_root) has a real index to drop rather than a name that
+    -- was never used.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_bindings_active_note
+      ON workflow_bindings(note_key) WHERE state = 'active';
     CREATE TABLE IF NOT EXISTS workflow_runs (
       id                    TEXT PRIMARY KEY,
       binding_id            TEXT NOT NULL,
@@ -386,6 +391,32 @@ test("the delivery-to-attempt link and its live-uniqueness index arrive on an up
     indexes.get("idx_workflow_deliveries_identity"),
     ["submission_id", "kind", "payload_sha256"],
   );
+});
+
+test("an existing binding upgrades to the conversation's own checkout, and its uniqueness widens", () => {
+  // The backfill IS the column default: every binding written before per-repo runs reviewed
+  // the session's own checkout, and the empty string is exactly that fact rather than a
+  // placeholder. Nullable would have been an admission of ignorance about a row we know, and
+  // SQLite treats nulls as distinct in a unique index - two active bindings per conversation.
+  assert.equal(store.getBinding("legacy-binding")?.repoRoot, "");
+  const indexes = indexColumns("workflow_bindings");
+  assert.equal(indexes.has("idx_workflow_bindings_active_note"), false, "the narrow index is gone");
+  assert.deepEqual(
+    indexes.get("idx_workflow_bindings_active_note_repo"),
+    ["note_key", "repo_root"],
+  );
+  const insert = db.prepare(
+    `INSERT INTO workflow_bindings (id, workflow_version_id, note_key, session_id, repo_root,
+       trigger_mode, delivery_mode, state, max_repair_rounds, created_at, updated_at)
+     VALUES (?, 'legacy-version', 'agent-legacy', 'legacy-session', ?, 'manual', 'preview',
+             'active', 5, 9, 9)`,
+  );
+  // What the widened index still refuses: a SECOND binding on the conversation's own
+  // checkout. That is the invariant an upgraded database keeps, unchanged.
+  assert.throws(() => insert.run("upgrade-duplicate", ""));
+  // And what it now allows: one more repository of the same conversation.
+  insert.run("upgrade-second-repo", "/second");
+  db.prepare(`DELETE FROM workflow_bindings WHERE id = 'upgrade-second-repo'`).run();
 });
 
 test("the run, binding and published version behave exactly as they did", () => {

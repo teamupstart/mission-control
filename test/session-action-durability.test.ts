@@ -572,7 +572,13 @@ test("blocking an action is a run state, never a verdict or a spent repair round
 test("every wait reason is a WAIT, and every block code is closed", () => {
   // The two vocabularies are separate because they reach different readers: a wait is
   // something the runtime is still doing, a block is something a human has to resolve.
-  assert.equal(SESSION_ACTION_WAIT_REASONS.length, 11);
+  //
+  // The count is a tripwire on an APPEND-ONLY tuple, and moving it is a deliberate act: these
+  // strings reach a durable attempt's `output_json`, so a rename orphans history and a new one
+  // owes a human sentence in `run-model.ts` before it compiles. 11 -> 12 appended
+  // `queued_for_conversation`, for a repository's review waiting its turn on a conversation
+  // that is reviewing several.
+  assert.equal(SESSION_ACTION_WAIT_REASONS.length, 12);
   assert.equal(new Set(SESSION_ACTION_WAIT_REASONS).size, SESSION_ACTION_WAIT_REASONS.length);
   assert.equal(new Set(SESSION_ACTION_BLOCK_CODES).size, SESSION_ACTION_BLOCK_CODES.length);
   for (const reason of SESSION_ACTION_WAIT_REASONS) {

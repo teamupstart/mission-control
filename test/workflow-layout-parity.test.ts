@@ -10,6 +10,7 @@ import {
 } from "../src/shared/workflow.ts";
 import {
   WorkflowChip,
+  WorkflowChips,
   WorkflowRailMark,
   workflowRunTone,
 } from "../src/web/components/session-bits.tsx";
@@ -63,8 +64,10 @@ test("workflow status helper drives card, rail, and Board disclosure vocabularie
   const detail = readFileSync(new URL("../src/web/components/layouts/ConsoleDetail.tsx", import.meta.url), "utf8");
   const tile = readFileSync(new URL("../src/web/components/layouts/SessionTile.tsx", import.meta.url), "utf8");
   const rail = readFileSync(new URL("../src/web/components/layouts/RailRow.tsx", import.meta.url), "utf8");
-  assert.match(card, /<WorkflowChip/);
-  assert.match(detail, /<WorkflowChip/);
+  // The fan-out component, not the single chip: a card that drew one run would hide a
+  // multi-repo task's other repository behind whichever run updated last.
+  assert.match(card, /<WorkflowChips/);
+  assert.match(detail, /<WorkflowChips/);
   assert.match(tile, /<WorkflowLadderPanel/);
   assert.match(tile, /tileDisclosure=/);
   assert.doesNotMatch(tile, /<WorkflowTileFlag/);
@@ -77,7 +80,12 @@ test("Cards wears the held mark the Board tile wears, off the same predicate", (
   // without them shows a held session as indistinguishable from a genuinely free one.
   const idle = mkSession({ state: "idle", activity: null });
   const held = renderToStaticMarkup(
-    createElement(SessionCard, { session: idle, expanded: false, workflowRun: run }),
+    createElement(SessionCard, {
+      session: idle,
+      expanded: false,
+      workflowRun: run,
+      workflowRuns: [run],
+    }),
   );
   assert.match(held, /class="card [^"]*is-held/);
   assert.match(held, /class="card-held"[^>]*>held</);
@@ -89,6 +97,7 @@ test("Cards wears the held mark the Board tile wears, off the same predicate", (
       session: idle,
       expanded: false,
       workflowRun: { ...run, status: "completed" as const },
+      workflowRuns: [{ ...run, status: "completed" as const }],
     }),
   );
   assert.doesNotMatch(released, /is-held/);
@@ -101,6 +110,7 @@ test("Cards wears the held mark the Board tile wears, off the same predicate", (
       session: mkSession({ state: "awaiting_input", activity: null }),
       expanded: false,
       workflowRun: run,
+      workflowRuns: [run],
     }),
   );
   assert.doesNotMatch(asking, /is-held/);
@@ -137,6 +147,7 @@ function cardWith(bound: WorkflowRunSummary | null): string {
       session: idle(),
       expanded: false,
       workflowRun: bound,
+      workflowRuns: bound ? [bound] : null,
       onOpenWorkflowRun: () => {},
       onBindWorkflow: () => {},
     }),
@@ -149,8 +160,8 @@ function detailWith(bound: WorkflowRunSummary | null): string {
     createElement(ConsoleDetail, {
       session,
       view: mkSessionView(session, {
-        workflowRunBySession: new Map(
-          bound ? [[session.id, { ...bound, sessionId: session.id }]] : [],
+        workflowRunsBySession: new Map(
+          bound ? [[session.id, [{ ...bound, sessionId: session.id }]]] : [],
         ),
         onOpenWorkflowRun: () => {},
         onBindWorkflow: () => {},
@@ -184,7 +195,7 @@ test("an OPEN run withholds the bind chip from both session surfaces", () => {
 test("a TERMINAL run gives the bind chip back, beside the outcome it left behind", () => {
   // The pairing is the point. The outcome is history and the bind chip is the next move, so a
   // finished run shows BOTH - which is why the fix lives at these gates and not in
-  // `workflowRunBySession`, whose terminal runs are what the outcome chip is drawn from.
+  // `workflowRunsBySession`, whose terminal runs are what the outcome chip is drawn from.
   const outcomes: [WorkflowRunSummary["status"], string, string][] = [
     ["completed", "passed", "Approved"],
     ["cancelled", "failed", "Preview cancelled"],
@@ -211,7 +222,7 @@ test("a TERMINAL run gives the bind chip back, beside the outcome it left behind
 });
 
 test("a terminal run releases the held mark and the offer together, off one shared reading", () => {
-  // Pins that this change did not narrow `workflowRunBySession`: the summary is still there for
+  // Pins that this change did not narrow `workflowRunsBySession`: the summary is still there for
   // a finished run - the outcome chip proves it - and the two things that are about OWNERSHIP
   // both let go. Both surfaces read the shared helpers rather than a terminal-status list of
   // their own, so a fourth terminal status lands on all of them at once.
@@ -233,6 +244,39 @@ test("a terminal run releases the held mark and the offer together, off one shar
   }
 });
 
+test("a conversation reviewing two repositories draws a chip for each, named", () => {
+  // One workflow run is one repository, and two of a session's runs share a conversation, a
+  // workflow, a version and usually a status. The repository name is the only thing that
+  // tells them apart, so a fan-out that drew two identical chips would be worse than one.
+  const second: WorkflowRunSummary = {
+    ...run,
+    id: "run-2",
+    bindingId: "binding-2",
+    status: "completed",
+    repoRoot: "/checkouts/second-repo",
+  };
+  const both = renderToStaticMarkup(createElement(WorkflowChips, {
+    runs: [{ ...run, repoRoot: "/checkouts/demo-repo" }, second],
+  }));
+  assert.match(both, /class="workflow-chip-repo">demo-repo<\/span> Review changes/);
+  assert.match(both, /class="workflow-chip-repo">second-repo<\/span> Approved/);
+  // Each chip keeps its own tone, which is the whole reason both are drawn: one repository
+  // can be approved while its sibling is still being repaired.
+  assert.match(both, /workflow-chip workflow-waiting/);
+  assert.match(both, /workflow-chip workflow-passed/);
+
+  // The single-run session - which is nearly every session - draws the chip that was drawn
+  // before any of this existed, down to the byte. Tooltip ids are React's own per-render
+  // `useId` output and are normalized away; everything else has to match exactly, because a
+  // repository name creeping onto a one-run chip would rewrite the accessible name every
+  // existing spec selects by.
+  const ids = (markup: string): string => markup.replaceAll(/_R_[a-z0-9]+_/g, "_id_");
+  assert.equal(
+    ids(renderToStaticMarkup(createElement(WorkflowChips, { runs: [run] }))),
+    ids(renderToStaticMarkup(createElement(WorkflowChip, { run }))),
+  );
+});
+
 test("the rail row wears the held mark at rail density, on the state's own line", () => {
   // The rail shows more rows per screen than any other surface, so the section rule
   // scrolls away soonest there - a held row must read held on its own, and must do it
@@ -243,6 +287,7 @@ test("the rail row wears the held mark at rail density, on the state's own line"
       ...rowProps,
       session: mkSession({ state: "idle", activity: null }),
       workflowRun: run,
+      workflowRuns: [run],
     }),
   );
   assert.match(heldRow, /class="rail-row [^"]*is-held/);
@@ -255,6 +300,7 @@ test("the rail row wears the held mark at rail density, on the state's own line"
       ...rowProps,
       session: mkSession({ state: "idle", activity: null }),
       workflowRun: { ...run, status: "completed" as const },
+      workflowRuns: [{ ...run, status: "completed" as const }],
     }),
   );
   assert.doesNotMatch(released, /is-held/);

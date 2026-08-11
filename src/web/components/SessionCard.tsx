@@ -36,7 +36,7 @@ import {
   SessionTitle,
   StateBadge,
   TaskRepoPrs,
-  WorkflowChip,
+  WorkflowChips,
   EnsembleChip,
   SessionWhere,
 } from "./session-bits.tsx";
@@ -128,6 +128,7 @@ export function SessionCard({
   inputReviewId = null,
   pendingReviewIds,
   workflowRun = null,
+  workflowRuns = null,
   workflowBinding = null,
   onOpenWorkflowRun,
   onBindWorkflow,
@@ -191,6 +192,11 @@ export function SessionCard({
   reviews?: ReviewItem[];
   workflowRun?: WorkflowRunSummary | null;
   /**
+   * Every review this conversation is carrying - one per repository a multi-repo task
+   * changed, and exactly one for every other session.
+   */
+  workflowRuns?: readonly WorkflowRunSummary[] | null;
+  /**
    * What this conversation is ARMED with, which exists before any run does.
    *
    * Null covers two cases the card renders identically and should: nothing bound, and a
@@ -215,7 +221,7 @@ export function SessionCard({
   // Cards has no idle column to split and no section rule to draw, so the card's spine and
   // tag are the ONLY way this layout says "an open run owns this agent's next turn". Same
   // shared sentence the Board tile reads (`sessionIsHeld`), so the two cannot disagree.
-  const held = sessionIsHeld(workflowRun, st.tone);
+  const held = sessionIsHeld(workflowRuns, st.tone);
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
@@ -269,7 +275,10 @@ export function SessionCard({
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />
-        <WorkflowChip run={workflowRun} onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined} />
+        {/* One chip per review, which for every single-repo session is the one chip this
+            always drew. A multi-repo task's session names each one's repository, because two
+            reviews of one conversation are otherwise indistinguishable. */}
+        <WorkflowChips runs={workflowRuns} onOpen={onOpenWorkflowRun} />
         <EnsembleChip
           link={session.task?.ensemble ?? null}
           summary={ensembleSummary}
@@ -289,7 +298,7 @@ export function SessionCard({
             said the second one either way. A session armed with No-Mistakes Review read as
             unarmed for the whole of its working life, because the only thing consulted here
             was the RUN, and a `foreman_complete` binding has no run until the work is done. */}
-        {sessionCanBindWorkflow(workflowRun) && onBindWorkflow && (
+        {sessionCanBindWorkflow(workflowRuns) && onBindWorkflow && (
           <Tooltip label={workflowBindChipTitle(workflowBinding)}>
             <button
               className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
@@ -320,7 +329,7 @@ export function SessionCard({
             the "idle" the badge is about to say. */}
         {held && (
           <Tooltip
-            label={`Held by ${workflowRun!.workflowName} - the run owns this session's next turn`}
+            label={`Held by ${workflowRun?.workflowName ?? "a workflow"} - the run owns this session's next turn`}
           >
             <span className="card-held">held</span>
           </Tooltip>

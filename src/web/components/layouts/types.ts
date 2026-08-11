@@ -6,6 +6,7 @@ import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkspaceLinkHandler } from "../Markdown.tsx";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import { newestSessionRun } from "../../lib/held.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -142,8 +143,19 @@ export interface SessionViewProps {
    * arrive, which is the whole point of taking the live list rather than refetching.
    */
   reviews: ReviewItem[];
-  /** App-owned join from compact run SSE summaries to each live session. */
-  workflowRunBySession?: ReadonlyMap<string, WorkflowRunSummary>;
+  /**
+   * App-owned join from compact run SSE summaries to each live session: EVERY run the session
+   * carries, one per repository a multi-repo task changed.
+   *
+   * One entry for the fleet's single-repo sessions, so every rule built on it answers exactly
+   * what it answered when there was one run: the held mark, the drop target, the bind
+   * affordance and the chips.
+   *
+   * The three surfaces that genuinely speak about a single review - the board tile's ladder,
+   * the console's Workflows tab, the retro offer - derive it with `newestSessionRun` rather
+   * than reading a second map, so a session's list and its one run cannot disagree.
+   */
+  workflowRunsBySession?: ReadonlyMap<string, readonly WorkflowRunSummary[]>;
   /** App-owned join from compact binding SSE summaries to each live session. */
   workflowBindingBySession?: ReadonlyMap<string, WorkflowBindingSummary>;
   onOpenWorkflowRun?: (runId: string) => void;
@@ -216,7 +228,8 @@ export function cardProps(p: SessionViewProps, s: Session) {
     inputReviewId: p.inputReviewBySession.get(s.id) ?? null,
     pendingReviewIds: p.pendingReviewIds,
     reviews: p.reviews,
-    workflowRun: p.workflowRunBySession?.get(s.id) ?? null,
+    workflowRuns: p.workflowRunsBySession?.get(s.id) ?? null,
+    workflowRun: newestSessionRun(p.workflowRunsBySession?.get(s.id)),
     workflowBinding: p.workflowBindingBySession?.get(s.id) ?? null,
     onOpenWorkflowRun: p.onOpenWorkflowRun,
     onBindWorkflow: p.onBindWorkflow ? () => p.onBindWorkflow?.(s.id) : undefined,

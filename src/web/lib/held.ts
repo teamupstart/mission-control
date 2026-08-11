@@ -17,16 +17,21 @@ import type { Tone } from "./format.ts";
  * `WORKFLOW_RUN_STATUSES` is append-only: a fourth terminal status added there has to reach
  * this predicate at the same moment it reaches every other reader.
  *
- * Takes the map App already folds for the tile (`workflowRunBySession`) rather than the raw
- * summaries, so a session's run is resolved once per fleet change instead of once per consumer.
+ * Takes the map App already folds for the tile (`workflowRunsBySession`) rather than the raw
+ * summaries, so a session's runs are resolved once per fleet change instead of once per consumer.
+ *
+ * ANY open run holds the session, which is what makes this read the list rather than one run.
+ * A multi-repo task's session carries one run per repository it changed; reading only the
+ * newest would report a session as free to take work while another repository's review was
+ * still mid-repair on the very same pane.
  */
 export function heldSessionIds(
-  runBySession: ReadonlyMap<string, WorkflowRunSummary> | null | undefined,
+  runsBySession: ReadonlyMap<string, readonly WorkflowRunSummary[]> | null | undefined,
 ): ReadonlySet<string> {
   const held = new Set<string>();
-  if (!runBySession) return held;
-  for (const [sessionId, run] of runBySession) {
-    if (workflowRunIsOpen(run.status)) held.add(sessionId);
+  if (!runsBySession) return held;
+  for (const [sessionId, runs] of runsBySession) {
+    if (runs.some((run) => workflowRunIsOpen(run.status))) held.add(sessionId);
   }
   return held;
 }
@@ -35,19 +40,37 @@ export function heldSessionIds(
 export const NO_HELD_SESSIONS: ReadonlySet<string> = new Set<string>();
 
 /**
- * The same join, for one session standing in front of its own run.
+ * The one of a session's runs that a one-run surface should speak about.
+ *
+ * Three surfaces genuinely want one: the board tile's ladder, the console's Workflows tab and
+ * the retro offer each render or reason about a single review, and for a multi-repo task's
+ * session the most recently updated one is the review something is happening in.
+ *
+ * Derived here rather than folded into a second App-level map, so the list and the single run
+ * cannot disagree about a session - the failure mode a parallel map invites is a card drawing
+ * two chips while the tag beside them reads off a third run nobody can see.
+ */
+export function newestSessionRun(
+  runs: readonly WorkflowRunSummary[] | null | undefined,
+): WorkflowRunSummary | null {
+  if (!runs || runs.length === 0) return null;
+  return runs.reduce((best, run) => (run.updatedAt > best.updatedAt ? run : best));
+}
+
+/**
+ * The same join, for one session standing in front of its own runs.
  *
  * This is what a card-shaped surface (Board tile, Cards card) uses to draw its held mark, and
  * it is the SAME sentence `heldSessionIds` spells over the map - stated once here so the two
- * cannot drift. Scoped to the `idle` tone to match `orderSessions`: a held session that has
- * stopped to ask a question belongs to "needs you", and a held mark there would argue with
- * the column it sits in.
+ * cannot drift, which is also why both now read every run rather than one. Scoped to the
+ * `idle` tone to match `orderSessions`: a held session that has stopped to ask a question
+ * belongs to "needs you", and a held mark there would argue with the column it sits in.
  */
 export function sessionIsHeld(
-  run: WorkflowRunSummary | null | undefined,
+  runs: readonly WorkflowRunSummary[] | null | undefined,
   tone: Tone,
 ): boolean {
-  return run != null && workflowRunIsOpen(run.status) && tone === "idle";
+  return runs != null && runs.some((run) => workflowRunIsOpen(run.status)) && tone === "idle";
 }
 
 /**
@@ -69,9 +92,46 @@ export function sessionIsHeld(
  *
  * `workflowRunIsOpen` rather than a terminal-status list of our own, for the reason
  * `heldSessionIds` gives: `WORKFLOW_RUN_STATUSES` is append-only.
+ *
+ * Every run, not the newest: a multi-repo task's session is not bindable while ANY of its
+ * repositories is still under review, and the newest run finishing first is the ordinary case
+ * rather than an unusual one.
  */
-export function sessionCanBindWorkflow(run: WorkflowRunSummary | null | undefined): boolean {
-  return run == null || !workflowRunIsOpen(run.status);
+export function sessionCanBindWorkflow(
+  runs: readonly WorkflowRunSummary[] | null | undefined,
+): boolean {
+  return runs == null || !runs.some((run) => workflowRunIsOpen(run.status));
+}
+
+/**
+ * The active binding each session is ARMED with: its own repository's, never a sibling's.
+ *
+ * A multi-repo task's session owns one active binding per repository it is reviewing, and
+ * only one of them answers the question this chip asks. The chip names what the conversation
+ * is armed with and its click opens the dialog ON that binding, so handing it an attached
+ * repository's would name a repository the session is not standing in, and would open a
+ * binding the dialog then refuses to reattach - it compares the session's own cwd and root.
+ *
+ * "Own" is `repoRoot` matching the session's, or absent - the shape every binding written
+ * before per-repo runs has, and every single-repo binding still. Newest-wins stays the
+ * tiebreak within the session's own repository, which is the whole of the old rule.
+ */
+export function ownBindingBySession(
+  bindings: readonly WorkflowBindingSummary[],
+  sessionRepoRoots: ReadonlyMap<string, string | null>,
+): ReadonlyMap<string, WorkflowBindingSummary> {
+  const own = (binding: WorkflowBindingSummary): boolean =>
+    !binding.repoRoot || binding.repoRoot === sessionRepoRoots.get(binding.sessionId ?? "");
+  const bySession = new Map<string, WorkflowBindingSummary>();
+  for (const binding of bindings) {
+    if (!binding.sessionId || binding.state !== "active") continue;
+    const current = bySession.get(binding.sessionId);
+    if (current && own(current) && !own(binding)) continue;
+    if (!current || (own(binding) && !own(current)) || binding.updatedAt > current.updatedAt) {
+      bySession.set(binding.sessionId, binding);
+    }
+  }
+  return bySession;
 }
 
 /**

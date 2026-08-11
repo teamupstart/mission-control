@@ -131,6 +131,7 @@ const binding: WorkflowBinding = {
   sessionName: "harness/runs-monitor",
   sessionCwd: "/repo",
   sessionRepoRoot: "/repo",
+  repoRoot: "",
   triggerMode: "manual",
   deliveryMode: "preview",
   state: "active",

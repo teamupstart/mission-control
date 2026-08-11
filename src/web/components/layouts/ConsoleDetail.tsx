@@ -4,7 +4,11 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
-import { sessionCanBindWorkflow, workflowBindChipTitle } from "../../lib/held.ts";
+import {
+  newestSessionRun,
+  sessionCanBindWorkflow,
+  workflowBindChipTitle,
+} from "../../lib/held.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -26,7 +30,7 @@ import {
   SessionTitle,
   StateBadge,
   TaskRepoPrs,
-  WorkflowChip,
+  WorkflowChips,
   EnsembleChip,
   SessionWhere,
 } from "../session-bits.tsx";
@@ -161,7 +165,10 @@ export function ConsoleDetail({
   session: Session;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
-  const workflowRun = view.workflowRunBySession?.get(session.id) ?? null;
+  const workflowRuns = view.workflowRunsBySession?.get(session.id) ?? null;
+  // The Workflows tab and the retro offer speak about ONE review; the chips and the bind
+  // gate above read every one. Derived from the same list so the two cannot disagree.
+  const workflowRun = newestSessionRun(workflowRuns);
   const workflowBinding = view.workflowBindingBySession?.get(session.id) ?? null;
   const ensembleLink = session.task?.ensemble ?? null;
   const [diffSelection, setDiffSelection] = useState<DiffSelection>({
@@ -368,10 +375,9 @@ export function ConsoleDetail({
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />
-        <WorkflowChip
-          run={workflowRun}
-          onOpen={workflowRun ? () => view.onOpenWorkflowRun?.(workflowRun.id) : undefined}
-        />
+        {/* One chip per review, exactly as the card draws them - a multi-repo task's session
+            names each repository, a single-repo one is unchanged. */}
+        <WorkflowChips runs={workflowRuns} onOpen={view.onOpenWorkflowRun} />
         <EnsembleChip
           link={ensembleLink}
           summary={ensembleSummaryFor(view, session)}
@@ -379,7 +385,7 @@ export function ConsoleDetail({
         />
         {/* The card's gate, read from the same helper: a terminal run releases the offer here
             too, and stands its outcome chip next to it rather than instead of it. */}
-        {sessionCanBindWorkflow(workflowRun) && view.onBindWorkflow && (
+        {sessionCanBindWorkflow(workflowRuns) && view.onBindWorkflow && (
           <Tooltip label={workflowBindChipTitle(workflowBinding)}>
             <button
               className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}

@@ -176,14 +176,27 @@ export function workflowRunLabel(run: WorkflowRunSummary): string {
 
 export function WorkflowChip({
   run,
+  repoLabel,
   onOpen,
 }: {
   run: WorkflowRunSummary | null;
+  /**
+   * The repository this run reviews, drawn before the label when a session has more than one.
+   * Omitted for the single-run session, whose chip is then byte-identical to what it was.
+   */
+  repoLabel?: string | null;
   onOpen?: () => void;
 }): React.JSX.Element | null {
   if (!run) return null;
+  const label = workflowRunLabel(run);
   return (
-    <Tooltip label={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}>
+    <Tooltip
+      label={
+        repoLabel
+          ? `${run.workflowName} v${run.workflowVersion} on ${repoLabel}: ${label}`
+          : `${run.workflowName} v${run.workflowVersion}: ${label}`
+      }
+    >
       <button
         className={`workflow-chip workflow-${workflowRunTone(run)}`}
         onClick={(event) => {
@@ -192,9 +205,48 @@ export function WorkflowChip({
         }}
       >
         <span aria-hidden>⌁</span>
-        {workflowRunLabel(run)}
+        {/* A real space between the name and the label, not a CSS gap: this button's text IS
+            its accessible name, and a flex gap would weld "second-repoReview changes". */}
+        {repoLabel
+          ? <><span className="workflow-chip-repo">{repoLabel}</span>{" "}</>
+          : null}
+        {label}
       </button>
     </Tooltip>
+  );
+}
+
+/**
+ * Every review a conversation is carrying, one chip each.
+ *
+ * One chip for the fleet's single-repo sessions, drawn exactly as one `WorkflowChip` always
+ * was - no repository name, no wrapper, no change to the markup a person or a spec reads.
+ *
+ * A multi-repo task's session gets one per repository it changed, each named, because they
+ * are genuinely independent reviews: separate repair budgets, separate gates, separate pull
+ * requests, and routinely different states at the same moment. A surface that drew only the
+ * newest would report one repository's "Approved" over another's unfinished repair.
+ */
+export function WorkflowChips({
+  runs,
+  onOpen,
+}: {
+  runs: readonly WorkflowRunSummary[] | null | undefined;
+  onOpen?: (runId: string) => void;
+}): React.JSX.Element | null {
+  if (!runs || runs.length === 0) return null;
+  const named = runs.length > 1;
+  return (
+    <>
+      {runs.map((run) => (
+        <WorkflowChip
+          key={run.id}
+          run={run}
+          repoLabel={named ? repoLeaf(run.repoRoot) : null}
+          onOpen={onOpen ? () => onOpen(run.id) : undefined}
+        />
+      ))}
+    </>
   );
 }
 

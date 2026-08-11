@@ -133,6 +133,11 @@ type RunCursor = { updatedAt: number; id: string };
 // in one follow-up query instead of three reads per run.
 const WORKFLOW_RUN_SUMMARY_SELECT = `
   SELECT r.*, b.note_key, b.session_id, b.session_name,
+         -- The run's repository, RESOLVED: a secondary repository's own root, or the
+         -- session's root for the binding that follows its cwd. Resolved in SQL so no
+         -- reader has to know that '' means "ask the session", and so a run whose session
+         -- has gone still names the repository it reviewed.
+         COALESCE(NULLIF(b.repo_root, ''), b.session_repo_root) AS run_repo_root,
          d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
          COALESCE((
            SELECT MAX(s.round) FROM workflow_submissions s WHERE s.run_id = r.id
@@ -602,6 +607,9 @@ const WorkflowBindingRowSchema = z.object({
   session_name: text.optional().default(""),
   session_cwd: nullableText.optional().default(null),
   session_repo_root: nullableText.optional().default(null),
+  // Optional-with-a-default like every other post-hoc column: a row read by a build whose
+  // migrate() has not run yet still parses, and "" is what such a row genuinely is.
+  repo_root: text.optional().default(""),
   trigger_mode: z.enum(WORKFLOW_TRIGGER_MODES),
   delivery_mode: z.enum(WORKFLOW_DELIVERY_MODES),
   state: z.enum(WORKFLOW_BINDING_STATES),
@@ -621,6 +629,7 @@ export function parseWorkflowBindingRow(value: unknown): WorkflowBinding {
     sessionName: row.session_name ?? "",
     sessionCwd: row.session_cwd ?? null,
     sessionRepoRoot: row.session_repo_root ?? null,
+    repoRoot: row.repo_root ?? "",
     triggerMode: row.trigger_mode,
     deliveryMode: row.delivery_mode,
     state: row.state,
@@ -1306,6 +1315,12 @@ export interface WorkflowBindingInsert {
   sessionName: string;
   sessionCwd: string | null;
   sessionRepoRoot: string | null;
+  /**
+   * Which checkout this binding reviews; omitted means the session's own, which is what every
+   * caller but the per-repo sibling path wants. Optional rather than required so the six
+   * existing insert sites read exactly as they did.
+   */
+  repoRoot?: string;
   triggerMode: WorkflowBinding["triggerMode"];
   deliveryMode: WorkflowBinding["deliveryMode"];
   maxRepairRounds: number;
@@ -1435,6 +1450,27 @@ export interface ForemanCompletionStoreInput {
   expectedIntent: SessionIntentGuard | null;
   runId: string;
   submissionId: string;
+  /**
+   * Whether this claim spends the completion episode. Defaults to true, which is what every
+   * single-repo claim is and what every caller before per-repo runs meant.
+   *
+   * A multi-repo task's turn offers ONE proof to one binding per repository it changed, and
+   * the episode is one episode however many repositories it touched. The first claim retires
+   * the once-only guard; the rest pass `false` and ride the same proof, because retiring a
+   * guard that is no longer armed throws - correctly, since a second spend of one episode is
+   * exactly what that guard exists to refuse.
+   */
+  retireGuard?: boolean;
+  /**
+   * The CONVERSATION's working directory, for the Foreman queue row a prompted claim creates
+   * when none exists yet.
+   *
+   * Defaults to the binding's own checkout, which for every binding but a secondary
+   * repository's IS the conversation's. For that one it must not be: a Foreman queue belongs
+   * to the session and its `cwd` is where Foreman runs, so seeding it with an attached
+   * repository's worktree would point the queue at a checkout the agent is not standing in.
+   */
+  guardCwd?: string | null;
   now: number;
 }
 
@@ -2493,6 +2529,12 @@ export class WorkflowStore {
       workflowVersion: version?.version ?? 0,
       noteKey: binding.noteKey,
       sessionId: binding.sessionId,
+      // The same COALESCE `WORKFLOW_RUN_SUMMARY_SELECT` does, in TypeScript because this
+      // projection starts from a parsed row rather than a join: '' means "the session's own
+      // checkout", whose root is the one the binding captured.
+      ...(binding.repoRoot || binding.sessionRepoRoot
+        ? { repoRoot: binding.repoRoot || binding.sessionRepoRoot }
+        : {}),
       triggerMode: binding.triggerMode,
       deliveryMode: binding.deliveryMode,
       state: binding.state,
@@ -2500,10 +2542,47 @@ export class WorkflowStore {
     };
   }
 
+  /**
+   * The active binding that follows this conversation's OWN checkout.
+   *
+   * Unchanged in meaning by the repository dimension, and that is deliberate: every existing
+   * caller - the create conflict check, the dispatch arming, the Foreman claim, reattach -
+   * asks about the conversation's own binding, and a multi-repo task's secondary bindings are
+   * daemon-created siblings none of them may accidentally pick up. `activeBindingsForNote`
+   * below is the one that sees all of them.
+   */
   activeBindingForNote(noteKey: string): WorkflowBinding | null {
     const row = this.db.prepare(
-      `SELECT * FROM workflow_bindings WHERE note_key = ? AND state = 'active'`,
+      `SELECT * FROM workflow_bindings
+        WHERE note_key = ? AND repo_root = '' AND state = 'active'`,
     ).get(noteKey);
+    return row ? parseWorkflowBindingRow(row) : null;
+  }
+
+  /**
+   * Every active binding on this conversation - the session's own first, then one per
+   * secondary repository in path order.
+   *
+   * Its length is also the cheap "is this conversation running more than one review" test the
+   * delivery queue gates itself on, answered from the active-binding index alone.
+   */
+  activeBindingsForNote(noteKey: string): WorkflowBinding[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM workflow_bindings
+        WHERE note_key = ? AND state = 'active'
+        ORDER BY repo_root ASC`,
+    ).all(noteKey) as unknown[];
+    return rows.flatMap((row) => {
+      try { return [parseWorkflowBindingRow(row)]; } catch (error) { diagnose(error); return []; }
+    });
+  }
+
+  /** The active binding reviewing one named repository of this conversation. */
+  activeBindingForNoteRepo(noteKey: string, repoRoot: string): WorkflowBinding | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_bindings
+        WHERE note_key = ? AND repo_root = ? AND state = 'active'`,
+    ).get(noteKey, repoRoot);
     return row ? parseWorkflowBindingRow(row) : null;
   }
 
@@ -2511,9 +2590,9 @@ export class WorkflowStore {
     this.db.prepare(
       `INSERT INTO workflow_bindings (
          id, workflow_version_id, note_key, session_id, session_agent, session_name,
-         session_cwd, session_repo_root, trigger_mode, delivery_mode, state,
+         session_cwd, session_repo_root, repo_root, trigger_mode, delivery_mode, state,
          max_repair_rounds, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
     ).run(
       input.id,
       input.workflowVersionId,
@@ -2523,6 +2602,7 @@ export class WorkflowStore {
       input.sessionName,
       input.sessionCwd,
       input.sessionRepoRoot,
+      input.repoRoot ?? "",
       input.triggerMode,
       input.deliveryMode,
       input.maxRepairRounds,
@@ -2833,6 +2913,12 @@ export class WorkflowStore {
         // removed has no other human name left.
         ...(typeof row.session_name === "string" && row.session_name
           ? { sessionName: row.session_name }
+          : {}),
+        // Spread for the same reason, and absent means the same thing here as it does on the
+        // wire type: the session's own repository, which is what every run of a single-repo
+        // session reviews.
+        ...(typeof row.run_repo_root === "string" && row.run_repo_root
+          ? { repoRoot: row.run_repo_root }
           : {}),
         status: run.status,
         phase: run.currentPhase,
@@ -3187,12 +3273,23 @@ export class WorkflowStore {
       }
 
       // Retiring the guard stays inside this transaction: a later failure rolls it back, so
-      // a rejected or stale claim never spends the episode.
-      const retired = input.completionKind === "drain"
-        ? this.retireDrainGuard(binding.noteKey, `workflow:${run.id}`, input.now)
-        : this.retirePromptedGuard(binding, expectedIntent!.episodeKey, input.now);
-      if (!retired) {
-        throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
+      // a rejected or stale claim never spends the episode. A sibling repository's claim on
+      // the same turn passes `retireGuard: false` - the episode was already spent by the
+      // first, and this claim is that same proof offered to another repository's review.
+      if (input.retireGuard !== false) {
+        const retired = input.completionKind === "drain"
+          ? this.retireDrainGuard(binding.noteKey, `workflow:${run.id}`, input.now)
+          : this.retirePromptedGuard(
+              {
+                noteKey: binding.noteKey,
+                sessionCwd: input.guardCwd === undefined ? binding.sessionCwd : input.guardCwd,
+              },
+              expectedIntent!.episodeKey,
+              input.now,
+            );
+        if (!retired) {
+          throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
+        }
       }
       this.appendEvent(run.id, "workflow_completion_claimed", {
         triggerKey,

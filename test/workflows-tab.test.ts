@@ -19,7 +19,7 @@ const read = (rel: string): string =>
 
 function view(session: Session, over: Partial<SessionViewProps> = {}): SessionViewProps {
   return mkSessionView(session, {
-    workflowRunBySession: new Map([[session.id, { ...LADDER_SUMMARY, sessionId: session.id }]]),
+    workflowRunsBySession: new Map([[session.id, [{ ...LADDER_SUMMARY, sessionId: session.id }]]]),
     onOpenWorkflowRun: () => {},
     ...over,
   });

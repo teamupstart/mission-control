@@ -111,7 +111,7 @@ test("a bound workflow starts as an in-place Board disclosure, not a navigation 
   const session = mkSession();
   const viewProps = {
     ...props([session]),
-    workflowRunBySession: new Map([[session.id, { ...workflowRun, sessionId: session.id }]]),
+    workflowRunsBySession: new Map([[session.id, [{ ...workflowRun, sessionId: session.id }]]]),
     onOpenWorkflowRun: () => {},
   };
   const html = renderToStaticMarkup(createElement(BoardView, viewProps));
@@ -178,14 +178,14 @@ function heldProps(open: boolean): SessionViewProps {
   const { free, held } = idlePair();
   return {
     ...props([free, held]),
-    workflowRunBySession: new Map([
+    workflowRunsBySession: new Map([
       [
         held.id,
-        {
+        [{
           ...workflowRun,
           sessionId: held.id,
           status: open ? ("running" as const) : ("completed" as const),
-        },
+        }],
       ],
     ]),
     onOpenWorkflowRun: () => {},
@@ -237,8 +237,8 @@ test("a column where everything is held drops the free pill rather than counting
   const held = mkSession({ id: "held-only", name: "held", state: "idle", activity: null });
   const viewProps = {
     ...props([held]),
-    workflowRunBySession: new Map([
-      [held.id, { ...workflowRun, sessionId: held.id, status: "running" as const }],
+    workflowRunsBySession: new Map([
+      [held.id, [{ ...workflowRun, sessionId: held.id, status: "running" as const }]],
     ]),
     onOpenWorkflowRun: () => {},
   };
@@ -274,8 +274,8 @@ test("a held session that needs you is not tagged, and does not leave needs-you"
   });
   const viewProps = {
     ...props([asking]),
-    workflowRunBySession: new Map([
-      [asking.id, { ...workflowRun, sessionId: asking.id, status: "running" as const }],
+    workflowRunsBySession: new Map([
+      [asking.id, [{ ...workflowRun, sessionId: asking.id, status: "running" as const }]],
     ]),
     onOpenWorkflowRun: () => {},
   };

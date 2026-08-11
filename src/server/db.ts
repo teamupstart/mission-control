@@ -513,6 +513,16 @@ export function openDb(): DatabaseSync {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_draft
       ON workflow_versions(workflow_id, source_draft_revision);
 
+    -- repo_root is WHICH CHECKOUT this binding reviews, and the second column of the
+    -- active-binding key. Empty string means "the session's own checkout" - every row ever
+    -- written, and every single-repo binding still. A non-empty value names a secondary
+    -- repository of the session's multi-repo task, and session_cwd/session_repo_root then
+    -- hold that repository's worktree and root.
+    --
+    -- NOT NULL with an empty-string default, never nullable: SQLite treats nulls as distinct
+    -- in a unique index, so a null here would let two active bindings own one conversation.
+    -- The default is also the whole backfill - every pre-feature row IS a session's own
+    -- checkout - which is why no UPDATE accompanies the ALTER in migrate().
     CREATE TABLE IF NOT EXISTS workflow_bindings (
       id                  TEXT PRIMARY KEY,
       workflow_version_id TEXT NOT NULL,
@@ -522,6 +532,7 @@ export function openDb(): DatabaseSync {
       session_name        TEXT NOT NULL DEFAULT '',
       session_cwd         TEXT,
       session_repo_root   TEXT,
+      repo_root           TEXT NOT NULL DEFAULT '',
       trigger_mode        TEXT NOT NULL,
       delivery_mode       TEXT NOT NULL,
       state               TEXT NOT NULL,
@@ -529,8 +540,10 @@ export function openDb(): DatabaseSync {
       created_at          INTEGER NOT NULL,
       updated_at          INTEGER NOT NULL
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_bindings_active_note
-      ON workflow_bindings(note_key) WHERE state = 'active';
+    -- idx_workflow_bindings_active_note_repo is created by migrate(), NOT here, for the same
+    -- reason idx_workflow_submissions_segment is: this block runs first and its CREATE TABLE
+    -- is a no-op on an existing database, so an index over repo_root here would be built
+    -- against a table that does not have the column yet.
     CREATE INDEX IF NOT EXISTS idx_workflow_bindings_version
       ON workflow_bindings(workflow_version_id);
 
@@ -1544,6 +1557,37 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_bindings", "session_name", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "workflow_bindings", "session_cwd", "TEXT");
   addColumn(d, "workflow_bindings", "session_repo_root", "TEXT");
+
+  // ---- The binding's repository dimension ---------------------------------------------
+  //
+  // A conversation owns one active binding PER REPOSITORY, so a multi-repo task's session
+  // can run one full review per repository it changed. `repo_root` is that second key
+  // column: empty string for the session's own checkout, a secondary repository's root
+  // otherwise.
+  //
+  // NOT NULL DEFAULT '' is exact rather than convenient, and it is the entire backfill.
+  // Every binding written before this column existed reviewed the session's own checkout,
+  // which is precisely what the empty string means, so SQLite's own ALTER fills each row
+  // with the true value and no UPDATE follows. Nullable would have been wrong twice over: a
+  // pre-feature row would carry "unknown" rather than a fact, and SQLite treats nulls as
+  // distinct in a unique index - two active bindings per conversation, which is the
+  // invariant this widens rather than removes. Backfilling from `session_repo_root` instead
+  // was rejected for the same reason: that column is nullable, so a session outside a
+  // repository would land a null in the key.
+  addColumn(d, "workflow_bindings", "repo_root", "TEXT NOT NULL DEFAULT ''");
+  // The index replacement, both halves, in this order and only here - the
+  // idx_workflow_submissions_segment idiom above, for the same reason. Dropped by exact
+  // name after the column exists, and both statements idempotent: on a fresh database the
+  // dropped name was never used, and on an upgraded one it cannot come back.
+  //
+  // A single-repo fleet's rows all carry '', so the widened index refuses exactly what the
+  // narrow one refused: a second active binding on one conversation.
+  d.exec(`DROP INDEX IF EXISTS idx_workflow_bindings_active_note;`);
+  d.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_bindings_active_note_repo
+      ON workflow_bindings(note_key, repo_root) WHERE state = 'active';
+  `);
+
   addColumn(d, "workflow_node_attempts", "runner_id", "TEXT");
   addColumn(d, "workflow_node_attempts", "model_id", "TEXT");
   // Phase 6 retention markers are nullable because pre-retention rows contain full

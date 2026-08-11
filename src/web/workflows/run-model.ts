@@ -854,6 +854,9 @@ const ACTION_WAIT_SENTENCES: Record<SessionActionWaitReason, string> = {
   pull_request_wrong_branch:
     "This turn opened a pull request from a different branch, so it does not carry the "
     + "reviewed commit. Open one from this branch, or reset the run.",
+  queued_for_conversation:
+    "Ready to send, and waiting for another repository's review to finish using this "
+    + "session's turn. It goes out on its own; nothing is needed from you.",
 };
 
 export function actionWaitSentence(reason: SessionActionWaitReason): string {
@@ -897,6 +900,12 @@ const ACTION_WAIT_STATUSES: Record<SessionActionWaitReason, PipelineStatus> = {
   // nothing has judged the work and a later adoption can still resolve it.
   pull_request_wrong_repository: { tone: "waiting", label: "PR on another repo" },
   pull_request_wrong_branch: { tone: "waiting", label: "PR on another branch" },
+  // The RUNNING tone, not the waiting one, and the distinction is the same one `awaiting_send`
+  // draws: this action is authorized and its turn is coming. A multi-repo task's reviews share
+  // one pane, so one of them holds the turn and the rest queue - which is the runtime working,
+  // not a gate anybody has to clear. Amber here would put "needs you" on the majority of a
+  // two-repo task's life and teach an operator to ignore the colour.
+  queued_for_conversation: { tone: "running", label: "Queued" },
 };
 
 /**

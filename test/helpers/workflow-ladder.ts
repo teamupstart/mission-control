@@ -367,6 +367,7 @@ export function ladderDetail(state: LadderState): WorkflowRunDetail {
       sessionName: "harness/workflow-ladder",
       sessionCwd: "/repo",
       sessionRepoRoot: "/repo",
+      repoRoot: "",
       triggerMode: "manual",
       deliveryMode: "preview",
       state: "active",

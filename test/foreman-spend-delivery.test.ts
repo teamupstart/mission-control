@@ -237,25 +237,13 @@ const SPAWN_WAIT_MS = 30_000;
  */
 const IN_PROCESS_WAIT_MS = 10_000;
 
-/**
- * Wait for a condition, naming it so a timeout says WHICH one gave up.
- *
- * The label is not decoration. A cascading failure in this file reports one real timeout
- * followed by a dozen "this case starts from a drained queue", and the bare
- * "condition did not become true" the first one used to print said nothing about which
- * end of a round trip was still outstanding.
- */
-async function eventually(
-  check: () => boolean,
-  timeoutMs = IN_PROCESS_WAIT_MS,
-  what = "condition",
-): Promise<void> {
+async function eventually(check: () => boolean, timeoutMs = IN_PROCESS_WAIT_MS): Promise<void> {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     if (check()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.fail(`${what} did not become true within ${timeoutMs}ms`);
+  assert.fail("condition did not become true before timeout");
 }
 
 /**
@@ -395,8 +383,6 @@ test("an SDK Foreman run keeps its identity and usage through the HTTP outbox", 
         received.some((item) => item.runId === runId) &&
         pendingSpendReports() === 0 &&
         !existsSync(SPOOL),
-      IN_PROCESS_WAIT_MS,
-      "the SDK report should be delivered AND acknowledged",
     );
 
     const delivered = received.find((item) => item.runId === runId) as unknown as LlmSpendReport;
@@ -584,11 +570,7 @@ test("a recovered legacy spool is delivered once, not on every sweep", async () 
     afterFirst,
     "no further delivery attempts were made for an already-migrated legacy spool",
   );
-  await eventually(
-    () => pendingSpendReports() === 0,
-    IN_PROCESS_WAIT_MS,
-    "the migrated legacy report should be acknowledged",
-  );
+  await eventually(() => pendingSpendReports() === 0);
   for (const n of readdirSync(home).filter((f) => f.includes(".migrated-"))) {
     rmSync(join(home, n), { force: true });
   }
@@ -803,8 +785,6 @@ test("a peer that dies mid-outage is adopted by a worker that never restarts", a
       received.some((r) => (r as { runId: string }).runId === "run-from-dead-peer") &&
       pendingSpendReports() === 0 &&
       !existsSync(orphanPath("dead-peer-mid-outage")),
-    IN_PROCESS_WAIT_MS,
-    "the adopted report should be delivered AND acknowledged",
   );
   assert.equal(pendingSpendReports(), 0, "and it was delivered, not merely queued");
   assert.equal(

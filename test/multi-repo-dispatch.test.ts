@@ -243,8 +243,90 @@ test("a driver that cannot carry the grant refuses the dispatch instead of dropp
   assert.equal(existsSync(join(WORKTREES_DIR, "sdkguard-1")), false);
 });
 
-test("a single-repo task on the same harness and runtime is not touched by the guard", () => {
-  // The guard is scoped to tasks that actually attach repos, so it cannot become a general
-  // restriction on which harnesses may run embedded.
+test("the TERMINAL runtime refuses the same task rather than launching without the flags", async () => {
+  // The guard is runtime-agnostic, and this is the half that would otherwise fail silently:
+  // rendering no flags and launching anyway leaves an agent holding a manifest that says
+  // "You have write access to all of them" over worktrees it cannot write to.
+  //
+  // Enforced in the dispatcher rather than only at the routes because `TaskManager.create`
+  // does not check - its contract is that the caller validated - so a future producer of a
+  // multi-repo task (an MCP tool, a schedule, an ensemble) would reintroduce the drop.
+  const api = mkRepo("terminalguard-api");
+  const web = mkRepo("terminalguard-web");
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "terminalguard",
+      status: "dispatching",
+      agent: "pi",
+      repoRoot: api,
+      extraRepos: [entry(web)],
+    }),
+  );
+  // The default runtime, i.e. no `resolveRuntime` override at all.
+  const dispatcher = new Dispatcher(registry);
+
+  await dispatcher.dispatch("terminalguard");
+
+  const failed = registry.getTask("terminalguard");
+  assert.equal(failed?.status, "failed");
+  assert.match(failed?.error ?? "", /cannot be given write access/);
+  assert.equal(existsSync(join(WORKTREES_DIR, "terminalguard")), false, "nothing provisioned");
+  assert.equal(existsSync(join(WORKTREES_DIR, "terminalguard-1")), false);
+});
+
+test("a single-repo task on a harness with no capability still dispatches normally", async () => {
+  // The guard is scoped to tasks that actually attach repos. Without this, declaring no
+  // capability would become a general ban on dispatching that harness at all.
+  const api = mkRepo("soloharness-api");
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "soloharness", status: "dispatching", agent: "pi", repoRoot: api }),
+  );
+  const dispatcher = new Dispatcher(registry);
+
+  await dispatcher.dispatch("soloharness");
+
+  // It gets past the guard and provisions its tree; what happens after that is the ordinary
+  // launch path, which has no pane to talk to here. The guard's refusal is what must NOT
+  // appear.
+  assert.doesNotMatch(registry.getTask("soloharness")?.error ?? "", /write access/);
   assert.equal(capabilitiesFor("pi").multiRepoDispatch, null);
+});
+
+test("reclaiming a task's resources clears the primary's baseline with its tree", async () => {
+  // `base_sha` is what later phases compare a head against to decide whether a repo changed.
+  // A 40-char commit left beside a null `worktreePath` claims we know where a branch was cut
+  // for a tree that no longer exists - and the three reclaim sites in `tasks.ts` all clear
+  // it, so this one silently disagreeing with them is the drift worth pinning.
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "reclaim-baseline",
+      status: "cancelled",
+      repoRoot: "/repo/api",
+      worktreePath: "/wt/reclaim-baseline",
+      branch: "harness/x-abc123",
+      provider: "git",
+      baseSha: "a".repeat(40),
+      extraRepos: [{ ...entry("/repo/web"), worktreePath: "/wt/reclaim-baseline-1", baseSha: "b".repeat(40) }],
+    }),
+  );
+  const dispatcher = new Dispatcher(registry, async () => {});
+
+  const stopped = await (
+    dispatcher as unknown as { abortIfSettled(taskId: string): Promise<boolean> }
+  ).abortIfSettled("reclaim-baseline");
+  assert.equal(stopped, true);
+
+  const cleared = registry.getTask("reclaim-baseline");
+  assert.equal(cleared?.worktreePath, null);
+  assert.equal(cleared?.baseSha, null, "the primary's baseline goes with its tree");
+  assert.deepEqual(
+    cleared?.extraRepos.map((e) => [e.worktreePath, e.baseSha]),
+    [[null, null]],
+    "and each secondary's does too",
+  );
+  // The repo SET survives, so the task can be dispatched again as the task it was filed as.
+  assert.deepEqual(cleared?.extraRepos.map((e) => e.repoRoot), ["/repo/web"]);
 });

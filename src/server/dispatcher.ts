@@ -179,21 +179,35 @@ export class Dispatcher {
       // pinned-base check above. Reading a toggle flipped mid-batch still reaches the next
       // session rather than the next restart, which is all the later position bought.
       const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
-      // The `sdk` half of `multiRepoDispatch`, enforced rather than merely declared. A
-      // harness whose EMBEDDED driver cannot carry the write grant must not be dispatched
-      // embedded with secondary repos attached: it would start a healthy-looking session
-      // holding an intent that names repositories it cannot write to, which is exactly the
-      // silent failure the flag exists to name. Refused, never quietly downgraded to the
-      // terminal runtime - the operator chose that runtime, and a session that took the
-      // other one is not what they asked for (`dispatchEmbedded` refuses a missing
-      // supervisor on the same grounds).
-      if (runtime === "sdk" && task.extraRepos.length > 0) {
-        const spec = capabilitiesFor(task.agent).multiRepoDispatch;
-        if (!spec?.sdk) {
+      // `multiRepoDispatch`, enforced ONCE here for BOTH runtimes rather than per launch
+      // path. A task that attaches repositories and cannot be given write access to them
+      // must not start at all: the worktrees would be provisioned and the intent manifest
+      // would tell the agent "You have write access to all of them", which would be false.
+      //
+      // Runtime-agnostic on purpose. The routes and `TaskManager.update` check the
+      // capability before a multi-repo task can be stored, but `TaskManager.create` does not
+      // - its contract is that the CALLER validated - so any future producer of one (an MCP
+      // `create_task`, a schedule, an ensemble) would otherwise reach a launch that silently
+      // rendered no flags. Enforced at the one place every dispatch passes through, the
+      // invariant cannot be reintroduced by adding a door.
+      //
+      // Refused, never quietly downgraded to the other runtime: the operator chose it, and a
+      // session that took the other one is not what they asked for (`dispatchEmbedded`
+      // refuses a missing supervisor on the same grounds).
+      const multiRepo =
+        task.extraRepos.length > 0 ? capabilitiesFor(task.agent).multiRepoDispatch : null;
+      if (task.extraRepos.length > 0) {
+        const others = `${task.extraRepos.length === 1 ? "repo" : "repos"}`;
+        if (!multiRepo) {
+          throw new Error(
+            `${task.agent} cannot be given write access to this task's other ${others} - ` +
+              `dispatch it on a harness that can, or detach them`,
+          );
+        }
+        if (runtime === "sdk" && !multiRepo.sdk) {
           throw new Error(
             `${task.agent}'s embedded driver cannot be given write access to this task's ` +
-              `other ${task.extraRepos.length === 1 ? "repo" : "repos"} - dispatch it on the ` +
-              `terminal runtime, or detach them`,
+              `other ${others} - dispatch it on the terminal runtime, or detach them`,
           );
         }
       }
@@ -309,13 +323,13 @@ export class Dispatcher {
         : { args: [] as string[], sessionId: null };
       const askArgs = await askChannelArgs(task.agent, missionMcp);
       // Rendered by the harness that has to honour it, from a capability measured against a
-      // real installation - Claude's `--add-dir`, Codex's writable-roots override. A harness
-      // with no such capability cannot reach here with a non-empty list: the route refuses
-      // the task and the modal never offers the control.
+      // real installation - Claude's `--add-dir`, Codex's writable-roots override. Read off
+      // the spec the guard above already resolved rather than re-asking with a `?.` that
+      // would render NO flags for a harness without one: that is precisely the silent drop
+      // the guard exists to turn into a refusal, and asking twice is how the two answers
+      // drift apart.
       const extraDirArgs =
-        extraDirs.length > 0
-          ? (capabilitiesFor(task.agent).multiRepoDispatch?.launchArgs(extraDirs) ?? [])
-          : [];
+        extraDirs.length > 0 && multiRepo ? multiRepo.launchArgs(extraDirs) : [];
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...effortArgs,
@@ -767,6 +781,11 @@ export class Dispatcher {
         provider: null,
         homeName: null,
         terminalResourceId: null,
+        // The primary's baseline goes with its tree, exactly as at the three reclaim sites
+        // in `tasks.ts`. A 40-char commit left beside a null `worktreePath` reads as "we
+        // know where this branch was cut" for a tree that no longer exists, and later phases
+        // compare a head against this value.
+        baseSha: null,
         // The secondaries' trees are gone too, so their recorded paths go with the primary's.
         // The repo SET is kept - which repos the task attaches is durable operator intent,
         // and a reclaimed task that keeps its repos can be dispatched again as itself.

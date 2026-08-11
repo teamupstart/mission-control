@@ -2,10 +2,16 @@
 
 ## Outcome
 
-The worktree row stops being its own band. Its controls - the worktree path, the Terminal-view
-toggle, and the two launchers - move into the tab strip, which already runs the full width with dead
-space after "Files". The console detail Conversation tab reaches roughly 410px of conversation in a
-600px pane, up from 243px before this work started.
+The worktree row stops being its own band. Its two controls - the Terminal-view toggle and the two
+launchers - move into the tab strip, which already runs the full width with dead space after "Files".
+The console detail Conversation tab reaches roughly 410px of conversation in a 600px pane, up from
+243px before this work started.
+
+**The worktree path is not relocated - it is dropped.** Option 2 keeps the `PATH`/`BRANCH` row, and
+that row already shows the same string; the worktree row's copy of it is the duplicate identified at
+the very start of this work ("the path is rendered twice"). Deleting the band removes the duplicate,
+and no path is added to `.detail-tabs`. Adding one would recreate exactly the duplication this plan
+exists to remove.
 
 Delivers decision **D1**.
 
@@ -95,9 +101,11 @@ This is the phase the repository fought hardest, and F1 and F2 are binding.
 4. **Verify the Cards path is untouched** - the panel still mounts and registers its own strip there.
 5. **Decide the per-tab question** from the findings and implement it.
 6. **Build the give-way ladder** for the tab row, following `topbarLadder.ts` in mechanism and in its
-   visually-hidden rule. Shed in this order: the worktree path first, then the launcher labels down
-   to glyphs, then the Foreman label. Never shed a tab and never shed the mode chip's accessible
-   name (phase 1's contract).
+   visually-hidden rule. Shed in this order: **the launcher labels first**, down to their glyphs,
+   then the Foreman label. There is no path in this row to shed - see the Outcome; if the ladder
+   seems to want a first rung before the launcher labels, that is the signal that a path has been
+   added to `.detail-tabs` that does not belong there. Never shed a tab, and never shed the mode
+   chip's accessible name (phase 1's contract).
 7. **`styles.css`** - remove `.conv-launch`'s band styling where it no longer applies, keeping the
    rules the Cards host still needs. This file is shared; do not delete a rule another surface uses.
 8. **Docs** - fix `docs/ui.md:651-654`, `docs/ui.md:289-295`, `docs/ui.md:465-466` and
@@ -122,6 +130,9 @@ This is the phase the repository fought hardest, and F1 and F2 are binding.
 
 - The console detail Conversation tab has three bands - head, `PATH`/`BRANCH`, tab strip - and no
   separate worktree row.
+- **`.detail-tabs` contains no worktree path.** The path appears exactly once in the pane, in the
+  `PATH`/`BRANCH` row. If it appears twice, this phase has recreated the duplication the plan
+  started from.
 - Conversation area is materially larger; the source plan's target is ~410px in a 600px pane.
 - **Cards still have the launchers and the Terminal-view toggle**, and `t` / `a` still work there.
 - The tab row does not overflow at an 848px pane, and shed labels remain in the accessibility tree.
@@ -150,3 +161,13 @@ Final phase. What later work must not undo:
 - **Final set audit:** D1 is owned here alone; D2 and D3 by phase 1; D4 splits across phases 1 and 2
   exactly as the decision itself splits. No phase depends on undocumented cleanup by another, and
   each leaves the repository operable.
+- **Inspector review, round 2 (`major`)** - the Outcome and the give-way step both described the
+  worktree path as moving into `.detail-tabs` and being the ladder's first rung. That was written
+  against an earlier draft of option 2 in which the path *did* sit in the tab row; when options 1, 2
+  and 6 were re-differentiated into a lattice, option 2 changed to keep the `PATH`/`BRANCH` row and
+  the path left the tab strip. Verified against `mockups.html`: option 2's tab row contains no
+  `cl-path` element and no path string, while its `.detail-sub` row carries `PATH` and `BRANCH`. The
+  stale prose also contradicted line 77 of this same file, which measures the 101px overflow "even
+  with the path left in the `PATH`/`BRANCH` row". Both places now say the path is dropped rather than
+  relocated, the ladder starts at the launcher labels, and a new exit criterion asserts the path
+  appears exactly once in the pane. D1 is unchanged.

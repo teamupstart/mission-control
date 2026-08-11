@@ -99,6 +99,11 @@ Across the set, after phase 3 merges:
 - **After phase 2** - moved the "no wrapper inside `.detail-conv`" rule from phase 3 into phase 2,
   because phase 2 is the phase that edits those children and would be the one to break the child
   combinator. Phase 3 now consumes the rule instead of restating it.
+- **Inspector review, round 2** - phase 3 described the worktree path as moving into the tab strip
+  and as the give-way ladder's first rung. That was left over from an earlier draft of option 2;
+  once the options were re-differentiated into a lattice, option 2 kept the `PATH`/`BRANCH` row and
+  the path left the tab row. Phase 3 now states the path is dropped as a duplicate rather than
+  relocated, and its ladder starts at the launcher labels. No contract changed and D1 is unaffected.
 - **Inspector review, round 1** - phase 1's objective relocation was rewritten to move the `GoalLine`
   component rather than its text, after review showed the original wording would have dropped the
   goal state classes, the state-specific tooltip and the `GOAL_UNSUPPORTED` empty state. The

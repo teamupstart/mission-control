@@ -51,11 +51,33 @@ function foot(html: string): string {
   return html.slice(start);
 }
 
-/** The identity block: the title line and whatever reads with it. */
+/**
+ * The identity block, cut at its OWN closing tag rather than at the next landmark.
+ *
+ * Depth-counted, because "the objective is INSIDE `.detail-title`" is the entire claim
+ * every assertion below rests on. Slicing to the header's spacer instead would swallow
+ * `PrChip`, `InspectorChip`, `WorkflowChips`, `EnsembleChip`, the workflow-bind chip and
+ * `StateBadge` along the way - and would go on passing with `GoalLine` rendered as
+ * `.detail-title`'s SIBLING, which is the arrangement these tests exist to rule out.
+ *
+ * The first `</div>` is not the right one either: the block holds a nested
+ * `.detail-title-line` for the name and its source. Counting depth is the cheapest honest
+ * answer here, and it is safe against the markup React actually emits - there are no void
+ * or self-closing `div`s, so opens and closes pair exactly.
+ */
 function titleBlock(html: string): string {
   const start = html.indexOf('<div class="detail-title">');
   assert.ok(start >= 0, "the console detail should render its identity block");
-  return html.slice(start, html.indexOf('<span class="detail-head-spacer">'));
+  const CLOSE = "</div>";
+  let depth = 0;
+  for (let i = start; i < html.length; i += 1) {
+    if (html.startsWith("<div", i)) depth += 1;
+    else if (html.startsWith(CLOSE, i)) {
+      depth -= 1;
+      if (depth === 0) return html.slice(start, i + CLOSE.length);
+    }
+  }
+  return assert.fail("`.detail-title` was opened and never closed");
 }
 
 const goal = (over: Partial<SessionGoalSummary> = {}): SessionGoalSummary => ({

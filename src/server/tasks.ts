@@ -1310,6 +1310,28 @@ export class TaskManager {
             prState: null,
             mergedAt: null,
           }));
+    // The primary must not also be attached as a secondary, asked of the set this edit
+    // RESULTS in rather than of the field it happened to touch.
+    //
+    // The route resolves and checks whenever `extraRepoRoots` is in the patch, but that is
+    // only half the collision: moving the PRIMARY onto a path already attached sends a patch
+    // carrying `repoRoot` alone (`taskUpdatePatch` names a field only when it changed), and
+    // nothing in that direction was looking. The task would save with one repo listed twice,
+    // and the failure would surface much later as a raw `git worktree add` error during the
+    // all-or-nothing unwind - a message that names neither the duplicate nor the edit.
+    //
+    // A string comparison rather than a re-resolution, deliberately: both sides are already
+    // canonical roots by this type's contract, and re-resolving a repo set the edit did not
+    // touch would make a task uneditable the moment one of its directories went away.
+    const collision = extraRepos.find((entry) => entry.repoRoot === (patch.repoRoot ?? t.repoRoot));
+    if (collision) {
+      return {
+        ok: false,
+        error:
+          `${collision.repoRoot} is attached to this task as another repo - detach it before ` +
+          `making it the primary`,
+      };
+    }
     // Asked of the agent this edit RESULTS in, which is what catches the case a check on
     // the incoming repo set alone would miss: switching a multi-repo task onto a harness
     // whose write scope cannot leave its cwd, without touching the repos at all.

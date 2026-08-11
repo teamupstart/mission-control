@@ -6,6 +6,7 @@ import { HARNESS_CAPABILITIES, capabilitiesFor } from "@shared/harness-capabilit
 import { taskReposAllowlisted } from "@shared/allowlist.ts";
 import { decideBacklogTick } from "../src/server/foreman/backlog-machine.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { TaskManager as TaskManagerType } from "../src/server/tasks.ts";
 
 // The consent and capability rules that ship WITH multi-repo dispatch rather than after it.
 //
@@ -191,4 +192,76 @@ test("a multi-repo task refuses to be assigned to a running session", async () =
   const error = (outcome.ok === false ? outcome.error : "") ?? "";
   assert.match(error, /multi-repo task has to be dispatched/);
   assert.match(error, /1 more repo/);
+});
+
+// ---- editing the repo set --------------------------------------------------------------
+
+/** A TaskManager with just enough wired for `update`, over a fixed task. */
+function managerOver(task: Task): { manager: InstanceType<typeof TaskManagerType>; saved: Task[] } {
+  const saved: Task[] = [];
+  const registry = {
+    getTask: (id: string) => (id === task.id ? task : undefined),
+    upsertTask: (next: Task) => { saved.push(next); },
+    listTasks: () => [task],
+  };
+  const manager = Object.create(TaskManagerType.prototype) as InstanceType<typeof TaskManagerType>;
+  Object.assign(manager, {
+    registry,
+    titling: new Map(),
+    assigningTasks: new Set<string>(),
+    resolveDependencies: () => task.dependencies,
+  });
+  return { manager, saved };
+}
+
+test("moving the primary onto an already-attached repo is refused", async () => {
+  // The half a check on the incoming repo SET cannot see. `taskUpdatePatch` names a field
+  // only when it changed, so this edit sends `repoRoot` alone - and the collision is between
+  // the new primary and a secondary the patch never mentions.
+  //
+  // Left unchecked the task saves with one repo listed twice, and the failure surfaces much
+  // later as a raw `git worktree add` refusal during the all-or-nothing unwind: a message
+  // naming neither the duplicate nor the edit that created it.
+  const task = mkTask({
+    id: "collide",
+    status: "backlog",
+    repoRoot: "/repo/api",
+    extraRepos: [entry("/repo/web")],
+  });
+  const { manager, saved } = managerOver(task);
+
+  const outcome = await manager.update("collide", { repoRoot: "/repo/web" });
+
+  assert.equal(outcome.ok, false);
+  assert.match((outcome.ok === false ? outcome.error : "") ?? "", /detach it before making it the primary/);
+  assert.deepEqual(saved, [], "nothing is written when the edit is refused");
+});
+
+test("an ordinary primary move on a multi-repo task still saves", async () => {
+  // The guard is a collision check, not a ban on editing a multi-repo task's primary.
+  const task = mkTask({
+    id: "moveok",
+    status: "backlog",
+    repoRoot: "/repo/api",
+    extraRepos: [entry("/repo/web")],
+  });
+  const { manager, saved } = managerOver(task);
+
+  const outcome = await manager.update("moveok", { repoRoot: "/repo/core" });
+
+  assert.equal(outcome.ok, true);
+  assert.equal(saved[0]?.repoRoot, "/repo/core");
+  assert.deepEqual(saved[0]?.extraRepos.map((e) => e.repoRoot), ["/repo/web"]);
+});
+
+test("attaching the current primary as a secondary is refused from the other direction too", async () => {
+  // The direction the route already covered, asserted here as well so the invariant is
+  // pinned at the chokepoint every caller passes through rather than only at one door.
+  const task = mkTask({ id: "collide2", status: "backlog", repoRoot: "/repo/api", extraRepos: [] });
+  const { manager, saved } = managerOver(task);
+
+  const outcome = await manager.update("collide2", { extraRepoRoots: ["/repo/api"] });
+
+  assert.equal(outcome.ok, false);
+  assert.deepEqual(saved, []);
 });

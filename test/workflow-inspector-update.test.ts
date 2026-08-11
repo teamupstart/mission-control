@@ -270,7 +270,7 @@ test("workflow integration subscribes to Inspector and introduces no Inspector p
   assert.doesNotMatch(manager, /INSPECTOR_POLL_MS|fetchPr|gh pr/);
   assert.match(manager, /setInterval\([\s\S]*sweepRetention/);
   const index = readFileSync(new URL("../src/server/index.ts", import.meta.url), "utf8");
-  assert.match(index, /startInspector\(registry,\s*\{[\s\S]*workflowGatePending/);
+  assert.match(index, /startInspector\(registry,\s*\{[\s\S]*workflowGate:/);
   const routes = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");
   for (const action of ["prepare-pr", "recheck-inspector", "restart-full"]) {
     assert.match(

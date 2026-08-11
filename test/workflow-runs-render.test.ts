@@ -10,6 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import type {
@@ -639,6 +640,32 @@ test("a run whose version is missing cannot navigate to a composer that has noth
   assert.ok(hasTooltip(html, "The immutable published version is missing or corrupt"));
 });
 
+/*
+ * Run detail's `Cancel run` is the RETIRE half of the two controls that clear a spent gate,
+ * and the Merge queue names it in as many words - "open the run to grant more rounds or
+ * retire it". Retiring releases the Shipping veto the run holds over a pull request, so its
+ * confirmation has to say so, exactly as the drawer's `Dismiss` does.
+ *
+ * Asserted on the SOURCE rather than the markup because the confirmation body is built in an
+ * onClick handler, which `renderToStaticMarkup` never runs - the browser spec drives the
+ * dialog itself. What this pins is the thing a render test can pin and a spec cannot: that
+ * the two surfaces go through one derivation instead of spelling the sentence twice, which
+ * is how they would come to disagree about whether stopping a run touches a pull request.
+ */
+test("run detail's cancel takes its gate sentence from the shared derivation", () => {
+  const source = readFileSync(
+    new URL("../src/web/workflows/WorkflowRuns.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /cancelGateSentence\(cancelReleasesGate\(/);
+  assert.match(source, /confirmHint: cancelGateHint\(cancelReleasesGate\(/);
+  assert.doesNotMatch(
+    source,
+    /lifts the merge block/,
+    "run detail spells its own copy of the drawer's sentence",
+  );
+});
+
 /**
  * A blocked run used to reach this header with nothing but Cancel run.
  *
@@ -693,8 +720,13 @@ test("a blocked run whose binding was orphaned says why in prose, with no dead s
   assertNoGraphIds(html);
 });
 
-/** A run past its configured rounds is refused by the server, so the header must not offer it. */
-test("a blocked run out of repair rounds says so and names where the budget lives", () => {
+/*
+ * A run past its rounds is the one stop that never clears itself, and its pull request
+ * cannot merge until somebody acts, so the header owes the operator a button rather than a
+ * paragraph. It used to render the paragraph - and the paragraph named the binding, which
+ * is the one place a fix cannot reach this run from.
+ */
+test("a blocked run out of repair rounds offers the grant in the header", () => {
   const base = runningDetail();
   const html = render({
     ...base,
@@ -702,9 +734,9 @@ test("a blocked run out of repair rounds says so and names where the budget live
     run: { ...base.run, status: "blocked", currentPhase: "round_limit" },
   });
   const header = headerOf(html);
-  assert.match(header, /<b>This run has used every repair round its binding allows,<\/b>/);
-  assert.match(header, /A larger repair budget is a change to the binding/);
-  assert.doesNotMatch(header, /btn-primary/);
+  assert.match(header, /btn-primary/, "the one stop that needs an operator has no primary");
+  assert.match(header, /Grant \d+ more rounds/);
+  assert.doesNotMatch(header, /A larger repair budget is a change to the binding/);
   assertNoGraphIds(html);
 });
 

@@ -40,6 +40,7 @@ export type MergeBlock =
   | "not-open"
   | "draft"
   | "workflow-gate-pending"
+  | "workflow-gate-spent"
   | "not-reviewed"
   | "findings"
   | "threads"
@@ -71,6 +72,13 @@ export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
   "not-open": "the pull request is closed",
   draft: "still a draft",
   "workflow-gate-pending": "an active workflow still owns the Inspector final gate",
+  // Front-loaded deliberately. The Merge queue's standing column is one ellipsized line
+  // (`.sc-standing`), so roughly the first forty characters are all an operator reads
+  // without opening anything - and the two workflow blocks have to be told apart THERE.
+  // "gave up" and the surface that fixes it both land inside that budget; the remedy
+  // detail trails past the ellipsis where it costs nothing.
+  "workflow-gate-spent":
+    "a workflow gate gave up - open the run to grant more rounds or retire it",
   "not-reviewed": "the Inspector has not reviewed this push yet",
   findings: "the Inspector has open findings",
   threads: "there are unresolved review threads",
@@ -83,6 +91,19 @@ export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
   "mergeability-unknown": "GitHub has not worked out whether it merges cleanly",
   soaking: "waiting out the soak window",
 };
+
+/**
+ * What a workflow's Inspector final gate is doing to this pull request, in one word.
+ *
+ * This is a tri-state rather than the boolean it replaced because the two vetoing values
+ * are not the same promise to the operator. `pending` is a gate that is still reviewing -
+ * it clears itself, and waiting is the correct thing to do. `spent` is a gate that ran out
+ * of repair rounds: it will NEVER clear on its own, no further push can clear it (the gate
+ * re-tests the budget on every new head), and the only way out is an operator granting
+ * more rounds or retiring the gate. Reporting both as one block reason told an operator
+ * to wait for something that was never going to happen.
+ */
+export type WorkflowGateStanding = "none" | "pending" | "spent";
 
 /** Everything the decision reads. Deliberately plain data - no snapshots, no rows. */
 export interface MergeInput {
@@ -119,7 +140,7 @@ export interface MergeInput {
   /** Findings the Inspector is currently carrying: posted, previewed, or mid-post. */
   openFindings: number;
   /** Pure veto from the workflow subsystem. It can never make a merge eligible. */
-  workflowGatePending: boolean;
+  workflowGate: WorkflowGateStanding;
   now: number;
 }
 
@@ -187,7 +208,10 @@ export function mergeVerdict(input: MergeInput): MergeVerdict {
 
   if (pr.state !== "OPEN") return blocked("not-open");
   if (pr.isDraft) return blocked("draft");
-  if (input.workflowGatePending) return blocked("workflow-gate-pending");
+  // Both values veto; they differ only in what the operator should do about it, which is
+  // the difference between "wait" and "this needs you and will not resolve itself".
+  if (input.workflowGate === "pending") return blocked("workflow-gate-pending");
+  if (input.workflowGate === "spent") return blocked("workflow-gate-spent");
 
   // The review has to be of THIS push. `rounds` alone would let a PR that was reviewed
   // clean three force-pushes ago merge whatever is on the branch now.

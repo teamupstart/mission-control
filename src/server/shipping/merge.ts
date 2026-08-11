@@ -1,6 +1,7 @@
 import { getInspectorPr, updateInspectorPr } from "../db.ts";
 import { mergePr } from "../inspector/github.ts";
 import { mergeVerdict } from "@shared/shipping.ts";
+import type { WorkflowGateStanding } from "@shared/shipping.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import type { PrSnapshot } from "../inspector/github.ts";
 import type { InspectorComment, InspectorPr } from "@shared/types.ts";
@@ -69,7 +70,7 @@ export async function maybeMerge(
   s: PrSnapshot,
   rows: Map<string, InspectorComment>,
   now: number,
-  workflowGatePending: (prKey: string) => boolean = () => false,
+  workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
 ): Promise<boolean> {
   const cfg = getShippingConfig();
   const verdict = mergeVerdict({
@@ -93,7 +94,7 @@ export async function maybeMerge(
     reviewPosture: pr.reviewPosture,
     rounds: pr.round,
     openFindings: openFindings(rows),
-    workflowGatePending: workflowGatePending(pr.key),
+    workflowGate: workflowGate(pr.key),
     now,
   });
 

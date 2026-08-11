@@ -3297,6 +3297,66 @@ export class WorkflowStore {
     });
   }
 
+  /**
+   * Raise one run's repair budget and append its audit event, in one transaction.
+   *
+   * The run carries its OWN `max_repair_rounds`, snapshotted from the binding when the row
+   * was inserted, and every round-limit guard in the manager reads that snapshot. Until
+   * this method existed nothing ever updated the column, so the remedy the dashboard
+   * advertised - "a larger repair budget is a change to the binding" - could not work on
+   * the run it was advertised on: `updateBinding` writes `workflow_bindings` only, and the
+   * blocked run went on comparing against the number it was born with. This is the one
+   * writer that moves it.
+   *
+   * Deliberately NOT a parameter on `setRunState`: the budget outlives any single
+   * transition, and a run whose status a concurrent sweep is rewriting must still take the
+   * grant. The guarded UPDATE is the authority on the terminal race for the same reason
+   * `setRunDisabledNodes` gives - a grant reported as applied to a finished run would put
+   * a line in its history about a budget it never spent.
+   */
+  grantRunRepairRounds(
+    id: string,
+    maxRepairRounds: number,
+    /**
+     * The status to put the run back into, for the runs a budget alone does not revive.
+     *
+     * `null` leaves the run blocked, which is right for a parked repair round: the resume
+     * move accepts a blocked run and the resumption observer is not involved. An
+     * Inspector-only gate run is the opposite case - its gate is what drives it, and
+     * `evaluateInspectorGate` returns early on a blocked run, so a grant that moved only
+     * the number would leave it stopped forever while telling Shipping it was working
+     * again. Carried in the same transaction as the budget because a run restored without
+     * its new budget re-blocks on the very next head.
+     */
+    restore: { status: WorkflowRun["status"]; phase: string; gateState: WorkflowJson | null } | null,
+    event: { kind: string; payload: WorkflowJson },
+    now = Date.now(),
+  ): WorkflowRun | null {
+    return transaction(this.db, () => {
+      const result = this.db.prepare(
+        `UPDATE workflow_runs
+            SET max_repair_rounds = ?, updated_at = ?
+          WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+      ).run(maxRepairRounds, now, id);
+      if (Number(result.changes) !== 1) return null;
+      if (restore) {
+        this.db.prepare(
+          `UPDATE workflow_runs
+              SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?
+            WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+        ).run(
+          restore.status,
+          restore.phase,
+          restore.gateState === null ? null : JSON.stringify(restore.gateState),
+          now,
+          id,
+        );
+      }
+      this.appendEvent(id, event.kind, event.payload, now);
+      return this.mustRun(id);
+    });
+  }
+
   /** Set or replace one active, run-scoped Persona directive with its audit event. */
   setRunPersonaDirective(
     id: string,

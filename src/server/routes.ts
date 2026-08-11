@@ -84,6 +84,7 @@ import {
   DeleteWorkflowSchema,
   ArchiveWorkflowBindingSchema,
   CancelWorkflowRunSchema,
+  GrantWorkflowRepairRoundsSchema,
   CreateWorkflowBindingSchema,
   ReattachWorkflowBindingSchema,
   RestartFullWorkflowSchema,
@@ -1406,6 +1407,14 @@ export function buildApp(
     return result.ok
       ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/grant-rounds", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, GrantWorkflowRepairRoundsSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.grantRepairRounds(c.req.param("id"), parsed.data);
+    return result.ok ? c.json({ run: result.value }) : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/prepare-pr", async (c) => {
     const manager = workflowManager();

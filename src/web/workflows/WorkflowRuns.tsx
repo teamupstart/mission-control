@@ -38,6 +38,9 @@ import {
   actionBlockSentence,
   actionWaitSentence,
   attemptStateLabel,
+  cancelGateHint,
+  cancelGateSentence,
+  cancelReleasesGate,
   checkOutcomeOf,
   checkStatusView,
   continuationSourceAttempt,
@@ -798,9 +801,15 @@ export function WorkflowRunView({
                   title: "Cancel this run",
                   body: `Stop ${detail.summary.workflowName} v${detail.summary.workflowVersion} on`
                     + ` ${detail.binding.sessionName}? It will not resume, and its evidence and`
-                    + " verdicts stay in history.",
+                    + " verdicts stay in history."
+                    // The RETIRE half of the two controls that clear a spent gate, and the
+                    // one the Merge queue sends people here for - "open the run to grant more
+                    // rounds or retire it". Through the same derivation the drawer's Dismiss
+                    // uses, so the two cannot disagree about whether stopping this run
+                    // touches a pull request.
+                    + cancelGateSentence(cancelReleasesGate(detail.summary)),
                   confirmLabel: "Cancel run",
-                  confirmHint: "Stops the run for good",
+                  confirmHint: cancelGateHint(cancelReleasesGate(detail.summary)),
                   danger: true,
                   onConfirm: () => void onCancel(),
                 })}

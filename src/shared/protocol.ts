@@ -3052,6 +3052,26 @@ export const ResubmitWorkflowSchema = z.object({
 });
 export type ResubmitWorkflow = z.infer<typeof ResubmitWorkflowSchema>;
 
+/**
+ * How many EXTRA repair rounds to add to a run that spent its budget.
+ *
+ * A delta rather than an absolute ceiling, because the operator is answering "give it
+ * another go", not "set this run's budget to seven". The manager clamps the sum at
+ * `WORKFLOW_LIMITS.repairRoundsMax`, the same ceiling the binding form enforces, and
+ * answers a repeat of the same `requestId` with the grant that already landed.
+ *
+ * The delta does NOT make concurrent grants additive - the manager reads the current budget
+ * and writes the sum outside a shared transaction, so two racing grants of two both settle
+ * on the same +2 rather than +4. That is the safe direction (an operator gets fewer rounds
+ * than two clicks suggest, never a budget nobody asked for) and the idempotency key makes
+ * the realistic version of the race - one intent retried - exact.
+ */
+export const GrantWorkflowRepairRoundsSchema = z.object({
+  requestId: z.string().min(1).max(200),
+  rounds: z.number().int().min(1).max(WORKFLOW_LIMITS.repairRoundsMax),
+});
+export type GrantWorkflowRepairRounds = z.infer<typeof GrantWorkflowRepairRoundsSchema>;
+
 export const RetryWorkflowRunSchema = z.object({
   requestId: z.string().min(1).max(200),
   nodeAttemptId: WorkflowIdSchema.optional(),

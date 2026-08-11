@@ -22,7 +22,11 @@ import type {
   WorkflowRunSummary,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
-import { isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
+import {
+  WORKFLOW_RUN_SPENT_PHASES,
+  isVerdictNode,
+  verdictAuthor,
+} from "@shared/workflow.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   SessionActionAttemptStateSchema,
@@ -1534,6 +1538,46 @@ export interface RunRemedy {
 
 const RESTART_FULL_PHRASE = "RESTART FULL WORKFLOW";
 
+/**
+ * The pull request a cancel would unblock, when cancelling is the RETIRE of a spent gate.
+ *
+ * Cancelling a run out of rounds is not only tidying a queue - it is the act that releases
+ * the Shipping veto its gate holds, and doing that to somebody's pull request without saying
+ * so is how a confirmation becomes a trap. It is also half of the answer the Merge queue
+ * sends operators here for: `workflow-gate-spent` reads "open the run to grant more rounds
+ * or retire it", and the retire it names is this.
+ *
+ * Null where it would not be true: a run still inside its budget releases nothing by
+ * stopping, and a `session_disappeared` run reaching the drawer's dismiss may hold no gate
+ * at all. Shared by the drawer's `Dismiss` and run detail's `Cancel run` rather than spelled
+ * in both, because two surfaces describing the same destructive act must not be able to
+ * disagree about whether it touches a pull request.
+ */
+export function cancelReleasesGate(run: {
+  phase: string;
+  gatePrNumber: number | null;
+}): number | null {
+  // Both spent spellings, from the shared list, rather than the one string the gate happens
+  // to write today - the whole point of this predicate is that no surface carries its own
+  // idea of which runs are holding a pull request hostage.
+  return (WORKFLOW_RUN_SPENT_PHASES as readonly string[]).includes(run.phase)
+    ? run.gatePrNumber
+    : null;
+}
+
+/** The clause the two cancel confirmations append when a gate veto goes with the run. */
+export function cancelGateSentence(prNumber: number | null): string {
+  return prNumber === null
+    ? ""
+    : ` It also lifts the merge block this run holds on #${prNumber},`
+      + " which no longer waits on a review that has stopped.";
+}
+
+/** The one-line hint beside those confirmations' button. */
+export function cancelGateHint(prNumber: number | null): string {
+  return prNumber === null ? "Stops the run for good" : "Stops the run and unblocks the PR";
+}
+
 export function runRemedy(
   run: WorkflowRunSummary,
   /**
@@ -1605,10 +1649,14 @@ export function runRemedy(
   }
 
   // The two blocks nothing argument-free revives. `session_disappeared` needs a Reattach,
-  // which needs a session picker; `round_limit` needs a bigger repair budget, which is a
-  // binding edit. Both are a click away through "Open run" - so what the drawer offers is
-  // the other honest move: stop counting a run that is never going to move again.
+  // which needs a session picker; `round_limit` needs a bigger repair budget, which is the
+  // run page's grant. Both are a click away through "Open run" - so what the drawer offers
+  // is the other honest move: stop counting a run that is never going to move again.
+  //
+  // Which, for a run out of rounds, is also the RETIRE half of the two controls that clear
+  // a spent gate. See `cancelReleasesGate`.
   if (run.phase === "session_disappeared" || run.phase === "round_limit") {
+    const release = cancelReleasesGate(run);
     return {
       kind: "dismiss",
       label: "Dismiss",
@@ -1618,9 +1666,10 @@ export function runRemedy(
       confirm: {
         title: "Cancel this run",
         body: `Stop ${run.workflowName} v${run.workflowVersion} on ${name}?`
-          + " It will not resume, and its evidence and verdicts stay in history.",
+          + " It will not resume, and its evidence and verdicts stay in history."
+          + cancelGateSentence(release),
         confirmLabel: "Cancel run",
-        confirmHint: "Stops the run for good",
+        confirmHint: cancelGateHint(release),
         danger: true,
       },
     };

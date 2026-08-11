@@ -4,17 +4,31 @@ import type {
   WorkflowRunDetail,
 } from "@shared/workflow.ts";
 import {
+  WORKFLOW_LIMITS,
   manualWorkflowTriggerRequestId,
+  workflowRunGaveUp,
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
 // One-directional: this module reads `run-model`'s derivations at runtime, and `run-model` takes
 // only a TYPE from here, so there is no cycle to resolve at load.
 import {
   blockedPhaseClause,
+  cancelGateSentence,
+  cancelReleasesGate,
   gateWaitSentence,
   orderedSubmissions,
 } from "./run-model.ts";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
+
+/**
+ * How many rounds the run-detail grant hands over at once.
+ *
+ * Two rather than one, because one buys a single attempt and a round-limited run has just
+ * demonstrated that a single attempt was not enough - an operator who has to click through
+ * a confirmation for every retry learns to raise the binding instead, which is the setting
+ * that governs every FUTURE run rather than this stuck one.
+ */
+const GRANT_ROUNDS = 2;
 
 export type RunActionId = string;
 export type WorkflowDeliveryResolution =
@@ -310,6 +324,7 @@ export interface RunNextMove {
     | "prepare-pr"
     | "recheck-inspector"
     | "retry"
+    | "grant-rounds"
     | "run-again";
   label: string;
   tooltip: string;
@@ -321,8 +336,8 @@ export interface RunNextMove {
    * the terminal arm a second derivation.
    */
   path: string;
-  /** Everything the route needs beyond `requestId`. Empty for five of the six. */
-  body: Record<string, string | boolean>;
+  /** Everything the route needs beyond `requestId`. Empty for most arms. */
+  body: Record<string, string | boolean | number>;
   /** `null` fires immediately; a move that spends a round warns first. */
   confirm: WorkflowConfirmDescriptor | null;
 }
@@ -533,6 +548,76 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     };
   }
 
+  /*
+   * A run that spent its repair budget, which is the one block that never clears itself.
+   *
+   * It comes BEFORE the resubmission family because it is the reason that family refuses:
+   * `resubmitAvailability` turns `round > maxRepairRounds` into a refusal sentence, and for
+   * a round-limited run that sentence used to be the end of the page - a paragraph pointing
+   * at a binding edit that cannot reach this run's snapshot. The grant moves the number the
+   * refusal actually reads, so the very next render offers the resume move on its own.
+   *
+   * This is also the only move here that changes what a pull request is waiting for, so the
+   * confirmation says so: while the run is spent, Shipping reports a permanent block.
+   */
+  const spent = workflowRunGaveUp({
+    status,
+    phase: currentPhase,
+    round: detail.summary.round,
+    maxRepairRounds: detail.summary.maxRepairRounds,
+  });
+  /*
+   * Offered only where it REVIVES something, which is two different conditions.
+   *
+   * An Inspector-only gate run is revived by the grant itself: the daemon restores
+   * `waiting_for_new_head` so the gate re-enters, and that works whoever started the run.
+   * Externally sourced runs are included for exactly this arm - an ensemble handoff binds
+   * a published version and its binding stays active, so its gate DOES hold the Shipping
+   * veto and can go spent. Withholding the button there would leave the Merge queue telling
+   * an operator to open a run that offers nothing.
+   *
+   * Every other spent run is revived by the resume move instead, so it inherits that move's
+   * preconditions: a manual round is what it will go on to take, and `resubmitAvailability`
+   * refuses one for a gone session or an external source. Granting rounds there would raise
+   * a number nothing goes on to spend - a button that succeeds and changes nothing.
+   */
+  const gateRepair = liveInspectorRepair(detail);
+  if (
+    spent
+    && detail.binding.state === "active"
+    && (gateRepair || !detail.externalSource)
+    // And only while there is headroom to grant. `grantRepairRounds` clamps the sum at the
+    // same ceiling and REFUSES a grant that would not move the number, so a run already at
+    // the maximum would otherwise render a button whose only possible answer is a 409.
+    && detail.summary.maxRepairRounds < WORKFLOW_LIMITS.repairRoundsMax
+  ) {
+    // The number the daemon will actually add, not the number we asked for. The clamp bites
+    // within `GRANT_ROUNDS` of the ceiling, and a button that promises two and delivers one
+    // is a small lie told at the exact moment an operator is counting rounds.
+    const rounds = Math.min(
+      detail.summary.maxRepairRounds + GRANT_ROUNDS,
+      WORKFLOW_LIMITS.repairRoundsMax,
+    ) - detail.summary.maxRepairRounds;
+    return {
+      id: "grant-rounds",
+      kind: "grant-rounds",
+      label: rounds === 1 ? "Grant one more round" : `Grant ${rounds} more rounds`,
+      tooltip: "Raise this run's repair budget so the review can continue",
+      path: runPath(detail, "grant-rounds"),
+      body: { rounds },
+      confirm: {
+        title: rounds === 1 ? "Grant one more repair round" : `Grant ${rounds} more repair rounds`,
+        body: "This run used every repair round its budget allowed, so it stopped and will"
+          + " not restart on its own - and while it is stopped its pull request cannot merge."
+          + ` Granting ${rounds === 1 ? "one" : rounds} more lets the review carry on from`
+          + " where it left off.",
+        confirmLabel: "Grant the rounds",
+        confirmHint: "Raises this run's budget only",
+        danger: false,
+      },
+    };
+  }
+
   // Everything below is a resubmission, so the manager's own refusals decide first. Where it
   // refuses, the move is `null` and `runNoMoveReason` turns the refusal into the sentence.
   const availability = resubmitAvailability(detail, liveInspectorRepair(detail));
@@ -593,15 +678,25 @@ const NO_MOVE_SENTENCES: Record<string, RunNoMoveReason> = {
     consequence: "so it cannot take another round. Cancelling clears it from your queue; its"
       + " evidence and verdicts stay in history.",
   },
+  /*
+   * Reached only when something ELSE also refuses - an inactive binding, an external
+   * source - because a run that is merely out of rounds now gets the grant as its move.
+   *
+   * Neither sentence sends the reader to the binding any more, and that is a correction
+   * rather than a rewording: a run snapshots `maxRepairRounds` when its row is inserted and
+   * every guard compares against that snapshot, so raising the binding's budget changes
+   * what the NEXT run may spend and cannot reach this one. The old copy named the one
+   * remedy guaranteed not to work.
+   */
   round_limit: {
-    cause: "This run has used every repair round its binding allows,",
-    consequence: "so nothing here can open another one. A larger repair budget is a change to"
-      + " the binding; cancelling clears the run and keeps its history.",
+    cause: "This run has used every repair round it was given,",
+    consequence: "and the rest of its state means nothing here can open another one."
+      + " Cancelling clears the run and keeps its history.",
   },
   inspector_round_limit: {
-    cause: "This run has used every Inspector round its binding allows,",
-    consequence: "so nothing here can open another one. A larger repair budget is a change to"
-      + " the binding; cancelling clears the run and keeps its history.",
+    cause: "This run has used every Inspector round it was given,",
+    consequence: "and the rest of its state means nothing here can open another one."
+      + " Cancelling clears the run and keeps its history.",
   },
   inspector_findings: {
     cause: "Inspector left findings that have to be resolved.",
@@ -704,7 +799,25 @@ export function runNoMoveReason(detail: WorkflowRunDetail): RunNoMoveReason | nu
   ) return null;
 
   const mapped = NO_MOVE_SENTENCES[currentPhase];
-  if (mapped) return mapped;
+  if (mapped) {
+    /*
+     * The merge-block clause is EARNED, not assumed - and the same predicate the two cancel
+     * confirmations use earns it.
+     *
+     * `round_limit` is the generic round-exhaustion phase, shared by every workflow type. A
+     * version whose completion policy is not `inspector` never populates gate state at all,
+     * and a spent run reaching this sentence has already failed some other test - an
+     * orphaned binding, the repair ceiling - which is exactly when `mergeGate` stops walking
+     * it. Appending "cancelling releases the merge block" to a static string told those runs
+     * something plainly false about a pull request they do not hold. Conditional here, and
+     * naming the number rather than "the pull request", because a sentence that cannot say
+     * WHICH one is a sentence that does not know there is one.
+     */
+    const release = cancelReleasesGate(detail.summary);
+    return release === null
+      ? mapped
+      : { ...mapped, consequence: mapped.consequence + cancelGateSentence(release) };
+  }
 
   // An Inspector-only repair withholds the resubmission on purpose rather than by refusal: it
   // owns `Restart full workflow`, and two competing recoveries side by side is how an operator

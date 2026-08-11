@@ -3,6 +3,7 @@ import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
+import type { WorkflowGateStanding } from "@shared/shipping.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
@@ -10,6 +11,7 @@ import { agentActive, reportBucket, settledIdle } from "@shared/session.ts";
 import type {
   CreateWorkflow,
   CreateWorkflowBinding,
+  GrantWorkflowRepairRounds,
   ResolveWorkflowDelivery,
   ResubmitWorkflow,
   RetryWorkflowDelivery,
@@ -63,11 +65,13 @@ import type {
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
+  WORKFLOW_LIMITS,
   isSessionActionNode,
   isVerdictNode,
   manualWorkflowTriggerKey,
   normalizeWorkflowName,
   verdictAuthor,
+  workflowRunGaveUp,
 } from "@shared/workflow.ts";
 import {
   PersonaVerdictSchema,
@@ -1726,28 +1730,152 @@ export class WorkflowManager {
     return true;
   }
 
-  /** Shipping may only be vetoed by active Inspector-gated workflow ownership. */
-  blocksMerge(prKey: string): boolean {
+  /**
+   * Shipping may only be vetoed by active Inspector-gated workflow ownership.
+   *
+   * Returns WHICH veto rather than whether there is one, because a gate that ran out of
+   * repair rounds never clears itself and telling the operator to wait for it was the
+   * whole defect - see `WorkflowGateStanding`. The veto itself is unchanged: every run
+   * that vetoed before still vetoes, `blocked` included and deliberately (see
+   * `WORKFLOW_RUN_TERMINAL_STATUSES`). Only the reported reason got more specific.
+   *
+   * A run that gave up outranks nothing: when two bindings own the same key and one is
+   * still reviewing, `pending` wins, because something really is still working on it and
+   * "wait" remains the honest instruction.
+   */
+  mergeGate(prKey: string): WorkflowGateStanding {
     const adopted = getInspectorPr(prKey);
+    let standing: WorkflowGateStanding = "none";
+    const owns = (run: WorkflowRun): void => {
+      if (standing === "pending") return;
+      const round = this.store.latestSubmission(run.id)?.round ?? 0;
+      standing = workflowRunGaveUp({
+        status: run.status,
+        phase: run.currentPhase,
+        round,
+        maxRepairRounds: run.maxRepairRounds,
+      })
+        ? "spent"
+        : "pending";
+    };
     for (const binding of this.store.listBindings()) {
       if (binding.state !== "active") continue;
       const run = this.store.activeRunForBinding(binding.id);
       const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
       if (!run || version?.completionPolicy.kind !== "inspector") continue;
       const gate = this.gateState(run);
-      if (gate?.prKey === prKey) return true;
+      if (gate?.prKey === prKey) { owns(run); continue; }
       // A PR handoff can open the PR without changing one repository byte. Until the gate
       // pins that PR, the live Session.prUrl is only a convenience and disappears across an
       // SDK restart. The Inspector row is the durable proof that this session opened this PR,
       // so it must preserve the veto during that pinning window as well.
-      if (gate && adopted && this.matchesUnpinnedGate(binding, gate, adopted)) return true;
+      if (gate && adopted && this.matchesUnpinnedGate(binding, gate, adopted)) { owns(run); continue; }
       const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
       const candidate = session?.state !== "exited" && session?.prUrl
         ? parsePrUrl(session.prUrl)
         : null;
-      if (candidate?.key === prKey) return true;
+      if (candidate?.key === prKey) owns(run);
     }
-    return false;
+    return standing;
+  }
+
+  /**
+   * Give a run that spent its repair budget more rounds, so it stops being a dead end.
+   *
+   * It raises the budget and, for one class of run, puts the status back.
+   *
+   * A PARKED REPAIR ROUND needs only the number. The resume move and the confirmed full
+   * restart both accept a blocked run and refuse on exactly one inequality,
+   * `round > maxRepairRounds`, so moving the right-hand side hands it straight back to the
+   * machinery that already knows how to revive it - no second revival path to keep in step.
+   *
+   * AN INSPECTOR-ONLY GATE RUN needs the status too, and this is not symmetry for its own
+   * sake. Nothing polls a blocked run: `evaluateInspectorGate` returns early on one, and
+   * the resumption observer only looks at `waiting_for_session`. So a grant that moved only
+   * the number would leave the gate run exactly as stopped as it was while flipping the
+   * Shipping veto from `workflow-gate-spent` to `workflow-gate-pending` - trading a true
+   * "this gave up" for a false "this is still working", which is worse than the dead end
+   * this method exists to open. Restoring `waiting_for_new_head` puts it back where its own
+   * gate re-enters it, and the head that was refused has not been recorded as a prior
+   * submission head, so the next observation picks that very head up.
+   *
+   * `workflowRunGaveUp` reads the same inequality, so the veto downgrades to `pending` -
+   * now truthfully - without this method knowing Shipping exists.
+   */
+  grantRepairRounds(
+    runId: string,
+    input: GrantWorkflowRepairRounds,
+    now = Date.now(),
+  ): WorkflowRuntimeMutation<WorkflowRun> {
+    const run = this.store.getRun(runId);
+    if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    /*
+     * A replay of a grant that already landed is that grant, not a second one.
+     *
+     * The action store deliberately RETAINS its request id across a failed response, so a
+     * network error on a grant that actually committed comes back with the same id. Without
+     * this the replay would hit the `run_not_waiting` refusal below - the run is no longer
+     * spent, precisely because the first attempt worked - and tell the operator their run
+     * could not be granted rounds it already has. Every sibling action keys idempotency the
+     * same way; this one has an event rather than a trigger key to key off.
+     */
+    const replay = this.store.listEvents(run.id).find((event) =>
+      event.kind === "repair_rounds_granted"
+      && event.payload
+      && !Array.isArray(event.payload)
+      && typeof event.payload === "object"
+      && event.payload.requestId === input.requestId);
+    if (replay) return { ok: true, value: run, idempotent: true };
+    const latest = this.store.latestSubmission(run.id);
+    if (!latest) return { ok: false, reason: "not_found", message: "The run has no submission" };
+    if (!workflowRunGaveUp({
+      status: run.status,
+      phase: run.currentPhase,
+      round: latest.round,
+      maxRepairRounds: run.maxRepairRounds,
+    })) {
+      return {
+        ok: false,
+        reason: "run_not_waiting",
+        message: "Only a run that has spent its repair budget can be granted more rounds",
+      };
+    }
+    // Clamped rather than refused: the operator asked for room to continue, and the
+    // binding form already caps the same number at the same ceiling.
+    const granted = Math.min(run.maxRepairRounds + input.rounds, WORKFLOW_LIMITS.repairRoundsMax);
+    if (granted <= run.maxRepairRounds) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: `A run may not exceed ${WORKFLOW_LIMITS.repairRoundsMax} repair rounds`,
+      };
+    }
+    // The same discriminator `resubmit` uses to refuse an Inspector-only repair, and it has
+    // to be the submission MODE rather than the status: the status is `blocked` here, which
+    // is exactly what the gate arm has in common with the parked arm.
+    const gate = this.gateState(run);
+    const restore = gate && latest.mode === "inspector_only"
+      ? {
+          status: "waiting_for_new_head" as const,
+          phase: "inspector_findings",
+          gateState: gate as unknown as WorkflowJson,
+        }
+      : null;
+    const updated = this.store.grantRunRepairRounds(run.id, granted, restore, {
+      kind: "repair_rounds_granted",
+      payload: {
+        requestId: input.requestId,
+        from: run.maxRepairRounds,
+        to: granted,
+        round: latest.round,
+        resumed: restore?.status ?? null,
+      },
+    }, now);
+    if (!updated) {
+      return { ok: false, reason: "conflict", message: "The run finished before the grant landed" };
+    }
+    this.publishRun(run.id);
+    return { ok: true, value: updated };
   }
 
   async preparePr(

@@ -763,8 +763,26 @@ When there is no move, the header says so **in a sentence** and names where the 
 actually lives: "Confirm or discard it in Deliveries below", "they are listed under Inspector
 final gate below". A control that cannot run is never left standing in place of an explanation.
 That covers the states nothing argument-free revives - the bound session is gone, the run is
-externally sourced, it has used every repair round its binding allows - and the states blocked
-on a judgement the page carries the material for further down. Beside the primary sit at most
+externally sourced - and the states blocked on a judgement the page carries the material for
+further down.
+
+**A run that spent its repair budget is the exception, and it gets a button.** It used to get
+the sentence too, and that was the one dead end on the page: the run had stopped, nothing on
+the dashboard could restart it, and its Inspector gate went on vetoing its pull request
+forever. Its primary is now **Grant 2 more rounds**. The sentence that used to stand there
+named the binding's `Max repair rounds` as the fix, which was wrong: a run snapshots its
+budget when its row is created, and editing the binding changes what the *next* run may
+spend.
+
+What the grant does depends on what stopped the run, and the difference is not cosmetic. A
+**parked repair round** needs only the number: the resume move refuses on
+`round > maxRepairRounds`, so raising the budget hands the run straight back to it, and the
+header repaints from the grant to **Preview fresh evidence**. An **Inspector-only gate run**
+needs its status back as well, because nothing polls a blocked run - the gate evaluator
+returns early on one - so the grant restores `waiting_for_new_head` and the gate re-enters
+on the next observation, picking up the very head it refused. Without that second half the
+grant would flip the merge block from "gave up" to "still working" while nothing was working,
+which is worse than the dead end it replaced. Beside the primary sit at most
 **Copy feedback** and **Open PR**, and **Open PR** appears only when there is an adopted pull
 request to open.
 
@@ -864,6 +882,8 @@ Four things it deliberately does not do:
   unattended is exactly the case where no tab is open to notice.
 
 `Max repair rounds` is the budget, and exhausting it blocks the run exactly as it always did.
+It sets what a *new* run starts with; a run already stuck takes more rounds from **Grant 2
+more rounds** on its own page, which is the only control that reaches a live run's budget.
 
 Automatic **pull request** preparation is the same idea one stage later, and it is Live-only
 for a reason that is not a preference: preparing a PR means typing into the session, and
@@ -888,6 +908,33 @@ Blocked is also no longer a dead end in the header. A resubmission is offered fo
 run, not only a parked one, because the daemon has always accepted one for both - so a run
 blocked on a fault that has since cleared, `check_cleanup_unresolved` once its pooled worktree
 came back, is recoverable from the page rather than reading as terminal.
+
+**`blocked` is deliberately not a terminal status**, and the reason is written down beside
+`WORKFLOW_RUN_TERMINAL_STATUSES` in `src/shared/workflow.ts` because it looks like an
+oversight from both directions. A blocked run has stopped, so adding it to the terminal set
+would in one line release the Shipping veto its Inspector gate holds - and that is exactly
+why it is not there. A gate that ran out of repair rounds did **not** pass; releasing its veto
+would turn "the reviewer gave up with findings open" into "the reviewer approved it", which is
+the bypass the veto exists to prevent. Blocked also is not reliably an ending: a reattach
+revives one, and a grant revives another.
+
+So the veto stays, and what changed is that it stops lying about itself. A gate still working
+reports `workflow-gate-pending` - "an active workflow still owns the Inspector final gate",
+and waiting is correct. A gate that spent its budget reports **`workflow-gate-spent`**, which
+says the stop is permanent and names the way out, because no further push can clear it: the
+gate re-tests the budget on every new head, so the operator cannot push their way out. The two
+controls that do clear it are **Grant 2 more rounds** and **Cancel run** - carry on, or let
+the pull request go. Retiring is the destructive one, so both places that offer it - run
+detail's `Cancel run` and the Review drawer's `Dismiss` - now name the pull request they
+unblock: *"It also lifts the merge block this run holds on #486, which no longer waits on a
+review that has stopped."*
+
+That clause is earned rather than assumed, and the run page's no-move paragraph earns it the
+same way. `round_limit` is the generic round-exhaustion phase that every workflow type
+reaches, and a version whose completion policy is not `inspector` never pins a pull request at
+all - so all three surfaces read one derivation, which answers "which pull request, if any"
+rather than assuming there is one. A run holding no gate is told plainly that cancelling
+clears the run and keeps its history, and nothing more.
 
 ### Live repair delivery and Foreman completion
 

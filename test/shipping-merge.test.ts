@@ -37,7 +37,7 @@ function ready(over: Partial<MergeInput> = {}): MergeInput {
     inspector: "live",
     reviewedSha: "abc",
     reviewPosture: "live",
-    workflowGatePending: false,
+    workflowGate: "none",
     rounds: 1,
     openFindings: 0,
     now: NOW,
@@ -126,9 +126,47 @@ test("a draft is never merged", () => {
 });
 
 test("an active workflow final gate narrowly vetoes YOLO merge", () => {
-  assert.equal(blockOf(ready({ workflowGatePending: true })), "workflow-gate-pending");
-  assert.equal(mergeVerdict(ready({ workflowGatePending: false })).merge, true);
+  assert.equal(blockOf(ready({ workflowGate: "pending" })), "workflow-gate-pending");
+  assert.equal(mergeVerdict(ready({ workflowGate: "none" })).merge, true);
   assert.match(MERGE_BLOCK_LABEL["workflow-gate-pending"], /workflow/i);
+});
+
+// A gate that ran out of repair rounds vetoes exactly as hard - it did not pass, and
+// "the reviewer gave up" must never read as "the reviewer approved it". What changes is
+// the sentence: `pending` clears itself and waiting is correct, `spent` never clears on
+// its own and no further push can clear it, so the panel has to send the operator to the
+// controls instead of telling them to wait for something that is never coming.
+test("a workflow gate that spent its repair budget still vetoes, under its own reason", () => {
+  assert.equal(blockOf(ready({ workflowGate: "spent" })), "workflow-gate-spent");
+  assert.equal(mergeVerdict(ready({ workflowGate: "spent" })).merge, false);
+  assert.notEqual(
+    MERGE_BLOCK_LABEL["workflow-gate-spent"],
+    MERGE_BLOCK_LABEL["workflow-gate-pending"],
+    "a permanent stop and a live review read the same to an operator",
+  );
+  // The sentence has to name the way out, because there is no other way out: the gate
+  // re-tests the budget on every new head, so pushing more commits re-enters the block.
+  assert.match(MERGE_BLOCK_LABEL["workflow-gate-spent"], /round/i);
+  assert.match(MERGE_BLOCK_LABEL["workflow-gate-spent"], /grant|retire/i);
+
+  /*
+   * And it has to say it inside the width the panel actually gives it.
+   *
+   * `.sc-standing` is one line with `text-overflow: ellipsis`, so everything past roughly
+   * the first forty characters is invisible until somebody widens a column. That is a real
+   * trap rather than a hypothetical: the first draft of this label opened with "a workflow
+   * gate ran out of repair rou…" and hid the entire remedy behind the ellipsis, and no
+   * assertion caught it because `textContent` carries the whole string whatever CSS does
+   * with it. So the distinguishing words are pinned to the visible prefix.
+   */
+  const GLANCE = 40;
+  const spentGlance = MERGE_BLOCK_LABEL["workflow-gate-spent"].slice(0, GLANCE);
+  assert.notEqual(
+    spentGlance,
+    MERGE_BLOCK_LABEL["workflow-gate-pending"].slice(0, GLANCE),
+    "the two workflow blocks are indistinguishable in the width the panel renders",
+  );
+  assert.match(spentGlance, /gave up/i, "the permanence is not readable without hovering");
 });
 
 // The whole point of the feature is that the Inspector looked at THIS code. A review of a
@@ -231,6 +269,7 @@ test("every block code the gate can return has a sentence for the panel", () => 
     "not-open",
     "draft",
     "workflow-gate-pending",
+    "workflow-gate-spent",
     "not-reviewed",
     "findings",
     "threads",

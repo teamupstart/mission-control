@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -15,6 +15,10 @@ import type {
   WorkflowInspectorGateState,
 } from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import {
+  WORKFLOW_RUN_TERMINAL_STATUSES,
+  workflowRunIsOpen,
+} from "../src/shared/workflow.ts";
 
 // What is at stake: a successful Persona End is not completion when the published
 // version owns an Inspector gate. Every conclusion must be about an adopted PR and a
@@ -640,8 +644,8 @@ test("an unpinned durable handoff keeps vetoing Shipping across restart", async 
     const staleUrl = `https://github.com/owner/repo/pull/${900 + serial}`;
     adoptInspectorPr(inspectorPr(staleKey, staleUrl, seeded.ids.session, seeded.now - 1));
     assert.equal(
-      seeded.manager.blocksMerge(staleKey),
-      false,
+      seeded.manager.mergeGate(staleKey),
+      "none",
       "an older PR from the same long-lived session was claimed by the new gate",
     );
 
@@ -659,14 +663,14 @@ test("an unpinned durable handoff keeps vetoing Shipping across restart", async 
       null,
       "the test requires the restart window before the gate pins its PR",
     );
-    assert.equal(seeded.manager.blocksMerge(seeded.key), true);
+    assert.equal(seeded.manager.mergeGate(seeded.key), "pending");
 
     await seeded.manager.stop();
     const recovered = new WorkflowManager(seeded.registry, seeded.store);
     try {
       // No Inspector event and no Session.prUrl has been restored. The persisted adoption row
       // alone must fail closed until normal Inspector reconciliation pins and evaluates it.
-      assert.equal(recovered.blocksMerge(seeded.key), true);
+      assert.equal(recovered.mergeGate(seeded.key), "pending");
     } finally {
       await recovered.stop();
     }
@@ -701,7 +705,7 @@ test("durable handoff provenance requires an exact known repository identity", a
         cwd: repoRoot ?? "/repo",
         repoRoot,
       });
-      assert.equal(seeded.manager.blocksMerge(seeded.key), false);
+      assert.equal(seeded.manager.mergeGate(seeded.key), "none");
 
       seeded.registry.applyHook({
         agent: "claude",
@@ -962,6 +966,190 @@ test("sessionless Inspector-only findings still wait for a new head", async () =
     seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "inspector_findings").length,
     1,
   );
+  await seeded.manager.stop();
+});
+
+// The decision recorded beside `WORKFLOW_RUN_TERMINAL_STATUSES`, asserted rather than
+// only written down. Making `blocked` terminal is the one-line change that would end the
+// permanent veto by turning "the reviewer gave up" into "the reviewer approved it", and
+// both halves of the codebase have to keep refusing it: the shared predicate the browser
+// reads, and the SQL literal the Shipping veto actually runs.
+test("a blocked run stays open on both sides of the wire, so its gate keeps vetoing", () => {
+  assert.equal(
+    WORKFLOW_RUN_TERMINAL_STATUSES.includes("blocked" as never),
+    false,
+    "blocked became terminal - a gate that gave up would now auto-merge",
+  );
+  assert.equal(workflowRunIsOpen("blocked"), true);
+  const store = readFileSync(new URL("../src/server/workflows/store.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    store,
+    /status NOT IN \('completed', 'cancelled', 'failed', 'blocked'\)/,
+    "the store stopped counting a blocked run as active, which silently releases the veto",
+  );
+});
+
+// A run that exhausts its repair budget vetoes its pull request FOREVER, and until this
+// test existed nothing pinned any part of that story. The veto itself is correct and stays
+// - a gate that gave up did not pass, and auto-merging it is the bypass the veto exists to
+// stop - so what is pinned here is that the daemon says WHICH veto it is, that the remedy
+// the dashboard used to advertise genuinely does not work, that no amount of pushing clears
+// it, and that the grant does.
+test("a spent repair budget vetoes under its own reason, survives new heads, and clears only on a grant", async () => {
+  const seeded = await seed({ policy: "inspector_only" });
+  // One round, so the second new head exhausts the budget through the real gate path
+  // rather than a hand-written `blocked` row.
+  db.prepare(`UPDATE workflow_runs SET max_repair_rounds = 1 WHERE id = ?`).run(seeded.ids.run);
+  db.prepare(`UPDATE workflow_bindings SET session_id = NULL WHERE id = ?`).run(seeded.ids.binding);
+
+  const findOn = (round: number, head: string): void => {
+    updateInspectorPr(seeded.key, {
+      headSha: head,
+      lastAttemptSha: head,
+      reviewPosture: "live",
+      round,
+      lastReviewedAt: Date.now(),
+    }, Date.now());
+    upsertInspectorComment({
+      id: `round-limit-comment-${serial}-${round}`,
+      prKey: seeded.key,
+      fingerprint: `round-limit-finding-${serial}-${round}`,
+      path: "src/file.ts",
+      line: 10,
+      title: "Still not fixed",
+      body: "The repair did not land.",
+      severity: "major",
+      round,
+      status: "open",
+      replies: 0,
+      answeredCommentId: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  };
+  const parkOnFindings = async (round: number, head: string, why: string): Promise<void> => {
+    findOn(round, head);
+    signal(seeded, head);
+    await waitFor(
+      () => seeded.store.getRun(seeded.ids.run)?.status === "waiting_for_new_head",
+      why,
+    );
+  };
+
+  // Round 1 fails, the operator pushes a fix, round 2 fails too. That second push is what
+  // spends the budget: the gate re-tests it on the NEXT head, not on this one.
+  await parkOnFindings(1, seeded.head, "the first findings did not park on a new head");
+  const secondHead = `head-${serial}-two`;
+  signal(seeded, secondHead);
+  await waitFor(
+    () => seeded.store.latestSubmission(seeded.ids.run)?.round === 2,
+    "the new head did not open the second repair round",
+  );
+  assert.equal(
+    seeded.manager.mergeGate(seeded.key),
+    "pending",
+    "a run still inside its budget is not a run that gave up",
+  );
+
+  await parkOnFindings(2, secondHead, "the second findings did not park on a new head");
+  signal(seeded, `head-${serial}-three`);
+  await waitFor(
+    () => seeded.store.getRun(seeded.ids.run)?.currentPhase === "round_limit",
+    "the exhausted budget did not block the run",
+  );
+
+  // 1. The veto stands, and now it names itself. `pending` here would be the daemon
+  //    telling the operator to wait for a review that will never run again.
+  assert.equal(seeded.manager.mergeGate(seeded.key), "spent");
+
+  // 2. The remedy run detail used to advertise - "a larger repair budget is a change to
+  //    the binding" - does not work, because every guard reads the RUN's snapshot and
+  //    `updateBinding` never touched it. Pinned as a fact so nobody re-advertises it.
+  seeded.store.updateBinding(seeded.ids.binding, { maxRepairRounds: 10 });
+  assert.equal(
+    seeded.store.getRun(seeded.ids.run)?.maxRepairRounds,
+    1,
+    "raising the binding budget silently rewrote the run's snapshot",
+  );
+  assert.equal(
+    seeded.manager.mergeGate(seeded.key),
+    "spent",
+    "raising the binding budget appeared to revive a run it cannot reach",
+  );
+
+  // 3. The operator cannot push their way out: the gate re-tests the budget on every new
+  //    head, so more commits re-enter the same refusal.
+  signal(seeded, `head-${serial}-four`);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, "round_limit");
+  assert.equal(seeded.manager.mergeGate(seeded.key), "spent");
+
+  // 4. The grant is the way out, and it reaches the number the guards actually read.
+  const granted = seeded.manager.grantRepairRounds(seeded.ids.run, { requestId: `grant-${serial}`, rounds: 2 });
+  assert.equal(granted.ok, true);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.maxRepairRounds, 3);
+  assert.equal(
+    seeded.manager.mergeGate(seeded.key),
+    "pending",
+    "the grant did not lift the permanent veto",
+  );
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "repair_rounds_granted").length,
+    1,
+    "the grant left no audit trail",
+  );
+
+  /*
+   * 5. And the run is actually GOING again, which the budget alone does not achieve here.
+   *
+   * Nothing polls a blocked run - `evaluateInspectorGate` returns early on one - so a grant
+   * that moved only the number would leave this gate exactly as stopped as it was while
+   * reporting `pending` to Shipping. That trade, a true "gave up" for a false "still
+   * working", is worse than the dead end. So the grant restores the state its own gate
+   * re-enters, and the proof is that the next head opens a round instead of being ignored.
+   */
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_new_head");
+  signal(seeded, `head-${serial}-five`);
+  await waitFor(
+    () => seeded.store.latestSubmission(seeded.ids.run)?.round === 3,
+    "the granted gate ignored the next head, so the grant revived nothing",
+  );
+
+  /*
+   * 6. And a replay of the same intent is that grant, not a second one.
+   *
+   * The run-action store retains its request id across a failed response, so a network error
+   * on a grant that actually committed comes back with the same id. Answered as the refusal
+   * below it, that would tell the operator their run could not be granted rounds it already
+   * holds - and the budget would read one grant short of what the timeline says.
+   */
+  const replay = seeded.manager.grantRepairRounds(seeded.ids.run, {
+    requestId: `grant-${serial}`,
+    rounds: 2,
+  });
+  assert.equal(replay.ok, true, "a retried grant was refused as a new one");
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.maxRepairRounds, 3, "the replay granted twice");
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "repair_rounds_granted").length,
+    1,
+    "the replay wrote a second grant into the run's history",
+  );
+  await seeded.manager.stop();
+});
+
+/*
+ * The grant refuses a run that is not stuck, which is what keeps it from becoming a general
+ * "raise the budget" control. The budget is a BINDING setting; this route exists only to
+ * open the one dead end the binding cannot reach, so a run with rounds left is told no.
+ */
+test("a grant is refused for a run that has not spent its budget", async () => {
+  const seeded = await seed({ policy: "inspector_only" });
+  const refused = seeded.manager.grantRepairRounds(seeded.ids.run, {
+    requestId: `grant-live-${serial}`,
+    rounds: 2,
+  });
+  assert.equal(refused.ok, false);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.maxRepairRounds, 3, "a live run took a grant");
   await seeded.manager.stop();
 });
 

@@ -136,14 +136,35 @@ test("a silent pill does not take the multi-repo pull-request row with it", () =
   }
 });
 
-test("the card keeps a pill for the transient status only it draws", () => {
-  // `dispatching…` / `failed` are the card's alone, so the card ORs them into the gate at
-  // the point it draws them rather than the shared helper asserting them for everyone.
-  const session = dispatched({ status: "failed" });
-  assert.equal(taskPillParts(session).silent, true, "nothing the shared parts host");
-  const html = card(session);
-  assert.ok(html.includes("task-chip task-failed"), "the card should keep the pill");
-  assert.match(html, /class="task-status">failed</, "for the word it has to draw in it");
+test("the card keeps a pill for the transient status only it draws, and the detail does not", () => {
+  // The one place the two layouts deliberately differ, so both halves are asserted together
+  // rather than one of them being left to a reader's inference.
+  //
+  // `dispatching…` / `failed` are words only `SessionCard` draws - the console detail reads
+  // that state off its own badge - so the card ORs them into its gate at the point it draws
+  // them, and `taskPillParts` does not assert them for everyone. The consequence is that this
+  // fixture keeps a pill on the card and has none in the detail, where it would have been an
+  // empty bar carrying a red left edge and no words.
+  //
+  // Pinned in both directions because the split is a decision, not a side effect: moving the
+  // status word into the shared predicate would put an empty chip back in the detail, and
+  // dropping the card's OR would lose the only place `failed` is written.
+  for (const [status, word] of [["failed", "failed"], ["dispatching", "dispatching…"]] as const) {
+    const session = dispatched({ status });
+    assert.equal(taskPillParts(session).silent, true, `${status}: nothing the shared parts host`);
+
+    const cardHtml = card(session);
+    assert.ok(cardHtml.includes(`task-chip task-${status}`), `${status}: the card should keep the pill`);
+    assert.ok(
+      cardHtml.includes(`class="task-status">${word}<`),
+      `${status}: for the word it has to draw in it`,
+    );
+
+    assert.ok(
+      !detail(session).includes("task-chip"),
+      `${status}: the console detail draws no status word, so it should draw no pill either`,
+    );
+  }
 });
 
 test("a ship task draws no kind badge on either layout", () => {

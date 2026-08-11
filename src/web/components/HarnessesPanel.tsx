@@ -144,7 +144,7 @@ function HarnessCard({
   label: string;
   model: string | null;
   effort: ThinkingLevel | null;
-  runtime: string;
+  runtime: string | null;
   autoMode: boolean;
   disabled: boolean;
   onModel: (id: string | null) => void;
@@ -154,12 +154,19 @@ function HarnessCard({
   const modelId = `harness-model-${agent}`;
   const effortId = `harness-effort-${agent}`;
   const runtimeId = `harness-runtime-${agent}`;
-  // Through the shared gate, never off the raw string: the panel and the dispatcher must
-  // agree about which runtime is in force, including when what was stored is a value this
-  // build cannot read (an older build reading a newer one's choice) or one this harness no
-  // longer offers. Both fall back to `terminal` and the card says which happened.
-  const resolved = resolveSessionRuntime(agent, runtime);
+  // Do not guess a runtime while the config is in flight. A new install will resolve to the
+  // Agent SDK, but an upgraded installation can still have a legacy Terminal default. Once
+  // loaded, the shared gate makes the panel and dispatcher agree about unknown or unsupported
+  // stored values too.
+  const resolved = runtime === null ? null : resolveSessionRuntime(agent, runtime);
   const sdkWhy = sdkRuntimeUnsupportedWhy(agent);
+  const runtimeNote =
+    runtime === null
+      ? `Loading saved runtime default for ${label}.`
+      : (sdkWhy ??
+        (resolved?.runtime === "sdk"
+          ? "They run inside Mission Control on the Agent SDK - no terminal pane, questions answered from the card, and Continue in terminal when you want to take over."
+          : "They run in a terminal pane, as they always have."));
   return (
     <div className="harness-card" data-anchor={`harnesses/${agent}`} style={agentAccentStyle(agent)}>
       <div className="harness-card-head">
@@ -215,7 +222,7 @@ function HarnessCard({
         {/* Rendered only for a harness that DECLARES the runtime, never for one we hope
             will get a driver later: the row would be a toggle that changes nothing. The
             absence is stated in the card's note below, composed from the capability. */}
-        {!sdkWhy && (
+        {!sdkWhy && resolved && (
           <>
             <label className="harness-card-field-label" htmlFor={runtimeId}>
               Runtime
@@ -243,11 +250,8 @@ function HarnessCard({
         {effort
           ? `They start with ${effort} reasoning effort.`
           : `Effort stays whatever ${label} has configured.`}{" "}
-        {sdkWhy ??
-          (resolved.runtime === "sdk"
-            ? `They run inside Mission Control on the Agent SDK - no terminal pane, questions answered from the card, and Continue in terminal when you want to take over.`
-            : `They run in a terminal pane, as they always have.`)}
-        {resolved.unknown && (
+        {runtimeNote}
+        {resolved?.unknown && (
           <>
             {" "}
             <strong>
@@ -255,7 +259,7 @@ function HarnessCard({
             </strong>
           </>
         )}
-        {resolved.unsupported && (
+        {resolved?.unsupported && (
           <>
             {" "}
             <strong>
@@ -340,7 +344,7 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
             label={card.label}
             model={config?.defaultModel[card.agent] ?? null}
             effort={config?.defaultEffort[card.agent] ?? null}
-            runtime={config?.sessionRuntime[card.agent] ?? "terminal"}
+            runtime={config?.sessionRuntime[card.agent] ?? null}
             autoMode={autoMode}
             disabled={!config}
             onModel={(id) => void update({ defaultModel: { [card.agent]: id } })}

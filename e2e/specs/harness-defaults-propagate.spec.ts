@@ -26,6 +26,66 @@ const CLAUDE_MODEL = "Default model for dispatched Claude Code sessions";
 
 const EVIDENCE = artifactsDir("harness-defaults-propagate");
 
+test("a new installation defaults Claude and Codex dispatches to the Agent SDK", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings`);
+  await dashboard.getByRole("tab", { name: /Harnesses/ }).click();
+
+  await expect(
+    dashboard.getByRole("combobox", {
+      name: "Session runtime for dispatched Claude Code sessions",
+    }),
+  ).toHaveValue("sdk");
+  await expect(
+    dashboard.getByRole("combobox", {
+      name: "Session runtime for dispatched Codex sessions",
+    }),
+  ).toHaveValue("sdk");
+  await shoot(dashboard, "new-install-sdk-defaults");
+});
+
+test("Settings waits for a saved runtime rather than guessing during its first read", async ({
+  dashboard,
+  daemon,
+}) => {
+  let release: (() => void) | null = null;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let hit: (() => void) | null = null;
+  const gateHit = new Promise<void>((resolve) => {
+    hit = resolve;
+  });
+  let gated = false;
+  await dashboard.route("**/api/harnesses/config", async (route) => {
+    if (route.request().method() !== "GET" || gated) return route.fallback();
+    gated = true;
+    const response = await route.fetch();
+    hit?.();
+    await released;
+    await route.fulfill({ response });
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings`);
+  await dashboard.getByRole("tab", { name: /Harnesses/ }).click();
+  await gateHit;
+  await expect(dashboard.getByText("Loading saved runtime default for Claude Code.")).toBeVisible();
+  await expect(
+    dashboard.getByRole("combobox", {
+      name: "Session runtime for dispatched Claude Code sessions",
+    }),
+  ).toHaveCount(0);
+
+  release?.();
+  await expect(
+    dashboard.getByRole("combobox", {
+      name: "Session runtime for dispatched Claude Code sessions",
+    }),
+  ).toHaveValue("sdk");
+});
+
 /**
  * Photograph a state this spec has already asserted on.
  *

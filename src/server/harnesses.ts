@@ -1,5 +1,8 @@
-import { HarnessesConfigSchema } from "@shared/protocol.ts";
-import type { HarnessesConfig, HarnessesConfigPatch } from "@shared/protocol.ts";
+import {
+  HarnessesConfigSchema,
+  type HarnessesConfig,
+  type HarnessesConfigPatch,
+} from "@shared/protocol.ts";
 import { resolveSessionRuntime } from "@shared/harness-capabilities.ts";
 import type { AgentType, SessionRuntime, ThinkingLevel } from "@shared/types.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
@@ -16,10 +19,31 @@ import { getAppConfig, setAppConfig } from "./db.ts";
 // session it launches without a restart.
 
 const CONFIG_KEY = "harnesses";
+const LEGACY_SESSION_RUNTIMES: HarnessesConfig["sessionRuntime"] = {
+  claude: "terminal",
+  codex: "terminal",
+  pi: "terminal",
+};
+
+function isPreRuntimeHarnessesConfig(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !Object.hasOwn(value, "sessionRuntime")
+  );
+}
 
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getHarnessesConfig(): HarnessesConfig {
-  return HarnessesConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  const stored = getAppConfig<unknown>(CONFIG_KEY);
+  // A config row without this key predates runtime selection. It was created while terminal
+  // was the only shipped behavior, so preserve that behavior for upgrades. An absent row is a
+  // new installation and receives the schema's current Agent SDK defaults.
+  const input = isPreRuntimeHarnessesConfig(stored)
+    ? { ...stored, sessionRuntime: LEGACY_SESSION_RUNTIMES }
+    : (stored ?? {});
+  return HarnessesConfigSchema.parse(input);
 }
 
 /**

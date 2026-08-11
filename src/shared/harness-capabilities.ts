@@ -409,10 +409,9 @@ export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
 export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   claude: {
     id: "claude",
-    // `terminal` first, and that order is the default rather than a preference ranking: a
-    // dispatch takes the operator's `sessionRuntime` choice, which ships as `terminal` for
-    // every harness and is only ever changed by hand. `"sdk"` here and
-    // `HARNESSES.claude.sdk` are one fact in two files (`harness-sdk.test.ts`).
+    // The list declares what the harness supports; dispatch takes the configured runtime.
+    // `"sdk"` here and `HARNESSES.claude.sdk` are one fact in two files
+    // (`harness-sdk.test.ts`).
     runtimes: ["terminal", "sdk"],
     // `claude --resume <id>`. Already shipping - this is the argv the embedded handoff
     // has spawned since the first driver landed.
@@ -473,8 +472,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   codex: {
     id: "codex",
     // `codex app-server` JSON-RPC, behind `HARNESSES.codex.sdk` - one fact in two files
-    // (`harness-sdk.test.ts`). `terminal` stays first for the reason Claude's entry gives:
-    // the order is the shipped default, not a ranking, and only an operator moves it.
+    // (`harness-sdk.test.ts`). This list declares support, not a preference order.
     runtimes: ["terminal", "sdk"],
     // `codex resume <uuid>`. Measured against `codex resume --help`, which documents the
     // positional as "Session id (UUID) or session name". Resuming and being drivable

@@ -9,7 +9,7 @@ import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, THINKING_LEVELS } from "./types.ts";
-import type { Task } from "./types.ts";
+import type { AgentType, SessionRuntime, Task } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
@@ -1521,6 +1521,18 @@ const StoredSessionRuntimeSchema = z.string();
 const SessionRuntimeSchema = z.enum(SESSION_RUNTIMES);
 
 /**
+ * The runtime an untouched installation uses for each harness. Only harnesses with a
+ * declared embedded driver start on the Agent SDK; Pi remains terminal-backed until it
+ * has one. Kept beside the schema so the server's first read and the browser's pre-load
+ * state cannot disagree.
+ */
+export const DEFAULT_HARNESSES_SESSION_RUNTIMES = {
+  claude: "sdk",
+  codex: "sdk",
+  pi: "terminal",
+} as const satisfies Record<AgentType, SessionRuntime>;
+
+/**
  * Defaults the harness applies to the sessions IT dispatches - never to the
  * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig, so a new key needs no migration.
@@ -1572,11 +1584,10 @@ export const HarnessesConfigSchema = z.object({
    * How a dispatched session of each harness is DRIVEN: through a terminal pane, or
    * embedded through the harness's own programmatic interface.
    *
-   * `"terminal"` everywhere is the shipped value and stays the shipped value - the cut-over
-   * is an operator flipping a toggle per harness, never a default change (a resolved
-   * decision on `docs/plans/agent-sdk-sessions/plan.md`). Scoped to dispatch like every
-   * other key in this blob: a session an operator started themselves is pane-backed
-   * whatever this says, because we do not own their pty.
+   * New installations use the Agent SDK for Claude and Codex, the two harnesses with
+   * embedded drivers. Pi stays terminal-backed because it has no SDK driver. Scoped to
+   * dispatch like every other key in this blob: a session an operator started themselves
+   * is pane-backed whatever this says, because we do not own their pty.
    *
    * A stored value this build cannot read, or one naming a runtime the harness does not
    * offer, falls back to `"terminal"` and says so - see `resolveDispatchRuntime`. Read at
@@ -1584,11 +1595,11 @@ export const HarnessesConfigSchema = z.object({
    */
   sessionRuntime: z
     .object({
-      claude: StoredSessionRuntimeSchema.default("terminal"),
-      codex: StoredSessionRuntimeSchema.default("terminal"),
-      pi: StoredSessionRuntimeSchema.default("terminal"),
+      claude: StoredSessionRuntimeSchema.default(DEFAULT_HARNESSES_SESSION_RUNTIMES.claude),
+      codex: StoredSessionRuntimeSchema.default(DEFAULT_HARNESSES_SESSION_RUNTIMES.codex),
+      pi: StoredSessionRuntimeSchema.default(DEFAULT_HARNESSES_SESSION_RUNTIMES.pi),
     })
-    .default({ claude: "terminal", codex: "terminal", pi: "terminal" }),
+    .default(DEFAULT_HARNESSES_SESSION_RUNTIMES),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
 

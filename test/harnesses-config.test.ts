@@ -25,6 +25,14 @@ test("ships with auto mode on dispatch enabled", () => {
   assert.equal(getHarnessesConfig().autoModeOnDispatch, true);
 });
 
+test("new installations default supported harnesses to the Agent SDK", () => {
+  assert.deepEqual(getHarnessesConfig().sessionRuntime, {
+    claude: "sdk",
+    codex: "sdk",
+    pi: "terminal",
+  });
+});
+
 test("enabling persists and reads back on", () => {
   const next = setHarnessesConfig({ autoModeOnDispatch: true });
   assert.equal(next.autoModeOnDispatch, true);
@@ -43,6 +51,27 @@ test("a stored config with an unknown key still parses (schema defaults fill the
   // Forward-compatibility: a value written by a newer build must not throw an older one.
   openDb()
     .prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)`)
-    .run("harnesses", JSON.stringify({ autoModeOnDispatch: true, somethingNew: 7 }));
-  assert.equal(getHarnessesConfig().autoModeOnDispatch, true);
+    .run(
+      "harnesses",
+      JSON.stringify({
+        autoModeOnDispatch: true,
+        sessionRuntime: { claude: "sdk", codex: "sdk", pi: "terminal" },
+        somethingNew: 7,
+      }),
+    );
+  const config = getHarnessesConfig();
+  assert.equal(config.autoModeOnDispatch, true);
+  assert.equal(config.sessionRuntime.claude, "sdk");
+});
+
+test("a config saved before runtime selection keeps its terminal behavior", () => {
+  openDb()
+    .prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)`)
+    .run("harnesses", JSON.stringify({ autoModeOnDispatch: true }));
+
+  assert.deepEqual(getHarnessesConfig().sessionRuntime, {
+    claude: "terminal",
+    codex: "terminal",
+    pi: "terminal",
+  });
 });

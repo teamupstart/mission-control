@@ -573,9 +573,10 @@ own effort in the dispatch form.
 ### Session runtime
 
 **Each card's runtime select** chooses how a dispatched session of that harness is *driven*:
-in a **Terminal pane**, or embedded on the **Agent SDK**. It ships as Terminal for every
-harness, and stays there until you change it - see
-[Session runtimes](sessions.md#session-runtimes-terminal-or-the-agent-sdk) for what turning it on
+in a **Terminal pane**, or embedded on the **Agent SDK**. New installations use the Agent SDK
+for Claude and Codex; Pi stays in a Terminal pane because it has no embedded driver. You can
+change either supported harness back to Terminal - see
+[Session runtimes](sessions.md#session-runtimes-terminal-or-the-agent-sdk) for what each choice
 changes, what it costs, and how to hand a session back to a terminal.
 
 The row renders only for a harness that actually has a driver behind it (Claude and Codex

@@ -4,7 +4,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { HarnessesPanel } from "../src/web/components/HarnessesPanel.tsx";
 import type { HarnessesState } from "../src/web/useHarnesses.ts";
-import type { HarnessesConfig } from "../src/shared/protocol.ts";
+import {
+  DEFAULT_HARNESSES_SESSION_RUNTIMES,
+  type HarnessesConfig,
+} from "../src/shared/protocol.ts";
 import {
   AGENT_TYPES,
   type AgentType,
@@ -68,7 +71,7 @@ function mkConfig(
     autoModeOnDispatch: over.autoModeOnDispatch ?? false,
     defaultModel: { ...fullRecord<string | null>(null), ...over.defaultModel },
     defaultEffort: { ...fullRecord<ThinkingLevel | null>(null), ...over.defaultEffort },
-    sessionRuntime: { ...fullRecord<string>("terminal"), ...over.sessionRuntime },
+    sessionRuntime: { ...DEFAULT_HARNESSES_SESSION_RUNTIMES, ...over.sessionRuntime },
   };
 }
 
@@ -142,6 +145,13 @@ test("the switch is disabled until the first config read lands", () => {
   assert.match(html, /<input[^>]*disabled/);
   // On is the shipped default, so the pre-poll switch reads checked.
   assert.match(html, /checked/);
+});
+
+test("the runtime card waits for the saved config instead of guessing a legacy default", () => {
+  const html = render(null);
+  assert.match(html, /Loading saved runtime default for Claude Code\./);
+  assert.doesNotMatch(html, /Session runtime for dispatched Claude Code sessions/);
+  assert.doesNotMatch(html, /<option value="sdk" selected/);
 });
 
 test("a rejected edit says so", () => {
@@ -289,16 +299,19 @@ test("the runtime control renders only for a harness that declares a driver", ()
   }
 });
 
-test("terminal is what a card shows until an operator changes it", () => {
-  // The shipped value, and the one every existing installation reads back: cut-over is an
-  // operator flipping this per harness, never a default this phase moved.
+test("a fresh card shows the shipped runtime defaults", () => {
   const html = render({});
+  assert.equal((html.match(/<option value="sdk" selected/g) ?? []).length, 2);
+  assert.match(html, /They run inside Mission Control on the Agent SDK/);
+});
+
+test("a card describes a terminal choice when an operator selects it", () => {
+  const html = render({ sessionRuntime: { claude: "terminal" } });
   assert.match(html, /<option value="terminal" selected/);
-  assert.doesNotMatch(html, /<option value="sdk" selected/);
   assert.match(html, /run in a terminal pane, as they always have/);
 });
 
-test("turning it on says what changes, in the card's own sentence", () => {
+test("an Agent SDK selection says what changes in the card's own sentence", () => {
   const html = render({ sessionRuntime: { claude: "sdk" } });
   assert.match(html, /<option value="sdk" selected/);
   assert.match(html, /no terminal pane/);

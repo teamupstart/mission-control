@@ -69,6 +69,15 @@ action (the palette). So adding an `interrupt` row to `BAR_ACTIONS` and nothing 
 gives a chord that is dead inside the composer - which is the case decision 3 is
 specifically about. An explicit bypass above `:1554` is required.
 
+**`typing` is narrower than "the operator is selecting text", and the gap is where copy
+lives.** `typing` (`:1418`) is true only for focus inside
+`input, textarea, select, [contenteditable='true']`. Selecting a transcript line, a diff
+hunk, or captured terminal output is none of those, so such a selection reaches the
+`BAR_ACTIONS` dispatch, which calls `e.preventDefault()` unconditionally at `:1839` (and
+again on the board arm). Copying read-only text off a card is the most common copy in this
+app, so the selection yield decision 2 promises has to be a gate ahead of every dispatch
+path rather than a condition inside the typing bypass. Step 7 is written around this.
+
 **The board overview drills in unless told otherwise.** `App.tsx:1843-1863` opens the
 drill-in for any `BAR_ACTIONS` chord with no mounted bar, except `cycleMode`, which runs
 in place because it is a live control rather than a reveal. Interrupt is a live control
@@ -207,19 +216,43 @@ Then add the `ctrl+c` case to the `producible` set in `test/keybindings.test.ts:
 
 ### 7. App wiring
 
-Three separate edits in `src/web/App.tsx`:
+Four edits in `src/web/App.tsx`, and the order below is the order they must be reasoned
+about - the selection gate has to come before every dispatch path, not inside one of them.
 
-1. **`BAR_ACTIONS` row** (`:109`): `["interrupt", "requestInterrupt"]`. Required to be a
+1. **Selection yield, as a single early gate.** Immediately after the `chord` is computed
+   and the `defaultPrevented` check (`:1416-1423`), return without calling
+   `preventDefault()` when the chord is the interrupt chord and there is a live text
+   selection. The browser then performs the copy.
+
+   This must be one gate covering all three dispatch paths below, **not** a check inside
+   the composer bypass. `typing` (`:1418`) is only true for focus inside
+   `input, textarea, select, [contenteditable='true']`, so selecting a transcript line, a
+   diff hunk, or captured terminal output leaves `typing === false` - the flow falls
+   through to the `BAR_ACTIONS` dispatch at `:1834`, which calls `e.preventDefault()`
+   unconditionally once a card is selected and its bar is mounted (`:1839`). A
+   selection-check placed only in the typing bypass would therefore suppress the single
+   most common copy in this app - selecting read-only text on a card - and interrupt the
+   agent instead. Decision 2 promises the opposite.
+
+   Put the predicate in a pure helper beside `shouldRecallPendingTurn`
+   (`src/web/lib/pending-turns.ts`), taking a flat record rather than reading the DOM
+   itself, so it is unit-testable without jsdom. It needs one fact: whether the current
+   selection is non-empty. Read `window.getSelection()` at the call site and pass the
+   result in.
+
+2. **`BAR_ACTIONS` row** (`:109`): `["interrupt", "requestInterrupt"]`. Required to be a
    literal row by the source scan.
-2. **Composer bypass above `:1554`.** Interrupt is the second action allowed to fire while
-   typing. Gate it exactly as the palette does - on `chordHasCommandModifier(bindings.interrupt)`,
-   so a rebinding to a bare key falls back behind the guard - and additionally require that
-   there is no live text selection, which is decision 2. Put the selection check in a pure
-   helper next to `shouldRecallPendingTurn` in `src/web/lib/pending-turns.ts` (or a sibling
-   module) so it is unit-testable without a DOM, following that function's flat-record shape.
-3. **Board-overview in-place arm** at `:1855`, beside `cycleMode`: run the interrupt against
-   the overview selection rather than opening the drill-in, and swallow the key either way so
-   the board keeps its cursor.
+
+3. **Composer bypass above `:1554`.** Interrupt is the second action allowed to fire while
+   typing. Gate it exactly as the palette does, on
+   `chordHasCommandModifier(bindings.interrupt)`, so a rebinding to a bare key falls back
+   behind the guard. The selection case is already handled by the gate in step 1 and must
+   not be re-implemented here.
+
+4. **Board-overview in-place arm** at `:1855`, beside `cycleMode`: run the interrupt
+   against the overview selection rather than opening the drill-in, and swallow the key
+   either way so the board keeps its cursor. This path also calls `preventDefault()`, which
+   is the third reason the selection gate belongs in step 1.
 
 Also extend the hand-written command-bar action union at `App.tsx:2773` if the command bar
 should offer interrupt.
@@ -277,7 +310,14 @@ add a `SessionState` member and do not add a `Session` field - either would pull
   Extend `test/pending-turn-manager.test.ts`.
 - capability: the new agreement test, plus the updates to
   `test/harness-capabilities.test.ts` for the added slot.
-- the selection-yield predicate, as a pure function with no DOM.
+- the selection-yield predicate, as a pure function with no DOM: empty selection yields the
+  chord to the interrupt, non-empty selection yields it to the browser.
+- the selection gate's **placement**, which is the part a unit test on the predicate alone
+  would not catch. Assert that a non-empty selection leaves the interrupt undispatched on
+  the read-only path - selection present, `typing` false, a card selected with its bar
+  mounted - not only on the composer path. That ordering is the defect this phase was
+  revised to prevent, so it needs a test that fails if the gate moves back inside the
+  typing bypass.
 - updates to `test/keybindings.test.ts`, `test/keybinding-hints.test.ts`,
   `test/action-bar-controls.test.ts`, `test/board-keyboard-open.test.ts`.
 
@@ -300,7 +340,10 @@ accessible name; add no `data-testid`; spend no model tokens.
   not re-drive the cancelled turn.
 - A terminal-runtime card shows the control disabled with a reason - not hidden, not
   enabled-and-broken.
-- Copying selected text with Ctrl+C still works.
+- Copying with Ctrl+C still works **everywhere a selection can exist** - inside the
+  composer, and on read-only text such as a transcript line, a diff hunk, or captured
+  terminal output while a card is selected. The second case is the one the naive
+  implementation breaks.
 - All commands above pass; the new e2e spec passes.
 
 ## Downstream handoff
@@ -330,3 +373,12 @@ Phase 2 must not reshape the capability, add a second route or a request body, a
   runtime-independent. Phase 2 inherits it and adds nothing.
 - **Terminal arm.** Deliberately written as a refusal rather than omitted, so Phase 2 has
   exactly one function body to replace and the route contract does not move.
+- **Selection gate placement (revised after review).** An earlier draft of step 7 put the
+  selection check inside the composer bypass, which reads as sufficient because that is
+  where a text field is. It is not: `typing` is false for read-only selections, so a
+  transcript or diff selection falls through to the `BAR_ACTIONS` dispatch and its
+  unconditional `preventDefault()` (`App.tsx:1839`), suppressing the copy and interrupting
+  the agent instead. The check is now one gate ahead of all three dispatch paths, and the
+  test section asks for a case that fails if it moves back. Phase 2 inherits the gate and
+  must not add a second one - its terminal arm changes what the interrupt *does*, never
+  whether the chord is claimed.

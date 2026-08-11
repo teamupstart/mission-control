@@ -135,8 +135,17 @@ list would be a genuine surprise worth seeing.
 **Ctrl+C reaches the handler from inside the composer, which is wanted.** App.tsx's
 keydown handler skips shortcuts while typing, except for chords carrying ⌘ or ⌃
 (`chordHasCommandModifier`, `keybindings.ts:399`). Ctrl+C qualifies, so the gesture works
-mid-sentence while composing the replacement instruction. That is also precisely where
-copy lives, which is what the selection check in decision 2 protects.
+mid-sentence while composing the replacement instruction.
+
+**But copy does not only live in the composer, and that is where decision 2 has teeth.**
+The handler's `typing` flag (`App.tsx:1418`) is true only for focus inside
+`input, textarea, select, [contenteditable='true']`. Selecting a transcript line, a diff
+hunk, or captured terminal output is none of those, so such a selection falls straight
+through to the shortcut dispatch at `:1834`, which calls `preventDefault()` unconditionally
+once a card is selected (`:1839`) - as does the board-overview arm. Copying read-only text
+off a card is the most common copy in this app, so the selection yield has to be a gate
+ahead of every dispatch path rather than a condition inside the composer bypass. Placed
+wrongly, the gesture would ship having broken copy for the case operators use most.
 
 **`Escape` cannot be the binding.** `RESERVED_KEYS` (`keybindings.ts:285`) blocks Escape
 from being bound at all - it owns the overlay-peel ladder. This constrains only the

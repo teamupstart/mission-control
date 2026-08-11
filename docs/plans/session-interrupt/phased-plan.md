@@ -62,7 +62,14 @@ Verified against the repository at commit `eee83d2`.
   `App.tsx:1554` returns on `typing` *above* the `BAR_ACTIONS` dispatch at `:1834`, and the
   `chordHasCommandModifier` bypass at `:1441` serves exactly one action (the palette).
   Adding a `BAR_ACTIONS` row alone gives a chord that is dead inside the composer - which is
-  the case decision 3 is about. Phase 1 owns the bypass and the selection check.
+  the case decision 3 is about. Phase 1 owns the bypass.
+- **The selection yield has to sit ahead of every dispatch path, not inside the bypass.**
+  `typing` (`App.tsx:1418`) is true only for focus inside an editable field, so selecting a
+  transcript line, a diff hunk, or captured terminal output leaves it false and reaches the
+  `BAR_ACTIONS` dispatch, which calls `preventDefault()` unconditionally (`:1839`) - as does
+  the board arm. Copying read-only text off a card is the most common copy in the app, so a
+  check placed only in the typing bypass would break it. Phase 1 owns a single gate ahead of
+  all three paths, and a test that fails if it moves back.
 - **The board overview drills in unless told otherwise.** `App.tsx:1843-1863` opens the
   drill-in for any `BAR_ACTIONS` chord with no mounted bar, except `cycleMode`. Interrupt is
   a live control like `cycleMode` and needs the same in-place arm.

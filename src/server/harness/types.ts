@@ -615,6 +615,17 @@ export interface SdkLaunchOptions {
   permissionMode: PermissionMode | null;
   /** Rendered from `mission-mcp.ts`'s single descriptor, or null to register nothing. */
   mcp: MissionMcpDescriptor | null;
+  /**
+   * Absolute paths, beyond `cwd`, this session must be able to WRITE to - the secondary
+   * worktrees of a multi-repo task. Empty on every ordinary dispatch.
+   *
+   * A launch-time grant on both drivers because neither can be widened afterwards: Claude's
+   * runtime directory control refuses anything that is not under cwd or a launch-time
+   * directory, and a Codex thread's sandbox is fixed once it starts. A driver that ignored
+   * this would produce a session holding an intent naming repositories it cannot write to,
+   * which is why `MultiRepoDispatchSpec.sdk` is a measured flag rather than an assumption.
+   */
+  extraDirs: readonly string[];
   /** Harness-native session/thread id to continue, for a restart. Null starts fresh. */
   resume: string | null;
 }

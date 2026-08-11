@@ -26,6 +26,16 @@ export interface DaemonHandle {
   workspace: string;
   /** Absolute path of the seeded git repository a dispatch can branch from. */
   repo: string;
+  /**
+   * A SECOND seeded repository in the same workspace.
+   *
+   * Here rather than seeded per spec because a multi-repo dispatch needs it to exist before
+   * the daemon does: `listRepos` caches its workspace scan behind a TTL, so a repo created
+   * after the first scan can be missing from the picker for reasons that have nothing to do
+   * with the spec. Nothing asserts a repo COUNT, so its presence costs the other specs
+   * nothing.
+   */
+  secondRepo: string;
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -153,6 +163,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   const { recordDir, bins } = writeFakeAgents(home);
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
+  const secondRepo = seedRepo(workspace, "second-repo");
 
   const isolatedEnv = {
     ...process.env,
@@ -408,6 +419,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     recordDir,
     workspace,
     repo,
+    secondRepo,
     readLog: () => log,
     startForeman,
     crash,

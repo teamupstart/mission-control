@@ -172,6 +172,7 @@ async function launch(
     effort: null,
     permissionMode: null,
     mcp: null,
+    extraDirs: [],
     resume: null,
     ...opts,
   });
@@ -1404,6 +1405,7 @@ test("a launch whose handshake fails throws and leaves no subprocess behind", as
         effort: null,
         permissionMode: null,
         mcp: null,
+        extraDirs: [],
         resume: null,
       }),
     /no fake reply for initialize/,
@@ -1444,6 +1446,7 @@ test("the MCP descriptor becomes launch-scoped config, all three keys or none", 
     effort: null,
     permissionMode: null,
     mcp: { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} },
+    extraDirs: [],
     resume: null,
   });
   // Rendered by `mission-mcp.ts`, not composed here: one descriptor, whichever launch
@@ -1581,6 +1584,7 @@ test("a subprocess spawn error rejects launch with its diagnostic", async () => 
         effort: null,
         permissionMode: null,
         mcp: null,
+        extraDirs: [],
         resume: null,
       }),
     (err: unknown) => {

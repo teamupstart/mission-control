@@ -1,7 +1,7 @@
 import type { AssignRefusalScope, BacklogPlan, Session, Task } from "@shared/types.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
-import { cwdAllowlisted, foremanAllowlisted } from "@shared/foreman.ts";
+import { cwdAllowlisted, foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
 import { hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
 
@@ -238,6 +238,17 @@ function freeAgentFor(
   now: number,
   unassignable: ReadonlySet<string>,
 ): Session | null {
+  // A multi-repo task can never be assigned, so it must never be OFFERED for assignment.
+  // `TaskManager.assign` refuses one with `scope: "task"`, and that refusal is not one the
+  // tick can learn from: the worker clears the task from `recentlyActed` on a 409 and
+  // `assignRefusalParksSession("task")` is false, so the session is not parked either. The
+  // same (task, session) pair would be chosen again every tick, forever - and because this
+  // loop RETURNS on its first match, the tick would never reach the dispatch fallback, so
+  // one such task would park the entire backlog rather than just itself.
+  //
+  // Returning null here makes the caller `continue` to the next candidate, and the task is
+  // still reachable through the dispatch branch below - which is the only way it can start.
+  if (task.extraRepos.length > 0) return null;
   for (const s of sessions) {
     if (unassignable.has(s.id)) continue;
     // Compared on repoRoot, not cwd - a linked worktree of the task's repo is a
@@ -313,8 +324,8 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   // `foremanAllowlisted`, because a backlog task has no cwd yet - it has only the repo
   // it will be cut FROM, which is the exact thing the allowlist names. (The worktree it
   // eventually runs in is covered by the other half of `foremanAllowlisted` once it is a
-  // live session.)
-  const allowed = backlog.filter((t) => cwdAllowlisted(t.repoRoot, cfg.allowlist));
+  // live session.) EVERY repo, not just the primary - see `taskReposAllowlisted`.
+  const allowed = backlog.filter((t) => taskReposAllowlisted(t, cfg.allowlist));
 
   // The allowlist is answered BEFORE dependencies, and the order is the whole point: it
   // is the coarser fact, and it is the only one of the two the operator can act on
@@ -327,7 +338,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     return { kind: "none", why: "no backlog item is in a repo Foreman is trusted to act in" };
   }
 
-  const ready = readyBacklog(tasks, plan).filter((t) => cwdAllowlisted(t.repoRoot, cfg.allowlist));
+  const ready = readyBacklog(tasks, plan).filter((t) => taskReposAllowlisted(t, cfg.allowlist));
   if (ready.length === 0) {
     // Counted over the ALLOWED items, so the number matches the sentence: an item in an
     // untrusted repo is not "blocked", it is out of scope, and including it would have

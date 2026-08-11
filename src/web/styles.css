@@ -6923,6 +6923,71 @@ mark.find-hit.is-current {
   border-color: var(--muted);
 }
 
+/* Attached secondary repos, under the primary Repo field. Deliberately the dependency
+   chips' shape and spacing - both answer "what else is this task bound to", and giving
+   them a second visual language would suggest a difference that is not there. The one
+   departure is the tone: repos take the neutral border rather than the working accent,
+   because the accent on the dependency chip means "this is waiting on something" and an
+   attached repo is not waiting on anything. */
+.repo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.repo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 999px;
+  padding: 4px 6px 4px 9px;
+  max-width: 100%;
+}
+/* The chip shows a basename; the full path is its `title` and its remove button's
+   accessible name, so a long root cannot stretch the row. */
+.repo-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The picker and its confirm sit on one line and take the row's full width when they
+   wrap, so a long path is readable while being chosen rather than after. */
+.repo-chip-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.repo-chip-add .combobox {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.repo-chips button.dep-add {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+.repo-chips button.dep-add:hover:not(:disabled) {
+  color: var(--muted);
+  border-color: var(--muted);
+}
+.repo-chips button.dep-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Unmet dependencies speak in the attention tone, once: a compact note beside the
    dependencies, and the primary button recolored below. An environment-check warning wears
    the same shape deliberately - both say "this will not go the way you expect" in the
@@ -19375,6 +19440,14 @@ span.line-run-prov {
 }
 .bl-kind-scout {
   color: var(--working);
+}
+/* "N repos" on a multi-repo backlog card. Same pill as the kind/agent chips beside it -
+   it is one more fact about what this task IS, not a warning - and it sits before
+   `.bl-added`, whose `margin-left: auto` keeps the timestamp on the right. */
+.bl-repos {
+  padding: 0 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
 }
 .bl-added {
   margin-left: auto;

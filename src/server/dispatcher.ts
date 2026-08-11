@@ -5,9 +5,11 @@ import type {
   PermissionMode,
   Session,
   Task,
+  TaskRepoEntry,
   ThinkingLevel,
   WorktreeProvider,
 } from "@shared/types.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import { TITLE_MAX_CHARS } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
@@ -171,21 +173,86 @@ export class Dispatcher {
       // terminal home and an agent that has to be torn down again.
       const baseSha = options.baseSha ? await verifyPinnedBase(task.repoRoot, options.baseSha) : null;
 
-      const wt = await provisionWorktree(
-        task.repoRoot,
-        taskId,
-        slug,
-        shortId,
-        () => poolPins(this.registry),
-        baseSha,
-      );
-      // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
-      this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
-      // The task now names this tree, so `PoolPins.taskWorktrees` speaks for it and the
+      // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
+      // the fork further down. Resolved here rather than after provisioning so the guard can
+      // refuse before any worktree exists - the same ordering, and the same reason, as the
+      // pinned-base check above. Reading a toggle flipped mid-batch still reaches the next
+      // session rather than the next restart, which is all the later position bought.
+      const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
+      // `multiRepoDispatch`, enforced ONCE here for BOTH runtimes rather than per launch
+      // path. A task that attaches repositories and cannot be given write access to them
+      // must not start at all: the worktrees would be provisioned and the intent manifest
+      // would tell the agent "You have write access to all of them", which would be false.
+      //
+      // Runtime-agnostic on purpose. The routes and `TaskManager.update` check the
+      // capability before a multi-repo task can be stored, but `TaskManager.create` does not
+      // - its contract is that the CALLER validated - so any future producer of one (an MCP
+      // `create_task`, a schedule, an ensemble) would otherwise reach a launch that silently
+      // rendered no flags. Enforced at the one place every dispatch passes through, the
+      // invariant cannot be reintroduced by adding a door.
+      //
+      // Refused, never quietly downgraded to the other runtime: the operator chose it, and a
+      // session that took the other one is not what they asked for (`dispatchEmbedded`
+      // refuses a missing supervisor on the same grounds).
+      const multiRepo =
+        task.extraRepos.length > 0 ? capabilitiesFor(task.agent).multiRepoDispatch : null;
+      if (task.extraRepos.length > 0) {
+        const others = `${task.extraRepos.length === 1 ? "repo" : "repos"}`;
+        if (!multiRepo) {
+          throw new Error(
+            `${task.agent} cannot be given write access to this task's other ${others} - ` +
+              `dispatch it on a harness that can, or detach them`,
+          );
+        }
+        if (runtime === "sdk" && !multiRepo.sdk) {
+          throw new Error(
+            `${task.agent}'s embedded driver cannot be given write access to this task's ` +
+              `other ${others} - dispatch it on the terminal runtime, or detach them`,
+          );
+        }
+      }
+
+      // One worktree per attached repo, primary first. `provisionAll` is all-or-nothing:
+      // a failure part-way through returns every tree it had already taken, provider-aware,
+      // and rethrows - so a partial dispatch never leaves leased trees nothing will ever
+      // tear down. On a single-repo task this is exactly one call with slot 0.
+      const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, baseSha);
+      // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
+      // The collection lands in the SAME patch as the primary's triple: `poolPins` reads
+      // the task row, so a secondary recorded a moment later would be unpinned in between -
+      // and an unpinned tree is one the reaper may hard-reset.
+      this.patch(taskId, {
+        worktreePath: wt.path,
+        branch: wt.branch,
+        provider: wt.provider,
+        baseSha: wt.baseSha,
+        extraRepos: extras,
+      });
+      // The task now names these trees, so `PoolPins.taskWorktrees` speaks for them and the
       // acquisition no longer has to. Handed over immediately after the record lands, which
       // is the moment the reaper can see it - see `settleLease`.
       settleLease(wt.path);
+      for (const entry of extras) if (entry.worktreePath) settleLease(entry.worktreePath);
       if (await this.abortIfSettled(taskId)) return;
+
+      // The task as it now stands, since `task` is the snapshot taken before any of this
+      // was provisioned. Both the manifest and the write-access grant describe worktrees,
+      // so both have to read the provisioned shape rather than the backlog row.
+      const provisioned: Task = {
+        ...task,
+        worktreePath: wt.path,
+        branch: wt.branch,
+        provider: wt.provider,
+        baseSha: wt.baseSha,
+        extraRepos: extras,
+      };
+      const intent = intentWithRepoManifest(provisioned);
+      // The directories this session needs write access to beyond its cwd, and the argv
+      // that grants them. Empty on every single-repo dispatch, which renders no flags at
+      // all - so those command lines stay byte-identical.
+      const extraDirs = extras
+        .map((entry) => entry.worktreePath)
+        .filter((p): p is string => p !== null);
 
       // Resolved here, not at task creation: a backlogged task launches on the defaults
       // in force NOW. Both CLIs spell the model flag `--model <id>`; effort syntax comes
@@ -196,15 +263,23 @@ export class Dispatcher {
       // for why it is passed here rather than written onto the task row.
       const model = resolveDispatchModel(task.agent, task.model, options.defaultModel ?? null);
       const effort = resolveDispatchEffort(task.agent, task.effort);
-      // Which of the two runtimes this launch takes, resolved here for the same reason the
-      // model and effort are: a toggle flipped mid-batch reaches the next session rather
-      // than the next restart. Everything above this line is identical on both paths -
-      // provisioning a worktree is not a runtime question. After the SDK return, EVERYTHING
-      // below is terminal-branch-only: the argv and ask-channel redirect, terminal home,
-      // `waitForSessionAtCwd`, `awaitReady`, and
+      // The fork. `runtime` was resolved before provisioning (see the multi-repo guard up
+      // there) but nothing between here and there depends on it: provisioning a worktree is
+      // not a runtime question, and everything above this line is identical on both paths.
+      // After the SDK return, EVERYTHING below is terminal-branch-only: the argv and
+      // ask-channel redirect, terminal home, `waitForSessionAtCwd`, `awaitReady`, and
       // `deliverIntent` exist because pane launch and delivery cannot be acknowledged.
-      if ((this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent) === "sdk") {
-        await this.dispatchEmbedded(taskId, task, wt, model, effort, options.missionMcp ?? null);
+      if (runtime === "sdk") {
+        await this.dispatchEmbedded(
+          taskId,
+          task,
+          wt,
+          model,
+          effort,
+          options.missionMcp ?? null,
+          intent,
+          extraDirs,
+        );
         return;
       }
       const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
@@ -244,14 +319,23 @@ export class Dispatcher {
       // launch seam. Whoever gives it an SDK runtime composes the same pointer into turn
       // one on the embedded path, which returns above this line.
       const piLaunch = task.agent === "pi"
-        ? preparePiLaunch(withRepoMemoryPointer(wt.path, task.intent))
+        ? preparePiLaunch(withRepoMemoryPointer(wt.path, intent))
         : { args: [] as string[], sessionId: null };
       const askArgs = await askChannelArgs(task.agent, missionMcp);
+      // Rendered by the harness that has to honour it, from a capability measured against a
+      // real installation - Claude's `--add-dir`, Codex's writable-roots override. Read off
+      // the spec the guard above already resolved rather than re-asking with a `?.` that
+      // would render NO flags for a harness without one: that is precisely the silent drop
+      // the guard exists to turn into a refusal, and asking twice is how the two answers
+      // drift apart.
+      const extraDirArgs =
+        extraDirs.length > 0 && multiRepo ? multiRepo.launchArgs(extraDirs) : [];
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...effortArgs,
         ...modeArgs,
         ...askArgs,
+        ...extraDirArgs,
         ...codexLaunch.args,
         ...piLaunch.args,
       ];
@@ -318,7 +402,7 @@ export class Dispatcher {
       // `session.prompt()` only after the TUI is initialized, so injecting it here would run
       // the task twice. Other terminal harnesses still need the pane delivery below.
       if (!piLaunch.sessionId) {
-        await this.deliverIntent(deliverySession.id, task.intent, wt.path, instrumented);
+        await this.deliverIntent(deliverySession.id, intent, wt.path, instrumented);
       }
 
       if (await this.abortIfSettled(taskId)) return;
@@ -402,6 +486,10 @@ export class Dispatcher {
     model: string | null,
     effort: ThinkingLevel | null,
     missionMcp: MissionMcpRequirement | null,
+    /** Turn one, already carrying the repo manifest when the task has attached repos. */
+    intent: string,
+    /** Secondary worktrees this session must be able to write to. Empty for single-repo. */
+    extraDirs: string[],
   ): Promise<void> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
@@ -429,11 +517,12 @@ export class Dispatcher {
       // makes a restored card come back under the same name (see `restoredName`).
       name: task.title.trim() || wt.path,
       cwd: wt.path,
-      prompt: task.intent,
+      prompt: intent,
       model,
       effort,
       permissionMode: dispatchPermissionMode(task.agent),
       mcp,
+      extraDirs,
       taskId,
       gitBranch: wt.branch,
       gitRoot: wt.path,
@@ -602,6 +691,83 @@ export class Dispatcher {
     return true;
   }
 
+  /**
+   * Provision one worktree per attached repo, or none at all.
+   *
+   * All-or-nothing, and that is the whole reason this is a method rather than a loop at the
+   * call site. A task whose second repo fails to provision has already taken a real tree
+   * for its first - a pool lease, most likely - and nothing downstream would ever tear that
+   * down: the dispatch throws before any of it reaches the task row, so teardown and
+   * startup reconciliation, which both read the row, cannot see it. The pool would simply
+   * lose a slot per failed dispatch.
+   *
+   * Unwinding is provider-aware because `teardownWorktree` is: a treehouse lease is
+   * RETURNED (never git-removed, which would delete a pooled tree the pool still believes
+   * it owns) and a git fallback tree is removed with its `harness/` branch. Mixed providers
+   * across one task are ordinary - a treehouse repo takes a lease while a plain repo does
+   * not - so both orderings unwind correctly.
+   *
+   * A failure during the unwind is logged, never thrown: the caller is already failing, and
+   * replacing the cause with a cleanup error would hide the thing that actually went wrong.
+   */
+  private async provisionAll(
+    task: Task,
+    taskId: string,
+    slug: string,
+    shortId: string,
+    baseSha: string | null,
+  ): Promise<{ primary: ProvisionedWorktree; extras: TaskRepoEntry[] }> {
+    const pins = () => poolPins(this.registry);
+    const primary = await provisionWorktree(task.repoRoot, taskId, slug, shortId, pins, baseSha, 0);
+    const taken: Array<{ repoRoot: string; wt: ProvisionedWorktree }> = [
+      { repoRoot: task.repoRoot, wt: primary },
+    ];
+    const extras: TaskRepoEntry[] = [];
+    try {
+      for (const [index, entry] of task.extraRepos.entries()) {
+        // Slot is the entry's position in `task_repos`, offset by one for the primary at
+        // slot 0. `baseSha` pins the PRIMARY's repo and means nothing in another one, so a
+        // secondary is cut from its own HEAD and records where that landed.
+        const wt = await provisionWorktree(
+          entry.repoRoot,
+          taskId,
+          slug,
+          shortId,
+          pins,
+          null,
+          index + 1,
+        );
+        taken.push({ repoRoot: entry.repoRoot, wt });
+        extras.push({
+          ...entry,
+          worktreePath: wt.path,
+          branch: wt.branch,
+          provider: wt.provider,
+          baseSha: wt.baseSha,
+        });
+      }
+    } catch (err) {
+      for (const { repoRoot, wt } of taken) {
+        await this.teardown({
+          repoRoot,
+          worktreePath: wt.path,
+          branch: wt.branch,
+          provider: wt.provider,
+          // No terminal home exists yet - nothing has been spawned at this point.
+          homeName: null,
+        }).catch((cleanupError: unknown) => {
+          console.error(
+            `[mission-control] could not unwind ${wt.path} after a failed multi-repo ` +
+              `provision: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+          );
+        });
+        settleLease(wt.path);
+      }
+      throw err;
+    }
+    return { primary, extras };
+  }
+
   private async teardownTaskResources(
     taskId: string,
     task: Task,
@@ -610,16 +776,19 @@ export class Dispatcher {
     try {
       await this.teardown(task);
       this.patch(taskId, {
-        worktreePath: null,
-        branch: null,
-        provider: null,
+        ...releasedTaskResources(task, null),
         homeName: null,
         terminalResourceId: null,
       });
       return true;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+      // The trees that DID come back are released even though the teardown failed overall.
+      // Anything still standing keeps its record, so it remains reclaimable; anything gone
+      // stops being pinned. Reporting the failure and keeping the whole collection would
+      // leave `poolPins` sparing trees that are already back in their pools.
       this.patch(taskId, {
+        ...releasedTaskResources(task, reclaimedFrom(error)),
         error: baseError
           ? `${baseError} - resource cleanup failed: ${detail}`
           : `resource cleanup failed: ${detail}`,
@@ -642,6 +811,13 @@ export interface ProvisionedWorktree {
   path: string; // realpath, so it matches a pane's reported cwd exactly
   branch: string | null;
   provider: "treehouse" | "git";
+  /**
+   * The full 40-character commit this tree was cut at, or null when HEAD could not be
+   * read. Recorded for every repo on every dispatch, single-repo included: it costs one
+   * column write, keeps one code path, and is the baseline later phases compare a head
+   * against to decide whether a repo changed at all.
+   */
+  baseSha: string | null;
 }
 
 /**
@@ -778,6 +954,21 @@ export async function provisionWorktree(
   pins: () => PoolPins,
   /** The exact commit the tree must start at, verified by `verifyPinnedBase` already. */
   baseSha: string | null = null,
+  /**
+   * Which of the task's repos this is: 0 is the primary, n > 0 the nth attached secondary.
+   *
+   * It exists to make the git-fallback DESTINATION unique. That path was keyed on the task
+   * alone, so a task attaching two non-pool repositories provisioned the first and then ran
+   * `git worktree add` against a directory that already existed. Keyed on the slot rather
+   * than on the repo's basename because two attached repos can share one (`~/a/api` and
+   * `~/b/api`), while the slot is unique by construction and persisted as the entry's
+   * `position`, so the path stays stable across restarts.
+   *
+   * Defaulted to 0, whose destination is byte-identical to what it always was - single-repo
+   * dispatch, existing tasks and startup reconciliation are untouched. The pool arm ignores
+   * it entirely: those paths come from each repo's own pool and are already distinct.
+   */
+  slot = 0,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
@@ -845,7 +1036,16 @@ export async function provisionWorktree(
           );
         }
       }
-      return { path, branch: await currentBranch(path), provider: "treehouse" };
+      return {
+        path,
+        // Whatever the leased tree is standing on - a pool lease is not given a branch of
+        // our choosing, and it is not renamed here. That is why a multi-repo task's branch
+        // names are read back from the provisioned entries rather than assumed to be the
+        // git fallback's `harness/<slug>-<shortId>`; see `intentWithRepoManifest`.
+        branch: await currentBranch(path),
+        provider: "treehouse",
+        baseSha: baseSha ?? (await headCommit(path)),
+      };
     }
     // Fall through to a plain worktree - but say so. This used to be silent, which
     // hid a full pool behind trees that merely looked unfamiliar; the fallback is a
@@ -865,7 +1065,16 @@ export async function provisionWorktree(
   }
 
   mkdirSync(WORKTREES_DIR, { recursive: true });
-  const path = join(WORKTREES_DIR, taskId);
+  const path = worktreeSlotPath(taskId, slot);
+  // Deliberately the SAME branch name in every repo the task touches. They live in
+  // different repositories, so they cannot collide, and one name across the set is what
+  // makes the resulting pull requests legible as one piece of work.
+  //
+  // This arm is the only one that can promise it. The pool arm above reports the branch its
+  // LEASE came on and does not rename it - renaming there would change what a single-repo
+  // pooled dispatch does, which this phase leaves untouched - so a set mixing the two can
+  // hold two names. `intentWithRepoManifest` reads the provisioned branches rather than
+  // assuming this one, and says so when they differ.
   const branch = `harness/${slug}-${shortId}`;
   const add = await run(
     "git",
@@ -890,7 +1099,41 @@ export async function provisionWorktree(
       throw new Error(cleanup ? `${cause} - and its worktree could not be removed: ${cleanup}` : cause);
     }
   }
-  return { path: real, branch, provider: "git" };
+  return { path: real, branch, provider: "git", baseSha: baseSha ?? (await headCommit(real)) };
+}
+
+/**
+ * Where the git fallback puts slot `n`'s tree.
+ *
+ * Slot 0 is `WORKTREES_DIR/<taskId>` - the path this has always used, unchanged so that
+ * every single-repo task, every row written before multi-repo tasks existed, and startup
+ * reconciliation all resolve exactly as before.
+ *
+ * A cross-phase contract: teardown and reconciliation read the RECORDED `worktree_path`
+ * rather than recomputing it here, so nothing may renumber a provisioned entry's position
+ * without also moving its tree.
+ */
+export function worktreeSlotPath(taskId: string, slot: number): string {
+  return join(WORKTREES_DIR, slot === 0 ? taskId : `${taskId}-${slot}`);
+}
+
+/**
+ * The full object id a freshly provisioned tree stands on, or null if it cannot be read.
+ *
+ * Null is "unknown", which is the same thing the column already means for every task
+ * dispatched before it existed - and it is the only honest answer here. Every rule that
+ * consumes a baseline compares a later head against it, so a fabricated value would be
+ * indistinguishable from a measured one and would report an untouched repo as changed (or
+ * the reverse). A failure to read HEAD is deliberately NOT fatal: the tree is provisioned
+ * and the agent can work in it, and refusing the whole dispatch over a baseline that is
+ * only consumed by later phases would trade a working session for a bookkeeping field.
+ */
+async function headCommit(dir: string): Promise<string | null> {
+  const r = await run("git", ["-C", dir, "rev-parse", "HEAD"], {
+    timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
+  });
+  const sha = r.stdout.trim();
+  return r.code === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
 }
 
 /**
@@ -929,6 +1172,17 @@ export async function teardownWorktree(
     branch: string | null;
     provider: WorktreeProvider | null;
     homeName: string | null;
+    /**
+     * The task's secondary repos, when it has any. Optional so the handful of callers that
+     * build this shape by hand for a single tree - provisioning's own unwind paths - stay
+     * unchanged; a `Task` satisfies it as-is and gets the whole collection torn down.
+     */
+    extraRepos?: readonly {
+      repoRoot: string;
+      worktreePath: string | null;
+      branch: string | null;
+      provider: WorktreeProvider | null;
+    }[];
   },
   /**
    * The pool CLI, injectable for one reason: dispatch teardown must keep returning a tree
@@ -952,6 +1206,109 @@ export async function teardownWorktree(
       );
     }
   }
+  // Every tree the task holds, primary first. Each is attempted even if an earlier one
+  // failed, and the failures are reported together: stopping at the first would leave the
+  // remaining trees leased or on disk with nothing left that will ever come back for them -
+  // the caller nulls the whole collection on the row either way.
+  //
+  // A single-repo task has no extras, so this is one entry and one error message, exactly
+  // as it was before.
+  const trees = [
+    { repoRoot: task.repoRoot, worktreePath: task.worktreePath, branch: task.branch, provider: task.provider },
+    ...(task.extraRepos ?? []).map((entry) => ({
+      repoRoot: entry.repoRoot,
+      worktreePath: entry.worktreePath,
+      branch: entry.branch,
+      provider: entry.provider,
+    })),
+  ];
+  const failures: string[] = [];
+  const reclaimed: string[] = [];
+  for (const tree of trees) {
+    await teardownOneWorktree(tree, cli).then(
+      () => {
+        if (tree.worktreePath) reclaimed.push(tree.worktreePath);
+      },
+      (err: unknown) => {
+        failures.push(err instanceof Error ? err.message : String(err));
+      },
+    );
+  }
+  // The reclaimed set rides on the error so a caller can clear exactly the trees that came
+  // back. Without it a partial failure reads as a total one and the row goes on naming
+  // worktrees that no longer exist - see `releasedTaskResources`.
+  if (failures.length > 0) throw new WorktreeTeardownError(failures.join("; "), reclaimed);
+}
+
+/**
+ * A teardown in which at least one of a task's trees could not be reclaimed.
+ *
+ * It carries the paths that DID come back, which is the whole reason it is a type rather
+ * than a plain Error. `teardownWorktree` attempts every tree even after one fails, so a
+ * failure is no longer all-or-nothing - and a caller that treated it as such would leave
+ * the row claiming trees that are already gone: `poolPins` would go on sparing them, and a
+ * retry would re-issue a lease return against a tree the pool has already taken back.
+ */
+export class WorktreeTeardownError extends Error {
+  constructor(message: string, readonly reclaimed: readonly string[]) {
+    super(message);
+    this.name = "WorktreeTeardownError";
+  }
+}
+
+/** The worktrees a failed teardown did manage to reclaim; everything, on any other error. */
+export function reclaimedFrom(error: unknown): readonly string[] {
+  return error instanceof WorktreeTeardownError ? error.reclaimed : [];
+}
+
+/**
+ * The provisioning fields a task should be left holding after a teardown.
+ *
+ * `reclaimed` is the set of worktree paths that actually came back, or `null` for the
+ * ordinary case where every one of them did. A tree that came back has its record cleared;
+ * a tree that did not KEEPS it, because a row that stopped naming a worktree still standing
+ * is a row nothing can ever reclaim.
+ *
+ * One function rather than the same five-field literal at each of the six teardown sites.
+ * That duplication has now been the cause of two separate defects - a site that forgot
+ * `baseSha`, and a site that forgot the collection entirely - and partial reclaim makes the
+ * rule too subtle to restate correctly by hand.
+ *
+ * The repo SET always survives, for both the primary and the secondaries: `repoRoot` stays
+ * while the worktree facts go. That is what lets a reclaimed multi-repo task be dispatched
+ * again as the task the operator filed rather than silently becoming a single-repo one.
+ */
+export function releasedTaskResources(
+  task: Pick<Task, "worktreePath" | "branch" | "provider" | "baseSha" | "extraRepos">,
+  reclaimed: readonly string[] | null,
+): Pick<Task, "worktreePath" | "branch" | "provider" | "baseSha" | "extraRepos"> {
+  // A tree with no recorded path has nothing to reclaim and nothing to keep.
+  const gone = (path: string | null): boolean =>
+    path === null || reclaimed === null || reclaimed.includes(path);
+  return {
+    worktreePath: gone(task.worktreePath) ? null : task.worktreePath,
+    branch: gone(task.worktreePath) ? null : task.branch,
+    provider: gone(task.worktreePath) ? null : task.provider,
+    // The primary's baseline is a fact about the primary's tree, so it goes with it.
+    baseSha: gone(task.worktreePath) ? null : task.baseSha,
+    extraRepos: task.extraRepos.map((entry) =>
+      gone(entry.worktreePath)
+        ? { ...entry, worktreePath: null, branch: null, provider: null, baseSha: null }
+        : entry,
+    ),
+  };
+}
+
+/** One tree's return-or-remove, provider-aware. See `teardownWorktree` for the policy. */
+async function teardownOneWorktree(
+  task: {
+    repoRoot: string;
+    worktreePath: string | null;
+    branch: string | null;
+    provider: WorktreeProvider | null;
+  },
+  cli: TreehouseCli,
+): Promise<void> {
   if (!task.worktreePath) return;
   // Read once, so the return below keeps its narrowing inside the closure the pool lock
   // wraps it in.
@@ -999,6 +1356,76 @@ export async function teardownWorktree(
 }
 
 // ---- pure helpers (unit-tested) ----
+
+/**
+ * The repo manifest prepended to a multi-repo task's intent, or the intent unchanged.
+ *
+ * Everything here is something the agent cannot work out for itself from inside its cwd:
+ *
+ *  - **Where the other repos are.** Nothing in the primary worktree names them.
+ *  - **Read each repo's own AGENTS.md/CLAUDE.md.** Only the primary's loads automatically -
+ *    both harnesses resolve instruction files from the working directory, so a sibling
+ *    checkout's conventions are invisible unless the agent goes and reads them.
+ *  - **One pull request per repo you actually changed.** The default assumption is one
+ *    branch, one pull request; without this an agent will commit across repos and open a
+ *    single pull request in the one it happens to be standing in, leaving the rest of the
+ *    work on unpushed local branches.
+ *
+ * Each repo's branch is stated PER REPO and read from what was actually provisioned. The
+ * design's intent is one shared name across the set - that is what makes the resulting pull
+ * requests legible as one task - and the git fallback delivers it, but a treehouse-pooled
+ * repo arrives on whatever branch its lease was already on. Claiming a shared name the
+ * secondary does not have would send the agent to push a branch that does not exist there,
+ * so the manifest reports the set it got and says plainly when they differ.
+ *
+ * Repos with no worktree are omitted rather than listed as unavailable: this text is
+ * delivered after provisioning, so an entry without one is a bug being reported to the
+ * wrong audience.
+ */
+export function intentWithRepoManifest(task: Task): string {
+  const attached = task.extraRepos.filter((entry) => entry.worktreePath !== null);
+  if (attached.length === 0) return task.intent;
+  const branchOf = (branch: string | null): string => (branch ? `, on branch ${branch}` : "");
+  // Whether the whole set really did land on one branch name. The git fallback cuts
+  // `harness/<slug>-<shortId>` in every repo, but a treehouse-pooled repo does NOT: its
+  // lease arrives on whatever branch the pooled tree was already standing on, and nothing
+  // in provisioning renames it (doing so would change single-repo pooled dispatch, which
+  // this phase leaves byte-identical). So a mixed set can genuinely hold two names, and
+  // this is READ from what was provisioned rather than asserted from the design's intent -
+  // a manifest that promised one shared branch would send the agent to push a branch that
+  // does not exist in the secondary.
+  const branches = [task.branch, ...attached.map((entry) => entry.branch)];
+  const shared = task.branch !== null && branches.every((b) => b === task.branch)
+    ? task.branch
+    : null;
+  const lines = [
+    "## Repositories for this task",
+    "",
+    "This task spans several repositories. You have write access to all of them.",
+    "",
+    `- ${task.worktreePath ?? task.repoRoot} - PRIMARY (your working directory), from ${task.repoRoot}${branchOf(task.branch)}`,
+    ...attached.map(
+      (entry) => `- ${entry.worktreePath} - from ${entry.repoRoot}${branchOf(entry.branch)}`,
+    ),
+    "",
+    ...(shared
+      ? [`Every one of them is on the branch ${shared}.`, ""]
+      : [
+          "They are NOT all on the same branch - each repo's branch is listed above. Work on the",
+          "branch each repo is already checked out on; do not assume one shared name.",
+          "",
+        ]),
+    "Before you touch a repository, read its own AGENTS.md / CLAUDE.md - only the primary's",
+    "loads automatically, so the others' conventions are invisible until you read them.",
+    "",
+    "Commit and push in each repository you change, and open ONE pull request per repository",
+    "you actually changed. A repository you did not change needs no commit and no pull request.",
+    "",
+    "---",
+    "",
+  ];
+  return `${lines.join("\n")}${task.intent}`;
+}
 
 /** A filesystem/git-safe slug from a task title - the branch and worktree name. */
 export function slugify(title: string): string {

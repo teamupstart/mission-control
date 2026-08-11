@@ -18,6 +18,15 @@ what is active, what needs a decision, and what is ready for the next step.
 Start a task in the right repository, choose its harness and runtime, and leave it attached
 to the backlog and workflow that will carry it through review.
 
+A task can attach more than one repository. Dispatch it and you get **one** agent session
+holding all of them in shared context: its working directory is the primary repo's worktree,
+each attached repo gets a worktree of its own, and the agent is granted write access to every
+one of them. The intent it receives names where each repo lives, which branch each one is on,
+and asks for one pull request per repository it actually changes. Claude and Codex
+support this; the dispatch modal offers the control only for a harness that does. Multi-repo
+tasks are dispatch-only - they cannot be dropped onto an agent that is already running,
+because the extra worktrees and the write access to them are granted when a session starts.
+
 ![Mission Control dispatch](docs/images/dispatch.png)
 
 ## Build the operating system around the work

@@ -968,6 +968,14 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
           ...(permissionMode ? { permissionMode } : {}),
+          // The secondary worktrees of a multi-repo task. Spread conditionally so an
+          // ordinary session's options object is exactly what it always was.
+          //
+          // Launch-time is the ONLY moment this can be said. The runtime `addDirectories`
+          // control request requires its argument to be a strict subdirectory of cwd or of
+          // a directory named here, so a sibling checkout is unreachable to a session that
+          // did not start with it.
+          ...(opts.extraDirs.length > 0 ? { additionalDirectories: [...opts.extraDirs] } : {}),
           // Makes `bypassPermissions` REACHABLE for this session. It does not enter it, and
           // reading it as "skip permissions" is the mistake to avoid: the CLI has two
           // separate flags, and this option compiles to the weaker one.

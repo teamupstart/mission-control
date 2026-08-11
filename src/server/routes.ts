@@ -124,7 +124,7 @@ import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog } from "@shared/session.ts";
-import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
 import {
@@ -208,7 +208,14 @@ import {
 } from "./actions.ts";
 import { driverClearFor, resetSession } from "./reset.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
-import { listRepos, resolveRepoPath, resolveRepoRoot, resolveTaskRepoRoot } from "./repos.ts";
+import {
+  listRepos,
+  resolveRepoPath,
+  resolveRepoRoot,
+  resolveTaskExtraRepoRoots,
+  resolveTaskRepoRoot,
+  resolveTaskRepoSet,
+} from "./repos.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import {
   listSessionFiles,
@@ -3508,9 +3515,20 @@ export function buildApp(
     const parsed = await parseBody(c, DispatchSchema);
     if (!parsed.ok) return parsed.res;
     const workflowId = resolveTaskWorkflowId(parsed.data.workflowId);
-    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    const resolved = await resolveTaskRepoSet(parsed.data.repoRoot, parsed.data.extraRepoRoots);
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
     const repoRoot = resolved.repoRoot;
+    const extraRepoRoots = resolved.extraRepoRoots;
+    // The harness has to be able to hold write access outside its cwd, or the secondary
+    // worktrees would be provisioned and then be unreachable to the agent standing in the
+    // primary. Refused here as well as hidden in the modal, so the capability gates the
+    // API rather than only the button.
+    if (extraRepoRoots.length > 0 && !capabilitiesFor(parsed.data.agent).multiRepoDispatch) {
+      return c.json(
+        { error: `${parsed.data.agent} cannot be given write access to more than one repo` },
+        400,
+      );
+    }
     if (workflowId) {
       const manager = workflowManager();
       if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
@@ -3521,7 +3539,7 @@ export function buildApp(
     }
     let task;
     try {
-      task = tasks.create({ ...parsed.data, repoRoot, workflowId });
+      task = tasks.create({ ...parsed.data, repoRoot, extraRepoRoots, workflowId });
     } catch (error) {
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
       throw error;
@@ -3553,6 +3571,17 @@ export function buildApp(
       // priority-only patch would look like it touched the repo and get refused on any
       // task that had already been dispatched.
       patch.repoRoot = resolved.repoRoot;
+    }
+    // The secondaries are resolved whenever the patch NAMES them, against whichever root
+    // the task ends up with. Unlike the primary above there is no "did it move" shortcut:
+    // this key is only ever present because the operator edited the repo set, so there is
+    // no untouched value to protect from a re-check.
+    if (patch.extraRepoRoots !== undefined) {
+      const primary = patch.repoRoot ?? existing?.repoRoot;
+      if (!primary) return c.json({ error: "no such task" }, 404);
+      const resolved = await resolveTaskExtraRepoRoots(primary, patch.extraRepoRoots);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+      patch.extraRepoRoots = resolved.repoRoots;
     }
     if (existing) {
       const workflowId =

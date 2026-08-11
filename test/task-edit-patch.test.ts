@@ -167,6 +167,7 @@ test("every field on the form reaches the patch", () => {
   // then fails it again if the patch ignores that change.
   const changed: { [K in keyof Omit<DispatchDraft, "attachments">]: DispatchDraft[K] } = {
     repoRoot: "/Users/dev/work/elsewhere",
+    extraRepoRoots: ["/Users/dev/work/sibling"],
     intent: "something else entirely",
     title: "Another name",
     kind: "scout",

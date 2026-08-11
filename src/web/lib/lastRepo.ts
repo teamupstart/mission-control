@@ -17,6 +17,17 @@
 
 const KEY = "mission-control.dispatch.repo";
 
+/**
+ * The attached secondary repos of the last dispatch.
+ *
+ * A SECOND key rather than a JSON array under the first, so a build that predates
+ * multi-repo tasks - or one an operator rolls back to - still reads the primary it always
+ * read, out of the same string it always read it from. The whole value of this file is
+ * that it survives a reload; a format change that made the existing value unreadable
+ * would spend that to save a key.
+ */
+const EXTRAS_KEY = "mission-control.dispatch.extraRepos";
+
 /** The remembered repo, or "" when there is none (or storage is unavailable). */
 export function readLastDispatchRepo(): string {
   try {
@@ -27,17 +38,42 @@ export function readLastDispatchRepo(): string {
 }
 
 /**
- * Remember the repo a dispatch was just submitted against.
+ * The remembered secondary repos, or [] when there are none.
  *
- * A blank is ignored rather than stored: submitting is impossible without a repo, so
- * the only way to get one here is a caller passing something it never sent, and
- * clearing the memory is not what that should mean.
+ * Anything unreadable - absent, malformed, not an array of strings - reads as none, for
+ * the reason every defensive parse in this app gives: a stale blob must not be able to
+ * seed a dispatch form with something the operator cannot see is there.
  */
-export function rememberDispatchRepo(repoRoot: string): void {
+export function readLastDispatchExtraRepos(): string[] {
+  try {
+    const raw = localStorage.getItem(EXTRAS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is string => typeof v === "string" && v.trim() !== "");
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Remember the repos a dispatch was just submitted against.
+ *
+ * A blank primary is ignored rather than stored: submitting is impossible without a repo,
+ * so the only way to get one here is a caller passing something it never sent, and
+ * clearing the memory is not what that should mean. The secondaries are written on every
+ * accepted dispatch INCLUDING an empty list, which is the opposite rule and the right one:
+ * dispatching a single-repo task is the operator saying this run is one repo, and seeding
+ * the next form with attachments they just dropped would be the surprise.
+ */
+export function rememberDispatchRepo(repoRoot: string, extraRepoRoots: string[] = []): void {
   const root = repoRoot.trim();
   if (!root) return;
   try {
     localStorage.setItem(KEY, root);
+    const extras = extraRepoRoots.map((r) => r.trim()).filter(Boolean);
+    if (extras.length > 0) localStorage.setItem(EXTRAS_KEY, JSON.stringify(extras));
+    else localStorage.removeItem(EXTRAS_KEY);
   } catch {
     /* storage unavailable - the seed just doesn't survive this tab */
   }

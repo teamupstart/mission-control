@@ -304,6 +304,36 @@ function codexStatusSelection(paneText: string, modelId: string): ThinkingLevel 
   return level === "ultra" ? "max" : level as ThinkingLevel;
 }
 
+/**
+ * Can one dispatched session hold WRITE access to checkouts outside its own cwd?
+ *
+ * The capability behind multi-repo tasks. A session's cwd is always the primary repo's
+ * worktree; a secondary repo is a second worktree the same session is granted access to,
+ * and a harness that cannot express that grant at launch cannot run one of these tasks.
+ *
+ * A spec rather than a boolean, for the reason `permissionModes` is one: the answer the
+ * dispatcher needs is not "yes" but "which flags", and keeping the rendering beside the
+ * measurement is what stops a launch path from re-deriving it per harness. Null is a
+ * MEASURED unsupported, never a placeholder.
+ */
+export interface MultiRepoDispatchSpec {
+  /**
+   * Launch-time argv granting this session write access to each directory.
+   *
+   * Never called with an empty list - a single-repo dispatch renders no flags at all, so
+   * its argv stays byte-identical to what it was before this capability existed.
+   */
+  launchArgs: (dirs: readonly string[]) => string[];
+  /**
+   * Whether the harness's EMBEDDED (SDK) driver carries the same grant, so a dispatch that
+   * resolves to the `sdk` runtime is not silently handed a session that cannot write to
+   * the secondary worktrees it was told about. Both shipped drivers do; the flag exists so
+   * a harness whose terminal path can express the grant and whose driver cannot has
+   * somewhere honest to say so rather than degrading in silence.
+   */
+  sdk: boolean;
+}
+
 /** One agent's capabilities, as far as they can be stated without touching a disk. */
 export interface HarnessCapabilities {
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
@@ -348,6 +378,8 @@ export interface HarnessCapabilities {
   mcp: McpSpec | null;
   /** Null only for a harness with no launch-time reasoning-effort control. */
   effort: EffortSpec | null;
+  /** Null for a harness whose write scope could not be widened past cwd at launch. */
+  multiRepoDispatch: MultiRepoDispatchSpec | null;
 }
 
 const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
@@ -422,6 +454,21 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         commit: "s",
       },
     },
+    // Verified against the pinned `@anthropic-ai/claude-agent-sdk@0.3.220` and the shipped
+    // CLI, whose flag is declared `--add-dir <directories...>`.
+    //
+    // REPEATED rather than variadic - `--add-dir a --add-dir b`, not `--add-dir a b` -
+    // because that is what the vendor's own SDK emits when it renders
+    // `Options.additionalDirectories` for this same CLI (`for (let d of dirs)
+    // args.push("--add-dir", d)` in `sdk.mjs`). Both spellings are accepted, and this one
+    // is the measured one; it also cannot swallow a following flag, which the variadic form
+    // would, so the argv stays order-independent.
+    //
+    // It has to be a LAUNCH-time grant on both paths. The SDK's runtime `addDirectories`
+    // control request requires its argument to be a strict subdirectory of cwd or of a
+    // directory passed at launch (`sdk.d.ts`), so a sibling repository is reachable only
+    // by naming it here.
+    multiRepoDispatch: { launchArgs: (dirs) => dirs.flatMap((dir) => ["--add-dir", dir]), sdk: true },
   },
   codex: {
     id: "codex",
@@ -519,6 +566,28 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         raise: "shift-up",
       },
     },
+    // Measured against codex-cli 0.145.0 rather than read off documentation, because the
+    // answer is not the obvious one. `sandbox_workspace_write.writable_roots` is the key,
+    // and it rides as a `-c` TOML override, which is the one grammar BOTH Codex runtimes
+    // accept: the terminal launch already speaks it, and `codex app-server` documents the
+    // same `-c <key=value>` flag, so the embedded driver carries the identical grant.
+    //
+    // What was measured, with a two-repo probe (cwd in repo A's worktree, repo B's
+    // worktree granted):
+    //
+    //   plain `--sandbox workspace-write`          write into B  -> denied
+    //   + writable_roots = [B]                     write into B  -> allowed
+    //
+    // And the part worth stating because it looks like a gap and is not: Codex protects
+    // the git metadata of every writable root, so `git commit` inside a LINKED worktree is
+    // refused in-sandbox and escalates through `--ask-for-approval on-request`. That is
+    // not a shortfall of this grant - the primary worktree, which is the session's own
+    // cwd, was measured to behave identically today. A granted secondary lands in exactly
+    // the posture the primary is already in, which is the parity this capability promises.
+    multiRepoDispatch: {
+      launchArgs: (dirs) => ["-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(dirs)}`],
+      sdk: true,
+    },
   },
   pi: {
     id: "pi",
@@ -582,6 +651,12 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // `minimal`, so neither existing live-picker shape can drive it faithfully.
       sessionPicker: null,
     },
+    // Null because it is UNMEASURED, which is the only thing null is allowed to mean here.
+    // pi has no sandbox to widen and no additional-directories flag that was verified
+    // against a real install, and guessing one would have the dispatch modal offer a
+    // multi-repo task that launches an agent which cannot write to half of it. Measuring
+    // it later is a one-line change with its evidence attached.
+    multiRepoDispatch: null,
   },
 };
 

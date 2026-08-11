@@ -24,6 +24,13 @@ import type { PendingAttachment } from "../components/ImageDrop.tsx";
 export type DispatchDraft = {
   /** On a fresh dispatch, seeded from the last one's repo - see `lib/lastRepo.ts`. */
   repoRoot: string;
+  /**
+   * SECONDARY repos attached beyond `repoRoot`, in the order they were added, which is the
+   * order they are provisioned and persisted in. Empty for the single-repo tasks that are
+   * nearly all of them, and only ever non-empty for a harness that can be granted write
+   * access outside its cwd.
+   */
+  extraRepoRoots: string[];
   intent: string;
   title: string;
   kind: TaskKind;
@@ -57,6 +64,7 @@ export type DispatchDraft = {
 
 export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   repoRoot: "",
+  extraRepoRoots: [],
   intent: "",
   title: "",
   kind: "ship",
@@ -94,6 +102,7 @@ export function parseLabelInput(raw: string): string[] {
 export function draftFromTask(t: Task): DispatchDraft {
   return {
     repoRoot: t.repoRoot,
+    extraRepoRoots: t.extraRepos.map((entry) => entry.repoRoot),
     intent: t.intent,
     title: t.title,
     kind: t.kind,
@@ -132,6 +141,10 @@ export function draftFromTask(t: Task): DispatchDraft {
 export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
   return (
     a.repoRoot === b.repoRoot &&
+    // Order-sensitive, unlike the dependency comparison below: an entry's position is its
+    // provisioning slot, so reordering the list is a real edit rather than a re-spelling.
+    a.extraRepoRoots.length === b.extraRepoRoots.length &&
+    a.extraRepoRoots.every((root, i) => root === b.extraRepoRoots[i]) &&
     a.intent === b.intent &&
     a.title === b.title &&
     a.kind === b.kind &&
@@ -178,6 +191,17 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   const patch: UpdateTask = {};
   const repoRoot = draft.repoRoot.trim();
   if (repoRoot !== task.repoRoot) patch.repoRoot = repoRoot;
+  // Named only when it actually changed: the key's presence is what makes a patch a
+  // provisioning change (`isAnnotationOnlyUpdate` counts keys), so sending it unchanged
+  // would get a priority edit refused on a task that has left the backlog.
+  const storedExtraRepoRoots = task.extraRepos.map((entry) => entry.repoRoot);
+  const extraRepoRoots = draft.extraRepoRoots.map((root) => root.trim()).filter(Boolean);
+  if (
+    extraRepoRoots.length !== storedExtraRepoRoots.length
+    || extraRepoRoots.some((root, i) => root !== storedExtraRepoRoots[i])
+  ) {
+    patch.extraRepoRoots = extraRepoRoots;
+  }
   if (intent !== task.intent) patch.intent = intent;
   // Empty is meaningful here and only here: it asks for a title to be derived again from
   // the intent as it now reads. A title equal to the stored one is simply not sent.

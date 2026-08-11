@@ -161,6 +161,7 @@ function launchOpts(over: Record<string, unknown> = {}) {
     effort: null,
     permissionMode: null,
     mcp: null,
+    extraDirs: [],
     resume: null,
     ...over,
   } as Parameters<ReturnType<typeof claudeSdkSpec>["launch"]>[0];
@@ -195,6 +196,23 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   assert.equal((turns[0]!.message.content as string), "do the thing");
   // And delivery is the transition to working, said before any assistant frame arrives.
   assert.ok(events.some((e) => e.kind === "state" && e.state === "working"));
+});
+
+test("secondary worktrees reach the driver as additionalDirectories, and only when there are any", async () => {
+  // The multi-repo write grant on the embedded runtime. `additionalDirectories` is the
+  // vendor's own option name at the pinned SDK version; getting it wrong produces a session
+  // that starts perfectly and silently cannot write where its intent says it may.
+  const granted = fakeDeps();
+  await claudeSdkSpec(granted.deps).launch(launchOpts({ extraDirs: ["/wt/one-1", "/wt/one-2"] }));
+  const withDirs = await granted.started;
+  assert.deepEqual(withDirs.options.additionalDirectories, ["/wt/one-1", "/wt/one-2"]);
+
+  // Absent, not empty, when nothing is attached: an ordinary session's options object stays
+  // byte-identical to what it was before this capability existed.
+  const plain = fakeDeps();
+  await claudeSdkSpec(plain.deps).launch(launchOpts());
+  const withoutDirs = await plain.started;
+  assert.equal("additionalDirectories" in withoutDirs.options, false);
 });
 
 test("SDK usage repopulates both Claude plan windows on init and refreshes after a turn", async () => {

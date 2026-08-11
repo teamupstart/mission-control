@@ -13,13 +13,15 @@ import type {
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
-import { supportsEffort } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import {
   Dispatcher,
   deriveTitle,
+  reclaimedFrom,
+  releasedTaskResources,
   teardownWorktree,
   type TaskDispatchOptions,
 } from "./dispatcher.ts";
@@ -55,6 +57,12 @@ import { resolveTaskWorkflowId } from "./workflows/config.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
+  /**
+   * Secondary repositories to attach, already resolved through `resolveTaskRepoRoot`,
+   * deduped, and checked against the primary by the caller - the same contract `repoRoot`
+   * has. Omitted by every single-repo caller, which is nearly all of them.
+   */
+  extraRepoRoots?: string[];
   intent: string;
   title?: string;
   kind: TaskKind;
@@ -1088,6 +1096,21 @@ export class TaskManager {
       worktreePath: null,
       branch: null,
       provider: null,
+      baseSha: null,
+      // Already resolved and validated by the caller (the route), exactly as `repoRoot` is.
+      // Recorded at creation so a backlog task carries its full repo set before anything is
+      // provisioned - which is what lets Foreman answer the allowlist question about all of
+      // them, and what makes a repo-set edit a provisioning change the status guard refuses.
+      extraRepos: (input.extraRepoRoots ?? []).map((repoRoot) => ({
+        repoRoot,
+        worktreePath: null,
+        branch: null,
+        provider: null,
+        baseSha: null,
+        prUrl: null,
+        prState: null,
+        mergedAt: null,
+      })),
       homeName: null,
       terminalResourceId: null,
       sessionId: null,
@@ -1271,6 +1294,54 @@ export class TaskManager {
     if (effort !== null && !supportsEffort(agent, effort)) {
       return { ok: false, error: `reasoning effort ${effort} is not supported by ${agent}` };
     }
+    // The repo set is replaced wholesale when named, and left alone otherwise. Safe to
+    // rebuild the entries from roots because the status guard above has already refused
+    // any patch that is not annotation on a task that left the backlog - so nothing here
+    // has a provisioned worktree to lose.
+    const extraRepos =
+      patch.extraRepoRoots === undefined
+        ? t.extraRepos
+        : patch.extraRepoRoots.map((repoRoot) => ({
+            repoRoot,
+            worktreePath: null,
+            branch: null,
+            provider: null,
+            baseSha: null,
+            prUrl: null,
+            prState: null,
+            mergedAt: null,
+          }));
+    // The primary must not also be attached as a secondary, asked of the set this edit
+    // RESULTS in rather than of the field it happened to touch.
+    //
+    // The route resolves and checks whenever `extraRepoRoots` is in the patch, but that is
+    // only half the collision: moving the PRIMARY onto a path already attached sends a patch
+    // carrying `repoRoot` alone (`taskUpdatePatch` names a field only when it changed), and
+    // nothing in that direction was looking. The task would save with one repo listed twice,
+    // and the failure would surface much later as a raw `git worktree add` error during the
+    // all-or-nothing unwind - a message that names neither the duplicate nor the edit.
+    //
+    // A string comparison rather than a re-resolution, deliberately: both sides are already
+    // canonical roots by this type's contract, and re-resolving a repo set the edit did not
+    // touch would make a task uneditable the moment one of its directories went away.
+    const collision = extraRepos.find((entry) => entry.repoRoot === (patch.repoRoot ?? t.repoRoot));
+    if (collision) {
+      return {
+        ok: false,
+        error:
+          `${collision.repoRoot} is attached to this task as another repo - detach it before ` +
+          `making it the primary`,
+      };
+    }
+    // Asked of the agent this edit RESULTS in, which is what catches the case a check on
+    // the incoming repo set alone would miss: switching a multi-repo task onto a harness
+    // whose write scope cannot leave its cwd, without touching the repos at all.
+    if (extraRepos.length > 0 && !capabilitiesFor(agent).multiRepoDispatch) {
+      return {
+        ok: false,
+        error: `${agent} cannot be given write access to more than one repo`,
+      };
+    }
     let dependencies = t.dependencies;
     try {
       if (patch.dependencies !== undefined) {
@@ -1283,6 +1354,7 @@ export class TaskManager {
     const next: Task = {
       ...t,
       repoRoot: patch.repoRoot ?? t.repoRoot,
+      extraRepos,
       intent,
       // Emptying the title asks for one to be derived again - and from the intent as it
       // now reads, not the one the task was first shelved under. Derived here rather than
@@ -1432,6 +1504,27 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
+    // Multi-repo tasks are DISPATCH-ONLY, and this is where that is enforced for every
+    // caller - the board's drag, Foreman's autopilot, the HTTP route.
+    //
+    // Not a policy preference: assignment hands a task to a session that already exists,
+    // and everything a secondary repo needs was decided when that session LAUNCHED. Its
+    // extra worktrees are provisioned by the dispatcher, and its write access to them is a
+    // launch-time grant that neither harness can widen afterwards (Claude's runtime
+    // directory control refuses anything outside the launch set; Codex's sandbox is fixed
+    // for a thread). Accepting one here would produce a session holding an intent that
+    // names repositories it cannot reach, which fails as confused agent output rather than
+    // as an error anybody can act on.
+    if (t.extraRepos.length > 0) {
+      return {
+        ok: false,
+        error:
+          `${t.title} attaches ${t.extraRepos.length} more ` +
+          `${t.extraRepos.length === 1 ? "repo" : "repos"} - a multi-repo task has to be ` +
+          `dispatched, because its extra worktrees and their write access are granted at launch`,
+        scope: "task",
+      };
     }
     // The same refusal `dispatch` applies, and it has to be here too: assigning onto a
     // running agent is the autopilot's OTHER way of starting a parked task, and a guard
@@ -1819,6 +1912,9 @@ export class TaskManager {
     this.autoCompleted.delete(id);
 
     let teardownError: string | null = null;
+    // Which worktrees actually came back. Null means every one of them did - the ordinary
+    // case - and a partial failure narrows it to the ones that are really gone.
+    let reclaimed: readonly string[] | null = null;
     try {
       await this.stopEmbeddedAgentBeforeReclaim(t);
       if (t.sessionId && t.homeName) {
@@ -1831,6 +1927,7 @@ export class TaskManager {
       await teardownWorktree(teardownTarget);
     } catch (error) {
       teardownError = error instanceof Error ? error.message : String(error);
+      reclaimed = reclaimedFrom(error);
     }
 
     // Merge onto the LATEST snapshot, not a stale one, so we don't resurrect fields
@@ -1840,9 +1937,12 @@ export class TaskManager {
     this.registry.upsertTask({
       ...cur,
       status: "cancelled",
-      worktreePath: teardownError === null ? null : cur.worktreePath,
-      branch: teardownError === null ? null : cur.branch,
-      provider: teardownError === null ? null : cur.provider,
+      // Per TREE, not per teardown. `teardownWorktree` attempts every one of a task's trees
+      // even after an earlier one fails, so "the teardown failed" no longer means "nothing
+      // came back": clearing the whole collection would have the row forget trees that are
+      // still standing, and keeping it would have `poolPins` go on sparing trees that are
+      // already back in their pools. `releasedTaskResources` splits it on what was reclaimed.
+      ...releasedTaskResources(cur, reclaimed),
       homeName: teardownError === null ? null : cur.homeName,
       terminalResourceId: teardownError === null ? null : cur.terminalResourceId,
       completedAt: now,
@@ -1978,6 +2078,12 @@ export class TaskManager {
           await this.stopEmbeddedAgentBeforeReclaim(current);
           await teardownWorktree(current);
         } catch (error) {
+          const partial = this.registry.getTask(id) ?? t;
+          this.registry.upsertTask({
+            ...partial,
+            ...releasedTaskResources(partial, reclaimedFrom(error)),
+            updatedAt: Date.now(),
+          });
           return {
             ok: false,
             error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
@@ -1996,9 +2102,8 @@ export class TaskManager {
         ...cur,
         status: "backlog",
         enabled: true,
-        worktreePath: null,
-        branch: null,
-        provider: null,
+        // Everything came back: this path returns early when the teardown throws.
+        ...releasedTaskResources(cur, null),
         homeName: null,
         terminalResourceId: null,
         sessionId: null,
@@ -2029,6 +2134,15 @@ export class TaskManager {
       await this.stopEmbeddedAgentBeforeReclaim(current);
       await teardownWorktree(current);
     } catch (error) {
+      // A partial reclaim still releases what came back. The refusal stands - the operator
+      // is told the reclaim failed, and the trees still standing keep their record so a
+      // retry can reach them - but a tree already back in its pool stops being pinned.
+      const partial = this.registry.getTask(id) ?? t;
+      this.registry.upsertTask({
+        ...partial,
+        ...releasedTaskResources(partial, reclaimedFrom(error)),
+        updatedAt: Date.now(),
+      });
       return {
         ok: false,
         error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
@@ -2037,9 +2151,7 @@ export class TaskManager {
     const cur = this.registry.getTask(id) ?? t;
     this.registry.upsertTask({
       ...cur,
-      worktreePath: null,
-      branch: null,
-      provider: null,
+      ...releasedTaskResources(cur, null),
       homeName: null,
       terminalResourceId: null,
       sessionId: null,
@@ -2062,6 +2174,13 @@ export class TaskManager {
         await this.stopEmbeddedAgentBeforeReclaim(t);
         await teardownWorktree(t);
       } catch (error) {
+        // The row survives a failed remove, so the same partial-release rule applies to it.
+        const partial = this.registry.getTask(id) ?? t;
+        this.registry.upsertTask({
+          ...partial,
+          ...releasedTaskResources(partial, reclaimedFrom(error)),
+          updatedAt: Date.now(),
+        });
         return {
           ok: false,
           error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
@@ -2153,6 +2272,9 @@ export class TaskManager {
       const now = Date.now();
       this.registry.upsertTask({
         ...t,
+        // Whatever came back is released even though the teardown failed overall; the rest
+        // keeps its record so it stays reclaimable. See `releasedTaskResources`.
+        ...releasedTaskResources(t, reclaimedFrom(error)),
         status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
         error:
           t.status === "done" || t.status === "cancelled"
@@ -2172,9 +2294,7 @@ export class TaskManager {
           : t.status === "dispatching"
             ? "dispatch interrupted by a restart - re-dispatch"
             : "the agent's session did not survive a restart",
-      worktreePath: null,
-      branch: null,
-      provider: null,
+      ...releasedTaskResources(t, null),
       homeName: null,
       terminalResourceId: null,
       sessionId: null,

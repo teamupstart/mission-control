@@ -153,10 +153,17 @@ test("the dispatcher composes pi's turn one through the pointer", () => {
   // and Codex load the worktree's root doc natively, and the committed reference line
   // rides in on that - so there is exactly one call site and it is easy to lose in a
   // refactor of a 600-line method with no test that would notice.
+  //
+  // The second argument is `intent` rather than `task.intent`: dispatch composes turn one
+  // once - prepending the multi-repo manifest when the task attaches other repositories -
+  // and every runtime path delivers that same string. Pi's pointer wraps the composed
+  // intent, so a pi session reads the memory pointer first and the task second, whichever
+  // shape the task has. (Pi declares no `multiRepoDispatch`, so today that composition is
+  // always the identity for pi - but the seam is what this test pins, not the arithmetic.)
   const dispatcher = readFileSync(`${here}../src/server/dispatcher.ts`, "utf8");
   assert.match(
     dispatcher,
-    /preparePiLaunch\(\s*withRepoMemoryPointer\(\s*wt\.path,\s*task\.intent,?\s*\)\s*\)/,
+    /preparePiLaunch\(\s*withRepoMemoryPointer\(\s*wt\.path,\s*intent,?\s*\)\s*\)/,
     "pi's launch message must be composed through withRepoMemoryPointer",
   );
 });

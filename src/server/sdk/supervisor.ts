@@ -142,6 +142,12 @@ export class SdkSupervisor {
     effort: ThinkingLevel | null;
     permissionMode: PermissionMode | null;
     mcp: MissionMcpDescriptor | null;
+    /**
+     * Secondary worktrees this session must be able to write to (multi-repo tasks).
+     * Optional so every existing caller is unchanged; omitted means the ordinary
+     * single-checkout session.
+     */
+    extraDirs?: readonly string[];
     taskId: string | null;
     gitBranch?: string | null;
     gitRoot?: string | null;
@@ -157,6 +163,7 @@ export class SdkSupervisor {
       effort: input.effort,
       permissionMode: input.permissionMode,
       mcp: input.mcp,
+      extraDirs: input.extraDirs ?? [],
       resume: null,
     });
     return this.adopt({
@@ -649,6 +656,14 @@ export class SdkSupervisor {
       effort: row.effort,
       permissionMode: row.permissionMode,
       mcp,
+      // Rebuilt from the task row rather than remembered on the session row, because the
+      // task is where the repo set durably lives - and this grant can only be made at
+      // launch, so a resumed multi-repo session that omitted it would come back able to
+      // read its secondary worktrees and unable to write to them, which is the failure
+      // nobody would attribute to a daemon restart.
+      extraDirs: (task?.extraRepos ?? [])
+        .map((entry) => entry.worktreePath)
+        .filter((p): p is string => p !== null),
       resume: row.agentSessionId,
     });
     this.adopt({

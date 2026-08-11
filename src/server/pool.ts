@@ -257,9 +257,15 @@ export function occupiedCwds(registry: Registry): string[] {
 export function poolPins(registry: Registry): PoolPins {
   return {
     sessionCwds: occupiedCwds(registry),
+    // EVERY worktree a task holds, not just its primary. A multi-repo task's secondary
+    // trees are provisioned by the same dispatcher, leased from the same pools, and worked
+    // in by the same live agent - and the reaper spares only what is pinned, so a secondary
+    // missing from this list is a tree that can be `reset --hard` and returned to its pool
+    // underneath an agent that is writing to it. That is why the pins and the provisioning
+    // are one change: shipping the loop without this line is destructive, not incomplete.
     taskWorktrees: registry
       .listTasks()
-      .map((t) => t.worktreePath)
+      .flatMap((t) => [t.worktreePath, ...t.extraRepos.map((entry) => entry.worktreePath)])
       .filter((p): p is string => p !== null && p !== undefined),
     checkLeasePaths: checkLeasePaths(),
   };
@@ -306,8 +312,12 @@ export async function poolRepos(registry: Registry): Promise<string[]> {
     if (root) roots.add(root);
   }
   for (const task of registry.listTasks()) {
-    const root = mainRepoRoot(task.repoRoot);
-    if (root) roots.add(root);
+    // Every repo the task dispatched into, so a secondary repo's pool is swept on the same
+    // terms as the primary's - it leaks leases the same way, from the same dispatcher.
+    for (const repoRoot of [task.repoRoot, ...task.extraRepos.map((e) => e.repoRoot)]) {
+      const root = mainRepoRoot(repoRoot);
+      if (root) roots.add(root);
+    }
   }
   for (const repo of await listRepos().catch(() => [])) {
     const root = mainRepoRoot(repo);

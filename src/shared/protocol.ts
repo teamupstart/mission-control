@@ -583,6 +583,14 @@ export const ModelIdSchema = z
 export const DispatchSchema = z
   .object({
     repoRoot: z.string().min(1),
+    /**
+     * SECONDARY repositories to attach, beyond `repoRoot`. Each is resolved through
+     * `resolveTaskRepoRoot`, deduped, and refused if it names the primary.
+     *
+     * The cap of 8 is a sanity bound on a request body, not a product limit on how many
+     * repos a task may coordinate - nothing downstream reads it as a maximum.
+     */
+    extraRepoRoots: z.array(z.string().min(1)).max(8).default([]),
     intent: z.string().min(1),
     title: z.string().optional(),
     kind: z.enum(["ship", "scout"]).default("ship"),
@@ -730,6 +738,15 @@ export const RescheduleTaskSchema = z.object({}).strict();
 export const UpdateTaskSchema = z
   .object({
     repoRoot: z.string().min(1).optional(),
+    /**
+     * Replace the attached secondary repos wholesale. Same resolution and refusals as
+     * `DispatchSchema`; see the cap note there.
+     *
+     * No `isAnnotationOnlyUpdate` change is needed for it: that predicate counts KEYS, so
+     * naming this one makes the patch a provisioning change by construction and it stays
+     * refused once the task has left the backlog. That is the behaviour we want, for free.
+     */
+    extraRepoRoots: z.array(z.string().min(1)).max(8).optional(),
     intent: z.string().min(1).optional(),
     title: z.string().optional(),
     kind: z.enum(["ship", "scout"]).optional(),

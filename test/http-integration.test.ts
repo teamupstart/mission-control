@@ -446,6 +446,8 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     workflowId: null,
     source: null,
     repoRoot: "/repo",
+    baseSha: null,
+    extraRepos: [],
     worktreePath: "/wt/stale-xyzzy",
     branch: null,
     provider: null,

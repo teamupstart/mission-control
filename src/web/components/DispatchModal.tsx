@@ -41,6 +41,7 @@ import {
   type DispatchDraft,
 } from "../lib/task-draft.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
+import { repoLeaf } from "../lib/format.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import {
   AttachmentStrip,
@@ -76,18 +77,6 @@ function freshDispatchDraft(): DispatchDraft {
     repoRoot: readLastDispatchRepo(),
     extraRepoRoots: readLastDispatchExtraRepos(),
   };
-}
-
-/**
- * The last path segment of a repo root, for a chip that has to stay narrow.
- *
- * The full path is not lost - it is the chip's `title` and its Detach button's accessible
- * name - because two attached repos can share a basename (`~/a/api` and `~/b/api`) and the
- * short form alone would draw them as the same chip twice.
- */
-function basename(path: string): string {
-  const trimmed = path.replace(/\/+$/, "");
-  return trimmed.split("/").pop() || trimmed || path;
 }
 
 /** Two attached-repo lists holding the same roots in the same order. */
@@ -1264,7 +1253,7 @@ function DispatchModal({
                   `tooltip-coverage.test.ts` enforces that, and it is what makes the
                   shortened chip readable without a browser-styled box. */}
               <Tooltip label={root}>
-                <span className="repo-chip-name">{basename(root)}</span>
+                <span className="repo-chip-name">{repoLeaf(root)}</span>
               </Tooltip>
               <Tooltip label="Detach this repo">
                 <button
@@ -1348,7 +1337,7 @@ function DispatchModal({
       )}
       {collidingRepo !== null && (
         <span className="dispatch-workflow-warning">
-          {basename(collidingRepo)} is named twice. Detach it, or point the Repo field at a
+          {repoLeaf(collidingRepo)} is named twice. Detach it, or point the Repo field at a
           different repo.
         </span>
       )}

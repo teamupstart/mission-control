@@ -629,6 +629,7 @@ const SCHEDULED_TASK = {
   scheduleOccurrenceId: "occ-1",
   scheduledFor: 1_753_600_000_000,
   ensemble: null,
+  repoPrs: [],
 };
 const SCHEDULE_NAMES = new Map([["sched-1", "Dependency audit"]]);
 

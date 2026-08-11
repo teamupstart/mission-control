@@ -748,7 +748,7 @@ test("a driver-observed gh pr create decorates the card and proves authorship on
     handle: driver.handle,
     durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
-  driver.emit({ kind: "pr_created", url: "https://github.com/o/r/pull/7" });
+  driver.emit({ kind: "pr_created", urls: ["https://github.com/o/r/pull/7"] });
   await settle();
   assert.equal(r.getSession(SDK_ID)?.prUrl, "https://github.com/o/r/pull/7");
   assert.equal(r.getSession(SDK_ID)?.prNumber, 7);
@@ -762,13 +762,13 @@ test("a driver-observed gh pr create decorates the card and proves authorship on
   // otherwise re-announce authorship into the ledger that decides where the Inspector
   // comments in public. `adoptInspectorPr` happens to absorb a repeat today; the guarantee
   // belongs at the source rather than in a downstream table's forgiveness.
-  driver.emit({ kind: "pr_created", url: "https://github.com/o/r/pull/7" });
+  driver.emit({ kind: "pr_created", urls: ["https://github.com/o/r/pull/7"] });
   await settle();
   assert.deepEqual(opened, ["https://github.com/o/r/pull/7"], "a replayed event is not news");
 
   // A DIFFERENT pull request still is. What is suppressed is a repeat, not a sequence - a
   // long-running agent opening a second PR must still be recorded as its author.
-  driver.emit({ kind: "pr_created", url: "https://github.com/o/r/pull/8" });
+  driver.emit({ kind: "pr_created", urls: ["https://github.com/o/r/pull/8"] });
   await settle();
   assert.deepEqual(opened, [
     "https://github.com/o/r/pull/7",

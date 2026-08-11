@@ -35,6 +35,7 @@ import {
   ScheduleOriginChip,
   SessionTitle,
   StateBadge,
+  TaskRepoPrs,
   WorkflowChip,
   EnsembleChip,
   SessionWhere,
@@ -404,6 +405,7 @@ export function SessionCard({
       </span>
 
       {session.task && (
+        <>
         <div className={`task-chip task-${session.task.status}`}>
           <Tooltip label={`${session.task.kind} task`}>
             <span className="task-kind">{session.task.kind}</span>
@@ -437,6 +439,11 @@ export function SessionCard({
               </Tooltip>
             ))}
         </div>
+        {/* Its own row rather than another chip inside the one above: a multi-repo task's
+            list is as wide as its repo count, and the outcome link in that row is pinned
+            right by `margin-left: auto`. Renders nothing at all for a single-repo task. */}
+        <TaskRepoPrs repoPrs={session.task.repoPrs} />
+        </>
       )}
 
       {session.queue && queueChipVisible(session.queue) && !queueOpen && (

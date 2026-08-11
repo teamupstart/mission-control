@@ -40,8 +40,11 @@ import {
 import {
   getTask as getDurableTask,
   historicalTaskWorkEpisodeBindingsForTask,
+  primaryRepoPrForTask,
+  taskReposFor,
   taskWorkEpisodeForTask,
 } from "./db.ts";
+import { taskMergeQuorum, type QuorumVerdict } from "@shared/task-repos.ts";
 import {
   driverClearFor,
   resetSession,
@@ -451,7 +454,14 @@ export class TaskManager {
     // path keeps the episode-currency gate and reads only the current binding.
     const current = this.registry.workEpisodeForSession(s.id);
     if (current && current.episodeId !== binding.episodeId) return;
-    const completed = this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
+    // A multi-repo task's primary landing is one repository's news, not the task's. The
+    // episode-currency gate above stays exactly as it is - this only adds the siblings.
+    const quorum = t.extraRepos.length === 0 ? null : this.mergeQuorumFor(t);
+    if (quorum && !quorum.satisfied) return;
+    const outcome = quorum
+      ? `merged ${quorum.merged.map((entry) => entry.prUrl).join(", ")}`
+      : `merged ${binding.prUrl}`;
+    const completed = this.complete(t.id, outcome, binding.prUrl);
     // `complete` broadcasts synchronously and may evict this row from the bounded
     // in-memory task list before it returns. Do not recreate provenance after the
     // corresponding `task_remove` already cleared it.
@@ -552,6 +562,60 @@ export class TaskManager {
   }
 
   /**
+   * The adopted all-merged quorum for one MULTI-repo task: has every repository it changed
+   * had its pull request merged?
+   *
+   * The facts are gathered here and the RULE lives in `@shared/task-repos.ts`, which is the
+   * whole point of that module: per-repo review runs decide what to review from the same
+   * changed-set predicate, and two implementations of "changed" would eventually disagree
+   * about whether a repository's work had shipped.
+   *
+   * Read from durable state rather than from the in-memory row, deliberately. The projection
+   * onto `Task.extraRepos` exists for surfaces; a completion is irreversible, so it asks the
+   * tables. Heads come from the poller's sweep - a worktree nobody has looked at yet reads as
+   * "unknown" and HOLDS, which is what stops a restart completing a task on one merged
+   * sibling before anything has looked at the others.
+   */
+  private mergeQuorumFor(t: Task): QuorumVerdict {
+    const primary = primaryRepoPrForTask(t.id);
+    const task = { ...t, extraRepos: taskReposFor(t.id) };
+    return taskMergeQuorum(task, (ref) => {
+      const entry = ref.role === "primary" ? null : task.extraRepos[ref.position - 1];
+      return {
+        prUrl: entry ? entry.prUrl : primary.prUrl,
+        mergedAt: entry ? entry.mergedAt : primary.mergedAt,
+        headSha: this.registry.worktreeHead(ref.worktreePath),
+      };
+    });
+  }
+
+  /**
+   * The outcome a merged pull request records for this task, or null while it is not over.
+   *
+   * The single fork between the one-repo world and the many-repo one, and single-repo takes
+   * the branch it always took: `mergedPrFor`, unchanged, so every existing rule about which
+   * merge counts and which status a merge upgrades is untouched for the tasks that are
+   * nearly all of them.
+   *
+   * A multi-repo task instead asks the quorum, and `outcome` then names EVERY pull request
+   * that landed, in repo order. `outcomeUrl` stays the primary's, which is what every
+   * existing consumer of that field means by it - falling back to the first merged only when
+   * the primary repository was not one of the ones that changed.
+   */
+  private mergeOutcomeFor(t: Task): { outcome: string; url: string } | null {
+    const merged = this.mergedPrFor(t.id);
+    if (t.extraRepos.length === 0) {
+      return merged ? { outcome: `merged ${merged}`, url: merged } : null;
+    }
+    const quorum = this.mergeQuorumFor(t);
+    if (!quorum.satisfied) return null;
+    const primary = quorum.merged.find((entry) => entry.role === "primary");
+    const url = primary?.prUrl ?? quorum.merged[0]?.prUrl ?? merged;
+    if (!url) return null;
+    return { outcome: `merged ${quorum.merged.map((entry) => entry.prUrl).join(", ")}`, url };
+  }
+
+  /**
    * Complete every task whose durable record shows a merged pull request, whatever became
    * of the session that produced it.
    *
@@ -605,9 +669,11 @@ export class TaskManager {
         if (this.reschedulingTasks.has(t.id)) continue;
         if (this.agentMayStillBeUndiscovered(t)) continue;
         if (this.agentIsStillHere(t)) continue;
-        const merged = this.mergedPrFor(t.id);
-        if (!merged) continue;
-        this.complete(t.id, `merged ${merged}`, merged, true);
+        // The one fork: a single-repo task completes on its merge exactly as it always has,
+        // a multi-repo one only once every repository it changed has landed.
+        const outcome = this.mergeOutcomeFor(t);
+        if (!outcome) continue;
+        this.complete(t.id, outcome.outcome, outcome.url, true);
       }
     } finally {
       this.reconcilingMergedTasks = false;
@@ -800,9 +866,9 @@ export class TaskManager {
     // says "ended with no outcome recorded", and a merged pull request IS the outcome -
     // reporting it as a failure would strand every task declared to wait on this one
     // behind a `stopped` blocker, for work that shipped.
-    const merged = this.mergedPrFor(t.id);
-    if (merged) {
-      this.complete(t.id, `merged ${merged}`, merged);
+    const outcome = this.mergeOutcomeFor(t);
+    if (outcome) {
+      this.complete(t.id, outcome.outcome, outcome.url);
       return;
     }
     const holdsResources = Boolean(t.worktreePath) || Boolean(t.homeName);

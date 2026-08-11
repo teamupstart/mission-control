@@ -12,13 +12,24 @@ import { startDaemon, type DaemonHandle } from "./daemon.ts";
  * file breaks it in a way that reads as a product bug. A fresh daemon per test means each
  * one states its own preconditions.
  */
-export const test = base.extend<{ daemon: DaemonHandle; dashboard: Page }>({
-  // Playwright resolves a fixture's dependencies by destructuring its first parameter. This
-  // fixture depends on none, so the empty pattern IS the API here, and naming a placeholder
-  // would declare a dependency that does not exist.
-  // oxlint-disable-next-line no-empty-pattern
-  daemon: async ({}, use) => {
-    const daemon = await startDaemon();
+export const test = base.extend<{
+  /**
+   * Extra environment for THIS file's daemon, through `test.use({ daemonEnv: … })`.
+   *
+   * An option rather than an argument because the daemon boots before a test body runs, so a
+   * spec that needs a different cadence has no other moment to say so. Per file rather than
+   * in the shared list in `daemon.ts` deliberately: every override there runs in all four
+   * workers' daemons for every spec in the suite, and a poller sped up for one spec is
+   * background work the other fifty pay for.
+   */
+  daemonEnv: Record<string, string>;
+  daemon: DaemonHandle;
+  dashboard: Page;
+}>({
+  daemonEnv: [{}, { option: true }],
+
+  daemon: async ({ daemonEnv }, use) => {
+    const daemon = await startDaemon(daemonEnv);
     try {
       await use(daemon);
     } finally {

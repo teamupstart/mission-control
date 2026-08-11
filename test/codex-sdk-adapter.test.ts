@@ -1028,7 +1028,7 @@ test("a pull request is reported only with both halves of the provenance rule", 
   await settle();
   assert.deepEqual(
     events.filter((e) => e.kind === "pr_created"),
-    [{ kind: "pr_created", url: "https://github.com/o/r/pull/12" }],
+    [{ kind: "pr_created", urls: ["https://github.com/o/r/pull/12"] }],
   );
   await handle.stop();
   await drained;
@@ -1076,7 +1076,7 @@ test("a retired thread cannot attribute a pull request to its replacement", asyn
   await settle();
   assert.deepEqual(
     events.filter((event) => event.kind === "pr_created"),
-    [{ kind: "pr_created", url: "https://github.com/o/r/pull/42" }],
+    [{ kind: "pr_created", urls: ["https://github.com/o/r/pull/42"] }],
   );
   await handle.stop();
   await drained;
@@ -1150,7 +1150,7 @@ test("a subagent of a retired thread cannot attribute a pull request either", as
 
   assert.deepEqual(
     events.filter((event) => event.kind === "pr_created"),
-    [{ kind: "pr_created", url: "https://github.com/o/r/pull/53" }],
+    [{ kind: "pr_created", urls: ["https://github.com/o/r/pull/53"] }],
   );
   await handle.stop();
   await drained;

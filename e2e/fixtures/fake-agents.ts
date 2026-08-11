@@ -29,6 +29,34 @@ export interface FakeAgents {
   bins: { claude: string; codex: string; pi: string; cmux: string; keepAwake: string; gh: string };
 }
 
+/**
+ * One pull request `FAKE_GH` will report, in the shape `gh pr list --json …` prints.
+ *
+ * `cwd` is not a `gh` field - it is which CHECKOUT this pull request belongs to, which is how
+ * the fake decides who a `pr list` is answering for. See the fake's header.
+ */
+export interface FakePullRequest {
+  /** Absolute path of the worktree whose `gh pr list` should report this pull request. */
+  cwd: string;
+  url: string;
+  number: number;
+  state: "OPEN" | "MERGED";
+  /** ISO instant. Must be after the session's work episode started, or adoption refuses it. */
+  createdAt: string;
+  mergedAt: string | null;
+  headRefOid: string;
+}
+
+/** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
+export function ghPullRequestsPath(home: string): string {
+  return join(home, "gh-prs.json");
+}
+
+/** Script what `gh` reports, for this daemon, from now on. Re-read by the fake per call. */
+export function writeGhPullRequests(home: string, prs: readonly FakePullRequest[]): void {
+  writeFileSync(ghPullRequestsPath(home), JSON.stringify(prs, null, 2));
+}
+
 /** The issue `FAKE_GH` says it created, and the id the daemon derives from it. */
 export const FAKE_GH_ISSUE_URL = "https://github.com/acme/demo-repo/issues/123";
 export const FAKE_GH_ISSUE_ID = "acme/demo-repo#123";
@@ -95,6 +123,14 @@ if (dir) {
  * so `pr list` and `issue list` answer with an empty array - "nothing found", the state every
  * spec that does not care about a PR is already in.
  *
+ * A spec that DOES care writes `MC_E2E_GH_PRS` (see `writeGhPullRequests`), and then `pr list`
+ * answers for the checkout it was run in and `pr view` answers for the url it was asked about.
+ * Keyed on the cwd because that is the only thing that distinguishes one repository's pull
+ * request from another's here: a multi-repo task cuts the SAME branch name in every repo, so
+ * `--head` cannot tell them apart, and the daemon's whole per-repo fan-out is the claim that
+ * it asks in each worktree separately. Re-read on every call, so a spec can merge one pull
+ * request and leave its sibling open between two polls.
+ *
  * The record it writes is the assertion surface: the argv carries the title, the body and one
  * `--label` per label the source sweeps on, and the cwd is the repo the issue is filed
  * against - which is where a push aimed at the wrong repository would show up.
@@ -116,10 +152,27 @@ if (dir) {
   );
 }
 const command = argv.join(" ");
+/** Whatever the spec last scripted, re-read per call. Absent or unreadable means none. */
+function scriptedPrs() {
+  const path = process.env.MC_E2E_GH_PRS;
+  if (!path) return [];
+  try {
+    return JSON.parse(require("node:fs").readFileSync(path, "utf8"));
+  } catch {
+    return [];
+  }
+}
 if (command.startsWith("issue create")) {
   // What the real gh prints on success: the URL of the issue, and nothing else.
   process.stdout.write("${FAKE_GH_ISSUE_URL}\\n");
-} else if (command.startsWith("issue list") || command.startsWith("pr list")) {
+} else if (command.startsWith("pr view")) {
+  const url = argv[2];
+  const found = scriptedPrs().find((pr) => pr.url === url);
+  if (found) process.stdout.write(JSON.stringify({ state: found.state, mergedAt: found.mergedAt ?? null }) + "\\n");
+} else if (command.startsWith("pr list")) {
+  const here = scriptedPrs().filter((pr) => pr.cwd === process.cwd());
+  process.stdout.write(JSON.stringify(here) + "\\n");
+} else if (command.startsWith("issue list")) {
   process.stdout.write("[]\\n");
 }
 `;

@@ -9,5 +9,8 @@ export function opensPullRequest(command: unknown): boolean;
 
 export const PR_URL_RE: RegExp;
 
+/** Every distinct PR URL in `text`, in order. Accepts unknown for the same reason as above. */
+export function pullRequestUrlsIn(text: unknown): string[];
+
 /** The first PR URL in `text`, or null. Accepts unknown for the same reason as above. */
 export function pullRequestUrlIn(text: unknown): string | null;

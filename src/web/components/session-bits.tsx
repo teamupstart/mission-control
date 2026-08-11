@@ -7,12 +7,13 @@ import type {
   SessionMeta,
   Task,
   TaskPriority,
+  TaskRepoPrSummary,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import { costTone } from "@shared/cost.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
-import { compactTokens, contextTone, fmtUsd, stateDisplay } from "../lib/format.ts";
+import { compactTokens, contextTone, fmtUsd, repoLeaf, stateDisplay } from "../lib/format.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -1575,6 +1576,88 @@ export function PrStateIcon({ state }: { state: PrState }): React.JSX.Element {
       />
     </svg>
   );
+}
+
+/**
+ * A multi-repo task's repositories, each with the pull request it has produced.
+ *
+ * The one drawing of "one PR per changed repo", shared by the card and the console for the
+ * usual reason: the card is rendered by one layout and the detail by two, so a private copy
+ * silently misses one of them.
+ *
+ * It renders NOTHING for a single-repo task. That is not an optimisation - it is what keeps
+ * the markup of the tasks that are nearly all of them byte-identical to what it was before
+ * per-repo tracking existed, and `repoPrs` is empty for exactly those tasks by construction.
+ *
+ * A repository with no pull request yet is drawn too, and deliberately: the whole promise the
+ * dispatch modal makes is one pull request per repository you changed, and a list that
+ * silently omitted the repo still missing one would hide the only thing an operator can act
+ * on. It is also what the completion quorum is waiting for, said out loud.
+ */
+export function TaskRepoPrs({
+  repoPrs,
+}: {
+  repoPrs: readonly TaskRepoPrSummary[];
+}): React.JSX.Element | null {
+  if (repoPrs.length === 0) return null;
+  return (
+    <span className="task-repo-prs">
+      {repoPrs.map((entry) => {
+        const number = prNumberIn(entry.prUrl);
+        const label = number === null ? "PR" : `#${number}`;
+        const state: PrState = entry.prState === "merged" ? "merged" : "open";
+        const role = entry.primary ? "primary repo" : "attached repo";
+        const name = repoLeaf(entry.repoRoot);
+        if (!entry.prUrl) {
+          return (
+            <Tooltip
+              key={entry.repoRoot}
+              label={`${entry.repoRoot} (${role}) - no pull request opened here yet`}
+            >
+              <span className="task-repo-pr task-repo-pr-none">
+                <span className="task-repo-name">{name}</span>
+                <span className="pr-num">no PR</span>
+              </span>
+            </Tooltip>
+          );
+        }
+        return (
+          <Tooltip
+            key={entry.repoRoot}
+            label={
+              state === "merged"
+                ? `${entry.repoRoot} (${role}) - pull request ${label} merged - open on GitHub`
+                : `${entry.repoRoot} (${role}) - pull request ${label} open - open on GitHub`
+            }
+          >
+            <a
+              className={`task-repo-pr pr-${state}`}
+              href={entry.prUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <PrStateIcon state={state} />
+              <span className="task-repo-name">{name}</span>
+              <span className="pr-num">{label}</span>
+            </a>
+          </Tooltip>
+        );
+      })}
+    </span>
+  );
+}
+
+/**
+ * The number in a pull request URL, or null.
+ *
+ * Its own tiny reader rather than `Session.prNumber`, because these pull requests are not the
+ * session's: `prNumber` is denormalized beside `prUrl` on a session by the daemon, and a
+ * task's per-repo list has neither field to lean on.
+ */
+function prNumberIn(url: string | null): number | null {
+  const m = url?.match(/\/pull\/(\d+)/);
+  return m ? Number(m[1]) : null;
 }
 
 /** Warning glyph for the "a CI check failed" alert: an outlined triangle with an exclamation. */

@@ -53,6 +53,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { goalLine } from "@shared/goal.ts";
+import { taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
@@ -157,6 +158,12 @@ import {
   taskWorkEpisodeForTask,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
+  primaryRepoPrForTask,
+  recordWorkEpisodeRepoPr,
+  retargetInspectorPrCheckout,
+  taskReposFor,
+  workEpisodeRepoPr,
+  workEpisodeRepoPrsForTask,
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
@@ -264,6 +271,32 @@ export type PrObservation = {
   episodeId: string;
   headSha: string | null;
 };
+
+/**
+ * One SECONDARY repository of a live multi-repo task, as the branch poller has to ask about
+ * it: which worktree to run `gh` in, and which branch to ask for.
+ *
+ * Keyed by `(session, repo)` rather than by session alone, which is the whole reason this is
+ * a separate harvest from `prPollTargets`: one session can be waiting on a pull request in
+ * each of several repositories at once, and a session-keyed map has room for one.
+ */
+export interface RepoPrPollTarget {
+  /** `${sessionId}\0${repoRoot}` - what the poller keys its results by. */
+  key: string;
+  sessionId: string;
+  taskId: string;
+  repoRoot: string;
+  /** The attached repo's provisioned worktree - where `gh` resolves this repo from. */
+  cwd: string;
+  branch: string;
+  agentSessionId: string | null;
+  episodeId: string | null;
+}
+
+/** The `(session, repo)` key a repo poll result is carried under. */
+export function repoPrTargetKey(sessionId: string, repoRoot: string): string {
+  return `${sessionId}\0${repoRoot}`;
+}
 
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
 const RECENT_TERMINAL_TASKS = 50;
@@ -442,6 +475,16 @@ export class Registry extends EventEmitter {
    * fact is the adoption row the announcement produces.
    */
   private announcedPrs = new Map<string, Set<string>>();
+  /**
+   * Last observed head of each multi-repo worktree the completion quorum asks about, by
+   * path. A `null` value is "we looked and could not answer"; a MISSING key is "nothing has
+   * looked yet", and the quorum holds on that rather than concluding. See
+   * `recordWorktreeHeads`.
+   */
+  private worktreeHeads = new Map<string, string | null>();
+  /** Re-entrancy state for `emitEvent`: a change announced from inside another's delivery. */
+  private emitting = false;
+  private emitQueue: ServerEvent[] = [];
   private reviews = new Map<string, ReviewItem>();
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
@@ -955,7 +998,42 @@ export class Registry extends EventEmitter {
     }
   }
 
+  /**
+   * Broadcast one change, and keep a change CAUSED BY that broadcast behind it.
+   *
+   * The queue is the whole of this. Listeners run synchronously, and one of them - the task
+   * manager - concludes work from what it just heard: a `session_upsert` carrying a merged
+   * pull request makes it complete the task, which writes a new session entry and emits
+   * again, from inside the first emit. Delivered depth-first, the browser then receives the
+   * CONSEQUENCE before the event that caused it, and last-write-wins leaves it holding the
+   * stale one - a finished task drawn as still running, for as long as nothing else happens
+   * to that session. Which, for a task that has just finished, is a long time.
+   *
+   * So a nested emit is queued and delivered after the outer one drains, and the wire order
+   * matches the order the store actually moved in. Still fully synchronous by the time this
+   * returns, which every caller and every test that asserts straight after an `applyHook` or
+   * a `reconcilePrs` depends on - this is a reordering, not a deferral.
+   */
   private emitEvent(e: ServerEvent): void {
+    if (this.emitting) {
+      this.emitQueue.push(e);
+      return;
+    }
+    this.emitting = true;
+    try {
+      this.deliverEvent(e);
+      // `shift` rather than a for-of: a delivery can queue more, and those belong at the
+      // back of this same drain rather than in a second one.
+      while (this.emitQueue.length > 0) this.deliverEvent(this.emitQueue.shift()!);
+    } finally {
+      this.emitting = false;
+      // A listener that threw abandons the drain; clearing keeps the next emit from
+      // replaying a burst whose ordering no longer means anything.
+      this.emitQueue.length = 0;
+    }
+  }
+
+  private deliverEvent(e: ServerEvent): void {
     this.emit("event", e);
     // The Line's one hook into the stores it folds over.
     //
@@ -1602,7 +1680,7 @@ export class Registry extends EventEmitter {
         }
         return;
       case "pr_created":
-        if (evt.url) this.applyDriverPrCreated(s, evt.url);
+        if (evt.urls.length > 0) this.applyDriverPrCreated(s, evt.urls);
         return;
       case "exited":
         // The same exited-then-linger-then-`session_remove` sequence a vanished pane gets.
@@ -1738,8 +1816,16 @@ export class Registry extends EventEmitter {
    *
    * A repeat is safe HERE (the fields it writes are the same ones) and dangerous downstream,
    * which is why the announcement is not made inline - see `announcePrOpened`.
+   *
+   * `urls` is a LIST and every one of them is announced, but only the FIRST decorates the
+   * card. That asymmetry is the `Session.prUrl` contract: the chip means "this session's
+   * current-branch pull request", the poller re-decides it every tick from `gh`, and a
+   * multi-repo agent that opened three pull requests still has one branch checked out at
+   * `cwd`. Authorship is per pull request; the chip is per session.
    */
-  private applyDriverPrCreated(s: Session, url: string): void {
+  private applyDriverPrCreated(s: Session, urls: string[]): void {
+    const url = urls[0];
+    if (!url) return;
     const next: Session = {
       ...s,
       prUrl: url,
@@ -1751,7 +1837,7 @@ export class Registry extends EventEmitter {
     this.resolveInspectionSummaries(next);
     this.sessions.set(next.id, next);
     if (!sessionEqual(s, next)) this.emitSession(next);
-    this.announcePrOpened(next, url);
+    for (const opened of urls) this.announcePrOpened(next, opened);
   }
 
   /**
@@ -1945,7 +2031,15 @@ export class Registry extends EventEmitter {
       // persists that distinction, so this firing is the only chance to record that this PR
       // is ours - see `announcePrOpened`, which owns both the once-per-PR rule and the
       // guard that keeps adoption from breaking hook ingest.
-      if (evt.prCreated && evt.prUrl) this.announcePrOpened(next, evt.prUrl);
+      //
+      // Every url the command printed, falling back to the scalar for a hook installed
+      // before `prUrls` existed - those hooks keep running with the environment they were
+      // installed with, so the fallback is a live path rather than a courtesy.
+      if (evt.prCreated) {
+        for (const url of evt.prUrls ?? (evt.prUrl ? [evt.prUrl] : [])) {
+          this.announcePrOpened(next, url);
+        }
+      }
     }
     this.pruneOverlays(now);
   }
@@ -3165,6 +3259,217 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * The SECONDARY repositories of every live multi-repo task, as the branch poller needs to
+   * ask `gh` about them: one `(cwd, branch)` pair per attached worktree.
+   *
+   * The fan-out that makes a secondary repo's pull request discoverable at all. The primary
+   * list above is one entry per SESSION, because `Session.prUrl` is one chip; a multi-repo
+   * task has one branch checked out in each of N worktrees, and `gh pr list --head` only
+   * answers for the repo it is run in. Still one `gh` call per distinct cwd, which is the
+   * cost rule the poller has always kept - these cwds are simply new ones.
+   *
+   * Empty on a single-repo install, and empty for every single-repo task, so the poller's
+   * shape is unchanged for the tasks that are nearly all of them.
+   */
+  extraRepoPrPollTargets(): RepoPrPollTarget[] {
+    const out: RepoPrPollTarget[] = [];
+    for (const s of this.sessions.values()) {
+      if (!s.cwd || s.state === "exited") continue;
+      const task = this.activeTaskFor(s.id, s.cwd);
+      if (!task || task.extraRepos.length === 0) continue;
+      const episode = sessionWorkEpisodeFor(s.id);
+      for (const entry of task.extraRepos) {
+        // No tree or no branch means nothing was provisioned here (or teardown already
+        // took it back), and there is no checkout to run `gh` in.
+        if (!entry.worktreePath || !entry.branch) continue;
+        out.push({
+          key: repoPrTargetKey(s.id, entry.repoRoot),
+          sessionId: s.id,
+          taskId: task.id,
+          repoRoot: entry.repoRoot,
+          cwd: entry.worktreePath,
+          branch: entry.branch,
+          agentSessionId: s.agentSessionId,
+          episodeId: episode?.episodeId ?? null,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Adopt the pull requests the poller found in each attached repository's worktree.
+   *
+   * Deliberately NOT part of `reconcilePrs`, and not because it would be awkward there. That
+   * function's single rule is "every session not in `skip` is set to what `gh` says about its
+   * branch, including to nothing", which is what retracts a stale chip. A secondary repo has
+   * no chip and no session field to retract: what it has is a durable per-repo association on
+   * the work episode, which - exactly like the primary's - is never retracted once made. So a
+   * repo absent from `found` is a no-op here rather than a clear.
+   *
+   * `skip` is honoured for the same reason it is there: a `gh` that timed out says nothing.
+   */
+  reconcileRepoPrs(found: Map<string, PrMatch>, skip: Set<string>): void {
+    const at = Date.now();
+    const touchedTasks = new Set<string>();
+    for (const target of this.extraRepoPrPollTargets()) {
+      if (skip.has(target.key)) continue;
+      const match = found.get(target.key);
+      if (!match) continue;
+      // A merged pull request whose merge instant `gh` did not report is not yet a merge -
+      // the same refusal `reconcilePrs` makes, so nothing lands a null `mergedAt`.
+      if (match.state === "merged" && match.mergedAt === null) continue;
+      const episodeId = this.acceptRepoPrForEpisode(target, match, at);
+      if (!episodeId) continue;
+      touchedTasks.add(target.taskId);
+      // The measurement that fixes adoption's one blind spot: the hook proved WE opened this
+      // pull request but could only name the session's own repo, and `gh` has now answered
+      // for it from inside this repository's worktree. See `retargetInspectorPrCheckout`.
+      const parsed = parsePrUrl(match.url);
+      if (parsed && retargetInspectorPrCheckout(parsed.key, target.repoRoot, target.cwd, at)) {
+        this.refreshInspections();
+      }
+      if (match.state === "merged" && match.mergedAt !== null) {
+        markWorkEpisodeMerged(target.sessionId, episodeId, match.url, match.mergedAt);
+      }
+    }
+    for (const taskId of touchedTasks) this.refreshTaskRepoPrs(taskId);
+  }
+
+  /**
+   * Associate one pull request with one SECONDARY repository of a task's current episode.
+   *
+   * The per-repo twin of `acceptPrForEpisode`, guard for guard, with two substitutions that
+   * are the whole of the difference:
+   *
+   *  - the branch compared against is the ENTRY's branch, not `session.gitBranch`. The
+   *    session's branch is the primary worktree's; a pooled secondary lease can legitimately
+   *    arrive on a different one, which phase 1 records per entry and the manifest states.
+   *  - "does this episode already hold a pull request" is asked per repository, so repo A
+   *    holding one does not refuse repo B's, while a SECOND, different url for repo A is
+   *    refused exactly as the scalar guard refuses a second primary pull request.
+   */
+  private acceptRepoPrForEpisode(
+    target: RepoPrPollTarget,
+    match: PrMatch,
+    at: number,
+  ): string | null {
+    const session = this.sessions.get(target.sessionId);
+    if (!session?.agentSessionId) return null;
+    const episode = sessionWorkEpisodeFor(session.id);
+    if (!episode || episode.awaitingAgentRebind) return null;
+    const existing = workEpisodeRepoPr(episode.episodeId, target.repoRoot);
+    const firstAssociation = existing === null;
+    const matchesPolledWorktreeHead =
+      match.worktreeHeadSha !== null && match.headSha === match.worktreeHeadSha;
+    const createdDuringEpisode = match.createdAt !== null && match.createdAt >= episode.startedAt;
+    if (
+      episode.episodeId !== match.episodeId ||
+      episode.agentSessionId !== match.agentSessionId ||
+      match.branch !== target.branch ||
+      match.headSha === null ||
+      (firstAssociation && !matchesPolledWorktreeHead && !createdDuringEpisode) ||
+      (match.createdAt !== null && match.createdAt < episode.startedAt) ||
+      (existing !== null && existing.prUrl !== match.url)
+    ) {
+      return null;
+    }
+    const recorded = recordWorkEpisodeRepoPr(
+      {
+        episodeId: episode.episodeId,
+        repoRoot: target.repoRoot,
+        sessionId: session.id,
+        taskId: target.taskId,
+        prUrl: match.url,
+        prState: match.state,
+        prHeadSha: match.headSha,
+      },
+      at,
+    );
+    return recorded ? episode.episodeId : null;
+  }
+
+  /**
+   * Re-read a task's per-repo pull request state and broadcast it if anything moved.
+   *
+   * The one place the projection reaches the board. `Task.extraRepos` is filled on READ from
+   * `work_episode_prs`, so the in-memory row a card was last sent goes stale the moment a
+   * pull request is adopted or observed merged - and nothing else would push it out, because
+   * none of the task's own columns changed.
+   */
+  private refreshTaskRepoPrs(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task || task.extraRepos.length === 0) return;
+    const extraRepos = taskReposFor(taskId);
+    if (JSON.stringify(extraRepos) === JSON.stringify(task.extraRepos)) return;
+    const next = { ...task, extraRepos };
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+    if (next.sessionId) this.resyncSessionTask(next.sessionId);
+  }
+
+  /**
+   * A freshly derived task summary when this session is running a MULTI-repo task, and the
+   * one the session already carries otherwise.
+   *
+   * The narrow half of `taskSummaryFor`, for the one caller that has to notice a change the
+   * task row cannot express. Single-repo sessions get back the identical object, so the
+   * caller's equality check sees no movement and nothing about them is re-emitted.
+   */
+  private repoPrSummaryFor(s: Session): TaskSummary | null {
+    const task = this.activeTaskFor(s.id, s.cwd);
+    if (!task || task.extraRepos.length === 0) return s.task;
+    return this.taskSummaryFor(s.id, s.cwd);
+  }
+
+  /**
+   * The worktrees whose head the completion quorum still needs read.
+   *
+   * Every repository of every multi-repo task a merge could still complete - and no others,
+   * so a fleet with no multi-repo task in flight spends nothing on this. The PRIMARY is in
+   * the list: it is a repository like any other to the changed-set rule, and leaving it out
+   * is precisely how a task whose primary changed without opening a primary pull request
+   * would complete on a merged secondary alone.
+   */
+  worktreeHeadTargets(): string[] {
+    const paths = new Set<string>();
+    for (const task of this.tasks.values()) {
+      if (task.extraRepos.length === 0 || !completableByMerge(task.status)) continue;
+      for (const ref of taskRepoRefs(task)) {
+        if (ref.worktreePath) paths.add(ref.worktreePath);
+      }
+    }
+    return [...paths];
+  }
+
+  /**
+   * Record what a head sweep saw. `null` means "we looked and could not answer" - a tree that
+   * has been torn down or a `git` that failed - which the changed-set rule reads as unchanged.
+   *
+   * In memory rather than persisted, and that is what makes the three-state
+   * `undefined`/`null`/sha distinction in `repoChangeVerdict` load-bearing: after a restart
+   * nothing has been observed yet, and a quorum that read "unobserved" as "unchanged" would
+   * complete a task on one merged sibling in the seconds before the first sweep.
+   */
+  recordWorktreeHeads(heads: Map<string, string | null>): void {
+    for (const [path, sha] of heads) this.worktreeHeads.set(path, sha);
+    // Bounded by what is still worth asking about, so a long-lived daemon does not
+    // accumulate an entry per worktree it ever polled.
+    const live = new Set(this.worktreeHeadTargets());
+    for (const path of this.worktreeHeads.keys()) {
+      if (!live.has(path)) this.worktreeHeads.delete(path);
+    }
+  }
+
+  /**
+   * The last observed head of a worktree: a sha, `null` for "looked and could not answer",
+   * or `undefined` for "nothing has looked yet".
+   */
+  worktreeHead(path: string | null): string | null | undefined {
+    return path === null ? null : this.worktreeHeads.get(path);
+  }
+
+  /**
    * Driver-run sessions whose checkout has to be re-read, with the cwd to read it in.
    *
    * The counterpart to `applyDiscovery` for the one runtime that never passes through it.
@@ -3275,6 +3580,15 @@ export class Registry extends EventEmitter {
           match = null;
         }
       }
+      // Re-read this session AFTER the merge reconciliation above, which is not a pure write:
+      // it announces `task_pr_merged`, and the listener that settles the task runs
+      // synchronously up to its first await - completing the task, upserting it, and
+      // rewriting this very map entry with the finished summary. `s` is the snapshot the
+      // loop started with, so spreading it below would revert the card to the summary it had
+      // BEFORE its task completed, and nothing would rebuild it: the task row has already
+      // stopped changing. That leaves a finished task drawn as still running until some
+      // unrelated event happens along.
+      const live = this.sessions.get(id) ?? s;
       const url = match?.url ?? null;
       const number = match?.number ?? null;
       const state = match?.state ?? null;
@@ -3290,9 +3604,30 @@ export class Registry extends EventEmitter {
       } else {
         this.prObservations.delete(id);
       }
-      if (s.prUrl === url && s.prNumber === number && s.prState === state && s.prChecks === checks)
+      // A multi-repo task's per-repo lines live on THIS session's card, and the PRIMARY
+      // repo's line moves the moment the merge recorded just above lands. Nothing else
+      // re-derives that summary - the task ROW did not change, only the binding its pull
+      // request hangs off - so without this the card would go on saying "open" until some
+      // unrelated event happened to rebuild it. Identical for a single-repo session, which
+      // gets back the summary it already had.
+      const task = this.repoPrSummaryFor(live);
+      const taskMoved = JSON.stringify(task) !== JSON.stringify(live.task);
+      if (
+        !taskMoved &&
+        live.prUrl === url &&
+        live.prNumber === number &&
+        live.prState === state &&
+        live.prChecks === checks
+      )
         continue;
-      const next: Session = { ...s, prUrl: url, prNumber: number, prState: state, prChecks: checks };
+      const next: Session = {
+        ...live,
+        prUrl: url,
+        prNumber: number,
+        prState: state,
+        prChecks: checks,
+        task,
+      };
       // `prUrl` is the key the Inspector summary hangs off, so changing it here without
       // re-resolving leaves the chip answering for the PREVIOUS pull request - or, on the
       // ordinary startup ordering (this poller runs seconds after the first sweep, which
@@ -3375,6 +3710,13 @@ export class Registry extends EventEmitter {
       ];
       for (const candidate of candidates) {
         if (candidate?.prUrl && candidate.mergedAt === null) urls.add(candidate.prUrl);
+      }
+      // And the SECONDARY repositories' pull requests, on the same rule. Without them a
+      // multi-repo task's quorum could never be met once its agent was gone: the branch
+      // poller only asks about LIVE sessions, so nothing would ever observe repo B's merge
+      // and the task would sit `running` for ever with repo A's already landed.
+      for (const repoPr of workEpisodeRepoPrsForTask(task.id)) {
+        if (repoPr.mergedAt === null) urls.add(repoPr.prUrl);
       }
     }
     return [...urls];
@@ -3535,10 +3877,31 @@ export class Registry extends EventEmitter {
         }
       }
     }
+    // The SECONDARY repositories' merges. Their own pass rather than a `reconcileWorkEpisodeMerge`
+    // target, because none of what that function does applies to one: dependency edges are
+    // scalar and bind to the primary's pull request, a rollover is decided by the episode's own
+    // pull request, and `task_pr_merged` announces "this task's work landed" - which a single
+    // sibling merge on a multi-repo task is precisely not. What a secondary merge is, is a
+    // durable stamp plus a reason to re-ask the quorum, and that is what this does.
+    let repoMerges = 0;
+    for (const task of this.tasks.values()) {
+      if (!completableByMerge(task.status) || task.extraRepos.length === 0) continue;
+      let stamped = false;
+      for (const repoPr of workEpisodeRepoPrsForTask(task.id)) {
+        if (repoPr.mergedAt !== null) continue;
+        const mergedAt = mergedUrls.get(repoPr.prUrl);
+        if (mergedAt === undefined) continue;
+        if (markWorkEpisodeMerged(repoPr.sessionId, repoPr.episodeId, repoPr.prUrl, mergedAt)) {
+          repoMerges += 1;
+          stamped = true;
+        }
+      }
+      if (stamped) this.refreshTaskRepoPrs(task.id);
+    }
     this.cleanupDependencyProvenance();
     // Announced after the cleanup above, so the listener that reads this record reads it
     // settled. See `onPrMergesRecorded`.
-    if (targets.size > 0) this.emit("pr_merges_recorded");
+    if (targets.size > 0 || repoMerges > 0) this.emit("pr_merges_recorded");
   }
 
   /** MCP `report_status`: update a session's activity line without a hook. */
@@ -4697,6 +5060,12 @@ export class Registry extends EventEmitter {
           // launched. The join lives on the daemon side of one seam rather than on
           // `Session`, so it needs no comparator: `task` is already compared by JSON.
           ensemble: this.ensembleProjection?.(t.id) ?? null,
+          // Guarded on the empty case rather than inside, so a single-repo card - which is
+          // nearly every card, re-emitted several times a second - pays no query at all.
+          repoPrs:
+            t.extraRepos.length === 0
+              ? []
+              : taskRepoPrSummaries(t, primaryRepoPrForTask(t.id)),
         }
       : null;
   }

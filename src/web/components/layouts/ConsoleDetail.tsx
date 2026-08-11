@@ -25,6 +25,7 @@ import {
   ScheduleOriginChip,
   SessionTitle,
   StateBadge,
+  TaskRepoPrs,
   WorkflowChip,
   EnsembleChip,
   SessionWhere,
@@ -419,6 +420,7 @@ export function ConsoleDetail({
           </div>
         )}
         {session.task && (
+          <>
           <div className={`task-chip task-${session.task.status}`}>
             <Tooltip label={`${session.task.kind} task`}>
               <span className="task-kind">{session.task.kind}</span>
@@ -445,6 +447,11 @@ export function ConsoleDetail({
                 <span className="task-outcome">{session.task.outcome}</span>
               ))}
           </div>
+          {/* The same shared leaf the card draws, for the same reason it is a leaf: this
+              detail is served by two layouts, so a private copy misses one of them.
+              Renders nothing at all for a single-repo task. */}
+          <TaskRepoPrs repoPrs={session.task.repoPrs} />
+          </>
         )}
       </dl>
 

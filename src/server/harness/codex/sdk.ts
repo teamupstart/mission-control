@@ -6,7 +6,7 @@ import type {
   SessionRequestQuestion,
   ThinkingLevel,
 } from "@shared/types.ts";
-import { opensPullRequest, pullRequestUrlIn } from "@shared/pr-command.mjs";
+import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import type {
@@ -1116,8 +1116,10 @@ class CodexSdkSession implements SdkSessionHandle {
       opensPullRequest(item.command) ||
       item.commandActions.some((a) => opensPullRequest((a as { command?: unknown }).command));
     if (!opened) return;
-    const url = pullRequestUrlIn(item.aggregatedOutput ?? "");
-    if (url) this.out.emit({ kind: "pr_created", url });
+    // Every url the item printed, not the first: one command can open a pull request in each
+    // of a multi-repo task's repositories, and the rest were being dropped here.
+    const urls = pullRequestUrlsIn(item.aggregatedOutput ?? "");
+    if (urls.length > 0) this.out.emit({ kind: "pr_created", urls });
   }
 
   /**

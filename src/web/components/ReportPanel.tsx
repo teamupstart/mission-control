@@ -9,7 +9,7 @@ import {
 } from "@shared/session.ts";
 import { backlogIndex, declaredBlockers, deadBlockersFor } from "@shared/backlog.ts";
 import { api } from "../lib/api.ts";
-import { shortenCwd } from "../lib/format.ts";
+import { repoLeaf, shortenCwd } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import {
   AgentDot,
@@ -109,6 +109,19 @@ function BacklogReportRow({
         <span className="report-line report-line-sub">
           <LabelChips labels={task.labels} max={3} />
           <span className="report-sub mono">{shortenCwd(task.repoRoot)}</span>
+          {/* The rest of the repo set, named rather than counted: this row has the width
+              the board card does not, and the thing an operator is deciding here is whether
+              a backlog item touches a repo they care about. Absent entirely for a
+              single-repo task, so the line is exactly what it was. */}
+          {task.extraRepos.length > 0 && (
+            <Tooltip
+              label={`Spans ${task.extraRepos.length + 1} repos: ${[task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].join(", ")} - one pull request per repo it changes`}
+            >
+              <span className="report-sub report-repos">
+                +{task.extraRepos.map((entry) => repoLeaf(entry.repoRoot)).join(", ")}
+              </span>
+            </Tooltip>
+          )}
           <ScheduleOriginChip
             task={task}
             scheduleNames={scheduleNameById}

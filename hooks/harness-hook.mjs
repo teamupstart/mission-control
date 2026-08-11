@@ -18,23 +18,29 @@
 
 import { captureTerminalEnv } from "../src/shared/harness-runtime.mjs";
 import { postHookEvent, readStdin } from "../src/shared/hook-bridge.mjs";
-import { opensPullRequest, pullRequestUrlIn } from "../src/shared/pr-command.mjs";
+import { opensPullRequest, pullRequestUrlsIn } from "../src/shared/pr-command.mjs";
 
 /**
- * Sniff a PR URL out of a PostToolUse payload. `gh pr create` prints the new
+ * Sniff the PR URLs out of a PostToolUse payload. `gh pr create` prints the new
  * PR's URL on stdout, which Claude hands back in `tool_response`. Scoped to Bash
  * results so merely reading a PR page (WebFetch/Read of a pull URL) can't flash a
  * false chip; even if one slips through, the PR poller clears it within a tick
  * because the link won't match the session's branch. Returns undefined when
  * there's nothing to report - the common case, kept cheap.
+ *
+ * ALL of them, not the first. One tool call can open a pull request in each of a
+ * multi-repo task's repositories, and the daemon has to hear about every one: the first
+ * decorates the card, and each is announced so the Inspector adopts it and the task's
+ * completion quorum can count it.
  */
-function sniffPrUrl(payload, event) {
+function sniffPrUrls(payload, event) {
   if (event !== "PostToolUse") return undefined;
   if (payload.tool_name && payload.tool_name !== "Bash") return undefined;
   const field = payload.tool_response;
   if (field == null) return undefined;
   const text = typeof field === "string" ? field : JSON.stringify(field);
-  return pullRequestUrlIn(text) ?? undefined;
+  const urls = pullRequestUrlsIn(text);
+  return urls.length > 0 ? urls : undefined;
 }
 
 /**
@@ -67,6 +73,7 @@ function sniffPrCreated(payload, event) {
  * the field is empty", and `permission_mode` is the one that depends on it.
  */
 function toIngest(payload, event) {
+  const prUrls = sniffPrUrls(payload, event);
   return {
     agent: "claude",
     event,
@@ -84,7 +91,11 @@ function toIngest(payload, event) {
     // hook events. Undefined on events that omit it - the daemon keeps the last
     // known mode rather than clearing it.
     permissionMode: payload.permission_mode,
-    prUrl: sniffPrUrl(payload, event),
+    // The scalar stays FIRST on the wire and keeps its exact meaning - the URL that
+    // decorates this card - so a daemon that predates `prUrls` still reads what it always
+    // did. `prUrls` is the whole set, and only the plural is fanned out to adoption.
+    prUrl: prUrls?.[0],
+    prUrls,
     prCreated: sniffPrCreated(payload, event),
   };
 }

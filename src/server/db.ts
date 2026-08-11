@@ -227,6 +227,37 @@ export function openDb(): DatabaseSync {
       PRIMARY KEY (session_id, episode_id, prompted_at)
     );
 
+    -- One episode's pull request in a SECONDARY repository, one row per repo.
+    --
+    -- The same additive split task_repos makes, on the other axis: the primary repo's pull
+    -- request stays on session_work_episodes.pr_url (and the binding rows that mirror it), so
+    -- a single-repo task writes zero rows here and every existing reader keeps its meaning.
+    -- One owner per repo, never two - nothing writes the primary's URL into this table, and
+    -- nothing reads a secondary's from the scalar.
+    --
+    -- Keyed on the EPISODE rather than the task because that is what the refusal guard is
+    -- about: within one episode a repo holds at most one pull request, and a second one for
+    -- the same repo is refused exactly as the scalar guard refuses it for the primary. A new
+    -- episode is new work and may open a new one.
+    --
+    -- task_id is carried so the row can be cleaned up with its task and harvested for the
+    -- completion quorum without walking every historical binding; it is nullable because the
+    -- episode, not the task, owns the row's identity.
+    CREATE TABLE IF NOT EXISTS work_episode_prs (
+      episode_id  TEXT NOT NULL,
+      repo_root   TEXT NOT NULL,
+      session_id  TEXT NOT NULL,
+      task_id     TEXT,
+      pr_url      TEXT NOT NULL,
+      pr_state    TEXT,               -- open | merged, as of the last observation
+      pr_head_sha TEXT,
+      merged_at   INTEGER,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (episode_id, repo_root)
+    );
+    CREATE INDEX IF NOT EXISTS idx_work_episode_prs_task ON work_episode_prs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_work_episode_prs_url ON work_episode_prs(pr_url);
+
     CREATE TABLE IF NOT EXISTS task_work_episode_bindings (
       task_id          TEXT PRIMARY KEY,
       episode_id       TEXT NOT NULL,
@@ -2749,19 +2780,39 @@ interface TaskRepoRow {
   position: number;
 }
 
-function rowToTaskRepo(r: TaskRepoRow): TaskRepoEntry {
+/**
+ * The pull request to show for one repository, out of everything its task's episodes
+ * recorded for it.
+ *
+ * A task can have several episodes (an agent that restarted, a fix-forward run), so one
+ * repository can carry more than one row over a task's life. A MERGED one wins, because that
+ * is the outcome; among equals the most recently written wins, which is the same
+ * newest-merge-wins rule `mergedPrFor` applies to the primary. Rows arrive newest-first.
+ */
+function pickRepoPr(rows: readonly WorkEpisodeRepoPr[]): WorkEpisodeRepoPr | null {
+  let best: WorkEpisodeRepoPr | null = null;
+  for (const row of rows) {
+    if (best === null) { best = row; continue; }
+    if (row.mergedAt === null) continue;
+    if (best.mergedAt === null || row.mergedAt > best.mergedAt) best = row;
+  }
+  return best;
+}
+
+function rowToTaskRepo(r: TaskRepoRow, prs: readonly WorkEpisodeRepoPr[] = []): TaskRepoEntry {
+  const pr = pickRepoPr(prs.filter((entry) => entry.repoRoot === r.repo_root));
   return {
     repoRoot: r.repo_root,
     worktreePath: r.worktree_path,
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
     baseSha: r.base_sha,
-    // Declared on the wire and deliberately not derived here. Nothing in this build writes
-    // per-repo pull request state, and inventing one from the primary's would report the
-    // wrong repository's pull request against every secondary.
-    prUrl: null,
-    prState: null,
-    mergedAt: null,
+    // Projected on read from `work_episode_prs` rather than stored on this row, so there is
+    // one writer of a repository's pull request and one reader of it. Deriving any of this
+    // from the PRIMARY's pull request would report the wrong repository's work.
+    prUrl: pr?.prUrl ?? null,
+    prState: pr?.prState ?? null,
+    mergedAt: pr?.mergedAt ?? null,
   };
 }
 
@@ -2770,7 +2821,9 @@ export function taskReposFor(taskId: string): TaskRepoEntry[] {
   const rows = openDb()
     .prepare(`SELECT * FROM task_repos WHERE task_id = ? ORDER BY position`)
     .all(taskId) as unknown as TaskRepoRow[];
-  return rows.map(rowToTaskRepo);
+  if (rows.length === 0) return [];
+  const prs = workEpisodeRepoPrsForTask(taskId);
+  return rows.map((row) => rowToTaskRepo(row, prs));
 }
 
 /**
@@ -2786,10 +2839,13 @@ function taskReposByTask(): Map<string, TaskRepoEntry[]> {
     .prepare(`SELECT * FROM task_repos ORDER BY task_id, position`)
     .all() as unknown as TaskRepoRow[];
   const out = new Map<string, TaskRepoEntry[]>();
+  if (rows.length === 0) return out;
+  const prsByTask = workEpisodeRepoPrsByTask();
   for (const row of rows) {
+    const entry = rowToTaskRepo(row, prsByTask.get(row.task_id) ?? []);
     const list = out.get(row.task_id);
-    if (list) list.push(rowToTaskRepo(row));
-    else out.set(row.task_id, [rowToTaskRepo(row)]);
+    if (list) list.push(entry);
+    else out.set(row.task_id, [entry]);
   }
   return out;
 }
@@ -3566,6 +3622,179 @@ export function updateWorkEpisodePr(
   return true;
 }
 
+/** One secondary repository's pull request on one work episode. */
+export interface WorkEpisodeRepoPr {
+  episodeId: string;
+  repoRoot: string;
+  sessionId: string;
+  taskId: string | null;
+  prUrl: string;
+  prState: string | null;
+  prHeadSha: string | null;
+  mergedAt: number | null;
+  updatedAt: number;
+}
+
+interface WorkEpisodeRepoPrRow {
+  episode_id: string;
+  repo_root: string;
+  session_id: string;
+  task_id: string | null;
+  pr_url: string;
+  pr_state: string | null;
+  pr_head_sha: string | null;
+  merged_at: number | null;
+  updated_at: number;
+}
+
+function rowToWorkEpisodeRepoPr(r: WorkEpisodeRepoPrRow): WorkEpisodeRepoPr {
+  return {
+    episodeId: r.episode_id,
+    repoRoot: r.repo_root,
+    sessionId: r.session_id,
+    taskId: r.task_id,
+    prUrl: r.pr_url,
+    prState: r.pr_state,
+    prHeadSha: r.pr_head_sha,
+    mergedAt: r.merged_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Associate a pull request with one SECONDARY repository of a work episode.
+ *
+ * The per-repo twin of `updateWorkEpisodePr`, refusal guard included and for the same
+ * reason: within one episode a repository holds at most one pull request, so a SECOND,
+ * different URL arriving for a repo that already has one is refused rather than
+ * overwriting - `false` back to the caller, which then declines to treat it as this
+ * episode's deliverable. The same URL arriving again is an update (state and head move as
+ * the poller re-observes it), which is what the `WHERE pr_url = excluded.pr_url` clause
+ * says: conflict on the key, proceed only if it is the same pull request.
+ *
+ * Nothing writes the PRIMARY repo's URL here. That lives on `session_work_episodes.pr_url`
+ * and the binding rows that mirror it, and one owner per repo is what keeps the two tables
+ * from disagreeing about the same pull request.
+ */
+export function recordWorkEpisodeRepoPr(
+  entry: Omit<WorkEpisodeRepoPr, "mergedAt" | "updatedAt">,
+  now: number,
+): boolean {
+  const result = openDb()
+    .prepare(
+      `INSERT INTO work_episode_prs
+         (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha,
+          merged_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
+       ON CONFLICT(episode_id, repo_root) DO UPDATE SET
+         session_id  = excluded.session_id,
+         task_id     = COALESCE(excluded.task_id, work_episode_prs.task_id),
+         pr_state    = excluded.pr_state,
+         pr_head_sha = excluded.pr_head_sha,
+         updated_at  = excluded.updated_at
+       WHERE work_episode_prs.pr_url = excluded.pr_url`,
+    )
+    .run(
+      entry.episodeId,
+      entry.repoRoot,
+      entry.sessionId,
+      entry.taskId,
+      entry.prUrl,
+      entry.prState,
+      entry.prHeadSha,
+      now,
+    );
+  return Number(result.changes) > 0;
+}
+
+/** Every secondary-repo pull request recorded against a task, newest write first. */
+export function workEpisodeRepoPrsForTask(taskId: string): WorkEpisodeRepoPr[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM work_episode_prs WHERE task_id = ? ORDER BY updated_at DESC`,
+    )
+    .all(taskId) as unknown as WorkEpisodeRepoPrRow[];
+  return rows.map(rowToWorkEpisodeRepoPr);
+}
+
+/**
+ * Every secondary-repo pull request, grouped by task.
+ *
+ * One read for the whole table, exactly as `taskReposByTask` reads all of `task_repos`: the
+ * table is empty on a single-repo install and small on any other, so a per-task statement
+ * behind every card would cost far more than reading it whole.
+ */
+export function workEpisodeRepoPrsByTask(): Map<string, WorkEpisodeRepoPr[]> {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM work_episode_prs WHERE task_id IS NOT NULL ORDER BY updated_at DESC`,
+    )
+    .all() as unknown as WorkEpisodeRepoPrRow[];
+  const out = new Map<string, WorkEpisodeRepoPr[]>();
+  for (const row of rows) {
+    const entry = rowToWorkEpisodeRepoPr(row);
+    const list = out.get(row.task_id as string);
+    if (list) list.push(entry);
+    else out.set(row.task_id as string, [entry]);
+  }
+  return out;
+}
+
+/** The secondary-repo pull request one episode holds for one repository, if any. */
+export function workEpisodeRepoPr(
+  episodeId: string,
+  repoRoot: string,
+): WorkEpisodeRepoPr | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM work_episode_prs WHERE episode_id = ? AND repo_root = ?`)
+    .get(episodeId, repoRoot) as unknown as WorkEpisodeRepoPrRow | undefined;
+  return row ? rowToWorkEpisodeRepoPr(row) : null;
+}
+
+/** One repository's pull request on a task, in the shape every per-repo surface reads. */
+export interface TaskRepoPrRecord {
+  prUrl: string | null;
+  prState: string | null;
+  mergedAt: number | null;
+}
+
+/**
+ * The PRIMARY repository's pull request on a task, read from the same bindings
+ * `mergedPrFor` reads.
+ *
+ * The primary has no `work_episode_prs` row - its pull request lives on the episode scalar
+ * and the binding rows that mirror it - so this is where a per-repo reader gets it, and it
+ * is why nothing may build a repo list by iterating `task_repos` alone.
+ *
+ * Current AND historical bindings, for the reason `mergedPrFor` gives: a merge on an episode
+ * the task has already rolled off is still the outcome. A merged binding wins over an
+ * unmerged one and the newest merge wins among those; with nothing merged, the current
+ * binding's open pull request is what there is to show.
+ *
+ * `prState` is derived rather than stored: a binding exists only for a pull request this
+ * task opened, and the only transition the daemon records against it is the merge. A pull
+ * request closed unmerged therefore still reads `open` here, which is the same thing the
+ * session chip does with one - the poller simply stops reporting it.
+ */
+export function primaryRepoPrForTask(taskId: string): TaskRepoPrRecord {
+  const current = taskWorkEpisodeForTask(taskId);
+  const candidates = [
+    ...(current ? [current] : []),
+    ...historicalTaskWorkEpisodeBindingsForTask(taskId),
+  ].filter((binding) => binding.prUrl !== null);
+  let best: TaskWorkEpisodeBinding | null = null;
+  for (const binding of candidates) {
+    if (best === null) { best = binding; continue; }
+    if (binding.mergedAt === null) continue;
+    if (best.mergedAt === null || binding.mergedAt > best.mergedAt) best = binding;
+  }
+  return {
+    prUrl: best?.prUrl ?? null,
+    prState: best === null ? null : best.mergedAt === null ? "open" : "merged",
+    mergedAt: best?.mergedAt ?? null,
+  };
+}
+
 export function recordWorkEpisodePrompt(
   sessionId: string,
   episodeId: string,
@@ -3649,11 +3878,23 @@ export function markWorkEpisodeMerged(
          WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
       )
       .run(now, now, sessionId, episodeId, prUrl);
+    // And the SECONDARY repositories' row for the same episode, in the same transaction and
+    // on the same key. A url either belongs to the primary (the three statements above) or
+    // to exactly one secondary (this one), never both - one owner per repo - so this is a
+    // fourth place the same merge can land rather than a second copy of the same fact.
+    const repo = d
+      .prepare(
+        `UPDATE work_episode_prs
+         SET merged_at = COALESCE(merged_at, ?), pr_state = 'merged', updated_at = MAX(updated_at, ?)
+         WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
+      )
+      .run(now, now, sessionId, episodeId, prUrl);
     if (ownsTransaction) d.exec("COMMIT");
     return (
       Number(session.changes) > 0 ||
       Number(binding.changes) > 0 ||
-      Number(historical.changes) > 0
+      Number(historical.changes) > 0 ||
+      Number(repo.changes) > 0
     );
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
@@ -3678,6 +3919,7 @@ export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
 export function deleteTask(id: string): void {
   const d = openDb();
   d.prepare(`DELETE FROM task_repos WHERE task_id = ?`).run(id);
+  d.prepare(`DELETE FROM work_episode_prs WHERE task_id = ?`).run(id);
   d.prepare(`DELETE FROM task_work_episode_bindings WHERE task_id = ?`).run(id);
   d.prepare(`DELETE FROM historical_task_work_episode_bindings WHERE task_id = ?`).run(id);
   d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
@@ -5908,6 +6150,37 @@ export function getInspectorPr(key: string): InspectorPr | null {
     | InspectorPrRow
     | undefined;
   return r ? rowToInspectorPr(r) : null;
+}
+
+/**
+ * Point an adopted pull request at the checkout it actually belongs to.
+ *
+ * Deliberately narrow, and separate from `updateInspectorPr`, because `repo_root` is not a
+ * poll observation - it decides which `INSPECTOR.md` and which standards a review is written
+ * against, and which directory `gh` and the reviewer run in.
+ *
+ * It exists because adoption cannot always know. The proving signal is a hook or a driver
+ * event carrying a URL and the SESSION's identity, and on a multi-repo task the session's
+ * repo is the primary - so a pull request the agent opened in a secondary repository is
+ * adopted against the primary's checkout. The branch poller later finds that same URL by
+ * asking `gh` inside one specific worktree, which is not a guess about which repository it
+ * belongs to but a measurement, and this is how that measurement gets recorded. Single-repo
+ * adoption never moves: it is already correct, and this writes only when the value differs.
+ */
+export function retargetInspectorPrCheckout(
+  key: string,
+  repoRoot: string,
+  cwd: string | null,
+  now: number,
+): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs
+          SET repo_root = ?, cwd = ?, updated_at = ?
+        WHERE key = ? AND (repo_root IS NULL OR repo_root <> ?)`,
+    )
+    .run(repoRoot, cwd, now, key, repoRoot);
+  return Number(result.changes) > 0;
 }
 
 /** Every PR still worth polling - what the tick iterates. */

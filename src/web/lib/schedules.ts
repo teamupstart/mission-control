@@ -346,13 +346,13 @@ function ordinalDay(day: number): string {
 
 export type ScheduleCatalogFilter = "all" | "healthy" | "paused" | "attention";
 
-/** Shorten a repo root to its last path segment for the catalog's tight columns. */
-export function shortRepo(repoRoot: string | null | undefined): string {
-  if (!repoRoot) return "-";
-  const trimmed = repoRoot.replace(/\/+$/, "");
-  const seg = trimmed.split("/").pop();
-  return seg && seg.length > 0 ? seg : trimmed;
-}
+/**
+ * Shorten a repo root to its last path segment for the catalog's tight columns.
+ *
+ * Re-exported rather than reimplemented: `repoLeaf` is the one definition, and this name is
+ * what the catalog and detail views already call it.
+ */
+export { repoLeaf as shortRepo } from "./format.ts";
 
 /**
  * Does this schedule match the operator's free-text query?

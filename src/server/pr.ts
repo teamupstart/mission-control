@@ -147,6 +147,21 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
   }
 }
 
+/**
+ * The head commit of a worktree, or null when nothing there can answer.
+ *
+ * Null is the honest answer for a tree that has been torn down or returned to the pool, and
+ * the completion quorum reads it as "unchanged" - which is what lets a multi-repo task whose
+ * checkouts were reclaimed ever complete. It is deliberately distinct from "nobody has
+ * looked", which the registry represents by having no entry at all and which HOLDS
+ * completion.
+ */
+async function queryHead(dir: string): Promise<string | null> {
+  const r = await run("git", ["-C", dir, "rev-parse", "HEAD"], { timeoutMs: 8000 });
+  const sha = r.stdout.trim();
+  return r.code === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+}
+
 async function queryPrUrl(url: string): Promise<PrStateLookup> {
   const res = await run(ghBin(), ["pr", "view", url, "--json", "state,mergedAt"], {
     timeoutMs: 8000,
@@ -243,8 +258,19 @@ export async function pollAndReconcilePrs(
   lookupUrl: (url: string) => Promise<PrStateLookup> = queryPrUrl,
   urlState = new PrUrlPollState(),
   now = Date.now(),
+  lookupHead: (dir: string) => Promise<string | null> = queryHead,
 ): Promise<void> {
   const targets = registry.prPollTargets();
+  // The SECONDARY repositories of every live multi-repo task, each with its own worktree and
+  // branch. Same cost rule as the primary list - one `gh` call per distinct cwd - and empty
+  // whenever no multi-repo task is running, which is the ordinary case.
+  const repoTargets = registry.extraRepoPrPollTargets();
+  // Every multi-repo worktree the completion quorum still needs a head for. Read here rather
+  // than at reconcile time because the reconciler is synchronous and runs on every session
+  // event: a `git` call there would be a subprocess on the hot path. This tick is the one
+  // place that already spends subprocesses, and it runs immediately before the reconciler it
+  // feeds, so the observation is as fresh as the merge that triggers the question.
+  const headTargets = registry.worktreeHeadTargets();
   // Both harvests, deduplicated: a task waiting on its own merge is very often also the
   // task something else declared a dependency on, and asking twice would spend two `gh`
   // calls and two backoffs on one pull request.
@@ -253,23 +279,41 @@ export async function pollAndReconcilePrs(
   ];
   const found = new Map<string, PrMatch>();
   const skip = new Set<string>();
+  const repoFound = new Map<string, PrMatch>();
+  const repoSkip = new Set<string>();
 
   const queryable = targets.filter((t) => t.branch && !DEFAULT_BRANCHES.has(t.branch));
-  if (queryable.length === 0 && linkedUrls.length === 0) {
+  const repoQueryable = repoTargets.filter((t) => !DEFAULT_BRANCHES.has(t.branch));
+  if (
+    queryable.length === 0 &&
+    repoQueryable.length === 0 &&
+    linkedUrls.length === 0 &&
+    headTargets.length === 0
+  ) {
     registry.reconcilePrs(found, skip); // clears any lingering link, spawns nothing
     return;
   }
 
   // A branch is checked out in exactly one worktree, so one `gh` call per cwd
-  // answers for every session sharing it.
+  // answers for every session sharing it - and a secondary repo's worktree is simply
+  // another cwd, so the whole fan-out still costs one call per checkout.
   const byCwd = new Map<string, string>();
   for (const t of queryable) byCwd.set(t.cwd, t.branch as string);
+  for (const t of repoQueryable) byCwd.set(t.cwd, t.branch);
   const results = new Map<string, PrLookup>();
-  await Promise.all(
-    [...byCwd].map(async ([cwd, branch]) => {
+  const heads = new Map<string, string | null>();
+  await Promise.all([
+    ...[...byCwd].map(async ([cwd, branch]) => {
       results.set(cwd, await lookup(cwd, branch));
     }),
-  );
+    forEachConcurrent(headTargets, PR_URL_CONCURRENCY, async (dir) => {
+      heads.set(dir, await lookupHead(dir));
+    }),
+  ]);
+  // Before the reconcilers below, which is the ordering the quorum depends on: both of them
+  // can complete a task, and a task completed against last tick's heads is a task completed
+  // against a repository whose work may since have moved off its baseline.
+  if (headTargets.length > 0) registry.recordWorktreeHeads(heads);
 
   for (const t of queryable) {
     const r = results.get(t.cwd);
@@ -284,7 +328,21 @@ export async function pollAndReconcilePrs(
     }
     // r === null (no open/merged PR) -> omitted from both -> reconcile clears the chip
   }
-  const observed = new Map([...found.values()].map((match) => [match.url, match]));
+  for (const t of repoQueryable) {
+    const r = results.get(t.cwd);
+    if (r === "error") repoSkip.add(t.key);
+    else if (r) {
+      repoFound.set(t.key, {
+        ...r,
+        branch: t.branch,
+        agentSessionId: t.agentSessionId,
+        episodeId: t.episodeId,
+      });
+    }
+  }
+  const observed = new Map(
+    [...found.values(), ...repoFound.values()].map((match) => [match.url, match]),
+  );
   const mergedUrls = new Map<string, number>();
   const dueUrls = urlState.due(linkedUrls, now);
   for (const url of linkedUrls) {
@@ -306,6 +364,9 @@ export async function pollAndReconcilePrs(
     },
   );
   registry.reconcilePrs(found, skip);
+  // After the session pass, and deliberately: `reconcilePrs` can settle a task through the
+  // primary's merge, and the per-repo pass then has the task's own row already up to date.
+  registry.reconcileRepoPrs(repoFound, repoSkip);
   registry.reconcilePrMerges(mergedUrls);
 }
 

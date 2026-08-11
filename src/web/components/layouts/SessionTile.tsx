@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import { liveActivity } from "@shared/session.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import { heldByRun } from "../../lib/held.ts";
 import {
@@ -87,7 +88,7 @@ export function SessionTile({
   ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
   const st = stateDisplay(session);
-  const isRunning = session.state === "working" || session.state === "starting";
+  const ticker = liveActivity(session);
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
   // above it and this tag have to agree about the same session, and one source is how they do.
@@ -198,19 +199,17 @@ export function SessionTile({
       {session.goal?.text && <span className="tile-goal">{session.goal.text}</span>}
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
-          tells an actively-editing session apart from one stalled on a prompt. Only a
-          running session has a live action to report: once it settles, activity holds a
-          status label ("idle", "ended (logout)") the column and badge already carry, and
-          a ticker there would animate over a session that isn't moving. `instrumented`
-          is the freshness half of that: when hooks lapse past the overlay TTL the passive
-          poller refreshes `state` from the transcript but leaves `activity` at its stale
-          overlay value, so only a live hook makes the label worth animating. */}
-      {session.instrumented && isRunning && session.activity && (
+          tells an actively-editing session apart from one stalled on a prompt. `liveActivity`
+          is where the gate's reasoning lives: it answers with the line only while there is
+          something happening for it to describe, which is also what the conversation's
+          in-progress row asks. This tile established the rule; the shared predicate is what
+          stops the two from drifting apart. */}
+      {ticker && (
         <span className="tile-activity">
           <span className="ta-glyph" aria-hidden>
             ⟳
           </span>
-          <span className="ta-txt">{session.activity}</span>
+          <span className="ta-txt">{ticker}</span>
         </span>
       )}
 

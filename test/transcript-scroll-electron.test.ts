@@ -39,6 +39,11 @@ import { mkSession } from "./helpers/session-fixture.ts";
  * activity withheld), each in the Console detail and in an expanded card - and the
  * narrow-container layouts where activity collapses to a disclosure row that opens on
  * request while find still stacks its full rail.
+ *
+ * The log's in-progress row is measured here for the same reason. Its single line is a
+ * correctness requirement, not a preference - the log follows its tail only while the
+ * reader is within 48px of the bottom - and whether an activity line wraps or clips is a
+ * used-height fact that the identical markup gives no answer to either way.
  */
 
 const require = createRequire(import.meta.url);
@@ -70,7 +75,17 @@ interface Measured {
   activityContentHeight: number | null;
   activityViewHeight: number | null;
   activityScrolledTo: number | null;
+  progressHeight: number | null;
+  progressRightOverflow: number | null;
+  progressClipped: boolean | null;
 }
+
+/**
+ * The window `onScroll` calls "at the bottom" (`TranscriptPanel.onScroll`). Anything that
+ * appears under a bottom-pinned reader and is taller than this pushes them out of it, and
+ * the log stops following the conversation.
+ */
+const STICK_TO_BOTTOM_PX = 48;
 
 function hit(i: number): FindHit {
   return {
@@ -111,6 +126,13 @@ function panelMarkup(): string {
     createElement(TranscriptPanel, {
       session: mkSession({
         id: "s1",
+        // A working session, so the log carries its in-progress row - and an activity line
+        // far wider than any pane here, because the row's whole correctness argument is
+        // that it clips instead of wrapping. A comfortable string would measure one line
+        // whether or not the clip works.
+        state: "working",
+        activity:
+          "running Bash · git worktree list --porcelain and then the reaper sweep over every pooled checkout this daemon still owns",
         pendingTurns: [
           {
             id: "pending-editable",
@@ -281,6 +303,40 @@ for (const name of ALL_CASES) {
     assert.ok(
       m.splitRightOverflow <= 1,
       `the conversation frame must fit its host's width, got ${m.splitRightOverflow}px past its right edge`,
+    );
+  });
+}
+
+for (const name of ALL_CASES) {
+  test(`the in-progress row costs the log one line at most (${name})`, () => {
+    const m = measured[name];
+    assert.ok(m, `no geometry for ${name}`);
+
+    // Present in every case: the fixture session is working with something to report, and
+    // an assertion about a row that never rendered would pass on nothing.
+    assert.ok((m.progressHeight ?? 0) > 0, "a working session draws its in-progress row");
+
+    // The claim. `onScroll` treats a reader within 48px of the bottom as pinned there, so
+    // a row that wrapped to two or three lines would appear underneath them, push them out
+    // of that window, and stop the pane following the tail - a defect nothing in the DOM
+    // can show, because the markup is identical either way. Held well under the threshold
+    // rather than at it: the row shares the log's 10px gap, and a row that just fits is a
+    // row one font metric away from not fitting.
+    assert.ok(
+      (m.progressHeight ?? 0) < STICK_TO_BOTTOM_PX / 2,
+      `the in-progress row must stay on one line, got ${m.progressHeight}px`,
+    );
+
+    // And it got there by clipping, not by having short text: the fixture's activity line
+    // is wider than any pane measured here, so an un-clipped row would have wrapped.
+    assert.equal(m.progressClipped, true, "a long activity line must be clipped, not wrapped");
+
+    // Sideways, the same discipline the split gets: a nowrap row that did not clip would
+    // widen the log rather than growing it, and the overflow would leave through the right
+    // edge instead of the bottom.
+    assert.ok(
+      (m.progressRightOverflow ?? 0) <= 1,
+      `the in-progress row must fit the log's width, got ${m.progressRightOverflow}px past it`,
     );
   });
 }

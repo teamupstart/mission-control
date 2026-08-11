@@ -567,9 +567,16 @@ export function ConsoleDetail({
         {tab === "conversation" && (
           // Fills the body and pins the reply box: the leading bits stay put and the
           // transcript scrolls inside itself, rather than the whole tab scrolling the
-          // compose box off the bottom.
+          // compose box off the bottom. What leads it is now only what a reader has to
+          // answer before reading on - a pane menu, a Foreman escalation.
           <div className="detail-conv">
-            {session.activity && <p className="activity">{session.activity}</p>}
+            {/* No activity line here. What this session is doing right now reads at the
+                tail of the log, where the turn doing it is arriving - see
+                `InProgressRow`. Held up here it was fixed chrome: a band that cost the
+                conversation its height whether or not anything was running, and that
+                described the present at the top of a pane whose present is at the bottom.
+                Nothing may be added back above `.pane-dialog` here without checking the
+                child combinators that select through this container. */}
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} />}
             {session.note && (
               <ForemanStrip

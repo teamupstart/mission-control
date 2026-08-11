@@ -11,6 +11,7 @@ import type {
 import type { ConversationView } from "@shared/protocol.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
+import { liveActivity } from "@shared/session.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
@@ -284,6 +285,21 @@ export function TranscriptPanel({
    */
   const rows = mergeConversation(transcriptRows(messages), episodes, reviews);
   const agentLabel = AGENT_IDENTITY[agent].speaker;
+  /**
+   * What the turn currently arriving is doing, or null when nothing is arriving.
+   *
+   * The log's rows are the record - turns that were written and read back out of a
+   * transcript file. This one line is not in that record and never will be: it is the
+   * agent's own report of the step it is on, and the next real turn overwrites it. That
+   * is exactly why it belongs at the tail rather than in a band above the pane, and why
+   * it is drawn as provisional rather than as another turn.
+   *
+   * It is NOT the "Observed activity" rail beside this log. That rail is derived from
+   * `messages` and lists invocations the transcript recorded, claiming nothing about
+   * whether any of them is still running; this is the live report and claims exactly
+   * that, for one step, from the session rather than from the log.
+   */
+  const inProgress = liveActivity(session);
   /**
    * Which rendering this conversation is drawn in - the shipped chat log, or the Native
    * PTY terminal stream. One resolved answer, from one module: this session's own
@@ -579,6 +595,18 @@ export function TranscriptPanel({
    * in a passive effect it renders as a visible jump - which is what makes this the one
    * layout effect in the panel. Appends are the ordinary case and only follow the tail
    * when the reader was already there.
+   *
+   * `inProgress` is a dependency for the same reason the other two are: it is a row in this
+   * log, so it changes `scrollHeight` when it appears and when it goes.
+   *
+   * Measured honestly, it is currently redundant - and listed anyway. An activity change
+   * can only reach the browser as a whole-session upsert, and `session.pendingTurns` is
+   * re-parsed to a fresh array by every one of those, so the entry beside it already
+   * re-runs this effect on the same tick. That is an accident of the transport, not a
+   * contract: the day anything memoizes that array, or hands back the same empty one, the
+   * masking goes with it and a reader pinned to the bottom starts drifting off by a row
+   * with nothing else in the log having moved. An effect that follows the log's height
+   * should say which of its own values changes that height.
    */
   useLayoutEffect(() => {
     const el = logRef.current;
@@ -590,7 +618,7 @@ export function TranscriptPanel({
       return;
     }
     if (atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [messages, session.pendingTurns]);
+  }, [messages, session.pendingTurns, inProgress]);
 
   // Deliberately don't grab focus when the panel opens. Focus mode is opened with
   // `e` and closed with `e`, and the grid's global keys (including that toggle)
@@ -809,6 +837,15 @@ export function TranscriptPanel({
                 />
               ),
         )}
+        {inProgress && (
+          <InProgressRow agentLabel={agentLabel} activity={inProgress} terminal={terminal} />
+        )}
+        {/* AFTER the in-progress row, and the order is the conversation's own. A pending
+            turn is a message the human has queued and the agent has NOT yet received; the
+            row above is the step it is on right now. Drawn the other way round the queue
+            would read as already answered - the log would show messages, then the work
+            that supposedly followed them, when in fact that work is what has to finish
+            before any of them is delivered. */}
         {session.pendingTurns.map((turn) => (
           <PendingTurnView
             key={turn.id}
@@ -1103,6 +1140,67 @@ function Highlighted({
         );
       })}
     </>
+  );
+}
+
+/**
+ * The turn currently arriving, at the tail of the log where it is arriving.
+ *
+ * This is the typing-indicator position and it is the honest one: the line describes work
+ * that is happening after everything above it and before anything below, which is a claim
+ * only the tail can make. Held above the pane - where it used to live - it was a fixed
+ * band of chrome that said the same thing about a place the reader was not looking, and
+ * cost the conversation 36px whether or not anything was running.
+ *
+ * Three deliberate shapes:
+ *
+ * - **One line, clipped.** Not a style preference. The log follows its tail only while the
+ *   reader is within 48px of the bottom (`onScroll`), so a row that could wrap to two or
+ *   three lines would appear under a bottom-pinned reader, push them past that threshold,
+ *   and stop the pane following the conversation - the exact failure this row exists at
+ *   the bottom to avoid. The full text rides the tooltip's always-rendered copy, so
+ *   clipping costs nothing that cannot be read.
+ * - **Not a turn.** No bubble, no timestamp, no find highlighting: those belong to rows
+ *   that came out of a transcript and can be searched, quoted and scrolled back to. This
+ *   one is a report about the present that the next real turn overwrites, so it is drawn
+ *   as provisional - muted text, the working tone reserved for the marker.
+ * - **Not announced.** No `role="status"`, on purpose. A busy agent rewrites this line
+ *   every few seconds, and a live region here would read every one of them over the turns
+ *   actually arriving in the same log. The text is in the document for anyone reading the
+ *   log, and the tooltip's hidden copy says what it is.
+ *
+ * The terminal drawing gives the log a different rhythm - no flex gap, a 24px inset, and a
+ * spine with a node per entry - so there the row takes `.pty-entry` and joins the stream.
+ * Found in the browser: without it the row sat flush against the last entry and two dozen
+ * pixels to the left of everything else, reading as a stray line from another component.
+ * Taking the existing class rather than restating its four rules is also what keeps the
+ * spine's `:last-child` treatment landing on the row that is actually last.
+ */
+function InProgressRow({
+  agentLabel,
+  activity,
+  terminal,
+}: {
+  agentLabel: string;
+  activity: string;
+  terminal: boolean;
+}): React.JSX.Element {
+  return (
+    <Tooltip
+      label={`What ${agentLabel} reports it is doing right now: ${activity}. A live report from the session, not a turn the transcript recorded - the next real turn replaces it.`}
+    >
+      <p className={terminal ? "turn-progress pty-entry" : "turn-progress"}>
+        {/* The log's own byline class, so the row reads in the same rhythm as the turns
+            above it. It does NOT take `.turn-assistant`, so the name stays dim rather than
+            picking up the agent's accent: this line is provisional, and the accent is how
+            the log marks what the agent actually said. */}
+        <span className="turn-role turn-progress-who">{agentLabel}</span>
+        <span className="turn-progress-glyph" aria-hidden>
+          ⟳
+        </span>
+        <span className="turn-progress-text">{activity}</span>
+      </p>
+    </Tooltip>
   );
 }
 

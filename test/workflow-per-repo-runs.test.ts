@@ -94,6 +94,8 @@ interface SeedOptions {
   withTask?: boolean;
   triggerMode?: "manual" | "foreman_complete";
   deliveryMode?: "preview" | "live";
+  /** Called at the start of each capture, so a test can hold one open and watch the rest. */
+  holdCapture?: (binding: WorkflowBinding) => Promise<void>;
 }
 
 /**
@@ -230,6 +232,7 @@ function seed(over: SeedOptions = {}) {
     // binding is how the per-repo evidence test proves it without a real worktree.
     readContextRaw: async (_registry, binding) => {
       captures.push(binding);
+      if (over.holdCapture) await over.holdCapture(binding);
       const session = registry.getSession(binding.sessionId!)!;
       const cwd = workflowCheckoutPath(binding, session) ?? "/unknown";
       const context = snapshot(cwd, over.heads?.[cwd] ?? PRIMARY_BASE);
@@ -524,6 +527,73 @@ test("one settled turn spends ONE completion episode and starts a run per change
     guard.wrapup_answer,
     `workflow:${result.claimed === true ? result.runId : ""}`,
   );
+});
+
+test("the completion boundary answers on the lead alone, never on every repo's capture", async () => {
+  // `POST /api/sessions/:id/workflow-completion` is the Foreman worker's, and it fails CLOSED
+  // on a lost response. A capture reads git and can include a 45-second compaction attempt,
+  // so awaiting one per attached repository would stake the completion boundary - and the
+  // shipping that follows it - on N of those finishing inside one HTTP timeout.
+  //
+  // Driven by holding the ATTACHED repo's capture open for ever: if the claim awaits it, this
+  // test hangs, which is exactly what the defect did to the request.
+  let releaseSibling!: () => void;
+  const siblingHeld = new Promise<void>((resolve) => { releaseSibling = resolve; });
+  let siblingStarted = false;
+  const f = seed({
+    triggerMode: "foreman_complete",
+    holdCapture: async (binding) => {
+      if (!binding.repoRoot) return;
+      siblingStarted = true;
+      await siblingHeld;
+    },
+  });
+  f.registry.recordWorktreeHeads(new Map([
+    [f.primaryCwd, MOVED],
+    [f.secondCwd, MOVED],
+  ]));
+  db.prepare(
+    `INSERT INTO foreman_queues (
+       note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at
+     ) VALUES (?, ?, 'feat/work', NULL, NULL, NULL, 10)`,
+  ).run(f.agentSessionId, f.primaryCwd);
+  db.prepare(
+    `INSERT INTO foreman_queue_items (
+       id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
+       send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
+       proposed_payload, recovered_at, revision, created_at, updated_at, sent_at, completed_at
+     ) VALUES (?, ?, 0, 'work', 'verified', 1, 'base', 1, '[]',
+       1, 0, NULL, 'complete', NULL, NULL, NULL, 0, 1, 2, 1, 2)`,
+  ).run(`item-${serial}`, f.agentSessionId);
+
+  // Raced against a deadline rather than simply awaited: the defect this pins makes the claim
+  // wait on a promise that is never resolved, so an unraced await would HANG the suite instead
+  // of failing it. The bound is not a latency assertion - every capture here is stubbed and
+  // instant, and the failure being measured is unbounded rather than slow.
+  const result = await Promise.race([
+    f.manager.claimCompletion(f.sessionId, {
+      completionKind: "drain",
+      marker: "f".repeat(64),
+      summary: "work complete",
+      evidenceFingerprint: "fp",
+      expectedIntent: null,
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(
+        () => reject(new Error("claimCompletion awaited an attached repo's evidence capture")),
+        5_000,
+      ).unref();
+    }),
+  ]);
+  // The claim answered while the attached repo's capture is still held open.
+  assert.equal(result.claimed, true);
+
+  // Both runs are durable already, because every claim is made before any evidence is read -
+  // the reply speaks for the durable half, and that half does not wait on git.
+  assert.deepEqual(reviewedRepos(f), [PRIMARY_ROOT, SECOND_ROOT]);
+  releaseSibling();
+  await f.manager.stop();
+  assert.equal(siblingStarted, true, "the sibling's capture really was started, not skipped");
 });
 
 test("a repeated claim on the same proof starts nothing new", async () => {

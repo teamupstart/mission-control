@@ -230,6 +230,17 @@ export interface WorkflowSubmitResult {
  */
 interface PreparedWorkflowRun extends WorkflowSubmitResult {
   binding: WorkflowBinding;
+  /**
+   * The evidence fingerprint the previous round captured, when this run is a repair rather
+   * than a first submission.
+   *
+   * Carried rather than dropped because it is what makes an unchanged snapshot refusable: a
+   * sibling repository resubmitted at the completion boundary has a previous round, and a
+   * capture that forgot it would accept the same evidence again and spend a repair round
+   * proving nothing. Absent for every initial submission, which is what the manual fan-out
+   * produces.
+   */
+  previousFingerprint?: string;
 }
 
 export interface WorkflowManagerOptions {
@@ -1218,7 +1229,12 @@ export class WorkflowManager {
   private activateSiblingRuns(siblings: readonly PreparedWorkflowRun[]): void {
     for (const sibling of siblings) {
       this.trackBackgroundTask(
-        this.captureAndActivate(sibling.binding, sibling.run, sibling.submission)
+        this.captureAndActivate(
+          sibling.binding,
+          sibling.run,
+          sibling.submission,
+          sibling.previousFingerprint,
+        )
           .then(() => undefined)
           .catch((error) => {
             console.error(
@@ -2544,6 +2560,11 @@ export class WorkflowManager {
     // one binding exactly as it always was.
     const targets = this.repoRunTargets(session, anchor);
     let answer: WorkflowCompletionClaimResult | null = null;
+    let lead: { result: WorkflowCompletionClaimResult; activate: PreparedWorkflowRun } | null = null;
+    const siblings: PreparedWorkflowRun[] = [];
+    // Every claim is made HERE, synchronously and in order, before any evidence is read. The
+    // durable half of a completion - the guard, the runs, the submissions - is what the reply
+    // speaks for, and it must not depend on how long a git read takes.
     for (const [index, target] of targets.entries()) {
       // The FIRST target spends the completion episode; the rest ride the same proof. One
       // settled turn is one episode however many repositories it touched, and retiring the
@@ -2559,32 +2580,59 @@ export class WorkflowManager {
         if (!claimed.result.claimed) return claimed.result;
         this.queues.refresh(target.noteKey);
       }
-      if (claimed.activate) {
-        const activated = await this.captureAndActivate(
-          claimed.activate.binding,
-          claimed.activate.run,
-          claimed.activate.submission,
-          claimed.previousFingerprint,
-          false,
-        ).catch((error) => {
-          console.error(
-            `[workflow] could not capture the review of ${target.repoRoot || session.repoRoot}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          return { ok: false as const, reason: "capture_failed" as const, message: "" };
-        });
-        if (index === 0 && !activated.ok && claimed.result.claimed) {
-          answer = {
-            claimed: true,
-            runId: claimed.result.runId,
-            submissionId: claimed.result.submissionId,
-            state: "blocked",
-          };
-        }
-      }
+      if (!claimed.activate) continue;
+      const prepared: PreparedWorkflowRun = {
+        ...claimed.activate,
+        previousFingerprint: claimed.previousFingerprint,
+      };
+      if (index === 0) lead = { result: claimed.result, activate: prepared };
+      else siblings.push(prepared);
     }
     if (!answer) throw new Error("Claimed Foreman completion produced no run");
+    if (!lead) {
+      // Nothing for the lead to capture - an already-claimed replay, or a run that was
+      // blocked rather than resubmitted. The siblings still get theirs.
+      this.activateSiblingRuns(siblings);
+      return answer;
+    }
+    // Only the LEAD is awaited, and its promise is created BEFORE the siblings are fired so it
+    // takes the conversation's capture lock first and they queue behind it.
+    //
+    // Awaiting every target would put N sequential evidence captures on the request path, and
+    // this path is not a dashboard click: `POST /api/sessions/:id/workflow-completion` is the
+    // Foreman worker's, it fails CLOSED on a lost response, and a capture reads git and can
+    // include a 45-second compaction attempt. A three-repo task would have staked the
+    // completion boundary - and the shipping that follows it - on three of those finishing
+    // inside one HTTP timeout. The lead alone is awaited because the reply still has to be
+    // able to answer `blocked` when ITS capture fails, which is the single-repo contract and
+    // is unchanged.
+    //
+    // The same reasoning `activateSiblingRuns` already carries for the manual paths, applied
+    // here rather than restated: the caller learns nothing from a sibling's git read.
+    const leadCapture = this.captureAndActivate(
+      lead.activate.binding,
+      lead.activate.run,
+      lead.activate.submission,
+      lead.activate.previousFingerprint,
+      false,
+    ).catch((error) => {
+      console.error(
+        `[workflow] could not capture the review of ${
+          lead?.activate.binding.repoRoot || session.repoRoot
+        }: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { ok: false as const, reason: "capture_failed" as const, message: "" };
+    });
+    this.activateSiblingRuns(siblings);
+    const activated = await leadCapture;
+    if (!activated.ok && lead.result.claimed) {
+      return {
+        claimed: true,
+        runId: lead.result.runId,
+        submissionId: lead.result.submissionId,
+        state: "blocked",
+      };
+    }
     return answer;
   }
 

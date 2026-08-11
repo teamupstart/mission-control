@@ -45,6 +45,41 @@ const MODEL = "gpt-5-codex-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only a final answer";
 const HELD_TURN_MS = 5_000;
+/**
+ * The prompt that leaves a RUN of executed commands in the rollout.
+ *
+ * Deliberately the same constant `fake-claude.mjs` answers, because the claim the terminal
+ * rendering makes is agent-independent: a stretch of commands is ONE record whoever ran them.
+ * One probe, two harnesses, and a spec that can assert the same three commands on both.
+ *
+ * The records are the shape a real rollout writes, which is the part that matters - measured
+ * against `~/.codex/sessions`, a working stretch reads:
+ *
+ *   event_msg/agent_message          <- the preamble prose
+ *   response_item/custom_tool_call   <- the commands, as their OWN records
+ *   response_item/custom_tool_call_output
+ *   response_item/reasoning
+ *   response_item/custom_tool_call
+ *
+ * so the `reasoning` and `custom_tool_call_output` records are written here too. They carry no
+ * message and must not break the run apart; a fake that omitted them could not tell a reader
+ * that folds correctly from one that only looks like it does.
+ */
+const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
+/**
+ * The commands the run executes, as Codex really records them.
+ *
+ * Not a bare command string: the `exec` tool takes a freeform script, so the command sits
+ * inside a `tools.exec_command({...})` call, and in the object-literal form (unquoted key)
+ * that a rollout actually contains. Reading the command back out of this wrapper is the other
+ * half of what the terminal record has to get right - a fake that passed `{"command": "..."}`
+ * would prove nothing, because that shape already worked.
+ */
+const RUN_COMMANDS = [
+  "rg PersonaDirective src test",
+  "git status --short",
+  "sed -n '1,40p' src/server/registry.ts",
+];
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (recordDir) {
@@ -112,6 +147,32 @@ function appendRollout(type, message) {
       payload: { type, message },
     })}\n`,
   );
+}
+
+/** One `response_item` record, the envelope every non-`event_msg` rollout record wears. */
+function appendItem(payload) {
+  appendFileSync(
+    rolloutPath,
+    `${JSON.stringify({ timestamp: new Date().toISOString(), type: "response_item", payload })}\n`,
+  );
+}
+
+/**
+ * One executed command, with the records a real rollout surrounds it with.
+ *
+ * The reasoning record leads and the output record trails, which is the order Codex writes and
+ * the order that matters here: both sit BETWEEN two commands of the same run.
+ */
+function appendCommand(turnId, index, command) {
+  const callId = `call-${turnId}-${index}`;
+  appendItem({ type: "reasoning", summary: [], content: [] });
+  appendItem({
+    type: "custom_tool_call",
+    call_id: callId,
+    name: "exec",
+    arguments: `const r = await tools.exec_command({\n  cmd: ${JSON.stringify(command)},\n  workdir: ${JSON.stringify(process.cwd())},\n});\ntext(r.output);\n`,
+  });
+  appendItem({ type: "custom_tool_call_output", call_id: callId, output: "mock output" });
 }
 
 // --- the control wire -----------------------------------------------------------------
@@ -207,6 +268,16 @@ function runTurn(turnId, input) {
     // `finishTurn` is idempotent.
     notify("thread/status/changed", { threadId: THREAD_ID, status: { type: "idle" } });
   };
+
+  // A preamble, then a run of commands, then the echoed reply - the shape a real working
+  // stretch has. The reply is written last for the same reason it is on the Claude side: its
+  // arrival is what tells a spec the records above it have already reached the browser.
+  if (prompt === TOOL_RUN_TURN) {
+    appendRollout("agent_message", "Mock reply before the run");
+    RUN_COMMANDS.forEach((command, index) => appendCommand(turnId, index, command));
+    finish([prompt]);
+    return;
+  }
 
   // One deterministic busy window, the same contract `fake-claude.mjs` offers, so the
   // queued-turn specs can meet a genuinely busy driver on either harness. Ordinary prompts

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexTranscript } from "../src/server/harness/codex/transcript.ts";
 import { claudeTranscript } from "../src/server/harness/claude/transcript.ts";
+import type { TranscriptMessage } from "../src/shared/types.ts";
 
 // What is at stake: the dashboard's conversation panel, and every reader that asks a
 // harness "what has this session said".
@@ -66,23 +67,47 @@ function writeRollout(name: string, turns: number): { path: string; texts: strin
 
 const codex = codexTranscript.messages!;
 
+/**
+ * The turns that carry prose.
+ *
+ * A rollout turn parses to THREE messages, not two: the ask, the answer, and the run of
+ * commands that answer led to. The run is a turn of its own precisely so the panel can fold it
+ * into one record the way it folds Claude's - see `parseCodexMessages` - and it carries no text,
+ * so the assertions below name what they mean rather than counting rows.
+ *
+ * That the run costs a slot in the turn budget is deliberate and shared: Claude's tool-only
+ * turns have always cost one each, and a bound that skipped Codex's would be a bound on a
+ * different thing per harness. Codex is the cheaper of the two here - consecutive calls
+ * accumulate into ONE turn, so a stretch of eighteen commands spends one slot, not eighteen.
+ */
+const spoken = (messages: TranscriptMessage[]): string[] =>
+  messages.filter((m) => m.text).map((m) => m.text);
+
+/** How many of them are folded runs of commands. */
+const runs = (messages: TranscriptMessage[]): number =>
+  messages.filter((m) => !m.text && m.tools.length > 0).length;
+
 test("a stream's initial view carries the conversation, not the last 512KB of tool output", () => {
   const { path, texts } = writeRollout("stream.jsonl", 24);
   // Comfortably past every byte window in transcript.ts, so the old arithmetic applied.
   assert.ok(statSync(path).size > 1024 * 1024, "fixture must exceed the byte windows to be a regression");
 
   const init = codex.initial(path);
-  assert.equal(init.messages.length, texts.length, "every turn in the file reaches the panel");
-  assert.deepEqual(init.messages.map((m) => m.text), texts);
+  assert.deepEqual(spoken(init.messages), texts, "every turn in the file reaches the panel");
+  assert.equal(runs(init.messages), 24, "and so does each turn's run of commands");
   assert.equal(init.pos, statSync(path).size, "the stream resumes at EOF, so no turn is replayed");
 });
 
 test("the opening ask survives a rollout whose head is nearly all tool output", () => {
   const { path, texts } = writeRollout("window.jsonl", 24);
-  const w = codex.window(path, 12, 48);
+  // Tail sized to hold the whole conversation - 200 is the ceiling the panel's own route
+  // allows - because what this test is about is the BYTE windows, not the turn bound. A
+  // rollout turn spends three slots (ask, answer, run), so a 48-turn tail would elide part of
+  // this file and the elision, not the byte arithmetic, would be what the assertion measured.
+  // The bound itself is the next test's subject.
+  const w = codex.window(path, 12, 200);
   assert.equal(w.messages[0]?.text, texts[0], "the goal the human set is still the first turn");
-  assert.equal(w.messages.at(-1)?.text, texts.at(-1));
-  assert.equal(w.messages.length, texts.length);
+  assert.deepEqual(spoken(w.messages), texts);
   assert.equal(w.truncated, false, "nothing was elided, so the reader must not be told it was");
 });
 
@@ -93,7 +118,9 @@ test("a rollout longer than the turn budget is bounded, and reports its elision"
   assert.equal(w.headCount, 12);
   assert.equal(w.messages.length, 60, "bounded by the turn counts asked for, not by bytes");
   assert.equal(w.messages[0]?.text, texts[0]);
-  assert.equal(w.messages.at(-1)?.text, texts.at(-1));
+  // The newest thing in this rollout is a run of commands, so the last MESSAGE carries no text.
+  // What must still be reachable is the newest thing the agent said.
+  assert.equal(spoken(w.messages).at(-1), texts.at(-1));
 });
 
 test("the grown head and tail never overlap, so synthesized ids stay unique", () => {
@@ -102,9 +129,12 @@ test("the grown head and tail never overlap, so synthesized ids stay unique", ()
   // a synthesized id is unique per parse BATCH - so two reads covering the same bytes
   // would each mint their own, and the same turn would render twice.
   const { path, texts } = writeRollout("overlap.jsonl", 30);
-  const w = codex.window(path, 12, 48);
+  // Whole-conversation tail, for the reason given above: an elided middle would hide the very
+  // duplicate this test exists to catch.
+  const w = codex.window(path, 12, 200);
   assert.equal(new Set(w.messages.map((m) => m.id)).size, w.messages.length, "duplicate ids");
-  assert.deepEqual(w.messages.map((m) => m.text), texts, "a turn rendered twice, or dropped");
+  assert.deepEqual(spoken(w.messages), texts, "a turn rendered twice, or dropped");
+  assert.equal(runs(w.messages), 30, "and every run came back exactly once too");
 });
 
 test("a work item's verify window reads its turns, not half a megabyte of one command", () => {
@@ -118,7 +148,7 @@ test("a work item's verify window reads its turns, not half a megabyte of one co
   appendFileSync(path, `${more.lines.join("\n")}\n`);
 
   const s = codex.since(path, offset);
-  assert.deepEqual(s.messages.map((m) => m.text), more.texts, "the item's own turns, all of them");
+  assert.deepEqual(spoken(s.messages), more.texts, "the item's own turns, all of them");
   assert.equal(s.truncated, false);
   assert.equal(s.headCount, 0, "this window drops a prefix, never a middle");
 });

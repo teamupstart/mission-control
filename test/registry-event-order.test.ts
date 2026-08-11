@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
-import type { ServerEvent } from "../src/shared/protocol.ts";
+import type { ServerEvent } from "../src/shared/types.ts";
 
 // The order changes reach a browser in.
 //

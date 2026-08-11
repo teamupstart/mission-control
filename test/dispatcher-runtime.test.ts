@@ -38,7 +38,6 @@ const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { openDb, getForemanInvite } = await import("../src/server/db.ts");
 const { setHarnessesConfig, resolveDispatchRuntime } = await import("../src/server/harnesses.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
-const { AGENT_TYPES } = await import("../src/shared/types.ts");
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
@@ -92,8 +91,8 @@ function fakeSupervisor(registry: InstanceType<typeof Registry>) {
 }
 
 test("the resolver reads the stored choice, and falls back rather than guessing", () => {
-  // Shipped default, and it stays the shipped default: cut-over is an operator flipping
-  // this per harness, never a default change.
+  assert.equal(resolveDispatchRuntime("claude"), "sdk");
+  setHarnessesConfig({ sessionRuntime: { claude: "terminal" } });
   assert.equal(resolveDispatchRuntime("claude"), "terminal");
   setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
   assert.equal(resolveDispatchRuntime("claude"), "sdk");
@@ -116,11 +115,9 @@ test("the resolver reads the stored choice, and falls back rather than guessing"
   assert.equal(resolveDispatchRuntime("pi"), "terminal");
 });
 
-test("a fresh config pins every harness to terminal until the operator opts in", () => {
+test("a fresh config uses the Agent SDK for harnesses that declare an embedded driver", () => {
   const config = HarnessesConfigSchema.parse({});
-  for (const agent of AGENT_TYPES) {
-    assert.equal(config.sessionRuntime[agent], "terminal", `${agent} default changed`);
-  }
+  assert.deepEqual(config.sessionRuntime, { claude: "sdk", codex: "sdk", pi: "terminal" });
 });
 
 test("with both toggles on, Claude and Codex dispatch through the supervisor without a home", async () => {

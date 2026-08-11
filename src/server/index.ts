@@ -256,11 +256,10 @@ registry.onSessionsObserved(() => {
 // hangs off it, so a session registered after that moment is invisible to the reconciliation
 // that would have settled its task. Restoring first is what makes an embedded session look
 // exactly like a rediscovered terminal one to `reconcileTasksWithNoLiveSession` and
-// `reconcileBindingsAfterDiscovery`. Inert on an installation nobody has turned the runtime on
-// for: with every harness's `sessionRuntime` at its shipped `terminal`, no row was ever
-// written and there is nothing to resume. Awaited rather than fire-and-forget for the ordering
-// itself, and best-effort because a daemon that refused to start over one unresumable session
-// would be worse than one running without it.
+// `reconcileBindingsAfterDiscovery`. A fresh installation has no persisted SDK session row, so
+// this has nothing to restore until its first embedded dispatch. Awaited rather than
+// fire-and-forget for the ordering itself, and best-effort because a daemon that refused to
+// start over one unresumable session would be worse than one running without it.
 try {
   await sdkSessions.restore();
 } catch (err) {

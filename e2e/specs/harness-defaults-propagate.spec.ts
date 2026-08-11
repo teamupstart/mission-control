@@ -26,6 +26,26 @@ const CLAUDE_MODEL = "Default model for dispatched Claude Code sessions";
 
 const EVIDENCE = artifactsDir("harness-defaults-propagate");
 
+test("a new installation defaults Claude and Codex dispatches to the Agent SDK", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings`);
+  await dashboard.getByRole("tab", { name: /Harnesses/ }).click();
+
+  await expect(
+    dashboard.getByRole("combobox", {
+      name: "Session runtime for dispatched Claude Code sessions",
+    }),
+  ).toHaveValue("sdk");
+  await expect(
+    dashboard.getByRole("combobox", {
+      name: "Session runtime for dispatched Codex sessions",
+    }),
+  ).toHaveValue("sdk");
+  await shoot(dashboard, "new-install-sdk-defaults");
+});
+
 /**
  * Photograph a state this spec has already asserted on.
  *

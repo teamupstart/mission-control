@@ -13,6 +13,7 @@ import {
   sdkRuntimeUnsupportedWhy,
 } from "@shared/harness-capabilities.ts";
 import { modelChoicesFor } from "@shared/model.ts";
+import { DEFAULT_HARNESSES_SESSION_RUNTIMES } from "@shared/protocol.ts";
 import { permissionModeDisplay } from "../lib/format.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
 import { AgentDot, agentAccentStyle } from "./session-bits.tsx";
@@ -340,7 +341,7 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
             label={card.label}
             model={config?.defaultModel[card.agent] ?? null}
             effort={config?.defaultEffort[card.agent] ?? null}
-            runtime={config?.sessionRuntime[card.agent] ?? "terminal"}
+            runtime={config?.sessionRuntime[card.agent] ?? DEFAULT_HARNESSES_SESSION_RUNTIMES[card.agent]}
             autoMode={autoMode}
             disabled={!config}
             onModel={(id) => void update({ defaultModel: { [card.agent]: id } })}

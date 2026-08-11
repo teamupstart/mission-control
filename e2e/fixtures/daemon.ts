@@ -407,26 +407,6 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     );
   }
 
-  // Dispatch the SDK runtime, not a terminal one. `terminal` is the shipped default and it
-  // needs tmux or wezterm to spawn a pane, which CI does not have; `sdk` is fully headless -
-  // `Dispatcher.dispatch` returns before every terminal-only step. Set through the real
-  // route rather than a seeded DB row, so this configures the daemon the way the Settings
-  // panel does and cannot drift from it.
-  // Codex alongside Claude, for the same reason and with the same fake behind it: its
-  // driver speaks `codex app-server` over stdio, which is as headless as Claude's, while a
-  // terminal Codex would need the pane CI does not have.
-  const configured = await fetch(`${baseURL}/api/harnesses/config`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionRuntime: { claude: "sdk", codex: "sdk" } }),
-  });
-  if (!configured.ok) {
-    await stop();
-    throw new Error(
-      `could not switch claude and codex to the sdk runtime: ${configured.status} ${await configured.text()}`,
-    );
-  }
-
   return {
     baseURL,
     home,

@@ -746,6 +746,37 @@ test("a BLOCKED run's unresolved packet never holds its siblings hostage", async
   assert.equal(f.store.getDelivery(second.delivery.id)?.state, "delivered");
 });
 
+test("a queued packet whose run ends is forgotten, not remembered for ever", async () => {
+  // The id the queue remembers is a delivery id, so it has to be swept by asking that
+  // DELIVERY - not by walking bindings to their runs. A run that goes terminal while one of
+  // its packets waits (its binding archived, its run cancelled, while a sibling repository
+  // still owns the pane) is never walked again, because `activeRunForBinding` excludes
+  // terminal runs, and the id would sit in memory for the life of the process.
+  const { f, runs } = await twoLiveRuns();
+  const [first, second] = runs;
+  assert.ok(first && second);
+  const queued = f.manager as unknown as {
+    deliverPrepared(id: string, retry: boolean): Promise<void>;
+    scheduleQueuedDeliveries(noteKey: string): void;
+    queuedDeliveries: Set<string>;
+  };
+  await queued.deliverPrepared(first.delivery.id, false);
+  await queued.deliverPrepared(second.delivery.id, false);
+  assert.equal(queued.queuedDeliveries.has(second.delivery.id), true);
+
+  // The waiting repository's review is cancelled out from under its queued packet - the one
+  // shape the binding walk cannot see, because the run it would have to reach is gone.
+  f.store.archiveBindingAndCancel(second.binding.id, Date.now());
+  assert.notEqual(f.store.getDelivery(second.delivery.id)?.state, "prepared");
+  queued.scheduleQueuedDeliveries(f.agentSessionId);
+  assert.equal(
+    queued.queuedDeliveries.has(second.delivery.id),
+    false,
+    "the queue lets go of a packet it can never send",
+  );
+  await f.manager.stop();
+});
+
 test("the queue re-derives itself from persisted state after a restart", async () => {
   const { f, runs } = await twoLiveRuns();
   const [first, second] = runs;

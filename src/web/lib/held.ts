@@ -58,19 +58,39 @@ export function newestSessionRun(
 }
 
 /**
- * The same join, for one session standing in front of its own runs.
+ * The run actually holding this session's next turn, or null when nothing is.
  *
- * This is what a card-shaped surface (Board tile, Cards card) uses to draw its held mark, and
- * it is the SAME sentence `heldSessionIds` spells over the map - stated once here so the two
- * cannot drift, which is also why both now read every run rather than one. Scoped to the
- * `idle` tone to match `orderSessions`: a held session that has stopped to ask a question
- * belongs to "needs you", and a held mark there would argue with the column it sits in.
+ * This is what a card-shaped surface (Board tile, Cards card, rail row) uses to draw its held
+ * mark AND to name it, and it is the SAME sentence `heldSessionIds` spells over the map -
+ * stated once here so the two cannot drift, which is also why both read every run rather than
+ * one. Scoped to the `idle` tone to match `orderSessions`: a held session that has stopped to
+ * ask a question belongs to "needs you", and a held mark there would argue with the column it
+ * sits in.
+ *
+ * An OPEN run, and never merely the newest. On a multi-repo session those come apart: a run
+ * queued behind a sibling's turn stops advancing its `updatedAt` by design, so a sibling that
+ * COMPLETED afterwards is the newer row - and a tooltip reading the newest would name a
+ * finished review as the thing holding the session, while the review that really holds it went
+ * unnamed. The mark and its sentence have to come from the same run or the card is arguing
+ * with itself.
+ *
+ * List order decides between several open runs, which is repository order with the session's
+ * own first. Stable, so the sentence does not flip between renders as sibling runs update.
  */
+export function heldByRun(
+  runs: readonly WorkflowRunSummary[] | null | undefined,
+  tone: Tone,
+): WorkflowRunSummary | null {
+  if (runs == null || tone !== "idle") return null;
+  return runs.find((run) => workflowRunIsOpen(run.status)) ?? null;
+}
+
+/** Whether an open run owns this session's next turn. The predicate half of `heldByRun`. */
 export function sessionIsHeld(
   runs: readonly WorkflowRunSummary[] | null | undefined,
   tone: Tone,
 ): boolean {
-  return runs != null && runs.some((run) => workflowRunIsOpen(run.status)) && tone === "idle";
+  return heldByRun(runs, tone) !== null;
 }
 
 /**

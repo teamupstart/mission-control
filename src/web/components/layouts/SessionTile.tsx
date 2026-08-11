@@ -3,7 +3,7 @@ import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { sessionIsHeld } from "../../lib/held.ts";
+import { heldByRun } from "../../lib/held.ts";
 import {
   AgentDot,
   CostChip,
@@ -91,8 +91,11 @@ export function SessionTile({
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
   // above it and this tag have to agree about the same session, and one source is how they do.
-  // `sessionIsHeld` is the shared sentence, so the Cards card cannot spell it differently.
-  const held = sessionIsHeld(workflowRuns, st.tone);
+  // `heldByRun` is the shared sentence, so the Cards card cannot spell it differently - and
+  // the run it returns is the one the tooltip names, so the mark cannot credit a sibling
+  // review that has already finished.
+  const heldBy = heldByRun(workflowRuns, st.tone);
+  const held = heldBy !== null;
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
   const toggleWorkflowExpanded = useCallback(
@@ -185,7 +188,7 @@ export function SessionTile({
             by the arrow keys has to carry its own answer to "why can I not use this one". */}
         {held && (
           <Tooltip
-            label={`Held by ${workflowRun?.workflowName ?? "a workflow"} - the run owns this session's next turn`}
+            label={`Held by ${heldBy?.workflowName ?? "a workflow"} - the run owns this session's next turn`}
           >
             <span className="tile-held">held</span>
           </Tooltip>

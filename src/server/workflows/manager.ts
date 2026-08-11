@@ -4814,6 +4814,29 @@ export class WorkflowManager {
   }
 
   /**
+   * Drop queued ids the queue has no further claim on, BY DELIVERY rather than by binding.
+   *
+   * Keyed the way the set itself is keyed, which is the whole point. The re-offer sweep below
+   * reaches deliveries through active bindings and their non-terminal runs, so a run that went
+   * terminal while one of its packets waited - its binding archived, its run cancelled, while
+   * a sibling repository still owned the pane - is never walked again, and its id would sit in
+   * the set for the life of the process. Asking each id about its own delivery has no such
+   * blind spot: a delivery that was cancelled with its run, or vanished with a reset, drops
+   * here.
+   *
+   * Cheap when there is nothing queued, which is nearly always: an empty set iterates zero
+   * times, and a non-empty one holds one entry per packet currently waiting its turn across
+   * the whole fleet. It runs before the sweep's own early return so a conversation that has
+   * dropped back to a single binding still gets its ids cleaned up.
+   */
+  private pruneQueuedDeliveries(): void {
+    for (const id of this.queuedDeliveries) {
+      const delivery = this.store.getDelivery(id);
+      if (!delivery || delivery.state !== "prepared") this.queuedDeliveries.delete(id);
+    }
+  }
+
+  /**
    * Re-offer the packets this conversation's other reviews are holding.
    *
    * Called wherever a hold can end - a turn moving on, a repair being resubmitted - and cheap
@@ -4836,6 +4859,7 @@ export class WorkflowManager {
    * simply queues again.
    */
   private scheduleQueuedDeliveries(noteKey: string): void {
+    this.pruneQueuedDeliveries();
     const bindings = this.store.activeBindingsForNote(noteKey);
     if (bindings.length < 2) return;
     for (const binding of bindings) {
@@ -4844,13 +4868,6 @@ export class WorkflowManager {
       if (!run || runIsTerminal(run)) continue;
       for (const delivery of this.store.listDeliveries(run.id)) {
         if (!this.queuedDeliveries.has(delivery.id)) continue;
-        // A packet that has left `prepared` was sent, refused or superseded, so the queue has
-        // no further claim on it. Dropped here rather than only on the send path, so a run
-        // that ended while one of its packets waited cannot leak an id for the process's life.
-        if (delivery.state !== "prepared") {
-          this.queuedDeliveries.delete(delivery.id);
-          continue;
-        }
         this.schedulePreparedDelivery(delivery.id);
       }
     }

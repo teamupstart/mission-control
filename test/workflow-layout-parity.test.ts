@@ -17,6 +17,7 @@ import {
 import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { RailRow } from "../src/web/components/layouts/RailRow.tsx";
+import { heldByRun, newestSessionRun } from "../src/web/lib/held.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 import { mkSessionView } from "./helpers/session-view.ts";
 
@@ -118,8 +119,8 @@ test("Cards wears the held mark the Board tile wears, off the same predicate", (
   // Both card-shaped surfaces read the ONE shared sentence, so they cannot drift.
   const card = readFileSync(new URL("../src/web/components/SessionCard.tsx", import.meta.url), "utf8");
   const tile = readFileSync(new URL("../src/web/components/layouts/SessionTile.tsx", import.meta.url), "utf8");
-  assert.match(card, /sessionIsHeld\(/);
-  assert.match(tile, /sessionIsHeld\(/);
+  assert.match(card, /heldByRun\(/);
+  assert.match(tile, /heldByRun\(/);
 });
 
 /**
@@ -311,5 +312,56 @@ test("the rail row wears the held mark at rail density, on the state's own line"
     new URL("../src/web/components/layouts/RailRow.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(rail, /sessionIsHeld\(/);
+  assert.match(rail, /heldByRun\(/);
+});
+
+test("the held mark names the run actually holding the turn, not the newest one", () => {
+  // The two come apart on a multi-repo session, and the delivery queue is what pulls them
+  // apart: a run queued behind a sibling's turn stops advancing its `updatedAt` by design, so
+  // a sibling that COMPLETES afterwards is the newer row. A tooltip reading the newest then
+  // credits a finished review for holding the session, while the review that really holds it
+  // goes unnamed - the card contradicting its own mark.
+  const queued: WorkflowRunSummary = {
+    ...run,
+    id: "queued",
+    workflowName: "Repo A review",
+    status: "waiting_for_session",
+    updatedAt: 10,
+  };
+  const finished: WorkflowRunSummary = {
+    ...run,
+    id: "finished",
+    workflowName: "Repo B review",
+    status: "completed",
+    updatedAt: 99,
+  };
+  assert.equal(newestSessionRun([queued, finished])?.workflowName, "Repo B review");
+  assert.equal(heldByRun([queued, finished], "idle")?.workflowName, "Repo A review");
+
+  // And the surfaces say so. Every card-shaped surface reads the same run for the mark and
+  // for the sentence, so neither can name a review the other does not.
+  const idle = mkSession({ state: "idle", activity: null });
+  for (const markup of [
+    renderToStaticMarkup(createElement(SessionCard, {
+      session: idle,
+      expanded: false,
+      workflowRun: finished,
+      workflowRuns: [queued, finished],
+    })),
+    renderToStaticMarkup(createElement(RailRow, {
+      selected: false,
+      onSelect: () => {},
+      session: idle,
+      workflowRun: finished,
+      workflowRuns: [queued, finished],
+    })),
+  ]) {
+    assert.match(markup, /Held by Repo A review - the run owns this session/);
+    assert.doesNotMatch(markup, /Held by Repo B review/);
+  }
+
+  // Nothing open means nothing holds, whatever the newest run says.
+  assert.equal(heldByRun([finished], "idle"), null);
+  // And the tone gate is unchanged: a session parked on a question is not "held".
+  assert.equal(heldByRun([queued], "attention"), null);
 });

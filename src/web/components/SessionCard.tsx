@@ -6,7 +6,7 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
-import { sessionCanBindWorkflow, sessionIsHeld, workflowBindChipTitle } from "../lib/held.ts";
+import { heldByRun, sessionCanBindWorkflow, workflowBindChipTitle } from "../lib/held.ts";
 import { queueChipVisible, queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { Keycap } from "./Keycap.tsx";
@@ -220,8 +220,11 @@ export function SessionCard({
   const attention = st.tone === "attention";
   // Cards has no idle column to split and no section rule to draw, so the card's spine and
   // tag are the ONLY way this layout says "an open run owns this agent's next turn". Same
-  // shared sentence the Board tile reads (`sessionIsHeld`), so the two cannot disagree.
-  const held = sessionIsHeld(workflowRuns, st.tone);
+  // shared sentence the Board tile reads (`heldByRun`), so the two cannot disagree - and the
+  // mark and the name it carries come from ONE run rather than from two readings that can
+  // name different reviews.
+  const heldBy = heldByRun(workflowRuns, st.tone);
+  const held = heldBy !== null;
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
@@ -329,7 +332,7 @@ export function SessionCard({
             the "idle" the badge is about to say. */}
         {held && (
           <Tooltip
-            label={`Held by ${workflowRun?.workflowName ?? "a workflow"} - the run owns this session's next turn`}
+            label={`Held by ${heldBy?.workflowName ?? "a workflow"} - the run owns this session's next turn`}
           >
             <span className="card-held">held</span>
           </Tooltip>

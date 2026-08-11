@@ -90,6 +90,26 @@ test("codex's exec is read from an object literal, not just from JSON", () => {
   assert.deepEqual(chip, { name: "exec", detail: "git", title: "git status --short" });
 });
 
+// Dropping the required leading quote also dropped the only thing stopping `command` from
+// matching the TAIL of a longer field name, and the failure was the bad kind: a real command
+// line lifted out of the wrong field, so the record looked right and said something false.
+test("an unquoted shell key only matches at a field boundary", () => {
+  const wrong = (input: string) => toolChip({ name: "exec", input });
+  // A key ENDING in the one being looked for.
+  assert.equal(wrong('tools.exec_command({ shell_command: "old", cmd: "git status" })').title, "git status");
+  // The same, quoted - the form that was always safe, kept safe.
+  assert.equal(wrong('tools.exec_command({"shell_command":"old","cmd":"git status"})').title, "git status");
+  // And a key ending in the SHORT one, which `_` alone would not have caught.
+  assert.equal(wrong('tools.exec_command({ my_cmd: "old", cmd: "git status" })').title, "git status");
+  assert.equal(wrong('tools.exec_command({ precommand: "old", command: "git status" })').title, "git status");
+  // The boundaries that must still be admitted: `{`, `(`, whitespace, and start of input.
+  assert.equal(wrong('tools.exec_command({cmd:"npm test"})').title, "npm test");
+  assert.equal(wrong('exec_command(cmd: "npm test")').title, "npm test");
+  assert.equal(wrong('cmd: "npm test"').title, "npm test");
+  // The trailing side needs no assertion of its own - the required `:` refuses a longer key.
+  assert.equal(wrong('tools.exec_command({ cmd_extra: "nope", cmd: "ok" })').title, "ok");
+});
+
 test("a codex command cut off by the input cap is still named", () => {
   const chip = toolChip({ name: "exec", input: 'const r = await tools.exec_command({ cmd: "npm run build && npm run sm…' });
   assert.equal(chip.detail, "npm");

@@ -67,9 +67,17 @@ function strField(input: string, keys: readonly string[], bareKeys = false): str
  * often as `"cmd": "…"`. Opt-in per key set rather than always on: the quoted form is the only
  * one a JSON producer can emit, so relaxing it for the generic key list would let a common word
  * like `name:` or `query:` match inside a VALUE and name a call after its own argument text.
+ *
+ * The unquoted form must still begin at a field boundary. Dropping the required leading quote
+ * also drops the only thing that kept `command` from matching the TAIL of a longer name, so
+ * `{ shell_command: "old", cmd: "git status" }` reported `old` - a real command line, from the
+ * wrong field, which is the worst way for this to be wrong. The lookbehind rejects any key
+ * preceded by an identifier character, which covers `shell_command`, `my_cmd` and `precommand`
+ * at once and still admits `{`, `,`, `(`, whitespace, a leading quote, and the start of input.
+ * No trailing assertion is needed: the required `:` already refuses `cmd_extra`.
  */
 function rawField(input: string, key: string, bareKeys = false): string | null {
-  const k = bareKeys ? `"?${key}"?` : `"${key}"`;
+  const k = bareKeys ? `(?<![A-Za-z0-9_$])"?${key}"?` : `"${key}"`;
   const closed = new RegExp(`${k}\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(input);
   if (closed) return unescape(closed[1] ?? "");
   const open = new RegExp(`${k}\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)$`).exec(input);

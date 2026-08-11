@@ -179,27 +179,52 @@ test("the row cannot wrap, because wrapping would break the log's stick-to-botto
   assert.match(text.slice(0, text.indexOf("}")), /text-overflow:\s*ellipsis/);
 });
 
-test("the effect that follows the log's tail lists the row among what moves it", () => {
+/**
+ * The dependency SET of the hook whose body contains `bodyLine`, sorted.
+ *
+ * Parsed rather than matched, on the model of `dropdown-consistency.test.ts`: what the
+ * assertion below is about is which values the effect re-runs on, and that is a set. Which
+ * order they are written in, whether the array wraps across lines, and whether the last one
+ * carries a trailing comma are formatting, and a test that failed on any of those would be
+ * failing for a reason nobody changed the behaviour with.
+ */
+function hookDeps(source: string, bodyLine: string): string[] {
+  const at = source.indexOf(bodyLine);
+  assert.ok(at >= 0, `no hook body in TranscriptPanel.tsx containing: ${bodyLine}`);
+  const closing = /\}\s*,\s*\[([^\]]*)\]\s*\)/.exec(source.slice(at));
+  assert.ok(closing, "the hook should close with a dependency array");
+  return closing[1]!
+    .split(",")
+    .map((dep) => dep.trim())
+    .filter(Boolean)
+    .sort();
+}
+
+test("the tail-following effect declares the in-progress row among its dependencies", () => {
   // F4, defect one. The layout effect that re-pins the log runs on its dependencies and
-  // nothing else, so a row that changes the log's height while absent from that array
-  // leaves a bottom-pinned reader a row short of the bottom, silently.
+  // nothing else, so a row that changes the log's height while absent from that set leaves
+  // a bottom-pinned reader a row short of the bottom, silently.
   //
-  // Today the entry is redundant, and pinned anyway. An activity change can only arrive as
-  // a whole-session upsert, and every one of those re-parses `session.pendingTurns` into a
-  // fresh array - so the neighbouring dependency already re-runs the effect on the same
-  // tick. `e2e/specs/conversation-in-progress-row.spec.ts` measures the behaviour and
-  // stays green with `inProgress` removed for exactly that reason; it goes red the moment
-  // the masking does. This assertion is the one that fails on the narrow mutation, which
-  // is what makes "the effect declares its own dependency" a checked property rather than
-  // a comment.
+  // This is a wiring assertion and says so, because the behaviour it defends is not
+  // reachable from this layer: `renderToStaticMarkup` runs no effects and produces no
+  // scroll container, and AGENTS.md rules out jsdom without a project decision.
+  // `e2e/specs/conversation-in-progress-row.spec.ts` is where the behaviour is measured, in
+  // a real scroll container, and it is mutation-tested.
+  //
+  // Both are needed because the entry is currently REDUNDANT. An activity change can only
+  // arrive as a whole-session upsert, and every one of those re-parses
+  // `session.pendingTurns` into a fresh array, so the neighbouring dependency already
+  // re-runs the effect on the same tick - which is why the browser spec stays green with
+  // `inProgress` removed and goes red only when the masking goes too. Listing it is what
+  // keeps the effect standing on its own values instead of on an accident of the transport,
+  // and this is the assertion that notices if it stops.
   const source = readFileSync(
     fileURLToPath(new URL("../src/web/components/TranscriptPanel.tsx", import.meta.url)),
     "utf8",
   );
-  const deps = source.slice(source.indexOf("if (atBottom.current) el.scrollTop = el.scrollHeight;"));
-  assert.match(
-    deps.slice(0, deps.indexOf("\n", deps.indexOf("}, ["))),
-    /\}, \[messages, session\.pendingTurns, inProgress\]/,
-    "the tail-following effect must re-run when the in-progress row changes height",
+  assert.deepEqual(
+    hookDeps(source, "if (atBottom.current) el.scrollTop = el.scrollHeight;"),
+    ["inProgress", "messages", "session.pendingTurns"],
+    "the tail-following effect must re-run when the in-progress row changes the log's height",
   );
 });

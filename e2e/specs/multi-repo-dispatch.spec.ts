@@ -183,3 +183,38 @@ test("a harness that cannot hold write access outside its cwd is not offered the
   await dialog.getByLabel("Agent").selectOption("claude");
   await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeVisible();
 });
+
+test("retyping the primary onto an attached repo blocks the dispatch instead of dropping it", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The silent drop this closes: the chip stayed on screen, the submit stayed enabled, and
+  // the dispatch went out single-repo with nothing said. An operator deciding the secondary
+  // should really be the primary - and forgetting to detach the old chip - got a task that
+  // quietly did half of what they asked.
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Add another repo" }).click();
+  await dialog.getByPlaceholder("repo to attach…").fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Attach repo" }).click();
+  await dialog.getByPlaceholder("What should this agent do?").fill("Rename the shared field");
+
+  const go = dialog.getByRole("button", { name: "Dispatch now" });
+  await expect(go, "a well-formed multi-repo dispatch is launchable").toBeEnabled();
+
+  // Now point the primary at the repo that is already attached.
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+
+  await expect(dialog.getByText(/is named twice/)).toBeVisible();
+  await expect(go, "the doubled repo blocks the dispatch rather than being dropped").toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Add to backlog" })).toBeDisabled();
+
+  // Detaching the chip resolves it, so the block names something the operator can act on.
+  await dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }).click();
+  await expect(dialog.getByText(/is named twice/)).toBeHidden();
+  await expect(go).toBeEnabled();
+});

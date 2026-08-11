@@ -96,23 +96,30 @@ function sameRepoList(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /**
- * The secondary repos a draft would actually send: trimmed, blanks dropped, and neither
- * repeated nor equal to the primary.
+ * The secondary repos a draft sends: trimmed, with blanks dropped, and nothing else removed.
  *
- * A convenience, never the enforcement. The daemon resolves every path to a repo's main
- * checkout before comparing, so it is the only layer that can tell two spellings of one
- * repo apart and it refuses those itself. What this does is stop the form sending an entry
- * the operator can see is redundant.
+ * It deliberately does NOT filter out an entry equal to the primary. It used to, and that
+ * was a silent drop: retyping the primary onto an already-attached repo left the chip on
+ * screen, the submit enabled, and the dispatch quietly single-repo. A chip is the operator's
+ * stated intent, so the form either sends it or refuses - see `repoCollision`, which blocks
+ * the submit and names the repo instead.
  */
 function attachedRepoRoots(d: DispatchDraft): string[] {
+  return d.extraRepoRoots.map((raw) => raw.trim()).filter(Boolean);
+}
+
+/**
+ * The attached repo that is also the primary, or is attached twice - or null.
+ *
+ * STRING equality, and that bound is the honest one: only the daemon resolves a path to a
+ * repo's main checkout, so it stays the authority on whether two spellings are one repo and
+ * refuses those itself. What this catches is the case the operator can SEE - the same text
+ * in two places - which is exactly the one that would otherwise be dropped without a word.
+ */
+function repoCollision(d: DispatchDraft): string | null {
   const primary = d.repoRoot.trim();
-  const out: string[] = [];
-  for (const raw of d.extraRepoRoots) {
-    const root = raw.trim();
-    if (!root || root === primary || out.includes(root)) continue;
-    out.push(root);
-  }
-  return out;
+  const attached = attachedRepoRoots(d);
+  return attached.find((root, i) => root === primary || attached.indexOf(root) !== i) ?? null;
 }
 
 /**
@@ -869,6 +876,12 @@ function DispatchModal({
   // this form. Blocking in ensemble mode would put an unreachable instruction on screen:
   // its chips are not rendered, so there would be nothing to detach.
   const multiRepoBlocked = !ensembleMode && !multiRepoSupported && draft.extraRepoRoots.length > 0;
+  // The same repo named twice - as the primary and a chip, or as two chips. Only meaningful
+  // where the chips are part of the request at all, which is not ensemble mode.
+  const collidingRepo = ensembleMode ? null : repoCollision(draft);
+  // One gate for "this repo set cannot be sent as it stands", so the three submit paths and
+  // the two sentences under the field cannot disagree about it.
+  const repoSetBlocked = multiRepoBlocked || collidingRepo !== null;
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -1119,7 +1132,7 @@ function DispatchModal({
       !draft.intent.trim() ||
       busy ||
       drop.uploading ||
-      multiRepoBlocked ||
+      repoSetBlocked ||
       (launchesNow && selectedWorkflowBlocked) ||
       Boolean(editing && dispatchNow && selectedDependenciesUnmet)
     ) return;
@@ -1331,6 +1344,12 @@ function DispatchModal({
           {draft.agent} cannot be given write access beyond one repo. Detach the{" "}
           {draft.extraRepoRoots.length === 1 ? "attached repo" : "attached repos"} or choose
           a harness that can.
+        </span>
+      )}
+      {collidingRepo !== null && (
+        <span className="dispatch-workflow-warning">
+          {basename(collidingRepo)} is named twice. Detach it, or point the Repo field at a
+          different repo.
         </span>
       )}
     </label>
@@ -1935,7 +1954,7 @@ function DispatchModal({
                 || drop.uploading
                 || !draft.repoRoot.trim()
                 || !draft.intent.trim()
-                || multiRepoBlocked
+                || repoSetBlocked
               }
             >
             {editing
@@ -1988,7 +2007,7 @@ function DispatchModal({
                 drop.uploading ||
                 !draft.repoRoot.trim() ||
                 !draft.intent.trim() ||
-                multiRepoBlocked ||
+                repoSetBlocked ||
                 (selectedWorkflowBlocked && !selectedDependenciesUnmet) ||
                 Boolean(editing && selectedDependenciesUnmet)
               }

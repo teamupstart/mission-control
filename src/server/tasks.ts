@@ -20,7 +20,8 @@ import { completableByMerge, type Registry, type TaskPrMerged } from "./registry
 import {
   Dispatcher,
   deriveTitle,
-  releasedRepoEntries,
+  reclaimedFrom,
+  releasedTaskResources,
   teardownWorktree,
   type TaskDispatchOptions,
 } from "./dispatcher.ts";
@@ -1911,6 +1912,9 @@ export class TaskManager {
     this.autoCompleted.delete(id);
 
     let teardownError: string | null = null;
+    // Which worktrees actually came back. Null means every one of them did - the ordinary
+    // case - and a partial failure narrows it to the ones that are really gone.
+    let reclaimed: readonly string[] | null = null;
     try {
       await this.stopEmbeddedAgentBeforeReclaim(t);
       if (t.sessionId && t.homeName) {
@@ -1923,6 +1927,7 @@ export class TaskManager {
       await teardownWorktree(teardownTarget);
     } catch (error) {
       teardownError = error instanceof Error ? error.message : String(error);
+      reclaimed = reclaimedFrom(error);
     }
 
     // Merge onto the LATEST snapshot, not a stale one, so we don't resurrect fields
@@ -1932,23 +1937,12 @@ export class TaskManager {
     this.registry.upsertTask({
       ...cur,
       status: "cancelled",
-      worktreePath: teardownError === null ? null : cur.worktreePath,
-      branch: teardownError === null ? null : cur.branch,
-      provider: teardownError === null ? null : cur.provider,
-      // Cleared on the SAME condition as the fields above, and for the same reason: the
-      // teardown above returns every tree the task holds - `teardownWorktree` loops the
-      // collection - so on success the secondaries' recorded paths name trees that are back
-      // in their pools, and the baselines name commits for worktrees that no longer exist.
-      //
-      // Leaving them is not merely untidy. `poolPins` folds `registry.listTasks()` without
-      // filtering on status and pins every non-null `worktreePath` it finds, secondaries
-      // included, so a cancelled multi-repo task would go on pinning already-returned trees
-      // for as long as the row survives - capacity the reaper can never see through.
-      //
-      // On a teardown FAILURE they are kept, exactly like the paths above: the trees may
-      // still be standing, and a row that stopped naming them is a row nothing can reclaim.
-      baseSha: teardownError === null ? null : cur.baseSha,
-      extraRepos: teardownError === null ? releasedRepoEntries(cur.extraRepos) : cur.extraRepos,
+      // Per TREE, not per teardown. `teardownWorktree` attempts every one of a task's trees
+      // even after an earlier one fails, so "the teardown failed" no longer means "nothing
+      // came back": clearing the whole collection would have the row forget trees that are
+      // still standing, and keeping it would have `poolPins` go on sparing trees that are
+      // already back in their pools. `releasedTaskResources` splits it on what was reclaimed.
+      ...releasedTaskResources(cur, reclaimed),
       homeName: teardownError === null ? null : cur.homeName,
       terminalResourceId: teardownError === null ? null : cur.terminalResourceId,
       completedAt: now,
@@ -2084,6 +2078,12 @@ export class TaskManager {
           await this.stopEmbeddedAgentBeforeReclaim(current);
           await teardownWorktree(current);
         } catch (error) {
+          const partial = this.registry.getTask(id) ?? t;
+          this.registry.upsertTask({
+            ...partial,
+            ...releasedTaskResources(partial, reclaimedFrom(error)),
+            updatedAt: Date.now(),
+          });
           return {
             ok: false,
             error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
@@ -2102,14 +2102,8 @@ export class TaskManager {
         ...cur,
         status: "backlog",
         enabled: true,
-        worktreePath: null,
-        branch: null,
-        provider: null,
-        baseSha: null,
-        // The secondaries' trees went back with the primary's, so their recorded paths go
-        // too. The repo SET stays: which repos this task spans is durable operator intent,
-        // and a task returning to the backlog is still the task they filed.
-        extraRepos: releasedRepoEntries(cur.extraRepos),
+        // Everything came back: this path returns early when the teardown throws.
+        ...releasedTaskResources(cur, null),
         homeName: null,
         terminalResourceId: null,
         sessionId: null,
@@ -2140,6 +2134,15 @@ export class TaskManager {
       await this.stopEmbeddedAgentBeforeReclaim(current);
       await teardownWorktree(current);
     } catch (error) {
+      // A partial reclaim still releases what came back. The refusal stands - the operator
+      // is told the reclaim failed, and the trees still standing keep their record so a
+      // retry can reach them - but a tree already back in its pool stops being pinned.
+      const partial = this.registry.getTask(id) ?? t;
+      this.registry.upsertTask({
+        ...partial,
+        ...releasedTaskResources(partial, reclaimedFrom(error)),
+        updatedAt: Date.now(),
+      });
       return {
         ok: false,
         error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
@@ -2148,11 +2151,7 @@ export class TaskManager {
     const cur = this.registry.getTask(id) ?? t;
     this.registry.upsertTask({
       ...cur,
-      worktreePath: null,
-      branch: null,
-      provider: null,
-      baseSha: null,
-      extraRepos: releasedRepoEntries(cur.extraRepos),
+      ...releasedTaskResources(cur, null),
       homeName: null,
       terminalResourceId: null,
       sessionId: null,
@@ -2175,6 +2174,13 @@ export class TaskManager {
         await this.stopEmbeddedAgentBeforeReclaim(t);
         await teardownWorktree(t);
       } catch (error) {
+        // The row survives a failed remove, so the same partial-release rule applies to it.
+        const partial = this.registry.getTask(id) ?? t;
+        this.registry.upsertTask({
+          ...partial,
+          ...releasedTaskResources(partial, reclaimedFrom(error)),
+          updatedAt: Date.now(),
+        });
         return {
           ok: false,
           error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
@@ -2266,6 +2272,9 @@ export class TaskManager {
       const now = Date.now();
       this.registry.upsertTask({
         ...t,
+        // Whatever came back is released even though the teardown failed overall; the rest
+        // keeps its record so it stays reclaimable. See `releasedTaskResources`.
+        ...releasedTaskResources(t, reclaimedFrom(error)),
         status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
         error:
           t.status === "done" || t.status === "cancelled"
@@ -2285,11 +2294,7 @@ export class TaskManager {
           : t.status === "dispatching"
             ? "dispatch interrupted by a restart - re-dispatch"
             : "the agent's session did not survive a restart",
-      worktreePath: null,
-      branch: null,
-      provider: null,
-      baseSha: null,
-      extraRepos: releasedRepoEntries(t.extraRepos),
+      ...releasedTaskResources(t, null),
       homeName: null,
       terminalResourceId: null,
       sessionId: null,

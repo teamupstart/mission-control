@@ -21,8 +21,14 @@ const home = mkdtempSync(join(tmpdir(), "mission-multirepo-provision-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
-const { provisionWorktree, worktreeSlotPath, teardownWorktree, intentWithRepoManifest } =
-  await import("../src/server/dispatcher.ts");
+const {
+  provisionWorktree,
+  worktreeSlotPath,
+  teardownWorktree,
+  intentWithRepoManifest,
+  releasedTaskResources,
+  WorktreeTeardownError,
+} = await import("../src/server/dispatcher.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -156,21 +162,29 @@ test("one tree failing to come back does not strand the others", async () => {
   const primary = await provisionWorktree(api, "partial-task", "slug", "ccc333", NO_PINS, null, 0);
   const secondary = await provisionWorktree(web, "partial-task", "slug", "ccc333", NO_PINS, null, 1);
 
-  await assert.rejects(
-    () =>
-      teardownWorktree({
-        // A repo root that is not a git repository at all: its removal cannot succeed.
-        repoRoot: join(home, "not-a-repo"),
-        worktreePath: join(home, "not-a-repo", "tree"),
-        branch: "harness/slug-ccc333",
-        provider: "git",
-        homeName: null,
-        extraRepos: [
-          { repoRoot: api, worktreePath: primary.path, branch: primary.branch, provider: "git" },
-          { repoRoot: web, worktreePath: secondary.path, branch: secondary.branch, provider: "git" },
-        ],
-      }),
-    /worktree remove failed/,
+  // The error reports what it DID reclaim, which is what lets a caller clear exactly those
+  // trees. A partial failure read as a total one leaves the row naming worktrees that are
+  // already gone - `poolPins` goes on sparing them, and a retry re-issues a lease return
+  // against a tree the pool has already taken back.
+  const failure = await teardownWorktree({
+    // A repo root that is not a git repository at all: its removal cannot succeed.
+    repoRoot: join(home, "not-a-repo"),
+    worktreePath: join(home, "not-a-repo", "tree"),
+    branch: "harness/slug-ccc333",
+    provider: "git",
+    homeName: null,
+    extraRepos: [
+      { repoRoot: api, worktreePath: primary.path, branch: primary.branch, provider: "git" },
+      { repoRoot: web, worktreePath: secondary.path, branch: secondary.branch, provider: "git" },
+    ],
+  }).then(() => null, (err: unknown) => err);
+
+  assert.ok(failure instanceof WorktreeTeardownError, "a partial teardown reports which trees came back");
+  assert.match((failure as Error).message, /worktree remove failed/);
+  assert.deepEqual(
+    [...(failure as InstanceType<typeof WorktreeTeardownError>).reclaimed].sort(),
+    [primary.path, secondary.path].sort(),
+    "the two reachable trees are named as reclaimed; the broken one is not",
   );
   assert.equal(existsSync(primary.path), false, "the reachable trees still came back");
   assert.equal(existsSync(secondary.path), false);
@@ -401,4 +415,66 @@ test("a repo standing on no branch at all is described without inventing one", (
   });
   assert.doesNotMatch(manifest, /on branch null/);
   assert.doesNotMatch(manifest, /Every one of them is on the branch/);
+});
+
+// ---- releasing exactly what came back ---------------------------------------------------
+
+test("a task releases the trees that came back and keeps the ones still standing", () => {
+  // The rule every teardown site now shares. Before this, a partial failure was read as a
+  // total one: the row kept naming all three trees even though two were already gone, so
+  // `poolPins` went on sparing them and a retry re-issued a return against a released lease.
+  const task = {
+    worktreePath: "/wt/t1",
+    branch: "harness/x-abc",
+    provider: "git" as const,
+    baseSha: "a".repeat(40),
+    extraRepos: [
+      {
+        repoRoot: "/repo/web",
+        worktreePath: "/wt/t1-1",
+        branch: "harness/x-abc",
+        provider: "git" as const,
+        baseSha: "b".repeat(40),
+        prUrl: null,
+        prState: null,
+        mergedAt: null,
+      },
+      {
+        repoRoot: "/repo/docs",
+        worktreePath: "/wt/t1-2",
+        branch: "harness/x-abc",
+        provider: "treehouse" as const,
+        baseSha: "c".repeat(40),
+        prUrl: null,
+        prState: null,
+        mergedAt: null,
+      },
+    ],
+  };
+
+  // Only the primary and the first secondary came back.
+  const partial = releasedTaskResources(task, ["/wt/t1", "/wt/t1-1"]);
+  assert.equal(partial.worktreePath, null);
+  assert.equal(partial.baseSha, null, "the primary's baseline goes with the primary's tree");
+  assert.deepEqual(
+    partial.extraRepos.map((e) => [e.repoRoot, e.worktreePath, e.baseSha]),
+    [
+      ["/repo/web", null, null],
+      // Still standing, so it keeps its record - a row that stopped naming it could never
+      // reclaim it.
+      ["/repo/docs", "/wt/t1-2", "c".repeat(40)],
+    ],
+  );
+
+  // Null means everything came back, which is the ordinary case.
+  const full = releasedTaskResources(task, null);
+  assert.equal(full.worktreePath, null);
+  assert.deepEqual(full.extraRepos.map((e) => e.worktreePath), [null, null]);
+  // And the repo SET always survives, so the task can be dispatched again as itself.
+  assert.deepEqual(full.extraRepos.map((e) => e.repoRoot), ["/repo/web", "/repo/docs"]);
+
+  // Nothing came back: the row is left exactly as it was.
+  const none = releasedTaskResources(task, []);
+  assert.equal(none.worktreePath, "/wt/t1");
+  assert.deepEqual(none.extraRepos.map((e) => e.worktreePath), ["/wt/t1-1", "/wt/t1-2"]);
 });

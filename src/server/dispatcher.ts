@@ -776,25 +776,19 @@ export class Dispatcher {
     try {
       await this.teardown(task);
       this.patch(taskId, {
-        worktreePath: null,
-        branch: null,
-        provider: null,
+        ...releasedTaskResources(task, null),
         homeName: null,
         terminalResourceId: null,
-        // The primary's baseline goes with its tree, exactly as at the three reclaim sites
-        // in `tasks.ts`. A 40-char commit left beside a null `worktreePath` reads as "we
-        // know where this branch was cut" for a tree that no longer exists, and later phases
-        // compare a head against this value.
-        baseSha: null,
-        // The secondaries' trees are gone too, so their recorded paths go with the primary's.
-        // The repo SET is kept - which repos the task attaches is durable operator intent,
-        // and a reclaimed task that keeps its repos can be dispatched again as itself.
-        extraRepos: releasedRepoEntries(task.extraRepos),
       });
       return true;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+      // The trees that DID come back are released even though the teardown failed overall.
+      // Anything still standing keeps its record, so it remains reclaimable; anything gone
+      // stops being pinned. Reporting the failure and keeping the whole collection would
+      // leave `poolPins` sparing trees that are already back in their pools.
       this.patch(taskId, {
+        ...releasedTaskResources(task, reclaimedFrom(error)),
         error: baseError
           ? `${baseError} - resource cleanup failed: ${detail}`
           : `resource cleanup failed: ${detail}`,
@@ -1229,31 +1223,80 @@ export async function teardownWorktree(
     })),
   ];
   const failures: string[] = [];
+  const reclaimed: string[] = [];
   for (const tree of trees) {
-    await teardownOneWorktree(tree, cli).catch((err: unknown) => {
-      failures.push(err instanceof Error ? err.message : String(err));
-    });
+    await teardownOneWorktree(tree, cli).then(
+      () => {
+        if (tree.worktreePath) reclaimed.push(tree.worktreePath);
+      },
+      (err: unknown) => {
+        failures.push(err instanceof Error ? err.message : String(err));
+      },
+    );
   }
-  if (failures.length > 0) throw new Error(failures.join("; "));
+  // The reclaimed set rides on the error so a caller can clear exactly the trees that came
+  // back. Without it a partial failure reads as a total one and the row goes on naming
+  // worktrees that no longer exist - see `releasedTaskResources`.
+  if (failures.length > 0) throw new WorktreeTeardownError(failures.join("; "), reclaimed);
 }
 
 /**
- * The same attached repos with their provisioning facts cleared, for a task whose trees
- * have just been reclaimed.
+ * A teardown in which at least one of a task's trees could not be reclaimed.
  *
- * The repo SET survives and its worktrees do not, which is the same split the primary
- * already has: `repo_root` stays on the row while `worktree_path`/`branch`/`provider` are
- * nulled. Keeping the set is what lets a reclaimed multi-repo task be dispatched again as
- * the task the operator filed, rather than silently becoming a single-repo one.
+ * It carries the paths that DID come back, which is the whole reason it is a type rather
+ * than a plain Error. `teardownWorktree` attempts every tree even after one fails, so a
+ * failure is no longer all-or-nothing - and a caller that treated it as such would leave
+ * the row claiming trees that are already gone: `poolPins` would go on sparing them, and a
+ * retry would re-issue a lease return against a tree the pool has already taken back.
  */
-export function releasedRepoEntries(entries: readonly TaskRepoEntry[]): TaskRepoEntry[] {
-  return entries.map((entry) => ({
-    ...entry,
-    worktreePath: null,
-    branch: null,
-    provider: null,
-    baseSha: null,
-  }));
+export class WorktreeTeardownError extends Error {
+  constructor(message: string, readonly reclaimed: readonly string[]) {
+    super(message);
+    this.name = "WorktreeTeardownError";
+  }
+}
+
+/** The worktrees a failed teardown did manage to reclaim; everything, on any other error. */
+export function reclaimedFrom(error: unknown): readonly string[] {
+  return error instanceof WorktreeTeardownError ? error.reclaimed : [];
+}
+
+/**
+ * The provisioning fields a task should be left holding after a teardown.
+ *
+ * `reclaimed` is the set of worktree paths that actually came back, or `null` for the
+ * ordinary case where every one of them did. A tree that came back has its record cleared;
+ * a tree that did not KEEPS it, because a row that stopped naming a worktree still standing
+ * is a row nothing can ever reclaim.
+ *
+ * One function rather than the same five-field literal at each of the six teardown sites.
+ * That duplication has now been the cause of two separate defects - a site that forgot
+ * `baseSha`, and a site that forgot the collection entirely - and partial reclaim makes the
+ * rule too subtle to restate correctly by hand.
+ *
+ * The repo SET always survives, for both the primary and the secondaries: `repoRoot` stays
+ * while the worktree facts go. That is what lets a reclaimed multi-repo task be dispatched
+ * again as the task the operator filed rather than silently becoming a single-repo one.
+ */
+export function releasedTaskResources(
+  task: Pick<Task, "worktreePath" | "branch" | "provider" | "baseSha" | "extraRepos">,
+  reclaimed: readonly string[] | null,
+): Pick<Task, "worktreePath" | "branch" | "provider" | "baseSha" | "extraRepos"> {
+  // A tree with no recorded path has nothing to reclaim and nothing to keep.
+  const gone = (path: string | null): boolean =>
+    path === null || reclaimed === null || reclaimed.includes(path);
+  return {
+    worktreePath: gone(task.worktreePath) ? null : task.worktreePath,
+    branch: gone(task.worktreePath) ? null : task.branch,
+    provider: gone(task.worktreePath) ? null : task.provider,
+    // The primary's baseline is a fact about the primary's tree, so it goes with it.
+    baseSha: gone(task.worktreePath) ? null : task.baseSha,
+    extraRepos: task.extraRepos.map((entry) =>
+      gone(entry.worktreePath)
+        ? { ...entry, worktreePath: null, branch: null, provider: null, baseSha: null }
+        : entry,
+    ),
+  };
 }
 
 /** One tree's return-or-remove, provider-aware. See `teardownWorktree` for the policy. */

@@ -206,11 +206,11 @@ else, if you want those too.
 ### Session runtimes (terminal, or the Agent SDK)
 
 Everything above answers "which terminal holds this session". A separate question is how
-Mission Control *talks* to it at all, and until now every session answered it the same way:
-through a pane. That is a session's **runtime**, and there are two.
+Mission Control *talks* to it at all. That is a session's **runtime**, and there are two.
 
-- **Terminal** - the default, and what every session you start yourself always is. Delivery
-  is a bracketed paste and an Enter; a permission prompt is a menu read off the screen.
+- **Terminal** - what every session you start yourself always is, and the default for Pi.
+  It remains an explicit choice for dispatched Claude and Codex sessions. Delivery is a
+  bracketed paste and an Enter; a permission prompt is a menu read off the screen.
 - **Agent SDK** - the daemon runs the agent itself: Claude Code through
   `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
   There is no pane. A permission prompt or an approval arrives as data, including what is
@@ -248,16 +248,17 @@ For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime
 replaces probabilistic paste-and-Enter delivery and screen-scraped questions with
 acknowledged turns and structured requests. Terminal is not a deprecated operator surface:
 sessions you start yourself are always terminal-backed, and terminal-runtime dispatch
-remains an explicit per-harness choice. The shipped defaults are unchanged.
+remains an explicit per-harness choice. New installations default dispatched Claude and
+Codex sessions to Agent SDK; Pi remains terminal-backed until it has an embedded driver.
 
 The runtime is chosen **per harness, in Settings → Harnesses**, and it is read at dispatch
-time, so flipping it mid-batch reaches the next session you launch. It ships as `terminal`
-for every harness and stays there until you change it: there is no per-task override and no
-default flip. It is also scoped to dispatch, exactly like the model and effort defaults next
-to it - a Claude session you started yourself is pane-backed whatever this says, because
-Mission Control does not own your terminal.
+time, so flipping it mid-batch reaches the next session you launch. New installations use
+`sdk` for Claude and Codex and `terminal` for Pi. There is no per-task override. It is also
+scoped to dispatch, exactly like the model and effort defaults next to it: a Claude session
+you started yourself is pane-backed whatever this says, because Mission Control does not own
+your terminal.
 
-**What changes when you turn it on.** A dispatched session appears as a card with no
+**What the Agent SDK runtime changes.** A dispatched session appears as a card with no
 pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 
 - the task's prompt is the conversation's first turn - there is no paste to verify, no

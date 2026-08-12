@@ -42,6 +42,7 @@ import { startGoalRefiner } from "./goal/refiner.ts";
 import { startAwayWatcher } from "./away/watcher.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
+import { ScoutArchiveManager } from "./scouts/manager.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
 import { warnIfSessionAttributionDisabled } from "./cost.ts";
 import { reconcileSkills } from "./skills/config.ts";
@@ -337,6 +338,21 @@ const keepAwake = new KeepAwakeManager({
 });
 registry.setKeepAwakeStatus(keepAwake.status());
 
+// The portable scout library and its disposable index. CONSTRUCTED here so the routes never
+// see a daemon without it, but deliberately not STARTED here: discovery is scheduled below,
+// after this process has won the port and is answering requests. An installation whose
+// database was deleted, or whose library was restored from a backup, reindexes everything on
+// its first pass, and a daemon that held its own startup for that would 503 for as long as
+// hashing somebody's whole scout history takes.
+//
+// The watcher is a latency hint; the recurring scan is the authority. Both live inside the
+// manager, and the Registry is how a finished batch reaches open dashboards - one
+// invalidation per batch, no history in the snapshot, no browser polling.
+const scouts = new ScoutArchiveManager({
+  onChanged: () => registry.emitScoutArchiveChanged(),
+  watch: true,
+});
+
 const app = buildApp(
   registry,
   reviews,
@@ -354,6 +370,7 @@ const app = buildApp(
   pendingTurns,
   undefined,
   keepAwake,
+  scouts,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -379,6 +396,12 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
+  // Discovery starts HERE, after the callback that means "we are serving", for the reason
+  // the manager's construction documents: the first pass over a restored library can be
+  // long, and it must not be able to delay the port answering. It is fire-and-forget by
+  // design - a library that could not be walked is a background failure to log, never a
+  // reason a daemon does not start.
+  scouts.start();
   const where = hasDist
     ? `http://${HOST}:${info.port}`
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;
@@ -424,6 +447,10 @@ async function shutdown(): Promise<void> {
   stopSkillsReloader();
   stopTaskSources();
   stopSchedules();
+  // Closes the library watcher and cancels the cadence. A pass already in flight is left to
+  // finish or be abandoned with the process: every write it makes is an idempotent replace of
+  // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
+  scouts.stop();
   // Release the idle-sleep assertion while we can still do it gracefully. `caffeinate`'s
   // own `-w <daemon PID>` covers every exit that never reaches this line, so this is the
   // orderly half of a two-part cleanup, not the only one.

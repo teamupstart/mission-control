@@ -628,6 +628,16 @@ LIMIT 20;
                 <div class="table-row"><code>ensemble_deletion_intents</code><p>A recoverable, single in-progress deletion record for external refs that must be cleaned before the run is removed.</p></div>
               </div>
             </details>
+
+            <details class="family">
+              <summary><strong>Scout archives (disposable index)</strong><span>3 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>scout_archives</code><p>One row per discovered bundle under the scout library: composite archive key, producer and archive identity, format version, ready/partial/unreadable status, frozen manifest display fields, digests, relative bundle path, manifest fingerprint, counts, bytes, safe error, and reconciliation epoch.</p></div>
+                <div class="table-row"><code>scout_artifacts</code><p>One archived file per row, addressed by generated artifact id rather than by path: role, repository slot, original and archive paths, media type, bytes, and digest.</p></div>
+                <div class="table-row"><code>scout_search_segments</code><p>Bounded, case-folded text a literal search scans, including visible report text extracted once at index time. Deliberately not an FTS5 table, because FTS5 is a compile-time option.</p></div>
+              </div>
+              <p class="section-note">This family is the one exception to "durable, not live" in the other direction: these rows are a cache of directories on disk. They carry no foreign key to a task or a session, hold no evidence bytes, and are rebuilt from the library by a background reconciler if the database is deleted.</p>
+            </details>
           </div>
         </section>
 

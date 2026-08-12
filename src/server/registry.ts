@@ -818,6 +818,19 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "harnesses_config_changed" });
   }
 
+  /**
+   * Announce that the local scout library moved.
+   *
+   * Raised once per reconciliation BATCH by the archive manager, never per bundle: the
+   * reconciler already coalesces a pass into one decision about whether derived state
+   * changed, and this is the frame that carries it. Content-free for the reason the event's
+   * declaration gives - scout history is bounded, filtered, paginated HTTP state, and it
+   * stays out of both this frame and the reconnect snapshot.
+   */
+  emitScoutArchiveChanged(): void {
+    this.emitEvent({ type: "scout_archive_changed" });
+  }
+
   getSession(id: string): Session | undefined {
     return this.sessions.get(id);
   }

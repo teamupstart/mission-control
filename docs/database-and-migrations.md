@@ -18,3 +18,10 @@ This page is an orientation aid. The authoritative requirements for database cha
 append-only identifiers, and ledgers are [Database changes](agent-guides/change-contracts.md#database-changes),
 [Persisted identifiers](agent-guides/change-contracts.md#persisted-identifiers), and
 [Ledger tables](agent-guides/change-contracts.md#ledger-tables).
+
+One family of tables is deliberately not durable state. `scout_archives`, `scout_artifacts`,
+and `scout_search_segments` are a derived index of the [scout library](scout-archives.md) on
+disk: they hold no foreign keys to tasks or sessions, no evidence bytes, and nothing that is
+not already in a bundle. Deleting them - or the whole database - costs a background rebuild
+and nothing else. A label, annotation, or ownership flag stored only in those rows would be
+lost the first time the index was rebuilt, which is why none may be added.

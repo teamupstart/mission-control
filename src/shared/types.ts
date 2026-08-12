@@ -2453,7 +2453,24 @@ export type ServerEvent =
    * converges without a fetch; emitted only when an observable field changed (see
    * `Registry.setKeepAwakeStatus`).
    */
-  | { type: "keep_awake_status"; status: KeepAwakeStatus };
+  | { type: "keep_awake_status"; status: KeepAwakeStatus }
+  /**
+   * The local scout library changed - a reconciliation batch indexed, refused, or pruned at
+   * least one archive bundle. An invalidation signal: a surface showing scout history
+   * re-runs its own bounded query against `GET /api/scouts`.
+   *
+   * CONTENT-FREE, and for a stronger reason than `harnesses_config_changed` above. Scout
+   * archives are HISTORY: a library holds every scout an operator ever kept, and it is
+   * explicitly not evicted by age or count. Putting rows on this frame - or in the reconnect
+   * snapshot - would mean every dashboard paying for the whole archive on every connect, to
+   * populate a page that is bounded, filtered, and paginated anyway. So history stays out of
+   * the stream entirely and only the fact that it moved crosses it.
+   *
+   * ONE frame per batch, never one per file: a sync tool delivering forty bundles raises a
+   * single revision bump, because forty is not more informative than one to something whose
+   * only response is to re-read its current page.
+   */
+  | { type: "scout_archive_changed" };
 
 // ---- session transcript (expanded card) ----
 

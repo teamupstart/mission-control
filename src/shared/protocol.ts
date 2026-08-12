@@ -7,6 +7,13 @@ import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
+import {
+  SCOUT_INDEX_STATUSES,
+  SCOUT_SEARCH_LIMITS,
+  SCOUT_TEXT_LIMITS,
+  decodeScoutCursor,
+  isScoutId,
+} from "./scouts.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "./types.ts";
 import type { AgentType, SessionRuntime, Task } from "./types.ts";
@@ -4436,3 +4443,45 @@ export const EnsembleMemberSubmitSchema = z.object({
   result: EnsembleSubmissionClaimsSchema,
 });
 export type EnsembleMemberSubmitBody = z.infer<typeof EnsembleMemberSubmitSchema>;
+
+/**
+ * The scout library's list query.
+ *
+ * Every field is bounded at the schema edge, and an out-of-range `limit` or an unparseable
+ * `cursor` is REFUSED rather than clamped, on `ScheduleHistoryQuerySchema`'s rule: a history
+ * route that reinterpreted a bad cursor would page through a different window and look like
+ * it worked. `producer` is a generated UUID and `status` is a closed vocabulary, so neither
+ * can carry a path fragment into a filter.
+ */
+export const ScoutSearchQuerySchema = z.object({
+  q: z.string().max(SCOUT_SEARCH_LIMITS.queryChars).optional(),
+  producer: z.string().refine(isScoutId, "not a producer id").optional(),
+  repo: z.string().max(SCOUT_TEXT_LIMITS.label).optional(),
+  agent: z.string().max(SCOUT_TEXT_LIMITS.label).optional(),
+  status: z.enum(SCOUT_INDEX_STATUSES).optional(),
+  from: z.coerce.number().int().nonnegative().optional(),
+  to: z.coerce.number().int().nonnegative().optional(),
+  cursor: z.string().refine((value) => decodeScoutCursor(value) !== null, "not a cursor").optional(),
+  limit: z.coerce.number().int().min(1).max(SCOUT_SEARCH_LIMITS.maxLimit).optional(),
+});
+export type ScoutSearchQueryInput = z.infer<typeof ScoutSearchQuerySchema>;
+
+/**
+ * Deleting one scout archive.
+ *
+ * The body ECHOES the archive key that is already in the URL, and the daemon refuses a
+ * mismatch before it resolves any path. That looks redundant and is not: a list is a live,
+ * filtered, reconciled view, so a browser holding a stale page can name a row position whose
+ * occupant has changed. Binding the typed key to the route key means a delete can only ever
+ * remove the archive the operator was actually looking at.
+ */
+export const DeleteScoutArchiveSchema = z.object({
+  confirmArchiveKey: z.string().min(1).max(128),
+});
+export type DeleteScoutArchiveBody = z.infer<typeof DeleteScoutArchiveSchema>;
+
+/** Handing one archived artifact to a registered "Open in" target. */
+export const OpenScoutArtifactSchema = z.object({
+  target: z.enum(OPEN_TARGET_IDS),
+});
+export type OpenScoutArtifactBody = z.infer<typeof OpenScoutArtifactSchema>;

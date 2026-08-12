@@ -1,0 +1,51 @@
+{
+  "format": "mission-control/scout-archive",
+  "format_version": 1,
+  "vectors": [
+    {
+      "name": "empty content table",
+      "entries": [],
+      "payload": "",
+      "content_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "one primary report",
+      "entries": [
+        {
+          "archivePath": "report/report.html",
+          "bytes": 12744,
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "payload": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12744 report/report.html\n",
+      "content_digest": "sha256:7d9ce751a50b09c490f0ea57ed06128cf3d4880dd534e56e16e41b77279fca85"
+    },
+    {
+      "name": "unsorted, with a space in a path and manifest.json excluded",
+      "entries": [
+        {
+          "archivePath": "artifacts/repo-01/evidence/resume-debug.log",
+          "bytes": 2911,
+          "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        {
+          "archivePath": "manifest.json",
+          "bytes": 999,
+          "sha256": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        },
+        {
+          "archivePath": "report/report.html",
+          "bytes": 12744,
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "archivePath": "report/permission events.csv",
+          "bytes": 4821,
+          "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "payload": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc 2911 artifacts/repo-01/evidence/resume-debug.log\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 4821 report/permission events.csv\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12744 report/report.html\n",
+      "content_digest": "sha256:3dc6d42a703ab36d0fb19fab1be7457616238ff519024dd3eed93b1d73b9829c"
+    }
+  ]
+}

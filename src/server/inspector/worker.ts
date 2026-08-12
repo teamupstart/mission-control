@@ -41,8 +41,8 @@ import {
 } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 import { maybeMerge } from "../shipping/merge.ts";
-import { InspectorVerdictSchema, planReview } from "./verdict.ts";
-import type { InspectorVerdict, OurThread } from "./verdict.ts";
+import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verdict.ts";
+import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
   authenticatedLogin,
   cleanReviewExists,
@@ -62,6 +62,7 @@ import {
 import type { GhResult, PrSnapshot, ThreadSnapshot } from "./github.ts";
 
 const INSPECTOR_VERDICT_JSON_SCHEMA = providerJsonSchema(InspectorVerdictSchema);
+const INSPECTOR_REPLY_JSON_SCHEMA = providerJsonSchema(InspectorReplySchema);
 
 // The Inspector's tick: review the pull requests we opened, answer follow-ups in our own
 // threads, and close our own threads once a push has fixed what they were about.
@@ -637,6 +638,7 @@ async function processPr(
         pr,
         dir,
         w,
+        rows,
         diff.value?.diff ?? "",
         diff.value?.truncated ?? false,
         post,
@@ -697,6 +699,8 @@ async function answerFollowUp(
   pr: InspectorPr,
   dir: string,
   w: ReturnType<typeof threadsAwaitingUs>[number],
+  /** This tick's ledger. Mutated in place when the reply drops its own finding. */
+  rows: Map<string, InspectorComment>,
   diff: string,
   diffTruncated: boolean,
   post: boolean,
@@ -724,15 +728,23 @@ async function answerFollowUp(
     diffTruncated,
   });
 
-  let text: string;
-  try {
-    const run = inspectorRunOptions(cfg, REPLY_TIMEOUT_MS, dir, "inspector:reply");
-    text = await run.runner.run(prompt, run.options);
-  } catch (err) {
-    return noteFailure(pr, `reply failed: ${String(err)}`, now, tick);
-  }
+  const run = inspectorRunOptions(
+    cfg,
+    REPLY_TIMEOUT_MS,
+    dir,
+    "inspector:reply",
+    INSPECTOR_REPLY_JSON_SCHEMA,
+  );
+  const result = await runStructured<typeof InspectorReplySchema>(
+    (p) => run.runner.run(p, run.options),
+    prompt,
+    (raw) => parseModelJson(raw, InspectorReplySchema),
+    "The inspector",
+  );
+  if (result.kind !== "ok") return noteFailure(pr, `reply failed: ${result.reason}`, now, tick);
+  const answer = result.value as InspectorReply;
 
-  const reply = scrubSecrets(text.trim());
+  const reply = scrubSecrets(answer.reply.trim());
   if (!reply) return false;
 
   // Same marker fingerprint as the thread it belongs to, so a reply of ours is
@@ -750,12 +762,39 @@ async function answerFollowUp(
 
   // Stamp AFTER the send, never before: a failed post that had already recorded the
   // answer would leave someone's question permanently unanswered and invisible.
-  upsertInspectorComment({
+  const answered: InspectorComment = {
     ...w.row,
     replies: w.row.replies + 1,
     answeredCommentId: w.newest.databaseId,
     updatedAt: now,
-  });
+  };
+  rows.set(w.row.fingerprint, answered);
+  upsertInspectorComment(answered);
+
+  // The Inspector dropped its own finding. Close the thread and the ledger row, in that
+  // order, so the reply explaining the drop is already on the pull request when the thread
+  // it belongs to closes - the reverse reads as a thread closed without an answer.
+  //
+  // AFTER the reply is stamped, so a failure here cannot cost a duplicate public comment.
+  if (answer.resolved) {
+    // A refused GitHub mutation does NOT hold the ledger row open, which is the opposite
+    // of the review round's rule, and the asymmetry is the point. There, a failed resolve
+    // is retried by the next round; here there is no next round - the head has been
+    // reviewed, `answeredCommentId` is stamped, and nothing would ever revisit this
+    // thread. Leaving the row open on a transient `gh` failure is exactly the permanent
+    // block this whole path exists to end.
+    //
+    // Closing it is safe because the row is only OUR opinion of the finding, and it is not
+    // the only thing standing between this pull request and the default branch: a thread
+    // that did not close is still counted by `mergeVerdict`'s `threads` gate, which reads
+    // GitHub's own snapshot on every sweep. So a failed resolve degrades to "blocked on an
+    // unresolved thread", which an operator can clear on GitHub, rather than to a merge.
+    //
+    // Unconditional rather than guarded on `post`: this function returns at its top when we
+    // could not publish, so reaching here means the reply was posted for real.
+    await resolveThread(dir, w.thread.id);
+    closeRow(rows, w.row.fingerprint, now);
+  }
   return true;
 }
 

@@ -1430,6 +1430,24 @@ export const InspectorConfigPatchSchema = InspectorConfigSchema.partial().refine
 );
 export type InspectorConfigPatch = z.infer<typeof InspectorConfigPatchSchema>;
 
+/**
+ * An operator closing the findings the Inspector is carrying on one pull request.
+ *
+ * The PR is named in the BODY rather than in the path because its key is `owner/repo#123`
+ * - a slash and a hash, both of which have to survive a URL segment intact for the daemon
+ * to look the row up. Encoding them is a rule every future caller has to remember; a body
+ * field is one nobody can get wrong.
+ */
+export const ResolveFindingsSchema = z.object({
+  prKey: z.string().min(1),
+});
+export type ResolveFindings = z.infer<typeof ResolveFindingsSchema>;
+
+/** What the daemon reports back: how many findings that actually closed. */
+export interface ResolveFindingsResult {
+  resolved: number;
+}
+
 // ---- Shipping (landing the pull requests we opened, unattended) ----
 
 /**

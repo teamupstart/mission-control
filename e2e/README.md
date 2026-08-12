@@ -96,6 +96,33 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --reporter=list
 ```
 
+### Resolving a stuck Inspector finding
+
+`e2e/.artifacts/inspector-resolve-findings/` holds three frames from the run that asserts an
+operator can close a finding no review round is left to close - the case that held
+`mergeBlock: findings` on a pull request permanently and forced a merge by hand.
+
+- `inspector-findings-stuck.png` - the ledger row carrying `2 findings`, with the **Resolve**
+  control offered in its own column.
+- `inspector-findings-resolved.png` - after the click: `clean`, `2 fixed`, the control retired
+  because there is nothing left to resolve, and the count strip having followed.
+- `inspector-findings-narrow-fold.png` - the same row at 420px, where `.sc-table` clips rather
+  than scrolls. A new column is exactly the change that silently drops a cell off that edge, so
+  the run measures the button's right edge against the table's box and photographs the result.
+
+The pair matters because the two states differ only in words and a missing control, which is
+what a reader of this panel actually navigates by; and the fold frame matters because a clipped
+cell still reports `visible` to an assertion.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/inspector-resolve-findings.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### A spent Foreman note retiring itself
 
 `e2e/.artifacts/foreman-note-retires-on-your-answer/`

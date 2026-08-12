@@ -224,6 +224,7 @@ function inspectorHtml(): string {
     inspections: [row()],
     model: null,
     update: async () => true,
+    resolveFindings: async () => true,
     error: null,
   };
   return renderToStaticMarkup(
@@ -372,6 +373,7 @@ test("a ledger longer than a page shows one page of rows and a pager", () => {
         inspections: rows,
         model: null,
         update: async () => true,
+        resolveFindings: async () => true,
         error: null,
       } satisfies InspectorState,
       onNavigate: () => {},

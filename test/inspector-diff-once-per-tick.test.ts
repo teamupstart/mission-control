@@ -41,13 +41,21 @@ process.env.MISSION_INSPECTOR_POLL_MS = "25";
 process.env.FAKE_GITHUB_STATE = statePath;
 process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
 
+// Both jobs answer with JSON, and they answer with DIFFERENT json - a review returns a
+// verdict, a follow-up returns `{reply, resolved}`. The reply prompt's output contract is
+// what tells them apart here, so this fake cannot answer a review in the reply's shape and
+// quietly stop exercising either path.
 writeFileSync(
   claudePath,
   `#!/usr/bin/env node
-process.stdin.resume();
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
 process.stdin.on("end", () => {
-  const verdict = { summary: "Nothing else to flag.", findings: [], resolved: [] };
-  process.stdout.write(JSON.stringify({ result: JSON.stringify(verdict) }));
+  const prompt = Buffer.concat(chunks).toString("utf8");
+  const answer = prompt.includes('"resolved": true | false')
+    ? { reply: "Still stands - see the guard above.", resolved: false }
+    : { summary: "Nothing else to flag.", findings: [], resolved: [] };
+  process.stdout.write(JSON.stringify({ result: JSON.stringify(answer) }));
 });
 `,
 );

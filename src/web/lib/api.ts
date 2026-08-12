@@ -40,6 +40,7 @@ import type {
   LlmConfig,
   LlmConfigPatch,
   ResolveEpisode,
+  ResolveFindingsResult,
   RetroResponse,
   ShippingConfig,
   ShippingConfigPatch,
@@ -1064,6 +1065,17 @@ export const api = {
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
   setInspectorConfig: (cfg: InspectorConfigPatch) => put(`/api/inspector/config`, cfg),
+  /**
+   * Close the findings the Inspector is carrying on one pull request.
+   *
+   * The way out of a finding that has genuinely been addressed but that nothing can mark
+   * resolved - the review round only closes fingerprints the model lists, and it stops
+   * running once the head has been reviewed. It does not merge anything and it does not
+   * relax a gate: every other merge condition, including GitHub's own unresolved review
+   * threads, is still checked on the next sweep.
+   */
+  resolveInspectorFindings: (prKey: string) =>
+    post<ActionResult & ResolveFindingsResult>(`/api/inspector/resolve-findings`, { prKey }),
 
   // --- LLM (which provider does the app's own offline work, and on which model) ---
   setLlmConfig: (cfg: LlmConfigPatch) => put(`/api/llm/config`, cfg),

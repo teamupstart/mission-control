@@ -28,6 +28,7 @@ import {
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  ResolveFindingsSchema,
   ShippingConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
@@ -102,7 +103,7 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import type { TaskDependencyInput } from "@shared/protocol.ts";
+import type { ResolveFindingsResult, TaskDependencyInput } from "@shared/protocol.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -188,6 +189,9 @@ import {
   loadHumanResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
+  getInspectorPr,
+  resolveInspectorFindings,
+  updateInspectorPr,
   episodeById,
   recentEpisodes,
 } from "./db.ts";
@@ -3340,6 +3344,64 @@ export function buildApp(
       return c.json({ error: "adoptedSince must be an epoch-ms timestamp" }, 400);
     }
     return c.json(loadInspectionsAdoptedSince(since));
+  });
+  /**
+   * Close the findings the Inspector is carrying on one pull request.
+   *
+   * The one mutating verb on this subsystem that is not a config change, and it exists
+   * because a finding that has genuinely been addressed could otherwise hold
+   * `mergeBlock: findings` forever - see `resolveInspectorFindings` for the mechanism and
+   * for what this pointedly does not loosen.
+   *
+   * Refuses a PR the ledger has never heard of rather than reporting a no-op success: the
+   * caller supplied the key, so a miss is a mistyped or stale key, and "resolved 0
+   * findings" reads as "there were none" for a pull request nobody is tracking at all.
+   *
+   * A CLOSED pull request is refused too, and separately, with a 409 rather than a 404: the
+   * row exists and the caller is not confused about which pull request they mean, they are
+   * asking to rewrite the record of one that has already landed. `resolveInspectorFindings`
+   * enforces this as well - that is the real guard, since it also binds callers that never
+   * come through here - but it can only answer 0, which is indistinguishable from "there
+   * was nothing open". The status code is what makes the panel's error line say something
+   * true when a pull request closes between its poll and the operator's click.
+   */
+  app.post("/api/inspector/resolve-findings", async (c) => {
+    const parsed = await parseBody(c, ResolveFindingsSchema);
+    if (!parsed.ok) return parsed.res;
+    const pr = getInspectorPr(parsed.data.prKey);
+    if (!pr) {
+      return c.json({ error: "no adopted pull request with that key" }, 404);
+    }
+    if (pr.state !== "open") {
+      return c.json(
+        { error: "that pull request has closed - its findings are the record of what was said about it" },
+        409,
+      );
+    }
+    const resolved = resolveInspectorFindings(parsed.data.prKey, Date.now());
+    // Clear the recorded block ONLY when it was the one this call just answered.
+    //
+    // `findings` is derived from the ledger we changed, so it is stale the moment this
+    // returns - and `recordBlock` only rewrites the reason when the answer CHANGES, so
+    // leaving it would keep publishing "the Inspector has open findings" about a pull
+    // request that no longer has any. Null is the honest reading until the next sweep, and
+    // it is what an adopted-but-unevaluated row already carries.
+    //
+    // Any OTHER reason has to survive untouched, which is the part that is easy to miss:
+    // `mergeVerdict` reports only the FIRST failing gate, and several of them are checked
+    // ahead of `findings`. A pull request that has been pushed to since its last review
+    // reads `not-reviewed` while still carrying the previous head's open findings, so
+    // resolving them there is a real edit to the ledger that does not make `not-reviewed`
+    // any less true. Blanking it would replace an accurate reason with "nothing known" for
+    // the ~90s until the next sweep re-derives it - self-healing, and still the panel
+    // confidently reporting no known block on a pull request that is waiting for a review.
+    if (resolved > 0 && pr.mergeBlock === "findings") {
+      updateInspectorPr(parsed.data.prKey, { mergeBlock: null }, Date.now());
+    }
+    // The panels poll, but the per-session chip rides SSE off this same ledger, so the
+    // count on the card would otherwise stay wrong until the Inspector's own 90s sweep.
+    registry.refreshInspections();
+    return c.json({ resolved } satisfies ResolveFindingsResult);
   });
   // What the Inspector will actually spawn with, resolved HERE rather than in the panel
   // for the reason `ForemanStatus.models` documents: the env layer is invisible to the

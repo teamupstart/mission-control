@@ -235,6 +235,7 @@ function inspector(
     inspections: [],
     model: null,
     update: async () => true,
+    resolveFindings: async () => true,
     error: null,
   };
 }

@@ -15566,8 +15566,13 @@ button.sc-row:focus-visible {
   border-left: 2px solid var(--border);
   background: var(--panel-2);
 }
+/* The resolve column is 62px, measured against its own longest real value rather than
+   rounded up: the cell holds one text button reading `Resolve`, or `Resolving…` for the
+   moment a request is in flight, and both fit at the row's 12px. It comes out of the pull
+   request's flexible track, which can afford it - that cell holds `repo#123`, the shortest
+   real value in the table, while every other track here is already measured. */
 .sc-table-inspector .sc-row {
-  grid-template-columns: minmax(0, 1fr) 148px 74px 104px;
+  grid-template-columns: minmax(0, 1fr) 148px 74px 104px 62px;
 }
 .sc-table-shipping .sc-row {
   grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 104px;
@@ -15637,6 +15642,17 @@ button.sc-row:focus-visible {
     grid-column: 2;
     grid-row: 2;
     text-align: right;
+  }
+  /* A third line of its own, SPANNING the row rather than sitting in the first track.
+     Both halves are load-bearing and the span is the one that is easy to drop: the folded
+     grid is `minmax(0, 1fr) auto`, so an auto-placed `.sc-act` lands in track one, and the
+     `justify-content: flex-end` it carries then right-aligns it to the end of THAT track -
+     stopping short of the row's right edge and leaving the only repair control on this
+     panel visibly out of line with `Reviewed` above it. Nothing is clipped or hidden, which
+     is why the fold spec measures it against `.sc-when` rather than asserting visibility. */
+  .sc-table-inspector .sc-row > .sc-act {
+    grid-column: 1 / -1;
+    grid-row: 3;
   }
   .sc-table-shipping .sc-row > .sc-standing {
     grid-column: 1 / -1;
@@ -15753,6 +15769,14 @@ button.sc-row:focus-visible {
   color: var(--dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+/* The operator's way out of a stuck finding. Right-aligned to the row's edge like every
+   other trailing cell here, and 11px to sit with `Fixed` rather than to compete with the
+   verdict - it is a repair for an uncommon state, not the row's headline. */
+.sc-act {
+  display: flex;
+  justify-content: flex-end;
+  font-size: 11px;
 }
 
 /* ---- the Foreman ledger's own cells ----

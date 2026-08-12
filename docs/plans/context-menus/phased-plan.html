@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Context menus &middot; phased implementation</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --panel: #f6f8fa;
+        --panel-2: #eef1f5;
+        --border: #d8dee4;
+        --border-soft: #e6eaef;
+        --fg: #1f2328;
+        --muted: #4a5058;
+        --dim: #6b727c;
+        --accent: #0a68d1;
+        --good: #1a7f4b;
+        --warn: #9a6700;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0a0c0f;
+          --panel: #14181e;
+          --panel-2: #171c23;
+          --border: #232a33;
+          --border-soft: #1b2129;
+          --fg: #e7ebf1;
+          --muted: #b3bcc9;
+          --dim: #8b94a3;
+          --accent: #4a9eff;
+          --good: #35c08a;
+          --warn: #f6a733;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      .page {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 48px 28px 120px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin: 0 0 10px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+        letter-spacing: -0.02em;
+        margin: 0 0 16px;
+      }
+      h2 {
+        font-size: 21px;
+        margin: 44px 0 12px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border-soft);
+      }
+      h3 {
+        font-size: 16px;
+        margin: 26px 0 8px;
+      }
+      p {
+        margin: 0 0 14px;
+      }
+      ul,
+      ol {
+        margin: 0 0 14px;
+        padding-left: 24px;
+      }
+      li {
+        margin: 0 0 8px;
+      }
+      a {
+        color: var(--accent);
+      }
+      strong {
+        font-weight: 640;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.86em;
+        background: var(--panel-2);
+        border: 1px solid var(--border-soft);
+        border-radius: 4px;
+        padding: 0.5px 5px;
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        margin: 0 0 16px;
+      }
+      pre code {
+        background: none;
+        border: 0;
+        padding: 0;
+        font-size: 12.5px;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        margin: 0 0 18px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13.5px;
+      }
+      th {
+        text-align: left;
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+        padding: 10px 14px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+      td {
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--border-soft);
+        color: var(--muted);
+        vertical-align: top;
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      td:first-child {
+        color: var(--fg);
+        white-space: nowrap;
+      }
+      .lede {
+        font-size: 16.5px;
+        color: var(--muted);
+      }
+      .callout {
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        background: var(--panel);
+        border-radius: 0 9px 9px 0;
+        padding: 14px 18px;
+        margin: 0 0 20px;
+        font-size: 14px;
+      }
+      .callout.good {
+        border-left-color: var(--good);
+      }
+      .callout.warn {
+        border-left-color: var(--warn);
+      }
+      .callout p:last-child {
+        margin-bottom: 0;
+      }
+      figure {
+        margin: 0 0 22px;
+      }
+      figure svg {
+        width: 100%;
+        height: auto;
+        display: block;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--panel);
+      }
+      figcaption {
+        font-size: 12.5px;
+        color: var(--dim);
+        margin-top: 9px;
+      }
+      .svg-box {
+        fill: var(--panel-2);
+        stroke: var(--border);
+      }
+      .svg-box-hi {
+        fill: var(--panel-2);
+        stroke: var(--accent);
+        stroke-width: 1.5;
+      }
+      .svg-t {
+        fill: var(--fg);
+        font: 12.5px var(--sans);
+      }
+      .svg-t-sm {
+        fill: var(--dim);
+        font: 10.5px var(--mono);
+      }
+      .svg-arrow {
+        stroke: var(--accent);
+        stroke-width: 1.5;
+        fill: none;
+      }
+      .phase-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0 0 20px;
+      }
+      .phase-links a {
+        font-size: 12.5px;
+        text-decoration: none;
+        color: var(--fg);
+        border: 1px solid var(--border);
+        background: var(--panel);
+        border-radius: 999px;
+        padding: 5px 13px;
+      }
+      .phase-links a:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <p class="eyebrow">Mission Control &middot; phased implementation</p>
+      <h1>Context menus</h1>
+
+      <p class="lede">
+        Four phases. One is a prerequisite for everything, one is the foundation, and the last
+        two are independent of each other and can run concurrently.
+      </p>
+
+      <div class="phase-links">
+        <a href="plan.md">plan.md</a>
+        <a href="plan.html">plan.html</a>
+        <a href="mockups.html">mockups.html (live)</a>
+        <a href="phase-1-clipboard-feedback.md">phase 1</a>
+        <a href="phase-2-menu-foundation.md">phase 2</a>
+        <a href="phase-3-transcript-targets.md">phase 3</a>
+        <a href="phase-4-session-targets.md">phase 4</a>
+      </div>
+
+      <h2>Incorporated decisions</h2>
+      <p>Both dashboard reviews are settled; nothing below is an open question.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Decided</th>
+              <th>Owned by</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>D1</td><td>Custom menu everywhere; <code>Shift</code>+right-click falls through to native</td><td>Phase 2</td></tr>
+            <tr><td>D2</td><td>One DOM menu for both builds; no Electron <code>Menu</code> over IPC</td><td>Phase 2</td></tr>
+            <tr><td>D3</td><td>v1 = transcript + composer + session card / tile / rail row</td><td>Phases 2-4</td></tr>
+            <tr><td>D4</td><td>Dense rows - label plus a shortcut/payload hint</td><td>Phase 2</td></tr>
+            <tr><td>Q1</td><td>Both <code>Copy</code> (raw, matches &#8984;C) and <code>Copy text</code> (chrome stripped)</td><td>2 / 3</td></tr>
+            <tr><td>Q2</td><td><code>Paste</code> always shown; attempt the read, fall back honestly</td><td>Phase 2</td></tr>
+            <tr><td>Q3</td><td>Cross-turn quotes attribute each speaker</td><td>Phase 3</td></tr>
+            <tr><td>Q4</td><td>The clipboard cleanup is its own PR, landed first</td><td>Phase 1</td></tr>
+            <tr><td>Q5</td><td><code>Shift+F10</code> and the Menu key ship in v1</td><td>Phase 2</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>What the investigation changed</h2>
+      <p>
+        Decomposing against the repository moved four things. Each is recorded in the phase that
+        owns it, and <code>plan.md</code> was corrected before the phase files were written.
+      </p>
+      <ol>
+        <li>
+          <strong>Constraint 2 is resolved, not open.</strong> <code>plan.md</code> left the
+          Escape contract to be chosen. <code>Overlay.tsx</code> has exactly one return path and
+          it renders <code>.modal-backdrop</code> unconditionally - a full-screen blurred veil
+          with the panel as a centred flex child - and joining it sets <code>anyOpen</code>,
+          which stands down App's entire global handler. A cursor-anchored menu takes the
+          <strong>anchored-popover contract</strong> instead: capture-phase <code>window</code>
+          keydown with <code>stopImmediatePropagation</code>.
+          <code>test/overlay-registry.test.ts:89-136</code> already documents six popovers
+          outside the registry <em>and</em> the unfixed gap that <code>k</code>/<code>r</code>/<code>c</code>
+          still reach the card behind them; Phase 2 closes that gap for its own surface rather
+          than inheriting it.
+        </li>
+        <li>
+          <strong>A purely DOM-driven registry cannot work.</strong> A turn renders with
+          <strong>no id in the DOM</strong>, and the source markdown lives only in React state
+          as <code>m.text</code>. <code>Copy message</code> and <code>Quote in reply</code> are
+          therefore impossible to read out of the document - the mockup's
+          <code>innerText</code> is a stand-in. Phase 3 stamps <code>data-turn-id</code> and
+          registers a message lookup.
+        </li>
+        <li>
+          <strong>The clipboard counts were wrong.</strong> The plan said seven ad-hoc
+          implementations with three defects; there are <strong>six</strong> sites with
+          <strong>four</strong> defects (the fourth being leaked timers in
+          <code>WorkflowRuns.tsx</code>, which has no unmount cleanup).
+        </li>
+        <li>
+          <strong><code>Shift+F10</code> needs one gate widened.</strong> The chord grammar
+          already supports it with no change, but <code>App.tsx:1610</code>
+          (<code>if (typing) return;</code>) is bypassed only by
+          <code>chordHasCommandModifier</code>, which is false for <code>shift+F10</code> - so
+          it would be eaten inside a composer, which is exactly where <code>Paste</code> lives.
+        </li>
+      </ol>
+
+      <h2>Phases</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Phase</th>
+              <th>Depends on</th>
+              <th>Delivers</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td><a href="phase-1-clipboard-feedback.md">Clipboard feedback foundation</a></td>
+              <td>-</td>
+              <td><code>useCopyFeedback()</code>; six sites migrated, four defects fixed</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td><a href="phase-2-menu-foundation.md">Menu, registry, keyboard</a></td>
+              <td>1</td>
+              <td>The menu; selection / link / field targets; <code>Shift+F10</code></td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td><a href="phase-3-transcript-targets.md">Transcript targets</a></td>
+              <td>2</td>
+              <td><code>Quote in reply</code>, <code>Copy message</code>, <code>Copy text</code>, code / tool / path / timestamp</td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td><a href="phase-4-session-targets.md">Session targets</a></td>
+              <td>2</td>
+              <td>Branch, checkout path, session id, PR URL on card / tile / rail row</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <figure>
+        <svg viewBox="0 0 800 220" role="img" aria-label="Dependency graph. Phase 1 clipboard feedback leads to Phase 2 menu, registry and keys. Phase 2 leads to both Phase 3 transcript targets and Phase 4 session targets, which are independent of each other and may merge in either order.">
+          <defs>
+            <marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6 z" fill="var(--accent)" />
+            </marker>
+          </defs>
+
+          <rect class="svg-box" x="24" y="86" width="176" height="48" rx="9" />
+          <text x="112" y="107" class="svg-t" text-anchor="middle">Phase 1</text>
+          <text x="112" y="123" class="svg-t-sm" text-anchor="middle">clipboard feedback</text>
+
+          <path class="svg-arrow" d="M202,110 L246,110" marker-end="url(#a)" />
+
+          <rect class="svg-box-hi" x="250" y="86" width="196" height="48" rx="9" />
+          <text x="348" y="107" class="svg-t" text-anchor="middle">Phase 2</text>
+          <text x="348" y="123" class="svg-t-sm" text-anchor="middle">menu · registry · keys</text>
+
+          <path class="svg-arrow" d="M448,102 L470,102 L470,50 L554,50" marker-end="url(#a)" />
+          <path class="svg-arrow" d="M448,118 L470,118 L470,170 L554,170" marker-end="url(#a)" />
+
+          <rect class="svg-box" x="558" y="26" width="196" height="48" rx="9" />
+          <text x="656" y="47" class="svg-t" text-anchor="middle">Phase 3</text>
+          <text x="656" y="63" class="svg-t-sm" text-anchor="middle">transcript targets</text>
+
+          <rect class="svg-box" x="558" y="146" width="196" height="48" rx="9" />
+          <text x="656" y="167" class="svg-t" text-anchor="middle">Phase 4</text>
+          <text x="656" y="183" class="svg-t-sm" text-anchor="middle">session targets</text>
+
+          <text x="656" y="112" class="svg-t-sm" text-anchor="middle">concurrent &middot; either merge order</text>
+        </svg>
+        <figcaption>
+          Phases 3 and 4 share Phase 2 as their only prerequisite and depend on nothing of each
+          other's. Phase 3's path matcher was deliberately narrowed to transcript elements so
+          Phase 4 owns the card's branch-before-path ordering outright.
+        </figcaption>
+      </figure>
+
+      <p>
+        <strong>Merge order:</strong> 1, then 2, then 3 and 4 in any order. Every phase leaves
+        the repository operable. After 1, copies work and confirm. After 2, both builds have a
+        working right-click menu - which alone closes the hole that justified the plan. After 3
+        and 4, the v1 scope in D3 is complete.
+      </p>
+
+      <h2>Cross-phase contracts</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Contract</th><th>Set by</th><th>Consumed by</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>useCopyFeedback()</code>; 1600ms hold; the label <code>"Copied"</code></td><td>1</td><td>2, 3</td></tr>
+            <tr><td><code>copyText()</code> unchanged - <code>test/clipboard.test.ts</code> pins its exact call ordering</td><td>1</td><td>all</td></tr>
+            <tr><td><code>resolveContextActions(el, ctx)</code> and the <code>ContextTarget</code> shape</td><td>2</td><td>3, 4</td></tr>
+            <tr><td>Tier 1 ordered, first-match-wins; two tiers; six-item budget</td><td>2</td><td>3, 4</td></tr>
+            <tr><td>Dedupe on <strong>kind and payload</strong>, not payload alone</td><td>2</td><td>3, 4</td></tr>
+            <tr><td>Capture-phase keydown + <code>stopImmediatePropagation</code>; no <code>Overlay</code> import; no literal <code>role="dialog"</code></td><td>2</td><td>3, 4</td></tr>
+            <tr><td>The <code>.is-desktop</code> no-drag allow-list entry (<code>styles.css:1438-1470</code>)</td><td>2</td><td>-</td></tr>
+            <tr><td><code>data-turn-id</code> + the message lookup; no turn content read from the DOM</td><td>3</td><td>-</td></tr>
+            <tr><td>Path matcher is transcript-scoped; <code>.card-meta dd.mono</code> is Phase 4's</td><td>3</td><td>4</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Deliberately not in v1</h2>
+      <p>Named rather than dropped silently. Each is one registry entry plus a test when wanted.</p>
+      <ul>
+        <li>
+          <strong>Diff targets</strong> - <code>Copy line</code>, <code>Copy hunk</code>,
+          <code>Copy SHA</code>, <code>Copy file path</code>, <code>Copy diff</code>. Excluded
+          by <strong>D3</strong>.
+        </li>
+        <li><strong>Files targets.</strong> Excluded by <strong>D3</strong>.</li>
+        <li>
+          <strong>Task and queue items</strong> (<code>.bl-card</code>, <code>.wq-item</code>) -
+          in the source plan's registry, outside D3's v1 surface list.
+        </li>
+        <li>
+          <strong>Session ref</strong> (<code>.sc-ref</code>) - it lives in
+          <code>settings-console.tsx</code>, not on the card / tile / rail row that D3 named.
+        </li>
+        <li>
+          <strong>Unifying <code>showFlash</code>.</strong>
+          <code>TranscriptPanel.tsx:400-414</code> and <code>ActionBar.tsx:153-168</code> are
+          byte-identical, which is the strongest existing argument for a shared transient-state
+          hook - but they carry send/queue outcomes, not copy outcomes, and folding them into
+          Phase 1 doubles that diff for a different feature.
+        </li>
+      </ul>
+
+      <h2>Final verification</h2>
+      <p>
+        Per phase: <code>npm test</code>, <code>npm run typecheck</code>,
+        <code>npm run lint</code>, and <code>npm run build</code> plus the phase's own
+        <code>e2e/</code> spec. <code>npm run smoke</code> where build or runtime surfaces
+        changed (Phase 2).
+      </p>
+      <p>Across the set, when 3 and 4 have both merged:</p>
+      <ul>
+        <li>
+          Right-click every surface in D3's scope in <strong>both</strong> conversation
+          renderings, with rich text on and off, and with find open - the four states in which
+          <code>TurnProse</code> renders different markup.
+        </li>
+        <li>The full <code>e2e/</code> suite (~4.4 minutes locally at 4 workers; two shards in CI).</li>
+        <li>
+          The desktop build specifically: right-click Copy and Paste, <code>Open link</code>
+          reaching the browser without navigating the app window, and the menu not being eaten
+          by the titlebar drag region when opened near the top of the window.
+        </li>
+      </ul>
+    </div>
+  </body>
+</html>

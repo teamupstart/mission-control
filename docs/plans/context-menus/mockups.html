@@ -1,0 +1,2686 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Context menus &middot; mockups</title>
+    <style>
+      /* ==========================================================================
+         Tokens, copied verbatim from src/web/styles.css so these mockups are the
+         real palette rather than an approximation of it. Nothing is added: a
+         context menu is chrome, and chrome that needs a new colour is chrome that
+         is saying something the rest of the app does not already say.
+         ========================================================================== */
+      :root {
+        color-scheme: dark;
+        --bg: #0a0c0f;
+        --bg-2: #0e1116;
+        --panel: #14181e;
+        --panel-2: #171c23;
+        --border: #232a33;
+        --border-soft: #1b2129;
+        --fg: #e7ebf1;
+        --muted: #939eae;
+        --dim: #7c8798;
+
+        --working: #4a9eff;
+        --idle: #35c08a;
+        --attention: #f6a733;
+        --danger: #f85149;
+        --exited: #707a88;
+        --neutral: #8b94a3;
+        --select: #35c08a;
+        --find: #e3b341;
+        --purple: #a371f7;
+        --foreman: var(--purple);
+        --pr-open: #3fb950;
+        --pr-merged: var(--purple);
+        --syntax-type: #d97757;
+
+        --radius: 13px;
+        --shadow:
+          0 1px 2px rgba(0, 0, 0, 0.4),
+          0 8px 24px rgba(0, 0, 0, 0.28);
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background:
+          radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+          radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+          var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ==========================================================================
+         Presentation chrome for this document only. `mk-` prefix so nothing here
+         could ever be mistaken for a class the app ships.
+         ========================================================================== */
+      .mk-page {
+        max-width: 1240px;
+        margin: 0 auto;
+        padding: 40px 32px 160px;
+      }
+      .mk-masthead {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 26px;
+        margin-bottom: 30px;
+      }
+      .mk-eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin: 0 0 10px;
+      }
+      .mk-masthead h1 {
+        margin: 0 0 14px;
+        font-size: 30px;
+        font-weight: 660;
+        letter-spacing: -0.015em;
+      }
+      .mk-lede {
+        margin: 0 0 10px;
+        max-width: 82ch;
+        color: var(--muted);
+        font-size: 14.5px;
+        line-height: 1.65;
+      }
+      .mk-lede strong,
+      .mk-prose strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .mk-lede code,
+      .mk-prose code,
+      .mk-note code,
+      .mk-table code {
+        font-family: var(--mono);
+        font-size: 0.9em;
+        color: var(--fg);
+        background: color-mix(in oklab, var(--working) 9%, var(--bg-2));
+        border: 1px solid var(--border-soft);
+        border-radius: 4px;
+        padding: 0 4px;
+      }
+
+      .mk-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 0 -32px 34px;
+        padding: 12px 32px;
+        background: color-mix(in oklab, var(--bg) 88%, transparent);
+        backdrop-filter: blur(14px);
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .mk-toolbar-label {
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .mk-toolbar-jump {
+        margin-left: auto;
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+      .mk-toolbar-jump a {
+        font-size: 11.5px;
+        color: var(--dim);
+        text-decoration: none;
+        padding: 5px 9px;
+        border-radius: 7px;
+      }
+      .mk-toolbar-jump a:hover {
+        color: var(--fg);
+        background: var(--panel);
+      }
+
+      .mk-section {
+        margin: 0 0 68px;
+        scroll-margin-top: 78px;
+      }
+      .mk-section-head {
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .mk-num {
+        flex: none;
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border-radius: 9px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--working);
+      }
+      .mk-section-head h2 {
+        margin: 4px 0 2px;
+        font-size: 21px;
+        font-weight: 640;
+        letter-spacing: -0.01em;
+      }
+      .mk-sub {
+        margin: 0;
+        color: var(--dim);
+        font-size: 12.5px;
+      }
+      .mk-prose {
+        max-width: 84ch;
+        color: var(--muted);
+        font-size: 13.5px;
+        line-height: 1.7;
+      }
+      .mk-prose p {
+        margin: 0 0 12px;
+      }
+      .mk-prose em {
+        color: var(--muted);
+      }
+
+      .mk-note {
+        max-width: 84ch;
+        margin: 14px 0 0;
+        padding: 11px 14px;
+        border-radius: 9px;
+        border: 1px solid color-mix(in oklab, var(--working) 26%, var(--border-soft));
+        background: color-mix(in oklab, var(--working) 7%, var(--bg-2));
+        color: var(--muted);
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+      .mk-note b {
+        color: var(--fg);
+      }
+      .mk-note.is-warn {
+        border-color: color-mix(in oklab, var(--attention) 30%, var(--border-soft));
+        background: color-mix(in oklab, var(--attention) 7%, var(--bg-2));
+      }
+
+      kbd {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        padding: 1.5px 5px;
+        border-radius: 5px;
+        border: 1px solid var(--border);
+        border-bottom-width: 2px;
+        background: var(--panel-2);
+        color: var(--fg);
+      }
+
+      /* Frames that stand in for a real app pane. */
+      .mk-frame {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        padding: 14px;
+      }
+      .mk-frame-label {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin: 0 0 10px;
+        font-size: 10.5px;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .mk-frame-label em {
+        margin-left: auto;
+        font-style: normal;
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0;
+        color: var(--dim);
+        text-transform: none;
+      }
+      .mk-two {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        align-items: start;
+      }
+      /* For side-by-sides whose whole point is a like-for-like comparison, so one
+         panel being taller does not read as one panel being more important. */
+      .mk-two.is-even {
+        align-items: stretch;
+      }
+      .mk-two.is-even .mk-frame {
+        display: flex;
+        flex-direction: column;
+      }
+      .mk-two.is-even .mk-stage {
+        flex: 1;
+      }
+      @media (max-width: 900px) {
+        .mk-two {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .mk-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 8px 0 0;
+        font-size: 12.5px;
+      }
+      .mk-table th {
+        text-align: left;
+        font-size: 10px;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--dim);
+        font-weight: 640;
+        padding: 0 12px 8px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .mk-table td {
+        padding: 9px 12px 9px 0;
+        border-bottom: 1px solid var(--border-soft);
+        color: var(--muted);
+        vertical-align: top;
+      }
+      .mk-table td:first-child {
+        color: var(--fg);
+        white-space: nowrap;
+      }
+      .mk-table .mk-act {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg);
+      }
+      .mk-table .mk-act i {
+        font-style: normal;
+        color: var(--dim);
+      }
+
+      .mk-pick {
+        display: grid;
+        grid-template-columns: 26px 1fr;
+        gap: 10px 12px;
+        align-items: start;
+        max-width: 84ch;
+        padding: 14px 16px;
+        border-radius: 11px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        margin-top: 12px;
+      }
+      .mk-pick + .mk-pick {
+        margin-top: 10px;
+      }
+      .mk-pick.is-rec {
+        border-color: color-mix(in oklab, var(--idle) 38%, var(--border));
+        background: color-mix(in oklab, var(--idle) 6%, var(--panel));
+      }
+      .mk-pick-key {
+        width: 26px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        border-radius: 7px;
+        border: 1px solid var(--border);
+        background: var(--bg-2);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--dim);
+      }
+      .mk-pick.is-rec .mk-pick-key {
+        color: var(--idle);
+        border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+      }
+      .mk-pick-body h4 {
+        margin: 3px 0 4px;
+        font-size: 13.5px;
+        font-weight: 600;
+        color: var(--fg);
+      }
+      .mk-pick-body p {
+        margin: 0;
+        font-size: 12.5px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .mk-tag {
+        display: inline-block;
+        margin-left: 8px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 9.5px;
+        font-weight: 640;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--idle);
+        background: color-mix(in oklab, var(--idle) 14%, transparent);
+        border: 1px solid color-mix(in oklab, var(--idle) 30%, transparent);
+        vertical-align: 2px;
+      }
+
+      /* ==========================================================================
+         Existing app CSS, lifted verbatim from src/web/styles.css. The mockups are
+         drawn on the real transcript, so a menu that crowds a turn here crowds it
+         in the product.
+         ========================================================================== */
+      .transcript {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        position: relative;
+      }
+      .transcript-log {
+        max-height: 420px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding-right: 4px;
+        position: relative;
+      }
+      .turn {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .turn-role {
+        font: 600 10px/1 var(--sans);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .turn-assistant .turn-role {
+        color: color-mix(in oklab, var(--agent-accent, var(--muted)) 70%, var(--muted));
+      }
+      .turn-text {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font: 13px/1.5 var(--sans);
+        color: var(--fg);
+        background: var(--bg-2);
+        border: 1px solid var(--border-soft);
+        border-radius: 9px;
+        padding: 8px 10px;
+      }
+      .turn-user .turn-text {
+        background: color-mix(in oklab, var(--working) 10%, var(--bg-2));
+        border-color: color-mix(in oklab, var(--working) 22%, var(--border-soft));
+      }
+      .turn-tools {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .tool-chip {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 5px;
+        min-width: 0;
+        font: 500 11px/1 var(--mono);
+        color: var(--muted);
+        background: color-mix(in oklab, var(--neutral) 12%, transparent);
+        border: 1px solid var(--border-soft);
+        border-radius: 6px;
+        padding: 3px 6px;
+      }
+      .tool-chip-name {
+        color: var(--dim);
+      }
+      .tool-chip-detail {
+        color: var(--fg);
+        overflow-wrap: anywhere;
+      }
+      .turn-toolrun {
+        flex-direction: row;
+        align-items: baseline;
+        gap: 8px;
+      }
+      .turn-toolrun .turn-role {
+        flex: none;
+        padding-top: 1px;
+      }
+      .markdown a {
+        color: var(--working);
+      }
+      .markdown a.workspace-path {
+        color: inherit;
+        text-decoration: none;
+        border-bottom: 1px dotted color-mix(in oklab, var(--working) 55%, transparent);
+      }
+      .markdown a.workspace-path:hover {
+        color: var(--working);
+        border-bottom-color: var(--working);
+      }
+      .turn-text.markdown {
+        white-space: normal;
+      }
+      .turn-text.markdown p {
+        margin: 0 0 8px;
+      }
+      .turn-text.markdown p:last-child {
+        margin-bottom: 0;
+      }
+      .turn-text.markdown pre {
+        margin: 8px 0;
+        padding: 9px 11px;
+        border-radius: 8px;
+        background: var(--bg);
+        border: 1px solid var(--border-soft);
+        overflow-x: auto;
+      }
+      .turn-text.markdown pre code {
+        font: 11.5px/1.55 var(--mono);
+        color: var(--fg);
+      }
+      .turn-text.markdown :not(pre) > code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        background: color-mix(in oklab, var(--working) 9%, var(--bg-2));
+        border: 1px solid var(--border-soft);
+        border-radius: 4px;
+        padding: 0 4px;
+      }
+      .conversation-time {
+        font: 10px/1 var(--mono);
+        color: var(--dim);
+      }
+      /* Card, lifted in outline. */
+      .card {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--panel);
+        padding: 12px 13px;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+      }
+      .card-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .card-title {
+        font-size: 13.5px;
+        font-weight: 600;
+      }
+      .card-meta {
+        margin: 0;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 3px 10px;
+        font-size: 11.5px;
+      }
+      .card-meta dt {
+        color: var(--dim);
+      }
+      .card-meta dd {
+        margin: 0;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .card-meta dd.mono {
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+      .branch {
+        color: var(--idle);
+      }
+      .branch::before {
+        content: "⌥ ";
+        color: var(--dim);
+      }
+      .state-badge {
+        margin-left: auto;
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--idle);
+        border: 1px solid color-mix(in oklab, var(--idle) 34%, transparent);
+        background: color-mix(in oklab, var(--idle) 12%, transparent);
+        border-radius: 999px;
+        padding: 2px 8px;
+      }
+      .pr-chip {
+        font: 500 11px/1 var(--mono);
+        color: var(--pr-open);
+        border: 1px solid color-mix(in oklab, var(--pr-open) 32%, transparent);
+        background: color-mix(in oklab, var(--pr-open) 10%, transparent);
+        border-radius: 6px;
+        padding: 3px 7px;
+        text-decoration: none;
+      }
+      /* Diff rows, lifted in outline. */
+      .dl {
+        font: 11.5px/1.6 var(--mono);
+      }
+      .dl-num {
+        user-select: none;
+        color: var(--dim);
+        text-align: right;
+        padding-right: 10px;
+        width: 42px;
+      }
+      .dl-sign {
+        width: 14px;
+        color: var(--dim);
+      }
+      .dl-text {
+        color: var(--fg);
+        white-space: pre-wrap;
+      }
+      .dl-add {
+        background: color-mix(in oklab, var(--idle) 10%, transparent);
+      }
+      .dl-add .dl-sign {
+        color: var(--idle);
+      }
+      .dl-del {
+        background: color-mix(in oklab, var(--danger) 10%, transparent);
+      }
+      .dl-del .dl-sign {
+        color: var(--danger);
+      }
+      .diff-sha {
+        font: 11px/1 var(--mono);
+        color: var(--muted);
+      }
+
+      /* ---- terminal rendering (verbatim from src/web/styles.css) ----
+         The conversation window has TWO markups behind ConversationViewToggle, and
+         a selection has to work in both. This is the second one. */
+      .pty-entry {
+        position: relative;
+        max-width: 1160px;
+        padding: 0 0 17px 24px;
+        font-family: var(--mono);
+      }
+      .pty-entry::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 5px;
+        width: 1px;
+        background: var(--border);
+      }
+      .pty-entry:last-child::before {
+        bottom: 15px;
+      }
+      .pty-entry::after {
+        content: "";
+        position: absolute;
+        top: 5px;
+        left: 2px;
+        width: 7px;
+        height: 7px;
+        border: 1px solid var(--dim);
+        border-radius: 50%;
+        background: var(--bg-2);
+      }
+      .pty-user::after {
+        border-color: var(--working);
+        background: color-mix(in oklab, var(--working) 38%, var(--bg-2));
+      }
+      .pty-agent::after {
+        border-color: var(--agent-accent, var(--idle));
+        background: color-mix(in oklab, var(--agent-accent, var(--idle)) 35%, var(--bg-2));
+      }
+      .pty-commandline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        align-items: baseline;
+        margin: 0;
+        color: var(--fg);
+        font: 12.5px/1.55 var(--mono);
+      }
+      .pty-host {
+        color: var(--working);
+      }
+      .pty-cwd {
+        color: var(--muted);
+      }
+      .pty-caret {
+        color: var(--fg);
+        font-weight: 700;
+      }
+      .pty-command {
+        flex: 1 1 auto;
+        min-width: 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .pty-speaker {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin-bottom: 6px;
+        color: color-mix(in oklab, var(--agent-accent, var(--muted)) 70%, var(--muted));
+        font: 700 9.5px/1 var(--mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .pty-entry .pty-time {
+        flex: none;
+        margin-left: auto;
+        padding-left: 10px;
+        color: var(--dim);
+        font: 500 9.5px/1 var(--mono);
+        letter-spacing: 0.01em;
+        text-transform: none;
+        white-space: nowrap;
+      }
+      .pty-copy {
+        max-width: 108ch;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: none;
+        font: 12.5px/1.7 var(--mono);
+      }
+      .pty-copy.markdown > :first-child {
+        margin-top: 0;
+      }
+      .pty-copy.markdown > :last-child {
+        margin-bottom: 0;
+      }
+
+      /* ==========================================================================
+         Candidate product CSS. These are the class names the feature would ship
+         with, so the mockup and the diff can be read against each other.
+         ========================================================================== */
+
+      /* ---- the selection playground (this document only, `pg-` prefix) ---- */
+      .pg-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin: 0 0 12px;
+      }
+      .pg-bar-label {
+        font-size: 10px;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin-right: 2px;
+      }
+      .pg-btn {
+        font: 11.5px var(--sans);
+        color: var(--muted);
+        background: var(--bg-2);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 4px 9px;
+        cursor: pointer;
+      }
+      .pg-btn:hover {
+        color: var(--fg);
+        border-color: var(--dim);
+      }
+      .pg-btn.is-on {
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+        background: color-mix(in oklab, var(--working) 12%, var(--bg-2));
+      }
+      .pg-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 300px;
+        gap: 16px;
+        align-items: start;
+      }
+      @media (max-width: 1040px) {
+        .pg-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      .pg-readout {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg-2);
+        padding: 12px 13px;
+        font-size: 11.5px;
+        position: sticky;
+        top: 72px;
+      }
+      .pg-readout h4 {
+        margin: 0 0 10px;
+        font: 700 9.5px/1 var(--sans);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .pg-row {
+        display: flex;
+        gap: 8px;
+        padding: 5px 0;
+        border-top: 1px solid var(--border-soft);
+      }
+      .pg-row:first-of-type {
+        border-top: 0;
+      }
+      .pg-k {
+        flex: none;
+        width: 74px;
+        color: var(--dim);
+      }
+      .pg-v {
+        min-width: 0;
+        color: var(--fg);
+        overflow-wrap: anywhere;
+      }
+      .pg-v.is-none {
+        color: var(--dim);
+        font-style: italic;
+      }
+      .pg-items {
+        margin: 8px 0 0;
+        padding: 0;
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .pg-items li {
+        display: flex;
+        gap: 7px;
+        align-items: baseline;
+        font: 11px var(--mono);
+        color: var(--fg);
+        background: var(--panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 6px;
+        padding: 4px 7px;
+      }
+      .pg-items li em {
+        margin-left: auto;
+        font-style: normal;
+        font-size: 10px;
+        color: var(--dim);
+      }
+      /* The composer, so Quote in reply has somewhere real to land. */
+      .pg-compose {
+        display: flex;
+        gap: 6px;
+        align-items: flex-end;
+        margin-top: 10px;
+      }
+      .pg-compose textarea {
+        flex: 1;
+        min-height: 60px;
+        resize: vertical;
+        font: 13px/1.5 var(--sans);
+        color: var(--fg);
+        background: var(--bg-2);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 8px 10px;
+      }
+      .pg-compose textarea:focus {
+        outline: none;
+        border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+      }
+      .pg-compose textarea::placeholder {
+        color: var(--dim);
+      }
+      .pg-send {
+        font: 12px var(--sans);
+        color: var(--fg);
+        background: color-mix(in oklab, var(--working) 18%, var(--bg-2));
+        border: 1px solid color-mix(in oklab, var(--working) 40%, var(--border));
+        border-radius: 8px;
+        padding: 7px 14px;
+        cursor: pointer;
+      }
+      .ctx-menu {
+        position: fixed;
+        z-index: 60;
+        min-width: 196px;
+        max-width: 268px;
+        padding: 4px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--panel);
+        box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        /* A menu opens at a cursor, so it can land anywhere - including under the
+           desktop shell's titlebar. It belongs in the `.is-desktop` no-drag list in
+           styles.css:1438-1470 on the first commit, not after the bug report. */
+      }
+      .ctx-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 5px 9px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        font: 12px var(--sans);
+        color: var(--fg);
+        text-align: left;
+        cursor: pointer;
+      }
+      .ctx-row:hover:not(:disabled),
+      .ctx-row:focus-visible {
+        background: var(--panel-2);
+        outline: none;
+      }
+      .ctx-row:disabled {
+        color: var(--dim);
+        cursor: default;
+      }
+      .ctx-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* The payload preview. Not decoration: it is what makes "the label names its
+         payload" checkable at a glance when the label alone is ambiguous. */
+      .ctx-hint {
+        margin-left: auto;
+        flex: none;
+        font: 10.5px var(--mono);
+        color: var(--dim);
+      }
+      .ctx-sep {
+        height: 1px;
+        margin: 3px 6px;
+        background: var(--border-soft);
+      }
+      /* Style B only - a one-line blurb under the label. */
+      .ctx-menu.is-blurbs {
+        min-width: 258px;
+        max-width: 300px;
+      }
+      .ctx-menu.is-blurbs .ctx-row {
+        align-items: flex-start;
+        padding: 7px 9px;
+      }
+      .ctx-menu.is-blurbs .ctx-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .ctx-menu.is-blurbs .ctx-note {
+        font: 10.5px/1.4 var(--sans);
+        color: var(--dim);
+        white-space: normal;
+      }
+
+      /* Copy confirmation. Mirrors TranscriptPanel's existing `.action-flash`
+         `role="status"` span, which already announces to screen readers. */
+      .ctx-flash {
+        position: fixed;
+        left: 50%;
+        bottom: 26px;
+        transform: translateX(-50%);
+        z-index: 70;
+        display: flex;
+        align-items: baseline;
+        gap: 9px;
+        max-width: min(640px, 90vw);
+        padding: 9px 14px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in oklab, var(--idle) 34%, var(--border));
+        background: color-mix(in oklab, var(--idle) 12%, var(--panel));
+        box-shadow: var(--shadow);
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .ctx-flash b {
+        font-weight: 640;
+        color: var(--idle);
+      }
+      .ctx-flash span {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* The hover copy button on a code block. Ships with `Copy code`, because a
+         right-click-only affordance is not discoverable. */
+      .code-wrap {
+        position: relative;
+      }
+      .code-copy {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        opacity: 0;
+        transition: opacity 120ms;
+        font: 10.5px var(--mono);
+        color: var(--dim);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 3px 7px;
+        cursor: pointer;
+      }
+      .code-wrap:hover .code-copy,
+      .code-copy:focus-visible {
+        opacity: 1;
+      }
+      .code-copy:hover {
+        color: var(--fg);
+        border-color: var(--dim);
+      }
+
+      /* Right-clickable regions get a faint affordance in the mockup only, so a
+         reviewer knows where to try. NOT proposed for the product. */
+      .mk-live {
+        position: relative;
+      }
+      .mk-live::after {
+        content: "right-click me";
+        position: absolute;
+        top: -9px;
+        right: 8px;
+        font: 9px var(--mono);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--dim);
+        background: var(--panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 999px;
+        padding: 1px 8px;
+      }
+
+      /* A drawn stand-in for the browser's own menu, for the "today" comparison. */
+      .mk-native {
+        width: 230px;
+        padding: 4px 0;
+        border: 1px solid #3a3a3a;
+        border-radius: 8px;
+        background: #2b2b2b;
+        box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
+        font: 12px var(--sans);
+        color: #e6e6e6;
+      }
+      .mk-native div {
+        padding: 5px 14px;
+      }
+      .mk-native div.is-off {
+        color: #7d7d7d;
+      }
+      .mk-native hr {
+        border: 0;
+        border-top: 1px solid #3a3a3a;
+        margin: 4px 0;
+      }
+      .mk-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 132px;
+        border: 1px dashed var(--border);
+        border-radius: 10px;
+        color: var(--dim);
+        font-size: 12.5px;
+        text-align: center;
+        padding: 20px;
+        line-height: 1.6;
+      }
+      .mk-empty b {
+        color: var(--muted);
+        font-size: 13.5px;
+        font-weight: 600;
+      }
+      .mk-empty span {
+        max-width: 42ch;
+      }
+      .mk-stage {
+        display: grid;
+        place-items: center;
+        min-height: 190px;
+        padding: 20px;
+        border-radius: 10px;
+        background: var(--bg-2);
+        border: 1px solid var(--border-soft);
+      }
+      /* Menus drawn inline (not opened at a cursor) for the style comparison. */
+      .mk-stage .ctx-menu {
+        position: static;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mk-page">
+      <header class="mk-masthead">
+        <p class="mk-eyebrow">Mission Control &middot; mockups</p>
+        <h1>Context menus</h1>
+        <p class="mk-lede">
+          Right-click gives you the actions that belong to the thing under the cursor. A link
+          offers <strong>Copy</strong> and <strong>Copy URL</strong>; a file path offers
+          <strong>Copy path</strong> and <strong>Copy absolute path</strong>; a message offers
+          <strong>Copy message</strong> and <strong>Quote in reply</strong>.
+        </p>
+        <p class="mk-lede">
+          <strong>Every menu on this page is live.</strong> Right-click the transcript, the
+          session card and the diff below and the real proposed menu opens with the real
+          proposed items, resolved from what you actually clicked. Choosing an item really
+          writes your clipboard and shows you what it wrote.
+        </p>
+        <p class="mk-lede">
+          The transcript is drawn with the shipping <code>.turn</code> /
+          <code>.turn-text</code> / <code>.tool-chip</code> CSS lifted verbatim from
+          <code>src/web/styles.css</code>. The written proposal is
+          <code>plan.md</code> beside this file.
+        </p>
+      </header>
+
+      <nav class="mk-toolbar">
+        <span class="mk-toolbar-label">Jump to</span>
+        <span class="mk-toolbar-jump">
+          <a href="#today">Today</a>
+          <a href="#rules">Two rules</a>
+          <a href="#live">The transcript</a>
+          <a href="#selecting">Selecting text</a>
+          <a href="#matrix">Matrix</a>
+          <a href="#beyond">Beyond the transcript</a>
+          <a href="#density">A vs B</a>
+          <a href="#native">The native question</a>
+          <a href="#pick">Recommendation</a>
+        </span>
+      </nav>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="today">
+        <div class="mk-section-head">
+          <div class="mk-num">0</div>
+          <div>
+            <h2>What right-click does today</h2>
+            <p class="mk-sub">The two builds do not agree, and the packaged one does nothing</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            There is no <code>onContextMenu</code> handler anywhere in <code>src/</code>. In a
+            browser that is survivable, because Chromium's own menu carries Copy and Copy Link
+            Address. In the desktop app it is not: <strong>Electron ships no default context
+            menu</strong>, and an app that does not build one has none.
+            <code>src/main/menu.ts</code> installs an <em>application</em> menu and
+            <code>src/main/tray.ts</code> a <em>tray</em> menu; neither is a
+            <code>webContents</code> context menu. So the build the product is packaged and
+            shipped as has no right-click Copy, no Paste, and no Copy Link Address anywhere.
+          </p>
+        </div>
+        <div class="mk-two is-even" style="margin-top: 16px">
+          <div class="mk-frame">
+            <p class="mk-frame-label">Browser <em>dist/web on :7317</em></p>
+            <div class="mk-stage">
+              <div class="mk-native">
+                <div>Back</div>
+                <div class="is-off">Forward</div>
+                <div>Reload</div>
+                <hr />
+                <div>Copy</div>
+                <div>Copy Link Address</div>
+                <hr />
+                <div>Save Page As&hellip;</div>
+                <div>Inspect</div>
+              </div>
+            </div>
+          </div>
+          <div class="mk-frame">
+            <p class="mk-frame-label">Desktop <em>Electron 43</em></p>
+            <div class="mk-stage">
+              <div class="mk-empty">
+                <b>Nothing appears.</b>
+                <span
+                  >No Copy, no Paste, no Copy Link Address - only the
+                  <kbd>&#8984;C</kbd> accelerator from the app menu&rsquo;s
+                  <code>editMenu</code> role.</span
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mk-note is-warn">
+          <b>A second gap, already half-built.</b>
+          <code>window.missionDesktop.openExternal</code> is exposed in
+          <code>src/preload/index.ts:12</code>, handled in <code>src/main/index.ts:58</code>,
+          and typed in <code>mission-desktop.d.ts:11</code> - and
+          <b>no renderer code calls it</b>. External links instead rely on
+          <code>will-navigate</code> firing and <code>src/main/window.ts:103-108</code>
+          bouncing the navigation back out. The app window begins navigating away from the
+          dashboard on every external link click and is caught on the way. An explicit
+          <b>Open link</b> is the first real caller of a bridge that already exists.
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="rules">
+        <div class="mk-section-head">
+          <div class="mk-num">1</div>
+          <div>
+            <h2>Two rules, and the menu falls out of them</h2>
+            <p class="mk-sub">Which is why there is no per-component right-click code</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            <strong>Actions stack by specificity.</strong> A link inside a message inside a
+            card is three targets at once, so the menu resolves the hit into a target chain
+            and concatenates each target&rsquo;s actions, most specific first. That is exactly
+            the request - a URL offering <em>both</em> <code>Copy</code> and
+            <code>Copy URL</code> - generalized, so it never has to be special-cased per
+            element. The chain is capped at <strong>two tiers</strong>: the thing under the
+            cursor, then the container it lives in. Every menu in this document is six items
+            or fewer because of that cap.
+          </p>
+          <p>
+            <strong>The label names its payload.</strong> A bare <code>Copy</code> that copies
+            something the reader did not choose is worse than no item at all. So
+            <code>Copy</code> appears only when there is a real selection to copy; with no
+            selection the item is named for what it will write -
+            <code>Copy message</code>, <code>Copy code</code>, <code>Copy branch</code>. Nobody
+            has to paste to find out what they got.
+          </p>
+          <p>
+            One consequence worth naming, because it looks like a bug otherwise:
+            <strong>identical payloads collapse</strong>. A bare autolinked URL has link text
+            equal to its href, so <code>Copy</code> and <code>Copy URL</code> would write the
+            same string, and the duplicate is dropped. On a markdown link reading
+            &ldquo;the failing job&rdquo; both survive, because both are real choices. That is
+            one general dedupe rule the stacking already needed, not a special case. You can
+            see both behaviours in the next section: right-click the bare URL, then the worded
+            link.
+          </p>
+        </div>
+        <div class="mk-note">
+          <b>Also in the registry, not drawn:</b> <kbd>Shift</kbd>+<kbd>F10</kbd> and the Menu
+          key open the same menu at the focused element. Both are unbound today
+          (<code>src/web/lib/keybindings.ts</code>), and without them the whole feature is
+          mouse-only.
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="live">
+        <div class="mk-section-head">
+          <div class="mk-num">2</div>
+          <div>
+            <h2>The conversation window</h2>
+            <p class="mk-sub">The ask, live. Right-click anything in the turn below.</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            One turn, carrying every tier-1 target the transcript can produce: a bare
+            autolinked URL, a worded markdown link, an auto-linked workspace path
+            (<code>rehypeWorkspacePaths</code>), inline code, a fenced code block, a tool chip,
+            and a timestamp. Right-click each and watch the menu change. Then select some text
+            first and right-click again - the first item becomes <code>Copy</code>, and
+            <code>Quote in reply</code> quotes what you selected rather than the whole message.
+          </p>
+        </div>
+
+        <div class="mk-frame" style="margin-top: 14px; max-width: 748px">
+          <p class="mk-frame-label">Console detail &middot; conversation <em>720px</em></p>
+          <div class="mk-live" style="max-width: 720px">
+            <div class="transcript" style="--agent-accent: #d97757">
+              <div class="transcript-log">
+                <div class="turn turn-user" data-msg="user">
+                  <div class="turn-role">
+                    you
+                    <time class="conversation-time" datetime="2026-08-12T09:14:22.000Z"
+                      >09:14</time
+                    >
+                  </div>
+<!-- No indentation inside this element: `.turn-text` is `white-space: pre-wrap`,
+                       so pretty-printed source would be rendered as leading spaces. -->
+                  <div class="turn-text">CI is red again on the topbar branch. The run is https://github.com/mancej-cyc/ai-harness/actions/runs/18392207744 - can you look at the shard that timed out?</div>
+                </div>
+
+                <div class="turn turn-assistant" data-msg="agent">
+                  <div class="turn-role">
+                    claude
+                    <time class="conversation-time" datetime="2026-08-12T09:14:51.000Z"
+                      >09:14</time
+                    >
+                  </div>
+                  <div class="turn-text markdown">
+                    <p>
+                      Both shards are green except
+                      <a href="https://github.com/mancej-cyc/ai-harness/actions/runs/18392207744/job/52418803311"
+                        >the failing job</a
+                      >, which timed out waiting on the SSE reconnect. The assertion lives in
+                      <a class="workspace-path" href="e2e/specs/topbar.spec.ts"
+                        >e2e/specs/topbar.spec.ts</a
+                      >
+                      and it waits on <code>page.waitForSelector</code> with no timeout of its
+                      own, so it inherits the 30s global and dies before the daemon has
+                      finished its backoff.
+                    </p>
+                    <div class="code-wrap">
+                      <button class="code-copy" type="button">Copy</button>
+                      <pre><code>await expect(page.getByRole("status", { name: "connection" }))
+  .toHaveText("live", { timeout: 45_000 });</code></pre>
+                    </div>
+                    <p>
+                      That is the smallest fix. The reconnect itself is fine - I confirmed it
+                      against <a class="workspace-path" href="src/server/sse.ts">src/server/sse.ts</a>.
+                    </p>
+                  </div>
+                </div>
+
+                <div class="turn turn-assistant turn-toolrun">
+                  <div class="turn-role">ran</div>
+                  <div class="turn-tools">
+                    <span class="tool-chip"
+                      ><span class="tool-chip-name">Read</span
+                      ><span class="tool-chip-detail">e2e/specs/topbar.spec.ts</span></span
+                    >
+                    <span class="tool-chip"
+                      ><span class="tool-chip-name">Bash</span
+                      ><span class="tool-chip-detail">npx playwright test topbar --reporter=line</span></span
+                    >
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mk-note">
+          <b>Try in order:</b> the bare URL in your own turn (identical payloads collapse to
+          one <code>Copy URL</code>) &middot; the words &ldquo;the failing job&rdquo; (both
+          survive) &middot; <code>e2e/specs/topbar.spec.ts</code> (a path, so
+          <code>Copy path</code> and <code>Copy absolute path</code>, and never
+          <code>Copy URL</code>) &middot; inside the code block &middot; a tool chip &middot;
+          the timestamp &middot; empty space in a bubble &middot; then select a sentence and
+          right-click it.
+        </div>
+        <div class="mk-note is-warn">
+          <b>Constraint this frame cannot show.</b>
+          <code>TurnProse</code> (<code>TranscriptPanel.tsx:1366-1390</code>) renders raw text
+          with <b>no <code>&lt;a&gt;</code> at all</b> when <code>useRichText()</code> is off,
+          and again while find is active - and the whole panel has a second PTY rendering
+          (<code>.pty-entry</code> / <code>.pty-copy</code>) behind
+          <code>ConversationViewToggle</code>. So URL detection cannot depend on anchors
+          existing: the resolver scans the text node under the cursor <i>as well as</i>
+          checking <code>closest("a")</code>, and both markups hit-test. One code path covers
+          rich text, plain text, find-active and terminal view.
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="selecting">
+        <div class="mk-section-head">
+          <div class="mk-num">3</div>
+          <div>
+            <h2>Selecting text &middot; the playground</h2>
+            <p class="mk-sub">
+              Drag a selection, right-click it, and watch what the menu would do
+            </p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            Section 2 shows what each <em>target</em> offers. This one is for the case you
+            actually spend your day in: <strong>you have selected some text in a conversation and
+            you want to do something with it.</strong> Everything here is live. The panel on the
+            right shows what the resolver currently sees, the composer below the log is real, and
+            <code>Quote in reply</code> really writes into it.
+          </p>
+          <p>
+            Drag your own selections, or use the presets to set up the awkward ones without
+            fiddly dragging. The <strong>Chat / Terminal</strong> toggle re-renders the same four
+            turns into the conversation window's other markup
+            (<code>.pty-entry</code> / <code>.pty-copy</code>, with that CSS lifted verbatim) -
+            selection has to behave identically in both, and this is where you check that it
+            does.
+          </p>
+        </div>
+
+        <div class="pg-bar" style="margin-top: 16px">
+          <span class="pg-bar-label">View</span>
+          <button class="pg-btn is-on" type="button" data-view-btn="chat">Chat</button>
+          <button class="pg-btn" type="button" data-view-btn="terminal">Terminal</button>
+          <span class="pg-bar-label" style="margin-left: 14px">Select</span>
+          <button class="pg-btn" type="button" data-preset="one">Inside one turn</button>
+          <button class="pg-btn" type="button" data-preset="across">Across two turns</button>
+          <button class="pg-btn" type="button" data-preset="code">Inside the code block</button>
+          <button class="pg-btn" type="button" data-preset="link">Part of a link</button>
+          <button class="pg-btn" type="button" data-preset="space">Whitespace only</button>
+          <button class="pg-btn" type="button" data-preset="clear">Clear</button>
+        </div>
+
+        <div class="pg-grid">
+          <div class="mk-frame">
+            <p class="mk-frame-label">
+              Console detail &middot; conversation <em id="pg-view-label">chat</em>
+            </p>
+            <div class="mk-live" id="pg-live">
+              <div class="transcript" id="pg-transcript" style="--agent-accent: #d97757">
+                <div class="transcript-log" id="pg-log"></div>
+              </div>
+              <!-- The composer is inside the live region deliberately: quoting into it and
+                   then right-clicking it is one continuous motion, and a dead right-click
+                   sitting directly under a live one is worse than no menu at all. -->
+              <div class="pg-compose">
+                <textarea
+                  id="pg-composer"
+                  aria-label="Reply to this session"
+                  placeholder="Reply to this session…"
+                ></textarea>
+                <button class="pg-send" type="button">Send</button>
+              </div>
+            </div>
+          </div>
+
+          <aside class="pg-readout" aria-live="polite">
+            <h4>What the resolver sees</h4>
+            <div class="pg-row">
+              <span class="pg-k">selection</span>
+              <span class="pg-v is-none" id="pg-sel">nothing selected</span>
+            </div>
+            <div class="pg-row">
+              <span class="pg-k">spans</span>
+              <span class="pg-v" id="pg-spans">&mdash;</span>
+            </div>
+            <div class="pg-row">
+              <span class="pg-k">last menu</span>
+              <span class="pg-v is-none" id="pg-menu-note">right-click the log</span>
+            </div>
+            <ul class="pg-items" id="pg-items"></ul>
+          </aside>
+        </div>
+
+        <div class="mk-note">
+          <b>Four behaviours to exercise, in this order:</b>
+          <br />1. Select a phrase, then right-click <b>inside</b> it - the first item is
+          <code>Copy</code>, hinted <code>selection</code>, and <code>Quote in reply</code> quotes
+          exactly what you selected.
+          <br />2. With that selection still live, right-click <b>outside</b> it - the selection
+          clears and the menu falls back to <code>Copy message</code>, because a
+          <code>Copy</code> offered there would copy something you did not choose. This is what
+          every browser already does, and it is what makes rule 2 honest.
+          <br />3. Select <b>across two turns</b> - <code>Copy</code> gives you the raw text, and
+          <code>Quote in reply</code> attributes each speaker, because a quote that silently
+          merges two voices into one is a quote that misleads.
+          <br />4. Flip to <b>Terminal</b> and repeat 1-3. Same menu, different markup.
+        </div>
+        <div class="mk-note is-warn">
+          <b>Right-click the composer too - it is inside the live region.</b> A field's
+          selection is its <i>own</i>: <code>window.getSelection()</code> is empty inside a
+          <code>&lt;textarea&gt;</code>, which is the same two-kinds-of-selection distinction
+          <code>chordYieldsToSelection</code> already documents in
+          <code>src/web/lib/keybindings.ts</code>. So the field reads
+          <code>selectionStart</code>/<code>selectionEnd</code> instead, and captures them
+          <i>before</i> the menu takes focus.
+          <br /><br />
+          <b>And this is where a DOM menu is genuinely worse than an OS one.</b>
+          <code>Paste</code> needs <code>navigator.clipboard.readText()</code>, which requires
+          the <code>clipboard-read</code> permission - already granted in the Electron renderer,
+          but prompted on first use in a browser tab. Try it here and you will most likely get
+          the honest fallback rather than a paste. It is the single strongest argument for the
+          native-menu option in section 7, and it is worth exactly one item: <kbd>&#8984;V</kbd>
+          works regardless, and every other item on this page is unaffected.
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="matrix">
+        <div class="mk-section-head">
+          <div class="mk-num">4</div>
+          <div>
+            <h2>What you clicked, and what you get</h2>
+            <p class="mk-sub">The whole registry. Tier 1 stacks on tier 2, and stops there.</p>
+          </div>
+        </div>
+        <table class="mk-table">
+          <thead>
+            <tr>
+              <th style="width: 24%">Tier 1 &middot; under the cursor</th>
+              <th style="width: 38%">Actions</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>External link</td>
+              <td class="mk-act">Copy <i>·</i> Copy URL <i>·</i> Open link</td>
+              <td>The ask. <code>Open link</code> is the first caller of <code>openExternal</code>.</td>
+            </tr>
+            <tr>
+              <td>Workspace path</td>
+              <td class="mk-act">Copy path <i>·</i> Copy absolute path <i>·</i> Open in Files</td>
+              <td>
+                <code>shortenCwd</code> means the visible path is usually not the pasteable
+                one. The menu has the session, so it can join them.
+              </td>
+            </tr>
+            <tr>
+              <td>Code block</td>
+              <td class="mk-act">Copy code</td>
+              <td>Ships with a hover copy button - right-click alone is not discoverable.</td>
+            </tr>
+            <tr>
+              <td>Inline code</td>
+              <td class="mk-act">Copy code</td>
+              <td>Deliberately not auto-linked by <code>rehypeWorkspacePaths</code>.</td>
+            </tr>
+            <tr>
+              <td>Tool chip</td>
+              <td class="mk-act">Copy tool call</td>
+              <td>The detail is very often a path or a command you want to re-run.</td>
+            </tr>
+            <tr>
+              <td>Timestamp</td>
+              <td class="mk-act">Copy timestamp</td>
+              <td>The ISO value already sits in the <code>&lt;time dateTime&gt;</code>.</td>
+            </tr>
+            <tr>
+              <td>Diff line</td>
+              <td class="mk-act">Copy line <i>·</i> Copy hunk</td>
+              <td><code>.dl-num</code> is already <code>user-select: none</code>.</td>
+            </tr>
+            <tr>
+              <td>Commit SHA</td>
+              <td class="mk-act">Copy SHA</td>
+              <td><code>DiffViewer.tsx:185</code>.</td>
+            </tr>
+            <tr>
+              <td>Branch</td>
+              <td class="mk-act">Copy branch</td>
+              <td>Three markups: <code>.branch</code>, <code>.tile-branch</code>, <code>.pty-branch</code>.</td>
+            </tr>
+            <tr>
+              <td>Session ref</td>
+              <td class="mk-act">Copy session id</td>
+              <td><code>.sc-ref</code> is deliberately not a link.</td>
+            </tr>
+            <tr>
+              <td>Text field</td>
+              <td class="mk-act">Cut <i>·</i> Copy <i>·</i> Paste <i>·</i> Paste as quote</td>
+              <td>There is no right-click paste anywhere in the desktop build today.</td>
+            </tr>
+            <tr>
+              <td>Any live selection</td>
+              <td class="mk-act">Copy</td>
+              <td>Opening the menu never clears the selection.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <table class="mk-table" style="margin-top: 26px">
+          <thead>
+            <tr>
+              <th style="width: 24%">Tier 2 &middot; the container</th>
+              <th style="width: 38%">Actions</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Message</td>
+              <td class="mk-act">Copy message <i>·</i> Quote in reply <i>·</i> Copy from here</td>
+              <td>
+                <code>Copy message</code> writes the turn&rsquo;s <i>source</i> markdown. Today
+                there is no way to get it - a drag-select gives you the rendering, fences gone.
+              </td>
+            </tr>
+            <tr>
+              <td>Session</td>
+              <td class="mk-act">Open <i>·</i> Copy branch <i>·</i> Copy checkout path <i>·</i> Copy session id <i>·</i> Copy PR URL</td>
+              <td>Card, tile and rail row are three drawings of one session and share one entry.</td>
+            </tr>
+            <tr>
+              <td>Task / queue item</td>
+              <td class="mk-act">Copy title <i>·</i> Copy id</td>
+              <td><code>.bl-card</code>, <code>.wq-item</code>.</td>
+            </tr>
+            <tr>
+              <td>Diff file</td>
+              <td class="mk-act">Copy file path <i>·</i> Copy diff</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="beyond">
+        <div class="mk-section-head">
+          <div class="mk-num">5</div>
+          <div>
+            <h2>Beyond the transcript</h2>
+            <p class="mk-sub">The same registry, no new right-click code per component</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            <code>SessionTile.tsx:27-36</code> already carries the comment
+            <em>&ldquo;Copying a branch name off a tile is a fair thing to want on a triage
+            board&rdquo;</em>, and defends it with <code>isDragSelection</code> so that ending
+            a drag-select does not open the session. This is that instinct, finished: the
+            branch, the checkout path, the session id and the PR are all one right-click away,
+            on the card, the tile and the rail row alike.
+          </p>
+        </div>
+        <div class="mk-two is-even" style="margin-top: 14px">
+          <div class="mk-frame">
+            <p class="mk-frame-label">Fleet &middot; session card</p>
+            <div class="mk-live">
+              <article class="card" data-session="ses_8f21c0">
+                <div class="card-head">
+                  <span class="card-title">topbar ladder knife-edge</span>
+                  <span class="state-badge">idle</span>
+                </div>
+                <dl class="card-meta">
+                  <dt>path</dt>
+                  <dd class="mono">~/ai-harness-43</dd>
+                  <dt>branch</dt>
+                  <dd class="mono branch">fix/topbar-rung-3</dd>
+                </dl>
+                <div>
+                  <a class="pr-chip" href="https://github.com/mancej-cyc/ai-harness/pull/241"
+                    >#241 open</a
+                  >
+                </div>
+              </article>
+            </div>
+          </div>
+          <div class="mk-frame">
+            <p class="mk-frame-label">Console &middot; diff</p>
+            <div class="mk-live">
+              <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px">
+                <span style="font-size: 12px; color: var(--muted)"
+                  >e2e/specs/topbar.spec.ts</span
+                >
+                <span class="diff-sha">a3f91c4</span>
+              </div>
+              <table style="width: 100%; border-collapse: collapse" data-difffile="e2e/specs/topbar.spec.ts">
+                <tbody>
+                  <tr class="dl dl-del">
+                    <td class="dl-num">214</td>
+                    <td class="dl-sign">-</td>
+                    <td class="dl-text">  await page.waitForSelector('[role="status"]');</td>
+                  </tr>
+                  <tr class="dl dl-add">
+                    <td class="dl-num">214</td>
+                    <td class="dl-sign">+</td>
+                    <td class="dl-text">  await expect(status).toHaveText("live", {</td>
+                  </tr>
+                  <tr class="dl dl-add">
+                    <td class="dl-num">215</td>
+                    <td class="dl-sign">+</td>
+                    <td class="dl-text">    timeout: 45_000,</td>
+                  </tr>
+                  <tr class="dl dl-add">
+                    <td class="dl-num">216</td>
+                    <td class="dl-sign">+</td>
+                    <td class="dl-text">  });</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="density">
+        <div class="mk-section-head">
+          <div class="mk-num">6</div>
+          <div>
+            <h2>Row density &middot; A or B</h2>
+            <p class="mk-sub">The same menu, drawn in each of the app&rsquo;s two popover vocabularies</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            The app already speaks two popover dialects. <code>.wf-pipeline-item-menu-pop</code>
+            is terse, label-only rows at 176px. <code>.open-in-pop</code> is a label plus a
+            one-line blurb at 268px, because &ldquo;Open in&rdquo; is a thing you do rarely and
+            may not know the targets of. A context menu is the opposite kind of surface: you
+            open it constantly and you already know what Copy does.
+          </p>
+        </div>
+        <div class="mk-two is-even" style="margin-top: 14px">
+          <div class="mk-frame">
+            <p class="mk-frame-label">A &middot; dense <em>recommended</em></p>
+            <div class="mk-stage">
+              <div class="ctx-menu" role="menu" aria-label="Link actions">
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-label">Copy</span><span class="ctx-hint">selection</span>
+                </button>
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-label">Copy URL</span>
+                </button>
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-label">Open link</span>
+                </button>
+                <div class="ctx-sep"></div>
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-label">Copy message</span>
+                </button>
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-label">Quote in reply</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="mk-frame">
+            <p class="mk-frame-label">B &middot; blurbs</p>
+            <div class="mk-stage">
+              <div class="ctx-menu is-blurbs" role="menu" aria-label="Link actions">
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-text"
+                    ><span class="ctx-label">Copy</span
+                    ><span class="ctx-note">The text you have selected</span></span
+                  >
+                </button>
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-text"
+                    ><span class="ctx-label">Copy URL</span
+                    ><span class="ctx-note">github.com/mancej-cyc/&hellip;/job/52418803311</span></span
+                  >
+                </button>
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-text"
+                    ><span class="ctx-label">Open link</span
+                    ><span class="ctx-note">Opens in your default browser</span></span
+                  >
+                </button>
+                <div class="ctx-sep"></div>
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-text"
+                    ><span class="ctx-label">Copy message</span
+                    ><span class="ctx-note">This turn, as its source markdown</span></span
+                  >
+                </button>
+                <button class="ctx-row" role="menuitem">
+                  <span class="ctx-text"
+                    ><span class="ctx-label">Quote in reply</span
+                    ><span class="ctx-note">Puts it in the composer as a &gt; quote</span></span
+                  >
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mk-prose" style="margin-top: 14px">
+          <p>
+            Measured in this page: the same five rows are <strong>147&times;196</strong> in A
+            and <strong>250&times;258</strong> in B - B is 70% taller. At a cursor that decides
+            how often the menu has to flip above the pointer near the bottom of a window,
+            which is the one placement move a reader actually notices. A keeps the payload
+            visible where it is genuinely ambiguous - the <code>selection</code> hint on the
+            right of row one - without paying for a blurb on <code>Copy URL</code>, which
+            nobody has ever needed explained.
+          </p>
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="native">
+        <div class="mk-section-head">
+          <div class="mk-num">7</div>
+          <div>
+            <h2>Does this replace the browser&rsquo;s own menu?</h2>
+            <p class="mk-sub">The one decision with a real cost either way</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            In the desktop build there is nothing to replace, so the answer is free. In a
+            browser, taking over right-click costs the reader View Source, Save Image As, and
+            Inspect - and this product&rsquo;s users are developers running it on localhost,
+            which is exactly the audience that uses them.
+          </p>
+        </div>
+        <div class="mk-pick is-rec">
+          <div class="mk-pick-key">a</div>
+          <div class="mk-pick-body">
+            <h4>Custom everywhere, <kbd>Shift</kbd>+right-click falls through<span class="mk-tag">recommended</span></h4>
+            <p>
+              One menu in both builds, one implementation, and the Firefox convention keeps the
+              native menu one modifier away. <b>This page behaves this way</b> - try
+              <kbd>Shift</kbd>+right-click on the transcript above and you get your
+              browser&rsquo;s menu instead.
+            </p>
+          </div>
+        </div>
+        <div class="mk-pick">
+          <div class="mk-pick-key">b</div>
+          <div class="mk-pick-body">
+            <h4>Custom in Electron only</h4>
+            <p>
+              Closes the hole where it is worst and touches nothing in the browser. The cost is
+              that the two builds diverge in behaviour, and the browser - which is where
+              <code>npm run dev</code> and every e2e spec live - never gets Quote in reply or
+              Copy message at all.
+            </p>
+          </div>
+        </div>
+        <div class="mk-pick">
+          <div class="mk-pick-key">c</div>
+          <div class="mk-pick-body">
+            <h4>Custom everywhere, no escape hatch</h4>
+            <p>
+              Simplest to describe and to test. Takes Inspect away from a local developer tool
+              on the surface those developers most want to inspect.
+            </p>
+          </div>
+        </div>
+        <div class="mk-note" style="margin-top: 20px">
+          <b>A separate question, same section.</b> Electron can build a real OS menu in the
+          main process (<code>Menu.buildFromTemplate</code> over IPC, the way
+          <code>src/main/tray.ts</code> already does). It would look native and get spellcheck
+          for free. But it only exists in Electron, so the browser build needs the DOM menu
+          regardless - choosing it means building and maintaining <b>both</b>, and the OS menu
+          cannot render the app&rsquo;s own tokens or reach React state for Quote in reply
+          without another round trip. <b>Recommended: one DOM menu for both builds.</b> The
+          flow diagram for this is in <code>plan.html</code>.
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="pick">
+        <div class="mk-section-head">
+          <div class="mk-num">8</div>
+          <div>
+            <h2>Recommendation</h2>
+            <p class="mk-sub">What to build, and what to sweep up on the way</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            Build the registry and the DOM menu, option <strong>A</strong> above, dense rows,
+            and scope v1 to <strong>the transcript, the composer, and the session card / tile /
+            rail row</strong>. That covers the ask, the two actions worth the whole feature
+            (<code>Quote in reply</code> and <code>Copy message</code>), and the triage-board
+            copying the codebase has already written a comment wishing for. Diff and Files are
+            one registry entry each afterwards, with no new plumbing.
+          </p>
+          <p>
+            Three fixes come along because this work touches the same code and leaving them is
+            not defensible: <code>PersonaEditor.tsx:396</code> and
+            <code>ReportPanel.tsx:250</code> call <code>navigator.clipboard.writeText</code>
+            directly instead of <code>src/web/lib/clipboard.ts</code>, whose entire reason for
+            existing is the Electron renderer&rsquo;s <code>execCommand</code> fallback - so
+            both are quietly unreliable in the desktop build, the one this plan is about. And
+            <code>FileWorkspace.tsx:466</code> (&ldquo;Copy local&rdquo;) gives no feedback at
+            all. One <code>useCopyFeedback()</code> hook over <code>copyText()</code> replaces
+            seven hand-rolled 1600ms label flips and fixes all three.
+          </p>
+          <p>
+            Two constraints go in on the first commit rather than after the bug report.
+            The menu class joins the <code>.is-desktop</code> no-drag allow-list at
+            <code>styles.css:1438-1470</code>, whose own comment notes that every entry was
+            added after it broke - and a menu that opens at a cursor can land under the
+            titlebar on the very first try. And it picks one of the two documented Escape
+            contracts: join <code>Overlay.tsx</code>&rsquo;s topmost-wins registry, or take keys
+            in the capture phase with <code>stopImmediatePropagation</code> the way
+            <code>OpenInMenu.tsx:86-99</code> explains it must.
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      /* =====================================================================
+         The proposed resolver, really running. Two tiers, most specific first,
+         identical payloads collapsed. The product version reads its targets from
+         a registry module; this is the same shape inline.
+         ===================================================================== */
+
+      const URL_RE = /\bhttps?:\/\/[^\s<>"')\]]+/;
+      const PATH_RE = /^[\w.\-/]+\.\w+(:\d+)?(:\d+)?$/;
+      const CWD = "/Users/you/ai-harness-43";
+
+      /** Text of the current selection, if it is non-empty and inside `el`. */
+      function selectionIn(el) {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) return "";
+        const text = sel.toString().trim();
+        if (!text) return "";
+        const node = sel.anchorNode;
+        const holder = node && node.nodeType === 1 ? node : node && node.parentElement;
+        return holder && el.contains(holder) ? text : "";
+      }
+
+      /** Every later turn in the same log. */
+      function siblingsAfter(el) {
+        const out = [];
+        for (let n = el.nextElementSibling; n; n = n.nextElementSibling) {
+          if (n.matches("[data-msg]")) out.push(n);
+        }
+        return out;
+      }
+
+      /** A URL sitting in the raw text under the cursor, with no anchor around it.
+
+          This is the path that keeps the feature alive when useRichText() is off
+          and while find is active, where TurnProse renders no <a> at all - and it
+          cannot be done from `e.target`, which for a mouse event is always the
+          ELEMENT, never the text node. It needs the caret position, and it needs
+          the caret OFFSET too: the whole first turn below is a single text node,
+          so "does this text node contain a URL" would offer Copy URL when you
+          right-click the word "CI". The match has to contain the caret. */
+      function urlAtPoint(x, y) {
+        let node = null;
+        let offset = 0;
+        if (document.caretPositionFromPoint) {
+          const p = document.caretPositionFromPoint(x, y);
+          if (p) {
+            node = p.offsetNode;
+            offset = p.offset;
+          }
+        } else if (document.caretRangeFromPoint) {
+          const r = document.caretRangeFromPoint(x, y);
+          if (r) {
+            node = r.startContainer;
+            offset = r.startOffset;
+          }
+        }
+        if (!node || node.nodeType !== 3) return "";
+        const text = node.textContent;
+        const re = new RegExp(URL_RE.source, "g");
+        let m;
+        while ((m = re.exec(text))) {
+          if (offset >= m.index && offset <= m.index + m[0].length) return m[0];
+        }
+        return "";
+      }
+
+      function tier1(el, root, point) {
+        const out = [];
+
+        /* --- text field ------------------------------------------------------
+           First, because a field is never inside any other target. Its selection
+           is its OWN - `window.getSelection()` is empty inside an <input> or
+           <textarea> - which is the same two-kinds-of-selection distinction
+           `chordYieldsToSelection` already documents in keybindings.ts. The
+           offsets are captured NOW, because focusing the menu loses them. */
+        const field = el.closest("textarea, input");
+        if (field) {
+          const at = [field.selectionStart, field.selectionEnd];
+          const picked = field.value.slice(at[0], at[1]);
+          if (picked) {
+            out.push({ label: "Cut", hint: "selection", payload: picked, kind: "cut", field, at });
+            out.push({ label: "Copy", hint: "selection", payload: picked });
+          }
+          out.push({ label: "Paste", payload: "", kind: "paste", field, at });
+          out.push({ label: "Paste as quote", payload: "", kind: "paste-quote", field, at });
+          return out;
+        }
+
+        const anchor = el.closest("a[href]");
+        const sel = selectionIn(root);
+
+        // --- external link -------------------------------------------------
+        const isPath = anchor && anchor.classList.contains("workspace-path");
+        const href = anchor && !isPath ? anchor.getAttribute("href") : urlAtPoint(point.x, point.y);
+        if (href && /^https?:/.test(href)) {
+          const text = anchor && !isPath ? anchor.textContent.trim() : href;
+          // `Copy` is only offered when it would write something different from
+          // `Copy URL`. On a bare autolinked URL the two payloads are the same
+          // string, and the precise label is the one that survives.
+          if (sel || text !== href) {
+            out.push({ label: "Copy", hint: sel ? "selection" : "link text", payload: sel || text });
+          }
+          out.push({ label: "Copy URL", payload: href });
+          out.push({ label: "Open link", payload: href, kind: "open" });
+          return out;
+        }
+
+        // --- branch --------------------------------------------------------
+        // Before the path matcher: a card's branch is `dd.mono.branch`, so it
+        // would otherwise be claimed as a path.
+        const branch = el.closest(".branch, .tile-branch, .pty-branch");
+        if (branch) {
+          out.push({ label: "Copy branch", payload: branch.textContent.trim() });
+          return out;
+        }
+
+        // --- tool chip -----------------------------------------------------
+        // Before the path matcher, and it decides for itself whether its detail is
+        // a path: `Read e2e/specs/topbar.spec.ts` is one, `Bash npx playwright test
+        // --reporter=line` is not. Claiming every tool detail as a path offers
+        // "Copy absolute path" on a shell command. The product already owns this
+        // shape test - `detectPathTokens` / `workspaceFileTarget`, workspaceLinks.ts.
+        const chip = el.closest(".tool-chip, .tool-line");
+        if (chip) {
+          const name = chip.querySelector(".tool-chip-name");
+          const detail = chip.querySelector(".tool-chip-detail");
+          const detailText = (detail ? detail.textContent : chip.textContent).trim();
+          if (sel) out.push({ label: "Copy", hint: "selection", payload: sel });
+          out.push({
+            label: "Copy tool call",
+            payload: (name ? name.textContent + " " : "") + detailText,
+          });
+          if (PATH_RE.test(detailText)) {
+            out.push({ label: "Copy path", payload: detailText });
+            out.push({ label: "Copy absolute path", payload: CWD + "/" + detailText });
+          }
+          return out;
+        }
+
+        // --- workspace path ------------------------------------------------
+        const pathEl = isPath ? anchor : el.closest(".card-meta dd.mono:not(.branch), .pty-cwd");
+        if (pathEl) {
+          const raw = (isPath ? anchor.getAttribute("href") : pathEl.textContent).trim();
+          if (sel) out.push({ label: "Copy", hint: "selection", payload: sel });
+          out.push({ label: "Copy path", payload: raw });
+          out.push({ label: "Copy absolute path", payload: raw.startsWith("~") || raw.startsWith("/") ? raw.replace(/^~/, "/Users/you") : CWD + "/" + raw });
+          if (isPath) out.push({ label: "Open in Files", payload: raw, kind: "open" });
+          return out;
+        }
+
+        // --- code ----------------------------------------------------------
+        const pre = el.closest("pre");
+        if (pre) {
+          if (sel) out.push({ label: "Copy", hint: "selection", payload: sel });
+          out.push({ label: "Copy code", payload: pre.textContent.replace(/\s+$/, "") });
+          return out;
+        }
+        const code = el.closest("code");
+        if (code) {
+          out.push({ label: "Copy code", payload: code.textContent.trim() });
+          return out;
+        }
+
+        // --- timestamp -----------------------------------------------------
+        const time = el.closest("time.conversation-time");
+        if (time) {
+          out.push({ label: "Copy timestamp", payload: time.getAttribute("datetime") });
+          return out;
+        }
+
+        // --- diff ----------------------------------------------------------
+        const row = el.closest("tr.dl");
+        if (row) {
+          const text = row.querySelector(".dl-text");
+          if (sel) out.push({ label: "Copy", hint: "selection", payload: sel });
+          out.push({ label: "Copy line", payload: text ? text.textContent : "" });
+          const lines = [...row.closest("tbody").querySelectorAll("tr.dl")];
+          const hunk = lines
+            .map((r) => (r.querySelector(".dl-sign").textContent.trim() || " ") + r.querySelector(".dl-text").textContent)
+            .join("\n");
+          out.push({ label: "Copy hunk", hint: lines.length + " lines", payload: hunk });
+          return out;
+        }
+        if (el.closest(".diff-sha")) {
+          out.push({ label: "Copy SHA", payload: el.closest(".diff-sha").textContent.trim() });
+          return out;
+        }
+
+        // --- bare selection, or nothing in particular -----------------------
+        if (sel) {
+          out.push({ label: "Copy", hint: "selection", payload: sel });
+          /* `Copy text` is the same selection with the turn chrome taken out - the
+             `you 09:16` byline, the `you@mission ~/leaf ❯` prompt. It is a SECOND item
+             rather than a redefinition of `Copy`, because a `Copy` that quietly differs
+             from ⌘C on the same selection is a `Copy` you cannot trust.
+
+             It costs nothing when it would say nothing: a selection inside one turn's
+             prose produces a payload identical to `Copy`'s, and the dedupe rule drops it.
+             So it appears exactly when it has something to offer - a selection that
+             crossed a turn boundary. Deliberately in this fallback branch and not in
+             tier 2: on a link, tier 1 already spends three rows, and a fourth container
+             row would push that menu past the six-item cap. */
+          const cleaned = selectedTurns(root)
+            .map((t) => clippedSelectionText(t))
+            .filter(Boolean)
+            .join("\n\n");
+          if (cleaned) out.push({ label: "Copy text", hint: "no chrome", payload: cleaned });
+        }
+        return out;
+      }
+
+      /* ---- turn helpers, written once for BOTH conversation markups ----
+         Chat draws `.turn` / `.turn-role` / `.turn-text`; the terminal view draws
+         `.pty-entry` / `.pty-speaker` / `.pty-command` / `.pty-copy`. Every selection
+         rule below reads through these three functions, which is the whole reason
+         flipping the view does not change a single menu. */
+      function turnBody(turn) {
+        return turn.querySelector(".turn-text, .pty-command") || turn;
+      }
+      function turnRole(turn) {
+        const r = turn.querySelector(".turn-role, .pty-speaker");
+        const raw = r ? (r.childNodes[0].textContent || "").trim() : "";
+        // The terminal speaker reads "claude / stdout"; the quote wants the name.
+        return raw.replace(/\s*\/\s*stdout$/, "") || turn.getAttribute("data-msg") || "turn";
+      }
+      function turnText(turn) {
+        return turnBody(turn).innerText.trim();
+      }
+
+      /** The part of the current selection that falls inside ONE turn's BODY.
+
+          A selection dragged across turns is one Range, so quoting it per speaker means
+          clipping that Range to each turn rather than splitting a string.
+
+          Clipping to the body and not to the turn is the load-bearing half. A drag from
+          one turn into the next necessarily crosses the chrome between them - the
+          `you 09:16` byline in chat, the `you@mission ~/leaf ❯` prompt in terminal view -
+          and that chrome is inside the turn element. Clip to the turn and the quote reads
+          as though the agent said "09:16". The reader selected prose; quote the prose. */
+      function clippedSelectionText(turn) {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
+        const range = sel.getRangeAt(0);
+        const whole = document.createRange();
+        whole.selectNodeContents(turnBody(turn));
+        if (
+          range.compareBoundaryPoints(Range.END_TO_START, whole) > 0 ||
+          range.compareBoundaryPoints(Range.START_TO_END, whole) < 0
+        ) {
+          return "";
+        }
+        const clip = range.cloneRange();
+        if (clip.compareBoundaryPoints(Range.START_TO_START, whole) < 0) {
+          clip.setStart(whole.startContainer, whole.startOffset);
+        }
+        if (clip.compareBoundaryPoints(Range.END_TO_END, whole) > 0) {
+          clip.setEnd(whole.endContainer, whole.endOffset);
+        }
+        return clip.toString().trim();
+      }
+
+      /** Every turn the selection actually covers text in. */
+      function selectedTurns(root) {
+        return [...root.querySelectorAll("[data-msg]")].filter((t) => clippedSelectionText(t));
+      }
+
+      function quoteBlock(text) {
+        return text
+          .split("\n")
+          .map((l) => "> " + l)
+          .join("\n");
+      }
+
+      /** One turn quotes plainly. Two or more attribute each speaker: a quote that
+          silently merges two voices into one paragraph is a quote that misleads. */
+      function buildQuote(turns) {
+        const multi = turns.length > 1;
+        return (
+          turns
+            .map((t) => {
+              const text = clippedSelectionText(t) || turnText(t);
+              return multi ? "> **" + turnRole(t) + "**\n" + quoteBlock(text) : quoteBlock(text);
+            })
+            .join("\n>\n") + "\n\n"
+        );
+      }
+
+      function tier2(el, root) {
+        const out = [];
+
+        const msg = el.closest("[data-msg]");
+        if (msg) {
+          out.push({ label: "Copy message", payload: turnText(msg) });
+          const spanned = selectedTurns(root);
+          const multi = spanned.length > 1;
+          out.push({
+            label: "Quote in reply",
+            hint: multi ? spanned.length + " turns" : spanned.length === 1 ? "selection" : "",
+            payload: buildQuote(spanned.length ? spanned : [msg]),
+            kind: "quote",
+          });
+          const after = [msg, ...siblingsAfter(msg)];
+          out.push({
+            label: "Copy from here",
+            hint: after.length + (after.length === 1 ? " turn" : " turns"),
+            payload: after
+              .map((t) => "**" + turnRole(t) + "**\n\n" + turnText(t))
+              .join("\n\n"),
+          });
+          return out;
+        }
+
+        const card = el.closest("[data-session]");
+        if (card) {
+          const branch = card.querySelector(".branch");
+          const path = card.querySelector(".card-meta dd.mono:not(.branch)");
+          const pr = card.querySelector(".pr-chip");
+          out.push({ label: "Open", payload: card.getAttribute("data-session"), kind: "open" });
+          if (branch) out.push({ label: "Copy branch", payload: branch.textContent.trim() });
+          if (path) out.push({ label: "Copy checkout path", payload: path.textContent.trim().replace(/^~/, "/Users/you") });
+          out.push({ label: "Copy session id", payload: card.getAttribute("data-session") });
+          if (pr) out.push({ label: "Copy PR URL", payload: pr.getAttribute("href") });
+          return out;
+        }
+
+        const file = el.closest("[data-difffile]");
+        if (file) {
+          out.push({ label: "Copy file path", payload: file.getAttribute("data-difffile") });
+          out.push({ label: "Copy diff", payload: "(the whole file's diff)" });
+          return out;
+        }
+
+        return out;
+      }
+
+      /** Two tiers, separated, with identical payloads collapsed. */
+      function resolve(el, root, point) {
+        const a = tier1(el, root, point);
+        const b = tier2(el, root);
+        const seen = new Set();
+        const keep = (list) =>
+          list.filter((item) => {
+            // Keyed on kind AND payload. Two items that WRITE the same string collapse
+            // (`Copy` vs `Copy URL` on a bare link); two items that merely share an empty
+            // payload but do different things (`Paste` vs `Paste as quote`) do not.
+            const key = (item.kind ?? "copy") + ":" + item.payload;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        return { top: keep(a), bottom: keep(b) };
+      }
+
+      /* ---------------------------------------------------------------- menu */
+      let menuEl = null;
+      /* The `.mk-live` the open menu belongs to, so an action can reach that frame's
+         own composer rather than a global one. */
+      let menuRoot = null;
+
+      /** Is this point inside the current selection's own rectangles? */
+      function pointInSelection(x, y) {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+        for (const r of sel.getRangeAt(0).getClientRects()) {
+          if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+        }
+        return false;
+      }
+
+      function closeMenu() {
+        if (menuEl) menuEl.remove();
+        menuEl = null;
+      }
+
+      function flash(label, payload) {
+        const old = document.querySelector(".ctx-flash");
+        if (old) old.remove();
+        const el = document.createElement("div");
+        el.className = "ctx-flash";
+        el.setAttribute("role", "status");
+        const b = document.createElement("b");
+        b.textContent = label;
+        const s = document.createElement("span");
+        s.textContent = payload.length > 90 ? payload.slice(0, 90) + "…" : payload;
+        el.append(b, s);
+        document.body.append(el);
+        setTimeout(() => el.remove(), 2600);
+      }
+
+      function run(item) {
+        closeMenu();
+        if (item.kind === "open") {
+          flash(item.label, item.payload);
+          return;
+        }
+        // --- text-field actions ---------------------------------------------
+        if (item.field) {
+          const put = (text) => {
+            const [s, e] = item.at;
+            const f = item.field;
+            f.value = f.value.slice(0, s) + text + f.value.slice(e);
+            f.focus();
+            const pos = s + text.length;
+            f.setSelectionRange(pos, pos);
+          };
+          if (item.kind === "cut") {
+            writeClipboard(item.payload, () => {
+              put("");
+              flash("Cut", item.payload);
+            });
+            return;
+          }
+          /* Paste is the ONE item a DOM menu cannot do as well as an OS menu.
+             `readText()` needs the `clipboard-read` permission, which Chrome prompts
+             for on first use in a browser tab; in the Electron renderer it is already
+             granted. The fallback is honest rather than silent: say so and point at
+             the accelerator that always works. */
+          navigator.clipboard
+            ?.readText()
+            .then((text) => {
+              if (!text) return flash("Clipboard is empty", "");
+              put(item.kind === "paste-quote" ? quoteBlock(text) + "\n\n" : text);
+              flash(item.kind === "paste-quote" ? "Pasted as quote" : "Pasted", text);
+            })
+            .catch(() => {
+              item.field.focus();
+              flash("Paste needs clipboard permission", "press ⌘V - always works");
+            });
+          return;
+        }
+
+        // A quote does not go to the clipboard at all - it goes to that frame's composer.
+        if (item.kind === "quote") {
+          const box = menuRoot?.closest(".mk-frame")?.querySelector("textarea");
+          if (box) {
+            box.value += item.payload;
+            box.focus();
+            box.setSelectionRange(box.value.length, box.value.length);
+            box.scrollTop = box.scrollHeight;
+            flash("Quoted into the composer", item.payload.trim());
+            return;
+          }
+        }
+        writeClipboard(item.payload, () =>
+          flash(item.kind === "quote" ? "Quoted into the composer" : "Copied", item.payload),
+        );
+      }
+
+      /** The shape of `src/web/lib/clipboard.ts`'s `copyText`: async API first, hidden
+          textarea + execCommand where it is unavailable, which is the case the Electron
+          renderer needs. `done` runs either way - a copy that silently did nothing is
+          the failure mode the helper exists to prevent. */
+      function writeClipboard(text, done) {
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(text).then(done, done);
+          return;
+        }
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.append(ta);
+        ta.select();
+        try {
+          document.execCommand("copy");
+        } catch (_) {}
+        ta.remove();
+        done();
+      }
+
+      function openMenu(x, y, groups) {
+        closeMenu();
+        const menu = document.createElement("div");
+        menu.className = "ctx-menu";
+        menu.setAttribute("role", "menu");
+        menu.setAttribute("aria-label", "Actions");
+
+        const add = (items) =>
+          items.forEach((item) => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "ctx-row";
+            b.setAttribute("role", "menuitem");
+            const l = document.createElement("span");
+            l.className = "ctx-label";
+            l.textContent = item.label;
+            b.append(l);
+            if (item.hint) {
+              const h = document.createElement("span");
+              h.className = "ctx-hint";
+              h.textContent = item.hint;
+              b.append(h);
+            }
+            b.addEventListener("click", () => run(item));
+            menu.append(b);
+          });
+
+        if (groups.top.length) add(groups.top);
+        if (groups.top.length && groups.bottom.length) {
+          const sep = document.createElement("div");
+          sep.className = "ctx-sep";
+          menu.append(sep);
+        }
+        if (groups.bottom.length) add(groups.bottom);
+
+        document.body.append(menu);
+        // Placement clamp, the same shape as ModePicker's `place()`.
+        const r = menu.getBoundingClientRect();
+        const gap = 8;
+        const left = Math.min(x, window.innerWidth - r.width - gap);
+        const top = y + r.height + gap > window.innerHeight ? Math.max(gap, y - r.height) : y;
+        menu.style.left = Math.max(gap, left) + "px";
+        menu.style.top = top + "px";
+        menuEl = menu;
+
+        // `preventScroll` is load-bearing, not a nicety. Focusing a row can make
+        // the browser scroll to reveal it, and the capture-phase scroll listener
+        // below closes the menu on any scroll - so a plain .focus() lets the menu
+        // close itself on open, intermittently, depending on where the cursor was.
+        // The real implementation inherits this hazard: `.transcript-log` is a
+        // scroll container and the menu is fixed-positioned over it.
+        const first = menu.querySelector(".ctx-row");
+        if (first) first.focus({ preventScroll: true });
+      }
+
+      document.addEventListener("contextmenu", (e) => {
+        // Option (a): Shift falls through to the browser's own menu.
+        if (e.shiftKey) return;
+        const el = e.target instanceof Element ? e.target : null;
+        if (!el) return;
+        const root = el.closest(".mk-live");
+        if (!root) return;
+        /* Native behaviour, and rule 2's other half: a right-click OUTSIDE the current
+           selection collapses it. Without this, right-clicking somewhere else while an
+           old selection is still live offers `Copy` for text the reader is no longer
+           pointing at - which is exactly the "copies something you did not choose" case
+           the rule exists to prevent. Right-clicking INSIDE the selection keeps it. */
+        if (!pointInSelection(e.clientX, e.clientY)) {
+          const sel = window.getSelection();
+          if (sel && !sel.isCollapsed) sel.removeAllRanges();
+        }
+        menuRoot = root;
+        const groups = resolve(el, root, { x: e.clientX, y: e.clientY });
+        pgShowMenu(root, groups);
+        if (!groups.top.length && !groups.bottom.length) return;
+        e.preventDefault();
+        openMenu(e.clientX, e.clientY, groups);
+      });
+
+      document.addEventListener("mousedown", (e) => {
+        if (menuEl && !menuEl.contains(e.target)) closeMenu();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (!menuEl) return;
+        const rows = [...menuEl.querySelectorAll(".ctx-row")];
+        const i = rows.indexOf(document.activeElement);
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeMenu();
+        } else if (e.key === "ArrowDown") {
+          e.preventDefault();
+          rows[(i + 1) % rows.length].focus();
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          rows[(i - 1 + rows.length) % rows.length].focus();
+        }
+      });
+      /* Close on the user's scroll INPUT, not on the scroll EVENT.
+
+         `ModePicker` closes on any scroll because a fixed popover cannot track the
+         chip it hangs off. A context menu has no anchor element to drift from - it
+         opens at a cursor point - so the only reason to close it is that the reader
+         moved the view themselves.
+
+         Listening for the scroll event instead is actively wrong here, and running
+         this page is how that surfaced: a scroll dispatched one frame AFTER the menu
+         opens closes it immediately. In the product that frame belongs to
+         `.transcript-log` auto-scrolling as a streamed turn arrives, which would slam
+         the menu shut mid-read through no action of the reader's. Wheel and touch are
+         the reader; the scroll event is anybody. */
+      window.addEventListener("wheel", closeMenu, { passive: true });
+      window.addEventListener("touchmove", closeMenu, { passive: true });
+      window.addEventListener("resize", closeMenu);
+
+      // The hover copy button that ships alongside `Copy code`. Delegated, because the
+      // playground re-renders its log whenever the view is toggled.
+      document.addEventListener("click", (e) => {
+        const btn = e.target instanceof Element ? e.target.closest(".code-copy") : null;
+        if (!btn) return;
+        const pre = btn.parentElement.querySelector("pre");
+        menuRoot = btn.closest(".mk-live");
+        run({ label: "Copy code", payload: pre.textContent.replace(/\s+$/, "") });
+      });
+
+      /* =====================================================================
+         The selection playground (section 3). Same resolver, same menu - this
+         only supplies content, the two markups, and a readout of what the
+         resolver currently sees.
+         ===================================================================== */
+
+      const PG_TURNS = [
+        {
+          role: "you",
+          kind: "user",
+          time: "09:14",
+          iso: "2026-08-12T09:14:22.000Z",
+          text: "CI is red again on the topbar branch. The SSE reconnect spec keeps timing out on shard 2 - can you look?",
+        },
+        {
+          role: "claude",
+          kind: "agent",
+          time: "09:14",
+          iso: "2026-08-12T09:14:51.000Z",
+          html:
+            '<p>Both shards are green except <a href="https://github.com/mancej-cyc/ai-harness/actions/runs/18392207744/job/52418803311">the failing job</a>, which timed out waiting on the SSE reconnect. The assertion lives in <a class="workspace-path" href="e2e/specs/topbar.spec.ts">e2e/specs/topbar.spec.ts</a> and it waits on <code>page.waitForSelector</code> with no timeout of its own, so it inherits the 30s global.</p>' +
+            '<div class="code-wrap"><button class="code-copy" type="button">Copy</button><pre><code>await expect(status).toHaveText("live", {\n  timeout: 45_000,\n});</code></pre></div>',
+        },
+        {
+          role: "you",
+          kind: "user",
+          time: "09:16",
+          iso: "2026-08-12T09:16:04.000Z",
+          text: "Bump the timeout for now and open a PR against main.",
+        },
+        {
+          role: "claude",
+          kind: "agent",
+          time: "09:18",
+          iso: "2026-08-12T09:18:33.000Z",
+          html: "<p>Pushed as #241. The spec now waits on the status role with a 45s ceiling, and both shards are green.</p>",
+        },
+      ];
+
+      function pgRenderChat(t) {
+        const time =
+          '<time class="conversation-time" datetime="' + t.iso + '">' + t.time + "</time>";
+        if (t.kind === "user") {
+          // No indentation inside `.turn-text`: it is `white-space: pre-wrap`.
+          return (
+            '<div class="turn turn-user" data-msg="' +
+            t.role +
+            '"><div class="turn-role">' +
+            t.role +
+            " " +
+            time +
+            '</div><div class="turn-text">' +
+            t.text +
+            "</div></div>"
+          );
+        }
+        return (
+          '<div class="turn turn-assistant" data-msg="' +
+          t.role +
+          '"><div class="turn-role">' +
+          t.role +
+          " " +
+          time +
+          '</div><div class="turn-text markdown">' +
+          t.html +
+          "</div></div>"
+        );
+      }
+
+      function pgRenderTerminal(t) {
+        const time =
+          '<time class="conversation-time pty-time" datetime="' +
+          t.iso +
+          '">' +
+          t.time +
+          "</time>";
+        if (t.kind === "user") {
+          return (
+            '<article class="pty-entry pty-user" data-msg="' +
+            t.role +
+            '"><p class="pty-commandline"><span class="pty-host">' +
+            t.role.replace(/\s+/g, "-") +
+            '@mission</span><span class="pty-cwd">~/ai-harness-43</span><span class="pty-caret" aria-hidden="true">&#10095;</span><span class="pty-command">' +
+            t.text +
+            "</span>" +
+            time +
+            "</p></article>"
+          );
+        }
+        return (
+          '<article class="pty-entry pty-agent" data-msg="' +
+          t.role +
+          '"><header class="pty-speaker">' +
+          t.role +
+          " / stdout" +
+          time +
+          '</header><div class="turn-text pty-copy markdown">' +
+          t.html +
+          "</div></article>"
+        );
+      }
+
+      let pgView = "chat";
+
+      function pgRender() {
+        const log = document.getElementById("pg-log");
+        if (!log) return;
+        const render = pgView === "chat" ? pgRenderChat : pgRenderTerminal;
+        log.innerHTML = PG_TURNS.map(render).join("");
+        document.getElementById("pg-view-label").textContent = pgView;
+        document.querySelectorAll("[data-view-btn]").forEach((b) => {
+          b.classList.toggle("is-on", b.getAttribute("data-view-btn") === pgView);
+        });
+        pgUpdateReadout();
+      }
+
+      function pgTurnAt(i) {
+        return document.querySelectorAll("#pg-log [data-msg]")[i] || null;
+      }
+
+      function pgPos(container, needle, atEnd) {
+        const w = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        for (let n = w.nextNode(); n; n = w.nextNode()) {
+          const i = n.textContent.indexOf(needle);
+          if (i === -1) continue;
+          return { node: n, offset: atEnd ? i + needle.length : i };
+        }
+        return null;
+      }
+
+      function pgSelect(aC, aN, bC, bN) {
+        if (!aC || !bC) return;
+        const a = pgPos(aC, aN, false);
+        const b = pgPos(bC, bN, true);
+        if (!a || !b) return;
+        const r = document.createRange();
+        r.setStart(a.node, a.offset);
+        r.setEnd(b.node, b.offset);
+        const s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+        pgUpdateReadout();
+      }
+
+      const PG_PRESETS = {
+        one: () => pgSelect(pgTurnAt(1), "timed out waiting", pgTurnAt(1), "SSE reconnect"),
+        across: () => pgSelect(pgTurnAt(1), "The assertion lives in", pgTurnAt(2), "open a PR"),
+        code: () => {
+          const pre = document.querySelector("#pg-log pre");
+          if (pre) pgSelect(pre, "await expect", pre, "45_000,");
+        },
+        link: () => {
+          const a = document.querySelector("#pg-log a[href^='http']");
+          if (a) pgSelect(a, "failing", a, "failing");
+        },
+        space: () => pgSelect(pgTurnAt(2), " ", pgTurnAt(2), " "),
+        clear: () => {
+          window.getSelection().removeAllRanges();
+          pgUpdateReadout();
+        },
+      };
+
+      function pgUpdateReadout() {
+        const root = document.getElementById("pg-live");
+        if (!root) return;
+        const selEl = document.getElementById("pg-sel");
+        const spansEl = document.getElementById("pg-spans");
+        const text = selectionIn(root);
+        const turns = selectedTurns(root);
+
+        if (text) {
+          selEl.textContent = '"' + (text.length > 120 ? text.slice(0, 120) + "…" : text) + '"';
+          selEl.classList.remove("is-none");
+        } else {
+          const raw = window.getSelection()?.toString() ?? "";
+          selEl.textContent =
+            raw && !raw.trim()
+              ? "whitespace only — treated as no selection"
+              : "nothing selected";
+          selEl.classList.add("is-none");
+        }
+        spansEl.textContent = turns.length
+          ? turns.length + (turns.length === 1 ? " turn · " : " turns · ") +
+            turns.map((t) => turnRole(t)).join(", ")
+          : "—";
+      }
+
+      /** Mirror the menu that just opened into the readout. */
+      function pgShowMenu(root, groups) {
+        if (!root || root.id !== "pg-live") return;
+        const note = document.getElementById("pg-menu-note");
+        const list = document.getElementById("pg-items");
+        const items = [...groups.top, ...groups.bottom];
+        list.innerHTML = "";
+        if (!items.length) {
+          note.textContent = "no actions here";
+          note.classList.add("is-none");
+          return;
+        }
+        note.textContent = items.length + (items.length === 1 ? " item" : " items");
+        note.classList.remove("is-none");
+        for (const it of items) {
+          const li = document.createElement("li");
+          const label = document.createElement("span");
+          label.textContent = it.label;
+          li.append(label);
+          if (it.hint) {
+            const em = document.createElement("em");
+            em.textContent = it.hint;
+            li.append(em);
+          }
+          list.append(li);
+        }
+      }
+
+      document.addEventListener("click", (e) => {
+        const el = e.target instanceof Element ? e.target : null;
+        if (!el) return;
+        const view = el.closest("[data-view-btn]");
+        if (view) {
+          pgView = view.getAttribute("data-view-btn");
+          pgRender();
+          return;
+        }
+        const preset = el.closest("[data-preset]");
+        if (preset) PG_PRESETS[preset.getAttribute("data-preset")]?.();
+      });
+
+      document.addEventListener("selectionchange", () => {
+        const root = document.getElementById("pg-live");
+        if (!root) return;
+        pgUpdateReadout();
+      });
+
+      pgRender();
+    </script>
+  </body>
+</html>

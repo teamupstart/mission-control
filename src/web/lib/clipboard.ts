@@ -117,11 +117,25 @@ export interface CopyFeedback extends CopyFeedbackState {
   /**
    * Resolve the payload, write it through `copyText`, then confirm or record the failure.
    *
-   * Never rejects, and RETURNS the outcome as well as publishing it. A control that renders
-   * `error` straight from the hook can ignore the return; a page that owns one error slot of
-   * its own - `WorkflowRuns`, `WorkflowLadder`, `PersonaEditor` all do - routes the returned
-   * sentence into that slot instead, which keeps last-write-wins intact rather than leaving
-   * two competing sources for one line of prose.
+   * Never rejects. It resolves with THE STATE THIS CONTROL IS IN once the attempt settles -
+   * which is this attempt's outcome when it is still the current one, and whatever the copy
+   * that overtook it left behind when it is not. A control that renders `error` straight from
+   * the hook can ignore the return; a page that owns one error slot of its own -
+   * `WorkflowRuns`, `WorkflowLadder`, `PersonaEditor` all do - routes the returned sentence
+   * into that slot, which keeps last-write-wins rather than leaving two competing sources for
+   * one line of prose.
+   *
+   * "The surface" and not "your attempt" is the whole contract, and it was the other way round
+   * for one round of review. Neither copy button disables while a copy is in flight, so two
+   * clicks can settle out of order - one stalled on a permission prompt, a later one straight
+   * through. Handing each caller its own outcome meant the loser's `.then` wrote its stale
+   * refusal into the shared error line AFTER the winner had already published `Copied`, so the
+   * page showed a confirmation and a contradicting failure for the same action at once. The
+   * flag was generation-guarded and the sentence beside it was not.
+   *
+   * Fixed here rather than by a guard at each call site on purpose: three of the five sites
+   * route this value, and a rule every caller has to remember is the rule this module exists
+   * to stop repeating. Callers keep writing `if (error !== null)` and are simply correct.
    */
   copy: (produce: CopyPayload) => Promise<CopyFeedbackState>;
   /** Drop the confirmation and any armed timer - for a surface that changed what it is about. */
@@ -204,17 +218,14 @@ export function createCopyFeedback(deps: CopyFeedbackDeps): CopyFeedbackControll
         text = typeof produce === "function" ? await produce() : produce;
         await write(text);
       } catch (caught) {
+        // Overtaken: report the surface, not this attempt. See the return contract above.
+        if (mine !== generation) return state;
         const outcome: CopyFeedbackState = { copied: false, error: copyFailureMessage(caught) };
-        // An overtaken attempt still REPORTS its outcome to whoever awaited it, and simply
-        // does not publish it. The caller asked about the copy it started; the surface shows
-        // the copy that finished last.
-        if (mine === generation) publish(outcome);
+        publish(outcome);
         return outcome;
       }
+      if (mine !== generation) return state;
       const outcome: CopyFeedbackState = { copied: true, error: null };
-      // The write succeeded, so that is what the caller is told either way - the same rule the
-      // catch arm above follows. Only the SURFACE defers to whichever copy finished last.
-      if (mine !== generation) return outcome;
       publish(outcome);
       // Not after teardown. `dispose()` disarms what is armed at that moment, and a copy still
       // awaiting its write when the surface unmounted would otherwise arm a fresh timer with

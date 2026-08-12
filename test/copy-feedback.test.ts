@@ -237,25 +237,7 @@ test("a slow copy overtaken by a newer one neither confirms nor arms a timer", a
   assert.equal(h.timers.length, 1);
 });
 
-test("an overtaken failure cannot put its error on a copy that succeeded", async () => {
-  const gates: Array<(fail: boolean) => void> = [];
-  const h = harness({
-    write: () => new Promise((resolve, reject) => {
-      gates.push((fail) => (fail ? reject(new Error("stale refusal")) : resolve(undefined)));
-    }),
-  });
-
-  const first = h.controller.copy("slow");
-  const second = h.controller.copy("fast");
-  gates[1]?.(false);
-  await second;
-  gates[0]?.(true);
-  await first;
-
-  assert.deepEqual(h.latest(), { copied: true, error: null });
-});
-
-test("copy returns its own outcome, so a page with one error slot can route it", async () => {
+test("copy resolves with the settled surface state, so one error slot can route it", async () => {
   // `WorkflowRuns`, `WorkflowLadder` and `PersonaEditor` each own a single error line that many
   // unrelated actions write to. Reading the sentence off the return keeps that last-write-wins,
   // where rendering the hook's `error` beside it would make two sources compete for one line.
@@ -269,7 +251,14 @@ test("copy returns its own outcome, so a page with one error slot can route it",
   });
 });
 
-test("an overtaken copy reports its failure to its own caller without publishing it", async () => {
+test("an overtaken failure never hands its stale refusal to a caller", async () => {
+  /*
+   * The defect this contract exists for. Neither copy button disables while a copy is in
+   * flight, so a click stalled on a permission prompt can settle AFTER a later click that went
+   * straight through. When the loser reported its own failure, the page wrote that refusal into
+   * its shared error line while the generation-guarded flag beside it already said `Copied` -
+   * a success confirmation and a contradicting error for one action, at once.
+   */
   const gates: Array<(fail: boolean) => void> = [];
   const h = harness({
     write: () => new Promise((resolve, reject) => {
@@ -277,15 +266,50 @@ test("an overtaken copy reports its failure to its own caller without publishing
     }),
   });
 
-  const first = h.controller.copy("slow");
-  const second = h.controller.copy("fast");
+  const slow = h.controller.copy("slow");
+  const fast = h.controller.copy("fast");
   gates[1]?.(false);
-  await second;
+  await fast;
   gates[0]?.(true);
 
-  // The caller that started the losing copy is told it lost; the surface is not.
-  assert.deepEqual(await first, { copied: false, error: "stale refusal" });
+  // What every call site does with this value: `if (error !== null) setError(...)`. There is
+  // nothing to write, which is the point - the surface succeeded.
+  assert.deepEqual(await slow, { copied: true, error: null });
   assert.deepEqual(h.latest(), { copied: true, error: null });
+});
+
+test("an overtaken success reports the surface rather than itself", async () => {
+  // The mirror of the case above, and the reason the rule is stated once for both arms: the
+  // loser wrote, but the reader is looking at the copy that finished last.
+  const gates: Array<(fail: boolean) => void> = [];
+  const h = harness({
+    write: () => new Promise((resolve, reject) => {
+      gates.push((fail) => (fail ? reject(new Error("the browser refused")) : resolve(undefined)));
+    }),
+  });
+
+  const slow = h.controller.copy("slow");
+  const fast = h.controller.copy("fast");
+  gates[1]?.(true);
+  await fast;
+  gates[0]?.(false);
+
+  assert.deepEqual(await slow, { copied: false, error: "the browser refused" });
+  assert.deepEqual(h.latest(), { copied: false, error: "the browser refused" });
+});
+
+test("a copy overtaken by reset reports the cleared surface, not its own failure", async () => {
+  // `resetOn` fires when the subject changes. A copy of the PREVIOUS subject settling after
+  // that must not put its refusal on the surface now describing a different one.
+  const slow = deferred();
+  const h = harness({ write: async () => { await slow.promise; throw new Error("stale refusal"); } });
+
+  const running = h.controller.copy("the previous run's feedback");
+  h.controller.reset();
+  slow.release();
+
+  assert.deepEqual(await running, { copied: false, error: null });
+  assert.deepEqual(h.latest(), { copied: false, error: null });
 });
 
 test("reset clears the confirmation, the error and the armed timer", async () => {
@@ -343,23 +367,6 @@ test("a copy still in flight when the surface goes away arms no timer behind it"
 
   assert.deepEqual(h.timers, []);
   assert.deepEqual(h.states, []);
-});
-
-test("an overtaken copy that did write reports success to its own caller", async () => {
-  // The catch arm already tells an overtaken caller what happened to ITS attempt; the success
-  // arm says the same. Only the surface defers to whichever copy finished last.
-  const gates: Array<() => void> = [];
-  const h = harness({ write: () => new Promise((resolve) => gates.push(() => resolve(undefined))) });
-
-  const first = h.controller.copy("slow");
-  const second = h.controller.copy("fast");
-  gates[1]?.();
-  await second;
-  gates[0]?.();
-
-  assert.deepEqual(await first, { copied: true, error: null });
-  // One hold, belonging to the copy that finished last.
-  assert.equal(h.timers.filter(Boolean).length, 1);
 });
 
 test("dispose is idempotent, because StrictMode tears a hook down twice", () => {

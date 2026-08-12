@@ -201,7 +201,10 @@ function Launcher({
         >
           <span className="launch-glyph-lead" aria-hidden>{glyph}</span>
           <Keycap action={action} />
-          {label}
+          {/* In a span so the console detail's tab-strip ladder can take the word back when
+              that row runs out of width, leaving the glyph and this button's accessible
+              name. See `detailTabsLadder.ts`; in every other host the span is inert. */}
+          <span className="launch-word">{label}</span>
           <span className="launch-caret" aria-hidden>▾</span>
         </button>
       </Tooltip>
@@ -228,16 +231,18 @@ function Launcher({
 }
 
 /**
- * The pair, plus the worktree they act on.
+ * The pair, plus - where it is the only thing saying so - the worktree they act on.
  *
- * Rendered by `TranscriptPanel`, which is the conversation pane itself - so this reaches
- * the expanded card, the console detail and the board drill-in from one mount rather than
- * from three placements kept in step by hand.
+ * Rendered by `TranscriptPanel` for a host that has nowhere better to put it, which is how
+ * this reaches the expanded card from one mount rather than from placements kept in step by
+ * hand. The console detail is the one host that DOES have somewhere better: it hosts this
+ * strip in its own tab row and suppresses the panel's (`TranscriptPanel`'s `hostToolbar`).
  */
 export function SessionLaunchers({
   session,
   registerLaunchers,
   leading,
+  place = "pane",
 }: {
   session: Session;
   registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
@@ -245,12 +250,25 @@ export function SessionLaunchers({
    * A control to sit at the head of the button run, before the launchers.
    *
    * A slot rather than another prop pair, because what goes here is not a launcher and
-   * this component should not learn about it: the conversation pane owns the control and
-   * this strip only owns where the row of buttons begins. Today that is the rendering
-   * switch - the one control that is about the pane you are looking at rather than about
-   * somewhere else to open the session.
+   * this component should not learn about it: the host owns the control and this strip only
+   * owns where the row of buttons begins. Today that is the rendering switch - the one
+   * control that is about the pane you are looking at rather than about somewhere else to
+   * open the session.
    */
   leading?: React.ReactNode;
+  /**
+   * Where this strip is drawn, which settles two things it must not decide for itself.
+   *
+   * `"pane"` is its own band at the top of a conversation pane: it draws the band chrome
+   * and names the worktree, because in that host nothing else does.
+   *
+   * `"toolbar"` is a host row that already runs the full width - the console detail's tab
+   * strip. There the band chrome would be a box drawn inside a box, and the worktree would
+   * be the pane's SECOND copy of a path its `PATH`/`BRANCH` row already prints in full.
+   * Printing it twice is the duplication this placement exists to remove, so it is dropped
+   * rather than relocated.
+   */
+  place?: "pane" | "toolbar";
 }): React.JSX.Element {
   const [flash, setFlash] = useState<{ text: string; error: boolean } | null>(null);
   const terminalRef = useRef<LauncherHandle>(null);
@@ -309,19 +327,23 @@ export function SessionLaunchers({
   }, [session.id, registerLaunchers]);
 
   return (
-    <div className="conv-launch">
-      <span className="conv-launch-where">
-        <span className="conv-launch-lbl">worktree</span>
-        {/* The path ellipsizes when the pane is narrow, so the full one has to be readable
-            somewhere - through the shared Tooltip, never a native `title`, which renders in
-            the OS style after a delay this app does not control. */}
-        <Tooltip label={session.cwd ?? "this session has no checkout"}>
-          <span className="conv-launch-path mono" dir="ltr">
-            {session.cwd ?? "none"}
+    <div className={place === "toolbar" ? "conv-launch in-toolbar" : "conv-launch"}>
+      {place === "pane" && (
+        <>
+          <span className="conv-launch-where">
+            <span className="conv-launch-lbl">worktree</span>
+            {/* The path ellipsizes when the pane is narrow, so the full one has to be
+                readable somewhere - through the shared Tooltip, never a native `title`,
+                which renders in the OS style after a delay this app does not control. */}
+            <Tooltip label={session.cwd ?? "this session has no checkout"}>
+              <span className="conv-launch-path mono" dir="ltr">
+                {session.cwd ?? "none"}
+              </span>
+            </Tooltip>
           </span>
-        </Tooltip>
-      </span>
-      <span className="conv-launch-sp" />
+          <span className="conv-launch-sp" />
+        </>
+      )}
       {flash && (
         <span className={`launch-flash${flash.error ? " is-error" : ""}`}>{flash.text}</span>
       )}
@@ -343,7 +365,7 @@ export function SessionLaunchers({
           <button type="button" className="launch-btn launch-agent" onClick={() => void focusPane()}>
             <span className="launch-glyph-lead" aria-hidden>◆</span>
             <Keycap action="agent" />
-            {agentLabel}
+            <span className="launch-word">{agentLabel}</span>
           </button>
         </Tooltip>
       ) : action === "handoff" || action === "resume" ? (
@@ -362,7 +384,7 @@ export function SessionLaunchers({
           <button type="button" className="launch-btn launch-agent" disabled>
             <span className="launch-glyph-lead" aria-hidden>◆</span>
             <Keycap action="agent" />
-            {agentLabel}
+            <span className="launch-word">{agentLabel}</span>
           </button>
         </Tooltip>
       )}

@@ -5651,6 +5651,23 @@ mark.find-hit.is-current {
 .conv-launch-sp {
   flex: 1;
 }
+/* The same strip, hosted by a row that already has a band's chrome - the console detail's
+   tab strip (`SessionLaunchers place="toolbar"`). It gives up the border, the fill and the
+   padding, because a bordered box inside a bordered row is furniture rather than structure,
+   and it carries no worktree: the pane's `PATH`/`BRANCH` row two bands up already prints
+   that path, and a second copy is the duplication this placement exists to remove.
+
+   `margin-left: auto` is what pushes the run to the far end of the tab row, and it is why
+   `.foreman-rail` no longer carries one of its own - see the note there. */
+.conv-launch.in-toolbar {
+  margin-left: auto;
+  align-self: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
 /* The rendering switch, at the head of the button run. It wears `.launch-btn` because it
    IS one of that row's buttons visually - the difference is only that it acts on the pane
    you are looking at rather than opening the session somewhere else. Pressed state carries
@@ -18286,22 +18303,43 @@ span.line-run-prov {
   color: var(--idle);
 }
 
+/* The tab strip, which is also the conversation's toolbar - see the ladder further down and
+   the call site in `ConsoleDetail.tsx`.
+
+   `flex-wrap: wrap` is the last resort below the narrowest rung, and it is also what the
+   ladder READS: `fitDetailTabs` steps rungs down only while this row is taller than its
+   tallest child, so `nowrap` would leave it unable to see anything and the row would
+   overflow the pane instead. The 6px row-gap keeps two rows off each other in the state
+   below the last rung, where wrapping is all that is left.
+
+   Cross-axis alignment is deliberately left at `stretch` even though the row now carries
+   controls of three heights. A tab's selected underline is drawn at its own `bottom: -1px`,
+   so it lands on this row's border only while the tab is as tall as the row - centring the
+   row would leave that underline floating the moment anything taller than a tab joined it.
+   Every non-tab control here sets its own `align-self: center` instead. */
 .detail-tabs {
   flex: none;
   display: flex;
-  gap: 2px;
+  flex-wrap: wrap;
+  gap: 6px 2px;
   padding: 0 22px;
   border-bottom: 1px solid var(--border-soft);
 }
+/* `flex: none` and `nowrap` together are what make this row's overflow HONEST, which the
+   ladder depends on. Left shrinkable, a squeezed tab wraps its own label instead: the row's
+   tallest child then grows with the row, the fit compares the two and never sees a second
+   row, and the strip silently degrades into stacked words at rung 0. */
 .detail-tab {
   position: relative;
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
   padding: 10px 13px;
   font: inherit;
   font-size: 12.5px;
   font-weight: 600;
+  white-space: nowrap;
   color: var(--muted);
   background: none;
   border: 0;
@@ -18335,6 +18373,106 @@ span.line-run-prov {
   border-radius: 999px;
   color: var(--bg);
   background: var(--attention);
+}
+
+/* ---- detail tab strip: responsive ladder ----
+   Four rungs, each shedding the least useful ink first, so the strip stays ONE row on a
+   pane narrow enough that five tabs, three toolbar buttons and Foreman do not fit across it.
+
+   WHICH rungs apply is decided by `fitDetailTabs` in `detailTabsLadder.ts`, which MEASURES:
+   it puts the row at rung 0, asks whether it wrapped, and steps down until it did not,
+   writing the rungs it landed on into `data-rung` as a cumulative token list. Same mechanism
+   as the topbar's (`measuredLadder.ts`), for the same reason and one more of this row's own.
+
+   The general reason is that a rung would otherwise fire on the width the row HAS, while
+   whether it needs to fire depends on the width its content NEEDS - two independent
+   quantities. This row's content is a function of the SESSION: the launcher carries the
+   harness's own name (`Codex` against `Claude Code` is ~50px), the Foreman slot is
+   `＋ Invite foreman`, `Foreman intent` or `Foreman · 12` depending on a field that arrives
+   over SSE, and the Work queue tab grows a pip. Two sessions selected one after the other in
+   the same rail need different rungs at the same width.
+
+   The one of this row's own is that a container query is not even available here.
+   `.detail-tabs` declares no container and neither does any ancestor - the conversation
+   pane's only `container-type: inline-size` is on `.transcript`, which this row sits ABOVE
+   rather than inside. Do not add one and expect it to work.
+
+   Every label a rung sheds goes VISUALLY HIDDEN, never `display: none`: out of flow so it
+   costs no width and no flex gap, clipped so it paints nothing, and still in the
+   accessibility tree - so the control keeps its accessible name and its tooltip, and only
+   its glyph is drawn. A keycap or a caret beside a shed word takes `display: none` instead,
+   because neither is a control's name: a chord hint floating next to a bare glyph reads as a
+   second glyph, and the caret's promise is already carried by `aria-haspopup`.
+
+   NO TAB EVER SHEDS ITS WORD. The tabs are what this row is; a strip of five unlabelled
+   glyphs is not a narrow version of it.
+
+   `~=` because the rungs STACK: at rung 3 the row has also shed 1 and 2. */
+
+/* Rung 1: the tabs give up their keycaps - and this is FIRST, which is the one place this
+   ladder departs from the order its phase document proposed (launcher labels, then Foreman).
+
+   It is measured rather than argued. The full row needs ~1002px; a 1280px window gives the
+   console detail ~940px, which is the most common desktop width this pane is read at. So
+   ONE rung fires there, and the choice is what a reader loses for the ~60px: five chord
+   hints for chords that keep working, or the NAMES off three buttons. Shedding the hints
+   costs 120px and buys back both - the tabs keep every word, and `Terminal view`,
+   `Terminal` and the agent's own name survive to the next rung.
+
+   A keycap is not a control's name. It is a hint about a chord that works at every width,
+   that `docs/ui.md` documents, and that Settings can turn off across the whole app anyway.
+   The tab beside it keeps its word at every rung - the tabs are what this row IS. */
+.detail-tabs[data-rung~="1"] .detail-tab .kb-hint {
+  display: none;
+}
+/* Rung 2: the Terminal-view toggle drops to its glyph. First of the three toolbar controls
+   because it is the one that acts on the pane you are already looking at rather than opening
+   the session somewhere else, and because its state survives the collapse intact -
+   `aria-pressed` for a reader, the accent fill and the override dot for everyone else. */
+.detail-tabs[data-rung~="2"] .conv-view-btn .launch-word {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* Rung 3: the two launchers drop to their glyphs, giving up their keycaps and carets with
+   the word - a chord hint floating beside a bare glyph reads as a second glyph, and the
+   caret's promise is already carried by `aria-haspopup`. Split from rung 2 deliberately:
+   bundled, the run sheds ~280px at once and leaves the row visibly half empty for the next
+   several hundred px of pane. The chords still work and the tooltips still name what each
+   button opens. */
+.detail-tabs[data-rung~="3"] .launch-btn:not(.conv-view-btn) .launch-word {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.detail-tabs[data-rung~="3"] .launch-btn .kb-hint,
+.detail-tabs[data-rung~="3"] .launch-caret {
+  display: none;
+}
+/* Rung 4: Foreman drops to its mark, and this is the last thing the row has to give. The
+   rail keeps the purple dot, the amber it takes when episodes are waiting, its tooltip and
+   its accessible name; the invite state keeps its ＋. Its padding tightens to what a lone
+   6px mark needs, which is most of what this rung is worth - the button is otherwise 20px
+   of padding around nothing. */
+.detail-tabs[data-rung~="4"] .fr-word {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.detail-tabs[data-rung~="4"] .foreman-rail {
+  padding: 4px 7px;
 }
 
 .detail-body {
@@ -21476,11 +21614,14 @@ span.line-run-prov {
 
 /* --- the rail + drawer --- */
 
-/* Sits in the tab row, pushed to its far end - see the comment at its call site.
-   Not a tab: no underline, no selected state, and it opens a surface rather than
-   switching the body, so it must not read as a peer of Conversation/Gate/Diff. */
+/* Sits at the far end of the tab row - see the comment at its call site. Not a tab: no
+   underline, no selected state, and it opens a surface rather than switching the body, so
+   it must not read as a peer of Conversation/Gate/Diff.
+
+   It no longer pushes ITSELF there. The launcher strip is now the row's last flexible edge
+   and carries the `margin-left: auto`; a second auto margin here would not stack with it,
+   it would SPLIT the free space between the two and park the launchers mid-row. */
 .foreman-rail {
-  margin-left: auto;
   align-self: center;
   display: flex;
   align-items: center;
@@ -21545,13 +21686,14 @@ span.line-run-prov {
 
 /* Keeps the busy chip in its slot. `Tooltip` wraps a DISABLED trigger in a `.tt-anchor`
    span, because a disabled button dispatches no mouse events and would otherwise lose the
-   sentence explaining itself - which makes the span the flex item and leaves
-   `.foreman-rail`'s own `margin-left: auto` on a child that no longer decides where it
-   sits. Untreated, the chip jumps from the right-hand slot to the middle of the strip for
-   the length of the request and back. The rail is the only control in this row that is
-   ever disabled, so the rule is as specific as it reads. */
+   sentence explaining itself - which makes the SPAN the flex item and leaves the rail's own
+   alignment on a child that no longer decides where it sits.
+
+   The jump this used to guard against is gone at the source: the launcher strip before it
+   carries the row's `margin-left: auto` now, so the rail sits after that strip whether it is
+   wrapped in an anchor or not. What is still needed is the cross-axis alignment, which the
+   anchor does not inherit. */
 .detail-tabs > .tt-anchor {
-  margin-left: auto;
   align-self: center;
 }
 /* Optically centred with the cap height beside it: the full-width plus sits high and
@@ -21560,6 +21702,21 @@ span.line-run-prov {
   font-size: 12px;
   line-height: 1;
   margin-right: -2px;
+}
+/* Foreman's own mark, and the thing this control is drawn as once the tab row's ladder
+   takes its word (rung 3). The same vocabulary as the topbar's Foreman button, which keeps
+   its `.foreman-dot` through the same collapse: purple says whose control this is without
+   spending a second word on it.
+
+   `.fr-dot` below is layered ON this element rather than being a sibling - one mark with
+   two states, because at the width where the word is gone two dots side by side would be
+   the only thing left to read. */
+.fr-mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--foreman);
+  flex: none;
 }
 .fr-dot {
   width: 6px;

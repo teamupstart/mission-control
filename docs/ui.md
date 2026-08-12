@@ -290,9 +290,16 @@ earns two surfaces a card has nowhere to put:
   the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
   Workflows / Diff / Files** - because a split pane has room a card doesn't: the conversation
   is permanent, and the sections that share a card's height in the grid get a tab each. The
-  **Conversation tab is the transcript and nothing else**: the workflow ladder lives in
-  **Workflows** (<kbd>y</kbd>), which is the tab that answers *how is this run going* while
-  Conversation answers *what was said*.
+  **Conversation tab is the transcript and its reply box, and nothing else**: the workflow
+  ladder lives in **Workflows** (<kbd>y</kbd>), which is the tab that answers *how is this
+  run going* while Conversation answers *what was said*. The controls for getting *at* this
+  session - **Terminal view** and the two launchers - sit in the **tab strip** rather than
+  in a band above the transcript, since that row already runs the full width and its job is
+  adjacent: the launchers choose *how* you view a session exactly as the tabs choose *what*.
+  On a narrow pane that row gives way in order - the tabs' chord hints, then the toggle's
+  word, then the launchers' words and chord hints, then Foreman's word - so it stays one
+  line, every tab keeps its own word, and every control keeps its name for a screen reader
+  and its tooltip for a pointer. The chords keep working at every width.
   The **Board** drills into that same detail when you open a card.
   In Console and Board, the
   Diff tab contains the complete checkout diff reader; the footer action and <kbd>d</kbd>
@@ -462,8 +469,9 @@ application, and says so rather than guessing). The row names what it found, so 
 The Conversation is drawn as a **chat log** by default and can be drawn as a **terminal
 stream** instead - prompt lines in, stdout out, tool runs folded into one record, inside a
 frame with a live status line. **Settings → Display → Conversation** sets the default for
-every session, per machine; the **Terminal view** button above any conversation flips that
-one session for as long as the tab is open. Both renderings are the same panel over the
+every session, per machine; the **Terminal view** button flips that one session for as long
+as the tab is open - in the strip above the conversation on a card, and in the detail's tab
+strip in Console and Board. Both renderings are the same panel over the
 same transcript, so find, the Observed activity rail, scroll-back, attachments and the
 reply box behave identically in either. See
 [Reading a conversation as a terminal](sessions.md#reading-a-conversation-as-a-terminal).
@@ -619,8 +627,8 @@ names the layouts where a shortcut's target exists:
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>↑</kbd> | Recall the newest editable queued message into the box, with the caret at the end. The box must be empty and have no attachments | Empty message composer |
-| <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. If its conversation is not visible, reveals it first, then opens the terminal chooser | Selected session |
-| <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or reveal the conversation and choose a terminal in which to resume it | Selected session |
+| <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. In Console and Board the launcher is in the detail's tab strip and answers from any tab; on a card, if its conversation is not visible this reveals it first, then opens the terminal chooser | Selected session |
+| <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or choose a terminal in which to resume it - revealing the conversation first only where the launcher lives above it | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>⇧</kbd><kbd>T</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
@@ -653,13 +661,16 @@ while a card in that strip has focus - so they are fixed for the same reason.
 ### Keycaps on the buttons
 
 The buttons those shortcuts drive print the key on their own face - Terminal and
-Codex / Claude in the conversation toolbar; Send, Focus, Files, Queue, Reset, Interrupt,
+Codex / Claude in the conversation toolbar (the strip above a card's conversation, and the
+Console and Board detail's tab strip); Send, Focus, Files, Queue, Reset, Interrupt,
 Complete and Kill on a card; Focus, Diff, Reset, Interrupt, Complete and Kill in the Console
 footer; the Console's
 Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board card's workflow disclosure; and the settings
 rail's search box. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.
+A narrow Console or Board detail is the one place they come off on their own: the tabs' keycaps
+are the first thing that row gives up to stay on one line, and the chords keep working.
 
 **Settings → Keyboard → Show keybindings on buttons** turns them off once you've learnt
 them. Small icon-only controls (the ⚙ gear and the expand chevron) never

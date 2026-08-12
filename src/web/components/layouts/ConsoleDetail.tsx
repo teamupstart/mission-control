@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
@@ -19,7 +19,14 @@ import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
-import { TranscriptPanel, type TranscriptHandle } from "../TranscriptPanel.tsx";
+import {
+  ConversationViewToggle,
+  TranscriptPanel,
+  type TranscriptHandle,
+} from "../TranscriptPanel.tsx";
+import { SessionLaunchers } from "../LaunchMenu.tsx";
+import { useSessionConversationView } from "../../lib/conversation-view.ts";
+import { fitDetailTabs, observeDetailTabs } from "../../detailTabsLadder.ts";
 import {
   AgentDot,
   CostChip,
@@ -184,6 +191,17 @@ export function ConsoleDetail({
   const transcriptRef = useRef<TranscriptHandle>(null);
   const filesRef = useRef<FileWorkspaceHandle>(null);
   const paneRef = useRef<HTMLDivElement>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  /**
+   * The conversation's rendering, read HERE because this detail hosts the toggle that
+   * changes it. `useSessionConversationView` notifies only its own caller, and this caller
+   * is `TranscriptPanel`'s parent, so a press re-renders this component and the panel with
+   * it - the panel then re-reads the same module-level map and redraws in the new rendering.
+   * The panel is not memoized, which is what makes that cascade a fact rather than a hope,
+   * and `e2e/specs/console-tabs-toolbar.spec.ts` presses the button and asserts the log
+   * actually changed rather than trusting the reasoning.
+   */
+  const conversationView = useSessionConversationView(session.id);
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
   const intent = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
@@ -361,6 +379,20 @@ export function ConsoleDetail({
     return () => view.registerReaderTab(session.id, null);
   }, [session.id, tab, tabs, view.registerReaderTab]);
 
+  // Fit the tab strip to one row. After EVERY render, not once on mount, for the reason
+  // App's topbar fit gives: this row's width requirement is a function of its content, and
+  // its content is the session - the Foreman slot swaps between three shapes over SSE, the
+  // Work queue tab grows a pip, and selecting the next session in the rail re-renders this
+  // component with a different agent's name on the launcher. `fitDetailTabs` guards its own
+  // cost, so a frame that moved nothing this row draws is one cheap comparison.
+  useLayoutEffect(() => {
+    if (tabsRef.current) fitDetailTabs(tabsRef.current);
+  });
+
+  // And for what a render cannot report: the pane resizing as the window does or as the
+  // rail beside it is dragged, and anything that resizes this row's text at a fixed width.
+  useEffect(() => (tabsRef.current ? observeDetailTabs(tabsRef.current) : undefined), []);
+
   return (
     <div className={`cdetail tone-${st.tone}`}>
       <header className="detail-head">
@@ -512,7 +544,7 @@ export function ConsoleDetail({
         />
       )}
 
-      <div className="detail-tabs" role="tablist" aria-label="Session detail">
+      <div className="detail-tabs" ref={tabsRef} role="tablist" aria-label="Session detail">
         {tabs.map((t) => (
           <Tooltip key={t.id} label={`Show this session's ${t.label.toLowerCase()}`}>
           <button
@@ -538,6 +570,38 @@ export function ConsoleDetail({
           </button>
           </Tooltip>
         ))}
+
+        {/* The conversation's toolbar, hosted HERE rather than above the transcript - which
+            is the whole of decision D1. This row already ran the full width with dead space
+            after "Files", and its job is adjacent: the launchers choose HOW you view this
+            session exactly as the tabs choose WHAT. Folding them in retires the worktree
+            band above the log, and the conversation gets that height.
+
+            No worktree path comes with them (`place="toolbar"`). The `PATH`/`BRANCH` row two
+            bands up already prints it in full, and a second copy here would recreate the
+            duplication this change exists to remove.
+
+            The panel is told to draw no strip of its own (`hostToolbar`), and this mount
+            takes over `registerLaunchers` so the `t` / `a` chords still resolve in this host.
+            The Cards layout never renders this component and keeps the panel-owned strip. */}
+        <SessionLaunchers
+          session={session}
+          place="toolbar"
+          registerLaunchers={view.registerLaunchers}
+          leading={
+            // Only on Conversation, because unlike the launchers this control is about the
+            // pane you are reading rather than about somewhere else to open the session.
+            // On Files or Diff it would be an `aria-pressed` toggle over a surface that is
+            // not on screen, changing nothing a reader can see.
+            tab === "conversation" ? (
+              <ConversationViewToggle
+                terminal={conversationView.view === "terminal"}
+                overridden={conversationView.overridden}
+                onChange={conversationView.setView}
+              />
+            ) : null
+          }
+        />
 
         <ForemanRail
           session={session}
@@ -600,7 +664,10 @@ export function ConsoleDetail({
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               files={view.files}
-              registerLaunchers={view.registerLaunchers}
+              // This detail hosts the launcher strip in its tab row, so the panel draws
+              // none - and `registerLaunchers` goes to that mount instead, since exactly
+              // one strip per session may hold App's handle.
+              hostToolbar
               registerFind={view.registerFind}
               resetNonce={view.resetNonces[session.id] ?? 0}
             />
@@ -755,11 +822,13 @@ export function ForemanRail({
       <Tooltip label="Foreman is not in this session. Invite it to triage, wrap up, and follow PRs here.">
         <button className="foreman-rail invite" disabled={busy} onClick={onInvite}>
           {/* Decoration, so a screen reader does not announce "full-width plus sign"
-              ahead of the words that say what the button does. */}
+              ahead of the words that say what the button does. It is also what this
+              button is drawn as once the tab row's ladder takes the word - the offer
+              survives as a purple ＋ with its tooltip and accessible name intact. */}
           <span className="fr-plus" aria-hidden="true">
             ＋
           </span>
-          Invite foreman
+          <span className="fr-word">Invite foreman</span>
         </button>
       </Tooltip>
     );
@@ -769,8 +838,15 @@ export function ForemanRail({
   return (
     <Tooltip label={drawerOpen ? "Close Foreman's session reading" : "Inspect Foreman's objective and decision history"}>
       <button className="foreman-rail" aria-expanded={drawerOpen} onClick={onToggleDrawer}>
-        {openCount > 0 && <span className="fr-dot" aria-hidden="true" />}
-        {episodes.length > 0 ? `Foreman · ${episodes.length}` : "Foreman intent"}
+        {/* One mark, two meanings, rather than two marks. It is Foreman's purple dot -
+            the same thing the topbar's Foreman control keeps when the ladder takes ITS
+            word - and it turns amber when episodes are waiting on a decision. A second
+            element for the waiting state would have put two dots side by side at exactly
+            the width where the word is gone and the marks are all there is. */}
+        <span className={openCount > 0 ? "fr-mark fr-dot" : "fr-mark"} aria-hidden="true" />
+        <span className="fr-word">
+          {episodes.length > 0 ? `Foreman · ${episodes.length}` : "Foreman intent"}
+        </span>
       </button>
     </Tooltip>
   );

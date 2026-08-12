@@ -213,12 +213,20 @@ test("a Codex final answer releases a queued turn when later lifecycle notificat
   // The fake emits the completed `final_answer` item and deliberately omits both
   // `turn/completed` and the idle thread status. The user-visible proof is that the outbox
   // still drains and the next turn receives an answer.
+  //
+  // Scoped to `.turn-assistant`, for the reason the mid-turn case above already gives: while
+  // a turn is running the same sentence is on screen TWICE - once as the recorded turn, and
+  // once as the live report of the step in progress, which is the card's activity ticker and
+  // (since the activity line moved into the log) the ghosted row at its tail. A card-wide
+  // `getByText` matches all three and fails strict mode on a timing the assertion does not
+  // care about, which is a flake rather than a defect: the reply really is there.
+  const replies = card.locator(".turn-assistant");
   await expect(
-    card.getByText(`Mock reply to: ${FINAL_ANSWER_HELD_TURN}`, { exact: true }),
+    replies.getByText(`Mock reply to: ${FINAL_ANSWER_HELD_TURN}`, { exact: true }),
   ).toBeVisible({ timeout: 15_000 });
   await expect(card.locator(".pending-turn")).toHaveCount(0, { timeout: 15_000 });
   await expect(
-    card.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
+    replies.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
   ).toBeVisible({ timeout: 15_000 });
   // Reviewer-visible proof from this exact regression: the former pending row is an
   // ordinary submitted turn and its SDK response is on the card.

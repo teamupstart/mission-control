@@ -892,8 +892,10 @@ no exit code and no duration for any of them. Where it shows an elapsed time, th
 span between the run's first and last recorded turn, and its tooltip says so.
 
 **Settings → Display → Conversation** chooses the default for every session. Any single
-conversation can be flipped on its own with the **Terminal view** button above the log,
-which wins over that default for that session until you close the tab - so one agent can be
+conversation can be flipped on its own with the **Terminal view** button - above the log on
+a card, in the detail's tab strip in Console and Board, where it appears only while the
+Conversation tab is the one you are reading. It
+wins over that default for that session until you close the tab - so one agent can be
 watched as a terminal while the rest stay on the chat log. Nothing about the per-session
 choice is stored; a reload starts over from the default.
 

@@ -539,6 +539,40 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### The console detail's tab row, carrying the toolbar
+
+`e2e/.artifacts/console-tabs-toolbar/` carries three frames from
+`specs/console-tabs-toolbar.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The change is a
+band that stopped existing and two controls that moved into a row which already had room, so
+what a picture answers is whether the row still reads as a tab strip.
+
+`01-console-detail-tab-toolbar.png` is the console detail at the default 1280px window: three
+bands - head, `PATH`/`BRANCH`, tab strip - with **Terminal view**, **Terminal** and
+**Claude Code** at the far end of the tabs, Foreman past them, and the transcript starting
+directly under the row. The worktree band that used to sit between them is gone, and the path
+appears exactly once, in the row above.
+
+`02-cards-keep-their-own.png` is the regression that a naive move would have shipped silently:
+the same controls on an expanded Cards card, in the pane-owned band, worktree caption and full
+path included - that host has nowhere better to put them, so it keeps them. The frame is taken
+in the run that also presses <kbd>t</kbd> there and gets the terminal chooser.
+
+`03-narrow-one-row.png` is the give-way ladder at a 1160px window, and it is the frame the
+ladder exists for: one line, every tab still carrying its own word, the three toolbar controls
+drawn as glyphs that still answer to a screen reader. That it is one row is checkable in the
+DOM as a height; that it still reads as a toolbar is legible only here.
+
+Regenerate all three with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/console-tabs-toolbar.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### The everything-palette
 
 `e2e/.artifacts/palette/` carries three frames and the run's own

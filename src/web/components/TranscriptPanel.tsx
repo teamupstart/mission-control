@@ -137,6 +137,7 @@ export function TranscriptPanel({
   registerLaunchers,
   registerFind,
   resetNonce = 0,
+  hostToolbar = false,
   ref,
 }: {
   /**
@@ -204,9 +205,32 @@ export function TranscriptPanel({
    * panel does not browse files, it only needs to know which words name one.
    */
   files?: SessionFilesController;
-  /** Register the launch buttons so App's selection shortcuts drive these exact controls. */
+  /**
+   * Register the launch buttons so App's selection shortcuts drive these exact controls.
+   *
+   * Ignored when `hostToolbar` is set, because there is then no strip here to register -
+   * the host mounts its own and passes this itself. Exactly one `SessionLaunchers` per
+   * session may register: App keeps one handle per id, so a second mount would overwrite
+   * the first and the first's unmount would then delete a live registration.
+   */
   registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
   registerFind?: (id: string, handle: TranscriptFindHandle | null) => void;
+  /**
+   * The host draws the launcher strip itself, so this panel must not draw a second one.
+   *
+   * It exists because the strip has three hosts and only one of them has somewhere better
+   * to put it. The expanded card and the board's collapsed tiles have no toolbar of their
+   * own, so the conversation pane owns the strip there and always has. The console detail
+   * has a tab row that already runs the full width, and hosting the strip in it is what
+   * lets the worktree band above the transcript stop existing
+   * (`docs/plans/console-header-density/plan.md`).
+   *
+   * Defaulted to the shipped behaviour so a host that says nothing keeps its strip. Moving
+   * the mount instead of gating it would have DELETED the strip - and the Terminal-view
+   * toggle, and the `t` / `a` chords - from the Cards layout, which never renders
+   * `ConsoleDetail`.
+   */
+  hostToolbar?: boolean;
   ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
   // The body below was written against these two names and still is; only the PROP changed.
@@ -1000,13 +1024,17 @@ export function TranscriptPanel({
       style={agentAccentStyle(agent)}
       onClick={(e) => e.stopPropagation()}
     >
-      <SessionLaunchers
-        session={session}
-        registerLaunchers={registerLaunchers}
-        leading={
-          <ConversationViewToggle terminal={terminal} overridden={overridden} onChange={setView} />
-        }
-      />
+      {/* Suppressed, not moved: a host that provides a toolbar mounts this strip itself,
+          and one that does not keeps the pane-owned one. See `hostToolbar`. */}
+      {!hostToolbar && (
+        <SessionLaunchers
+          session={session}
+          registerLaunchers={registerLaunchers}
+          leading={
+            <ConversationViewToggle terminal={terminal} overridden={overridden} onChange={setView} />
+          }
+        />
+      )}
       {terminal ? (
         // A region rather than a bare div: the frame is a named part of the page, and
         // naming it is what lets a reader (and a browser test) address the terminal as
@@ -1024,7 +1052,7 @@ export function TranscriptPanel({
 }
 
 /**
- * The per-session rendering switch, in the strip above the log.
+ * The per-session rendering switch, at the head of the launcher run.
  *
  * A toggle BUTTON rather than a second radio group: there are two renderings and the
  * question at this level is "read this one differently", which is one press. `aria-pressed`
@@ -1033,10 +1061,16 @@ export function TranscriptPanel({
  * screen reader user has to read twice.
  *
  * It sits beside the launchers because that strip is already the answer to "where am I and
- * how do I get at this session", and it reaches all three conversation surfaces from that
- * one mount.
+ * how do I get at this session".
+ *
+ * Exported so a host that provides its own toolbar (`hostToolbar`) can render it into that
+ * toolbar's `leading` slot rather than reimplementing it. It takes its state as props and
+ * holds none, so the caller's `useSessionConversationView` is still the single reader of
+ * that module's map - which matters, because that hook notifies only its OWN caller. A
+ * console-detail caller works because the panel re-renders as its child; a SIBLING of the
+ * panel would set the override and leave the log drawn in the other rendering.
  */
-function ConversationViewToggle({
+export function ConversationViewToggle({
   terminal,
   overridden,
   onChange,
@@ -1062,7 +1096,7 @@ function ConversationViewToggle({
         <span className="launch-glyph-lead" aria-hidden>
           ▤
         </span>
-        Terminal view
+        <span className="launch-word">Terminal view</span>
       </button>
     </Tooltip>
   );

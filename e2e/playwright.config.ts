@@ -18,6 +18,12 @@ export default defineConfig({
   // almost perfectly, so that was latency and money given away for nothing. It does have a
   // ceiling: at 16 workers a benchmark run oversubscribed the box hard enough to fail a
   // test outright, so raise this only together with the runner size.
+  //
+  // Going 2 -> 4 was checked for flakiness rather than assumed, because more workers means
+  // more CPU contention and this suite is timing-sensitive. Full suite, three runs at each
+  // setting on identical hardware: zero flakes in 765 test executions per arm, and ~6.0m
+  // against ~4.4m. If a timing flake does start recurring here, this setting is the first
+  // thing to suspect and `3` is the cheap hedge - it gives back roughly a third of the win.
   workers: 4,
   // A dispatch waits on a real subprocess launching, so the default 30s is tight on a cold
   // CI runner. Two minutes leaves room for a loaded runner while a real hang still fails.

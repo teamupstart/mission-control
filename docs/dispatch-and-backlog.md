@@ -29,6 +29,53 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
 If either launch path cannot prove it started as requested, dispatch fails instead of
 calling an unverified task running.
 
+## The guided pass
+
+The form opens with eight controls, and for most dispatches five of them are already right.
+The decisions that actually change are **Kind**, **Harness** and **After work** - and all
+three sit behind a tab-walk or a pointer trip, because the task box takes the caret on open.
+
+**Guided**, the switch in the modal's header, inverts that. With it on, pressing <kbd>+</kbd>
+asks those three as single keystrokes inside the same dialog, then hands over the ordinary
+form with the answers already set and the caret in the task box. A default dispatch is
+<kbd>+</kbd> <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd> and you are typing.
+
+It is **off by default**. The switch is the way to turn it on, it is where you turn it off
+again mid-dispatch, and the setting is per machine.
+
+| Key | What it does |
+|---|---|
+| the printed letter | takes that option - <kbd>p</kbd> ship, <kbd>t</kbd> scout, <kbd>c</kbd> Claude Code, <kbd>x</kbd> Codex, <kbd>i</kbd> Pi, <kbd>d</kbd> dispatch default, <kbd>n</kbd> None |
+| <kbd>1</kbd>…<kbd>9</kbd> | takes the option in that position |
+| <kbd>↑</kbd><kbd>↓</kbd> <kbd>↵</kbd> | walk the list and take the highlighted one |
+| <kbd>⌫</kbd> | back one question, which un-answers it |
+| <kbd>⇥</kbd> | leave the pass and use the form, keeping every answer so far |
+| <kbd>esc</kbd> | closes the dispatch, exactly as it does from the form |
+| <kbd>⌘↵</kbd> | dispatches, exactly as it does from the form |
+
+Nothing moves while it runs. The modal keeps its width and every field keeps its position;
+the questions float over the control they are about, the way that control's own dropdown
+would, and everything else recedes. A strip under the header carries the answers, each one a
+button that goes back to its question, and it leaves when the pass does - so the form you
+finish in is the ordinary one.
+
+**The mouse works too, everywhere it looks like it should.** Click an option in the list, or
+click an answered rung to go back to it, or ignore the list entirely and use the field's own
+control - the question it is about stays live, and using it answers it and moves the pass on
+just as the keyboard would. **Clear** puts the form back where it opened, which for a guided
+dispatch means back at the first question.
+
+**It is a different way to fill the form, never a second opinion about what a dispatch
+means.** Every answer is written through the same control the form offers, so the rules below
+still apply exactly as they are written - including the kind-to-after-work rule, which is why
+Kind is asked before After work: by the time that question is on screen a scout has already
+moved the selection to **None**, and the question says so rather than silently landing there.
+
+Two dispatches never run it: editing a task already in the backlog, whose answers exist
+already, and **Ensemble**, whose body replaces Crew and After work outright. The switch is not
+offered in either - it appears exactly where flipping it would do something, so it is never a
+control that saves a preference and visibly does nothing. Settings is its durable home.
+
 ## Attaching more than one repository
 
 Some work does not fit in one repo: a contract change and its consumers, a lockstep API

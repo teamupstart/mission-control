@@ -1924,7 +1924,11 @@ export function App(): React.JSX.Element {
         if (overviewSel && canInterruptSession(overviewSel)) {
           markInterrupting(overviewSel.id);
           void api.interrupt(overviewSel.id).then((r) => {
-            if (!r.ok) clearInterrupting(overviewSel.id);
+            // `stoppedTurn: false` alongside it: the turn ended on its own before the request
+            // landed, so there is no stop for the badge to be describing. The overview draws
+            // no flash, so retiring the badge is the whole of what this surface can say - and
+            // the tile's own state, which is about to read `idle`, is the honest answer.
+            if (!r.ok || r.stoppedTurn === false) clearInterrupting(overviewSel.id);
           });
         }
         return;

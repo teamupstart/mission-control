@@ -266,6 +266,43 @@ test("interrupting is a badge, not a session state, and never outranks a real re
   assert.equal(stateDisplay({ ...working, stateConfirmed: false }).label, "running");
 });
 
+test("a stop that found nothing takes the badge back and says so", async () => {
+  // The race, at the surface that has to explain it. The request succeeded and no turn was
+  // stopped, because it ended on its own between the keypress and the request landing - the
+  // card renders `working` from an SSE frame and is always slightly behind, which is why the
+  // control was still live.
+  //
+  // Two consequences, and both are here because both are invisible defects. The badge must be
+  // taken back NOW: there is no turn ending to produce the reading that would clear it, so it
+  // would otherwise claim a stop for its whole six-second timeout. And it has to be SAID,
+  // because the daemon deliberately leaves the queue alone in this case - an operator who
+  // believes they cleared the queue and then watches it deliver has been misled by us.
+  const { interruptReport } = await import("../src/web/lib/interrupting.ts");
+
+  const nothing = interruptReport({ ok: true, stoppedTurn: false });
+  assert.equal(nothing.settled, true);
+  assert.match(nothing.flash ?? "", /already finished/);
+  assert.match(nothing.flash ?? "", /anything queued will still be delivered/);
+
+  // A genuine stop leaves the badge to the next reading, which is what retires it honestly.
+  const stopped = interruptReport({ ok: true, stoppedTurn: true, droppedQueued: 2 });
+  assert.equal(stopped.settled, false);
+  assert.equal(stopped.flash, "Stopped, and dropped 2 queued messages.");
+  assert.equal(
+    interruptReport({ ok: true, stoppedTurn: true, droppedQueued: 1 }).flash,
+    "Stopped, and dropped 1 queued message.",
+  );
+  // Nothing queued is the ordinary case and needs no words: the badge and the card say it.
+  assert.deepEqual(interruptReport({ ok: true, stoppedTurn: true, droppedQueued: 0 }), {
+    settled: false,
+    flash: null,
+  });
+
+  // A refusal takes the badge back and adds nothing - the shared `run` helper has already
+  // put the daemon's own reason on screen, and two messages about one click is one too many.
+  assert.deepEqual(interruptReport({ ok: false }), { settled: true, flash: null });
+});
+
 test("the optimistic badge is retired by a real reading and by its own timeout", async () => {
   const { clearInterrupting, isInterrupting, markInterrupting, reconcileInterrupting } =
     await import("../src/web/lib/interrupting.ts");

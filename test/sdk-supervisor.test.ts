@@ -832,12 +832,49 @@ test("an interrupt reaches the driver, and says so when there is no driver to re
   try {
     const supervisor = new SdkSupervisor(new Registry());
     const session = await supervisor.start(START);
-    assert.equal(await supervisor.interrupt(session.id), true);
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
     assert.equal(interrupts, 1);
-    // The refusal is a FALSE rather than a throw, because "there is nothing driving this
-    // session" is a fact the route reports as a 500 with a sentence, not an exception.
-    assert.equal(await supervisor.interrupt("sdk:not-a-session"), false);
+    // The refusal is a NULL rather than a throw, because "there is nothing driving this
+    // session" is a fact the route reports as a 500 with a sentence, not an exception - and
+    // it is a third answer, distinct from both "stopped a turn" and "found none".
+    assert.equal(await supervisor.interrupt("sdk:not-a-session"), null);
     assert.equal(interrupts, 1);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("an interrupt that arrives after the turn ended reports finding nothing", async () => {
+  // The race the whole gesture has to survive, and the reason this returns an outcome rather
+  // than a boolean. A card renders `working` from an SSE frame, so it is always slightly
+  // behind; a turn that finishes in the window between the operator's keypress and the
+  // request landing leaves the control live and the request legitimate, while there is no
+  // longer anything to stop. Both drivers accept a late interrupt without complaint, so the
+  // call succeeding says nothing - and the caller's next act (dropping this session's queued
+  // messages) is destructive, so it must not run on the strength of it.
+  const handle = fakeHandle();
+  let interrupts = 0;
+  handle.interrupt = async () => void (interrupts += 1);
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
+
+    // The launch turn completes on its own.
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    assert.equal(await supervisor.interrupt(session.id), "idle");
+    // The driver was still asked. It is idempotent, both adapters document tolerating a late
+    // interrupt, and asking covers the opposite race - a turn begun in a gap the daemon's own
+    // accounting has not caught up with.
+    assert.equal(interrupts, 2, "a late interrupt is still delivered, just not claimed");
+
+    // And a new turn makes it a real stop again.
+    await supervisor.send(session.id, { text: "another go" });
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
   } finally {
     fake.restore();
   }
@@ -867,7 +904,7 @@ test("an interrupt is not queued behind the send it exists to cancel", async () 
     const sending = supervisor.send(session.id, { text: "go down the wrong path" });
     await waitFor(() => order.includes("send:start"));
 
-    assert.equal(await supervisor.interrupt(session.id), true);
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
     assert.deepEqual(order, ["send:start", "interrupt"], "the interrupt overtook the send");
 
     releaseSend();
@@ -894,7 +931,7 @@ test("the driver's own turn_done reconciles an interrupted turn, with no help fr
     await waitFor(() => registry.getSession(session.id)?.state === "working");
     assert.equal(getSdkSession(session.id)?.turnInProgress, true);
 
-    assert.equal(await supervisor.interrupt(session.id), true);
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
     // Nothing yet: the interrupt has been accepted, the driver has not reported back, and
     // the row still honestly says a turn is outstanding.
     assert.equal(getSdkSession(session.id)?.turnInProgress, true);

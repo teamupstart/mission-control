@@ -12,8 +12,19 @@ export interface PendingTurnQueueDrop {
   dropQueued(sessionId: string): number;
 }
 
-/** What an interrupt did, beyond succeeding: how much queued work went with it. */
+/** What an interrupt did, beyond succeeding. */
 export interface InterruptResult extends ActionResult {
+  /**
+   * Whether there was actually a turn to stop.
+   *
+   * `ok` says the request was serviced; this says it found something. They come apart in one
+   * ordinary case: the turn ends on its own in the window between the operator's keypress and
+   * the request reaching the daemon. The card is still drawing `working` at that moment - it
+   * is a frame behind - so the control is live and the request is legitimate, and yet nothing
+   * was stopped. The browser needs to be told, because it is otherwise about to report a stop
+   * that did not happen and a queue that is still going to be delivered.
+   */
+  stoppedTurn?: boolean;
   /** Queued turns dropped, so the caller can say what else stopped. */
   droppedQueued?: number;
 }
@@ -60,10 +71,18 @@ export async function interruptSession(
   const stopped = session.runtime === "sdk"
     ? await interruptDriver(session, supervisor)
     : await interruptPane(session);
-  if (!stopped.ok) return stopped;
-  // Only once the stop landed. A refused interrupt has changed nothing about what the agent
-  // is doing, and dropping the queue behind it would discard work that is still going to be
-  // wanted - the operator asked for one act, and it either happened or it did not.
+  // Gated on a turn having GENUINELY been in flight, not merely on the request succeeding.
+  //
+  // Two failures this closes, and the second is the one that is easy to miss. A refused
+  // interrupt has changed nothing about what the agent is doing, so dropping the queue behind
+  // it would discard work still going to be wanted. And a request that arrived a moment after
+  // the turn ended on its own is ALSO not a stop: the driver accepts it happily, but nothing
+  // was cancelled, so the queued messages behind it are about to be delivered normally - by
+  // the outbox's own idle drain, within `DEFAULT_IDLE_SETTLE_MS` - rather than being work
+  // anybody asked to restart. Deleting durable rows on the strength of a stop that did not
+  // happen is data loss, and reporting "Stopped, and dropped 1 queued message" for it is a
+  // lie the operator would act on.
+  if (!stopped.ok || !stopped.stoppedTurn) return stopped;
   return { ...stopped, droppedQueued: pendingTurns?.dropQueued(session.id) ?? 0 };
 }
 
@@ -71,12 +90,18 @@ export async function interruptSession(
 async function interruptDriver(
   session: Session,
   supervisor: SdkSupervisor | undefined,
-): Promise<ActionResult> {
+): Promise<InterruptResult> {
   if (!supervisor) return { ok: false, error: "this build has no session supervisor" };
   try {
-    return (await supervisor.interrupt(session.id))
-      ? { ok: true }
-      : { ok: false, error: "this session has no live embedded driver" };
+    const outcome = await supervisor.interrupt(session.id);
+    if (outcome === null) {
+      return { ok: false, error: "this session has no live embedded driver" };
+    }
+    // `idle` is a success. The request was serviced and the driver was asked; there was
+    // simply nothing left to stop, which is not the operator's mistake and not a failure of
+    // this call. It is reported rather than swallowed so the browser can say what actually
+    // happened instead of claiming a stop.
+    return { ok: true, stoppedTurn: outcome === "interrupted" };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -91,7 +116,7 @@ async function interruptDriver(
  * runtime interruptible, so `interruptUnsupportedWhy` refuses at the route first. It is here
  * for the caller that forgets to ask.
  */
-async function interruptPane(session: Session): Promise<ActionResult> {
+async function interruptPane(session: Session): Promise<InterruptResult> {
   return {
     ok: false,
     error: `Mission Control cannot yet write an interrupt into a ${session.runtime} session's pane.`,

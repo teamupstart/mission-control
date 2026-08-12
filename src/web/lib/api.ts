@@ -884,8 +884,14 @@ export const api = {
   /**
    * Stop what the session is doing right now and drop what was queued behind it, leaving
    * the conversation open. Nothing to send: the gesture has one meaning.
+   *
+   * `stoppedTurn: false` is a SUCCESS that found nothing - the turn ended on its own in the
+   * window between the keypress and the request landing. The queue is deliberately left
+   * alone in that case, so a caller must report it rather than treating a 200 as a stop.
    */
-  interrupt: (id: string): Promise<ActionResult & { droppedQueued?: number }> =>
+  interrupt: (
+    id: string,
+  ): Promise<ActionResult & { stoppedTurn?: boolean; droppedQueued?: number }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/interrupt`),
   cycleMode: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/mode/cycle`),
   /**

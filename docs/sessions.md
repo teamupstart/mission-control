@@ -390,6 +390,14 @@ Messages that have already left for the agent are kept, as are any whose deliver
 uncertain - the second kind is a question waiting for you, and interrupting is not an answer
 to it.
 
+The queue is dropped **only when a turn was genuinely stopped.** A card reports what it was
+told a moment ago, so a turn can finish on its own between your keypress and the request
+arriving - which is likeliest exactly when you press this, as a turn looks like it is
+wrapping up. Nothing is stopped in that case and nothing is dropped, and the card says so:
+"That turn had already finished, so nothing was stopped - anything queued will still be
+delivered." Silently deleting queued messages there would destroy work that was about to be
+delivered normally, not work anybody asked to restart.
+
 **The key you press and the key the agent receives are not the same.** In both the Claude
 Code and Codex TUIs, <kbd>Esc</kbd> interrupts a running turn while <kbd>⌃</kbd><kbd>C</kbd>
 clears the input line and, pressed twice, quits the CLI - so forwarding your literal

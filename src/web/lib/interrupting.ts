@@ -94,6 +94,60 @@ export function dropInterrupting(id: string): void {
   clearInterrupting(id);
 }
 
+/** What the daemon reports back from an interrupt, as far as the presentation cares. */
+export interface InterruptOutcome {
+  ok: boolean;
+  /** False when the turn had already ended, so nothing was stopped and nothing was dropped. */
+  stoppedTurn?: boolean;
+  droppedQueued?: number;
+}
+
+export interface InterruptReport {
+  /**
+   * Whether the optimistic badge must be retired NOW rather than left for the next reading.
+   *
+   * True whenever no stop actually happened, which is the one case the badge cannot survive:
+   * there is no turn ending to produce the reading that would clear it, so it would sit there
+   * claiming a stop for its whole timeout.
+   */
+  settled: boolean;
+  /** What to tell the operator, or null when the result needs no words. */
+  flash: string | null;
+}
+
+/**
+ * What to say and what to take back, given what the daemon actually did.
+ *
+ * A pure function rather than branching inside the click handler, for the reason
+ * `sdkDeliveryConfirmation` is one: the interesting case here is a race that cannot be
+ * staged in a browser, so the decision has to be reachable by a test that does not need one.
+ *
+ * The case worth reading twice is `stoppedTurn: false`. The request succeeded, and nothing
+ * was stopped: the turn ended on its own between the keypress and the request landing, which
+ * is ordinary because the card renders `working` from an SSE frame and is always slightly
+ * behind. The daemon deliberately leaves the queue alone there, so this has to SAY so - an
+ * operator who believes they cleared the queue and then watches it deliver has been misled,
+ * and that is worse than the silence it replaces.
+ */
+export function interruptReport(result: InterruptOutcome): InterruptReport {
+  // A refusal already puts its own reason on screen through the shared `run` helper, so
+  // there is nothing to add - only the badge to take back.
+  if (!result.ok) return { settled: true, flash: null };
+  if (result.stoppedTurn === false) {
+    return {
+      settled: true,
+      flash:
+        "That turn had already finished, so nothing was stopped - anything queued will still be delivered.",
+    };
+  }
+  const dropped = result.droppedQueued ?? 0;
+  if (dropped === 0) return { settled: false, flash: null };
+  return {
+    settled: false,
+    flash: `Stopped, and dropped ${dropped} queued message${dropped === 1 ? "" : "s"}.`,
+  };
+}
+
 /** Live view for one session's badge. */
 export function useInterrupting(id: string): boolean {
   return useSyncExternalStore(

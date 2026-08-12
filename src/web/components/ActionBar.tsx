@@ -8,7 +8,7 @@ import { api, type ActionResult } from "../lib/api.ts";
 import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
-import { clearInterrupting, markInterrupting } from "../lib/interrupting.ts";
+import { clearInterrupting, interruptReport, markInterrupting } from "../lib/interrupting.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import {
   latestEditablePendingTurn,
@@ -106,8 +106,9 @@ export function ActionBar({
    * Which control set to draw. "card" (default, unchanged) is the grid's full row -
    * Send / Focus / Queue / Reset / Interrupt / Kill. "foot" is the console's detail
    * footer, which matches the mockup: Focus / Diff / Reset / Interrupt / Kill, since Send
-   * is the conversation's own reply box and Queue is a tab. The imperative HANDLE is identical either way, so every
-   * keyboard shortcut still works in both - only the buttons drawn differ. */
+   * is the conversation's own reply box and Queue is a tab. The imperative HANDLE is
+   * identical either way, so every keyboard shortcut still works in both - only the buttons
+   * drawn differ. */
   variant?: "card" | "foot";
   /** Reveal the session detail's Diff tab. Only drawn by the "foot" variant. */
   onDiff?: () => void;
@@ -365,18 +366,15 @@ export function ActionBar({
     if (!interruptable || busy === "interrupt") return;
     markInterrupting(session.id);
     const result = await run("interrupt", () => api.interrupt(session.id));
-    if (!result.ok) {
-      clearInterrupting(session.id);
-      return;
-    }
-    const dropped = result.droppedQueued ?? 0;
-    if (dropped > 0) {
-      showFlash(
-        { text: `Stopped, and dropped ${dropped} queued message${dropped === 1 ? "" : "s"}.`, ok: true },
-        4000,
-      );
-    }
-    startSend();
+    const report = interruptReport(result);
+    // `settled` covers both the refusal and the stop that found nothing. Neither will produce
+    // a reading that retires the badge, so it has to be taken back here or it sits there
+    // describing something that did not happen for its whole timeout.
+    if (report.settled) clearInterrupting(session.id);
+    if (report.flash) showFlash({ text: report.flash, ok: true }, 6000);
+    // The composer regardless, including on a stop that found nothing: the operator pressed
+    // this key in order to type, and a failed stop does not make that less true.
+    if (result.ok) startSend();
   }
 
   // Escape's job here is now only the compose box. The dialogs are overlays and peel

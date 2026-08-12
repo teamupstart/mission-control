@@ -27,6 +27,16 @@ import {
   type SdkSessionStatus,
 } from "./store.ts";
 
+/**
+ * What an interrupt FOUND, as distinct from whether the driver took the call.
+ *
+ * `idle` is the case that needs a name. A driver accepts an interrupt that arrives after its
+ * turn already ended, so a successful call is not evidence that anything was stopped - and
+ * the follow-through the operator asked for (dropping the messages queued behind that turn)
+ * is destructive, so it has to know the difference. See `SdkSupervisor.interrupt`.
+ */
+export type SdkInterruptOutcome = "interrupted" | "idle";
+
 const RESTART_CONTINUATION_PROMPT =
   "Mission Control restarted while your previous turn was still in progress. " +
   "Continue that work from the current checkout and conversation. Inspect the current " +
@@ -463,13 +473,33 @@ export class SdkSupervisor {
    * counter negative-clamped at zero with a turn still outstanding, and restart recovery
    * reads exactly those two values.
    *
-   * False means there is no live driver to interrupt, which is the caller's to report.
+   * WHAT IT REPORTS is not whether the call succeeded. Both drivers accept an interrupt that
+   * arrives after the turn already ended - Codex returns early with a comment saying a late
+   * one must not error - so "the driver took it" says nothing about whether anything was
+   * stopped. The distinction is not academic: everything the caller does NEXT is destructive
+   * (it drops the session's queued messages) and must not happen on a stop that found
+   * nothing. `unfinishedTurns` is the daemon's own answer to "is a turn outstanding", the
+   * same value restart recovery is cut from, so it is the one to ask.
+   *
+   * Read BEFORE the driver call, deliberately. A turn can still finish inside the await, so
+   * this is not a race that can be closed - only narrowed, from the seconds between a card
+   * rendering `working` and an operator's keypress reaching the daemon, down to the length of
+   * one RPC. Reading after would be strictly worse: it would report `idle` for every
+   * interrupt that WORKED, since a successful one ends the turn.
+   *
+   * The driver is asked either way. It is idempotent, both adapters document tolerating it,
+   * and doing so covers the opposite race - a turn that started in a gap our accounting has
+   * not seen yet.
+   *
+   * Null means there is no live driver at all, which is a different fact and the caller's to
+   * report as one.
    */
-  async interrupt(id: string): Promise<boolean> {
+  async interrupt(id: string): Promise<SdkInterruptOutcome | null> {
     const handle = this.handles.get(id);
-    if (!handle) return false;
+    if (!handle) return null;
+    const running = (this.unfinishedTurns.get(id) ?? 0) > 0;
     await handle.interrupt();
-    return true;
+    return running ? "interrupted" : "idle";
   }
 
   /**

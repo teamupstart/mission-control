@@ -49,7 +49,7 @@ let fixtureSerial = 0;
  * `interrupted` is an array rather than a flag on purpose: several cases below turn on the
  * driver having been reached exactly once, or not at all.
  */
-function fixture(options: { interrupt?: () => Promise<boolean> } = {}) {
+function fixture(options: { interrupt?: () => Promise<"interrupted" | "idle" | null> } = {}) {
   fixtureSerial += 1;
   const registry = new Registry();
   const session = registry.registerSdkSession({
@@ -65,7 +65,7 @@ function fixture(options: { interrupt?: () => Promise<boolean> } = {}) {
   const supervisor = {
     interrupt: async (id: string) => {
       interrupted.push(id);
-      return options.interrupt ? await options.interrupt() : true;
+      return options.interrupt ? await options.interrupt() : "interrupted";
     },
     sendWhenIdle: async () => "started" as const,
   } as unknown as SdkSupervisor;
@@ -121,7 +121,7 @@ test("interrupting stops the turn and takes the queue behind it with it", async 
 
   const response = await interrupt(f.app, f.session.id);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true, droppedQueued: 2 });
+  assert.deepEqual(await response.json(), { ok: true, stoppedTurn: true, droppedQueued: 2 });
   assert.deepEqual(f.interrupted, [f.session.id]);
   // The count is not the assertion - what survived is. Leaving the queue armed would have
   // restarted the work the operator just stopped; deleting the row that already left would
@@ -134,7 +134,7 @@ test("interrupting stops the turn and takes the queue behind it with it", async 
 });
 
 test("a driver that has gone is a 500 naming what is missing, not a silent success", async () => {
-  const f = fixture({ interrupt: async () => false });
+  const f = fixture({ interrupt: async () => null });
   createPendingTurn({ id: "survives", noteKey: f.key, text: "still wanted", now: 1 });
   f.registry.refreshPendingTurns(f.key);
 
@@ -258,4 +258,33 @@ test("a build with no supervisor answers rather than pretending the stop landed"
     ok: false,
     error: "this build has no session supervisor",
   });
+});
+
+test("a turn that ended on its own is not a stop, and takes nothing with it", async () => {
+  // The race, at the surface that acts on it. A card renders `working` from an SSE frame, so
+  // it is always a little behind: a turn that finishes between the operator's keypress and
+  // the request landing leaves the control live and the request legitimate, while there is
+  // nothing left to stop. Both drivers accept a late interrupt happily, so a 200 proves
+  // nothing on its own.
+  //
+  // What must NOT happen then is the destructive half. Those queued rows were not work
+  // anybody asked to restart - they are about to be delivered normally by the outbox's idle
+  // drain - so deleting them is data loss, and answering "Stopped, and dropped 1 queued
+  // message" is a claim the operator would act on.
+  const f = fixture({ interrupt: async () => "idle" });
+  createPendingTurn({ id: "still-wanted", noteKey: f.key, text: "deliver me normally", now: 1 });
+  f.registry.refreshPendingTurns(f.key);
+
+  const response = await interrupt(f.app, f.session.id);
+  // A success, because the request was serviced and the driver was asked. Not the operator's
+  // mistake, and not a failure worth an error flash.
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, stoppedTurn: false });
+  assert.deepEqual(f.interrupted, [f.session.id], "the driver is still asked, just not claimed");
+  assert.deepEqual(
+    listPendingTurns(f.key).map((turn) => [turn.text, turn.state]),
+    [["deliver me normally", "queued"]],
+    "a stop that found nothing must not delete the queue behind it",
+  );
+  f.pending.stop();
 });

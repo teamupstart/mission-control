@@ -686,7 +686,7 @@ export function WorkflowLadderPanel({
   const disclosureRegionId = useId();
   const [refreshRevision, setRefreshRevision] = useState(0);
   // `resetOn` carries what the `[run.id]` effect below used to do by hand for this flag.
-  const feedback = useCopyFeedback({ resetOn: run.id });
+  const feedbackCopy = useCopyFeedback({ resetOn: run.id });
   const [localError, setLocalError] = useState<string | null>(null);
   /**
    * The retro request, keyed by the SESSION it is about rather than by the run.
@@ -801,10 +801,10 @@ export function WorkflowLadderPanel({
   const sessionBound = detail.binding.sessionId !== null;
   const copyFeedback = (): void => {
     setLocalError(null);
-    // Into `localError` rather than rendered from `feedback.error`, so this panel keeps ONE
+    // Into `localError` rather than rendered from `feedbackCopy.error`, so this panel keeps ONE
     // error line with last-write-wins. Two sources for one `<p>` is how a stale copy refusal
     // ends up masking the sentence from whatever the operator did next.
-    void feedback.copy(() => workflowFeedbackText(detail))
+    void feedbackCopy.copy(() => workflowFeedbackText(detail))
       .then(({ error }) => {
         // Named, because this panel's error line sits well below the button and the reason
         // `copyText` throws describes the mechanism rather than what was being copied.
@@ -917,7 +917,7 @@ export function WorkflowLadderPanel({
         if (prUrl) window.open(prUrl, "_blank", "noopener,noreferrer");
       }}
       onResolveDelivery={resolveDelivery}
-      feedbackCopied={feedback.copied}
+      feedbackCopied={feedbackCopy.copied}
       actionError={localError ?? call.error ?? controller.error}
       sessionBound={sessionBound}
       isPending={controller.isPending}

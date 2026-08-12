@@ -78,7 +78,7 @@ const RETRY_MS = 50;
  *
  * Generous - a page here is one file and one stylesheet, and a slow one loads in well under
  * a second - because the number's job is to bound a call that is never coming back, not to
- * police a slow one.
+ * police a slow one. It is a ceiling on ONE call; what bounds the run is the budget below.
  */
 const CALL_TIMEOUT_MS = 10_000;
 
@@ -94,13 +94,10 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * which says nothing about which page or which call. Bounded, it is one more attempt on a
  * fresh document, and a fresh document is exactly what clears it.
  */
-function bounded(promise, what) {
+function bounded(promise, what, ms) {
   let timer = null;
   const deadline = new Promise((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${what} did not answer within ${CALL_TIMEOUT_MS}ms`)),
-      CALL_TIMEOUT_MS,
-    );
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms}ms`)), ms);
   });
   // A call that answers after its deadline has nobody waiting for it; catch it here so a
   // late rejection cannot take the process down as an unhandled one.
@@ -153,6 +150,26 @@ function viewportFromArgv(argv) {
   return { width: Number(match[1]), height: Number(match[2]) };
 }
 
+/**
+ * `--budget-ms 210000`: how long the whole run gets to produce measurements.
+ *
+ * The test owns this for the same reason it owns the viewport, and for one more: the test is
+ * what puts a timeout on this process, and being killed by that timeout is the one outcome
+ * this fixture cannot explain. A budget derived from it there means the two cannot drift.
+ *
+ * A budget rather than an arithmetic argument about the per-call ceiling, because retries are
+ * per PAGE: `ATTEMPTS` attempts of two `CALL_TIMEOUT_MS` calls is ~60s of worst case per
+ * page, so any statement of the form "the ceiling leaves enough headroom" is really a
+ * statement about how many cases a file happens to have today. This holds at 5 cases and at
+ * 50 - the run stops on time and says which page it was on.
+ */
+function budgetFromArgv(argv) {
+  const flag = argv.indexOf("--budget-ms");
+  const match = flag === -1 ? null : /^\d+$/.exec(argv[flag + 1] ?? "");
+  if (!match) throw new Error("expected --budget-ms <milliseconds>");
+  return Number(match[0]);
+}
+
 /** `--pages a.html b.html …`, which is always last because it takes the rest of the line. */
 function pagesFromArgv(argv) {
   const flag = argv.indexOf("--pages");
@@ -161,13 +178,19 @@ function pagesFromArgv(argv) {
 }
 
 /** Loads each page in turn and returns `{ [case name]: { …measurement, viewport } }`. */
-async function measurePages({ paths, viewport, measure }) {
+async function measurePages({ paths, viewport, measure, budgetMs }) {
   const browser = new BrowserWindow({
     show: false,
     useContentSize: true,
     width: viewport.width,
     height: viewport.height,
   });
+  const started = Date.now();
+  const left = () => budgetMs - (Date.now() - started);
+  // What one call gets: its own ceiling, or the rest of the run's budget if that is shorter.
+  // Never below 1ms, because a call whose budget is already gone still has to fail with a
+  // number somebody can read - and it fails into the budget check above, which explains it.
+  const callTimeout = () => Math.max(1, Math.min(CALL_TIMEOUT_MS, left()));
   try {
     const measured = {};
     for (const htmlPath of paths) {
@@ -175,14 +198,27 @@ async function measurePages({ paths, viewport, measure }) {
       let result = null;
       for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
         if (attempt > 1) await delay(RETRY_MS);
+        // After the wait rather than before it, so the budget is checked against the moment
+        // the calls below actually start and no call is ever given a deadline in the past.
+        if (left() <= 0) {
+          // The run's own answer, given while there is still time to print it. Whatever is
+          // wrong, the page it was on and the pages it never reached are the two facts worth
+          // having, and neither survives being killed by the caller's timeout.
+          throw new Error(
+            `${name}: out of time - the ${budgetMs}ms budget ran out with `
+              + `${paths.length - Object.keys(measured).length} of ${paths.length} pages `
+              + `unmeasured`,
+          );
+        }
         // Before the document, so its first layout is at the right size rather than being
         // resized into it afterwards.
         demandContentSize(browser, viewport);
         try {
-          await bounded(browser.loadFile(htmlPath), `${name}: load`);
+          await bounded(browser.loadFile(htmlPath), `${name}: load`, callTimeout());
           result = await bounded(
             browser.webContents.executeJavaScript(measureSource(measure)),
             `${name}: measurement`,
+            callTimeout(),
           );
         } catch (error) {
           // Thrown with the page and the call in it, on the last attempt, because the
@@ -212,4 +248,4 @@ async function measurePages({ paths, viewport, measure }) {
   }
 }
 
-module.exports = { measurePages, pagesFromArgv, viewportFromArgv };
+module.exports = { budgetFromArgv, measurePages, pagesFromArgv, viewportFromArgv };

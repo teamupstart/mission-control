@@ -48,6 +48,20 @@ const require = createRequire(import.meta.url);
 const ELECTRON_TIMEOUT_MS = 240_000;
 
 /**
+ * What the fixture gets of that, leaving the rest for launch and exit.
+ *
+ * Being killed by the timeout above is the one failure the fixture cannot explain - the test
+ * gets "Command failed", naming no page and no call. So the fixture is handed a budget that
+ * expires first, and spends what it has left saying which page it was on.
+ *
+ * A budget rather than a smaller per-call ceiling, because the fixture retries per PAGE: any
+ * claim that a ceiling "leaves enough headroom" is really a claim about how many cases this
+ * file has today, and it stops being true the moment somebody adds a sixth. This does not
+ * care.
+ */
+const FIXTURE_BUDGET_MS = ELECTRON_TIMEOUT_MS - 30_000;
+
+/**
  * The strip's design budget, as used height including the space it reserves beneath it.
  *
  * A band rather than a number: the phase calls for "~90px", and pinning an exact pixel
@@ -184,6 +198,8 @@ before(() => {
       fileURLToPath(new URL("fixtures/line-strip-browser.cjs", import.meta.url)),
       "--viewport",
       `${VIEWPORT.width}x${VIEWPORT.height}`,
+      "--budget-ms",
+      String(FIXTURE_BUDGET_MS),
       // Last, because it takes the rest of the line.
       "--pages",
       ...paths,

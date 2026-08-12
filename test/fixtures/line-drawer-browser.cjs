@@ -1,5 +1,10 @@
 const { app } = require("electron");
-const { measurePages, pagesFromArgv, viewportFromArgv } = require("./measuring-window.cjs");
+const {
+  budgetFromArgv,
+  measurePages,
+  pagesFromArgv,
+  viewportFromArgv,
+} = require("./measuring-window.cjs");
 
 /**
  * Measures an open Line drawer's laid-out geometry in a real browser.
@@ -75,6 +80,7 @@ app.whenReady().then(async () => {
     const measured = await measurePages({
       paths: pagesFromArgv(process.argv),
       viewport: viewportFromArgv(process.argv),
+      budgetMs: budgetFromArgv(process.argv),
       measure: MEASURE,
     });
     process.stdout.write(`${JSON.stringify(measured)}\n`);

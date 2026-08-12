@@ -51,6 +51,13 @@ const require = createRequire(import.meta.url);
 const ELECTRON_TIMEOUT_MS = 240_000;
 
 /**
+ * What the fixture gets of that, leaving the rest for launch and exit - the strip file's
+ * note explains why it is a budget and not a smaller per-call ceiling. It matters more here:
+ * this file measures eight cases, and the fixture's worst case is per page.
+ */
+const FIXTURE_BUDGET_MS = ELECTRON_TIMEOUT_MS - 30_000;
+
+/**
  * The cap, as used height, in a 900px window.
  *
  * `min(38vh, 3 rows)` at 900px is 38vh = 342px against three 58px rows = 174px, so the ROW
@@ -269,6 +276,8 @@ before(() => {
       fileURLToPath(new URL("fixtures/line-drawer-browser.cjs", import.meta.url)),
       "--viewport",
       `${VIEWPORT.width}x${VIEWPORT.height}`,
+      "--budget-ms",
+      String(FIXTURE_BUDGET_MS),
       // Last, because it takes the rest of the line.
       "--pages",
       ...paths,

@@ -105,6 +105,11 @@ counted separately, so a pull request whose threads are still open moves from *f
 *threads* rather than to merged. It is offered only on open pull requests that are actually
 carrying findings.
 
+A pull request that has **closed** is refused outright, by the daemon and not merely by the
+panel hiding the button. A retired row is out of the sweep for good, so resolving it could
+unblock nothing - all it could do is overwrite the record of what the Inspector said about
+work that has already landed, which this ledger deliberately keeps.
+
 ### INSPECTOR.md
 
 Put one in the repository being reviewed, at `personas/INSPECTOR.md` or at the root. It tells

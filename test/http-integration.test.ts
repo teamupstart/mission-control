@@ -13,8 +13,14 @@ import { fileURLToPath, URL } from "node:url";
 // every write below would 401.
 process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-http-"));
 
-const { openDb, adoptInspectorPr, loadInspectorComments, updateInspectorPr, upsertInspectorComment } =
-  await import("../src/server/db.ts");
+const {
+  openDb,
+  adoptInspectorPr,
+  loadInspectorComments,
+  resolveInspectorFindings,
+  updateInspectorPr,
+  upsertInspectorComment,
+} = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -1882,6 +1888,56 @@ test("/api/inspector/resolve-findings closes every open finding and clears the s
     await app.request("/api/inspector/prs", { headers: LOOPBACK })
   ).json()) as Array<{ key: string; mergeBlock: string | null }>;
   assert.equal(rows.find((r) => r.key === key)?.mergeBlock, null);
+});
+
+test("/api/inspector/resolve-findings refuses a CLOSED pull request, and touches nothing", async () => {
+  openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments");
+  const now = 1_800_000_000_000;
+  adoptAt(22, now);
+  const key = "owner/repo#22";
+  // Retired: out of the sweep for good. Its findings are the record of what the Inspector
+  // said about work that has already landed, and resolving them can unblock nothing.
+  updateInspectorPr(key, { state: "closed", mergedAt: now, round: 5 }, now);
+  seedFinding(key, "aaa", "open");
+
+  const res = await app.request("/api/inspector/resolve-findings", {
+    method: "POST",
+    headers: { ...LOOPBACK, "content-type": "application/json" },
+    body: JSON.stringify({ prKey: key }),
+  });
+  // 409 rather than 404: the row exists and the caller named it correctly - they are asking
+  // to rewrite history, which is a different refusal from "no such pull request".
+  assert.equal(res.status, 409);
+
+  assert.deepEqual(
+    loadInspectorComments(key).map((c) => c.status),
+    ["open"],
+    "the historical record is left exactly as the Inspector wrote it",
+  );
+});
+
+// The route's check is the message; THIS is the enforcement. A UI guard does not bind a
+// direct caller, and does not survive a pull request closing between the panel's poll and
+// the operator's click - so the writer refuses too, whoever reaches it.
+test("resolveInspectorFindings itself refuses a closed pull request, not just the route", () => {
+  openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments");
+  const now = 1_800_000_000_000;
+  adoptAt(23, now);
+  const key = "owner/repo#23";
+  seedFinding(key, "aaa", "open");
+  seedFinding(key, "bbb", "drafted");
+
+  // Open: it resolves, so the assertion below is about the state and not about a typo.
+  assert.equal(resolveInspectorFindings(key, now), 2);
+
+  openDb().exec("DELETE FROM inspector_comments");
+  seedFinding(key, "ccc", "open");
+  updateInspectorPr(key, { state: "closed" }, now);
+  assert.equal(resolveInspectorFindings(key, now), 0, "a retired pull request is refused");
+  assert.deepEqual(loadInspectorComments(key).map((c) => c.status), ["open"]);
+
+  // And a key the ledger never adopted resolves nothing rather than throwing.
+  assert.equal(resolveInspectorFindings("owner/repo#999", now), 0);
 });
 
 test("/api/inspector/resolve-findings refuses a pull request the ledger never adopted", async () => {

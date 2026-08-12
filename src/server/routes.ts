@@ -3331,12 +3331,27 @@ export function buildApp(
    * Refuses a PR the ledger has never heard of rather than reporting a no-op success: the
    * caller supplied the key, so a miss is a mistyped or stale key, and "resolved 0
    * findings" reads as "there were none" for a pull request nobody is tracking at all.
+   *
+   * A CLOSED pull request is refused too, and separately, with a 409 rather than a 404: the
+   * row exists and the caller is not confused about which pull request they mean, they are
+   * asking to rewrite the record of one that has already landed. `resolveInspectorFindings`
+   * enforces this as well - that is the real guard, since it also binds callers that never
+   * come through here - but it can only answer 0, which is indistinguishable from "there
+   * was nothing open". The status code is what makes the panel's error line say something
+   * true when a pull request closes between its poll and the operator's click.
    */
   app.post("/api/inspector/resolve-findings", async (c) => {
     const parsed = await parseBody(c, ResolveFindingsSchema);
     if (!parsed.ok) return parsed.res;
-    if (!getInspectorPr(parsed.data.prKey)) {
+    const pr = getInspectorPr(parsed.data.prKey);
+    if (!pr) {
       return c.json({ error: "no adopted pull request with that key" }, 404);
+    }
+    if (pr.state !== "open") {
+      return c.json(
+        { error: "that pull request has closed - its findings are the record of what was said about it" },
+        409,
+      );
     }
     const resolved = resolveInspectorFindings(parsed.data.prKey, Date.now());
     // The recorded block reason is derived from the ledger we just changed, so it is stale

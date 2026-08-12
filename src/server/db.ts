@@ -6421,6 +6421,17 @@ export function upsertInspectorComment(c: InspectorComment): void {
  * the two other ways a row is counted open by `openFindings`, and both strand a pull
  * request in exactly the same way.
  *
+ * A pull request that has CLOSED is refused, and the refusal lives here rather than only at
+ * the route or in the panel that hides the control. A retired row is out of the sweep for
+ * good, so resolving it can unblock nothing - all it can do is overwrite the record of what
+ * the Inspector said about work that has already landed, which this ledger deliberately
+ * keeps (see `inspectionSummary`, and `docs/inspector-and-shipping.md`). The guard belongs
+ * to the WRITER because a UI check is not enforcement: it does not bind a direct caller of
+ * the route, and it does not survive the window between the panel's 4s poll and the click,
+ * in which the pull request can close under the operator. Returns 0, which is the truthful
+ * count - the caller decides whether that is an error worth a status code.
+ *
+
  * Written row-by-row through `upsertInspectorComment` rather than as one `UPDATE ... SET
  * status`, and that is the point rather than an oversight. There are two POLICIES that
  * resolve a finding - the worker's `closeRow`, driven by the model, and this one, driven by
@@ -6432,6 +6443,8 @@ export function upsertInspectorComment(c: InspectorComment): void {
  * than in the sweep, against a set the round cap bounds at 20.
  */
 export function resolveInspectorFindings(prKey: string, now: number): number {
+  const pr = getInspectorPr(prKey);
+  if (!pr || pr.state !== "open") return 0;
   const open = loadInspectorComments(prKey).filter((c) => c.status !== "resolved");
   for (const row of open) {
     upsertInspectorComment({ ...row, status: "resolved", updatedAt: now });

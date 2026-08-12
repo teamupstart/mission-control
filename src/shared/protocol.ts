@@ -1726,10 +1726,16 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
  * below reads its `.default()`s from.
  *
  * Plain rather than derived from the schema (`UiConfigSchema.parse({})`) because the web
- * needs these synchronously, before any fetch, to paint on a cold cache - and the web
- * bundle must not pull zod in to get them. That is not hypothetical: zod is absent from
- * `dist/web` today, and the only reason importing from this module is free is that
- * everything the web takes from it tree-shakes to a constant. Keep it that way.
+ * needs these synchronously, before any fetch, to paint on a cold cache - and reading them
+ * must not be what pulls zod into the web bundle. Everything the web takes from THIS module
+ * tree-shakes to a constant. Keep it that way.
+ *
+ * This comment used to claim zod was absent from `dist/web`, and that has not been true for
+ * a while: `@shared/task-source.ts` exports `TASK_SOURCE_KIND_INFO` with a `configSchema`
+ * per kind, and `DispatchModal` imports it as a value, so the whole library lands in the
+ * bundle (`grep -c ZodError dist/web/assets/index-*.js` says 2, at this commit and at the
+ * one before it). Corrected rather than deleted, because the rule it was defending is still
+ * the right rule and the breach is a defect to fix, not a licence to add a second one.
  */
 export const UI_CONFIG_DEFAULTS = {
   layout: "grid",

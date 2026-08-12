@@ -54,6 +54,29 @@ import {
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { LabelChips } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import {
+  GuidedPicker,
+  GuidedRail,
+  GuidedToggle,
+  type GuidedAnswer,
+  type GuidedOption,
+} from "./GuidedDispatch.tsx";
+import { useGuidedDispatch } from "../lib/guided-dispatch.ts";
+import {
+  GUIDED_HARNESS_KEYS,
+  GUIDED_KIND_KEYS,
+  NO_GUIDED_PASS,
+  activeGuidedStep,
+  answerGuidedStep,
+  backGuidedStep,
+  endGuidedPass,
+  guidedMnemonic,
+  isGuidedPassRunning,
+  jumpToGuidedStep,
+  startGuidedPass,
+  type GuidedPass,
+  type GuidedStepId,
+} from "../lib/guided-dispatch-steps.ts";
 import type { PersonaView, WorkflowConfig, WorkflowSummary } from "@shared/workflow.ts";
 import { workflowRequest } from "../workflows/workflowApi.ts";
 import {
@@ -248,6 +271,38 @@ function defaultEffortOptionLabel(
   if (!defaults) return "Default";
   const level = defaults[agent];
   return level ? `Default - ${level}` : "Default - whatever the harness is set to";
+}
+
+/**
+ * What the three crew questions describe, hoisted to constants because two surfaces now ask
+ * each one: the field's own `<select>`, and the guided pass's floating list over it. Hovering
+ * an option in the list has to say what hovering the control says, or the pass would be a
+ * place where the app describes the same choice in different words.
+ */
+const AGENT_FIELD_TIP =
+  "Which harness this task is dispatched to - switching resets the model and effort overrides";
+const KIND_FIELD_TIP =
+  "Whether this task asks for a delivered change or an investigation - scout also clears the after-work Workflow";
+const AFTER_WORK_FIELD_TIP =
+  "Run a published Workflow when Foreman confirms this agent's work is complete";
+
+/**
+ * What a harness would launch with, as one line - the model and effort the pass deliberately
+ * does not ask about, said out loud so choosing a harness is not choosing them blind.
+ *
+ * Null until the defaults land, and null for a harness the machine has nothing configured
+ * for; both render as an option with no second line rather than as a promise the form cannot
+ * keep.
+ */
+function harnessDefaultsLine(agent: AgentType, defaults: HarnessesConfig | null): string | null {
+  if (!defaults) return null;
+  const modelId = defaults.defaultModel[agent];
+  const model = modelId
+    ? modelChoicesFor(agent, modelId).find((m) => m.id === modelId)?.label ?? modelId
+    : null;
+  const effort = defaults.defaultEffort[agent] || null;
+  const parts = [model, effort].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 /**
@@ -730,6 +785,10 @@ function DispatchModal({
   // `Overlay`). Point it at the current submit closure so a field edit does not leave the
   // shortcut submitting the previous render's draft.
   const submitRef = useRef<(dispatchNow: boolean) => Promise<void>>(async () => {});
+  // The guided pass's keys, reached the same way and for the same reason: `Overlay`'s
+  // listener is subscribed once, so pointing it at a ref rather than at a closure is what
+  // keeps typing in the task box from re-subscribing a window listener on every keystroke.
+  const guidedKeyRef = useRef<(event: KeyboardEvent) => boolean>(() => false);
   const drop = useImageDrop({ attachments: draft.attachments, onChange: onAttachmentsChange });
   // Parsed once per render: the preview below and the submit body must never disagree
   // about what the typed text means.
@@ -746,6 +805,32 @@ function DispatchModal({
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
     () => editing !== null || draftHasBacklogDetails,
   );
+  const [guided, setGuided] = useGuidedDispatch();
+  /**
+   * Where the guided pass stands, and which option in the current question is lit.
+   *
+   * HERE rather than on `DispatchLayer`, unlike `launchMode` and the draft: the layer
+   * renders nothing while the dialog is closed, so this component's state resets on every
+   * open - which is exactly the wanted behaviour. A pass is per-opening. The draft is not,
+   * so a reopened pass seeds each question from what the draft already carries rather than
+   * from a hardcoded first entry (see `guidedSeed`).
+   *
+   * The mount rule is the whole gate: a new dispatch, in Single mode, with the preference on.
+   * An edit never runs it - those answers exist already, and re-asking them would be a quiz -
+   * and Ensemble replaces Crew and After work outright, so there would be nothing to point at.
+   */
+  const [pass, setPass] = useState<GuidedPass>(() =>
+    mode.kind === "new" && launchMode === "single" && guided ? startGuidedPass() : NO_GUIDED_PASS,
+  );
+  /**
+   * `null` means "wherever the draft already points", resolved at render.
+   *
+   * Deliberately not resolved when a step is entered: answering writes the draft through
+   * React state, so a seed computed inside the same handler would read the value the answer
+   * just replaced - and the After work step, which the Kind answer moves, would open on the
+   * wrong row every single time.
+   */
+  const [highlight, setHighlight] = useState<number | null>(null);
   const previousEnsembleMode = useRef(ensembleMode);
   useEffect(() => {
     const returnedToSingle = previousEnsembleMode.current && !ensembleMode;
@@ -923,9 +1008,279 @@ function DispatchModal({
     return stashed === NO_STASH ? {} : { workflowId: stashed };
   }
 
+  // ---- the guided pass ----------------------------------------------------------------
+  //
+  // A phase of THIS dialog, not a second one: `OVERLAY_IDS.dispatch` keeps its single entry
+  // either way, so App's stand-down guard and everything built on it are untouched. What
+  // follows is the options each question offers, the moves between them, and the keys - the
+  // drawing is in `GuidedDispatch.tsx`.
+
+  const guidedStep = activeGuidedStep(pass);
+  const guidedRunning = isGuidedPassRunning(pass);
+
+  /**
+   * The After work value as its `<select>` spells it, so the pass's list and the control it
+   * floats over are reading one thing. `undefined` is "follow the dispatch default", which is
+   * a different answer from an explicit None - see `NO_STASH`.
+   */
+  const afterWorkValue =
+    draft.workflowId === undefined ? "__default" : draft.workflowId ?? "__none";
+
+  /**
+   * The After work options, in the `<select>`'s order and with its copy.
+   *
+   * Built once and read twice - by the picker, and by the rail, which needs the chosen row's
+   * short form. `d` and `n` are spent on the two sentinels before the workflows are walked,
+   * so a workflow whose name starts with either letter earns its next free one instead of
+   * shadowing the option above it.
+   */
+  const afterWorkOptions: GuidedOption[] = (() => {
+    const taken = new Set<string>();
+    const out: GuidedOption[] = [];
+    const push = (option: GuidedOption): void => {
+      if (option.hotkey) taken.add(option.hotkey);
+      out.push(option);
+    };
+    const chosen = (workflowId: DispatchDraft["workflowId"]): void => {
+      // Chosen by hand, exactly as the `<select>`'s own handler reads it: a later kind
+      // switch must not hand back what scout put aside and revert this underneath them.
+      stashedWorkflowId.current = NO_STASH;
+      update({ workflowId });
+    };
+    const defaultName = defaultWorkflow
+      ? `${defaultWorkflow.name} · v${defaultWorkflow.publishedVersion}`
+      : workflowConfig === null
+        ? "loading…"
+        : workflowConfig.defaultWorkflowId
+          ? "unavailable workflow"
+          : "none";
+    push({
+      value: "__default",
+      label: `Dispatch default — ${defaultName}`,
+      short: defaultName,
+      sub: "Whatever Settings → Workflows has this machine handing off to",
+      hotkey: "d",
+      commit: () => chosen(undefined),
+    });
+    push({
+      value: "__none",
+      label: "None — finish without a Workflow",
+      short: "None",
+      sub: "The agent finishes and the task is done - nothing runs after it.",
+      hotkey: "n",
+      commit: () => chosen(null),
+    });
+    for (const workflow of publishedWorkflows) {
+      const label = `${workflow.name} · v${workflow.publishedVersion}`;
+      push({
+        value: workflow.id,
+        label,
+        short: workflow.name,
+        hotkey: guidedMnemonic(workflow.name, taken),
+        commit: () => chosen(workflow.id),
+      });
+    }
+    // The same fallback row the `<select>` carries, for a reopened draft pinned to a
+    // Workflow this build no longer publishes: without it the list would render on nothing
+    // and read as a choice the operator never made.
+    if (draft.workflowId && !publishedWorkflows.some((w) => w.id === draft.workflowId)) {
+      push({
+        value: draft.workflowId,
+        label: "Unavailable Workflow",
+        short: "Unavailable Workflow",
+        hotkey: guidedMnemonic("unavailable", taken),
+        commit: () => chosen(draft.workflowId),
+      });
+    }
+    return out;
+  })();
+
+  /** The options for each question, in the order the rail and the digits count them. */
+  const guidedOptions: Record<GuidedStepId, readonly GuidedOption[]> = {
+    kind: TASK_KINDS.map((k) => ({
+      value: k,
+      label: TASK_KIND_INFO[k].label,
+      sub: TASK_KIND_INFO[k].blurb,
+      hotkey: GUIDED_KIND_KEYS[k],
+      // Byte-identical to the Kind `<select>`'s own handler, `afterWorkForKind` and all.
+      // The scout-clears-after-work rule has one implementation and the pass calls it.
+      commit: () => update({ kind: k, ...afterWorkForKind(k) }),
+    })),
+    harness: AGENT_TYPES.map((a) => ({
+      value: a,
+      label: AGENT_IDENTITY[a].label,
+      accent: AGENT_IDENTITY[a].accent,
+      sub: harnessDefaultsLine(a, defaults),
+      hotkey: GUIDED_HARNESS_KEYS[a],
+      // And identical to the Agent `<select>`'s: neither override travels across harnesses,
+      // so both go back to the defaults of the one now chosen.
+      commit: () => update({ agent: a, model: "", effort: "" }),
+    })),
+    afterWork: afterWorkOptions,
+  };
+
+  /** Which option a question opens on: the one the draft already points at. */
+  function guidedSeed(id: GuidedStepId): number {
+    const value =
+      id === "kind" ? draft.kind : id === "harness" ? draft.agent : afterWorkValue;
+    const at = guidedOptions[id].findIndex((option) => option.value === value);
+    return at < 0 ? 0 : at;
+  }
+
+  const guidedList = guidedStep ? guidedOptions[guidedStep.id] : [];
+  const guidedAt = guidedStep ? highlight ?? guidedSeed(guidedStep.id) : 0;
+
+  /** What the answered rungs read, taken from the draft rather than from what was clicked. */
+  const guidedAnswers: Partial<Record<GuidedStepId, GuidedAnswer>> = {
+    kind: { text: TASK_KIND_INFO[draft.kind].label },
+    harness: {
+      text: AGENT_IDENTITY[draft.agent].label,
+      accent: AGENT_IDENTITY[draft.agent].accent,
+    },
+    afterWork: {
+      text:
+        afterWorkOptions.find((option) => option.value === afterWorkValue)?.short ??
+        "Dispatch default",
+    },
+  };
+
+  /** Take the highlighted option and move on. */
+  function guidedTake(index: number): boolean {
+    const option = guidedList[index];
+    if (!option) return false;
+    option.commit();
+    setPass(answerGuidedStep(pass));
+    setHighlight(null);
+    return true;
+  }
+
+  function guidedLeave(): void {
+    setPass(endGuidedPass(pass));
+    setHighlight(null);
+  }
+
+  /**
+   * The pass's keys, offered the event before the dialog's own ⌘↵ and reporting whether it
+   * took it.
+   *
+   * Bare letters are safe here for a stated reason rather than by luck: <kbd>p</kbd>,
+   * <kbd>t</kbd> and <kbd>c</kbd> are all bound in App's global `selection` group, and
+   * `App.tsx` stands down whenever any overlay is open. That is why no capture-phase listener
+   * is needed - `LaunchMenu`'s pattern, which does need one, is competing with a live handler.
+   *
+   * Escape is not here. `Overlay` answers it before this ever runs, and it still closes the
+   * dispatch outright, which is the ladder every other dialog in the app has.
+   *
+   * Modifier chords fall through untouched, so ⌘↵ still dispatches and ⌘V still pastes; and
+   * so does anything typed while a text field genuinely holds the caret, which the pass takes
+   * as evidence that it is not the thing being driven.
+   */
+  function handleGuidedKey(event: KeyboardEvent): boolean {
+    if (!guidedStep || event.metaKey || event.ctrlKey || event.altKey) return false;
+    const target = event.target as HTMLElement | null;
+    if (
+      target?.tagName === "INPUT" ||
+      target?.tagName === "TEXTAREA" ||
+      target?.isContentEditable === true
+    ) return false;
+
+    const count = guidedList.length;
+    const take = (index: number): boolean => {
+      if (!guidedList[index]) return false;
+      event.preventDefault();
+      return guidedTake(index);
+    };
+    switch (event.key) {
+      case "ArrowDown":
+      case "ArrowUp": {
+        if (count === 0) return false;
+        event.preventDefault();
+        const step = event.key === "ArrowDown" ? 1 : count - 1;
+        setHighlight((guidedAt + step) % count);
+        return true;
+      }
+      case "Enter":
+        return take(guidedAt);
+      case "Backspace":
+        event.preventDefault();
+        // A no-op at the first question rather than an exit: ⇥ is the exit, and it is
+        // printed on the strip. The event is still swallowed so it cannot reach anything
+        // behind the dialog.
+        setPass(backGuidedStep(pass));
+        setHighlight(null);
+        return true;
+      case "Tab":
+        event.preventDefault();
+        guidedLeave();
+        return true;
+      default:
+        break;
+    }
+    if (event.key.length !== 1) return false;
+    if (event.key >= "1" && event.key <= "9") return take(Number(event.key) - 1);
+    const hit = guidedList.findIndex((option) => option.hotkey === event.key.toLowerCase());
+    return hit < 0 ? false : take(hit);
+  }
+  guidedKeyRef.current = handleGuidedKey;
+
+  /**
+   * A switch to Ensemble ends the pass. Its body replaces Crew and After work entirely, so a
+   * question floating over a control that is no longer rendered would be pointing at nothing.
+   * An effect rather than a line in the toggle's `onClick` because the layer can arm Ensemble
+   * from a launch intent too, and both routes have to end the same way.
+   */
   useEffect(() => {
-    intentRef.current?.focus();
-  }, []);
+    if (ensembleMode) {
+      setPass(endGuidedPass);
+      setHighlight(null);
+    }
+  }, [ensembleMode]);
+
+  /**
+   * The mount autofocus, now conditional - and the reason it had to become so.
+   *
+   * `Overlay.onKeyDown` is a `window` listener, so while a pass is running <kbd>p</kbd> would
+   * both advance it and type a `p` into the task box. The caret therefore stays out of the
+   * textarea until the pass ends, and this same effect is what puts it there when it does:
+   * completing the last question, <kbd>⇥</kbd>, turning Guided off, or switching to Ensemble
+   * all land on the same transition. `clearDraft()`'s own refocus is untouched.
+   */
+  useEffect(() => {
+    if (!guidedRunning) intentRef.current?.focus();
+  }, [guidedRunning]);
+
+  /**
+   * Everything the pass is not asking about recedes, and stops taking the pointer inside the
+   * body - a click into the task box mid-pass would put the caret somewhere the next
+   * mnemonic gets swallowed instead of typed. The footer keeps its clicks: it is dim because
+   * it is not the question, not because it is unavailable.
+   *
+   * All three are empty strings when no pass is running, so a form with the preference off
+   * carries exactly the classes it carried before this existed.
+   */
+  const guidedDim = guidedRunning ? " dispatch-guided-dim" : "";
+  const guidedDimUnless = (id: GuidedStepId): string =>
+    guidedRunning && guidedStep?.id !== id ? " dispatch-guided-dim" : "";
+  const guidedAnchor = (id: GuidedStepId): string =>
+    guidedStep?.id === id ? " dispatch-guided-anchor" : "";
+  /** The question over a field, or nothing. One call site per step, beside its control. */
+  const guidedPickerFor = (
+    id: GuidedStepId,
+    tip: string,
+    { hint, place }: { hint?: string | null; place?: "below" | "above" } = {},
+  ): React.JSX.Element | null =>
+    guidedStep?.id === id ? (
+      <GuidedPicker
+        step={guidedStep}
+        options={guidedList}
+        highlight={guidedAt}
+        hint={hint}
+        optionTip={tip}
+        canGoBack={pass.answered.length > 0}
+        place={place}
+        onPick={(index) => guidedTake(index)}
+      />
+    ) : null;
 
   // Read the harness defaults so the model and effort pickers can name what "Default"
   // means. Keyed on `harnessesRevision` as well as the mount, so a default changed in
@@ -1207,6 +1562,10 @@ function DispatchModal({
 
   submitRef.current = submit;
   const onOverlayKeyDown = useCallback((event: KeyboardEvent): void => {
+    // The guided pass gets first refusal, and refuses every modifier chord - so ⌘↵ below
+    // still dispatches from inside a pass, which is the one shortcut that has to keep
+    // working while the questions are up.
+    if (guidedKeyRef.current(event)) return;
     // This is the dialog's primary action, not a textarea editing command. Keeping it on
     // the topmost overlay makes it work after the operator moves through Crew, Backlog
     // details, or the footer, while Overlay's stack still prevents a covered dialog from
@@ -1225,7 +1584,7 @@ function DispatchModal({
   // repo and title side by side above the shared composer. One JSX definition each, so the
   // two arrangements cannot drift apart in behavior.
   const repoField = (
-    <label className="field">
+    <label className={`field${guidedDim}`}>
       <span className="field-label">
         Repo{" "}
         <span className="field-hint">
@@ -1370,7 +1729,7 @@ function DispatchModal({
   );
 
   const taskField = (
-    <label className="field">
+    <label className={`field${guidedDim}`}>
       <span className="field-label">
         Task{" "}
         <span className="field-hint">
@@ -1423,7 +1782,9 @@ function DispatchModal({
       onClose={onClose}
       // Ensemble alone widens the dialog: a candidate lane holds four controls on one
       // line at 760 and clips at Single's width.
-      className={`modal dispatch-modal${ensembleMode ? " dispatch-modal-ensemble" : ""}`}
+      className={`modal dispatch-modal${ensembleMode ? " dispatch-modal-ensemble" : ""}${
+        guidedRunning ? " dispatch-modal-guided" : ""
+      }`}
       role="dialog"
       ariaLabel={editing ? "Edit a backlog task" : "Dispatch an agent"}
       onKeyDown={onOverlayKeyDown}
@@ -1464,12 +1825,39 @@ function DispatchModal({
             </Tooltip>
           </div>
         )}
+        {/* The preference, beside the launch mode and for its reason: both are properties of
+            the dialog rather than fields in it. Turning it ON starts a pass here and now -
+            arming one for the NEXT opening is a switch that appears to do nothing, which is
+            a switch nobody flips twice - and turning it OFF hands back today's form
+            mid-dispatch, keeping every answer already given. Absent on an edit, which never
+            runs a pass: those answers exist, and re-asking them would be a quiz. */}
+        {!editing && (
+          <GuidedToggle
+            on={guided}
+            onChange={(next) => {
+              setGuided(next);
+              setHighlight(null);
+              setPass(next && !ensembleMode ? startGuidedPass() : endGuidedPass(pass));
+            }}
+          />
+        )}
         <Tooltip label={busy ? "Waiting for the dispatch to land" : "Close without dispatching (Escape)"}>
           <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
             ✕
           </button>
         </Tooltip>
       </header>
+
+      {guidedRunning && (
+        <GuidedRail
+          pass={pass}
+          answers={guidedAnswers}
+          onJump={(id) => {
+            setPass(jumpToGuidedStep(pass, id));
+            setHighlight(null);
+          }}
+        />
+      )}
 
       <div className="dispatch-body">
         {editing?.scheduleId && (
@@ -1552,61 +1940,74 @@ function DispatchModal({
             one compact row instead of four full-width ones. Overrides read as values (a
             named model instead of "Default"), so no per-field "overriding" hint is needed. */}
         <div className="field dispatch-crew-field">
-          <span className="field-label">Crew</span>
+          <span className={`field-label${guidedDim}`}>Crew</span>
           <div className="dispatch-crew">
-            <label className="field">
-              <span className="field-label">Agent</span>
-              <Tooltip label="Which harness this task is dispatched to - switching resets the model and effort overrides">
-                <span
-                  className="agent-accent-select"
-                  style={{ ["--agent-accent" as string]: AGENT_IDENTITY[draft.agent].accent }}
-                >
+            {/* The cell exists so the guided pass's list can hang off the field WITHOUT
+                being inside its `<label>`. A `<label>` names the control it wraps from its
+                own text content, so a list rendered in there would rewrite the Agent
+                select's accessible name to the whole question - and a click on the list's
+                own chrome would be forwarded to the select and pop the native dropdown
+                under it. Always rendered, so the grid's items do not change shape when a
+                pass starts. */}
+            <div className={`dispatch-crew-cell${guidedAnchor("harness")}`}>
+              <label className={`field${guidedDimUnless("harness")}`}>
+                <span className="field-label">Agent</span>
+                <Tooltip label={AGENT_FIELD_TIP}>
+                  <span
+                    className="agent-accent-select"
+                    style={{ ["--agent-accent" as string]: AGENT_IDENTITY[draft.agent].accent }}
+                  >
+                    <select
+                      className="field-input"
+                      value={draft.agent}
+                      // Switching harness drops model and effort overrides with it: neither
+                      // selection is portable across harnesses. Back to the defaults, which are
+                      // per-agent and always right for the harness now chosen.
+                      onChange={(e) =>
+                        update({ agent: e.target.value as AgentType, model: "", effort: "" })
+                      }
+                    >
+                    {/* Driven off the union, so a harness that exists cannot be one the
+                        operator has no way to pick: a hand-written pair of options is a
+                        list that goes stale silently, with the new agent dispatchable
+                        everywhere except the modal that dispatches. */}
+                      {AGENT_TYPES.map((a) => (
+                        <option key={a} value={a}>
+                          {AGENT_IDENTITY[a].label}
+                        </option>
+                      ))}
+                    </select>
+                  </span>
+                </Tooltip>
+              </label>
+              {guidedPickerFor("harness", AGENT_FIELD_TIP)}
+            </div>
+            <div className={`dispatch-crew-cell${guidedAnchor("kind")}`}>
+              <label className={`field${guidedDimUnless("kind")}`}>
+                <span className="field-label">Kind</span>
+                <Tooltip label={KIND_FIELD_TIP}>
                   <select
                     className="field-input"
-                    value={draft.agent}
-                    // Switching harness drops model and effort overrides with it: neither
-                    // selection is portable across harnesses. Back to the defaults, which are
-                    // per-agent and always right for the harness now chosen.
-                    onChange={(e) =>
-                      update({ agent: e.target.value as AgentType, model: "", effort: "" })
-                    }
+                    value={draft.kind}
+                    onChange={(e) => {
+                      const kind = e.target.value as TaskKind;
+                      update({ kind, ...afterWorkForKind(kind) });
+                    }}
                   >
-                  {/* Driven off the union, so a harness that exists cannot be one the
-                      operator has no way to pick: a hand-written pair of options is a
-                      list that goes stale silently, with the new agent dispatchable
-                      everywhere except the modal that dispatches. */}
-                    {AGENT_TYPES.map((a) => (
-                      <option key={a} value={a}>
-                        {AGENT_IDENTITY[a].label}
+                    {/* Driven off the tuple for the reason the harness select above it is:
+                        a hand-written pair goes stale silently, and the array's order is
+                        the order every surface that offers the choice lists it in. */}
+                    {TASK_KINDS.map((k) => (
+                      <option key={k} value={k}>
+                        {TASK_KIND_INFO[k].label}
                       </option>
                     ))}
                   </select>
-                </span>
-              </Tooltip>
-            </label>
-            <label className="field">
-              <span className="field-label">Kind</span>
-              <Tooltip label="Whether this task asks for a delivered change or an investigation - scout also clears the after-work Workflow">
-                <select
-                  className="field-input"
-                  value={draft.kind}
-                  onChange={(e) => {
-                    const kind = e.target.value as TaskKind;
-                    update({ kind, ...afterWorkForKind(kind) });
-                  }}
-                >
-                  {/* Driven off the tuple for the reason the harness select above it is:
-                      a hand-written pair goes stale silently, and the array's order is
-                      the order every surface that offers the choice lists it in. */}
-                  {TASK_KINDS.map((k) => (
-                    <option key={k} value={k}>
-                      {TASK_KIND_INFO[k].label}
-                    </option>
-                  ))}
-                </select>
-              </Tooltip>
-            </label>
-            <label className="field">
+                </Tooltip>
+              </label>
+              {guidedPickerFor("kind", KIND_FIELD_TIP)}
+            </div>
+            <label className={`field${guidedDim}`}>
               <span className="field-label">Model</span>
               <Tooltip label="Pin the model this task's agent launches with, overriding the harness default">
                 <select
@@ -1630,7 +2031,7 @@ function DispatchModal({
                 </select>
               </Tooltip>
             </label>
-            <label className="field">
+            <label className={`field${guidedDim}`}>
               <span className="field-label">Effort</span>
               <Tooltip label="How much reasoning effort this task's agent spends, overriding the harness default">
                 <select
@@ -1651,7 +2052,7 @@ function DispatchModal({
               </Tooltip>
             </label>
           </div>
-          <span className="field-hint dispatch-crew-hint">
+          <span className={`field-hint dispatch-crew-hint${guidedDim}`}>
             Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides.
           </span>
         </div>
@@ -1660,11 +2061,21 @@ function DispatchModal({
             it changes what happens after the agent finishes rather than how the task is
             ranked. The rail shape makes that sequence legible without turning one select
             into another full-width card. */}
-        <div className={`dispatch-workflow${selectedWorkflowId ? " armed" : ""}`}>
+        {/* The lit/dim class goes on the rail rather than on the control inside it: an
+            `opacity` on an ancestor cannot be undone by a descendant, and this whole block -
+            mark, control and consequence - is what the After work question is about. The rail
+            is also the pass's anchor, and already `position: relative`; the question hangs
+            off it rather than off the `<label>` inside it, for the reason the crew cells
+            above exist. An absolutely-positioned child takes no grid track. */}
+        <div
+          className={`dispatch-workflow${selectedWorkflowId ? " armed" : ""}${guidedDimUnless(
+            "afterWork",
+          )}${guidedAnchor("afterWork")}`}
+        >
           <span className="dispatch-workflow-mark" aria-hidden>⌘</span>
           <label className="dispatch-workflow-control">
             <span className="field-label">After work</span>
-            <Tooltip label="Run a published Workflow when Foreman confirms this agent's work is complete">
+            <Tooltip label={AFTER_WORK_FIELD_TIP}>
               <select
                 className="field-input"
                 value={
@@ -1720,9 +2131,19 @@ function DispatchModal({
             <span aria-hidden>→</span>
             {selectedWorkflowId ? "Foreman complete" : "No handoff"}
           </span>
+          {/* The one question that says something the others do not have to: the row it
+              opens on was moved by the answer before it, and a preselection nobody
+              explained reads as the form having lost the operator's place.
+              Opens UPWARD - this rail is the last field before the fold and the footer, and
+              a list of every published Workflow hung below it leaves the panel entirely. */}
+          {guidedPickerFor("afterWork", AFTER_WORK_FIELD_TIP, {
+            hint:
+              draft.kind === "scout" ? "A scout has no diff, so None is preselected." : null,
+            place: "above",
+          })}
         </div>
         {selectedWorkflowBlocked && (
-          <span className="dispatch-workflow-warning">
+          <span className={`dispatch-workflow-warning${guidedDim}`}>
             {!foremanEnabled
               ? "You can add this task to the backlog, but turn on Foreman before dispatching it—or choose None."
               : `You can add this task to the backlog, but ${AGENT_IDENTITY[draft.agent].label} cannot detect the completion boundary; choose another agent or None before dispatching.`}
@@ -1745,7 +2166,7 @@ function DispatchModal({
             >
               <button
                 type="button"
-                className={`dispatch-more${detailsOpen ? " open" : ""}`}
+                className={`dispatch-more${detailsOpen ? " open" : ""}${guidedDim}`}
                 aria-expanded={detailsOpen}
                 onClick={() => setDetailsOpen((open) => !open)}
               >
@@ -1757,7 +2178,7 @@ function DispatchModal({
               </button>
             </Tooltip>
             {detailsOpen && (
-              <div className="dispatch-more-body">
+              <div className={`dispatch-more-body${guidedDim}`}>
                 <div className="field-row">
                   <label className="field">
                     <span className="field-label">
@@ -1915,7 +2336,7 @@ function DispatchModal({
         {error && <p className="dispatch-error">{error}</p>}
       </div>
 
-      <footer className="modal-foot">
+      <footer className={`modal-foot${guidedDim}`}>
         {/* Leading edge, ahead of the verbs that keep the task, because it is the one action
             here that destroys something - and edit-only, because a new dispatch has no row
             behind it to delete. Ghost-danger rather than filled: it must be findable without

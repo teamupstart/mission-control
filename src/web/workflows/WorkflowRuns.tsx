@@ -1797,6 +1797,28 @@ export function WorkflowRuns({
    * `setDetail(null)` unmounted it on every run change, so selecting another run cleared them
    * for free; this host stays mounted across that, so without the reset a run nobody copied
    * would read `Copied` for the rest of the previous run's hold.
+   *
+   * TWO instances, deliberately, and they do NOT share a generation counter.
+   *
+   * They copy different things, so each reports its own outcome and neither speaks for the
+   * other. Clicking Copy on the run id, then Copy feedback while the first is still stalled on
+   * a permission prompt, can leave `Copied` on the header button while the error line says the
+   * RUN ID copy failed - and every part of that is true: the feedback copy did succeed, the
+   * run-id button is sitting at its resting label claiming nothing, and the sentence names
+   * which copy it is about. That naming is why it reads as two outcomes rather than as a
+   * contradiction.
+   *
+   * A shared generation across the two would suppress the later-settling one, which here is a
+   * REAL failure of a copy the reader asked for - reintroducing exactly the silent-copy class
+   * this whole change exists to delete. One shared controller would be worse still: the two
+   * would share `copied`, so a successful feedback copy would flip the run-id button to
+   * `Copied` when nothing had been written for it.
+   *
+   * What the shared `error` slot genuinely costs is a message, not a lie: whichever copy
+   * settles last owns the line, and either one's `setError(null)` can clear a refusal the
+   * reader has not read yet. Fixing THAT means an error surface per control, the way
+   * `ReportPanel` and `FileWorkspace` render `error` beside their own buttons - new UI on this
+   * page, which this phase ships none of. Recorded as follow-up rather than done here.
    */
   const feedbackCopy = useCopyFeedback({ resetOn: selected });
   const runIdCopy = useCopyFeedback({ resetOn: selected });

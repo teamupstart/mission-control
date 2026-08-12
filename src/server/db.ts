@@ -1512,6 +1512,113 @@ export function openDb(): DatabaseSync {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    -- The scout library's DISPOSABLE index. Every row here is derived from a bundle
+    -- directory under STATE_DIR/scouts and can be thrown away: delete this database and the
+    -- background reconciler rebuilds all three tables from the filesystem, which is the
+    -- source of truth. That is why there is no foreign key to tasks or sessions and no
+    -- cascade - a completed archive outlives its task, its session, and its worktree, and a
+    -- reference to any of them would make the durable thing depend on the disposable one.
+    --
+    -- Nothing here may hold state that is not IN the bundle. A label, an annotation, or a
+    -- "seen" flag stored only in SQLite would be silently lost the first time the index was
+    -- rebuilt, which is a data-loss bug that only appears on the recovery path.
+    --
+    -- producer_id and archive_id are generated UUIDs, and the key column is their composite.
+    -- The composite is stored rather than derived so every query, cursor, and join uses one
+    -- string; the pair is kept beside it so filtering by producer is an equality test on a
+    -- column rather than a LIKE over the key.
+    CREATE TABLE IF NOT EXISTS scout_archives (
+      key                TEXT NOT NULL PRIMARY KEY,
+      producer_id        TEXT NOT NULL,
+      archive_id         TEXT NOT NULL,
+      producer_label     TEXT,
+      format_version     INTEGER NOT NULL DEFAULT 0,
+      status             TEXT NOT NULL,
+      capture_status     TEXT,
+      title              TEXT NOT NULL DEFAULT '',
+      question           TEXT,
+      summary            TEXT,
+      tags_json          TEXT,
+      agent              TEXT,
+      model              TEXT,
+      source             TEXT,
+      repositories_json  TEXT,
+      -- Every repository label this archive names, lowercased and pipe-delimited, as in
+      -- |mission-control|docs| . A filter is instr(repo_labels, ?) with a pipe-wrapped
+      -- needle, which is an exact label match with no JSON1 extension and no second table.
+      -- JSON1 is a compile-time option like FTS5, and a filter that failed on a shipped
+      -- SQLite without it would be a runtime error rather than a missing feature.
+      repo_labels        TEXT NOT NULL DEFAULT '',
+      missing_json       TEXT,
+      primary_artifact_id TEXT,
+      content_digest     TEXT,
+      -- SHA-256 of the manifest FILE, which is what "this key is immutable" is judged on.
+      -- content_digest covers only the archived files, so a manifest whose title was
+      -- rewritten over unchanged evidence would hash identically and the rewrite would be
+      -- adopted in silence; hashing the bytes means a same-key change is always seen, while
+      -- an identical copy from a sync tool still reconciles as the archive it already was.
+      manifest_digest    TEXT NOT NULL DEFAULT '',
+      relative_path      TEXT NOT NULL,
+      manifest_bytes     INTEGER NOT NULL DEFAULT 0,
+      manifest_mtime_ns  TEXT NOT NULL DEFAULT '',
+      artifact_count     INTEGER NOT NULL DEFAULT 0,
+      bytes              INTEGER NOT NULL DEFAULT 0,
+      error              TEXT,
+      created_at         INTEGER,
+      completed_at       INTEGER,
+      -- completed_at when known, else created_at, else indexed_at. Stored rather than
+      -- computed so the list's ORDER BY and its keyset cursor read one column: a cursor
+      -- comparing against an expression is a cursor that skips rows when the expression
+      -- changes shape.
+      sort_at            INTEGER NOT NULL,
+      indexed_at         INTEGER NOT NULL,
+      -- Which complete discovery pass last saw this bundle. Pruning is "not seen in the pass
+      -- that finished", never "the file was missing when I looked", so an interrupted walk
+      -- cannot delete the half of the library it never reached.
+      last_seen_epoch    INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_scout_archives_sort ON scout_archives(sort_at DESC, key DESC);
+    CREATE INDEX IF NOT EXISTS idx_scout_archives_producer ON scout_archives(producer_id);
+    CREATE INDEX IF NOT EXISTS idx_scout_archives_status ON scout_archives(status);
+
+    -- One archived file. Identity is (archive key, generated artifact id); the browser asks
+    -- for a body by that pair and never by a path, so archive_path is a verified server-side
+    -- detail rather than an addressable input.
+    CREATE TABLE IF NOT EXISTS scout_artifacts (
+      key           TEXT NOT NULL,
+      artifact_id   TEXT NOT NULL,
+      ordinal       INTEGER NOT NULL DEFAULT 0,
+      role          TEXT NOT NULL,
+      repo_slot     TEXT,
+      original_path TEXT,
+      archive_path  TEXT NOT NULL,
+      media_type    TEXT NOT NULL DEFAULT '',
+      bytes         INTEGER NOT NULL DEFAULT 0,
+      sha256        TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (key, artifact_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_scout_artifacts_key ON scout_artifacts(key, ordinal);
+
+    -- The bounded text a literal search scans. Segments rather than one blob so a hit can
+    -- say WHERE it matched, and so the report body is searchable without loading a manifest
+    -- summary and a 256 KiB report into the same row. Deliberately NOT an FTS5 table: FTS5 is
+    -- a compile-time option, and a shipped SQLite without it would turn a search feature into
+    -- a startup failure.
+    --
+    -- The text column is what a snippet is cut from; text_fold is the same string lowercased
+    -- in JavaScript and is the only thing a query matches against. SQLite's own lower() folds
+    -- ASCII only, so a search for a name with an accent or a non-Latin script would silently
+    -- match nothing - a search feature that is wrong rather than absent.
+    CREATE TABLE IF NOT EXISTS scout_search_segments (
+      key         TEXT NOT NULL,
+      ordinal     INTEGER NOT NULL,
+      source_kind TEXT NOT NULL,
+      text        TEXT NOT NULL,
+      text_fold   TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (key, ordinal)
+    );
+    CREATE INDEX IF NOT EXISTS idx_scout_segments_key ON scout_search_segments(key);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);

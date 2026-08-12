@@ -18,3 +18,11 @@ For the browser and process boundary, read [Process boundaries](agent-guides/arc
 For the shared wire types that must evolve with both server and client, use the
 [Shared types and events contract](agent-guides/change-contracts.md#shared-types-and-events).
 The user-facing dashboard context is in [User interface](ui.md).
+
+Not everything crosses this stream. Detailed or unbounded history - the Ship log's day feed,
+Workflow runs, [scout archives](scout-archives.md) - stays out of both the snapshot and the
+incremental frames, and is fetched on demand by the view that owns it. Where the daemon still
+needs to say that such a collection moved, it emits a content-free invalidation frame
+(`harnesses_config_changed`, `scout_archive_changed`) and the hook keeps a revision counter
+that the owning view watches. Those counters are bumped on reconnect as well as on the event,
+because a collection that rides no snapshot has nothing for a reconnect to restore.

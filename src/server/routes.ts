@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
 import type { TypeOf, ZodTypeAny } from "zod";
+import { Readable } from "node:stream";
 import {
   AddWorkItemSchema,
   AssignTaskSchema,
@@ -52,6 +53,9 @@ import {
   SelectOptionSchema,
   SendTextSchema,
   OpenSessionFileSchema,
+  ScoutSearchQuerySchema,
+  DeleteScoutArchiveSchema,
+  OpenScoutArtifactSchema,
   LaunchSessionTerminalSchema,
   SaveSessionFileSchema,
   SessionFilePathSchema,
@@ -120,6 +124,8 @@ import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
 import { TaskDependencyError, TaskStatusConflictError, type TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
+import { scoutErrorStatus, type ScoutArchiveManager } from "./scouts/manager.ts";
+import { SCOUT_SEARCH_LIMITS } from "@shared/scouts.ts";
 import { recordInjection } from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
@@ -643,6 +649,16 @@ export function buildApp(
    * a second claimant on host power state.
    */
   keepAwake?: KeepAwakeManager,
+  /**
+   * The scout library owner. Appended LAST for the reason every optional above it is
+   * optional: `buildApp` is called positionally by around fifty focused tests, and the ones
+   * that care about tasks or panes must not have to learn about scouts to keep compiling.
+   *
+   * Absent means the scout routes answer 503 rather than constructing a manager here. A
+   * route-built twin would be a second owner of one filesystem library and one reconciler -
+   * two background walks over the same directory, two writers of the same derived rows.
+   */
+  scouts?: ScoutArchiveManager,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -1616,6 +1632,134 @@ export function buildApp(
       return c.json({ ok: false, error: known?.message ?? "could not open session file" }, status);
     }
   });
+  // --- The scout library ---
+  //
+  // Five thin adapters over `ScoutArchiveManager`. Nothing here touches the store, the
+  // filesystem, or a path: a request names an opaque archive key and an opaque artifact id,
+  // and the manager is the only thing that turns either into a file. That is what makes
+  // "never accept a path from the browser" a property of the design rather than a rule each
+  // of these five has to remember.
+  const scoutLibrary = (): ScoutArchiveManager | null => scouts ?? null;
+
+  app.get("/api/scouts", (c) => {
+    const library = scoutLibrary();
+    if (!library) return c.json({ error: "scout library unavailable" }, 503);
+    const parsed = ScoutSearchQuerySchema.safeParse({
+      q: c.req.query("q"),
+      producer: c.req.query("producer"),
+      repo: c.req.query("repo"),
+      agent: c.req.query("agent"),
+      status: c.req.query("status"),
+      from: c.req.query("from"),
+      to: c.req.query("to"),
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const query = parsed.data;
+    return c.json(
+      library.list({
+        q: query.q ?? null,
+        producer: query.producer ?? null,
+        repo: query.repo ?? null,
+        agent: query.agent ?? null,
+        status: query.status ?? null,
+        from: query.from ?? null,
+        to: query.to ?? null,
+        cursor: query.cursor ?? null,
+        limit: query.limit ?? SCOUT_SEARCH_LIMITS.defaultLimit,
+      }),
+    );
+  });
+
+  app.get("/api/scouts/:archiveKey", (c) => {
+    const library = scoutLibrary();
+    if (!library) return c.json({ error: "scout library unavailable" }, 503);
+    const detail = library.detail(c.req.param("archiveKey"));
+    return detail ? c.json(detail) : c.json({ error: "no such scout archive" }, 404);
+  });
+
+  // One archived file's bytes.
+  //
+  // ALWAYS an attachment, including the HTML report, and that is the same decision the
+  // session-file routes make one screen above: archived HTML is content somebody else wrote,
+  // and serving it inline would put it on the daemon's own origin where its scripts would
+  // reach every action route on this port. A reader that wants to display it fetches the
+  // text and renders it in a sandboxed frame, which `Content-Disposition` does not affect.
+  // The content type comes from the archive path's extension through a closed table, never
+  // from the manifest's claim, and `nosniff` stops a browser from improving on it.
+  app.get("/api/scouts/:archiveKey/artifacts/:artifactId", async (c) => {
+    const library = scoutLibrary();
+    if (!library) return c.json({ error: "scout library unavailable" }, 503);
+    try {
+      // The manager returns an OPEN handle, not a path, and the length comes from `fstat` on
+      // that same handle. Reopening by name here would reintroduce the window between "this
+      // path is safe" and "these are the bytes": swap the verified file for a symlink in
+      // between and the daemon would serve whatever it points at, under this archive's own
+      // content type, with a Content-Length describing different bytes entirely.
+      const file = await library.artifactBody(c.req.param("archiveKey"), c.req.param("artifactId"));
+      const handle = file.handle;
+      c.header("Content-Type", file.view.mediaType);
+      c.header("Content-Length", String(file.bytes));
+      c.header("Content-Disposition", `attachment; filename="${file.fileName}"`);
+      c.header("X-Content-Type-Options", "nosniff");
+      c.header("Content-Security-Policy", "default-src 'none'; sandbox");
+      c.header("Cache-Control", "no-store");
+      return c.body(
+        Readable.toWeb(handle.createReadStream({ autoClose: true })) as unknown as ReadableStream,
+      );
+    } catch (error) {
+      const failure = scoutErrorStatus(error);
+      return c.json({ error: failure.message }, failure.status);
+    }
+  });
+
+  // Hand one archived file to an application outside Mission Control. A POST for the reason
+  // the session-file twin is: the daemon launches a local application against a local path,
+  // and nothing about the file crosses this boundary.
+  app.post("/api/scouts/:archiveKey/artifacts/:artifactId/open", async (c) => {
+    const library = scoutLibrary();
+    if (!library) return c.json({ error: "scout library unavailable" }, 503);
+    const parsed = await parseBody(c, OpenScoutArtifactSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      const result = await library.openArtifact(
+        c.req.param("archiveKey"),
+        c.req.param("artifactId"),
+        parsed.data.target,
+      );
+      const body = {
+        ok: result.ok,
+        target: parsed.data.target,
+        label: result.label,
+        detail: result.detail,
+        ...(result.error ? { error: result.error } : {}),
+      };
+      return result.ok ? c.json(body) : c.json(body, result.status as 409 | 502 | 504);
+    } catch (error) {
+      const failure = scoutErrorStatus(error);
+      return c.json({ ok: false, error: failure.message }, failure.status);
+    }
+  });
+
+  // Delete one local bundle. The body echoes the key in the URL and a mismatch is refused
+  // before any path is resolved - see `DeleteScoutArchiveSchema` for why that is not
+  // redundant. This removes a local file and its rows; it touches no task, no session, and
+  // nothing outside this machine.
+  app.delete("/api/scouts/:archiveKey", async (c) => {
+    const library = scoutLibrary();
+    if (!library) return c.json({ error: "scout library unavailable" }, 503);
+    const parsed = await parseBody(c, DeleteScoutArchiveSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      const result = await library.delete(c.req.param("archiveKey"), parsed.data.confirmArchiveKey);
+      return c.json(result);
+    } catch (error) {
+      const failure = scoutErrorStatus(error);
+      return c.json({ ok: false, error: failure.message }, failure.status);
+    }
+  });
+
   // Which terminals this HOST can open a window in. Same reasoning as `/api/open-targets`:
   // it is a question about the daemon's machine, not about the one the dashboard is being
   // viewed from, and unavailable backends are RETURNED with their sentence rather than

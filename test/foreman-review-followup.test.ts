@@ -487,6 +487,7 @@ function mkMultiRepoSession(repoPrs: TaskRepoPrSummary[], over: Partial<Session>
   const task: TaskSummary = {
     id: "t1",
     title: "cross-repo change",
+    fullTitle: "cross-repo change",
     kind: "ship",
     status: "running",
     outcome: null,

@@ -36,9 +36,16 @@ Run one test file with the same concurrency and loader as the full suite:
 node --test --test-concurrency=2 --import tsx test/session-contracts.test.ts
 ```
 
+`npm test` runs two test files at a time. Set `MISSION_TEST_CONCURRENCY` to change that; CI
+sets it to 6, which is where the suite stops getting faster on a 4 vCPU runner.
+
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI runs typecheck, tests, build, and bundle smoke tests on Node.js 24 and 26, then the `e2e/` Playwright suite on Node.js 24 only. Lint is a required local check but is not currently a CI job.
+CI runs three jobs in parallel. `gates` runs typecheck and lint on a GitHub-hosted runner;
+`unit` runs the tests, build, and bundle smoke on Node.js 24 and 26 on Blacksmith; `e2e`
+runs the `e2e/` Playwright suite on Node.js 24 only, split across two shards. Lint is now a
+CI job, so a lint failure blocks a merge. `.github/workflows/ci.yml` documents how each
+runner size and worker count was measured - read it before changing one.
 
 ## Working rules
 

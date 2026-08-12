@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { slugify, sessionLabel, deriveTitle } from "../src/server/dispatcher.ts";
 import { DispatchSchema } from "../src/shared/protocol.ts";
+import { fullTaskTitle } from "../src/shared/title.ts";
 
 test("slugify produces tmux-safe, bounded slugs", () => {
   assert.equal(slugify("Fix the Login Bug!"), "fix-the-login-bug");
@@ -43,6 +44,17 @@ test("deriveTitle takes the first non-empty line, title-cased, capped at 60", ()
   const long = "x".repeat(80);
   assert.equal(deriveTitle(long).length, 60); // 59 + ellipsis
   assert.ok(deriveTitle(long).endsWith("…"));
+});
+
+test("fullTaskTitle recovers only a shortened generated fallback", () => {
+  const intent =
+    "compare the features of this application with the features of the competing application in a complete report";
+  const shortened = deriveTitle(intent);
+  assert.equal(
+    fullTaskTitle(shortened, intent),
+    "Compare the Features of This Application with the Features of the Competing Application in a Complete Report",
+  );
+  assert.equal(fullTaskTitle("A model-written summary…", intent), "A model-written summary…");
 });
 
 test("an untitled dispatch names its card like a heading, not a slug", () => {

@@ -8,6 +8,42 @@ import { goalLine } from "./goal.ts";
  */
 export const TITLE_MAX_CHARS = 60;
 
+// Small words a title leaves lowercase unless they lead it, so an auto-derived title reads
+// the way a person would write one rather than Shouting Every Word.
+const TITLE_MINOR_WORDS = new Set([
+  "a", "an", "and", "as", "at", "but", "by", "for", "in", "nor", "of", "on", "or", "per",
+  "the", "to", "vs", "via", "with",
+]);
+
+/** The complete first-line title behind the bounded title stored on an untitled task. */
+export function deriveFullTitle(intent: string): string {
+  const line = intent.split("\n").map((part) => part.trim()).find(Boolean) ?? "task";
+  return line
+    .split(/\s+/)
+    .map((word, index) => {
+      if (!word || /[A-Z]/.test(word)) return word;
+      if (index > 0 && TITLE_MINOR_WORDS.has(word.toLowerCase())) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(" ");
+}
+
+/** A bounded fallback title for an untitled task. */
+export function deriveTitle(intent: string): string {
+  const title = deriveFullTitle(intent);
+  return title.length > TITLE_MAX_CHARS
+    ? title.slice(0, TITLE_MAX_CHARS - 1) + "…"
+    : title;
+}
+
+/**
+ * Recover the complete title only when the stored title is the deterministic shortened
+ * fallback. Explicit and model-written titles stay authoritative exactly as persisted.
+ */
+export function fullTaskTitle(title: string, intent: string): string {
+  return title.endsWith("…") && title === deriveTitle(intent) ? deriveFullTitle(intent) : title;
+}
+
 /**
  * Shorten text to a single displayable title line.
  *

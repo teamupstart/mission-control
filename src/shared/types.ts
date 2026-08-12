@@ -1731,6 +1731,8 @@ export interface BacklogPlan {
 export interface TaskSummary {
   id: string;
   title: string;
+  /** Complete title for hover/focus help when `title` is the shortened generated fallback. */
+  fullTitle: string;
   kind: TaskKind;
   status: TaskStatus;
   outcome: string | null;

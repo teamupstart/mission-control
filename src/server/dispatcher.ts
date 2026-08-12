@@ -11,7 +11,7 @@ import type {
 } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
-import { TITLE_MAX_CHARS } from "@shared/title.ts";
+import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
 import { resolveAgentBin } from "./harness/index.ts";
 import { askChannelArgs } from "./ask-channel.ts";
@@ -1456,29 +1456,6 @@ export function sessionLabel(title: string): string {
   return homeNameRules().sanitize(title);
 }
 
-// Small words a title leaves lowercase unless they lead it - so an auto-title reads the
-// way a person would write one, not Shouting Every Word.
-const TITLE_MINOR_WORDS = new Set([
-  "a", "an", "and", "as", "at", "but", "by", "for", "in", "nor", "of", "on", "or", "per",
-  "the", "to", "vs", "via", "with",
-]);
-
-/**
- * Title-case a line so an auto-derived title reads like a heading. Words that already
- * carry a capital are left exactly as typed - so acronyms, camelCase and file names
- * (`API`, `useEffect`, `App.tsx`) survive rather than being flattened.
- */
-function titleCase(line: string): string {
-  return line
-    .split(/\s+/)
-    .map((word, i) => {
-      if (!word || /[A-Z]/.test(word)) return word;
-      if (i > 0 && TITLE_MINOR_WORDS.has(word.toLowerCase())) return word;
-      return word.charAt(0).toUpperCase() + word.slice(1);
-    })
-    .join(" ");
-}
-
 /**
  * A sensible default task title from the intent: its first non-empty line, title-cased
  * so a dispatch left untitled still names its card like a heading, capped at
@@ -1490,9 +1467,7 @@ function titleCase(line: string): string {
  * does not need.
  */
 export function deriveTitle(intent: string): string {
-  const line = intent.split("\n").map((l) => l.trim()).find(Boolean) ?? "task";
-  const titled = titleCase(line);
-  return titled.length > TITLE_MAX_CHARS ? titled.slice(0, TITLE_MAX_CHARS - 1) + "…" : titled;
+  return deriveTaskTitle(intent);
 }
 
 /**

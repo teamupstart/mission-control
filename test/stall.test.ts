@@ -97,6 +97,7 @@ function mkTask(over: Partial<TaskSummary> = {}): TaskSummary {
   return {
     id: "t",
     title: "T",
+    fullTitle: "T",
     kind: "ship",
     status: "running",
     outcome: null,

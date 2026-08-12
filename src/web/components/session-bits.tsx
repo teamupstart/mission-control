@@ -1351,11 +1351,23 @@ export function SessionTitle({
   onRenameStart?: () => void;
   onRenameClose?: () => void;
 }): React.JSX.Element {
+  const displayedName = session.name || "(unnamed)";
+  const taskTitle = session.task?.title;
+  const fullTaskTitle = session.task?.fullTitle;
+  const shortenedStem = session.name.endsWith("…") ? session.name.slice(0, -1) : null;
+  const tooltipName =
+    shortenedStem &&
+    fullTaskTitle &&
+    fullTaskTitle.length > session.name.length &&
+    (taskTitle === session.name || taskTitle?.startsWith(shortenedStem))
+      ? fullTaskTitle
+      : displayedName;
+
   if (renaming) return <RenameEditor session={session} onClose={() => onRenameClose?.()} />;
   if (canRename) {
     return (
       <h2>
-        <Tooltip label={`Rename "${session.name}"`}>
+        <Tooltip label={`Rename "${tooltipName}"`}>
           <button
             type="button"
             className="card-title-edit"
@@ -1364,7 +1376,7 @@ export function SessionTitle({
               onRenameStart?.();
             }}
           >
-            <span className="card-title-name">{session.name || "(unnamed)"}</span>
+            <span className="card-title-name">{displayedName}</span>
             <span className="rename-pencil" aria-hidden>
               ✎
             </span>
@@ -1374,8 +1386,8 @@ export function SessionTitle({
     );
   }
   return (
-    <Tooltip label={session.name || "This session has no name"}>
-      <h2>{session.name || "(unnamed)"}</h2>
+    <Tooltip label={session.name ? tooltipName : "This session has no name"}>
+      <h2>{displayedName}</h2>
     </Tooltip>
   );
 }

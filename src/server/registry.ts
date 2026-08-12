@@ -54,6 +54,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { goalLine } from "@shared/goal.ts";
+import { fullTaskTitle } from "@shared/title.ts";
 import { taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
@@ -5156,6 +5157,7 @@ export class Registry extends EventEmitter {
       ? {
           id: t.id,
           title: t.title,
+          fullTitle: fullTaskTitle(t.title, t.intent),
           kind: t.kind,
           status: t.status,
           outcome: t.outcome,

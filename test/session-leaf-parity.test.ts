@@ -394,6 +394,25 @@ test("a live embedded session's title is a control, not plain text", () => {
   assert.ok(hasTooltip(plain, exited.name), "falls back to naming the session");
 });
 
+test("a shortened session title exposes its full generated task title", () => {
+  const shortened = "Compare the Features of This Application with the Features …";
+  const full =
+    "Compare the Features of This Application with the Features of the Competing Application";
+  const task = mkTaskSummary({ title: shortened, fullTitle: full });
+  const session = mkSession({ name: shortened, task });
+
+  const renameable = bit(SessionTitle, {
+    session,
+    canRename: true,
+    renaming: false,
+  });
+  assert.ok(hasTooltip(renameable, `Rename "${full}"`));
+  assert.ok(renameable.includes(shortened), "the visible heading stays shortened");
+
+  const plain = bit(SessionTitle, { session, canRename: false, renaming: false });
+  assert.ok(hasTooltip(plain, full));
+});
+
 test("the card's context meter is the shared RuntimeMetaRow", () => {
   const m = meta({ contextPct: 73 });
   const session = mkSession({ meta: m });
@@ -621,6 +640,7 @@ test("the inspector chip and its tile twin have an accessible name", () => {
 const SCHEDULED_TASK = {
   id: "task-1",
   title: "Run dependency audit",
+  fullTitle: "Run dependency audit",
   kind: "ship" as const,
   status: "running" as const,
   outcome: null,

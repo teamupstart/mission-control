@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -22,8 +23,13 @@ import { settled } from "../fixtures/settle.ts";
 const TASK = "write a haiku about flexbox";
 /** `deriveTitle` title-cases the intent - the synchronous name a fresh dispatch gets. */
 const DERIVED_TITLE = "Write a Haiku About Flexbox";
+const LONG_TASK =
+  "compare the features of this application with the features of the competing application in a complete report";
+const FULL_LONG_TITLE =
+  "Compare the Features of This Application with the Features of the Competing Application in a Complete Report";
+const EVIDENCE = "e2e/.artifacts/session-rename-full-tooltip";
 
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+async function dispatch(page: Page, daemon: DaemonHandle, task = TASK): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
@@ -34,7 +40,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   // dismissing it is what keeps the next fill from landing on a covered control. The combobox
   // stops the Escape itself, so the modal stays open.
   await page.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
+  await dialog.getByPlaceholder("What should this agent do?").fill(task);
   await dialog.getByLabel("Kind").selectOption("ship");
   // Pinned rather than left on the dispatch default: this repo is not allowlisted for Live
   // Workflow delivery, so the default would refuse the dispatch and leave the modal open.
@@ -46,6 +52,25 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 }
+
+test("a shortened generated name keeps its full name in the tooltip", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, LONG_TASK);
+
+  const card = dashboard.locator("article.card").first();
+  await expect(card).toContainText("Agent SDK", { timeout: 30_000 });
+
+  const title = card.getByRole("heading").getByRole("button");
+  await expect(title).toContainText("…");
+  await title.hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText(`Rename "${FULL_LONG_TITLE}"`);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({ path: `${EVIDENCE}/full-name-tooltip.png` });
+  }
+});
 
 test("clicking an SDK session's title renames it, durably", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);

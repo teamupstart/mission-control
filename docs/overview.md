@@ -25,7 +25,9 @@ and get your decision back.
   [Which terminal you use is declared](sessions.md#which-terminal-you-use-is-declared-not-assumed).
   - A renamed Agent SDK session **stays** renamed. Left alone, its card follows the title of
     the task it is running, which a dispatch refines with a headless model call moments after
-    launching; typing a name overrides that for good.
+    launching; typing a name overrides that for good. When a generated name is shortened on
+    the card, its rename tooltip and accessible description retain up to the accepted
+    200-character title limit.
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
 - **Acts** on a session: send it a message, rename it, focus its tab, kill it, or

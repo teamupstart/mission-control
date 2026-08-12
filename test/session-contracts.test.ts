@@ -117,6 +117,7 @@ test("schedule provenance rides inside Session.task, and a change to it still em
   const summary = {
     id: "t1",
     title: "Audit dependencies",
+    fullTitle: "Audit dependencies",
     kind: "ship" as const,
     status: "running" as const,
     outcome: null,
@@ -128,6 +129,13 @@ test("schedule provenance rides inside Session.task, and a change to it still em
     repoPrs: [],
   };
   assert.equal(sessionEqual(mkSession({ task: summary }), mkSession({ task: summary })), true);
+  assert.equal(
+    sessionEqual(
+      mkSession({ task: summary }),
+      mkSession({ task: { ...summary, fullTitle: "Audit dependencies across every package" } }),
+    ),
+    false,
+  );
   assert.equal(
     sessionEqual(
       mkSession({ task: summary }),

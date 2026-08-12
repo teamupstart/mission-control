@@ -201,6 +201,7 @@ export function mkTaskSummary(over: Partial<TaskSummary> = {}): TaskSummary {
   return {
     id: "task-1",
     title: "Fix the parser",
+    fullTitle: "Fix the parser",
     kind: "ship",
     status: "running",
     outcome: null,

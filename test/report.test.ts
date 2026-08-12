@@ -58,6 +58,7 @@ const mkTask = (over: Partial<Task> = {}): Task =>
 const shipSummary: TaskSummary = {
   id: "task-run",
   title: "Wire dispatch",
+  fullTitle: "Wire dispatch",
   kind: "ship",
   status: "running",
   outcome: null,

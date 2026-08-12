@@ -21,19 +21,25 @@ name: CI
 #   2. A runner whose cores sit idle is billed for them anyway. The single largest defect
 #      in the previous shape was buying 4 vCPU and then running 2 test workers on it.
 #
-# The numbers below were measured on this repository, not assumed - 34 configurations
-# across three benchmark runs. The load-bearing results:
+# The numbers below were measured on this repository, not assumed - 44 configurations
+# across five benchmark runs. The load-bearing results:
 #
 #   * Unit suite, 6960 tests. 4 vCPU at concurrency 6 costs 444 vCPU-seconds; at the old
 #     concurrency 2 it cost 676. 8 vCPU at concurrency 8 is faster in wall-clock but costs
 #     600, and 16 vCPU costs 1136 to save a further 4 seconds. 4 vCPU is the knee.
 #   * E2E suite, 250 tests, ~760 CPU-seconds of real work. It parallelises almost
 #     perfectly, so the shard count is a latency dial that costs a little more each turn.
-#   * 16 e2e workers oversubscribed the box and produced a genuine test failure. 4 workers
-#     per 4 vCPU is the point where speed stops costing reliability.
+#   * Playwright's `retain-on-failure` records every test and deletes the recording when it
+#     passes, so a green run pays for artifacts nobody reads: 24s for trace and 16s for
+#     video, of a 126s shard. Video is now off. See `e2e/playwright.config.ts`.
+#   * Oversubscription buys nothing and eventually costs correctness. 5 e2e workers on
+#     4 vCPU was no faster than 4; 6 workers, 16-on-16, and 4-on-2 each failed a test
+#     outright. 4 workers per 4 vCPU is the last configuration that is fast and green.
 #   * arm64 was measured and rejected. It is billed 37.5% less per vCPU-minute and ran
 #     2-2.5x slower per core on this workload (typecheck 34s against 13s, unit suite 291s
 #     against 117s), so it is a net loss of roughly 50%.
+#   * Only `gates` belongs on a GitHub-hosted runner. The unit suite takes 486s there
+#     against 127s, and e2e took 1129s and still failed.
 
 on:
   push:

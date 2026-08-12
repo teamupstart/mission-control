@@ -46,6 +46,9 @@ import type {
  */
 const KEY_SEQS: Record<Key, string> = {
   enter: "\r",
+  // The escape byte itself, not a sequence introduced by one. Measured through
+  // `send-text --no-paste`, which writes bytes straight to the pty: one 0x1B arrives.
+  escape: "\x1b",
   up: "\x1b[A",
   down: "\x1b[B",
   left: "\x1b[D",

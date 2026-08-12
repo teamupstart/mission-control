@@ -2607,14 +2607,20 @@ export function buildApp(
    * not a failure of this request but a property of this session that no retry can change,
    * and the card already draws the control disabled with the identical sentence - so a 400
    * is what a client hitting it anyway has actually done.
+   *
+   * 409 when the pane declined, which on the terminal runtime means it is sitting in a
+   * multiplexer mode that would have swallowed the Escape. Same reasoning as
+   * `/select-option` and `/submit-options`: the cause is a person reading their own
+   * scrollback, so it is a state conflict that clears on its own rather than a server fault,
+   * and 500 stays for the faults.
    */
   app.post("/api/sessions/:id/interrupt", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
     if (unsupported) return c.json({ error: unsupported }, 400);
-    const r = await interruptSession(session, sdkSessions, pendingTurns);
-    return c.json(r, r.ok ? 200 : 500);
+    const r = await interruptSession(session, sdkSessions, pendingTurns, panes);
+    return c.json(r, r.ok ? 200 : r.paneBlocked ? 409 : 500);
   });
 
   // Cycle the session's permission mode one Shift+Tab step - only for a harness whose

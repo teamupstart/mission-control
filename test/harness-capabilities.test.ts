@@ -165,11 +165,12 @@ test("every capability's null path is exercised, by a real harness or a named fi
   // last declarer must join it - either way this fails first, rather than a loop over an
   // empty `hasnt` quietly asserting nothing.
   //
-  // `interrupt` joins with pi as its real null declarer: pi has no embedded driver, so
-  // there is no interrupt primitive to reach and the pane mechanism does not exist for any
-  // harness yet. If a later phase gives pi a terminal interrupt, the slot loses that
-  // declarer and has to move onto this list - which is what this assertion is for.
-  const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext"];
+  // `interrupt` is the move this assertion was written to catch, and it happened exactly as
+  // predicted. It arrived with pi as its real null declarer - pi has no embedded driver, so
+  // there was no interrupt primitive to reach and the pane mechanism did not exist. Adding
+  // `escape` to the terminal vocabulary gave pi the only mechanism it can ever have, the
+  // slot lost its last null declarer, and this test went red until `interrupt` moved here.
+  const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext", "interrupt"];
   for (const cap of [
     "permissionModes",
     "skills",

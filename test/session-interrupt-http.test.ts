@@ -30,12 +30,17 @@ const { claimNextPendingTurn, createPendingTurn, listPendingTurns } = await impo
 );
 const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { HARNESS_CAPABILITIES } = await import("../src/shared/harness-capabilities.ts");
+const { bindSession } = await import("../src/server/terminal/registry.ts");
 
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 type TaskManager = import("../src/server/tasks.ts").TaskManager;
 type QueueManager = import("../src/server/queue.ts").QueueManager;
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
+type SessionState = import("../src/shared/types.ts").SessionState;
+type Registry = import("../src/server/registry.ts").Registry;
+type PaneDeps = import("../src/server/actions.ts").PaneDeps;
+type TerminalExec = import("../src/server/terminal/exec.ts").TerminalExec;
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -187,12 +192,15 @@ test("a harness with no interrupt at all is a 400 carrying the capability's own 
   f.pending.stop();
 });
 
-test("a runtime this harness cannot be stopped on is refused by runtime, and says which", async () => {
-  // The state of the world this phase ships: Claude declares only its Agent SDK turn
-  // interruptible, so a pane-backed session is refused - with a sentence naming the runtime,
-  // because the same session dispatched the other way WOULD answer to the key. The next
-  // phase widens the declaration and this stops being a refusal without any route change.
-  const registry = new Registry();
+/**
+ * A pane-backed Claude session, registered the only way one is ever born: through discovery.
+ *
+ * `applyDiscovery` is what stamps `runtime: "terminal"` (`registry.ts:mergeDiscovered`), so
+ * building the `Session` literal by hand would be asserting against a shape production never
+ * produces. `working` is applied on top because the interrupt's queue drop is gated on a turn
+ * having genuinely been in flight.
+ */
+function paneSession(registry: Registry, state: "idle" | "working" = "working") {
   const discovered: DiscoveredSession = {
     syntheticId: "terminal-interrupt",
     agent: "claude",
@@ -204,40 +212,143 @@ test("a runtime this harness cannot be stopped on is refused by runtime, and say
     repoRoot: null,
     pid: 4242,
     tty: "ttys009",
-    terminals: [mkMuxHandle({ session: "pane session", paneId: "%deadpane" })],
+    terminals: [mkMuxHandle({ session: "pane session", paneId: "%1" })],
     startedAt: 0,
   };
   registry.applyDiscovery([discovered]);
-  const session = registry.snapshot().sessions[0]!;
+  const found = registry.snapshot().sessions[0]!;
+  // The passive path, because that is how a pane-backed session's state is actually known:
+  // re-derived from its transcript on a poll tick, not pushed by an event pump. Using the
+  // driver-event door would assert against a signal a terminal session never has.
+  //
+  // Two sweeps, and the second is not ceremony - a passive reading is recorded against the
+  // session key and folded in when discovery next merges, so a single sweep would leave the
+  // card on the `working` a freshly discovered session starts at. That is the real poller's
+  // order, and asserting through it is what makes an `idle` here mean what it means live.
+  registry.applyPassiveActivity(found, { state, lastActivity: 1 });
+  registry.applyDiscovery([discovered]);
+  return registry.getSession(found.id)!;
+}
+
+/**
+ * The real tmux adapter over a faked subprocess, so the assertion is on the ARGV the daemon
+ * would have run.
+ *
+ * `bindSession(session, exec)` rather than a hand-built `BoundPane`: the point of this test
+ * is the rendering of `escape` into one backend's own convention, and a fake pane would
+ * assert only that the string "escape" was passed to a function I also wrote. `inMode`
+ * drives the copy-mode probe, which tmux answers through `display-message`.
+ */
+function recordingPane(inMode = "0"): { deps: PaneDeps; argv: string[] } {
+  const argv: string[] = [];
+  const exec: TerminalExec = async (bin, args) => {
+    const ok = { code: 0, stderr: "", outcomeUnknown: false, overflowed: false };
+    if (args.includes("display-message")) return { ...ok, stdout: `${inMode} copy-mode` };
+    argv.push([bin, ...args].join(" "));
+    return { ...ok, stdout: "" };
+  };
+  return { argv, deps: { pane: (s) => bindSession(s, exec), capture: async () => null } };
+}
+
+test("a terminal session is stopped by writing Escape into its pane", async () => {
+  // The claim this phase makes, end to end through the route: a pane-backed Claude session
+  // is no longer refused, and what reaches the pane is `Escape` - NOT the operator's literal
+  // Ctrl+C, which the TUI reads as "clear the line" and, twice, as "quit". Asserting the
+  // rendered argv is the only way to tell those two apart; a 200 says nothing about it.
+  const registry = new Registry();
+  const session = paneSession(registry);
   assert.equal(session.runtime, "terminal");
-  const app = buildApp(registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager);
+  const pane = recordingPane();
+  const app = buildApp(
+    registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, pane.deps,
+  );
 
   const response = await interrupt(app, session.id);
-  assert.equal(response.status, 400);
-  const body = (await response.json()) as { error: string };
-  assert.match(body.error, /can't yet stop a Claude Code turn running in a terminal/);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, stoppedTurn: true, droppedQueued: 0 });
+  assert.deepEqual(pane.argv, ["tmux send-keys -t %1 -- Escape"]);
 });
 
-test("the fan-out's pane arm refuses in its own words, which is the next phase's edit point", async () => {
-  // Unreachable through the route today, because the capability gate above answers first.
-  // Called directly so the arm cannot rot into a silent success while nothing exercises it:
-  // this is the ONE function body the terminal phase replaces, and the contract it inherits
-  // is that a refusal here leaves the queue alone.
-  const f = fixture();
-  createPendingTurn({ id: "untouched", noteKey: f.key, text: "still queued", now: 1 });
-  f.registry.refreshPendingTurns(f.key);
-  const pane = { ...f.session, runtime: "terminal" } as Session;
-
-  const result = await interruptSession(pane, f.supervisor, f.pending);
-  assert.equal(result.ok, false);
-  assert.match(result.error ?? "", /cannot yet write an interrupt into a terminal session's pane/);
-  assert.equal(result.droppedQueued, undefined);
-  assert.deepEqual(f.interrupted, [], "the pane arm must never reach the embedded driver");
-  assert.deepEqual(
-    listPendingTurns(f.key).map((turn) => turn.text),
-    ["still queued"],
+test("a pane in copy-mode is refused with 409 and is NOT pulled out of it", async () => {
+  // The deliberate decision, and the one a later reader is most likely to "fix". Escape is
+  // the key that EXITS tmux copy-mode, so an ungated interrupt would yank the operator out
+  // of the scrollback they are reading AND leave the agent running - strictly worse than
+  // refusing. 409 rather than 500 because the cause is a person, and it clears when they
+  // leave the mode.
+  const registry = new Registry();
+  const session = paneSession(registry);
+  const pane = recordingPane("1");
+  const app = buildApp(
+    registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, pane.deps,
   );
-  f.pending.stop();
+
+  const response = await interrupt(app, session.id);
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { ok: boolean; error: string; paneBlocked: boolean };
+  assert.equal(body.ok, false);
+  assert.equal(body.paneBlocked, true);
+  assert.match(body.error, /copy-mode/, "the refusal names the mode the operator has to leave");
+  assert.deepEqual(pane.argv, [], "not one keystroke was attempted, so nothing cancelled the mode");
+});
+
+test("a pane interrupt that found no turn running leaves the queue alone", async () => {
+  // The terminal half of the race phase 1 closed for the driver. A card renders `working`
+  // from a poll tick, so it is always slightly behind; a turn that ended just before the
+  // request landed leaves the control live and the request legitimate, and yet nothing was
+  // stopped. Dropping durable outbox rows on the strength of that is data loss.
+  const registry = new Registry();
+  const session = paneSession(registry, "idle");
+  const pane = recordingPane();
+
+  const dropped: string[] = [];
+  const result = await interruptSession(session, undefined, {
+    dropQueued: (id) => { dropped.push(id); return 1; },
+  }, pane.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.stoppedTurn, false, "an idle pane session had no turn to stop");
+  assert.equal(result.droppedQueued, undefined);
+  assert.deepEqual(dropped, [], "nothing queued was deleted for a stop that did not happen");
+  // The Escape still went, because the reading is a tick old and the opposite race is real.
+  assert.deepEqual(pane.argv, ["tmux send-keys -t %1 -- Escape"]);
+});
+
+test("a session with no pane to write to is a 500, not a silent success", async () => {
+  const registry = new Registry();
+  const session = paneSession(registry);
+  const app = buildApp(
+    registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, { pane: () => null, capture: async () => null },
+  );
+
+  const response = await interrupt(app, session.id);
+  assert.equal(response.status, 500);
+  const body = (await response.json()) as { error: string };
+  assert.match(body.error, /no terminal pane/);
+});
+
+test("a harness with no interrupt mechanism at all is still refused by the route", async () => {
+  // The 400 arm survives this phase - it just has a different occupant. Every shipped
+  // harness can now be interrupted on some runtime, so the refusal is reached by taking the
+  // capability away, which is what a harness that genuinely cannot be stopped would declare.
+  const registry = new Registry();
+  const session = paneSession(registry);
+  const app = buildApp(registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager);
+  const prior = HARNESS_CAPABILITIES.claude.interrupt;
+  HARNESS_CAPABILITIES.claude.interrupt = null;
+  try {
+    const response = await interrupt(app, session.id);
+    assert.equal(response.status, 400);
+    const body = (await response.json()) as { error: string };
+    assert.match(body.error, /can't stop a Claude Code turn once it has started/);
+  } finally {
+    HARNESS_CAPABILITIES.claude.interrupt = prior;
+  }
 });
 
 test("a build with no supervisor answers rather than pretending the stop landed", async () => {

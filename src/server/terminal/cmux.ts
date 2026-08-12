@@ -94,6 +94,18 @@ export const CMUX_BIN: BinSpec = {
  */
 const KEY_NAMES: Record<Key, string> = {
   enter: "enter",
+  /**
+   * Measured live through `rpc surface.send_key` against a real surface's pty: `"escape"`
+   * delivers one 0x1B.
+   *
+   * cmux is laxer here than Ghostty - `esc`, `Escape` and `ESC` were all accepted too, and
+   * all four spellings produced the identical byte. That makes this row a CHOICE rather than
+   * the only option, and it is spelled the way this interface spells its own vocabulary, for
+   * the reason the header gives. The laxity is not general: `btab` and a nonsense name are
+   * both `invalid_params: Unknown key`, so the acceptance above is a real measurement rather
+   * than a backend that shrugs at anything.
+   */
+  escape: "escape",
   up: "up",
   down: "down",
   left: "left",

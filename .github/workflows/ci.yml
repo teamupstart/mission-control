@@ -253,6 +253,26 @@ jobs:
         if: steps.pw-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps chromium
 
+      # tmux, for `session-interrupt-terminal.spec.ts` and nothing else yet.
+      #
+      # That spec needs a session whose runtime is `terminal`, and there is exactly one way
+      # one comes into being: passive discovery correlating a real agent process on a real
+      # tty to a real multiplexer pane. tmux is the multiplexer that cannot be faked - its
+      # `BinSpec` declares `env: null`, so unlike `CMUX_BIN` there is no override to point
+      # at a stand-in - and a real pty is also what makes that spec's central assertion
+      # ("exactly one 0x1B arrived") a fact about the product rather than about a fixture.
+      #
+      # The spec skips itself when tmux is absent, so a contributor without it is not
+      # blocked. This step is what stops that skip from silently applying HERE, where the
+      # gate is supposed to hold.
+      #
+      # Guarded on `command -v` rather than installed unconditionally, in this file's own
+      # terms: `apt-get update` is ~10s of billed vCPU on EVERY shard, and it buys nothing
+      # on an image that already carries tmux. The guard costs milliseconds and pays for
+      # itself the moment the image gains it.
+      - name: Install tmux for the terminal-runtime e2e spec
+        run: command -v tmux || { sudo apt-get update && sudo apt-get install -y tmux; }
+
       - name: Build
         run: npm run build
 

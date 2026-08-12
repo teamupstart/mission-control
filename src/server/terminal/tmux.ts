@@ -47,6 +47,9 @@ import type {
  */
 const KEY_NAMES: Record<Key, string> = {
   enter: "Enter",
+  // Capitalized like every other name here, which is tmux's own convention for a named key.
+  // Measured: `send-keys -t <pane> -- Escape` delivers exactly one 0x1B to the pane's pty.
+  escape: "Escape",
   up: "Up",
   down: "Down",
   left: "Left",

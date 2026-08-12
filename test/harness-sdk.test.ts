@@ -79,18 +79,24 @@ test("an interruptible sdk runtime is the same fact as the driver that performs 
   }
 });
 
-test("a harness with no driver declares no interrupt, so the null path is a real one", () => {
-  // The complement, and the reason `interrupt` stays off `harness-capabilities.test.ts`'s
-  // `BY_FIXTURE` list: pi exercises the null for real rather than through a stub. Nothing
-  // here says a driverless harness can NEVER be interrupted - the pane mechanism is a later
-  // phase - only that this build ships no way to, and says so.
+test("a harness with no driver is interruptible only in its pane", () => {
+  // The complement of the test above, and the pair is what keeps the two mechanisms from
+  // being confused for one. A driverless harness has no `query.interrupt()` to reach, so if
+  // it declares an interrupt at all the runtime list must be pane-only - an `"sdk"` here
+  // would be a capability the fan-out routes to a supervisor that will never have a handle.
+  //
+  // This is also where `interrupt` left `harness-capabilities.test.ts`'s `BY_FIXTURE` list:
+  // pi used to exercise the slot's null for real, and `escape` gave it the one mechanism it
+  // can ever have.
   const driverless = AGENT_TYPES.filter((agent) => sdkFor(agent) === null);
   assert.ok(driverless.length > 0, "no harness exercises the driverless path any more");
   for (const agent of driverless) {
-    assert.equal(
-      capabilitiesFor(agent).interrupt,
-      null,
-      `${agent}: has no driver and no pane interrupt exists yet, so this must be null`,
+    const spec = capabilitiesFor(agent).interrupt;
+    if (spec === null) continue; // A harness with no mechanism at all is still legal.
+    assert.deepEqual(
+      spec.runtimes,
+      ["terminal"],
+      `${agent}: has no driver, so a pane keystroke is the only interrupt it can offer`,
     );
   }
 });

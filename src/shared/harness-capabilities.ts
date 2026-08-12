@@ -498,9 +498,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     multiRepoDispatch: { launchArgs: (dirs) => dirs.flatMap((dir) => ["--add-dir", dir]), sdk: true },
     // The embedded driver calls the vendor SDK's own `query.interrupt()`
     // (`harness/claude/sdk.ts`), which aborts the running turn and leaves the conversation
-    // open. `terminal` is absent because the pane mechanism - `Escape` into the bound
-    // window - does not exist yet; the key is not in the terminal vocabulary at all.
-    interrupt: { runtimes: ["sdk"] },
+    // open. `terminal` is `Escape` into the bound pane, measured live against the TUI: a
+    // streaming turn stops and the session takes a next prompt.
+    interrupt: { runtimes: ["terminal", "sdk"] },
   },
   codex: {
     id: "codex",
@@ -620,8 +620,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       sdk: true,
     },
     // `turn/interrupt` over the app-server RPC (`harness/codex/sdk.ts`), which the driver
-    // already tolerates being sent a moment late. `terminal` is absent for Claude's reason.
-    interrupt: { runtimes: ["sdk"] },
+    // already tolerates being sent a moment late. `terminal` is `Escape`, measured live: the
+    // TUI's own footer advertises "esc to interrupt", and it answers with
+    // "Conversation interrupted" while the session stays open.
+    interrupt: { runtimes: ["terminal", "sdk"] },
   },
   pi: {
     id: "pi",
@@ -691,11 +693,18 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // multi-repo task that launches an agent which cannot write to half of it. Measuring
     // it later is a one-line change with its evidence attached.
     multiRepoDispatch: null,
-    // Null, and it is the slot's real null declarer: pi has no embedded driver
-    // (`runtimes` is terminal-only, `HARNESSES.pi.sdk` is null), so there is no interrupt
-    // primitive to reach, and the pane mechanism does not exist for any harness yet. The
-    // card draws a disabled control carrying that sentence rather than a key that no-ops.
-    interrupt: null,
+    // Terminal-only, which is the whole list pi has: it has no embedded driver
+    // (`HARNESSES.pi.sdk` is null), so the pane keystroke is not one of two mechanisms here,
+    // it is the only possible one.
+    //
+    // Measured rather than inherited from the other two, because nothing in pi's docs says
+    // which key aborts a turn. Escape into a running pi turn prints "Operation aborted" and
+    // writes `stopReason: "aborted"` into the transcript - the exact record `pi/meta.ts`
+    // already reads - and the session then answers a follow-up prompt normally.
+    //
+    // This is the declaration that took `interrupt` off `harness-capabilities.test.ts`'s
+    // real-null-declarer list; the slot's null path is a named fixture there now.
+    interrupt: { runtimes: ["terminal"] },
   },
 };
 

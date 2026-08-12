@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { GHOSTTY_BIN, binPresent, resolveBin } from "../src/server/terminal/bin.ts";
 import { asQuote, ghosttyEmulator, parseSurfaces } from "../src/server/terminal/ghostty.ts";
-import { ALL_KEYS } from "../src/server/terminal/types.ts";
+import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
 
 interface Call {
   bin: string;
@@ -91,8 +91,17 @@ test("every key renders into Ghostty's own convention, which is a third one", as
   // different commands - which is precisely the case `Key` exists for. Verified by recording
   // pty bytes: `send key` accepts a small table of named specials and silently does NOTHING
   // for a plain character, while `up` / `arrow_up` / `page_up` are all rejected outright.
-  const expected: Record<string, string> = {
+  //
+  // `Record<Key, string>` and not `Record<string, string>`, so a key added to the vocabulary
+  // fails TYPECHECK here the way it does in the four adapters. As a string map this table was
+  // the one place in the chain that let a new key through to a runtime `undefined` - and the
+  // failure it produced was `script.includes(undefined)` throwing about a searchString, which
+  // names neither the key nor the table it is missing from.
+  const expected: Record<Key, string> = {
     enter: 'send key "enter"',
+    // A bare 0x1B has no CSI form - `csi:X` is `ESC [ X` - so Escape joins Enter in the
+    // named group. Measured against a live surface: `escape` is accepted, `esc` is not.
+    escape: 'send key "escape"',
     up: 'perform action "csi:A"',
     down: 'perform action "csi:B"',
     left: 'perform action "csi:D"',

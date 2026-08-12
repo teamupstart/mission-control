@@ -398,16 +398,29 @@ wrapping up. Nothing is stopped in that case and nothing is dropped, and the car
 delivered." Silently deleting queued messages there would destroy work that was about to be
 delivered normally, not work anybody asked to restart.
 
-**The key you press and the key the agent receives are not the same.** In both the Claude
-Code and Codex TUIs, <kbd>Esc</kbd> interrupts a running turn while <kbd>⌃</kbd><kbd>C</kbd>
+**The key you press and the key the agent receives are not the same.** In the Claude Code,
+Codex and Pi TUIs alike, <kbd>Esc</kbd> interrupts a running turn while <kbd>⌃</kbd><kbd>C</kbd>
 clears the input line and, pressed twice, quits the CLI - so forwarding your literal
 <kbd>⌃</kbd><kbd>C</kbd> into a terminal would kill the session it was meant to interrupt.
-An Agent SDK session is stopped through its driver's own interrupt instead, which is why the
-control is offered there first.
+What Mission Control writes into a pane is <kbd>Esc</kbd>. An Agent SDK session is stopped
+through its driver's own interrupt instead. One gesture, two mechanisms, and the card picks
+the right one from the session's runtime.
 
-Terminal-runtime cards show the button **disabled with the reason**, not hidden: the pane
-mechanism is not built yet, and a control that vanished would teach you the gesture does not
-exist rather than that it is coming.
+Both runtimes are covered, on every agent that has them. Pi is terminal-only - it has no
+embedded driver - so the pane keystroke is not one of two options for it but the only one
+there can be.
+
+**A terminal interrupt is fire-and-forget.** Nothing on that path reports back that the turn
+actually ended: the keystroke is written and the pane is not asked. The card shows an
+optimistic "interrupting" that the next real reading of the session replaces. An Agent SDK
+interrupt is confirmed by the driver, so it settles immediately.
+
+**A pane in tmux copy-mode refuses, and says so.** Copy-mode routes every key to tmux instead
+of the agent, so the interrupt is declined rather than silently swallowed - and it is not
+cancelled on your behalf, because <kbd>Esc</kbd> is the key that *leaves* copy-mode. Sending
+it there would pull you out of the scrollback you were reading and leave the agent running,
+which is worse on both counts. Leave copy-mode (<kbd>q</kbd>, or scroll to the bottom) and
+press again.
 
 <kbd>⌃</kbd><kbd>C</kbd> is also Copy on Windows and Linux, which the desktop app inherits.
 **Whenever text is selected the browser keeps the keystroke** and performs the copy - whether

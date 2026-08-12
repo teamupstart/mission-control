@@ -824,6 +824,15 @@ function DispatchModal({
     on && mode.kind === "new" && launchMode === "single";
   const guidedApplies = guidedAppliesWith(guided);
   /**
+   * Whether the switch is offered at all: "would a pass apply here if the preference were on".
+   *
+   * The same predicate, asked with the preference held true, so the switch appears exactly
+   * where flipping it does something. Gating it on anything else is how it ends up live and
+   * inert - which is the failure the comment beside it warns about, and Ensemble was the one
+   * launch mode where it was true.
+   */
+  const guidedOfferable = guidedAppliesWith(true);
+  /**
    * Where the guided pass stands, and which option in the current question is lit.
    *
    * HERE rather than on `DispatchLayer`, unlike `launchMode` and the draft: the layer
@@ -1878,10 +1887,13 @@ function DispatchModal({
         {/* The preference, beside the launch mode and for its reason: both are properties of
             the dialog rather than fields in it. Turning it ON starts a pass here and now -
             arming one for the NEXT opening is a switch that appears to do nothing, which is
-            a switch nobody flips twice - and turning it OFF hands back today's form
-            mid-dispatch, keeping every answer already given. Absent on an edit, which never
-            runs a pass: those answers exist, and re-asking them would be a quiz. */}
-        {!editing && (
+            a switch nobody flips twice.
+            Offered exactly where that is true, off the SAME predicate the pass itself reads,
+            so the two cannot drift: absent on an edit, whose answers already exist, and
+            absent in Ensemble, which replaces Crew and After work outright - a switch
+            offering to ask about controls that are not on screen is the inert switch that
+            sentence is about. Settings is the durable home for it either way (phase 3). */}
+        {guidedOfferable && (
           <GuidedToggle
             on={guided}
             onChange={(next) => {

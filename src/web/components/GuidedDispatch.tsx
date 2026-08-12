@@ -33,9 +33,15 @@ export interface GuidedOption {
   short?: string;
   /** One line under the label saying what choosing it means. */
   sub?: string | null;
-  /** A right-aligned note: what a harness would launch with, a workflow's version. */
-  note?: string | null;
-  /** The harness accent, painted as the dot the rest of the app paints it as. */
+  /**
+   * The harness accent, painted as the dot the rest of the app paints it as.
+   *
+   * There is deliberately no right-aligned `note` column beside these, though the mockup had
+   * one. The two things it would have carried are already where they belong: a harness's
+   * defaults read better as the second line (`sub`) than as a cramped mono column, and a
+   * workflow's version stays inside `label` because that is what makes this list's copy
+   * byte-identical to the `<select>`'s - which is a property worth more than the column.
+   */
   accent?: string | null;
   /**
    * The letter that takes this option, or null when every letter in its text was already
@@ -239,11 +245,6 @@ export function GuidedPicker({
                 )}
                 {option.label}
               </span>
-              {option.note ? (
-                <span className="dispatch-guided-note">{option.note}</span>
-              ) : (
-                <span />
-              )}
               {option.sub && <span className="dispatch-guided-sub">{option.sub}</span>}
             </button>
           </Tooltip>

@@ -389,8 +389,18 @@ test("Ensemble mode never runs the pass", async ({ dashboard }) => {
   await expect(rail(dialog)).toBeHidden();
   await expect(dialog.getByRole("listbox")).toHaveCount(0);
 
-  // And coming back to Single does not restart it: the pass ended, it did not pause.
+  // And the switch goes with them. Left on screen it would be live and inert - clicking it
+  // saves the preference and starts nothing, which is the one thing the switch exists to
+  // avoid being.
+  await expect(dialog.getByRole("switch", { name: "Guided" })).toHaveCount(0);
+
+  // Back in Single it is offered again, still on - but it does not restart the pass, which
+  // ended rather than paused.
   await dialog.getByRole("radio", { name: "Single agent" }).click();
+  await expect(dialog.getByRole("switch", { name: "Guided" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
   await expect(rail(dialog)).toBeHidden();
 });
 

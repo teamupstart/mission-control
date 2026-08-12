@@ -7272,7 +7272,7 @@ button.dispatch-guided-rung .dispatch-guided-num {
 }
 .dispatch-guided-option {
   display: grid;
-  grid-template-columns: 19px minmax(0, 1fr) auto;
+  grid-template-columns: 19px minmax(0, 1fr);
   align-items: center;
   gap: 7px;
   padding: 6px 7px;
@@ -7313,11 +7313,6 @@ button.dispatch-guided-rung .dispatch-guided-num {
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dispatch-guided-note {
-  font: 10px var(--mono);
-  color: var(--dim);
   white-space: nowrap;
 }
 .dispatch-guided-sub {

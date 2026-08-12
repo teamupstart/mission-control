@@ -72,7 +72,9 @@ Kind is asked before After work: by the time that question is on screen a scout 
 moved the selection to **None**, and the question says so rather than silently landing there.
 
 Two dispatches never run it: editing a task already in the backlog, whose answers exist
-already, and **Ensemble**, whose body replaces Crew and After work outright.
+already, and **Ensemble**, whose body replaces Crew and After work outright. The switch is not
+offered in either - it appears exactly where flipping it would do something, so it is never a
+control that saves a preference and visibly does nothing. Settings is its durable home.
 
 ## Attaching more than one repository
 

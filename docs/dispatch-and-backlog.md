@@ -59,6 +59,12 @@ would, and everything else recedes. A strip under the header carries the answers
 button that goes back to its question, and it leaves when the pass does - so the form you
 finish in is the ordinary one.
 
+**The mouse works too, everywhere it looks like it should.** Click an option in the list, or
+click an answered rung to go back to it, or ignore the list entirely and use the field's own
+control - the question it is about stays live, and using it answers it and moves the pass on
+just as the keyboard would. **Clear** puts the form back where it opened, which for a guided
+dispatch means back at the first question.
+
 **It is a different way to fill the form, never a second opinion about what a dispatch
 means.** Every answer is written through the same control the form offers, so the rules below
 still apply exactly as they are written - including the kind-to-after-work rule, which is why

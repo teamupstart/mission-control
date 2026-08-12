@@ -1154,6 +1154,27 @@ function DispatchModal({
     return true;
   }
 
+  /**
+   * The active question was answered through the field's OWN control rather than the list
+   * floating under it, and the pass takes it.
+   *
+   * The list is positioned below its control, not over it, so the `<select>` a question is
+   * about stays visible and clickable throughout - and a mouse user reaching for the control
+   * they can see is doing the reasonable thing. Left to its own `onChange` it would write the
+   * draft correctly and leave the pass parked on a question it had just answered, with the
+   * rail still calling it unanswered and the list still open. So the two routes converge here
+   * instead: the value is written by the option's own `commit`, which IS that `onChange`, and
+   * the pass then advances exactly as if the option had been clicked.
+   *
+   * Returns false when this step is not the live one - an ordinary form, another question's
+   * field, an edit - and the caller runs its own handler untouched.
+   */
+  function guidedTakeValue(id: GuidedStepId, value: string): boolean {
+    if (guidedStep?.id !== id) return false;
+    const at = guidedList.findIndex((option) => option.value === value);
+    return at < 0 ? false : guidedTake(at);
+  }
+
   function guidedLeave(): void {
     setPass(endGuidedPass(pass));
     setHighlight(null);
@@ -1434,6 +1455,20 @@ function DispatchModal({
     revokeAttachments(draft.attachments);
     onRevert();
     setError(null);
+    // A pass is part of how a guided dispatch OPENED, so putting the form back where it
+    // started puts the questions back too - rather than leaving a half-walked strip on
+    // screen over a form that no longer holds any of its answers.
+    //
+    // Answering the Kind question is enough to enable this button, so this is reachable
+    // rather than theoretical, and the focus call below is what made it worth handling:
+    // the caret would land in the task box while the pass was still up, and `handleGuidedKey`
+    // stands down for a text field - so every remaining key would type instead of answering
+    // and the strip would have no way out but the Guided switch.
+    if (guidedRunning) {
+      setPass(startGuidedPass());
+      setHighlight(null);
+      return;
+    }
     intentRef.current?.focus();
   }
 
@@ -1963,9 +1998,13 @@ function DispatchModal({
                       // Switching harness drops model and effort overrides with it: neither
                       // selection is portable across harnesses. Back to the defaults, which are
                       // per-agent and always right for the harness now chosen.
-                      onChange={(e) =>
-                        update({ agent: e.target.value as AgentType, model: "", effort: "" })
-                      }
+                      onChange={(e) => {
+                        const agent = e.target.value as AgentType;
+                        // While the pass is asking this question, using the control it is
+                        // about answers it - the same write, and the pass moves on.
+                        if (guidedTakeValue("harness", agent)) return;
+                        update({ agent, model: "", effort: "" });
+                      }}
                     >
                     {/* Driven off the union, so a harness that exists cannot be one the
                         operator has no way to pick: a hand-written pair of options is a
@@ -1991,6 +2030,7 @@ function DispatchModal({
                     value={draft.kind}
                     onChange={(e) => {
                       const kind = e.target.value as TaskKind;
+                      if (guidedTakeValue("kind", kind)) return;
                       update({ kind, ...afterWorkForKind(kind) });
                     }}
                   >
@@ -2085,6 +2125,7 @@ function DispatchModal({
                 }
                 onChange={(event) => {
                   const value = event.target.value;
+                  if (guidedTakeValue("afterWork", value)) return;
                   // Chosen by hand, so a later kind switch must not hand back what scout
                   // put aside and revert this underneath the operator.
                   stashedWorkflowId.current = NO_STASH;

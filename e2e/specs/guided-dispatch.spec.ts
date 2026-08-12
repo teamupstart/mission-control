@@ -243,6 +243,61 @@ test("scout preselects None through the pass, and ship hands the stash back", as
   await expect(dialog.getByText("Foreman complete")).toBeVisible();
 });
 
+test("using the question's own control answers it and moves the pass on", async ({
+  dashboard,
+}) => {
+  const dialog = await openGuided(dashboard);
+
+  // The list hangs BELOW its control rather than over it, so the `<select>` a question is
+  // about stays visible and clickable - and a mouse user reaching for the control they can
+  // see is doing the reasonable thing. Left to its own handler it wrote the draft and left
+  // the pass parked on a question it had just answered, with the list still open over a form
+  // that had already moved.
+  await kindSelect(dialog).selectOption("scout");
+
+  await expect(rail(dialog).getByRole("button", { name: "Kind: scout" })).toBeVisible();
+  await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
+  await expect(picker(dialog, "What kind of run is this?")).toHaveCount(0);
+
+  // The same for the other two, including the one whose value the Kind answer just moved.
+  await agentSelect(dialog).selectOption("pi");
+  await expect(rail(dialog).getByRole("button", { name: "Harness: Pi" })).toBeVisible();
+  await expect(picker(dialog, "What runs after the work?")).toBeVisible();
+
+  await afterWorkSelect(dialog).selectOption("__default");
+
+  // Last question, so the pass is spent and the form is the ordinary one.
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog.getByRole("listbox")).toHaveCount(0);
+  await expect(taskBox(dialog)).toBeFocused();
+  await expect(afterWorkSelect(dialog)).toHaveValue("__default");
+});
+
+test("Clear during a pass restarts it rather than stranding the keyboard", async ({
+  dashboard,
+}) => {
+  const dialog = await openGuided(dashboard);
+  await dashboard.keyboard.press("t");
+  await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
+
+  // Answering Kind is enough to enable Clear, so this is reachable rather than theoretical.
+  const clear = dialog.getByRole("button", { name: "Clear" });
+  await expect(clear).toBeEnabled();
+  await clear.click();
+
+  // Back to the first question over a form that holds none of the old answers. The bug this
+  // pins put the caret in the task box with the strip still up - and the pass stands down for
+  // a text field, so every remaining key typed instead of answering.
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await expect(rail(dialog).getByRole("button", { name: "Kind: scout" })).toHaveCount(0);
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(taskBox(dialog)).not.toBeFocused();
+
+  // And the keyboard still drives it.
+  await dashboard.keyboard.press("t");
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+});
+
 test("an answered rung jumps back to its question", async ({ dashboard }) => {
   const dialog = await openGuided(dashboard);
 

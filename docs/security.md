@@ -27,9 +27,12 @@ nothing in it may authorize a path - the daemon generates every path it opens fr
 key it decoded itself, and re-verifies containment on every read. An archived report may not
 execute or fetch: a non-executing HTML parser - run with scripting disabled, so `<noscript>`
 content is checked as the markup a JavaScript-off browser would act on - refuses scripts,
-event handlers, forms, frames, embeds, `<base>`, meta refresh, SVG animation that could
-rewrite a checked attribute, external and protocol-relative URLs in every URL-bearing
-attribute and inside stylesheets, and any relative link that leaves the report directory.
+event handlers, forms, frames, embeds, meta refresh, SVG animation that could rewrite a
+checked attribute, external and protocol-relative URLs in every URL-bearing attribute and
+inside stylesheets, and any relative link that leaves the report directory. It also refuses
+anything that would re-root relative resolution - `<base>` and `xml:base` - because a
+contained-looking reference under a moved base is a request the containment check cannot
+see.
 Artifact bodies are served as attachments with `nosniff` and a `default-src 'none'; sandbox`
 policy rather than rendered on the daemon's origin, streamed from the handle the containment
 check opened rather than reopened by name. And a

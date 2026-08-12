@@ -397,3 +397,35 @@ test("ordinary stylesheet strings are not mistaken for references", () => {
   );
   assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result.problems));
 });
+
+test("xml:base cannot re-root a relative reference past the containment check", () => {
+  // The same hazard `<base>` is a forbidden element for, in attribute form: the link string
+  // is a contained relative reference and the request is not. `urlProblem` reads the string,
+  // so nothing downstream can catch this - it has to be refused where the re-rooting is.
+  for (const frag of [
+    `<svg xml:base="https://evil.example/"><image xlink:href="chart.png"/></svg>`,
+    `<div xml:base="https://evil.example/"><a href="x.html">y</a></div>`,
+    `<svg XML:BASE="https://evil.example/"><image xlink:href="chart.png"/></svg>`,
+    `<template><svg xml:base="https://evil.example/"><image xlink:href="chart.png"/></svg></template>`,
+  ]) {
+    const result = validateStaticReportHtml(
+      `<!doctype html><html><body>${frag}</body></html>`,
+      new Set(["report.html", "chart.png", "x.html"]),
+    );
+    assert.equal(result.ok, false, frag);
+    if (result.ok) continue;
+    assert.ok(
+      result.problems.some((problem) => problem.code === "forbidden_attribute"),
+      `${frag} should be refused as a forbidden attribute`,
+    );
+  }
+});
+
+test("the xml: attributes that change nothing about resolution are still allowed", () => {
+  // Banning the whole prefix would be the lazy fix and would refuse honest reports:
+  // xml:space is ordinary in inline SVG text and xml:lang is an accessibility affordance.
+  const result = validateStaticReportHtml(
+    `<!doctype html><html><body><svg><text xml:space="preserve">a  b</text><title xml:lang="en">flow</title></svg></body></html>`,
+  );
+  assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result.problems));
+});

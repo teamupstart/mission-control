@@ -50,9 +50,10 @@ synchronised folder, its contents go wherever that folder goes.
 - `report/report.html` - one self-contained, static page: the question, the finding, and the
   evidence. It works from `file://`, uses inline CSS and inline SVG, and makes no network
   request. A non-executing parser checks that before the archive is indexed: scripts, event
-  handlers, forms, frames, embeds, `<base>`, meta refresh, SVG animation, external and
-  protocol-relative URLs anywhere - including inside a stylesheet's `url()`, `@import`, or
-  `image-set()` - and relative links that leave the report directory are all refused.
+  handlers, forms, frames, embeds, anything that re-roots relative URLs (`<base>`,
+  `xml:base`), meta refresh, SVG animation, external and protocol-relative URLs anywhere -
+  including inside a stylesheet's `url()`, `@import`, or `image-set()` - and relative links
+  that leave the report directory are all refused.
 - `report/` - every bounded file produced beside the report, keeping its relative path so the
   report's own links to a CSV, an image, or a log still resolve.
 - `artifacts/<repo-slot>/…` - supporting files the scout explicitly named, under a generated

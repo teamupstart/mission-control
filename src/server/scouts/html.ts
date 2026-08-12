@@ -79,8 +79,24 @@ const URL_ATTRIBUTES = new Set([
   "xlink:href",
 ]);
 
-/** Anything that only exists to run code or to build content at runtime. */
-const FORBIDDEN_ATTRIBUTES = new Set(["srcdoc"]);
+/**
+ * Anything that only exists to run code, build content at runtime, or move the ground every
+ * other check in this file stands on.
+ *
+ * `xml:base` is the second kind, and it is here for exactly the reason `<base>` is a
+ * forbidden ELEMENT: it re-roots relative URL resolution for its subtree, so the containment
+ * proof below stops describing what a browser will actually fetch. `urlProblem` reads the
+ * literal attribute string and answers "this is a contained relative reference"; with
+ * `<svg xml:base="https://evil.example/"><image xlink:href="chart.png"/></svg>` that answer
+ * is true about the string and false about the request. Browsers still implement XML Base for
+ * inline SVG, and the archived report is opened from `file://` with nothing re-checking it,
+ * so a validator that let this through would be making a promise it cannot keep.
+ *
+ * Only `xml:base`, not the whole `xml:` prefix: `xml:space="preserve"` is ordinary in inline
+ * SVG text and `xml:lang` is an accessibility affordance. Neither changes what a reference
+ * resolves against, and refusing them would reject honest reports for nothing.
+ */
+const FORBIDDEN_ATTRIBUTES = new Set(["srcdoc", "xml:base"]);
 
 /** Not content: their text is code, styling, or a fallback for a runtime this never has. */
 const NON_CONTENT_ELEMENTS = new Set(["script", "style", "noscript", "template", "iframe"]);

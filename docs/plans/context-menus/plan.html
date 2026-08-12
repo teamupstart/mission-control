@@ -1,0 +1,1001 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Context menus &middot; plan</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --panel: #f6f8fa;
+        --panel-2: #eef1f5;
+        --border: #d8dee4;
+        --border-soft: #e6eaef;
+        --fg: #1f2328;
+        --muted: #4a5058;
+        --dim: #6b727c;
+        --accent: #0a68d1;
+        --good: #1a7f4b;
+        --warn: #9a6700;
+        --bad: #b3261e;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0a0c0f;
+          --panel: #14181e;
+          --panel-2: #171c23;
+          --border: #232a33;
+          --border-soft: #1b2129;
+          --fg: #e7ebf1;
+          --muted: #b3bcc9;
+          --dim: #8b94a3;
+          --accent: #4a9eff;
+          --good: #35c08a;
+          --warn: #f6a733;
+          --bad: #f85149;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      .page {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 48px 28px 120px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin: 0 0 10px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+        letter-spacing: -0.02em;
+        margin: 0 0 16px;
+      }
+      h2 {
+        font-size: 21px;
+        letter-spacing: -0.01em;
+        margin: 44px 0 12px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border-soft);
+      }
+      h3 {
+        font-size: 16px;
+        margin: 26px 0 8px;
+      }
+      p {
+        margin: 0 0 14px;
+      }
+      ul,
+      ol {
+        margin: 0 0 14px;
+        padding-left: 24px;
+      }
+      li {
+        margin: 0 0 8px;
+      }
+      a {
+        color: var(--accent);
+      }
+      strong {
+        font-weight: 640;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.86em;
+        background: var(--panel-2);
+        border: 1px solid var(--border-soft);
+        border-radius: 4px;
+        padding: 0.5px 5px;
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        margin: 0 0 16px;
+      }
+      pre code {
+        background: none;
+        border: 0;
+        padding: 0;
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        margin: 0 0 18px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13.5px;
+      }
+      th {
+        text-align: left;
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+        padding: 10px 14px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+      td {
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--border-soft);
+        color: var(--muted);
+        vertical-align: top;
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      td:first-child {
+        color: var(--fg);
+      }
+      .lede {
+        font-size: 16.5px;
+        color: var(--muted);
+      }
+      .callout {
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        background: var(--panel);
+        border-radius: 0 9px 9px 0;
+        padding: 14px 18px;
+        margin: 0 0 20px;
+        font-size: 14px;
+      }
+      .callout.good {
+        border-left-color: var(--good);
+      }
+      .callout.warn {
+        border-left-color: var(--warn);
+      }
+      .callout p:last-child {
+        margin-bottom: 0;
+      }
+      .rec {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--good);
+        border: 1px solid var(--good);
+        border-radius: 999px;
+        padding: 0 7px;
+        vertical-align: 1.5px;
+        margin-left: 6px;
+      }
+      figure {
+        margin: 0 0 22px;
+      }
+      figure svg {
+        width: 100%;
+        height: auto;
+        display: block;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--panel);
+      }
+      figcaption {
+        font-size: 12.5px;
+        color: var(--dim);
+        margin-top: 9px;
+      }
+      .svg-box {
+        fill: var(--panel-2);
+        stroke: var(--border);
+      }
+      .svg-box-accent {
+        fill: none;
+        stroke: var(--accent);
+        stroke-width: 1.5;
+      }
+      .svg-box-dead {
+        fill: none;
+        stroke: var(--dim);
+        stroke-dasharray: 4 3;
+      }
+      .svg-t {
+        fill: var(--fg);
+        font: 12px var(--sans);
+      }
+      .svg-t-sm {
+        fill: var(--dim);
+        font: 10.5px var(--mono);
+      }
+      .svg-t-hd {
+        fill: var(--dim);
+        font: 700 10px var(--sans);
+        letter-spacing: 0.09em;
+      }
+      .svg-arrow {
+        stroke: var(--accent);
+        stroke-width: 1.5;
+        fill: none;
+      }
+      .svg-arrow-dim {
+        stroke: var(--dim);
+        stroke-width: 1.5;
+        fill: none;
+        stroke-dasharray: 4 3;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <p class="eyebrow">Mission Control &middot; plan</p>
+      <h1>Context menus</h1>
+
+      <p class="lede">
+        Right-click anywhere in Mission Control and get the actions that belong to the thing
+        under the cursor: <code>Copy</code> and <code>Copy URL</code> on a link,
+        <code>Copy path</code> on a file path, <code>Copy message</code> and
+        <code>Quote in reply</code> on a transcript turn, <code>Copy branch</code> on a session
+        card.
+      </p>
+
+      <div class="callout good">
+        <p>
+          <strong>Open <a href="mockups.html">mockups.html</a> - that is the page to review.</strong>
+          Every menu in it is live: right-click the transcript, the card and the diff and the
+          real proposed menu opens with the real proposed items, and choosing one really writes
+          your clipboard.
+        </p>
+        <p>
+          <strong>Section 3 is the one to actually use.</strong> It is a selection playground:
+          drag a selection in a conversation, right-click it, and a live panel shows what the
+          resolver sees while the real composer receives what <code>Quote in reply</code>
+          produces. Presets set up the awkward selections (across two turns, inside a code
+          block, part of a link, whitespace only) and a Chat/Terminal toggle re-renders the
+          same turns into the window's other markup, so you can confirm selection behaves
+          identically in both.
+        </p>
+        <p>
+          The mockup is not a drawing. It runs the proposed two-tier resolver, and it is driven
+          headlessly through <strong>57 assertions</strong> - 22 over the target matrix below,
+          35 over selection behaviour - including the negative ones that matter (prose beside a
+          URL must not offer <code>Copy URL</code>; a shell command in a tool chip must not
+          offer <code>Copy absolute path</code>; a whitespace-only selection must not offer
+          <code>Copy</code>; <code>Shift</code>+right-click must fall through). Eight of the
+          constraints below exist because they broke that prototype first.
+        </p>
+      </div>
+
+      <h2>What selecting text does</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>You did this</th>
+              <th>The menu offers</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Selected a phrase, right-clicked <strong>inside</strong> it</td>
+              <td>
+                <code>Copy</code> <em>(selection)</em> · <code>Copy message</code> ·
+                <code>Quote in reply</code> <em>(selection)</em> · <code>Copy from here</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Right-clicked <strong>outside</strong> the selection</td>
+              <td>
+                The selection <strong>clears</strong> first, so no <code>Copy</code> - just
+                <code>Copy message</code> · <code>Quote in reply</code> ·
+                <code>Copy from here</code>. This is what every browser does, and it is what
+                stops <code>Copy</code> writing something the reader did not point at.
+              </td>
+            </tr>
+            <tr>
+              <td>Selected <strong>across two turns</strong></td>
+              <td>
+                <code>Copy</code> <em>(raw, exactly what &#8984;C gives)</em> ·
+                <code>Copy text</code> <em>(chrome stripped)</em> · <code>Copy message</code> ·
+                <code>Quote in reply</code> <em>(2 turns, attributing each speaker)</em> ·
+                <code>Copy from here</code>. A quote that silently merges two voices into one
+                paragraph is a quote that misleads.
+              </td>
+            </tr>
+            <tr>
+              <td>Selected only whitespace</td>
+              <td>Treated as no selection.</td>
+            </tr>
+            <tr>
+              <td>Right-clicked the <strong>composer</strong></td>
+              <td>
+                <code>Cut</code> · <code>Copy</code> · <code>Paste</code> ·
+                <code>Paste as quote</code> - see constraints 11 and 12.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Quoting clips the Range to each turn's <strong>body</strong> rather than splitting a
+        string, so a selection that starts mid-sentence in one turn and ends mid-sentence in the
+        next quotes exactly those two fragments under their own speakers - see constraint 14 for
+        why the body and not the turn.
+      </p>
+      <p>
+        <code>Copy</code> deliberately does not do that clipping: it returns exactly what the
+        browser would put on the clipboard for that selection, chrome and all, because a
+        <code>Copy</code> that quietly differs from <kbd>&#8984;C</kbd> is a <code>Copy</code>
+        you cannot trust. <strong><code>Copy text</code> is the cleaned second item</strong>
+        (decision Q1) - and it costs nothing when it would say nothing, because a selection
+        inside one turn's prose produces a payload identical to <code>Copy</code>'s and the
+        existing dedupe rule drops it. It appears exactly when it has something to offer: a
+        selection that crossed a turn boundary.
+      </p>
+      <p>
+        It lives in tier 1's plain-selection branch rather than tier 2 on purpose. On a link,
+        tier 1 already spends three rows, and a fourth container row would push that menu past
+        the six-item cap the two-tier rule exists to hold.
+      </p>
+
+      <h2>Why this is not a nicety</h2>
+      <p>
+        There is no <code>onContextMenu</code> handler anywhere in <code>src/</code>. That is
+        not the interesting part. The interesting part is what the two builds do with the gap:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Build</th>
+              <th>Right-click on selected text today</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Browser (<code>npm run dev</code>, daemon-served <code>dist/web</code>)</td>
+              <td>Chromium's native menu. Copy works.</td>
+            </tr>
+            <tr>
+              <td><strong>Electron desktop app</strong></td>
+              <td><strong>Nothing. No menu appears at all.</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Electron ships no default context menu; an app has to build one.
+        <code>src/main/menu.ts</code> installs an application menu and
+        <code>src/main/tray.ts</code> a tray menu, and neither is a <code>webContents</code>
+        context menu. So in the packaged app there is no Copy, no Paste, and no Copy Link
+        Address on right-click - only the <code>editMenu</code> role's keyboard accelerators.
+        The desktop build is the one the product is packaged as, and it is the one with no
+        clipboard affordance.
+      </p>
+      <p>
+        A second gap sits next to it. <code>window.missionDesktop.openExternal</code> is exposed
+        in <code>src/preload/index.ts:12</code>, handled in <code>src/main/index.ts:58</code>,
+        and typed in <code>mission-desktop.d.ts:11</code> - and
+        <strong>no renderer code calls it</strong>. External links in a transcript rely on
+        <code>will-navigate</code> firing and <code>src/main/window.ts:103-108</code> bouncing
+        the navigation back out to <code>shell.openExternal</code>. The app window starts
+        navigating away from the dashboard on every external link click and is caught on the way
+        out. An explicit <code>Open link</code> is the first real caller of a bridge that already
+        exists.
+      </p>
+
+      <h2>Two principles</h2>
+      <p><strong>1. Actions stack by specificity; they do not replace each other.</strong></p>
+      <p>
+        A link inside a message inside a card is three targets at once. The menu resolves the DOM
+        hit into an ordered target chain and concatenates each target's actions, most specific
+        first. That is exactly what the request asks for on a URL - <code>Copy</code>
+        <em>and</em> <code>Copy URL</code> - generalized so it does not have to be special-cased
+        per element.
+      </p>
+      <p>
+        The chain is capped at <strong>two tiers</strong>: the thing under the cursor, then the
+        container it lives in. A context menu that grows a section per ancestor is a menu nobody
+        reads. Two tiers keeps every menu in the design at six items or fewer.
+      </p>
+      <p><strong>2. The label names its payload.</strong></p>
+      <p>
+        A bare <code>Copy</code> that copies something the reader did not choose is worse than no
+        item. So <code>Copy</code> appears only when there is a real selection to copy. With no
+        selection, the item is named for what it will put on the clipboard:
+        <code>Copy message</code>, <code>Copy code</code>, <code>Copy line</code>,
+        <code>Copy branch</code>. The reader never has to guess, and never has to paste to find
+        out.
+      </p>
+      <p>
+        <strong>Identical payloads collapse.</strong> Because actions stack, two targets can
+        offer the same string - a bare autolinked URL has link text equal to its href, so
+        <code>Copy</code> and <code>Copy URL</code> would be the same clipboard write. The
+        duplicate is dropped. On a markdown link where the text reads "the docs" and the href is
+        a URL, both survive, because both are real choices. This is one general dedupe rule
+        rather than a special case per target.
+      </p>
+
+      <h2>The target registry</h2>
+      <p>
+        One registry, in the house pattern (<code>harnessFor</code>,
+        <code>permissionModeDisplay</code>, <code>ACTIONS</code>), rather than an
+        <code>onContextMenu</code> on each component:
+      </p>
+      <pre><code>// src/web/lib/context-actions.ts
+export type ContextTarget = {
+  match: (el: Element, ctx: ContextInfo) =&gt; boolean;
+  tier: "item" | "container";
+  actions: (el: Element, ctx: ContextInfo) =&gt; ContextAction[];
+};</code></pre>
+      <p>
+        <code>TranscriptPanel</code>, <code>SessionCard</code>, <code>DiffViewer</code> and the
+        rest gain no right-click code. One delegated <code>contextmenu</code> listener resolves
+        <code>e.target.closest()</code> against the registry, and the menu renders what comes
+        back. Adding a target is one registry entry plus its test.
+      </p>
+      <p>
+        <strong>Tier 1 is ordered and first-match-wins</strong>, which is load-bearing rather
+        than incidental: a card's branch is <code>dd.mono.branch</code> and would be claimed by
+        the path matcher, and a tool chip's detail would be claimed by it too. The order is tool
+        chip, branch, path, and the tests below pin it. Tier 2 does not need an order - a hit is
+        in exactly one container.
+      </p>
+
+      <h3>Tier 1 - the thing under the cursor</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Target</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>External link (<code>a[href^=http]</code>, or URL-shaped text)</td>
+              <td><code>Copy</code> · <code>Copy URL</code> · <code>Open link</code></td>
+            </tr>
+            <tr>
+              <td>
+                Workspace path (<code>a.workspace-path</code>,
+                <code>.card-meta dd.mono</code>, <code>.pty-cwd</code>)
+              </td>
+              <td>
+                <code>Copy</code> · <code>Copy path</code> · <code>Copy absolute path</code> ·
+                <code>Open in Files</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Code block (<code>pre code</code>)</td>
+              <td><code>Copy code</code></td>
+            </tr>
+            <tr>
+              <td>Inline code (<code>code</code>)</td>
+              <td><code>Copy code</code></td>
+            </tr>
+            <tr>
+              <td>Tool chip (<code>.tool-chip</code>, <code>.tool-line</code>)</td>
+              <td>
+                <code>Copy tool call</code>, plus <code>Copy path</code> ·
+                <code>Copy absolute path</code> <strong>only when the detail is path-shaped</strong>
+                (constraint 10)
+              </td>
+            </tr>
+            <tr>
+              <td>Timestamp (<code>time.conversation-time</code>)</td>
+              <td><code>Copy timestamp</code> (the ISO value already in <code>dateTime</code>)</td>
+            </tr>
+            <tr>
+              <td>Diff line (<code>.dl-text</code>)</td>
+              <td><code>Copy line</code> · <code>Copy hunk</code></td>
+            </tr>
+            <tr>
+              <td>Commit SHA (<code>.diff-sha</code>)</td>
+              <td><code>Copy SHA</code></td>
+            </tr>
+            <tr>
+              <td>
+                Branch (<code>.branch</code>, <code>.tile-branch</code>,
+                <code>.pty-branch</code>)
+              </td>
+              <td><code>Copy branch</code></td>
+            </tr>
+            <tr>
+              <td>Session ref (<code>.sc-ref</code>)</td>
+              <td><code>Copy session id</code></td>
+            </tr>
+            <tr>
+              <td>Text field (<code>textarea</code>, <code>input</code>)</td>
+              <td>
+                <code>Cut</code> · <code>Copy</code> · <code>Paste</code> ·
+                <code>Paste as quote</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Any live selection</td>
+              <td>
+                <code>Copy</code> <em>(raw)</em>, plus <code>Copy text</code>
+                <em>(chrome stripped)</em> when the selection crossed a turn boundary
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Tier 2 - the container</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Target</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Message (<code>.turn</code>, <code>.pty-entry</code>)</td>
+              <td>
+                <code>Copy message</code> · <code>Quote in reply</code> ·
+                <code>Copy from here</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Session (<code>.card</code>, <code>.tile</code>, <code>.rail-row</code>)</td>
+              <td>
+                <code>Open</code> · <code>Copy branch</code> · <code>Copy checkout path</code> ·
+                <code>Copy session id</code> · <code>Copy PR URL</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Task / queue item (<code>.bl-card</code>, <code>.wq-item</code>)</td>
+              <td><code>Copy title</code> · <code>Copy id</code></td>
+            </tr>
+            <tr>
+              <td>Diff file (<code>.diff-file</code>)</td>
+              <td><code>Copy file path</code> · <code>Copy diff</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The ergonomics this buys, beyond Copy</h2>
+      <p>These are the items worth building the menu for. Copy on a link is the entry price.</p>
+      <ul>
+        <li>
+          <strong>Quote in reply.</strong> Select a passage in a transcript, right-click,
+          <code>Quote in reply</code>. The text lands in that session's composer as
+          <code>&gt; …</code> and the composer takes focus. This is the action a reader actually
+          wants when they are pointing at something an agent said, and the current answer is
+          drag-select, &#8984;C, click the composer, type <code>&gt; </code>, paste.
+        </li>
+        <li>
+          <strong>Copy message.</strong> The turn's <em>source</em> markdown, not the rendered
+          DOM. Today there is no way to get it - a drag-select gives you the rendering, with the
+          code fences gone.
+        </li>
+        <li>
+          <strong>Copy code.</strong> The single most-copied thing in an agent transcript, and
+          today it is a careful drag from the first character to the last without catching the
+          bubble around it. A hover copy button on <code>pre</code> ships with it, because a
+          right-click-only affordance is not discoverable and the menu should not be the only
+          path.
+        </li>
+        <li>
+          <strong>Copy absolute path.</strong> <code>shortenCwd</code> and <code>repoLeaf</code>
+          mean the path a reader can see is usually not the path they can paste into a terminal.
+          The menu has the session, so it can join the two.
+        </li>
+        <li><strong>Copy PR URL / Open PR</strong> from the card, the tile and the rail row.</li>
+        <li>
+          <strong>Paste, in the composer.</strong> In the desktop build there is currently no
+          right-click paste anywhere in the app.
+        </li>
+        <li>
+          <strong>Copy from here.</strong> This message and everything after it, as markdown.
+          What you want when you are filing an issue about a run.
+        </li>
+      </ul>
+      <p>
+        <code>SessionTile.tsx:27-36</code> already carries the comment
+        <em>"Copying a branch name off a tile is a fair thing to want on a triage board"</em>,
+        and defends it with <code>isDragSelection</code>. This plan is that instinct, finished.
+      </p>
+
+      <h2>Keyboard and accessibility</h2>
+      <ul>
+        <li>
+          <strong><code>Shift+F10</code> and the Menu key</strong> open the same menu at the
+          focused element. Both are unbound today. Without this the whole feature is mouse-only.
+        </li>
+        <li>
+          Rows are <code>role="menuitem"</code> inside <code>role="menu"</code>, arrow keys walk,
+          <code>Enter</code> invokes, <code>Escape</code> closes, focus returns to where it came
+          from.
+        </li>
+        <li>
+          Selection is never stolen. Opening the menu leaves any existing selection intact, which
+          is what makes selection-aware <code>Copy</code> honest.
+        </li>
+      </ul>
+
+      <h2>Cleanups swept in</h2>
+      <p>
+        The copy-to-clipboard story is currently <strong>six</strong> ad-hoc implementations of
+        the same 1600ms label flip, and four of them are wrong in some way:
+      </p>
+      <ul>
+        <li>
+          <code>PersonaEditor.tsx:396</code> and <code>ReportPanel.tsx:250</code> call
+          <code>navigator.clipboard.writeText</code> directly, bypassing
+          <code>src/web/lib/clipboard.ts</code>. That helper exists precisely because the Electron
+          renderer needs the <code>execCommand</code> fallback, so both are silently unreliable in
+          the desktop build - the one this plan is about.
+        </li>
+        <li>
+          <code>FileWorkspace.tsx:466</code> ("Copy local") gives <strong>no feedback at
+          all</strong>. You cannot tell whether it worked.
+        </li>
+        <li>
+          <code>WorkflowRuns.tsx:744-761</code> and <code>:1439-1462</code> arm a bare
+          <code>setTimeout</code> with no ref, no <code>clearTimeout</code> of a prior timer, and
+          <strong>no unmount cleanup</strong> - so rapid clicks stack timers and the earliest one
+          clears the label while later ones fire into an unmounted tree.
+          <code>WorkflowLadder.tsx:804-819</code> is the same feature done correctly, with a ref
+          and cleanup; it is the shape the hook should generalize.
+        </li>
+        <li>
+          <code>ReportPanel.tsx:247-256</code> also swallows every error, so a failed
+          <code>fetch("/api/report.md")</code> and a blocked clipboard are indistinguishable and
+          produce no UI at all.
+        </li>
+      </ul>
+      <p>
+        One <code>useCopyFeedback()</code> hook, backed by <code>copyText()</code>, replaces all
+        six and fixes all four. <strong>This lands as its own PR, before the menu</strong>
+        (decision Q4). <code>TranscriptPanel</code>'s existing <code>showFlash</code> (line 400)
+        plus the <code>.action-flash</code> <code>role="status"</code> span (line 1008) is the
+        mechanism to generalize - it already announces to screen readers.
+      </p>
+
+      <h2>Constraints the implementation must answer</h2>
+      <ol>
+        <li>
+          <strong><code>-webkit-app-region: no-drag</code>.</strong>
+          <code>styles.css:1438-1470</code> is an explicit allow-list of floating surfaces that
+          must cancel the desktop drag region, and the comment at 1461-1465 notes every entry was
+          added <em>after</em> it broke. A context menu can open at any coordinate, including
+          under the titlebar, so it goes in that list on the first commit, not after a bug report.
+          Covered by <code>test/desktop-drag-region.test.ts</code>.
+        </li>
+        <li>
+          <strong>Escape ordering.</strong> <code>Overlay.tsx:41-59</code> owns a registry where
+          only the topmost surface handles <code>Escape</code>. <code>OpenInMenu.tsx:86-99</code>
+          documents why a popover must use <code>stopImmediatePropagation</code> in the capture
+          phase rather than <code>stopPropagation</code>. The menu picks one of those two
+          contracts and states which.
+        </li>
+        <li>
+          <strong>Two transcript renderings.</strong> Every transcript entity has a chat markup
+          and a PTY markup (<code>.turn</code>/<code>.turn-text</code> vs
+          <code>.pty-entry</code>/<code>.pty-copy</code>). Both hit-test, or the feature vanishes
+          when the reader flips <code>ConversationViewToggle</code>.
+        </li>
+        <li>
+          <strong>No anchors in two states.</strong> <code>TurnProse</code>
+          (<code>TranscriptPanel.tsx:1366-1390</code>) renders raw text with no
+          <code>&lt;a&gt;</code> at all when <code>useRichText()</code> is off, and again when
+          find is active. So URL detection cannot depend on anchors existing: the resolver scans
+          the text under the cursor as well as checking <code>closest("a")</code>. One code path
+          covers rich text, plain text and find-active.
+        </li>
+        <li><strong><code>copyText()</code>, never raw <code>navigator.clipboard</code>.</strong></li>
+        <li>
+          <strong>No <code>data-testid</code>.</strong> Selection by role and accessible name, per
+          <code>AGENTS.md</code>.
+        </li>
+      </ol>
+      <div class="callout warn">
+        <p>
+          The next four were found by <strong>building the mockup and driving it</strong>, not by
+          reading code. Each one broke a working prototype before it was understood.
+        </p>
+      </div>
+      <ol start="7">
+        <li>
+          <strong>The caret, not the event target.</strong> <code>e.target</code> on a mouse event
+          is always an <em>element</em>, so a text-node URL scan driven from it finds nothing. The
+          resolver needs <code>document.caretPositionFromPoint(x, y)</code> (with
+          <code>caretRangeFromPoint</code> as the WebKit fallback) - and it needs the returned
+          <strong>offset</strong>, not just the node. The first turn in the mockup is one text
+          node holding both prose and a URL, so "does this node contain a URL" offers
+          <code>Copy URL</code> when you right-click the word "CI". The match has to contain the
+          caret.
+        </li>
+        <li>
+          <strong>Close on the scroll <em>input</em>, not the scroll <em>event</em>.</strong>
+          <code>ModePicker</code> closes on any scroll because a fixed popover cannot track the
+          chip it hangs off. A context menu opens at a cursor point and has no anchor to drift
+          from, so the only reason to close is that the reader moved the view. Listening to the
+          <code>scroll</code> event instead is actively wrong here: a scroll dispatched one frame
+          <em>after</em> the menu opens closes it immediately, and in the product that frame
+          belongs to <code>.transcript-log</code> auto-scrolling as a streamed turn arrives. The
+          menu would slam shut mid-read through no action of the reader's. Bind
+          <code>wheel</code> and <code>touchmove</code>; leave <code>scroll</code> alone.
+        </li>
+        <li>
+          <strong><code>focus({ preventScroll: true })</code> on the first row.</strong> Focusing a
+          row can make the browser scroll to reveal it, which - with constraint 8 done wrong -
+          makes the menu close itself on open, intermittently, depending on where the cursor was.
+        </li>
+        <li>
+          <strong>A tool chip's detail is a path only when it is shaped like one.</strong>
+          <code>Read e2e/specs/topbar.spec.ts</code> is; <code>Bash npx playwright test
+          --reporter=line</code> is not. Claiming every <code>.tool-chip-detail</code> as a path
+          offers <code>Copy absolute path</code> on a shell command.
+          <code>detectPathTokens</code> / <code>workspaceFileTarget</code> in
+          <code>workspaceLinks.ts</code> already own this test - use them rather than a second
+          shape rule.
+        </li>
+        <li>
+          <strong>A field's selection is its own.</strong> <code>window.getSelection()</code> is
+          empty inside an <code>&lt;input&gt;</code> or <code>&lt;textarea&gt;</code>, so the
+          composer reads <code>selectionStart</code>/<code>selectionEnd</code> - and captures
+          them <em>before</em> the menu takes focus, or they are gone. Same distinction
+          <code>chordYieldsToSelection</code> already documents at
+          <code>keybindings.ts:424-449</code>.
+        </li>
+        <li>
+          <strong><code>Paste</code> is the one item a DOM menu does worse than an OS menu.</strong>
+          It needs <code>navigator.clipboard.readText()</code> and therefore the
+          <code>clipboard-read</code> permission: already granted in the Electron renderer,
+          prompted on first use in a browser tab. The fallback must say so rather than silently
+          doing nothing, and point at <kbd>&#8984;V</kbd>. This is the strongest argument for
+          D2's rejected option, and it is worth exactly one item out of the registry.
+        </li>
+        <li>
+          <strong>Dedupe on kind <em>and</em> payload.</strong> Keying on payload alone collapses
+          <code>Paste</code> and <code>Paste as quote</code>, which share an empty payload and do
+          different things. Two items that <em>write the same string</em> collapse; two that
+          merely look alike do not.
+        </li>
+        <li>
+          <strong>Clip a quote to the turn's body, not the turn.</strong> A drag from one turn
+          into the next necessarily crosses the chrome between them - the
+          <code>you 09:16</code> byline in chat, the <code>you@mission ~/leaf &#10095;</code>
+          prompt in terminal view - and that chrome lives inside the turn element. Clip to the
+          turn and the quote reads as though the agent said "09:16". The reader selected prose;
+          quote the prose.
+        </li>
+      </ol>
+
+      <h2>Decisions</h2>
+      <div class="callout good">
+        <p>
+          <strong>Resolved 2026-08-12 through two dashboard plan reviews.</strong> The first
+          settled D1-D4 below, all four on the recommendation. The second settled the five
+          questions left open after the mockups were built and driven, and answered the
+          follow-up with <strong>"Create phased implementation plan"</strong> - so this document
+          is the approved design behind a phased implementation.
+        </p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Question</th>
+              <th>Decided</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Q1</td>
+              <td>Should <code>Copy</code> match &#8984;C or strip turn chrome?</td>
+              <td>
+                <strong>Both.</strong> <code>Copy</code> matches &#8984;C exactly;
+                <code>Copy text</code> is a second item with the chrome stripped, shown only
+                when it would differ. Neither path is a compromise, and the dedupe rule already
+                hides the duplicate.
+              </td>
+            </tr>
+            <tr>
+              <td>Q2</td>
+              <td>What should <code>Paste</code> do in a browser tab?</td>
+              <td>
+                <strong>Always show it, attempt the read, fall back honestly.</strong> One menu
+                in both builds; on denial it says so and points at <kbd>&#8984;V</kbd> rather
+                than failing silently.
+              </td>
+            </tr>
+            <tr>
+              <td>Q3</td>
+              <td>How is a cross-turn selection quoted?</td>
+              <td>
+                <strong>Attribute each speaker.</strong> <code>&gt; **claude**</code> /
+                <code>&gt; **you**</code> blocks, so the agent can tell which words were its own.
+              </td>
+            </tr>
+            <tr>
+              <td>Q4</td>
+              <td>Where does the clipboard cleanup land?</td>
+              <td>
+                <strong>Its own PR, landed first.</strong> Keeps the context-menu diff
+                reviewable, fixes two silently-unreliable desktop copies immediately, and gives
+                the menu a helper to build on.
+              </td>
+            </tr>
+            <tr>
+              <td>Q5</td>
+              <td>Does <code>Shift+F10</code> ship in v1?</td>
+              <td>
+                <strong>Yes.</strong> Without it the feature is mouse-only, which is an
+                accessibility gap rather than a missing shortcut - and both chords are unbound
+                today.
+              </td>
+            </tr>
+            <tr>
+              <td>D1</td>
+              <td>Replace the browser's native menu?</td>
+              <td>
+                <strong>Custom everywhere; <code>Shift</code>+right-click falls through.</strong>
+                One menu in both builds, and the Firefox convention keeps View Source and Inspect
+                one modifier away on a tool whose users are developers on localhost.
+              </td>
+            </tr>
+            <tr>
+              <td>D2</td>
+              <td>Native <code>Menu</code> over IPC, or one DOM menu?</td>
+              <td>
+                <strong>One DOM menu for both builds.</strong> The browser build needs it
+                regardless, so the alternative is two implementations of one feature. The diagram
+                below is the argument.
+              </td>
+            </tr>
+            <tr>
+              <td>D3</td>
+              <td>v1 scope</td>
+              <td>
+                <strong>Transcript + composer + session card / tile / rail row.</strong> Diff and
+                Files are one registry entry each afterwards, with no new plumbing.
+              </td>
+            </tr>
+            <tr>
+              <td>D4</td>
+              <td>Row density</td>
+              <td>
+                <strong>Dense - label plus a shortcut/payload hint.</strong> Measured in the
+                mockups, the same five rows are 147&times;196 dense against 250&times;258 with
+                blurbs; 70% taller flips above the cursor far more often.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>D2, drawn - why one DOM menu</h3>
+      <figure>
+        <svg viewBox="0 0 820 372" role="img" aria-label="Two ways to build the menu. Column A: one DOM menu in the renderer, serving both the browser and desktop builds. Column B: a native Electron menu built in the main process over IPC, which crosses the process boundary twice and still needs column A for the browser build.">
+          <defs>
+            <marker id="ah" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6 z" fill="var(--accent)" />
+            </marker>
+            <marker id="ahd" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6 z" fill="var(--dim)" />
+            </marker>
+          </defs>
+
+          <!-- ---------- A ---------- -->
+          <text x="40" y="26" class="svg-t-hd">A · ONE DOM MENU — RECOMMENDED</text>
+
+          <rect class="svg-box" x="60" y="44" width="280" height="34" rx="7" />
+          <text x="200" y="66" class="svg-t" text-anchor="middle">contextmenu (delegated)</text>
+          <path class="svg-arrow" d="M200,78 L200,92" marker-end="url(#ah)" />
+
+          <rect class="svg-box" x="60" y="96" width="280" height="34" rx="7" />
+          <text x="200" y="118" class="svg-t" text-anchor="middle">context-actions registry</text>
+          <path class="svg-arrow" d="M200,130 L200,144" marker-end="url(#ah)" />
+
+          <rect class="svg-box" x="60" y="148" width="280" height="34" rx="7" />
+          <text x="200" y="170" class="svg-t" text-anchor="middle">React menu · role="menu"</text>
+          <path class="svg-arrow" d="M200,182 L200,196" marker-end="url(#ah)" />
+
+          <rect class="svg-box" x="60" y="200" width="280" height="34" rx="7" />
+          <text x="200" y="222" class="svg-t" text-anchor="middle">copyText() · openExternal</text>
+
+          <text x="200" y="266" class="svg-t-sm" text-anchor="middle">all renderer · no boundary crossed</text>
+          <text x="200" y="286" class="svg-t-sm" text-anchor="middle">one implementation, both builds</text>
+
+          <line x1="410" y1="16" x2="410" y2="356" stroke="var(--border)" />
+
+          <!-- ---------- B ---------- -->
+          <text x="460" y="26" class="svg-t-hd">B · NATIVE MENU OVER IPC</text>
+
+          <rect class="svg-box" x="480" y="44" width="280" height="34" rx="7" />
+          <text x="620" y="66" class="svg-t" text-anchor="middle">contextmenu → ipcRenderer</text>
+          <path class="svg-arrow-dim" d="M620,78 L620,100" marker-end="url(#ahd)" />
+
+          <line x1="440" y1="89" x2="800" y2="89" stroke="var(--dim)" stroke-dasharray="3 3" />
+          <text x="446" y="85" class="svg-t-sm">renderer / main</text>
+
+          <rect class="svg-box" x="480" y="104" width="280" height="34" rx="7" />
+          <text x="620" y="126" class="svg-t" text-anchor="middle">Menu.buildFromTemplate</text>
+          <path class="svg-arrow-dim" d="M620,138 L620,152" marker-end="url(#ahd)" />
+
+          <rect class="svg-box" x="480" y="156" width="280" height="34" rx="7" />
+          <text x="620" y="178" class="svg-t" text-anchor="middle">OS menu</text>
+          <path class="svg-arrow-dim" d="M620,190 L620,212" marker-end="url(#ahd)" />
+
+          <line x1="440" y1="201" x2="800" y2="201" stroke="var(--dim)" stroke-dasharray="3 3" />
+          <text x="446" y="197" class="svg-t-sm">main / renderer</text>
+
+          <rect class="svg-box" x="480" y="216" width="280" height="34" rx="7" />
+          <text x="620" y="238" class="svg-t" text-anchor="middle">click → IPC → renderer action</text>
+
+          <text x="620" y="278" class="svg-t-sm" text-anchor="middle">two crossings per open</text>
+          <rect class="svg-box-dead" x="470" y="292" width="300" height="32" rx="7" />
+          <text x="620" y="312" class="svg-t-sm" text-anchor="middle">browser build still needs all of column A</text>
+        </svg>
+        <figcaption>
+          Where the menu gets built. Column B crosses the renderer/main boundary twice per open
+          and per click, and - because it exists only under Electron - leaves the browser build
+          needing every box in column A regardless. That is two implementations of one feature,
+          and the OS menu cannot render the app's own tokens or reach React state for
+          <code>Quote in reply</code> without a third round trip.
+        </figcaption>
+      </figure>
+      <p>
+        Both density options for D4 are drawn side by side in
+        <a href="mockups.html">the mockups</a>, on the real transcript, at the width a Console
+        detail pane really gets.
+      </p>
+
+      <h2>Testing</h2>
+      <ul>
+        <li>
+          <strong><code>e2e/specs/</code></strong> - required by <code>AGENTS.md</code> for any UI
+          change, and the only layer that can prove a right-click produced a menu whose item wrote
+          the clipboard. Playwright reads the clipboard via
+          <code>navigator.clipboard.readText()</code> with permissions granted.
+        </li>
+        <li>
+          <strong><code>test/context-actions.test.ts</code></strong> - the registry is pure: given
+          a target chain, assert the action list, the dedupe of identical payloads, the
+          first-match-wins tier-1 order, and the two-tier cap. Milliseconds per case.
+        </li>
+        <li>
+          <strong><code>test/desktop-drag-region.test.ts</code></strong> - already exists; gains
+          the new pop class.
+        </li>
+      </ul>
+
+      <h2>Not doing</h2>
+      <ul>
+        <li>Submenus. Two tiers and six items do not need them.</li>
+        <li>Right-click drag-select, or any change to selection behavior.</li>
+        <li>
+          A context menu on the Electron tray or app menu. Those are separate surfaces with
+          owners.
+        </li>
+      </ul>
+    </div>
+  </body>
+</html>

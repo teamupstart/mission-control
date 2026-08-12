@@ -498,7 +498,7 @@ test("a reused session attributes its merged PR only to the current task after r
   });
   assert.equal(assigned.ok, true);
   assert.equal(r.getTask("binding-previous")?.sessionId, null);
-  const completed = tasks.complete("binding-current", "opened pull request")!;
+  const completed = (await tasks.complete("binding-current", "opened pull request"))!;
   for (let i = 0; i < 60; i++) {
     r.upsertTask(
       mkTask({
@@ -935,4 +935,79 @@ test("a task assigned to a session decorates that session's card, with no worktr
   const s = r.snapshot().sessions.find((x) => x.id === id);
   assert.equal(s?.task?.id, "t1");
   assert.equal(s?.task?.title, "Wire it up");
+});
+
+// ---- a scout assigned to an agent that was already running -------------------------------
+//
+// Assignment types into a LIVE process, so it cannot change what that process's launch
+// pre-approved. A scout finishes by calling `submit_scout_artifacts`, and the two things that
+// can go wrong here are opposite: handing a scout to an agent that provably cannot submit
+// (the bundle is not on this machine), and handing one the report requirement never reached.
+// Both are checked before the destructive reset, because after it the agent's checkout, queue
+// and context are already gone.
+
+test("a scout is refused before the reset when the MCP bundle cannot be launched", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-scout-nomcp-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "scout" }));
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    // The one honest question an assignment can ask: is our MCP bundle on this machine at
+    // all? Whether THAT process registered it is a property of a launch we did not make.
+    missionMcpDescriptor: async () => null,
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /scout/);
+  assert.match(res.error ?? "", /MCP server is not built/);
+  assert.equal(reset, false, "nothing may be done to an agent that cannot finish the task");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+  assert.equal(
+    gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"),
+    "feature/mine",
+    "the checkout is untouched - the refusal happens before the reset",
+  );
+});
+
+test("an assigned scout is typed the report contract, and an assigned ship task is not", async () => {
+  for (const kind of ["scout", "ship"] as const) {
+    const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-${kind}-contract-`);
+    r.upsertTask(mkTask({ repoRoot: clone, kind, intent: "look into the resume path" }));
+    let typed: string | null = null;
+
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady,
+      confirmReset: true,
+      missionMcpDescriptor: async () => ({
+        serverName: "mission-control",
+        command: "node",
+        args: ["server.mjs"],
+        env: {},
+      }),
+      reset: cleanReset,
+      inject: async (_session, prompt) => {
+        typed = prompt;
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    });
+
+    assert.equal(res.ok, true, res.error);
+    assert.ok(typed !== null, "the task was typed");
+    // The operator's own words arrive intact either way. Only the contract differs.
+    assert.match(typed!, /look into the resume path/);
+    if (kind === "scout") {
+      assert.match(typed!, /docs\/reports\/<slug>\/report\.html/);
+      assert.match(typed!, /submit_scout_artifacts/);
+      assert.match(typed!, /repoSlot: "repo-01"/, "the slot is issued for the session's own checkout");
+    } else {
+      assert.equal(typed, "look into the resume path", "a ship task's intent is byte-identical");
+    }
+  }
 });

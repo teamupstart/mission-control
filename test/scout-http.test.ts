@@ -26,6 +26,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ScoutStore, clearScoutTables } = await import("../src/server/scouts/store.ts");
 const { ScoutArchiveManager } = await import("../src/server/scouts/manager.ts");
+import type { ScoutTaskGateway } from "../src/server/scouts/task-gateway.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -50,7 +51,17 @@ interface Harness {
 }
 
 function harness(
-  options: { rename?: (from: string, to: string) => Promise<void>; root?: string } = {},
+  options: {
+    rename?: (from: string, to: string) => Promise<void>;
+    root?: string;
+    /**
+     * A task gateway, for the submission route only.
+     *
+     * Absent by default so every read test keeps proving that the read surface needs no task
+     * knowledge at all - which is the Phase 1 contract this file was written against.
+     */
+    tasks?: ScoutTaskGateway;
+  } = {},
 ): Harness {
   const root = options.root ?? newLibrary();
   const registry = new Registry();
@@ -65,6 +76,7 @@ function harness(
     watch: false,
     onChanged: () => registry.emitScoutArchiveChanged(),
     rename: options.rename,
+    tasks: options.tasks,
     openTarget: async (_target, path) => {
       opened.push(path);
       return { ok: true, label: "Browser", detail: "Fake", status: 200 };
@@ -455,4 +467,117 @@ test("a repository label cannot forge a filter match through the delimiter", asy
   await settle(manager);
   const forged = await app.request("/api/scouts?repo=mission-control", { headers: LOOPBACK });
   assert.deepEqual(((await forged.json()) as { archives: unknown[] }).archives, []);
+});
+
+// ---------------------------------------------------------------------------
+// The MCP submission route
+// ---------------------------------------------------------------------------
+
+/**
+ * The one write endpoint in this surface, and the one that an AGENT calls rather than a
+ * browser - so its refusals are what a scout reads when it gets something wrong.
+ *
+ * The schema is the security argument here: a body that names a task, a destination, or an
+ * archive is not a body this route can express. What is checked below is that those fields
+ * are rejected as shape errors rather than quietly ignored, and that the token guard sits in
+ * front of all of it exactly as it does for the ensemble twin.
+ */
+
+const SUBMIT = "/mcp/scouts/submit";
+
+function submitBody(over: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    env: {},
+    cwd: "/tmp/checkout",
+    reportPath: "docs/reports/resume/report.html",
+    summary: "Resume rebuilt the session without replaying the grant.",
+    ...over,
+  });
+}
+
+test("the submission route is behind the harness token, like every other MCP endpoint", async () => {
+  const { app } = harness();
+  const res = await app.request(SUBMIT, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: submitBody(),
+  });
+  assert.equal(res.status, 401);
+  assert.deepEqual(await res.json(), { error: "unauthorized" });
+});
+
+test("a report path that is not the convention is refused with the required shape", async () => {
+  const { app } = harness();
+  const { ensureToken } = await import("../src/server/auth.ts");
+  const res = await app.request(SUBMIT, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },
+    body: submitBody({ reportPath: "docs/answer.html" }),
+  });
+  assert.equal(res.status, 400);
+  assert.match(await res.text(), /docs\/reports\/<slug>\/report\.html/);
+});
+
+test("a submission may not name a repository slot that is not generated", async () => {
+  const { app } = harness();
+  const { ensureToken } = await import("../src/server/auth.ts");
+  const res = await app.request(SUBMIT, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },
+    body: submitBody({ supporting: [{ repoSlot: "../../etc", path: "passwd" }] }),
+  });
+  assert.equal(res.status, 400);
+  assert.match(await res.text(), /repository slot/);
+});
+
+test("a submission cannot name its own task, destination, or archive", async () => {
+  // A gateway that answers honestly for every session it is asked about: there is none.
+  const { app } = harness({
+    tasks: {
+      subjectForSession: () => ({
+        ok: false as const,
+        reason: "no_session" as const,
+        status: 404 as const,
+        detail: "no live session matched this request",
+      }),
+      subjectForTask: () => null,
+      subjectForExitingSession: () => null,
+      isScout: () => false,
+      awaitsAgent: () => false,
+    },
+  });
+  const { ensureToken } = await import("../src/server/auth.ts");
+  // Zod ignores unknown keys rather than refusing them, which is what keeps the wire
+  // forward-compatible - so the assertion is that they reach NOTHING. The route resolves
+  // attribution from the authenticated session, finds none, and answers 404: the extra fields
+  // did not select a task, a producer, or a directory.
+  const res = await app.request(SUBMIT, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },
+    body: submitBody({
+      taskId: "some-other-task",
+      archiveId: "11111111-2222-4333-8444-555555555555",
+      producerId: "11111111-2222-4333-8444-555555555555",
+      destination: "/etc",
+    }),
+  });
+  assert.equal(res.status, 404);
+  assert.match(await res.text(), /no live session matched this request/);
+});
+
+test("the submission route answers 503 when this build has no scout library", async () => {
+  const registry = new Registry();
+  const app = buildApp(
+    registry,
+    {} as ReviewManager,
+    {} as TaskManager,
+    {} as QueueManager,
+  );
+  const { ensureToken } = await import("../src/server/auth.ts");
+  const res = await app.request(SUBMIT, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },
+    body: submitBody(),
+  });
+  assert.equal(res.status, 503);
 });

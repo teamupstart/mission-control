@@ -25,3 +25,10 @@ disk: they hold no foreign keys to tasks or sessions, no evidence bytes, and not
 not already in a bundle. Deleting them - or the whole database - costs a background rebuild
 and nothing else. A label, annotation, or ownership flag stored only in those rows would be
 lost the first time the index was rebuilt, which is why none may be added.
+
+`scout_capture_jobs` sits beside them and is a different kind of table again: local
+coordination for archives this daemon is still WRITING, one row per task work episode, holding
+the reserved archive identity and the checkout locators a resumed capture needs. It refers to
+task and session ids as values and has no foreign key or cascade to either, because a published
+archive has to outlive both. Losing it loses the ability to resume an unfinished capture, never
+the ability to read a finished one.

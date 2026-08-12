@@ -106,7 +106,7 @@ export class FakeGateway implements EnsembleTaskGateway {
     if (t) t.status = "cancelled";
   }
 
-  settleSuperseded(taskId: string, outcome: string): void {
+  async settleSuperseded(taskId: string, outcome: string): Promise<void> {
     if (this.settleFailures.has(taskId)) throw new Error(`cannot settle ${taskId}`);
     this.settled.push({ taskId, outcome });
     const t = this.state.get(taskId);

@@ -1,0 +1,524 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after, beforeEach } from "node:test";
+import { SCOUT_REPORT_PATH_SHAPE } from "../src/shared/scouts.ts";
+import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { validReportHtml } from "./helpers/scout-fixture.ts";
+import type { Session, Task } from "../src/shared/types.ts";
+
+/**
+ * Where the archive meets the task lifecycle.
+ *
+ * The invariant under test is one sentence: a scout's evidence must be durable before
+ * anything that could destroy it happens, and nothing that destroys it may run without
+ * asking first. That splits into two obligations with opposite failure modes -
+ *
+ *  - completion must WAIT (a `done` scout with no archive is a lost answer that reads as a
+ *    delivered one), and
+ *  - cleanup must ASK (a reclaimed worktree takes an unarchived report with it, silently).
+ *
+ * Both are exercised through the real `TaskManager` against a real archive manager writing
+ * real bundles into a real library, because every interesting failure here is an ordering
+ * failure between two subsystems and a stubbed one proves only that the stub was called.
+ */
+
+const home = mkdtempSync(join(tmpdir(), "mission-scout-lifecycle-"));
+process.env.MISSION_HOME = home;
+process.env.HARNESS_HOME = home;
+
+const { Registry } = await import("../src/server/registry.ts");
+const { TaskManager, ScoutArchiveNotReadyError } = await import("../src/server/tasks.ts");
+const { ScoutArchiveManager } = await import("../src/server/scouts/manager.ts");
+const { RegistryScoutTaskGateway } = await import("../src/server/scouts/task-gateway.ts");
+const { clearScoutCaptureJobs } = await import("../src/server/scouts/capture-store.ts");
+const { clearScoutTables } = await import("../src/server/scouts/store.ts");
+const { openDb } = await import("../src/server/db.ts");
+
+const db = openDb();
+after(() => rmSync(home, { recursive: true, force: true }));
+beforeEach(() => {
+  clearScoutCaptureJobs(db);
+  clearScoutTables(db);
+});
+
+let seq = 0;
+
+function mkdirp(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * A real git worktree cut from a real repository.
+ *
+ * Real on both counts on purpose: containment and ignore rules are filesystem facts, and
+ * `reclaim` really does run `git worktree remove --force` - which is exactly the destruction
+ * the archive guard exists to get in front of, and which refuses to run against a main
+ * working tree. A fake path would make the cleanup tests assert nothing about cleanup.
+ */
+function makeWorktree(files: Record<string, string> = {}): { repoRoot: string; worktreePath: string } {
+  const n = ++seq;
+  const repoRoot = mkdirp(join(home, `repo-${n}`));
+  const git = (...args: string[]): void => {
+    execFileSync("git", args, {
+      cwd: repoRoot,
+      env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e" },
+    });
+  };
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(repoRoot, "README.md"), "# demo\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const worktreePath = join(home, `worktree-${n}`);
+  git("worktree", "add", "-q", "-b", `harness/scout-${n}`, worktreePath);
+  for (const [relative, contents] of Object.entries(files)) {
+    mkdirp(join(worktreePath, relative.split("/").slice(0, -1).join("/") || "."));
+    writeFileSync(join(worktreePath, relative), contents);
+  }
+  return { repoRoot, worktreePath };
+}
+
+interface Harness {
+  registry: InstanceType<typeof Registry>;
+  tasks: InstanceType<typeof TaskManager>;
+  scouts: InstanceType<typeof ScoutArchiveManager>;
+  library: string;
+}
+
+function harness(): Harness {
+  const registry = new Registry();
+  const library = mkdirp(join(home, `library-${++seq}`));
+  const scouts = new ScoutArchiveManager({
+    root: library,
+    tasks: new RegistryScoutTaskGateway(registry),
+    intervalMs: null,
+    watch: false,
+    log: () => {},
+  });
+  registry.onSessionExit((session) => scouts.reserveOnExit(session));
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, scouts);
+  return { registry, tasks, scouts, library };
+}
+
+function mkScout(over: Partial<Task> = {}): Task {
+  return baseTask({
+    id: `scout-${++seq}`,
+    kind: "scout",
+    title: "Why did resume lose permissions?",
+    intent: "Find out why a resumed agent lost repository permissions.",
+    status: "running",
+    ...over,
+  });
+}
+
+/**
+ * A live session standing in the task's checkout.
+ *
+ * Registered ONCE per checkout, because `findSessionByEnv`'s cwd fallback requires exactly one
+ * session there - two would be genuinely ambiguous, and answering anyway is the attribution
+ * mistake the whole submission design exists to avoid.
+ */
+const sessions = new Map<string, Session>();
+function bindSession(h: Harness, task: Task, cwd: string): Session {
+  const existing = sessions.get(cwd);
+  const session: Session =
+    existing ??
+    ({
+      ...({} as Session),
+      id: `sess-${++seq}`,
+      agent: "claude",
+      runtime: "terminal",
+      origin: "dispatch",
+      name: "agent",
+      state: "idle",
+      cwd,
+      repoRoot: cwd,
+      instrumented: true,
+      pendingReviews: 0,
+      meta: null,
+    } as Session);
+  sessions.set(cwd, session);
+  (h.registry as unknown as { sessions: Map<string, Session> }).sessions.set(session.id, session);
+  h.registry.upsertTask({ ...task, sessionId: session.id });
+  return session;
+}
+
+async function submit(
+  h: Harness,
+  task: Task,
+  cwd: string,
+  body: { reportPath: string; summary?: string; supporting?: Array<{ repoSlot: string; path: string }> },
+) {
+  // The session has to be discoverable by `findSessionByEnv`, which is what makes attribution
+  // server-side: the submission names nothing about itself.
+  bindSession(h, task, cwd);
+  return h.scouts.submit({
+    env: {},
+    sessionId: null,
+    cwd,
+    submission: {
+      reportPath: body.reportPath,
+      summary: body.summary ?? "Resume rebuilt the session without replaying the grant.",
+      tags: [],
+      supporting: body.supporting ?? [],
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Completion waits for the archive
+// ---------------------------------------------------------------------------
+
+test("a scout cannot be marked done before it has submitted a report", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree();
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+
+  await assert.rejects(
+    () => h.tasks.complete(task.id, "found it"),
+    (error: unknown) => {
+      assert.ok(error instanceof ScoutArchiveNotReadyError);
+      assert.match(error.message, new RegExp(escape(SCOUT_REPORT_PATH_SHAPE)));
+      assert.match(error.message, /submit_scout_artifacts/);
+      return true;
+    },
+  );
+  // Nonterminal, with everything it holds intact, so the agent can still fix it.
+  const after = h.registry.getTask(task.id)!;
+  assert.equal(after.status, "running");
+  assert.equal(after.worktreePath, cwd);
+  assert.equal(after.outcome, null);
+});
+
+test("a scout becomes done once its archive is published and verified", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+
+  const submitted = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  assert.equal(submitted.ok, true, JSON.stringify(submitted));
+
+  const done = await h.tasks.complete(task.id, "resume never replayed the grant");
+  assert.equal(done?.status, "done");
+  assert.equal(h.registry.getTask(task.id)?.outcome, "resume never replayed the grant");
+
+  // And the archive is readable through the Phase 1 API. Indexing is deliberately NOT part of
+  // readiness - the bundle is durable before the row exists - so the pass is awaited here
+  // rather than assumed to have happened.
+  await h.scouts.reconcileNow();
+  const page = h.scouts.list({
+    q: null, producer: null, repo: null, agent: null, status: null,
+    from: null, to: null, cursor: null, limit: 10,
+  });
+  assert.equal(page.archives.length, 1);
+  assert.equal(page.archives[0]!.status, "ready");
+  assert.equal(page.archives[0]!.title, task.title);
+});
+
+test("an invalid report leaves the task and its checkout available for a correction", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": "<!doctype html><html><body><script>go()</script></body></html>",
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+
+  const refused = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  assert.equal(refused.ok, false);
+
+  await assert.rejects(() => h.tasks.complete(task.id, "found it"), ScoutArchiveNotReadyError);
+  assert.equal(h.registry.getTask(task.id)?.status, "running");
+
+  // The scout fixes the page and resubmits against the SAME operation, which supersedes the
+  // failed staging rather than opening a second archive.
+  writeFileSync(join(cwd, "docs/reports/resume/report.html"), validReportHtml());
+  const fixed = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  assert.equal(fixed.ok, true, JSON.stringify(fixed));
+  assert.equal((await h.tasks.complete(task.id, "found it"))?.status, "done");
+  assert.equal(h.scouts.captureJobsForTask(task.id).length, 1, "one episode, one archive");
+});
+
+test("a ship task's completion is untouched by any of this", async () => {
+  const h = harness();
+  const task = baseTask({ id: `ship-${++seq}`, kind: "ship", status: "running" });
+  h.registry.upsertTask(task);
+  const done = await h.tasks.complete(task.id, "shipped", "https://example/pr/1", true);
+  assert.equal(done?.status, "done");
+  assert.equal(done?.outcomeUrl, "https://example/pr/1");
+  assert.equal(h.scouts.captureJobsForTask(task.id).length, 0, "no archive work at all");
+});
+
+test("two completion signals for one scout publish exactly one archive", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+
+  const [a, b] = await Promise.all([
+    h.tasks.complete(task.id, "first"),
+    h.tasks.complete(task.id, "second"),
+  ]);
+  assert.equal(a?.status, "done");
+  assert.equal(b?.status, "done");
+  const jobs = h.scouts.captureJobsForTask(task.id);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]!.status, "published");
+});
+
+// ---------------------------------------------------------------------------
+// Cleanup asks first
+// ---------------------------------------------------------------------------
+
+test("reclaiming an unarchived scout publishes what it wrote before the tree goes", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+    "docs/reports/resume/evidence.csv": "a,b\n",
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null, status: "failed" });
+  h.registry.upsertTask(task);
+
+  const reclaimed = await h.tasks.reclaim(task.id);
+  assert.equal(reclaimed.ok, true, reclaimed.error);
+  const jobs = h.scouts.captureJobsForTask(task.id);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]!.status, "published");
+  assert.equal(jobs[0]!.captureStatus, "complete", "the report it had written was recovered");
+});
+
+test("cancelling a scout that wrote nothing publishes an honest partial, never a claim", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "notes.md": "I thought about it" });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+
+  await h.tasks.cancel(task.id);
+  const jobs = h.scouts.captureJobsForTask(task.id);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]!.captureStatus, "partial");
+  await h.scouts.reconcileNow();
+  const page = h.scouts.list({
+    q: null, producer: null, repo: null, agent: null, status: null,
+    from: null, to: null, cursor: null, limit: 10,
+  });
+  assert.equal(page.archives[0]!.status, "partial", "never presented as complete");
+  assert.ok(page.archives[0]!.missingCount > 0);
+});
+
+test("a capture failure refuses the cleanup and keeps the resources tracked", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null, status: "failed" });
+  h.registry.upsertTask(task);
+  // The one failure a retry can actually clear: the rename into the library.
+  const failing = new ScoutArchiveManager({
+    root: h.library,
+    tasks: new RegistryScoutTaskGateway(h.registry),
+    intervalMs: null,
+    watch: false,
+    log: () => {},
+    rename: () => Promise.reject(new Error("the disk went away")),
+  });
+  const guarded = new TaskManager(h.registry, undefined, undefined, undefined, failing);
+
+  const refused = await guarded.reclaim(task.id);
+  assert.equal(refused.ok, false);
+  assert.match(refused.error ?? "", /could not be published/);
+  assert.match(refused.error ?? "", /the disk went away/);
+  // The tree is still there and still recorded, so the operator can retry rather than
+  // discovering afterwards that the report went with it.
+  assert.equal(h.registry.getTask(task.id)?.worktreePath, cwd);
+});
+
+test("removing a task never removes its archive", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  await h.tasks.complete(task.id, "found it");
+  await h.scouts.reconcileNow();
+
+  const removed = await h.tasks.remove(task.id);
+  assert.equal(removed.ok, true, removed.error);
+  assert.equal(h.registry.getTask(task.id), undefined);
+
+  await h.scouts.reconcileNow();
+  const page = h.scouts.list({
+    q: null, producer: null, repo: null, agent: null, status: null,
+    from: null, to: null, cursor: null, limit: 10,
+  });
+  assert.equal(page.archives.length, 1, "the answer outlives the card that asked for it");
+  assert.equal(page.archives[0]!.status, "ready");
+});
+
+test("a ship task's cleanup does no archive work at all", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = baseTask({ id: `ship-${++seq}`, kind: "ship", status: "failed", worktreePath: cwd, repoRoot: cwd });
+  h.registry.upsertTask(task);
+  assert.equal((await h.tasks.reclaim(task.id)).ok, true);
+  assert.equal(h.scouts.captureJobsForTask(task.id).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Unexpected exit
+// ---------------------------------------------------------------------------
+
+test("an exiting scout reserves its capture while its sources can still be derived", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  const session = bindSession(h, task, cwd);
+
+  // Exactly what `beginEviction` does: emit with the session still addressable.
+  h.registry.emit("session_exit", session);
+
+  const jobs = h.scouts.captureJobsForTask(task.id);
+  assert.equal(jobs.length, 1, "reserved synchronously, inside the listener");
+  assert.equal(jobs[0]!.repos[0]!.root, cwd, "with server-derived source locators");
+  assert.equal(jobs[0]!.submission, null, "and nothing the agent claimed");
+
+  // The capture itself runs in the background, so it must be settled before asserting.
+  await h.scouts.settleBeforeCleanup(task.id);
+  const settled = h.scouts.captureJobsForTask(task.id)[0]!;
+  assert.equal(settled.status, "published");
+  assert.equal(settled.captureStatus, "complete");
+});
+
+test("an exit after a successful submission does not archive a second time", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  await h.tasks.complete(task.id, "found it");
+
+  const session = bindSession(h, task, cwd);
+  h.registry.emit("session_exit", session);
+  assert.equal(h.scouts.captureJobsForTask(task.id).length, 1, "the ordinary end of a scout");
+});
+
+test("a session exit reserves nothing for a ship task", () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree();
+  const task = baseTask({ id: `ship-${++seq}`, kind: "ship", status: "running", worktreePath: cwd, repoRoot: cwd });
+  h.registry.upsertTask(task);
+  h.registry.emit("session_exit", bindSession(h, task, cwd));
+  assert.equal(h.scouts.captureJobsForTask(task.id).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Attribution: the caller names nothing
+// ---------------------------------------------------------------------------
+
+test("a submission from a session running no scout is refused", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = baseTask({ id: `ship-${++seq}`, kind: "ship", status: "running", worktreePath: cwd, repoRoot: cwd });
+  h.registry.upsertTask(task);
+  const result = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal("status" in result ? result.status : null, 409);
+  assert.match(result.problems.join(" "), /not a scout/);
+});
+
+test("a submission with no live session is refused rather than attributed by guess", async () => {
+  const h = harness();
+  const result = await h.scouts.submit({
+    env: {},
+    sessionId: null,
+    cwd: "/nowhere",
+    submission: { reportPath: "docs/reports/x/report.html", summary: "s", tags: [], supporting: [] },
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal("status" in result ? result.status : null, 404);
+});
+
+test("a scout that already finished can no longer be archived against, and says why", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null, status: "done" });
+  h.registry.upsertTask(task);
+  const result = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal("status" in result ? result.status : null, 409);
+  assert.match(result.problems.join(" "), /this scout is done/);
+});
+
+test("a replayed submission returns the same archive rather than a second one", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+
+  const first = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  const second = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (!first.ok || !second.ok) return;
+  assert.equal(second.replayed, true);
+  assert.deepEqual(second.archive?.key, first.archive?.key);
+  assert.equal(h.scouts.captureJobsForTask(task.id).length, 1);
+});
+
+test("the daemon derives the archive's identity - a submission carries none of it", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  const result = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  const job = h.scouts.captureJobsForTask(task.id)[0]!;
+  assert.equal(job.producerId, h.scouts.producer.id, "this machine's namespace, not a claim");
+  assert.match(job.archiveId, /^[0-9a-f-]{36}$/, "generated, never supplied");
+  assert.equal(result.archive?.relativePath, `${job.producerId}/${job.archiveId}`);
+  // And the portable record carries no local identity at all.
+  await h.scouts.reconcileNow();
+  const detail = h.scouts.detail(result.archive!.key);
+  assert.ok(detail);
+  const asText = JSON.stringify(detail);
+  assert.ok(!asText.includes(task.id), "no task id reaches the portable record");
+  assert.ok(!asText.includes(cwd), "and no absolute checkout path either");
+});
+
+// ---------------------------------------------------------------------------
+// Restart recovery
+// ---------------------------------------------------------------------------
+
+test("a job left unfinished by a restart is resumed, unless its agent is still expected", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+
+  // A scout still running: the daemon died between reserving and recording a submission, and
+  // publishing a partial now would burn the archive id it is about to submit against.
+  const live = mkScout({ worktreePath: cwd, repoRoot: cwd, status: "running" });
+  h.registry.upsertTask(live);
+  h.registry.emit("session_exit", bindSession(h, live, cwd));
+  const liveJob = h.scouts.captureJobsForTask(live.id)[0]!;
+  assert.ok(liveJob);
+
+  // A scout whose task is terminal: its agent is not coming back, so it is resumed.
+  const gone = mkScout({ worktreePath: cwd, repoRoot: cwd, status: "failed" });
+  h.registry.upsertTask(gone);
+  await h.scouts.settleBeforeCleanup(gone.id);
+
+  await h.scouts.recoverJobs();
+  assert.equal(h.scouts.captureJobsForTask(gone.id)[0]!.status, "published");
+});
+
+function escape(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

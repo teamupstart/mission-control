@@ -47,6 +47,8 @@ import {
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { taskMergeQuorum, type QuorumVerdict } from "@shared/task-repos.ts";
+import { missionMcpDescriptor } from "./mission-mcp.ts";
+import { withScoutReportContract } from "./scouts/prompt.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -172,6 +174,51 @@ export class TaskDependencyError extends Error {}
 export class TaskStatusConflictError extends Error {}
 
 /**
+ * A scout whose durable archive is not ready, refusing its own completion.
+ *
+ * Carries every problem rather than one sentence, because the caller is usually an agent or
+ * an operator about to fix them: four bad supporting paths should cost one round trip, not
+ * four. Distinct from `TaskStatusConflictError` so a route can answer with the list.
+ */
+export class ScoutArchiveNotReadyError extends Error {
+  constructor(readonly problems: string[]) {
+    super(problems.join("; "));
+  }
+}
+
+/** One completion request, as the owner's serialized path takes it. */
+interface CompletionInput {
+  outcome: string;
+  outcomeUrl?: string;
+  satisfyDependents: boolean;
+  requireStopped: boolean;
+  /**
+   * The session whose idleness this completion was INFERRED from, or null for a stated one.
+   *
+   * Present only for `settleIfEpisodeFinished`, and it is what makes that conclusion
+   * reversible: `reopenIfWorkResumed` undoes a completion this class inferred and never one a
+   * human recorded. Threaded through the completion rather than set by the caller afterwards
+   * so it lands in the same tick as the write it describes.
+   */
+  inferredFrom: string | null;
+}
+
+/**
+ * What `TaskManager` needs from the scout archive owner, and nothing else.
+ *
+ * A narrow port rather than the class, for two reasons. The archive manager is injected into
+ * this class so completion can wait on it, so it cannot in turn depend on this class; and the
+ * many focused tests that construct a bare `TaskManager` keep compiling and keep behaving
+ * exactly as they did, because an absent gate means "there are no scouts here".
+ */
+export interface ScoutArchiveGate {
+  /** Resolve once the task's verified COMPLETE bundle exists, or say what is wrong. */
+  ensureReady(taskId: string): Promise<{ ok: true } | { ok: false; problems: string[] }>;
+  /** Publish whatever this scout produced before its checkout is destroyed. */
+  settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
+/**
  * Why the disabled toggle refuses by DEFAULT rather than trusting callers to identify
  * themselves, spelled out once for both options objects below.
  *
@@ -231,6 +278,14 @@ export interface AssignOptions {
   reset?: (session: Session) => Promise<ResetResult>;
   /** Rename the agent's terminal after the task it just took. Cosmetic, never fatal. */
   rename?: (session: Session, name: string) => Promise<ActionResult>;
+  /**
+   * Whether Mission Control's MCP bundle can be launched on this machine.
+   *
+   * A seam only so a test can drive the scout capability refusal without deleting `dist/`.
+   * It answers a machine-level question - is the bundle on disk - which is the honest one for
+   * an assignment: the target session's own launch allowlist was fixed before we arrived.
+   */
+  missionMcpDescriptor?: typeof missionMcpDescriptor;
 }
 
 export interface CloseMergedSessionDeps {
@@ -296,6 +351,8 @@ export class TaskManager {
   private assigningTasks = new Set<string>();
   private assigningSessions = new Set<string>();
   private reschedulingTasks = new Set<string>();
+  /** One completion in flight per task, so two signals cannot both publish one archive. */
+  private completing = new Map<string, Promise<Task | null>>();
   /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
   private autoCompleted = new Map<string, string>();
   /** Re-entrancy guard for `reconcileMergedTasks`, which its own completions can re-enter. */
@@ -316,6 +373,15 @@ export class TaskManager {
     private supervisor?: SdkSupervisor,
     /** Coordinates claimed message delivery with every task-assignment reset. */
     private pendingTurns?: PendingTurnResetBoundary,
+    /**
+     * The scout archive owner, when the daemon built one.
+     *
+     * Optional for the same reason `supervisor` is - the focused tests that construct a bare
+     * TaskManager exercise no scouts and must keep behaving identically. Absent means every
+     * completion is a ship completion and every cleanup is unguarded, which is exactly what
+     * this file did before scouts had archives.
+     */
+    private scouts?: ScoutArchiveGate,
   ) {
     this.dispatcher = new Dispatcher(registry, undefined, { supervisor });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
@@ -486,13 +552,19 @@ export class TaskManager {
     if (!this.currentEpisodeLanded(t, binding)) return;
     const outcome = this.liveEpisodeOutcome(t, binding);
     if (!outcome) return;
-    const completed = this.complete(t.id, outcome.outcome, outcome.url);
-    // `complete` broadcasts synchronously and may evict this row from the bounded
-    // in-memory task list before it returns. Do not recreate provenance after the
-    // corresponding `task_remove` already cleared it.
-    if (completed && this.registry.getTask(t.id) === completed) {
-      this.autoCompleted.set(t.id, s.id);
-    }
+    // Backgrounded rather than awaited because this runs inside a `session_upsert` listener.
+    // For a ship task the whole completion - status, broadcast, and the `autoCompleted`
+    // provenance that makes it reversible - still happens synchronously inside this call, so
+    // the reopen path sees exactly what it always did. For a scout it lands once the archive
+    // is verified, which is the only ordering that can be true: a scout is not done until its
+    // report is durable.
+    this.completeInBackground(t.id, {
+      outcome: outcome.outcome,
+      outcomeUrl: outcome.url,
+      satisfyDependents: false,
+      requireStopped: false,
+      inferredFrom: s.id,
+    });
   }
 
   /**
@@ -728,7 +800,17 @@ export class TaskManager {
         // a multi-repo one only once every repository it changed has landed.
         const outcome = this.mergeOutcomeFor(t);
         if (!outcome) continue;
-        this.complete(t.id, outcome.outcome, outcome.url, true);
+        // A ship task still settles inside this iteration; a scout's settles once its archive
+        // is verified, and a scout that has not submitted one is simply not completed by this
+        // sweep. Either way the sweep is not abandoned, which is what the background form buys
+        // over an `await` this synchronous, re-entrant loop could not take.
+        this.completeInBackground(t.id, {
+          outcome: outcome.outcome,
+          outcomeUrl: outcome.url,
+          satisfyDependents: true,
+          requireStopped: false,
+          inferredFrom: null,
+        });
       }
     } finally {
       this.reconcilingMergedTasks = false;
@@ -923,17 +1005,50 @@ export class TaskManager {
     // behind a `stopped` blocker, for work that shipped.
     const outcome = this.mergeOutcomeFor(t);
     if (outcome) {
-      this.complete(t.id, outcome.outcome, outcome.url);
+      // A scout can refuse this: its pull request merged but no verified report was archived,
+      // and `done` would claim a durable answer that does not exist. The agent is gone, so
+      // the row still has to settle - it falls through to the same `failed` write, with a
+      // sentence that says which of the two things went wrong. The archive itself is settled
+      // separately by the exit reservation and by every cleanup guard.
+      this.completeInBackground(
+        t.id,
+        {
+          outcome: outcome.outcome,
+          outcomeUrl: outcome.url,
+          satisfyDependents: false,
+          requireStopped: false,
+          inferredFrom: null,
+        },
+        (problems) => this.settleAgentGone(t.id, problems),
+      );
       return;
     }
+    this.settleAgentGone(t.id, null);
+  }
+
+  /**
+   * Write the terminal row for a task whose agent is gone, keeping everything it holds.
+   *
+   * Split out of `agentWentAway` because a scout reaches it a beat later - after its archive
+   * refused the completion - and by then the row has to be re-read: a cancel or a fresh
+   * dispatch may have landed inside that window, and resurrecting the old snapshot would put
+   * a `failed` row over live work.
+   */
+  private settleAgentGone(taskId: string, scoutProblems: string[] | null): void {
+    const t = this.registry.getTask(taskId);
+    if (!t) return;
+    if (t.status !== "running" && t.status !== "dispatching") return;
     const holdsResources = Boolean(t.worktreePath) || Boolean(t.homeName);
     const now = Date.now();
+    const kept = holdsResources
+      ? " - its worktree was kept; Clean up or re-dispatch it"
+      : "";
     this.registry.upsertTask({
       ...t,
       status: "failed",
-      error: holdsResources
-        ? "the agent's session ended with no outcome recorded - its worktree was kept; Clean up or re-dispatch it"
-        : "the agent's session ended with no outcome recorded",
+      error: scoutProblems
+        ? `the agent's session ended and this scout's report was not archived: ${scoutProblems.join("; ")}${kept}`
+        : `the agent's session ended with no outcome recorded${kept}`,
       // A synthetic id carries the pid and the process start time, so this one can never
       // name a running agent again.
       sessionId: null,
@@ -1780,6 +1895,28 @@ export class TaskManager {
       return { ok: false, error: pane.error ?? "that agent's pane cannot take a prompt", scope: "session" };
     }
 
+    // A scout cannot finish without submitting its report through our MCP server, and an
+    // assignment cannot change an already-running process's launch allowlist - so if the
+    // bundle it would have to call is not on this machine at all, the assignment is refused
+    // HERE, before the reset. The alternative is an agent whose checkout has just been wiped
+    // working towards a task it can provably never complete.
+    //
+    // The bundle's presence is what can honestly be established: whether THIS session's launch
+    // registered it is a property of a process we did not necessarily start. A dispatched
+    // session carried `--mcp-config` (see `askChannelArgs`), and an operator's own session
+    // reaches the same server through `claude mcp add` if they installed the integration. The
+    // agent's own submission failure is the backstop for the remaining case, and it happens
+    // with the checkout intact rather than after it was reset.
+    if (t.kind === "scout" && !(await (opts.missionMcpDescriptor ?? missionMcpDescriptor)())) {
+      return {
+        ok: false,
+        error:
+          "this is a scout, and Mission Control's MCP server is not built on this machine, so " +
+          "the agent could not submit the report the task needs to finish",
+        scope: "task",
+      };
+    }
+
     // A reused agent starts the new task from origin's default branch with a cleared
     // context, not wherever the last one left it.
     //
@@ -1897,9 +2034,15 @@ export class TaskManager {
     // Type the prompt BEFORE claiming the task: if the pane refuses (it is locked, or
     // the agent died between the drop and here) the task must stay in the backlog,
     // droppable again, rather than sit marked `running` with nothing running it.
+    //
+    // The scout contract rides on the SAME text, composed here rather than in the dispatcher,
+    // because this seam types `ready.intent` straight into a live pane and a dispatcher-only
+    // helper would leave every assigned scout with no idea it owed an HTML page. `assign`
+    // refuses a multi-repo task, so the one repository slot this resolves is the session's own
+    // checkout - which is also the tree the capture path will read.
     const r = await inject(
       this.registry.getSession(s.id) ?? s,
-      ready.intent,
+      withScoutReportContract(ready, ready.intent, s.cwd),
       undefined,
       () => this.registry.promptResourceBlockerForSession(s.id),
     );
@@ -2015,6 +2158,34 @@ export class TaskManager {
   }
 
   /**
+   * Publish a scout's archive before anything destroys the checkout it lives in.
+   *
+   * Every destructive path in this class runs `teardownWorktree`, which is
+   * `git worktree remove --force` or a pooled lease handed back, and a scout's report is an
+   * ordinary untracked file in that tree. So the last moment at which the evidence can be
+   * saved is right here, before the teardown, on every one of those paths rather than on the
+   * visible Reclaim button alone.
+   *
+   * A refusal is returned rather than swallowed, and the caller must stop: the resources stay
+   * tracked and the operator can retry, which is strictly better than freeing a worktree and
+   * discovering afterwards that the report went with it. A ship task, a task with no scout
+   * gate, and a scout whose bundle is already published all return `ok` without touching the
+   * filesystem.
+   */
+  private async settleScoutArchive(id: string): Promise<Ok> {
+    if (!this.scouts) return { ok: true };
+    try {
+      const settled = await this.scouts.settleBeforeCleanup(id);
+      return settled.ok ? { ok: true } : { ok: false, error: settled.error };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `this scout's archive could not be published: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /**
    * Stop a task's agent and reclaim its (ephemeral) worktree, marking it
    * cancelled. A dispatched agent's tree is throwaway - to preserve work you
    * Focus and commit/PR it before cancelling - so cancel always reclaims, which
@@ -2030,6 +2201,11 @@ export class TaskManager {
   async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    // Before the kill and the teardown, while the checkout still exists. Cancelling a scout
+    // that had already written its page keeps that page; cancelling one that had not leaves an
+    // honest partial saying so. Neither is a reason to lose the tree quietly.
+    const archived = await this.settleScoutArchive(id);
+    if (!archived.ok) return archived;
     this.autoCompleted.delete(id);
 
     let teardownError: string | null = null;
@@ -2090,38 +2266,164 @@ export class TaskManager {
     outcomeUrl?: string,
     satisfyDependents = false,
     requireStopped = false,
-  ): Task | null {
-    // Refuse EVERY completion while a reschedule holds this task, not only the stopped-only
-    // dead-blocker path: a reschedule mid-teardown still has the row cancelled/failed, so an
-    // ordinary Mark done would flip it to `done` and the reschedule would then tear its
-    // worktree out from under that done row, leaving it pointing at reclaimed resources. The
-    // reservation covers the whole teardown window. The internal auto-settle callers never
-    // reach this throw: they only complete a running/dispatching task, and a reschedule only
-    // ever holds a cancelled/failed one.
+  ): Promise<Task | null> {
+    return this.runCompletion(id, {
+      outcome,
+      outcomeUrl,
+      satisfyDependents,
+      requireStopped,
+      inferredFrom: null,
+    });
+  }
+
+  /**
+   * The one door every completion goes through, and the fork that keeps ship behaviour exact.
+   *
+   * A ship task never awaits anything, so it takes the synchronous path and its status write,
+   * broadcast, dependency satisfaction and inferred-completion provenance all happen INSIDE
+   * the caller's call, exactly as they did before completion returned a promise. That is not
+   * an optimisation: `complete` runs from `session_upsert` and `session_remove` listeners that
+   * read the registry on the very next line, and a completion deferred to a microtask would
+   * silently stop being visible to them.
+   *
+   * A scout awaits its durable archive, so it takes the asynchronous path - and only that path
+   * touches the in-flight map. Serializing ship completions through the same map was tried and
+   * removed: the map entry outlives the write by a microtask, so a second synchronous
+   * completion signal in the same turn chained onto it and was deferred, which is precisely
+   * the regression above.
+   */
+  private runCompletion(id: string, input: CompletionInput): Promise<Task | null> {
+    const gate = this.scoutGateFor(id);
+    if (!gate) {
+      try {
+        return Promise.resolve(this.finishCompletion(id, input));
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    // Two completion signals for one scout must not both publish. Chained rather than
+    // deduplicated so the second acts on the state the first left behind.
+    const inflight = this.completing.get(id);
+    const run = inflight
+      ? inflight.catch(() => null).then(() => this.completeScout(id, input, gate))
+      : this.completeScout(id, input, gate);
+    const tracked = run.finally(() => {
+      if (this.completing.get(id) === tracked) this.completing.delete(id);
+    });
+    this.completing.set(id, tracked);
+    return tracked;
+  }
+
+  /** The archive gate for this task, or null when there is nothing durable to wait for. */
+  private scoutGateFor(id: string): ScoutArchiveGate | null {
+    if (!this.scouts) return null;
+    return this.registry.getTask(id)?.kind === "scout" ? this.scouts : null;
+  }
+
+  /**
+   * A scout's completion, in the order the durable evidence requires.
+   *
+   * 1. validate the task's current state, so a refusal costs no capture work;
+   * 2. await a verified COMPLETE archive - the only await in any completion;
+   * 3. finish through the same synchronous write every other completion uses, which re-reads
+   *    and re-validates the row: a cancel or a reschedule can land inside a capture.
+   *
+   * Step 2 is a refusal rather than a fallback. There is no transcript to fall back TO: the
+   * archive contract is one submitted HTML page, and manufacturing an archive from
+   * conversation text would publish something nobody wrote as the durable answer to the
+   * question. So a scout with no report stays nonterminal, keeps its session and checkout,
+   * and gets the exact correction back.
+   */
+  private async completeScout(
+    id: string,
+    input: CompletionInput,
+    gate: ScoutArchiveGate,
+  ): Promise<Task | null> {
+    this.assertCompletable(id, input.requireStopped);
+    if (!this.registry.getTask(id)) return null;
+    const ready = await gate.ensureReady(id);
+    if (!ready.ok) throw new ScoutArchiveNotReadyError(ready.problems);
+    return this.finishCompletion(id, input);
+  }
+
+  /**
+   * The state guards, shared so the pre-capture check and the write cannot disagree.
+   *
+   * Refuses EVERY completion while a reschedule holds this task, not only the stopped-only
+   * dead-blocker path: a reschedule mid-teardown still has the row cancelled/failed, so an
+   * ordinary Mark done would flip it to `done` and the reschedule would then tear its worktree
+   * out from under that done row, leaving it pointing at reclaimed resources. The reservation
+   * covers the whole teardown window. The internal auto-settle callers never reach this throw:
+   * they only complete a running/dispatching task, and a reschedule only ever holds a
+   * cancelled/failed one.
+   */
+  private assertCompletable(id: string, requireStopped: boolean): void {
     if (this.reschedulingTasks.has(id)) {
       throw new TaskStatusConflictError("task is being rescheduled");
     }
     const t = this.registry.getTask(id);
-    if (!t) return null;
+    if (!t) return;
     if (requireStopped && t.status !== "cancelled" && t.status !== "failed") {
       throw new TaskStatusConflictError(
         `task is ${t.status}, only a cancelled or failed task can be completed from a blocked dependent`,
       );
     }
+  }
+
+  /** The synchronous status write. Unchanged from before completion became awaitable. */
+  private finishCompletion(id: string, input: CompletionInput): Task | null {
+    this.assertCompletable(id, input.requireStopped);
+    const t = this.registry.getTask(id);
+    if (!t) return null;
     this.autoCompleted.delete(id);
     const now = Date.now();
     const updated: Task = {
       ...t,
       status: "done",
-      outcome,
-      outcomeUrl: outcomeUrl ?? null,
+      outcome: input.outcome,
+      outcomeUrl: input.outcomeUrl ?? null,
       error: null,
       completedAt: now,
       updatedAt: now,
     };
     this.registry.upsertTask(updated);
-    if (satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
+    // Recorded HERE rather than by the caller, and immediately after the upsert, because the
+    // window between them is the whole correctness argument: `upsertTask` may evict this row
+    // from the bounded in-memory list, and its `task_upsert` listener clears exactly this map.
+    // Setting it from a `.then` would put both of those between the write and the record.
+    if (input.inferredFrom && this.registry.getTask(id) === updated) {
+      this.autoCompleted.set(id, input.inferredFrom);
+    }
+    if (input.satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
     return updated;
+  }
+
+  /**
+   * Complete from a place that cannot await: an event listener, a reconciliation sweep.
+   *
+   * The rejection has to be absorbed HERE rather than leaked as an unhandled promise, and the
+   * two failures it absorbs are both ordinary rather than exceptional - a reschedule holding
+   * the row, and a scout that has not submitted its report. Neither is a reason to abandon a
+   * sweep over every other task.
+   */
+  private completeInBackground(
+    id: string,
+    input: CompletionInput,
+    onScoutRefusal?: (problems: string[]) => void,
+  ): void {
+    void this.runCompletion(id, input)
+      .catch((error: unknown) => {
+        if (error instanceof ScoutArchiveNotReadyError) {
+          // Ordinary while a scout is still working: the merge landed but the report has not
+          // been submitted, so the task stays running and the agent still owes its page.
+          // Callers whose own signal was terminal - an agent that went away - pass a handler
+          // and settle the row themselves.
+          onScoutRefusal?.(error.problems);
+          return;
+        }
+        if (error instanceof TaskStatusConflictError) return;
+        console.warn(`[tasks] could not complete ${id}:`, error);
+      });
   }
 
   /**
@@ -2192,6 +2494,12 @@ export class TaskManager {
     }
     this.reschedulingTasks.add(id);
     try {
+      // Re-filing a scout tears its worktree down and gives the next attempt a fresh one, so
+      // whatever the first attempt found is archived here or lost. The new attempt gets its
+      // own work episode and therefore its own archive, which is why this cannot simply be
+      // left to the relaunch.
+      const archived = await this.settleScoutArchive(id);
+      if (!archived.ok) return archived;
       this.autoCompleted.delete(id);
       if (t.worktreePath || t.homeName) {
         try {
@@ -2249,6 +2557,11 @@ export class TaskManager {
   async reclaim(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    // A normally completed scout already has its verified bundle, so this is a cheap replay.
+    // A scout that was never archived - one whose agent went away, or that failed - gets its
+    // last chance here, because after this line its report is gone.
+    const archived = await this.settleScoutArchive(id);
+    if (!archived.ok) return archived;
     this.autoCompleted.delete(id);
     try {
       const current = this.registry.getTask(id) ?? t;
@@ -2287,6 +2600,11 @@ export class TaskManager {
     if (t.status === "running" || t.status === "dispatching") {
       return { ok: false, error: "cancel the task before removing it" };
     }
+    // Removing the task must not remove its evidence: an archive is deliberately independent
+    // of the task that produced it, so the bundle is published first and then outlives the row
+    // entirely. This is also the only place a `remove` could silently discard a report.
+    const archived = await this.settleScoutArchive(id);
+    if (!archived.ok) return archived;
     this.autoCompleted.delete(id);
     // A terminal task may still hold a tree (e.g. a failed-but-alive dispatch);
     // reclaim it so removing the record never leaks a worktree/lease.
@@ -2387,6 +2705,23 @@ export class TaskManager {
       return; // resource-holding tasks stay loaded; live sessions re-bind by cwd
     }
     // The agent is gone - reclaim its worktree. Terminal tasks keep their status and outcome.
+    //
+    // This is the startup half of cleanup safety, and the one the exit listener cannot reach:
+    // the agent died WITH the daemon, so no `session_exit` was ever emitted and no job was
+    // ever reserved. A scout's report is sitting untracked in the tree about to be removed,
+    // so it is archived first. A refusal keeps the tree - the row already reads as
+    // resource-holding, so the operator gets the ordinary Clean up affordance and a retry.
+    const archived = await this.settleScoutArchive(t.id);
+    if (!archived.ok) {
+      this.registry.upsertTask({
+        ...t,
+        status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
+        error: t.status === "done" || t.status === "cancelled" ? t.error : archived.error ?? null,
+        sessionId: null,
+        updatedAt: Date.now(),
+      });
+      return;
+    }
     try {
       await teardownWorktree(t);
     } catch (error) {

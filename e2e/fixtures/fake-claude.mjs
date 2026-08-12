@@ -29,9 +29,9 @@
  * So a fake that only wrote to stdout would produce a live, idle, correctly-modelled card
  * with a permanently empty conversation. Writing that file is half of what this does.
  */
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
 /** Fixed so a test can assert against a known id; the driver only cares that it is stable. */
@@ -368,8 +368,113 @@ function replyTo(prompt) {
   return `Mock reply to: ${prompt}`;
 }
 
+// ---------------------------------------------------------------------------
+// The scout scenario
+// ---------------------------------------------------------------------------
+
+/**
+ * What a scout does when the daemon tells it to, with no model call anywhere.
+ *
+ * This fake is a COST DAM everywhere else; here it is also the only way to prove the scout
+ * contract end to end. The daemon appends a report requirement to every scout intent and
+ * then refuses to complete the task until a verified archive exists, and both halves of that
+ * are invisible unless something actually reads the prompt and calls the real MCP route. So
+ * this reacts to the marker the daemon composes, writes a static page into its own checkout,
+ * and posts to `/mcp/scouts/submit` over loopback with the harness token - the same request
+ * the bundled MCP server makes, without the MCP server.
+ *
+ * Everything it needs is inherited env: `MISSION_HOME` (the token file) and `MISSION_PORT`
+ * (the daemon this dispatch came from). Nothing here reaches a model API, and nothing is
+ * scripted by the spec beyond the words in the task's own intent.
+ */
+const SCOUT_MARKER = "--- Mission Control scout ---";
+/**
+ * The slug the fake writes under.
+ *
+ * A plain const, deliberately not exported: `writeFakeAgents` copies this file to an
+ * extension-less path and the shebang runs it as a program, and a top-level `export` in that
+ * position is a syntax error that shows up as a session which binds and immediately exits.
+ * A spec that needs the path spells it out.
+ */
+const SCOUT_SLUG = "e2e-scout";
+/** A phrase that exists ONLY in the report's visible text, so a search for it proves capture. */
+const SCOUT_FINDING = "the resume path never replayed the repository grant";
+/** An intent word that tells the fake to write a report it knows the daemon will refuse. */
+const SCOUT_INVALID = "E2E_SCOUT_INVALID_REPORT";
+/** An intent word that tells the fake to write the page but never submit it. */
+const SCOUT_NO_SUBMIT = "E2E_SCOUT_NO_SUBMIT";
+
+function scoutReportHtml(valid) {
+  const body = valid
+    ? `<p>${SCOUT_FINDING}.</p><p><code>src/server/reset.ts:118</code></p>`
+    : `<p>built at runtime</p><script>document.write("nope")</script>`;
+  return [
+    "<!doctype html>",
+    '<html lang="en">',
+    '<head><meta charset="utf-8"><title>Resume permission loss</title>',
+    "<style>body { background: #0a0c0f; color: #e7ebf1; }</style></head>",
+    "<body><h1>Resume permission loss</h1>",
+    body,
+    "</body></html>",
+  ].join("\n");
+}
+
+function daemonToken() {
+  const home = process.env.MISSION_HOME ?? process.env.HARNESS_HOME;
+  try {
+    return readFileSync(join(home, "token"), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Write the page, then hand it over the way a real scout would.
+ *
+ * Returns the sentence the turn answers with, so a spec can read the outcome in the
+ * conversation as well as in the archive - including the daemon's refusal, which is what an
+ * agent correcting an invalid report actually sees.
+ */
+async function runScout(prompt) {
+  const valid = !prompt.includes(SCOUT_INVALID);
+  const relative = `docs/reports/${SCOUT_SLUG}/report.html`;
+  const target = join(process.cwd(), relative);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, scoutReportHtml(valid));
+  // A companion beside the page, captured with the report directory rather than named.
+  writeFileSync(join(dirname(target), "evidence.csv"), "when,what\n1,grant missing\n");
+
+  if (prompt.includes(SCOUT_NO_SUBMIT)) {
+    return `Report written to ${relative} but deliberately not submitted.`;
+  }
+  const port = process.env.MISSION_PORT ?? "7317";
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/mcp/scouts/submit`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": daemonToken() },
+      body: JSON.stringify({
+        env: {},
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        reportPath: relative,
+        summary: "Resume rebuilt the session without replaying the repository grant.",
+        tags: ["resume", "permissions"],
+        supporting: [],
+      }),
+    });
+    if (!res.ok) {
+      return `Mission Control refused the scout submission (${res.status}): ${await res.text()}`;
+    }
+    return `Submitted the scout report. Report: ${relative}`;
+  } catch (error) {
+    return `Could not reach Mission Control: ${String(error)}`;
+  }
+}
+
 /** The turn the CLI is running right now, and every prompt it has absorbed. */
 let openTurn = null;
+/** The scout turn in flight, if any. Awaited on stdin close so its answer is never lost. */
+let scoutTurn = null;
 let slowStop = false;
 
 /**
@@ -594,6 +699,30 @@ rl.on("line", (line) => {
       return;
     }
 
+    // A scout, recognised by the contract the DAEMON appended rather than by anything the
+    // spec wrote - which is what makes the requirement's delivery the thing under test. The
+    // turn is held open across the write and the submission because both are real I/O; the
+    // card stays "working" until the archive exists, exactly as a real one would.
+    if (prompt.includes(SCOUT_MARKER)) {
+      const held = { prompts: [] };
+      openTurn = held;
+      // Tracked so a stdin close cannot exit the process out from under a submission that is
+      // already in flight - the answer would never be written and the card would go from
+      // working straight to exited, which reads as a crash rather than as a race.
+      scoutTurn = runScout(prompt).then((text) => {
+        openTurn = null;
+        appendTurn("assistant", [{ type: "text", text }]);
+        emit({
+          type: "assistant",
+          session_id: SESSION_ID,
+          message: { role: "assistant", content: [{ type: "text", text }] },
+        });
+        for (const queued of held.prompts) appendTurn("user", queued);
+        emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
+      });
+      return;
+    }
+
     // Deterministic transcript tool activity, in the two shapes the real CLI writes:
     // a `tool_use` beside prose, and a `tool_use` alone. `answer` then closes the turn
     // with the echoed reply, which is the anchor a spec waits on before asserting.
@@ -649,8 +778,14 @@ rl.on("line", (line) => {
 // close into `{kind:"exited"}` and evicts the session. Stay alive until the SDK closes
 // stdin, then leave cleanly.
 rl.on("close", () => {
-  if (slowStop) setTimeout(() => process.exit(0), SLOW_STOP_MS);
-  else process.exit(0);
+  const leave = () => {
+    if (slowStop) setTimeout(() => process.exit(0), SLOW_STOP_MS);
+    else process.exit(0);
+  };
+  // A scout's turn is real I/O - a file write and an HTTP submission - so exiting the moment
+  // stdin closes would cut it off mid-flight and lose the answer frame the spec reads.
+  if (scoutTurn) void scoutTurn.finally(leave);
+  else leave();
 });
 
 }

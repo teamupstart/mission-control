@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
+import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
 import { BASE_URL, captureTerminalEnv, readToken } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
 
@@ -394,6 +395,91 @@ server.registerTool(
         body.replayed
           ? `Already submitted; returning the existing snapshot (${ref}). You can stop.`
           : `Submitted. Your work was captured as an immutable snapshot (${ref}). You can stop.`,
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// Submit this scout's finished report and the evidence worth keeping. The scout NEVER names
+// itself or its destination: the daemon derives the task, the work episode, the checkouts and
+// the archive's identity from this session's pane/id/cwd, so the arguments carry only what the
+// scout wrote - no task, session, episode, producer, archive, digest or absolute path. The zod
+// here is a hand-written mirror of `SubmitScoutArtifactsSchema` in `@shared/protocol.ts`; the
+// two are duplicated deliberately, and change together.
+server.registerTool(
+  "submit_scout_artifacts",
+  {
+    title: "Submit a scout report",
+    description:
+      "When your scout report is written, submit it. Mission Control captures the report " +
+      "directory and the additional files you name into a durable local archive that outlives " +
+      "this session, its checkout and its task card, then lets the task finish. The report must " +
+      `be a self-contained static page at ${SCOUT_REPORT_PATH_SHAPE} with no JavaScript and no ` +
+      "external requests. Do not open a pull request for the report.",
+    inputSchema: {
+      reportPath: z
+        .string()
+        .min(1)
+        .max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
+        .describe(`Checkout-relative path of the report, at ${SCOUT_REPORT_PATH_SHAPE}`),
+      summary: z
+        .string()
+        .min(1)
+        .max(SCOUT_SUBMISSION_LIMITS.summary)
+        .describe("A short plain-text summary of the finding, for search results and listings."),
+      tags: z
+        .array(z.string().min(1).max(SCOUT_SUBMISSION_LIMITS.tag))
+        .max(SCOUT_SUBMISSION_LIMITS.tags)
+        .optional()
+        .describe("Optional short tags for later search."),
+      supporting: z
+        .array(
+          z.object({
+            repoSlot: z.string().describe("A repository slot issued in your task's prompt, e.g. repo-01"),
+            path: z
+              .string()
+              .min(1)
+              .max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
+              .describe("Path relative to that checkout"),
+          }),
+        )
+        .max(SCOUT_SUBMISSION_LIMITS.supportingFiles)
+        .optional()
+        .describe(
+          "Additional files worth preserving. Files already beside the report are captured " +
+            "automatically and must not be listed here.",
+        ),
+    },
+  },
+  async ({ reportPath, summary, tags, supporting }) => {
+    try {
+      const res = await http("/mcp/scouts/submit", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        reportPath,
+        summary,
+        tags: tags ?? [],
+        supporting: supporting ?? [],
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        return textResult(
+          `Mission Control refused the scout submission (${res.status}): ${detail}`,
+          true,
+        );
+      }
+      const body = (await res.json()) as {
+        replayed?: boolean;
+        archive?: { artifactCount?: number; captureStatus?: string };
+      };
+      const files = body.archive?.artifactCount ?? 0;
+      return textResult(
+        body.replayed
+          ? `Already submitted; the existing archive of ${files} file(s) still stands. You can stop.`
+          : `Submitted. Your report and ${Math.max(0, files - 1)} supporting file(s) were archived. You can stop.`,
       );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

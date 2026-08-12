@@ -36,7 +36,12 @@ import {
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
 import type { Registry } from "./registry.ts";
 import { resetWorktreeToCommit, verifyHeadIs } from "./git/ensemble-snapshot.ts";
-import { missionMcpDescriptor, type MissionMcpRequirement } from "./mission-mcp.ts";
+import {
+  missionMcpDescriptor,
+  scoutMissionMcpRequirement,
+  type MissionMcpRequirement,
+} from "./mission-mcp.ts";
+import { withScoutReportContract } from "./scouts/prompt.ts";
 import { withRepoMemoryPointer } from "./memory.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
@@ -246,7 +251,18 @@ export class Dispatcher {
         baseSha: wt.baseSha,
         extraRepos: extras,
       };
-      const intent = intentWithRepoManifest(provisioned);
+      // The repo manifest is a PREFIX (context the agent needs before the request) and the
+      // scout contract is a SUFFIX (what "delivered" means once it has read it), so the
+      // operator's own words are never buried and the ordering is the same on both delivery
+      // seams. A ship task passes through `withScoutReportContract` unchanged, which is what
+      // keeps its intent bytes identical to what they were.
+      const intent = withScoutReportContract(provisioned, intentWithRepoManifest(provisioned));
+      // Which of OUR tools this launch has to be able to call. A scout ALWAYS has to be able
+      // to submit its report - that is now the only way its task can finish - so the
+      // requirement is unioned in here rather than left to whichever caller happened to
+      // dispatch it. A ship task is unaffected: `scoutMissionMcpRequirement` returns the
+      // caller's requirement untouched, including `null`.
+      const missionMcp = scoutMissionMcpRequirement(task, options.missionMcp ?? null);
       // The directories this session needs write access to beyond its cwd, and the argv
       // that grants them. Empty on every single-repo dispatch, which renders no flags at
       // all - so those command lines stay byte-identical.
@@ -276,7 +292,7 @@ export class Dispatcher {
           wt,
           model,
           effort,
-          options.missionMcp ?? null,
+          missionMcp,
           intent,
           extraDirs,
         );
@@ -291,9 +307,6 @@ export class Dispatcher {
       // its own launch builder below (widened sandbox), so this is empty for it; live TUI
       // control stays only for a human swapping an existing session's mode from the card.
       const modeArgs = dispatchPermissionModeArgs(task.agent);
-      // Which of OUR tools this launch has to be able to call, if the caller said. Passed to
-      // each harness's launch builder as a requirement, never as flags - see `mission-mcp.ts`.
-      const missionMcp = options.missionMcp ?? null;
       // The ask channel rides along on every dispatch: it takes Claude's built-in
       // `AskUserQuestion` away and hands the agent our blocking `request_input` instead, so
       // a clarifying question arrives as structured arguments in the dashboard rather than

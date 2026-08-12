@@ -155,14 +155,14 @@ test("a reschedule reservation refuses duplicate reschedules and every completio
   const duplicate = await tasks.reschedule("resolving");
   assert.deepEqual(duplicate, { ok: false, error: "task is being rescheduled" });
   // The stopped-only dead-blocker completion is refused...
-  assert.throws(
+  await assert.rejects(
     () => tasks.complete("resolving", "landed", undefined, true, true),
     /task is being rescheduled/,
   );
   // ...and so is an ORDINARY completion (Inspector round 1): otherwise a Mark done
   // mid-teardown would flip the row to done while reschedule tears its worktree out from
   // under it, leaving a done task pointing at reclaimed resources.
-  assert.throws(
+  await assert.rejects(
     () => tasks.complete("resolving", "landed elsewhere"),
     /task is being rescheduled/,
   );

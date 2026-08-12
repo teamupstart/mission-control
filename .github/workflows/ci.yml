@@ -66,6 +66,19 @@ jobs:
   #
   # Lint is new to CI. It was previously a local-only check, which meant it was a required
   # standard nothing enforced. It costs under a second, so the honest place for it is here.
+  #
+  # There is deliberately no `needs: gates` on `unit` or `e2e`, and this is a real tradeoff
+  # rather than an oversight. Gating them would mean a typecheck or lint failure costs
+  # nothing instead of a full paid pipeline - but it also delays every run by the length of
+  # this job. Measured over the last 291 completed runs before the split:
+  #
+  #   26 failed (8.9%), and only 2 of 291 (0.69%) failed in a way `gates` would have caught
+  #   first. The common failure is `Test` (8 runs), which gating does nothing about.
+  #
+  # So `needs: gates` would save 0.69% of CI spend and add ~48s to 100% of runs, taking the
+  # pipeline from 145s to 193s (+33%). The regression it would fix costs about 1% of what
+  # this change saves. Revisit if that 0.69% climbs - if typecheck starts failing on a tenth
+  # of runs, the arithmetic flips and `needs: gates` becomes correct.
   gates:
     name: gates (typecheck, lint)
     runs-on: ubuntu-latest

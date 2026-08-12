@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Durable scout archive phased plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:#f2f4f7;--paper:#fff;--paper2:#f7f8fa;--ink:#1c232d;--muted:#626d7c;
+      --dim:#7b8593;--line:#dce1e7;--line2:#e9edf1;--blue:#2c73c8;--green:#16815d;
+      --amber:#a66508;--red:#bd3933;--purple:#7252b9;--code:#eef2f6;
+      --shadow:0 18px 54px rgba(28,35,45,.10);
+      --sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    }
+    @media (prefers-color-scheme:dark) {
+      :root {
+        --bg:#0a0c0f;--paper:#14181e;--paper2:#0f1318;--ink:#e7ebf1;--muted:#939eae;
+        --dim:#7c8798;--line:#29313b;--line2:#202730;--blue:#4a9eff;--green:#35c08a;
+        --amber:#f6a733;--red:#f85149;--purple:#a371f7;--code:#1a2028;
+        --shadow:0 20px 58px rgba(0,0,0,.38);
+      }
+    }
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}
+    body{margin:0;min-width:0;background:radial-gradient(900px 520px at 88% -12%,color-mix(in srgb,var(--blue) 11%,transparent),transparent 62%),var(--bg);color:var(--ink);font:15px/1.68 var(--sans)}
+    a{color:var(--blue);text-underline-offset:3px}a:hover{color:color-mix(in srgb,var(--blue) 75%,var(--ink))}
+    .mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 90%,transparent);backdrop-filter:blur(16px)}
+    .mast-inner{max-width:1380px;margin:auto;padding:42px clamp(20px,5vw,66px) 35px}
+    .kicker{margin:0 0 8px;color:var(--blue);font:800 11px/1.2 var(--mono);letter-spacing:.15em;text-transform:uppercase}
+    .mast h1{max-width:850px;margin:0;font-size:clamp(35px,5.5vw,64px);line-height:1.06;letter-spacing:-.045em}
+    .mast-copy{max-width:850px;margin:16px 0 0;color:var(--muted);font-size:17px}
+    .evidence-tabs{display:flex;flex-wrap:wrap;gap:0;margin-top:24px}
+    .evidence-tabs span{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid var(--line);background:var(--paper2);color:var(--muted);font:700 11px/1 var(--mono)}
+    .evidence-tabs span:first-child{border-radius:9px 0 0 9px}.evidence-tabs span:last-child{border-radius:0 9px 9px 0}.evidence-tabs span+span{border-left:0}
+    .evidence-tabs i{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 14%,transparent)}
+    .path{margin-top:16px;color:var(--dim);font:12px/1.5 var(--mono)}
+    .layout{display:grid;grid-template-columns:220px minmax(0,930px);gap:34px;max-width:1240px;margin:0 auto;padding:30px 18px 92px}
+    nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}
+    nav b{display:block;margin:0 0 9px;color:var(--dim);font:800 10px/1.2 var(--mono);letter-spacing:.12em;text-transform:uppercase}
+    nav a{display:block;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}
+    article{min-width:0;padding:10px clamp(18px,4vw,54px) 60px;border:1px solid var(--line);border-radius:17px;background:var(--paper);box-shadow:var(--shadow)}
+    article>h1:first-child{display:none}h2{margin:48px 0 13px;padding-top:7px;border-top:1px solid var(--line);font-size:25px;line-height:1.25;letter-spacing:-.025em}h2:first-of-type{margin-top:22px;border-top:0}
+    h3{margin:30px 0 9px;font-size:18px;line-height:1.35;letter-spacing:-.012em}h4{margin:22px 0 7px}
+    p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:5px 0}strong{color:var(--ink)}
+    code{padding:2px 5px;border:1px solid var(--line2);border-radius:5px;background:var(--code);color:var(--blue);font:12.5px/1.45 var(--mono);overflow-wrap:anywhere}
+    pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}
+    table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font-size:11px}
+    blockquote{margin:18px 0;padding:10px 16px;border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 6%,var(--paper));color:var(--muted)}
+    #approved-decisions{margin-top:56px;padding:22px 24px;border:1px solid color-mix(in srgb,var(--green) 48%,var(--line));border-radius:14px;background:color-mix(in srgb,var(--green) 6%,var(--paper));color:var(--ink)}
+    .flow{max-width:100%;margin:22px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}
+    .flow figcaption{margin-bottom:13px;font-weight:760}.flow svg{display:block;width:100%;height:auto;min-width:760px}.flow p{margin:12px 3px 1px;color:var(--muted);font-size:12px}
+    .flow .edges path{fill:none;stroke:var(--dim);stroke-width:1.7;marker-end:url(#flow-arrow)}.deletion .edges path{marker-end:url(#delete-arrow)}.publication .edges path{marker-end:url(#publish-arrow)}.reconciliation .edges path{marker-end:url(#reconcile-arrow)}.deletion .edges .failure,.publication .edges .failure{stroke:var(--red)}
+    .flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .node.manager rect{fill:color-mix(in srgb,var(--blue) 10%,var(--paper));stroke:var(--blue)}
+    .flow .node.bundle rect,.flow .node.done rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .node.db rect{stroke:var(--purple)}.flow .node.verify rect{stroke:var(--amber)}.flow .node.retry rect{stroke:var(--red);stroke-dasharray:5 4}
+    .flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:480}.flow text.label{fill:var(--dim);font:500 9px var(--mono)}
+    footer{display:flex;justify-content:space-between;gap:20px;max-width:1240px;margin:0 auto 36px;padding:0 18px;color:var(--dim);font:11px/1.5 var(--mono)}
+    @media(max-width:880px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:20px}}
+    @media(max-width:560px){.mast-inner{padding-top:30px}.evidence-tabs span{flex:1;justify-content:center}.layout{padding-inline:8px}article{border-radius:13px}.path{overflow-wrap:anywhere}th,td{min-width:130px}th:first-child,td:first-child{min-width:44px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+    @media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav{display:none}article{border:0}.flow svg{min-width:0}footer{display:none}}
+  </style>
+</head>
+<body>
+  <header class="mast">
+    <div class="mast-inner">
+      <p class="kicker">Mission Control · merge-aware implementation plan</p>
+      <h1>Build the scout archive in three safe merges</h1>
+      <p class="mast-copy">Establish the portable library first, make every scout publish a verified HTML artifact second, then add the permanent search and review experience.</p>
+      <div class="evidence-tabs" aria-label="Implementation phases"><span><i></i>Portable library</span><span><i></i>Required capture</span><span><i></i>Scouts UI</span></div>
+      <p class="path">Phase 1 → Phase 2 → Phase 3</p>
+    </div>
+  </header>
+  <div class="layout">
+    <nav aria-label="Plan sections"><b>On this page</b><a href="#incorporated-human-decisions">Decisions</a><a href="#repository-findings-that-changed-the-route">Repository findings</a><a href="#phase-map">Phase map</a><a href="#dependency-and-delivery-flow">Dependency flow</a><a href="#cross-phase-contracts">Contracts</a><a href="#merge-order-and-compatibility-strategy">Merge strategy</a><a href="#final-verification-strategy">Verification</a><a href="#complete-cross-phase-audit">Audit</a></nav>
+    <article><h1 id="durable-scout-archive-phased-implementation">Durable scout archive: phased implementation</h1>
+<p>Source plan: <a href="./plan.md"><code>plan.md</code></a>, rendered at <a href="./plan.html"><code>plan.html</code></a>.</p>
+<p>This index turns the approved product and engineering plan into three merge units. The detailed
+phase files beside this index are the implementation guides. The source plan remains the authority
+for the intended outcome and approved product choices.</p>
+<h2 id="incorporated-human-decisions">Incorporated human decisions</h2>
+<table><thead><tr><th>Decision</th><th>Approved selection</th><th>Consequence</th></tr></thead><tbody><tr><td>Durable content</td><td>One self-contained HTML report, not the scout conversation</td><td><code>report/report.html</code> is required for every complete scout; transcripts, prompts, hidden reasoning, and last-message fallbacks are excluded</td></tr><tr><td>Supporting artifacts</td><td>Report folder plus explicit files</td><td>Capture bounded companion files beside the report and only additional paths submitted by the scout; never infer all changed files</td></tr><tr><td>Canonical container</td><td>Versioned directory bundle</td><td><code>manifest.json</code>, <code>report/</code>, and <code>artifacts/</code> remain directly inspectable and portable without SQLite or Mission Control</td></tr><tr><td>Index behavior</td><td>Incremental local SQLite cache</td><td>Bootstrap and recurring background passes index new or changed bundles; deleting the database causes an automatic one-time rebuild</td></tr><tr><td>Sharing model</td><td>Filesystem copy or operator-selected sync</td><td>Producer and archive UUIDs form the global key, so independently created scouts do not collide and foreign bundles auto-appear</td></tr><tr><td>Retention</td><td>Keep until explicit deletion</td><td>No age, count, or byte eviction; the Scouts UI owns a deliberate delete action</td></tr><tr><td>Permanent entry point</td><td>Top-level Scouts page</td><td>Add a topbar segment, stable list and detail routes, a global action, and a static command-palette result</td></tr><tr><td>Follow-up</td><td>Phased implementation</td><td>This document and the three phase files below</td></tr></tbody></table>
+<h2 id="repository-findings-that-changed-the-route">Repository findings that changed the route</h2>
+<p>Verified against the planning checkout. Implementers must re-check the current tree before editing.</p>
+<ul>
+<li><code>STATE_DIR</code> in <code>src/server/config.ts</code> already resolves the current local Mission Control home and
+honors <code>MISSION_HOME</code>. The archive belongs under that root. <code>src/server/db.ts</code> remains the only
+SQLite schema and upgrade owner, and the daemon remains the only database writer.</li>
+<li><code>Registry.onSessionExit</code> already fires once inside <code>beginEviction</code>, before <code>session_remove</code> and
+while the session row and task binding are still addressable. No new exit or eviction path is
+needed.</li>
+<li><code>TaskManager.complete</code> is currently synchronous and is called by HTTP, merge reconciliation,
+session-loss reconciliation, tests, and the Ensemble task gateway. Making scout completion await
+capture requires one owner-level refactor across those callers, not a special completion route.</li>
+<li>A task reaches an agent through two seams. <code>Dispatcher.dispatch</code> handles a fresh terminal or SDK
+launch, while <code>TaskManager.assignReserved</code> injects <code>ready.intent</code> into an existing session. The
+scout report appendix must be composed for both.</li>
+<li>Launch-scoped Mission MCP requirements already fail dispatch when a required tool cannot be
+registered. <code>submit_ensemble_result</code> provides the closest registry, duplicated-schema, attribution,
+idempotency, and focused-test pattern for <code>submit_scout_artifacts</code>.</li>
+<li>The existing <code>skills/html-report/SKILL.md</code> already writes
+<code>docs/reports/&lt;slug&gt;/report.html</code>, requires self-contained static HTML, and asks the agent to report
+the output path. It is optional model guidance today, so the daemon must enforce the scout contract
+even when the global skill is disabled.</li>
+<li>Server file access already has containment and regular-file defenses in
+<code>src/server/session-files.ts</code>, but those helpers are session-root-specific. Scout storage needs a
+focused archive-path owner or a carefully extracted generic primitive, not reuse of a route that
+accepts session paths.</li>
+<li><code>FileWorkspace.tsx</code> already builds the sandboxed HTML preview source and link bridge. The Scouts
+reader should extract a small shared preview module so the Files and Scouts surfaces share one CSP
+and navigation policy.</li>
+<li>The route owner is <code>src/web/workflows/useWorkflowRoute.ts</code> despite its workflow-oriented name.
+<code>AppPageShell</code>, <code>PAGE_SEGMENTS</code>, route destinations, action IDs, and event handling are exhaustive
+contracts that must move with a new top-level page.</li>
+<li>The command palette forbids providers that fetch their own data. A static <strong>Open Scouts</strong> page row
+is compatible; individual archive search stays inside the Scouts page.</li>
+<li>Browser tests run only against the built daemon and fake agent binaries. The existing E2E fixture
+exposes an isolated <code>MISSION_HOME</code>, so it can seed foreign bundles, restart the daemon, and remove
+only <code>harness.db</code> without spending model tokens.</li>
+</ul>
+<h2 id="phase-map">Phase map</h2>
+<table><thead><tr><th>#</th><th>Phase</th><th>Detailed file</th><th>Merge unit</th><th>Direct prerequisite</th></tr></thead><tbody><tr><td>1</td><td>Portable library and disposable index</td><td><a href="./phase-1-portable-library-and-index.md"><code>phase-1-portable-library-and-index.md</code></a></td><td>Manifest contract, local producer namespace, contained bundle reader, rebuildable SQLite search cache, reconciler, HTTP API, deletion mechanism, and invalidation event</td><td>None</td></tr><tr><td>2</td><td>Scout capture and completion</td><td><a href="./phase-2-scout-capture-and-completion.md"><code>phase-2-scout-capture-and-completion.md</code></a></td><td>Required report prompt and MCP tool, capture jobs, atomic publication, completion gating, exit recovery, and cleanup protection</td><td>Phase 1</td></tr><tr><td>3</td><td>Scouts history UI</td><td><a href="./phase-3-scouts-history-ui.md"><code>phase-3-scouts-history-ui.md</code></a></td><td>Top-level Scouts route, search and report reader, supporting artifacts, background refresh, explicit deletion, responsive and accessible E2E coverage, and product docs</td><td>Phase 2</td></tr></tbody></table>
+<h2 id="dependency-and-delivery-flow">Dependency and delivery flow</h2>
+
+<figure class="flow phases" aria-labelledby="phased-flow-title">
+  <figcaption id="phased-flow-title">Merge-aware implementation and value flow</figcaption>
+  <svg viewBox="0 0 1200 390" role="img" aria-label="The planning pull request releases Phase 1, the portable library and disposable index. Phase 1 releases Phase 2, required scout capture and completion. Phase 2 releases Phase 3, the Scouts history interface. Each phase leaves an independently operable result.">
+    <defs>
+      <marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z"/></marker>
+    </defs>
+    <g class="edges">
+      <path d="M204 105H260"/><path d="M504 105H560"/><path d="M804 105H860"/>
+      <path d="M382 150V248"/><path d="M682 150V248"/><path d="M982 150V248"/>
+    </g>
+    <g class="node" transform="translate(24 65)"><rect width="180" height="80" rx="14"/><text x="90" y="31">Planning PR</text><text class="sub" x="90" y="53">approved contracts merge</text></g>
+    <g class="node manager" transform="translate(260 55)"><rect width="244" height="100" rx="14"/><text x="122" y="32">Phase 1</text><text class="sub" x="122" y="54">portable library</text><text class="sub" x="122" y="72">+ disposable index</text></g>
+    <g class="node verify" transform="translate(560 55)"><rect width="244" height="100" rx="14"/><text x="122" y="32">Phase 2</text><text class="sub" x="122" y="54">required capture</text><text class="sub" x="122" y="72">+ ordered completion</text></g>
+    <g class="node bundle" transform="translate(860 55)"><rect width="244" height="100" rx="14"/><text x="122" y="32">Phase 3</text><text class="sub" x="122" y="54">Scouts history</text><text class="sub" x="122" y="72">+ report reader</text></g>
+    <g class="node" transform="translate(260 248)"><rect width="244" height="82" rx="14"/><text x="122" y="30">Foreign bundles work</text><text class="sub" x="122" y="53">API discovery and rebuild</text></g>
+    <g class="node" transform="translate(560 248)"><rect width="244" height="82" rx="14"/><text x="122" y="30">New scouts persist</text><text class="sub" x="122" y="53">HTML before cleanup</text></g>
+    <g class="node done" transform="translate(860 248)"><rect width="244" height="82" rx="14"/><text x="122" y="30">Operators recover answers</text><text class="sub" x="122" y="53">search · read · delete</text></g>
+    <text class="label" x="231" y="92">publishes paths</text><text class="label" x="532" y="92">consumes C1-C5</text><text class="label" x="832" y="92">consumes C1-C9</text>
+  </svg>
+  <p>The graph is serial because each phase consumes durable contracts from its direct prerequisite. Every merge still leaves a usable, testable repository.</p>
+</figure>
+<p>The phases are intentionally serial. Phase 2 consumes the manifest, storage, reconciliation, and
+route contracts from phase 1. Phase 3 exercises the capture behavior from phase 2 in its required
+browser flow. No phases can safely implement concurrently because each later phase consumes source
+and tests owned by its direct prerequisite.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<p>These names let each phase state what it owns and what downstream work may rely on.</p>
+<ul>
+<li><strong>C1, portable source of truth (Phase 1):</strong> a completed archive is the verified directory at
+<code>scouts/&lt;producer-id&gt;/&lt;archive-id&gt;/</code>. The pair of generated UUIDs is its global identity. SQLite,
+tasks, sessions, and worktrees are not required to read it.</li>
+<li><strong>C2, immutable publication (Phase 1):</strong> Mission Control writes only through <code>.staging</code> and an
+atomic final rename, never overwrites a final key, and deletes through <code>.trash</code>. External copies
+settle across two observations before validation. Same-key, different-digest input is unreadable,
+never silently selected.</li>
+<li><strong>C3, version 1 manifest (Phase 1):</strong> the shared schema, allowed role and status vocabularies,
+canonical content digest, generated path rules, hard limits, and golden vectors are append-only
+portable contracts. <code>report/report.html</code> is the only complete archive primary artifact.</li>
+<li><strong>C4, disposable index (Phase 1):</strong> archive, artifact, and search rows are derived only from final
+bundles and have no task or session foreign keys. Empty SQLite state is rebuilt by the same
+incremental reconciler. Unchanged manifests do not cause body parsing.</li>
+<li><strong>C5, bounded read model (Phase 1):</strong> list, detail, artifact, open, and delete routes accept opaque
+archive and artifact IDs rather than paths. Historical records stay out of the SSE snapshot; one
+<code>scout_archive_changed</code> event invalidates bounded browser queries.</li>
+<li><strong>C6, required report (Phase 2):</strong> every delivered scout intent requires one answer-first,
+self-contained, static <code>docs/reports/&lt;slug&gt;/report.html</code>, regardless of skill settings or answer
+length. Conversation content is never an archive fallback.</li>
+<li><strong>C7, server attribution (Phase 2):</strong> <code>submit_scout_artifacts</code> accepts report-relative metadata and
+explicit supporting locators only. The daemon derives task, work episode, repositories, producer,
+archive ID, and destination. One task episode maps idempotently to one capture operation.</li>
+<li><strong>C8, ordered completion (Phase 2):</strong> every transition to scout <code>done</code> awaits a verified final
+bundle before changing task status. Cache indexing may retry later. Ship completion behavior and
+dependency semantics remain unchanged.</li>
+<li><strong>C9, cleanup safety (Phase 2):</strong> <code>onSessionExit</code> reserves recoverable source locators before
+eviction. Missing or ambiguous HTML yields an honest partial bundle. Reclaim, remove, and any
+teardown that could destroy the sources wait for the capture job to settle.</li>
+<li><strong>C10, shared preview boundary (Phase 3):</strong> Files and Scouts use one CSP and sandbox helper. Scout
+HTML cannot execute JavaScript or make external requests, and links resolve only to fragments or
+verified companions in the same bundle.</li>
+<li><strong>C11, stable history route (Phase 3):</strong> <code>#/scouts</code> and <code>#/scouts/&lt;archive-key&gt;</code> are permanent
+routes. Search and filters remain bounded HTTP state; reconnect and archive invalidation refetch the
+mounted query without browser polling.</li>
+<li><strong>C12, explicit local deletion (Phase 1 server, Phase 3 UI):</strong> deletion binds the typed archive key
+to the route key, atomically removes only the verified bundle and derived rows, preserves current
+filters, and has no portable tombstone or cascade into tasks and sessions.</li>
+</ul>
+<h2 id="merge-order-and-compatibility-strategy">Merge order and compatibility strategy</h2>
+<p>Merge Phase 1, then Phase 2, then Phase 3. Each pull request must be independently operable:</p>
+<ol>
+<li>After Phase 1, a valid bundle copied into the local library appears through bounded HTTP search
+and detail routes, survives SQLite removal, and can be deleted through the authenticated API.
+Existing scouts and every current dashboard page behave exactly as before.</li>
+<li>After Phase 2, newly completed scouts always publish the Phase 1 bundle and cannot lose their
+evidence to task or worktree cleanup. The library remains headless but fully usable through its
+routes. Ship tasks retain their current completion and teardown behavior.</li>
+<li>After Phase 3, operators can search, read, open, copy, and delete local or foreign scout bundles
+from the permanent Scouts page. This is the final user-visible state in the source plan.</li>
+</ol>
+<p>All schema work is additive. All persisted identifiers and format vocabularies are append-only.
+There is one filesystem source of truth, one daemon-owned derived index, one existing task owner, and
+one existing event stream. No phase creates a compatibility adapter that a later phase must remove.</p>
+<h2 id="final-verification-strategy">Final verification strategy</h2>
+<p>The phase files own focused tests and commands. The complete feature finishes with:</p>
+<pre><code class="language-sh">npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e -- e2e/specs/scout-archive.spec.ts e2e/specs/topbar-one-row.spec.ts
+</code></pre>
+<p>The final Playwright flow uses fake agents and an isolated local home. It proves required HTML output
+with the optional skill disabled, completion before cleanup, search and deep links, sandbox behavior,
+foreign-bundle discovery, partial-copy settling, SQLite reconstruction, explicit deletion from both
+UI entry points, and deletion failure recovery. No scout archive, report, screenshot, or other
+evidence artifact is committed to the repository.</p>
+<h2 id="complete-cross-phase-audit">Complete cross-phase audit</h2>
+<ul>
+<li>2026-08-12: initial decomposition. Every approved decision is assigned to one owning phase and no
+transcript capture remains.</li>
+<li>2026-08-12: repository trace corrected the source plan&#x27;s dispatcher-only wording. C6 now requires a
+shared task-delivery appendix for both fresh dispatch and assignment to an existing session.</li>
+<li>2026-08-12: the archive index and externally copied bundle path stay together in Phase 1, avoiding
+a database schema that has no usable reconciliation owner. Capture jobs move to Phase 2 because
+they coordinate task lifecycle rather than portable reading.</li>
+<li>2026-08-12: the invalidation event begins in Phase 1 to keep the wire contract exhaustive, while
+its first visible consumer lands with the page in Phase 3. The revision counter is inert until
+then and requires no temporary browser poller.</li>
+<li>2026-08-12: the final audit confirms a single serial dependency graph. Phase 2 consumes C1-C5;
+Phase 3 consumes C1-C12. The complete result matches the source plan without a cleanup phase.</li>
+<li>2026-08-12: after all phase files were written, the full set was reconciled again. Phase 1 owns
+portable reads, index reconstruction, server deletion, and invalidation. Phase 2 alone owns task
+attribution, capture, completion, and cleanup gating. Phase 3 consumes their public contracts for
+routing, preview, refresh, and explicit deletion. No requirement has two behavior owners.</li>
+<li>2026-08-12: review tightened the renderer contract. It now refuses to render when the number of
+Markdown Mermaid blocks and hand-authored inline SVG diagrams differs, preventing a later plan edit
+from silently dropping or attaching the wrong flow.</li>
+</ul></article>
+  </div>
+  <footer><span>Source of truth: phased-plan.md</span><span>Offline render · no external requests</span></footer>
+</body>
+</html>

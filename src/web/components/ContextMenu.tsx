@@ -446,6 +446,30 @@ export function ContextMenuHost({
 
   // ---- performing ---------------------------------------------------------
 
+  const openLink = useCallback(
+    async (url: string): Promise<void> => {
+      /*
+       * Awaited, and the failure reported. `missionDesktop.openExternal` is backed by
+       * `shell.openExternal` in main, whose promise rejects on a malformed URL or a scheme with
+       * no registered handler - so firing and forgetting would both tell the operator "Opened"
+       * over a link that did not open AND leave an unhandled rejection behind it.
+       */
+      try {
+        await openExternalUrl(url);
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message.trim() : "";
+        showNotice({
+          tone: "error",
+          text: message === "" ? "The link did not open" : message,
+          detail: previewPayload(url, 90),
+        });
+        return;
+      }
+      showNotice({ tone: "ok", text: "Opened", detail: previewPayload(url, 90) });
+    },
+    [showNotice],
+  );
+
   const write = useCallback(
     async (payload: string, detail = payload): Promise<boolean> => {
       const outcome = await feedback.copy(payload);
@@ -506,8 +530,7 @@ export function ContextMenuHost({
       close(action.field === undefined);
       switch (action.kind) {
         case "open":
-          openExternalUrl(action.payload);
-          showNotice({ tone: "ok", text: "Opened", detail: previewPayload(action.payload, 90) });
+          void openLink(action.payload);
           return;
         case "copy":
           if (action.field) action.field.element.focus({ preventScroll: true });
@@ -525,7 +548,7 @@ export function ContextMenuHost({
           void paste(action);
       }
     },
-    [close, paste, showNotice, write],
+    [close, openLink, paste, write],
   );
 
   // ---- render -------------------------------------------------------------

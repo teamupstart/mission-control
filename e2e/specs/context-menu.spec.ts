@@ -97,26 +97,47 @@ async function say(card: Locator, text: string): Promise<Locator> {
 }
 
 /**
- * A point ON THE GLYPHS of an element, once that element has stopped moving.
+ * Right-click ON THE GLYPHS of an element, at a point computed the instant before the click.
  *
- * A turn is a block, so its box runs the full width of the bubble while its text may be a
- * third of that - and the centre of the box is then beside the words, not on them. Every
- * assertion here is about what is under the cursor, so the cursor has to be on it.
+ * `locator.click()` would be simpler, but it aims at the centre of the BOX, and a turn is a
+ * block: its box runs the full width of the bubble while its text may be a third of that, so
+ * the centre is usually beside the words rather than on them. Every assertion in this file is
+ * about what is under the cursor, so the cursor has to be on it.
+ *
+ * Everything else here is because a raw `page.mouse.click(x, y)` gets NONE of Playwright's
+ * actionability. Computing a point once and reusing it later made two of these tests flaky:
+ * `.transcript-log` auto-scrolls to the newest turn, and the card reflows as a session settles
+ * from working to idle, so a coordinate is only good for the moment it was read. Scroll,
+ * settle, measure and click are one step for that reason, and the measurement asserts it
+ * actually landed on the intended element rather than letting a stale point fail later as a
+ * menu that mysteriously did not open.
  */
-async function textPoint(locator: Locator): Promise<{ x: number; y: number }> {
-  // `.transcript-log` scrolls, and it auto-scrolls to the newest turn - so by the third turn
-  // the first one is above the visible area and its client rects are coordinates the mouse
-  // cannot reach. Playwright's own actionability check does this for `locator.click`; a raw
-  // `mouse.click` at a computed point has none, so it is done here.
+async function rightClickText(
+  page: Page,
+  locator: Locator,
+  modifiers: string[] = [],
+): Promise<void> {
   await locator.scrollIntoViewIfNeeded();
   await settled(locator);
-  return locator.evaluate((node) => {
+  const point = await locator.evaluate((node) => {
     const range = document.createRange();
     range.selectNodeContents(node);
     const rect = range.getClientRects()[0];
     if (!rect) throw new Error("the element drew no text to point at");
-    return { x: rect.left + Math.min(rect.width / 2, 40), y: rect.top + rect.height / 2 };
+    const x = rect.left + Math.min(rect.width / 2, 40);
+    const y = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !(node.contains(hit) || hit.contains(node))) {
+      throw new Error(
+        `the point on this element is covered by <${hit?.tagName.toLowerCase() ?? "nothing"} `
+          + `class="${hit?.className ?? ""}">`,
+      );
+    }
+    return { x, y };
   });
+  for (const modifier of modifiers) await page.keyboard.down(modifier);
+  await page.mouse.click(point.x, point.y, { button: "right" });
+  for (const modifier of modifiers) await page.keyboard.up(modifier);
 }
 
 /**
@@ -188,13 +209,11 @@ test("right-clicking a selection copies exactly what was selected", async ({
   await settled(card);
 
   const body = turn.locator(".turn-text");
-  const point = await textPoint(body);
-
   await selectContents(body);
   const selected = await liveSelection(dashboard);
   expect(selected).toContain(PROSE);
 
-  await dashboard.mouse.click(point.x, point.y, { button: "right" });
+  await rightClickText(dashboard, body);
   await expect(menuOf(dashboard)).toBeVisible();
   await shoot(dashboard, "selection");
 
@@ -274,10 +293,7 @@ test("Shift+right-click falls through to the browser's own menu", async ({
   await watchRightClicks(dashboard);
 
   await selectContents(body);
-  const point = await textPoint(body);
-  await dashboard.keyboard.down("Shift");
-  await dashboard.mouse.click(point.x, point.y, { button: "right" });
-  await dashboard.keyboard.up("Shift");
+  await rightClickText(dashboard, body, ["Shift"]);
 
   // The handler returns before it touches anything, so the event goes back to the browser with
   // its default intact - which is a read, once, of the decision itself rather than a wait on
@@ -290,7 +306,7 @@ test("Shift+right-click falls through to the browser's own menu", async ({
   // the browser's menu is one modifier away on a developer tool, not that right-click is
   // unhandled. Re-selected first, because the Shift+click above moved the selection.
   await selectContents(body);
-  await dashboard.mouse.click(point.x, point.y, { button: "right" });
+  await rightClickText(dashboard, body);
   await expect(row(dashboard, "Copy")).toBeVisible();
   expect(await claimedRightClicks(dashboard)).toEqual([false, true]);
 });
@@ -341,7 +357,27 @@ test("a link offers its URL once, and opens through the desktop bridge", async (
 
   expect(await dashboard.evaluate(() => (window as unknown as { __opened: string[] }).__opened))
     .toEqual([RUN_URL]);
+  await expect(dashboard.getByRole("status").filter({ hasText: "Opened" })).toBeVisible();
   expect(dashboard.url()).toContain("#/fleet");
+
+  // And a shell that REFUSES says so. `shell.openExternal` rejects on a scheme with no
+  // registered handler, and that travels back over the IPC invoke - so the notice has to be
+  // the failure rather than the same "Opened" the success path shows.
+  await dashboard.evaluate(() => {
+    Object.assign(window, {
+      missionDesktop: {
+        isDesktop: true,
+        openExternal: () => Promise.reject(new Error("No application knows how to open this")),
+      },
+    });
+  });
+  await link.click({ button: "right" });
+  await row(dashboard, "Open link").click();
+
+  await expect(
+    dashboard.getByRole("status").filter({ hasText: "No application knows how to open this" }),
+  ).toBeVisible();
+  await expect(dashboard.getByRole("status").filter({ hasText: "Opened" })).toHaveCount(0);
 });
 
 test("no fleet shortcut reaches the card behind an open menu", async ({ dashboard, daemon }) => {
@@ -380,6 +416,43 @@ test("no fleet shortcut reaches the card behind an open menu", async ({ dashboar
   // the surface that owns the keyboard, not merely ignored by something that had stood down.
   await expect(menuOf(dashboard)).toBeVisible();
   await expect(kill).toHaveCount(0);
+});
+
+test("Cut takes the selection out of the composer and onto the clipboard", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The one row that both writes the clipboard AND mutates the DOM, so this is the only place
+   * `replaceFieldRange` runs at all: `test/context-actions.test.ts` decides which rows exist
+   * and never touches a real field. If `execCommand("delete")` stops taking the range, or the
+   * native-value-setter fallback is wrong, this is what goes red.
+   */
+  await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  const card = await conversation(dashboard, daemon);
+  await settled(card);
+
+  const composer = card.getByPlaceholder(/^Reply to this session/);
+  await composer.fill("ship the fix");
+  // The LAST WORD only, so what this pins is a range splice rather than a field clear - the
+  // two are indistinguishable when the selection is everything.
+  await composer.press("End");
+  for (let step = 0; step < 3; step += 1) await composer.press("Shift+ArrowLeft");
+  // Opened from the keyboard on purpose: right-clicking a field can move the caret, and the
+  // captured selection is the thing under test.
+  await composer.press("Shift+F10");
+  await expect(row(dashboard, "Cut")).toBeVisible();
+
+  await row(dashboard, "Cut").click();
+  await expect(menuOf(dashboard)).toBeHidden();
+
+  expect(await clipboard(dashboard)).toBe("fix");
+  await expect(composer).toHaveValue("ship the ");
+  // The caret is left where the text was, so typing continues from there rather than from
+  // wherever focus happened to land.
+  expect(
+    await composer.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
+  ).toEqual([9, 9]);
 });
 
 test("Shift+F10 and the Menu key open the menu from inside the composer", async ({

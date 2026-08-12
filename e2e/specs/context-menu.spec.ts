@@ -12,16 +12,41 @@
  * selection under the cursor survived the gesture that read it - and every one of those is a
  * link in the chain the feature is.
  *
- * Two negatives are asserted here, and both are set up so they cannot pass vacuously (README
- * trap 5). Right-clicking outside a selection and Shift-right-clicking are each checked by
- * reading the SELECTION back - a state change, once, after the event - before the menu's
- * absence, and each is bracketed by the same gesture at the same point succeeding.
+ * Two negatives are asserted here, and neither is allowed to pass vacuously (README trap 5).
+ * Both are bracketed by the same gesture at the same point succeeding, and neither rests on
+ * the selection, which is NOT an observable around a right-click: Chromium edits it on both
+ * sides of the app's handler, extending it on Shift+mousedown and selecting the word under the
+ * cursor on a plain right-click over unselected text. Asserting on it failed twice before that
+ * was understood (README trap 8). So `Shift`+right-click is checked by reading whether the app
+ * called `preventDefault`, and the cleared-selection case is checked on the ROWS of a menu that
+ * opens either way - a link whose `Copy` exists only while a selection under the cursor gives
+ * it something of its own to write.
  */
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
+
+const EVIDENCE = artifactsDir("context-menu");
+
+/**
+ * A menu photographed where it opened.
+ *
+ * No `mouse.move(0, 0)` first, unlike the other evidence helpers in this suite: this menu is
+ * anchored to the cursor, so the pointer's resting place is part of what the picture is of.
+ * The first row's tooltip is showing because the row has focus, which is also true of the
+ * real thing the moment it opens.
+ */
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.screenshot({ path: join(EVIDENCE, `${name}.png`) });
+}
 
 const PROSE = "the resolver reads the caret and not the event target";
 const LINK_TURN = "the failing run is https://example.test/run/9 today";
@@ -171,13 +196,22 @@ test("right-clicking a selection copies exactly what was selected", async ({
 
   await dashboard.mouse.click(point.x, point.y, { button: "right" });
   await expect(menuOf(dashboard)).toBeVisible();
-  await row(dashboard, "Copy").click();
+  await shoot(dashboard, "selection");
+
+  // Driven from the keyboard even though a pointer opened it. A pointer-opened menu parks
+  // focus on the menu rather than its first row - a row's tooltip fires on focus and would be
+  // painted over the very text being pointed at - so this also pins that the first ArrowDown
+  // from there lands on the first row rather than somewhere a modulo put it.
+  await dashboard.keyboard.press("ArrowDown");
+  await expect(row(dashboard, "Copy")).toBeFocused();
+  await dashboard.keyboard.press("Enter");
   await expect(menuOf(dashboard)).toBeHidden();
 
   expect(await clipboard(dashboard)).toBe(selected);
   // The confirmation is the host's, not the menu's: the menu closes on activation, so a line
   // inside it would die with the click that earned it.
   await expect(dashboard.getByRole("status").filter({ hasText: "Copied" })).toBeVisible();
+  await shoot(dashboard, "copied");
 });
 
 test("right-clicking outside a selection clears it, so Copy is never offered for it", async ({
@@ -280,6 +314,7 @@ test("a link offers its URL once, and opens through the desktop bridge", async (
   await expect(menuOf(dashboard).getByRole("menuitem")).toHaveCount(2);
   await expect(row(dashboard, "Copy URL")).toBeVisible();
   await expect(row(dashboard, "Open link")).toBeVisible();
+  await shoot(dashboard, "link");
 
   await row(dashboard, "Copy URL").click();
   expect(await clipboard(dashboard)).toBe(RUN_URL);
@@ -368,6 +403,7 @@ test("Shift+F10 and the Menu key open the menu from inside the composer", async 
   for (const name of ["Cut", "Copy", "Paste", "Paste as quote"]) {
     await expect(row(dashboard, name)).toBeVisible();
   }
+  await shoot(dashboard, "composer-shift-f10");
 
   // A field's selection is its own - `window.getSelection()` is empty inside a textarea - and
   // it is captured before the menu takes focus, or it is gone by the time a row is clicked.

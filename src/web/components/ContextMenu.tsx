@@ -58,6 +58,8 @@ interface MenuAnchor {
 interface OpenState {
   menu: ResolvedContextMenu;
   anchor: MenuAnchor;
+  /** What opened it. Decides where focus lands - see the focus effect. */
+  source: "pointer" | "keyboard";
   /** Null until measured. Rendering before then would paint the menu in the wrong place. */
   placed: { left: number; top: number } | null;
 }
@@ -220,11 +222,14 @@ export function ContextMenuHost({
     returnFocus.current = null;
   }, []);
 
-  const show = useCallback((menu: ResolvedContextMenu, anchor: MenuAnchor) => {
-    const active = document.activeElement;
-    returnFocus.current = active instanceof HTMLElement ? active : null;
-    setOpen({ menu, anchor, placed: null });
-  }, []);
+  const show = useCallback(
+    (menu: ResolvedContextMenu, anchor: MenuAnchor, source: "pointer" | "keyboard") => {
+      const active = document.activeElement;
+      returnFocus.current = active instanceof HTMLElement ? active : null;
+      setOpen({ menu, anchor, source, placed: null });
+    },
+    [],
+  );
 
   // ---- opening ------------------------------------------------------------
 
@@ -258,7 +263,7 @@ export function ContextMenuHost({
       if (contextMenuIsEmpty(menu)) return;
 
       event.preventDefault();
-      show(menu, { left: event.clientX, top: event.clientY, flipTo: event.clientY });
+      show(menu, { left: event.clientX, top: event.clientY, flipTo: event.clientY }, "pointer");
     }
     window.addEventListener("contextmenu", onContextMenu);
     return () => window.removeEventListener("contextmenu", onContextMenu);
@@ -274,7 +279,7 @@ export function ContextMenuHost({
       });
       if (contextMenuIsEmpty(menu)) return false;
       const rect = el.getBoundingClientRect();
-      show(menu, { left: rect.left, top: rect.bottom + GAP, flipTo: rect.top - GAP });
+      show(menu, { left: rect.left, top: rect.bottom + GAP, flipTo: rect.top - GAP }, "keyboard");
       return true;
     },
     [show],
@@ -317,16 +322,34 @@ export function ContextMenuHost({
   );
 
   /*
-   * `preventScroll` is load-bearing rather than tidy. Focusing a row can make the browser
-   * scroll to reveal it, and this menu floats over `.transcript-log`, which is a scroll
+   * Focus moves INTO the menu either way, so the keys below have somewhere to land and nothing
+   * behind it can be typed into - but WHERE depends on who opened it.
+   *
+   * A keyboard open takes the first row, so Enter works immediately and the row's tooltip
+   * announces what it will write. That tooltip is the whole point for a keyboard user, who has
+   * no hover.
+   *
+   * A pointer open takes the menu itself. Row tooltips fire on focus as well as hover - which
+   * is what makes them reachable without a mouse - and a cursor-anchored menu is by definition
+   * drawn ON the thing that was clicked, so focusing a row on open paints its bubble straight
+   * over the link, the selection or the turn the reader just pointed at. The evidence shots
+   * made that obvious in a way the markup could not. Hovering any row still shows it, which is
+   * what a pointer user is asking for when they hover.
+   *
+   * `preventScroll` is load-bearing rather than tidy: focusing can make the browser scroll to
+   * reveal the target, and this menu floats over `.transcript-log`, which is a scroll
    * container - so a plain `focus()` lets the menu close itself on open, intermittently,
    * depending on where the cursor was. Gated on `placed` because a menu is `visibility: hidden`
    * until it has been measured, and a hidden element cannot take focus at all.
    */
   useEffect(() => {
     if (!open?.placed) return;
-    menuRef.current?.querySelector<HTMLButtonElement>(".ctx-row")?.focus({ preventScroll: true });
-  }, [open?.placed]);
+    const menu = menuRef.current;
+    if (!menu) return;
+    const target =
+      open.source === "keyboard" ? menu.querySelector<HTMLButtonElement>(".ctx-row") : null;
+    (target ?? menu).focus({ preventScroll: true });
+  }, [open?.placed, open?.source]);
 
   // ---- dismissal ----------------------------------------------------------
 
@@ -389,8 +412,12 @@ export function ContextMenuHost({
         case "ArrowUp": {
           if (rows.length === 0) return;
           event.preventDefault();
-          const step = event.key === "ArrowDown" ? 1 : -1;
-          rows[(at + step + rows.length) % rows.length]?.focus({ preventScroll: true });
+          const down = event.key === "ArrowDown";
+          // `at` is -1 while focus is on the menu itself, which is where a pointer-opened menu
+          // starts. From there the first Down is the first row and the first Up is the last,
+          // rather than whatever the modulo below would land on.
+          const next = at < 0 ? (down ? 0 : rows.length - 1) : (at + (down ? 1 : -1) + rows.length) % rows.length;
+          rows[next]?.focus({ preventScroll: true });
           return;
         }
         case "Home":
@@ -512,6 +539,9 @@ export function ContextMenuHost({
             className="ctx-menu"
             role="menu"
             aria-label="Context actions"
+            // Focusable but not tabbable: a pointer-opened menu parks focus here, so the keys
+            // have somewhere to land without a row's tooltip covering what was clicked.
+            tabIndex={-1}
             style={{
               left: open.placed?.left ?? open.anchor.left,
               top: open.placed?.top ?? open.anchor.top,

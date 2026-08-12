@@ -23299,6 +23299,12 @@ span.line-run-prov {
   flex-direction: column;
   gap: 1px;
 }
+/* A pointer-opened menu parks focus on the menu itself rather than its first row, so the row's
+   tooltip is not painted over whatever was just clicked. The menu is the surface, not a
+   control, so it draws no ring of its own - the focused ROW is what should ever look focused. */
+.ctx-menu:focus {
+  outline: none;
+}
 /* Dense rows - label plus a right-aligned hint (decision D4). Measured against the blurb
    variant in the mockups, the same five rows are 147x196 dense against 250x258 with blurbs,
    and 70% taller flips above the cursor far more often. */

@@ -30,14 +30,23 @@ npm run package
 
 `npm run smoke` and `npm run test:e2e` both require a successful `npm run build` first. `npm run test:e2e` additionally needs the Playwright browser, which `npm install` does not fetch - run `npx playwright install chromium` once per machine. `npm run package` builds the macOS application.
 
-Run one test file with the same concurrency and loader as the full suite:
+Run one test file with the same loader as the full suite:
 
 ```sh
-node --test --test-concurrency=2 --import tsx test/session-contracts.test.ts
+node --test --import tsx test/session-contracts.test.ts
 ```
 
-`npm test` runs two test files at a time. Set `MISSION_TEST_CONCURRENCY` to change that; CI
-sets it to 6, which is where the suite stops getting faster on a 4 vCPU runner.
+`--test-concurrency` is deliberately not in that command. It caps how many test *files* run
+at once, so naming a single file makes it inert, and carrying it here implied a single-file
+run reproduces the suite's concurrency when it cannot.
+
+`npm test` runs two files at a time. `MISSION_TEST_CONCURRENCY` changes that, and CI sets it
+to 6, which is where the suite stops getting faster on a 4 vCPU runner. A failure that only
+appears under that contention needs the whole suite, not one file:
+
+```sh
+MISSION_TEST_CONCURRENCY=6 npm test
+```
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 
 /**
  * What is at stake: a button that a shortcut also drives has to TEACH that shortcut,
@@ -123,4 +124,48 @@ test("a rebind moves what the buttons print, so a keycap is never a stale defaul
   assert.ok(!caps.includes("k"), "and the default it replaced is gone");
   resetAll();
   assert.ok(keycaps(cardBar()).includes("k"), "resetting puts the default back");
+});
+
+/** The visible label of every keycap-carrying button, in drawn order. */
+function keycapLabels(html: string): string[] {
+  return [...html.matchAll(/<kbd class="kb-hint">[^<]*<\/kbd>(?:<!-- -->)?\s*([A-Za-z]+)/g)].map(
+    (m) => m[1] ?? "",
+  );
+}
+
+test("the docs name the keycapped buttons in the order they are actually drawn", () => {
+  // What is at stake: `docs/ui.md` enumerates every control that prints its chord, by hand,
+  // and nothing tied that list to the row it describes. A control inserted in one place and
+  // documented in another is a doc that is wrong in the one way a reader cannot detect - it
+  // is still a true list of the buttons, just not of their order - and that is exactly the
+  // drift this caught: Interrupt was first drawn between Complete and Kill, then moved ahead
+  // of the pair, and the sentence kept the old order.
+  //
+  // An ORDERED SUBSEQUENCE rather than an exact string, so the prose stays prose: commas,
+  // "and", and the surrounding clauses are free to change, while a swap fails.
+  resetAll();
+  setHints(true);
+  const docs = readFileSync(new URL("../docs/ui.md", import.meta.url), "utf8");
+  const section = docs.slice(docs.indexOf("### Keycaps on the buttons"));
+  assert.ok(section.length > 0, "the Keycaps enumeration is gone from docs/ui.md");
+
+  for (const [surface, endsAt, labels] of [
+    ["the card row", "on a card", keycapLabels(cardBar())],
+    ["the Console footer", "in the Console\nfooter", keycapLabels(footBar())],
+  ] as const) {
+    const clause = section.slice(0, section.indexOf(endsAt));
+    assert.ok(clause.length > 0, `docs/ui.md no longer says "${endsAt}"`);
+    let at = 0;
+    for (const label of labels) {
+      // Case-insensitive: the card row capitalises its labels and the console footer does
+      // not, while the prose names each control once.
+      const found = clause.toLowerCase().indexOf(label.toLowerCase(), at);
+      assert.notEqual(
+        found,
+        -1,
+        `docs/ui.md lists ${surface}'s buttons out of order: ${label} does not follow the one before it. Drawn order is ${labels.join(", ")}.`,
+      );
+      at = found + label.length;
+    }
+  }
 });

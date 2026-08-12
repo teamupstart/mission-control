@@ -653,8 +653,8 @@ while a card in that strip has focus - so they are fixed for the same reason.
 ### Keycaps on the buttons
 
 The buttons those shortcuts drive print the key on their own face - Terminal and
-Codex / Claude in the conversation toolbar; Send, Focus, Files, Queue, Reset, Complete,
-Interrupt and Kill on a card; Focus, Diff, Reset, Complete, Interrupt and Kill in the Console
+Codex / Claude in the conversation toolbar; Send, Focus, Files, Queue, Reset, Interrupt,
+Complete and Kill on a card; Focus, Diff, Reset, Interrupt, Complete and Kill in the Console
 footer; the Console's
 Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board card's workflow disclosure; and the settings

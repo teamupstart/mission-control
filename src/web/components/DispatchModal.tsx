@@ -807,6 +807,23 @@ function DispatchModal({
   );
   const [guided, setGuided] = useGuidedDispatch();
   /**
+   * Whether a guided pass belongs to this form AT ALL - for a given value of the preference,
+   * so the toggle can ask it about the value it is about to write.
+   *
+   * ONE predicate with three readers (the mount rule, the header toggle, and Clear), because
+   * they ask the same question at three moments: *should this form be asking the questions?*
+   * An edit never should - those answers exist already, and re-asking them would be a quiz -
+   * and Ensemble never should, because its body replaces Crew and After work outright, so
+   * there would be nothing left to point at.
+   *
+   * This is deliberately NOT `guidedRunning`, which answers something narrower: is a question
+   * on screen *right now*. The two part company the moment a pass hands over, and a reader
+   * that wants the first question but asks the second gets a plain form.
+   */
+  const guidedAppliesWith = (on: boolean): boolean =>
+    on && mode.kind === "new" && launchMode === "single";
+  const guidedApplies = guidedAppliesWith(guided);
+  /**
    * Where the guided pass stands, and which option in the current question is lit.
    *
    * HERE rather than on `DispatchLayer`, unlike `launchMode` and the draft: the layer
@@ -814,13 +831,9 @@ function DispatchModal({
    * open - which is exactly the wanted behaviour. A pass is per-opening. The draft is not,
    * so a reopened pass seeds each question from what the draft already carries rather than
    * from a hardcoded first entry (see `guidedSeed`).
-   *
-   * The mount rule is the whole gate: a new dispatch, in Single mode, with the preference on.
-   * An edit never runs it - those answers exist already, and re-asking them would be a quiz -
-   * and Ensemble replaces Crew and After work outright, so there would be nothing to point at.
    */
   const [pass, setPass] = useState<GuidedPass>(() =>
-    mode.kind === "new" && launchMode === "single" && guided ? startGuidedPass() : NO_GUIDED_PASS,
+    guidedApplies ? startGuidedPass() : NO_GUIDED_PASS,
   );
   /**
    * `null` means "wherever the draft already points", resolved at render.
@@ -1456,15 +1469,17 @@ function DispatchModal({
     onRevert();
     setError(null);
     // A pass is part of how a guided dispatch OPENED, so putting the form back where it
-    // started puts the questions back too - rather than leaving a half-walked strip on
-    // screen over a form that no longer holds any of its answers.
+    // started puts the questions back too - whether or not one is still on screen. Asking
+    // `guidedApplies` rather than `guidedRunning` is the whole point: the two agree until the
+    // pass hands over, and after that `guidedRunning` is false while the preference is still
+    // on, so Clear on a finished guided dispatch would blank the draft and leave the operator
+    // in the plain form - which is the one thing Clear is not for.
     //
-    // Answering the Kind question is enough to enable this button, so this is reachable
-    // rather than theoretical, and the focus call below is what made it worth handling:
-    // the caret would land in the task box while the pass was still up, and `handleGuidedKey`
-    // stands down for a text field - so every remaining key would type instead of answering
-    // and the strip would have no way out but the Guided switch.
-    if (guidedRunning) {
+    // Mid-pass it also un-strands the keyboard. Answering Kind alone is enough to enable this
+    // button, and the focus call below would put the caret in the task box with the strip
+    // still up - where `handleGuidedKey` stands down for a text field, so every remaining key
+    // would type instead of answering.
+    if (guidedApplies) {
       setPass(startGuidedPass());
       setHighlight(null);
       return;
@@ -1872,7 +1887,8 @@ function DispatchModal({
             onChange={(next) => {
               setGuided(next);
               setHighlight(null);
-              setPass(next && !ensembleMode ? startGuidedPass() : endGuidedPass(pass));
+              // Asked about the value being written, not the one being replaced.
+              setPass(guidedAppliesWith(next) ? startGuidedPass() : endGuidedPass(pass));
             }}
           />
         )}

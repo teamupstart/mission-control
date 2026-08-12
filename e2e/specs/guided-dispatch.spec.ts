@@ -298,6 +298,31 @@ test("Clear during a pass restarts it rather than stranding the keyboard", async
   await expect(kindSelect(dialog)).toHaveValue("scout");
 });
 
+test("Clear after the pass has handed over asks the questions again", async ({ dashboard }) => {
+  const dialog = await openGuided(dashboard);
+  await dashboard.keyboard.press("t");
+  await dashboard.keyboard.press("x");
+  await dashboard.keyboard.press("d");
+
+  // Spent, handed over, and typed into - the ordinary form.
+  await expect(rail(dialog)).toBeHidden();
+  await expect(taskBox(dialog)).toBeFocused();
+  await dashboard.keyboard.type("audit the retry policy");
+
+  await dialog.getByRole("button", { name: "Clear" }).click();
+
+  // "Back where it opened" is about the OPENING, not about whether a question happens to be
+  // on screen. Guided is still on, so this form still opens guided - and gating this on
+  // "is a question showing" instead blanked the draft and left the operator in the plain
+  // form, which is the one thing Clear is not for.
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await expect(rail(dialog).getByRole("button", { name: /^Kind:/ })).toHaveCount(0);
+  await expect(taskBox(dialog)).toHaveValue("");
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
+  await expect(taskBox(dialog)).not.toBeFocused();
+});
+
 test("an answered rung jumps back to its question", async ({ dashboard }) => {
   const dialog = await openGuided(dashboard);
 

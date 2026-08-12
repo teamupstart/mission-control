@@ -374,7 +374,16 @@ test("an SDK Foreman run keeps its identity and usage through the HTTP outbox", 
       }),
       "routed",
     );
-    await eventually(() => received.some((item) => item.runId === runId));
+    // Both ends, for the reason the dead-peer case below spells out: the fields asserted
+    // next are the SERVER's copy, but the drained queue and the removed spool asserted after
+    // them are the CLIENT's, and the harness records receipt before it writes the 204 that
+    // produces either. One wait covering both keeps every claim and races none of them.
+    await eventually(
+      () =>
+        received.some((item) => item.runId === runId) &&
+        pendingSpendReports() === 0 &&
+        !existsSync(SPOOL),
+    );
 
     const delivered = received.find((item) => item.runId === runId) as unknown as LlmSpendReport;
     assert.equal(delivered.role, "foreman:triage");
@@ -551,13 +560,17 @@ test("a recovered legacy spool is delivered once, not on every sweep", async () 
   // Two more sweeps with an empty queue - the exact condition that used to re-adopt it.
   sweepSpendOutbox();
   sweepSpendOutbox();
+  // The fixed window is right for the NEGATIVE claim below - "no further attempt happened"
+  // can only be checked by giving one a chance to. The positive claim is waited on instead,
+  // for the reason the dead-peer case above spells out: `received` is pushed before the 204
+  // that drains the queue, so 50ms is a guess about a round trip rather than a fact about it.
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(
     attempted.filter((id) => id === "run-legacy-once").length,
     afterFirst,
     "no further delivery attempts were made for an already-migrated legacy spool",
   );
-  assert.equal(pendingSpendReports(), 0);
+  await eventually(() => pendingSpendReports() === 0);
   for (const n of readdirSync(home).filter((f) => f.includes(".migrated-"))) {
     rmSync(join(home, n), { force: true });
   }
@@ -759,7 +772,20 @@ test("a peer that dies mid-outage is adopted by a worker that never restarts", a
   // coming. The sweep is the only thing that can find this.
   await start();
   sweepSpendOutbox();
-  await eventually(() => received.some((r) => (r as { runId: string }).runId === "run-from-dead-peer"));
+  // Waited on the CLIENT's end state, not the server's receipt, and the difference is a
+  // whole round trip. The harness pushes to `received` and only THEN writes the 204, while
+  // the queue drains and the spool is unlinked when the reporter processes that response -
+  // so asserting the drain straight after the push asserts something that provably has not
+  // happened yet. On an idle machine the 10ms poll granularity hides it; on a loaded runner
+  // it does not, and because every later case in this file opens with "starts from a drained
+  // queue", the one report left behind fails all thirteen of them (node 26, run
+  // 31531047778). Reproduced deterministically by delaying the harness's 204 by 50ms.
+  await eventually(
+    () =>
+      received.some((r) => (r as { runId: string }).runId === "run-from-dead-peer") &&
+      pendingSpendReports() === 0 &&
+      !existsSync(orphanPath("dead-peer-mid-outage")),
+  );
   assert.equal(pendingSpendReports(), 0, "and it was delivered, not merely queued");
   assert.equal(
     existsSync(orphanPath("dead-peer-mid-outage")),

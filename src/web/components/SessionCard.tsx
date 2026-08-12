@@ -5,6 +5,7 @@ import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
+import { taskPillParts } from "@shared/task.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { heldByRun, sessionCanBindWorkflow, workflowBindChipTitle } from "../lib/held.ts";
 import { queueChipVisible, queueChipView } from "../lib/queue.ts";
@@ -228,6 +229,17 @@ export function SessionCard({
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
+  // The shared reduction, so this pill and the console detail's cannot drift on what a
+  // kind badge or a repeated title is worth.
+  const pill = taskPillParts(session);
+  // The one part of the pill only the card draws: a transient status the console detail
+  // reads off its own state badge instead. Named here because it is also a reason for the
+  // pill to exist at all - see the gate below.
+  const statusWord = session.task?.status === "dispatching"
+    ? "dispatching…"
+    : session.task?.status === "failed"
+      ? "failed"
+      : null;
   // The work queue is a drawer, not part of the card: it opens on Queue / the shortcut
   // / the queued chip and stays open until you close it. Deliberately independent of
   // `expanded` - a queue is worth a glance without surrendering the grid to one card,
@@ -418,15 +430,24 @@ export function SessionCard({
 
       {session.task && (
         <>
+        {/* The chip survives as long as it is hosting something and stands down when it is
+            not - an empty one is a bar of background, border and tone-coloured left edge
+            saying less than nothing. `taskPillParts` answers for the parts every surface
+            hosts; the transient status word below is the card's alone, so the card is
+            where it is ORed in. */}
+        {(!pill.silent || statusWord !== null) && (
         <div className={`task-chip task-${session.task.status}`}>
-          <Tooltip label={`${session.task.kind} task`}>
-            <span className="task-kind">{session.task.kind}</span>
-          </Tooltip>
-          <Tooltip label={session.task.title}>
-            <span className="task-title">{session.task.title}</span>
-          </Tooltip>
-          {session.task.status === "dispatching" && <span className="task-status">dispatching…</span>}
-          {session.task.status === "failed" && <span className="task-status">failed</span>}
+          {pill.kind && (
+            <Tooltip label={`${pill.kind} task`}>
+              <span className="task-kind">{pill.kind}</span>
+            </Tooltip>
+          )}
+          {pill.title && (
+            <Tooltip label={pill.title}>
+              <span className="task-title">{pill.title}</span>
+            </Tooltip>
+          )}
+          {statusWord && <span className="task-status">{statusWord}</span>}
           <ScheduleOriginChip
             task={session.task}
             scheduleNames={scheduleNameById}
@@ -451,6 +472,7 @@ export function SessionCard({
               </Tooltip>
             ))}
         </div>
+        )}
         {/* Its own row rather than another chip inside the one above: a multi-repo task's
             list is as wide as its repo count, and the outcome link in that row is pinned
             right by `margin-left: auto`. Renders nothing at all for a single-repo task. */}

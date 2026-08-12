@@ -3,6 +3,7 @@ import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
+import { taskPillParts } from "@shared/task.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
 import {
   newestSessionRun,
@@ -336,6 +337,9 @@ export function ConsoleDetail({
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
   const queueCount = session.queue?.openCount ?? 0;
   const invited = session.foremanInvite !== null;
+  // The shared reduction, so this pill and the card's cannot drift on what a kind badge
+  // or a repeated title is worth.
+  const pill = taskPillParts(session);
 
   const tabs = useMemo(() => detailTabs({ queueCount }), [queueCount]);
   const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
@@ -362,16 +366,29 @@ export function ConsoleDetail({
       <header className="detail-head">
         <AgentDot agent={session.agent} />
         <div className="detail-title">
-          <SessionTitle
-            session={session}
-            canRename={canRename}
-            renaming={view.renamingId === session.id}
-            onRenameStart={() => view.onRenameStart(session.id)}
-            onRenameClose={view.onRenameClose}
-          />
-          {view.renamingId !== session.id && (
-            <SessionWhere session={session} />
-          )}
+          <div className="detail-title-line">
+            <SessionTitle
+              session={session}
+              canRename={canRename}
+              renaming={view.renamingId === session.id}
+              onRenameStart={() => view.onRenameStart(session.id)}
+              onRenameClose={view.onRenameClose}
+            />
+            {view.renamingId !== session.id && (
+              <SessionWhere session={session} />
+            )}
+          </div>
+          {/* The objective, under the name it belongs to rather than in a band of its own
+              above the transcript. It changes rarely - unlike `session.activity`, which is
+              why the two were split - so it reads as one more durable fact about this
+              session, next to the ones already here.
+
+              The COMPONENT moves, not its text: `GoalLine` carries the `goal-{state}`
+              classes, a state-specific tooltip (the `unclear` variant names Foreman's
+              paused wrap-up) and a `GOAL_UNSUPPORTED` empty state that fires with no goal
+              text at all. A paragraph hand-rolled here would drop all three. It is
+              restyled to one ellipsed line by `.detail-title .goal`, not reimplemented. */}
+          <GoalLine session={session} />
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />
@@ -408,6 +425,15 @@ export function ConsoleDetail({
           onOpenReviews={() => view.onOpenReviews(session.id)}
         />
         <span className="detail-head-spacer" />
+        {/* Leads the runtime cluster - mode, model, context, cost - because the posture
+            governs the session while the other three are consequences of running under
+            it. It also parks the one interactive control here at a stable position
+            instead of last, where cost and context change width as they tick.
+
+            A sibling of `RuntimeMetaRow` rather than a child: that row returns null for a
+            session with no model, thinking level or context, and the mode chip must not
+            disappear with it. */}
+        <ModePicker session={session} />
         {session.meta && <RuntimeMetaRow meta={session.meta} session={session} />}
         <CostChip cost={session.cost} />
       </header>
@@ -427,11 +453,19 @@ export function ConsoleDetail({
         )}
         {session.task && (
           <>
+          {/* The chip survives as long as it is hosting something - a kind, a title, the
+              schedule-origin mark or the outcome link - and stands down when it is not.
+              It has a background, a border and a tone-coloured left edge, so an empty one
+              is a bar of chrome saying less than nothing, which is the very thing this
+              band was tightened to stop drawing. */}
+          {!pill.silent && (
           <div className={`task-chip task-${session.task.status}`}>
-            <Tooltip label={`${session.task.kind} task`}>
-              <span className="task-kind">{session.task.kind}</span>
-            </Tooltip>
-            <span className="task-title">{session.task.title}</span>
+            {pill.kind && (
+              <Tooltip label={`${pill.kind} task`}>
+                <span className="task-kind">{pill.kind}</span>
+              </Tooltip>
+            )}
+            {pill.title && <span className="task-title">{pill.title}</span>}
             <ScheduleOriginChip
               task={session.task}
               scheduleNames={view.scheduleNameById}
@@ -453,6 +487,7 @@ export function ConsoleDetail({
                 <span className="task-outcome">{session.task.outcome}</span>
               ))}
           </div>
+          )}
           {/* The same shared leaf the card draws, for the same reason it is a leaf: this
               detail is served by two layouts, so a private copy misses one of them.
               Renders nothing at all for a single-repo task. */}
@@ -532,10 +567,16 @@ export function ConsoleDetail({
         {tab === "conversation" && (
           // Fills the body and pins the reply box: the leading bits stay put and the
           // transcript scrolls inside itself, rather than the whole tab scrolling the
-          // compose box off the bottom.
+          // compose box off the bottom. What leads it is now only what a reader has to
+          // answer before reading on - a pane menu, a Foreman escalation.
           <div className="detail-conv">
-            <GoalLine session={session} />
-            {session.activity && <p className="activity">{session.activity}</p>}
+            {/* No activity line here. What this session is doing right now reads at the
+                tail of the log, where the turn doing it is arriving - see
+                `InProgressRow`. Held up here it was fixed chrome: a band that cost the
+                conversation its height whether or not anything was running, and that
+                described the present at the top of a pane whose present is at the bottom.
+                Nothing may be added back above `.pane-dialog` here without checking the
+                child combinators that select through this container. */}
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} />}
             {session.note && (
               <ForemanStrip
@@ -628,8 +669,9 @@ export function ConsoleDetail({
       </div>
 
       <footer className="detail-foot">
+        {/* No ModePicker here: it leads the header cluster now. Keeping a copy in both
+            places would be exactly the duplication this band was tightened to remove. */}
         <span className="detail-agent">{AGENT_IDENTITY[session.agent].label}</span>
-        <ModePicker session={session} />
         <span className="dot-sep">·</span>
         <span className="mono dim">pid {session.pid}</span>
         {!session.instrumented && (

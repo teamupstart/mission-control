@@ -532,3 +532,92 @@ test("a merge on any episode outranks the current episode's open pull request", 
     [[PR_C, "merged"]],
   );
 });
+
+// ---- the live per-repo observation the follow-through reads ----------------------------------
+//
+// The durable association above is never retracted once made, deliberately: a card and the
+// completion quorum need it to survive the worktree. That is the wrong reading for anything
+// that TYPES at the agent, which is what `TaskRepoPrSummary.feedback` is for - the per-repo
+// twin of the `prChecks`/`inspector` scalars, retracted the moment a poll stops seeing an open
+// pull request in that repository.
+
+/** The per-repo lines on this session's card, by repo root. */
+function repoPrLines(f: Fixture) {
+  const summaries = f.registry.getSession(f.id)?.task?.repoPrs ?? [];
+  return new Map(summaries.map((line) => [line.repoRoot, line]));
+}
+
+test("an attached repo's open pull request carries its own number and CI rollup", () => {
+  const f = fixture("live-feedback");
+  f.registry.reconcileRepoPrs(
+    new Map([repoMatch(f, "/other", { checks: "failing" })]),
+    new Set(),
+  );
+
+  const line = repoPrLines(f).get("/other");
+  assert.equal(line?.prUrl, PR_B);
+  assert.equal(line?.feedback?.prNumber, 20);
+  assert.equal(line?.feedback?.prChecks, "failing");
+});
+
+test("a poll that stops seeing an open pull request retracts the feedback, not the record", () => {
+  // What a closed-unmerged sibling looks like: `gh` answers "nothing on this branch". The
+  // association must stand (something did open a pull request here) and the feedback must go,
+  // because Foreman would otherwise go on nudging a pull request nobody can push to.
+  const f = fixture("retract");
+  f.registry.reconcileRepoPrs(new Map([repoMatch(f, "/other")]), new Set());
+  assert.ok(repoPrLines(f).get("/other")?.feedback, "seen open");
+
+  f.registry.reconcileRepoPrs(new Map(), new Set());
+  const line = repoPrLines(f).get("/other");
+  assert.equal(line?.feedback, null, "the poll answered: no open pull request here");
+  assert.equal(line?.prUrl, PR_B, "the association it made is not retracted");
+});
+
+test("a `gh` that errored leaves the previous observation alone", () => {
+  // `skip` is not an answer. Dropping the feedback on an error would silence the follow-through
+  // for as long as `gh` is unhappy, which is precisely when a red CI matters.
+  const f = fixture("live-skip");
+  const [key, match] = repoMatch(f, "/other", { checks: "failing" });
+  f.registry.reconcileRepoPrs(new Map([[key, match]]), new Set());
+  f.registry.reconcileRepoPrs(new Map(), new Set([key]));
+
+  assert.equal(repoPrLines(f).get("/other")?.feedback?.prChecks, "failing");
+});
+
+test("a merged pull request is no longer live feedback", () => {
+  const f = fixture("live-merged");
+  f.registry.reconcileRepoPrs(
+    new Map([repoMatch(f, "/other", { state: "merged", mergedAt: 9_000 })]),
+    new Set(),
+  );
+  const line = repoPrLines(f).get("/other");
+  assert.equal(line?.feedback, null, "a merged pull request needs no follow-through");
+  assert.equal(line?.mergedAt, 9_000);
+});
+
+test("one repo's observation says nothing about another's", () => {
+  const f = fixture("live-two", ["/other", "/third"]);
+  f.registry.reconcileRepoPrs(
+    new Map([
+      repoMatch(f, "/other", { checks: "failing" }),
+      repoMatch(f, "/third", { url: PR_C, number: 21, checks: "passing" }),
+    ]),
+    new Set(),
+  );
+  const lines = repoPrLines(f);
+  assert.equal(lines.get("/other")?.feedback?.prChecks, "failing");
+  assert.equal(lines.get("/third")?.feedback?.prChecks, "passing");
+  assert.equal(lines.get("/third")?.feedback?.prNumber, 21);
+});
+
+test("the Inspector's findings reach the repository they were left on", () => {
+  const f = fixture("live-inspector");
+  f.registry.reconcileRepoPrs(new Map([repoMatch(f, "/other")]), new Set());
+  adoptPr(PR_B, { sessionId: f.id, cwd: "/wt/live-inspector-1", repoRoot: "/other" }, "hook", 1);
+  f.registry.refreshInspections();
+
+  const summary = repoPrLines(f).get("/other")?.feedback?.inspector;
+  assert.equal(summary?.prKey, "example/other#20");
+  assert.equal(summary?.postedOpen, 0);
+});

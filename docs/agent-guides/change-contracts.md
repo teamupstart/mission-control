@@ -159,6 +159,35 @@ through every rule here.
   re-derived from persisted delivery and attempt state, so a restart rebuilds it and a refused
   packet is still never re-prepared.
 
+## One pull request is one repository
+
+Everything that speaks TO an agent about a pull request, or decides something per pull request,
+is keyed on the pull request rather than on the session. A session owns one of them in each
+repository it changed, so a per-session key silently means "the primary's" - which is not a
+wrong answer that fails, it is a sibling that is never mentioned again.
+
+- **The durable association and the live observation are different facts.**
+  `work_episode_prs` (and the primary's episode columns) record which pull request a repository
+  produced, and are NEVER retracted once written - a card and the completion quorum need them
+  to outlive the worktree. `TaskRepoPrSummary.feedback` is the opposite: the per-repository twin
+  of `Session.prChecks`/`Session.inspector`, written from the branch poller's answer and dropped
+  the moment a poll reports no open pull request there. Anything that TYPES at an agent reads
+  the second. Reading `prState` for openness instead would go on nudging a pull request somebody
+  closed, because that field is durable by design.
+- **A `gh` that errored is not an answer.** A poll target in the reconciler's `skip` set leaves
+  its observation exactly as it was; only a poll that positively reported nothing retracts one.
+- **Foreman's follow-up marks are keyed `(session, pr_key)`**
+  (`src/server/foreman/review-followup.ts`, `worker.ts`). A flat session key makes each pull
+  request's mark evict its sibling's, which is both a repeated nudge and a permanently reset
+  history. `followupPrs` is the only place that turns a session into the list it owns, and its
+  single-repo branch must keep reading the session scalars so that path stays unchanged.
+- **One nudge per session per pass**, primary first - Foreman's twin of the rule above that
+  allows one outstanding delivery, and for the same reason: one pane, one turn.
+- **A per-run packet names its repository** when the binding has one
+  (`SessionActionPacketOrigin.repoRoot`, `PrHandoffInput.repoRoot`). Two of a session's reviews
+  deliver into one pane, and an instruction to open a pull request is unanswerable without it.
+  Null means the session's own checkout and renders no line at all.
+
 ## Session actions
 
 A SessionAction is a durable side effect, not an evaluator:

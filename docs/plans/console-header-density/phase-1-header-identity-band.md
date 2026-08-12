@@ -147,6 +147,29 @@ Phase 3 may rely on:
 Phase 2 may rely on the leading children of `.detail-conv` being one item shorter, and must preserve
 the no-wrapper rule.
 
+### As shipped
+
+Three shapes phase 3 inherits that this file did not name in advance. Full reasoning is in the pull
+request; recorded here because a later phase re-flowing the head row can undo any of them by accident.
+
+- **`.detail-title-line`** is a row element inside `.detail-title`, holding the `h2` and
+  `SessionWhere`. The column needed something to keep the name and its source on one baseline. The
+  no-wrapper rule is about `.detail-conv`'s children and is untouched by it.
+- **`.detail-title .goal` is `width: 0` with `min-width: 100%`.** The objective is bounded at 180
+  characters, which is about a thousand pixels; as an auto-width child it sets the identity block's
+  max-content width, and because `.detail-head` wraps rather than shrinks, that pushes the whole
+  chip cluster onto a second row. Zero width contributes nothing to that measurement and the
+  percentage minimum fills the width actually granted. `.detail-title` also carries `flex: 1 1 auto`
+  so the block grows into the free space beside `.detail-head-spacer`.
+  `e2e/specs/console-header-identity.spec.ts` pins the one-row outcome by measurement.
+- **The pill stands down when it is hosting nothing.** `taskPillParts().silent` is true when there
+  is no kind badge, no title, no outcome and no schedule origin, and neither layout draws the chip
+  then. This corrects the "the pill container must survive" finding above, which is right about
+  *why* (the `ScheduleOriginChip` parity test) but was written before anyone had looked at the
+  common case in a browser: with both text parts conditional, an ordinary running ship task drew a
+  full-width tinted bar with nothing in it. The parity test's fixture is a scheduled task, so its
+  chip still renders.
+
 ## Cross-phase audit record
 
 - Initial: no earlier phases. Confirmed that the two contracts phase 3 inherits (`.detail-title`

@@ -28,6 +28,14 @@ This keeps the **PR chip** honest without a terminal session sharing the checkou
 all, and the PR poller finds a session's pull request by asking
 `gh pr list --head <branch>`. Capturing either fact only once would leave live changes invisible.
 
+The chip is that one pull request: the one on the branch of the checkout the session is
+standing in. A session running a
+[multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) owns one in each
+repository it changed, and the poller asks `gh` inside every attached worktree as well - still
+one call per checkout. Those do not crowd the chip, which keeps naming the session's own
+checkout; they appear as the card's per-repository lines, and it is those the completion
+quorum and Foreman's [PR follow-through](work-queues.md#keeping-a-pr-on-track) read.
+
 ### The title bar stays compact at half-screen
 
 The **fleet pulse** is one readout, not a row of pills: the connection state leads it
@@ -627,7 +635,10 @@ native **Ask for approval**, **Approve for me**, **Full Access**, and **Read Onl
 through `/permissions`.
 Clicking either chip opens the same dashboard picker and drives the harness's own control.
 Like the thinking badge, it appears on Cards, in Console detail, and on Board tiles, so
-triaging from the board does not mean opening a session to change its permissions. Before
+triaging from the board does not mean opening a session to change its permissions. In
+**Console detail it leads the header's runtime cluster** - mode, model, context, cost -
+rather than sitting in the pane's footer: the posture governs the session, while the three
+readings beside it are consequences of running under it. Before
 Codex writes its first observable mode, the neutral `permissions` chip still opens the
 picker. When the pane cannot be written the chip stays read-only.
 
@@ -824,8 +835,9 @@ chords is all it does.
 
 Everything else is unchanged, because it is the same panel: the same box replies, the same
 attachments drop onto it, find works the same way, the Observed activity rail is still
-beside it, and Foreman's decisions and your review answers still appear in place. Only the
-drawing differs.
+beside it, [the step the current turn is on](#the-step-the-current-turn-is-on) is still the
+last thing in the log - drawn as the stream's own last entry, spine and all - and Foreman's
+decisions and your review answers still appear in place. Only the drawing differs.
 
 The status line says nothing it cannot prove. A session that reports no pid shows no pid
 rather than `pid 0`; a session off a checkout shows no branch; a context share appears once
@@ -840,7 +852,43 @@ which wins over that default for that session until you close the tab - so one a
 watched as a terminal while the rest stay on the chat log. Nothing about the per-session
 choice is stored; a reload starts over from the default.
 
+### The step the current turn is on
+
+While a session is working, the last row of the log is not a turn: it is one dimmed line
+carrying the agent's own report of what it is doing this second - `running Bash` - behind a
+turning marker. The next real turn replaces it, the way a typing indicator is replaced by
+the message it promised.
+
+It is drawn only while there is something to report. `activity` is written on every
+lifecycle event rather than only the busy ones, so a settled session's copy of it is a
+status word (`idle`, `ended (logout)`) that the state badge already carries - and a session
+whose hook channel has gone quiet holds whatever it last saw, which is a claim about the
+present sourced from an hour ago. Neither draws a row. A session with queued messages shows
+the row **above** them: a queued message has not been delivered yet, so the step running now
+comes first.
+
+The line is held to one line and clipped, with the full text on hover. That is a
+requirement rather than a preference - the log follows its tail only while you are near the
+bottom of it, and a row free to wrap would push you out of that window and quietly stop the
+conversation following itself. A change to the reported step leaves a reader at the bottom
+of the log still at the bottom of it.
+
+**In the Console detail this replaced a band above the transcript.** The line used to sit in
+fixed chrome at the top of the pane, where it cost the conversation its height whether or
+not anything was running and described the present at the end of the pane furthest from
+where the present arrives.
+
+The session card keeps its own activity line, which is a field in the card's status block
+rather than chrome above a conversation - a collapsed card has no log for a tail row to sit
+in. Expanding one shows both: the card's line near the top, and the in-progress row at the
+tail of the panel the expansion just opened.
+
 ### Observed activity beside the conversation
+
+Not to be confused with the row above, which is a different feature with a different
+source: **Observed activity** is derived from the transcript and claims nothing about what
+is running, while the in-progress row is the session's live self-report about exactly that.
+One says what was recorded, the other says what is happening.
 
 An **Observed activity** rail sits to the right of the transcript and lists the tool
 invocations recorded in it - the time each appeared, the tool, and what it was invoked on
@@ -938,6 +986,12 @@ Every instrumented card with a captured prompt carries a one-sentence **Goal** u
 title, visible even while the card is collapsed. The Goal is the session's durable completion
 objective, not a copy of the newest prompt or the step the agent happens to be working on.
 
+**Console detail draws it in the same place** - under the session's name, with the other
+facts that change rarely - rather than in a band above the transcript. There it takes one
+line and ellipses, and hovering gives you the whole sentence along with whatever the Goal's
+state has to add ("being refined", "automatic wrap-up is paused"). A harness that can never
+carry a Goal still says so there, in the same slot.
+
 The first substantive instruction establishes an immediate provisional objective with no
 model call. Every substantive instruction, including that first one, enters a durable queue;
 later instructions also update the tactical focus immediately. The daemon then reconciles the
@@ -975,8 +1029,11 @@ text cannot be recovered.
 
 What it deliberately isn't:
 
-- **Not** what the session is doing this second. That's the activity ticker on its own
-  line - "running Bash" is not a goal.
+- **Not** what the session is doing this second. That's the activity ticker, which reads
+  on its own line on a card and at
+  [the tail of the log](#the-step-the-current-turn-is-on) in the Console detail - "running
+  Bash" is not a goal. The goal changes rarely and the ticker changes constantly, which is
+  why they no longer share a band.
 - **Not** derived from anything but your prompts. Background task notifications arrive
   through the same hook and are filtered out; they're actually the majority of it.
 - `/clear` starts a new session, so it wipes the goal; `/compact` keeps the same session

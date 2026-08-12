@@ -9,7 +9,7 @@ import type {
   WorkflowJson,
 } from "../src/shared/workflow.ts";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
-import { renderWorkflowFeedback } from "../src/server/workflows/feedback.ts";
+import { renderPrHandoff, renderWorkflowFeedback } from "../src/server/workflows/feedback.ts";
 
 const context: WorkflowContextSnapshot = {
   primaryGoal: { rawPrompt: "Keep the original intent", refined: "Do not use me", sourceNoteKey: "note" },
@@ -170,4 +170,41 @@ test("repair feedback caps fields and total bytes with a stable truncation notic
   assert.match(rendered.payload, /Preserve the user's explicit intent\./);
   assert.match(rendered.payload, /\[Workflow repair packet truncated deterministically\.\]$/);
   assert.equal(rendered.truncated, true);
+});
+
+// ---- the PR preparation handoff ----
+//
+// The handoff asks for a pull request, and phase 3 made a run one REPOSITORY. Two of a
+// session's runs can offer this at once into one pane, so the packet has to say which
+// repository it means - and a single-repo session must go on reading exactly as it did.
+
+test("a handoff for one repository of a multi-repo task names it and scopes the ask", () => {
+  const rendered = renderPrHandoff({
+    workflowName: "No-Mistakes Review",
+    workflowVersion: 8,
+    runId: "run-2",
+    originalGoal: "Rename the shared field",
+    skillCommand: "/pull-request",
+    repoRoot: "/work/beta",
+  });
+  assert.match(rendered.payload, /Repository: \/work\/beta/);
+  assert.match(rendered.payload, /the repository named above/);
+  assert.match(rendered.payload, /Leave the task's other repositories alone/);
+});
+
+test("a handoff on the session's own checkout names no repository and asks as it always did", () => {
+  const rendered = renderPrHandoff({
+    workflowName: "No-Mistakes Review",
+    workflowVersion: 8,
+    runId: "run-1",
+    originalGoal: "Rename the shared field",
+    skillCommand: "/pull-request",
+    repoRoot: null,
+  });
+  assert.doesNotMatch(rendered.payload, /Repository:/);
+  assert.doesNotMatch(rendered.payload, /repositor/);
+  assert.match(
+    rendered.payload,
+    /Use the invoked pull-request skill to commit all reviewed work, push it, and open the pull request/,
+  );
 });

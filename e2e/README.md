@@ -54,6 +54,25 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### An HTML report opening rendered
+
+`e2e/.artifacts/file-default-view/html-report-opens-rendered.png` is captured the moment a
+session's `docs/reports/<slug>/report.html` is selected in the Files tab, with no click on the
+view toggle in between: the page is rendered in the preview pane and **Preview** carries the
+pressed state. It is the payoff shot for the `html-report` skill - the logged path resolves to
+the report as a page, not to its markup in an editor - and the same run proves the report's own
+`<script>` did not run inside the sandbox.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/file-default-view.spec.ts \
+  -g 'opens rendered' \
+  --reporter=list
+```
+
 ### Sibling links in the HTML preview
 
 `e2e/.artifacts/preview-sibling-links/preview-sibling-link.png` is captured after

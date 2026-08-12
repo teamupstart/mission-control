@@ -5,15 +5,19 @@ import {
   advanceFollowupMark,
   buildPayload,
   decideReviewFollowup,
+  followupPrs,
 } from "../src/server/foreman/review-followup.ts";
 import type {
   FollowupMark,
+  FollowupPr,
   ReviewFollowupInput,
 } from "../src/server/foreman/review-followup.ts";
 import type {
   InspectorSummary,
   Session,
   SessionQueueSummary,
+  TaskRepoPrSummary,
+  TaskSummary,
 } from "../src/shared/types.ts";
 import type { TerminalHandle } from "../src/shared/terminal.ts";
 import { WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
@@ -122,6 +126,9 @@ function decide(over: Partial<ReviewFollowupInput> = {}) {
   const session = over.session ?? mkSession();
   return decideReviewFollowup({
     session,
+    // The session's own pull request unless a case names one, which is what the worker
+    // passes for a single-repo session and keeps every case below reading as it did.
+    pr: followupPrs(session)[0] ?? null,
     bucket: "idle",
     mayActLive: true,
     workflowOwnsSession: false,
@@ -337,9 +344,18 @@ test("typing is a live act - dry-run or off-allowlist holds", () => {
 
 // ---- the once-per-feedback guard (the mark) ----
 
+/** The one pull request a single-repo session owns - what the worker decides about. */
+function onlyPr(session: Session): FollowupPr {
+  const prs = followupPrs(session);
+  assert.equal(prs.length, 1, "this fixture is meant to own exactly one pull request");
+  const [pr] = prs;
+  assert.ok(pr);
+  return pr;
+}
+
 /** Fold the observation for a fresh session, exactly as the worker does each pass. */
 function observe(session: Session, prev: FollowupMark | null = null): FollowupMark {
-  return advanceFollowupMark(prev, session);
+  return advanceFollowupMark(prev, onlyPr(session));
 }
 
 test("the same feedback state, already nudged, stays quiet", () => {
@@ -426,22 +442,260 @@ test("CI that recovers and fails again re-arms, even on the same Inspector round
 // ---- the payload ----
 
 test("the payload names the PR and forbids opening a second one", () => {
-  const p = buildPayload(mkSession(), { findings: true, ciFailing: true });
+  const p = buildPayload(onlyPr(mkSession()), { findings: true, ciFailing: true });
   assert.match(p, /PR #7/);
   assert.match(p, /Do NOT open a new pull request/);
   assert.match(p, /gh pr view 7 --comments/);
   assert.match(p, /gh pr checks 7/);
+  // A session with one repository is told nothing about repositories.
+  assert.doesNotMatch(p, /repositor/);
 });
 
 test("the payload only mentions the feedback that is actually open", () => {
-  const ciOnly = buildPayload(mkSession(), { findings: false, ciFailing: true });
+  const ciOnly = buildPayload(onlyPr(mkSession()), { findings: false, ciFailing: true });
   assert.doesNotMatch(ciOnly, /review comment/);
   assert.match(ciOnly, /CI/);
 
   const findingsOnly = buildPayload(
-    mkSession({ inspector: inspector({ open: 1 }) }),
+    onlyPr(mkSession({ inspector: inspector({ open: 1 }) })),
     { findings: true, ciFailing: false },
   );
   assert.match(findingsOnly, /review comment/);
   assert.doesNotMatch(findingsOnly, /failing CI/);
+});
+
+// ---- one session, several pull requests (a multi-repo task) ----
+//
+// The premise this half exists for: a multi-repo task's session opens one pull request per
+// repository it changed, and the session scalars (`prUrl`, `prChecks`, `inspector`) answer
+// for its own checkout alone. Everything below is about the ones that reach no scalar.
+
+/** One repository's line on a multi-repo task's card, with a pull request the poll saw open. */
+function repoPr(over: Partial<TaskRepoPrSummary> & { repoRoot: string }): TaskRepoPrSummary {
+  return {
+    primary: false,
+    prUrl: null,
+    prState: "open",
+    mergedAt: null,
+    feedback: null,
+    ...over,
+  };
+}
+
+/** A session running a two-repo task: the primary at /work/alpha, a secondary at /work/beta. */
+function mkMultiRepoSession(repoPrs: TaskRepoPrSummary[], over: Partial<Session> = {}): Session {
+  const task: TaskSummary = {
+    id: "t1",
+    title: "cross-repo change",
+    kind: "ship",
+    status: "running",
+    outcome: null,
+    outcomeUrl: null,
+    scheduleId: null,
+    scheduleOccurrenceId: null,
+    scheduledFor: null,
+    ensemble: null,
+    repoPrs,
+  };
+  return mkSession({ task, ...over });
+}
+
+const ALPHA_PR = repoPr({
+  repoRoot: "/work/alpha",
+  primary: true,
+  prUrl: "https://github.com/owner/alpha/pull/7",
+  feedback: {
+    prNumber: 7,
+    prChecks: null,
+    inspector: inspector({
+      prKey: "owner/alpha#7",
+      url: "https://github.com/owner/alpha/pull/7",
+      open: 0,
+    }),
+  },
+});
+
+const BETA_PR = repoPr({
+  repoRoot: "/work/beta",
+  prUrl: "https://github.com/owner/beta/pull/9",
+  feedback: {
+    prNumber: 9,
+    prChecks: null,
+    inspector: inspector({
+      prKey: "owner/beta#9",
+      url: "https://github.com/owner/beta/pull/9",
+      open: 0,
+    }),
+  },
+});
+
+test("a multi-repo session offers every repository's open pull request, primary first", () => {
+  const prs = followupPrs(mkMultiRepoSession([ALPHA_PR, BETA_PR]));
+  assert.deepEqual(
+    prs.map((pr) => [pr.prKey, pr.repoRoot, pr.number]),
+    [
+      ["owner/alpha#7", "/work/alpha", 7],
+      ["owner/beta#9", "/work/beta", 9],
+    ],
+  );
+});
+
+test("a repository with no pull request, or one no poll still sees open, is not offered", () => {
+  const noPr = repoPr({ repoRoot: "/work/gamma" });
+  // A pull request the durable row still calls open, whose live observation was retracted -
+  // what a closed-unmerged sibling looks like. Trusting `prState` here would nudge about it.
+  const closed = repoPr({
+    repoRoot: "/work/delta",
+    prUrl: "https://github.com/owner/delta/pull/3",
+    prState: "open",
+    feedback: null,
+  });
+  const prs = followupPrs(mkMultiRepoSession([ALPHA_PR, noPr, closed]));
+  assert.deepEqual(prs.map((pr) => pr.prKey), ["owner/alpha#7"]);
+});
+
+test("a single-repo session still yields exactly its own pull request", () => {
+  // `repoPrs` is empty for every single-repo task, and the session scalars answer instead.
+  const prs = followupPrs(mkSession({ inspector: inspector({ open: 2 }) }));
+  assert.equal(prs.length, 1);
+  assert.deepEqual(prs.map((pr) => [pr.prKey, pr.repoRoot, pr.number]), [
+    ["owner/repo#7", null, 7],
+  ]);
+});
+
+test("each pull request carries its OWN feedback, not the session's", () => {
+  // The whole degradation this lifts: the secondary is red and full of findings while the
+  // session scalars - the primary's - are clean.
+  const beta = repoPr({
+    ...BETA_PR,
+    repoRoot: "/work/beta",
+    feedback: {
+      prNumber: 9,
+      prChecks: "failing",
+      inspector: inspector({
+        prKey: "owner/beta#9",
+        url: "https://github.com/owner/beta/pull/9",
+        open: 3,
+      }),
+    },
+  });
+  const session = mkMultiRepoSession([ALPHA_PR, beta]);
+  const prs = followupPrs(session);
+
+  const quiet = decide({ session, pr: prs[0] });
+  assert.deepEqual(quiet, { kind: "skip", why: "no enabled review comments or failing CI" });
+
+  const loud = decide({ session, pr: prs[1] });
+  assert.equal(loud.kind, "nudge");
+  if (loud.kind !== "nudge") return;
+  assert.equal(loud.prKey, "owner/beta#9");
+  assert.match(loud.reason, /3 review comment.*\+ CI failing/);
+  assert.match(loud.reason, /\/work\/beta/);
+});
+
+test("a nudge about one repository's pull request names it, and only forbids a second OF IT", () => {
+  const pr = followupPrs(mkMultiRepoSession([ALPHA_PR, BETA_PR]))[1];
+  assert.ok(pr);
+  const payload = buildPayload(pr, { findings: true, ciFailing: true });
+  assert.match(payload, /PR #9/);
+  assert.match(payload, /\/work\/beta/);
+  assert.match(payload, /one of several repositories/);
+  assert.match(payload, /Do NOT open a new pull request for it/);
+  // `gh` runs in the session's own checkout, which is the PRIMARY repo's worktree, so a
+  // sibling's pull request has to be named by repository or the command answers about the
+  // wrong one.
+  assert.match(payload, /gh pr view 9 --repo owner\/beta --comments/);
+  assert.match(payload, /gh pr checks 9 --repo owner\/beta/);
+});
+
+test("two pull requests on one session hold independent marks", () => {
+  // The collision a session-keyed mark caused: nudging repo B erased what repo A had been
+  // told, so A's unchanged findings were relayed again - and then A erased B's, for ever.
+  const session = mkMultiRepoSession([
+    {
+      ...ALPHA_PR,
+      feedback: {
+        prNumber: 7,
+        prChecks: null,
+        inspector: inspector({
+          prKey: "owner/alpha#7",
+          url: "https://github.com/owner/alpha/pull/7",
+          open: 2,
+          round: 1,
+        }),
+      },
+    },
+    {
+      ...BETA_PR,
+      feedback: {
+        prNumber: 9,
+        prChecks: null,
+        inspector: inspector({
+          prKey: "owner/beta#9",
+          url: "https://github.com/owner/beta/pull/9",
+          open: 4,
+          round: 1,
+        }),
+      },
+    },
+  ]);
+  const [alpha, beta] = followupPrs(session);
+  assert.ok(alpha && beta);
+
+  const first = decide({ session, pr: alpha });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+
+  // The worker keys marks by PR key, so beta's decision never sees alpha's mark.
+  const marks = new Map<string, FollowupMark>([[first.prKey, first.mark]]);
+  const second = decide({ session, pr: beta, mark: marks.get(beta.prKey) ?? null });
+  assert.equal(second.kind, "nudge", "beta has never been nudged and must be");
+  if (second.kind !== "nudge") return;
+  marks.set(second.prKey, second.mark);
+
+  // And alpha's history survived beta's nudge: same round, same findings, nothing new.
+  assert.deepEqual(
+    decide({
+      session,
+      pr: alpha,
+      mark: advanceFollowupMark(marks.get(alpha.prKey) ?? null, alpha),
+    }),
+    { kind: "skip", why: "already nudged this round of feedback" },
+  );
+  assert.equal(marks.get(alpha.prKey)?.findingsRound, 1);
+  assert.equal(marks.get(beta.prKey)?.findingsRound, 1);
+});
+
+test("a mark advances on its own pull request's CI, not a sibling's", () => {
+  const failing: FollowupPr = {
+    prKey: "owner/beta#9",
+    url: "https://github.com/owner/beta/pull/9",
+    number: 9,
+    repoRoot: "/work/beta",
+    inspector: null,
+    checks: "failing",
+  };
+  const nudged = advanceFollowupMark({ prKey: failing.prKey, findingsRound: null, ciNudged: true }, failing);
+  assert.equal(nudged.ciNudged, true, "still the same failing episode");
+  const recovered = advanceFollowupMark(nudged, { ...failing, checks: "passing" });
+  assert.equal(recovered.ciNudged, false, "this pull request's own checks recovered");
+});
+
+test("two repositories holding the same pull request NUMBER do not share a mark", () => {
+  // Only reachable with the Inspector switched off, which is a supported configuration: with
+  // no ledger row there is no `owner/repo#n` key, and a bare `#7` in each of two repositories
+  // is one key for two pull requests - the collision this file is keyed per PR to avoid.
+  const unadopted = (repoRoot: string, url: string): TaskRepoPrSummary =>
+    repoPr({
+      repoRoot,
+      prUrl: url,
+      feedback: { prNumber: 7, prChecks: "failing", inspector: null },
+    });
+  const prs = followupPrs(
+    mkMultiRepoSession([
+      { ...unadopted("/work/alpha", "https://github.com/owner/alpha/pull/7"), primary: true },
+      unadopted("/work/beta", "https://github.com/owner/beta/pull/7"),
+    ]),
+  );
+  assert.equal(new Set(prs.map((pr) => pr.prKey)).size, 2, "one key per pull request");
 });

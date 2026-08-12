@@ -219,6 +219,10 @@ git commit -m "docs(memory): <what was learned>"
 ```
 
 - **On the current branch.** Never cut a new one, never switch, never rebase.
+- **In the repository the memory is about.** Nearly always that is the one you are standing
+  in. A session dispatched across several repositories is the exception: a lesson about an
+  attached repository belongs in that repository's worktree, on the branch it is already on,
+  and never in the primary's just because that is where your shell is.
 - **Only the retro's own files.** A retro that sweeps unrelated working-tree changes into
   its commit has made itself unreviewable.
 - **No co-author trailer**, and no change to how this repository pushes or merges.
@@ -228,7 +232,9 @@ ways:
 
 - **Riding a session's own branch** (the usual case: a session action arrived in the session
   that did the work). The branch already has a review in flight, so push, and the memory is
-  read in the same pull request as the work it came from. Do not open a second one.
+  read in the same pull request as the work it came from. Do not open a second one for that
+  repository - and where the session opened a pull request in each of several repositories,
+  each memory rides the one for the repository it was committed in.
 - **Dispatched as its own task**, because the session that did the work was already gone. The
   commit is then the task's entire deliverable and there is no review for it to ride, so
   finish the task the way this repository ships any other one - which normally means opening

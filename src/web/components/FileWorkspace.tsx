@@ -391,10 +391,16 @@ export function FileWorkspace({
           {buffer && <span className="file-size">{formatBytes(buffer.document.size)}</span>}
           {buffer && <SaveStatus buffer={buffer} />}
           <span className="file-toolbar-spacer" />
+          {/*
+            `aria-pressed` and not the class alone: which of the two views a file opened in
+            is the state a reader of this toolbar most needs, and a highlight is invisible
+            to a screen reader and unassertable from a browser test. It is the only
+            published signal that an HTML file lands on Preview and source lands on Editor.
+          */}
           {previewable && (
             <div className="file-mode" role="group" aria-label="File view mode">
-              <Tooltip label="Render this file rather than showing its source"><button className={mode === "preview" ? "on" : ""} onClick={() => controller.setMode(session.id, "preview")}>Preview</button></Tooltip>
-              <Tooltip label={buffer.document.editable ? "Edit this file's source" : "This file is not editable"}><button className={mode === "editor" ? "on" : ""} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor</button></Tooltip>
+              <Tooltip label="Render this file rather than showing its source"><button className={mode === "preview" ? "on" : ""} aria-pressed={mode === "preview"} onClick={() => controller.setMode(session.id, "preview")}>Preview</button></Tooltip>
+              <Tooltip label={buffer.document.editable ? "Edit this file's source" : "This file is not editable"}><button className={mode === "editor" ? "on" : ""} aria-pressed={mode === "editor"} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor</button></Tooltip>
             </div>
           )}
           <OpenInMenu disabled={!buffer} busy={launching || pendingOpen !== null} onChoose={openIn} />

@@ -493,7 +493,10 @@ same session's Files workspace. Console and Board reveal their integrated Files 
 reuse the extracted Files window. Checkout-relative links and absolute paths beneath the
 checkout are accepted, including optional line and column suffixes. External links keep
 their normal browser behavior, and resolved paths outside the checkout never open. HTML and
-Markdown open in Preview by default, while ordinary text opens in the editor. HTML preview
+Markdown open in Preview by default, while every other file type opens in the editor - so a
+generated page a session links to is read as the page it is, and source is read as source. The
+Preview and Editor buttons publish which of the two is showing as their pressed state, so the
+view a file landed in is legible to a screen reader and not only to the eye. HTML preview
 remains inert: a bounded set of checkout-local stylesheets is inlined through the contained
 file reader, without granting the sandbox scripts or network access.
 

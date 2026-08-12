@@ -2,7 +2,7 @@
 
 **Source plan:** [plan.md](plan.md) ([rendered](plan.html))
 **Rendered index:** [phased-plan.html](phased-plan.html)
-**Status:** Phases written 2026-08-05; citations re-verified against `main` 2026-08-10. No tasks are scheduled - this PR publishes the phase documents only. Scheduling one dependency-linked task per phase remains a separate, deliberate step.
+**Status:** All four phases merged, in order: #491 (dispatch), #493 (pull request tracking and completion), #494 (per-repo review runs), and the policy-and-prose phase this line was written by. Phases written 2026-08-05; citations re-verified against `main` 2026-08-10.
 
 ## Incorporated decisions
 

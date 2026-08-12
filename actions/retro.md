@@ -19,8 +19,9 @@ rewritten, or rejected individually before anything is written. Proposing fewer 
 is a correct outcome; proposing a deletion of a stale memory, or the promotion of a
 well-confirmed one into AGENTS.md, counts as a proposal.
 
-The approved ones are committed on the current branch as files under `.agents/memory`, so
-they are reviewed with the work they came from.
+The approved ones are committed as files under `.agents/memory` in the repository each is
+about - the one you are standing in, unless this session worked in several - on the branch
+that repository is already on, so they are reviewed with the work they came from.
 
 ## What not to do
 
@@ -31,6 +32,6 @@ they are reviewed with the work they came from.
 - Do not restate what AGENTS.md already says, and do not catalogue a fact about the feature
   you just built. A memory earns its place by being non-obvious and repeatedly costly.
 - Do not cut a branch, merge anything, or sweep unrelated working-tree changes into the
-  commit. This branch already has a review in flight; the memory rides it rather than
-  opening a second pull request.
+  commit. Each repository's branch already has a review in flight; the memory rides that
+  repository's pull request rather than opening a second one for it.
 - Do not add an agent as a commit co-author.

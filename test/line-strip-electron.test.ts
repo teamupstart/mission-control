@@ -35,6 +35,10 @@ import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
  * it is saying. It sits directly above the board, so a stage whose sentence wrapped, or
  * whose sentence was empty, would move every card on the page.
  *
+ * Every one of those is a comparison between pages that were loaded into the same window in
+ * turn, which makes the window's size a premise rather than a detail - see `VIEWPORT` and
+ * `at` below, and the note at the top of `fixtures/measuring-window.cjs`.
+ *
  * createElement, not JSX, because the runner's glob only matches .test.ts.
  */
 
@@ -52,6 +56,22 @@ const ELECTRON_TIMEOUT_MS = 240_000;
  * it doubles.
  */
 const HEIGHT_BUDGET = { min: 70, max: 110 };
+
+/**
+ * The window every number below is read in.
+ *
+ * Not a detail of the harness: `.card.expanded` is
+ * `calc(100dvh - var(--topbar-h) - var(--cmdbar-clearance) - 28px)` and the grid cases pin
+ * both tokens inline, so the card's height IS this viewport minus 180px - a reading of the
+ * window with no layout in it at all. The two grid cases are then compared with each other,
+ * which says something about the strip only while both were measured in the SAME window.
+ *
+ * So the size is stated here, handed to the fixture, and checked per case on the way back by
+ * `at`. CI has already produced the failure that motivates it: `720 !== 693`, which is a
+ * 900px window and an 873px one, reported as the strip stealing 27px from a card it never
+ * touched.
+ */
+const VIEWPORT = { width: 1400, height: 900 };
 
 const stage = (over: Partial<LineStageSummary> & { stage: LineStageSummary["stage"] }): LineStageSummary => ({
   count: 0,
@@ -105,6 +125,8 @@ interface Measured {
   cardHeight: number | null;
   subHeights: number[];
   subOverflows: number[];
+  /** The viewport this case's rects were laid out in, read beside them. */
+  viewport: { width: number; height: number };
 }
 
 function page(styles: string, body: string): string {
@@ -129,6 +151,17 @@ const gridShell = (summary: LineSummary | null): string =>
      <div class="card expanded" style="width:900px"><div class="card-panels"></div></div>
    </div>`;
 
+const CASES: Array<[string, string]> = [
+  ["console", consoleShell(FULL)],
+  ["console-empty", consoleShell(null)],
+  ["console-long", consoleShell(LONG)],
+  ["grid", gridShell(FULL)],
+  ["grid-without-strip", `<div class="app" style="--topbar-h:88px;--cmdbar-clearance:64px">${TOPBAR}
+     <nav class="line"></nav>
+     <div class="card expanded" style="width:900px"><div class="card-panels"></div></div>
+   </div>`],
+];
+
 let measured: Record<string, Measured>;
 
 before(() => {
@@ -140,17 +173,7 @@ before(() => {
   const userData = mkdtempSync(join(tmpdir(), "mission-line-strip-profile-"));
   try {
     const styles = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
-    const cases: Array<[string, string]> = [
-      ["console", consoleShell(FULL)],
-      ["console-empty", consoleShell(null)],
-      ["console-long", consoleShell(LONG)],
-      ["grid", gridShell(FULL)],
-      ["grid-without-strip", `<div class="app" style="--topbar-h:88px;--cmdbar-clearance:64px">${TOPBAR}
-         <nav class="line"></nav>
-         <div class="card expanded" style="width:900px"><div class="card-panels"></div></div>
-       </div>`],
-    ];
-    const paths = cases.map(([name, body]) => {
+    const paths = CASES.map(([name, body]) => {
       const path = join(dir, `${name}.html`);
       writeFileSync(path, page(styles, body));
       return path;
@@ -159,6 +182,9 @@ before(() => {
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
       fileURLToPath(new URL("fixtures/line-strip-browser.cjs", import.meta.url)),
+      "--viewport",
+      `${VIEWPORT.width}x${VIEWPORT.height}`,
+      // Last, because it takes the rest of the line.
       "--pages",
       ...paths,
     ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
@@ -169,8 +195,42 @@ before(() => {
   }
 });
 
+/**
+ * A case's numbers, refused unless they were measured in the window that was asked for.
+ *
+ * Every assertion in this file goes through here, so a window that changed size can only
+ * ever be reported as a window that changed size. It is the difference between the two
+ * sentences CI can print about the same event: "the strip took height out of the expanded
+ * card", which sends somebody to `LineStrip.tsx` and `styles.css` looking for a bug that is
+ * not there, and "grid-without-strip was measured in a 1400x873 window", which is true.
+ */
+function at(name: string): Measured {
+  const m = measured[name];
+  assert.ok(m, `the fixture measured no case called ${name}`);
+  const got = `${m.viewport.width}x${m.viewport.height}`;
+  const want = `${VIEWPORT.width}x${VIEWPORT.height}`;
+  assert.equal(
+    got,
+    want,
+    `${name} was measured in a ${got} window, not the ${want} it asked for - these numbers `
+      + `describe the window, not the layout, and every 100dvh box in them is out by the `
+      + `difference`,
+  );
+  return m;
+}
+
+test("every case is measured in the window the fixture asked for", () => {
+  // Stated on its own, and not only as a precondition of the cases below, because it is the
+  // one failure here that is about the harness rather than about the product. A viewport
+  // that wobbled is a fact about the machine: reported, it costs one line to read; folded
+  // into a `100dvh` height, it arrives as a geometry regression in a component that did
+  // nothing, and the browser-level spec that covers the same invariant stays green while
+  // this file insists otherwise.
+  for (const [name] of CASES) at(name);
+});
+
 test("the strip is about ninety pixels, which is the whole point of it", () => {
-  const m = measured["console"]!;
+  const m = at("console");
   assert.equal(m.stages, 6);
   assert.ok(
     m.lineHeight >= HEIGHT_BUDGET.min && m.lineHeight <= HEIGHT_BUDGET.max,
@@ -182,7 +242,7 @@ test("a full-height shell still ends at the viewport, so the reply box stays rea
   // `.app-console` does not scroll. If the strip pushed the shell past 100dvh there would
   // be no scrollbar to recover the bottom of it - the detail pane's reply box would simply
   // be off the screen.
-  const m = measured["console"]!;
+  const m = at("console");
   assert.ok(
     m.bodyBottomOverflow !== null && m.bodyBottomOverflow <= 1,
     `the console body ended ${m.bodyBottomOverflow}px past the viewport`,
@@ -197,8 +257,14 @@ test("the expanded card's height is the strip's business to stay out of", () => 
   // grows the measured `--topbar-h` and silently shortens every focus-expanded card on the
   // grid. Same page, same tokens, with and without a populated strip - the card must not
   // notice.
-  const withStrip = measured["grid"]!.cardHeight;
-  const without = measured["grid-without-strip"]!.cardHeight;
+  //
+  // Both cases are read through `at`, so the comparison is only ever made between two pages
+  // that were laid out in the same window. Without that, the difference this asserts on is
+  // indistinguishable from the window having changed size between two loads - and since the
+  // card is `100dvh` minus three pinned tokens, a window that moved by 27px produces a card
+  // that moved by 27px and an assertion that blames the strip for it.
+  const withStrip = at("grid").cardHeight;
+  const without = at("grid-without-strip").cardHeight;
   assert.ok(withStrip && without, "both grid cases must measure a card");
   assert.equal(withStrip, without, "the strip took height out of the expanded card");
 });
@@ -206,13 +272,13 @@ test("the expanded card's height is the strip's business to stay out of", () => 
 test("the strip is the same height whatever it is saying", () => {
   // It sits directly above the board. A stage that grew a line when a workflow name got
   // long - or lost one when a stage went quiet - would move every card on the page.
-  const full = measured["console"]!.lineBoxHeight;
-  assert.equal(measured["console-empty"]!.lineBoxHeight, full, "an empty strip shrank");
-  assert.equal(measured["console-long"]!.lineBoxHeight, full, "a wordy strip grew");
+  const full = at("console").lineBoxHeight;
+  assert.equal(at("console-empty").lineBoxHeight, full, "an empty strip shrank");
+  assert.equal(at("console-long").lineBoxHeight, full, "a wordy strip grew");
 });
 
 test("a sentence too long for its stage is clipped, not wrapped", () => {
-  const long = measured["console-long"]!;
+  const long = at("console-long");
   const lines = new Set(long.subHeights);
   assert.equal(lines.size, 1, `sentences laid out at ${[...lines].join(", ")}px - one wrapped`);
   // And it really was too long, so the assertion above is not passing on a short string.

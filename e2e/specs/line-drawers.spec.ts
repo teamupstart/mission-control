@@ -237,6 +237,61 @@ test("a stage opens its drawer in place, and three gestures close it again", asy
   await expect(shippedStage).toBeFocused();
 });
 
+test("the Decide drawer confirms and cancels a live ensemble run", async ({
+  dashboard,
+  daemon,
+}) => {
+  const title = "Drawer cancellation";
+  const created = await api<{ run: { id: string } }>(daemon, "/api/ensembles", {
+    sourceKey: "e2e-decide-drawer-cancel",
+    title,
+    intent: "Keep this ensemble alive until the drawer cancels it.",
+    repoRoot: daemon.repo,
+    strategyId: "best_of_n",
+    strategyConfig: { members: [{}, {}] },
+  });
+
+  // Creation launches two real Task rows through the fake agent binaries. Wait for the compact
+  // SSE summary, because that is the only input the drawer reads and the boundary this control
+  // is allowed to use.
+  await stage(dashboard, "Decide").click();
+  const decide = drawer(dashboard, "Decide");
+  const row = decide.locator(".line-ens-row").filter({ hasText: title });
+  await expect(row).toBeVisible({ timeout: 60_000 });
+  const cancel = row.getByRole("button", { name: `Cancel ${title}`, exact: true });
+  await expect(cancel).toBeVisible();
+  await shoot(dashboard, "decide-cancel");
+
+  // A drawer action that tears down member Tasks is deliberate. Backing out leaves both the row
+  // and its durable run untouched, and Escape peels only the registered confirmation overlay.
+  await cancel.click();
+  const confirm = dashboard.getByRole("dialog", { name: "Cancel this ensemble run" });
+  await expect(confirm).toContainText(title);
+  await expect(confirm).toContainText("Submitted snapshots and this run's history stay available");
+  await dashboard.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  await expect(row).toBeVisible();
+  expect(
+    (await api<{ run: { status: string } }>(daemon, `/api/ensembles/${created.run.id}`)).run.status,
+  ).not.toBe("cancelled");
+
+  await cancel.click();
+  const response = dashboard.waitForResponse((candidate) =>
+    candidate.url().endsWith(`/api/ensembles/${created.run.id}/actions`)
+      && candidate.request().method() === "POST");
+  await confirm.getByRole("button", { name: "Cancel run", exact: true }).click();
+  expect((await response).ok()).toBe(true);
+
+  // The action reaches the existing generic route, which tears down both member Tasks, publishes
+  // the terminal summary over SSE, and lets the drawer remove the row without a fetch or reload.
+  await expect(row).toHaveCount(0, { timeout: 60_000 });
+  await expect(decide.locator(".line-drawer-count")).toContainText("0 ensembles live");
+  await expect(decide).toContainText("No ensembles are running");
+  await expect.poll(async () =>
+    (await api<{ run: { status: string } }>(daemon, `/api/ensembles/${created.run.id}`)).run.status,
+  ).toBe("cancelled");
+});
+
 test("the drawer pushes the board down and hands the space back, and never resizes a card", async ({
   dashboard,
   daemon,

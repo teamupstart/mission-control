@@ -618,6 +618,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
+| <kbd>⇧</kbd><kbd>F10</kbd> or <kbd>Menu</kbd> | Open the context menu for the focused text, external link, or text field. In a field it offers Cut, Copy, Paste, and Paste as quote as applicable. Right-click opens the same menu; <kbd>⇧</kbd>+right-click keeps Chromium's native menu | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |
@@ -643,7 +644,8 @@ names the layouts where a shortcut's target exists:
 | <kbd>⌥</kbd><kbd>↑</kbd> <kbd>⌥</kbd><kbd>↓</kbd> | Move the focused reviewer within its stage | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 | <kbd>Delete</kbd> | Remove the focused reviewer or stage, after a confirmation naming what goes | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 
-Every shortcut except the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> is
+Every shortcut except the arrow keys, <kbd>Enter</kbd>, <kbd>Esc</kbd>, and the dedicated
+<kbd>Menu</kbd> key is
 **customizable**. Open **Settings** - the ⚙ gear in the top bar, or (in the desktop app)
 **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
 (optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd> / <kbd>⇧</kbd>). On a letter,
@@ -653,7 +655,7 @@ plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into anot
 trying to reuse an assigned key is refused inline. You can reset any one shortcut (or all
 of them); if another custom binding has claimed that shortcut's default, resetting clears
 the override and leaves the shortcut unset until its default is free. The arrow keys,
-<kbd>Enter</kbd>, <kbd>Esc</kbd> and bare <kbd>Tab</kbd> drive layout navigation and Console
+<kbd>Enter</kbd>, <kbd>Esc</kbd>, the <kbd>Menu</kbd> key, and bare <kbd>Tab</kbd> drive layout navigation and Console
 reading, and can't be reassigned; <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
 editor's four rows above are in-surface keys rather than fleet chords - they only exist
 while a card in that strip has focus - so they are fixed for the same reason.

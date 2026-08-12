@@ -163,6 +163,15 @@ test("every floating layer cancels the topbar's drag region", () => {
   );
 });
 
+test("the context menu and its confirmation explicitly opt out of desktop dragging", () => {
+  const noDrag = new Set(
+    ALL.filter((rule) => /-webkit-app-region:\s*no-drag/.test(rule.body))
+      .flatMap((rule) => rule.selectors),
+  );
+  assert.ok(noDrag.has(".is-desktop .context-menu"));
+  assert.ok(noDrag.has(".is-desktop .context-menu-flash"));
+});
+
 test("a new desktop-only floating layer is not excused by the scope it is written under", () => {
   // The shape a future floating layer takes: scoped to `.is-desktop`, painted above the
   // bar, and nowhere in the no-drag rule. Matching on class tokens anywhere in the

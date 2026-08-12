@@ -1465,9 +1465,110 @@ body {
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
-.is-desktop .bl-planner-pop {
+.is-desktop .bl-planner-pop,
+/* A cursor menu and its confirmation can land over the titlebar at any viewport coordinate. */
+.is-desktop .context-menu,
+.is-desktop .context-menu-flash {
   -webkit-app-region: no-drag;
 }
+
+/* One body-level context menu serves the browser and desktop builds. Its narrow hint rail is
+   the payload check: it tells the reader whether Copy means a selection or link text, and
+   keeps editing accelerators visible without making each row taller. */
+.context-menu {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  min-width: 196px;
+  max-width: 268px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.48);
+  animation: context-menu-in 100ms ease-out;
+}
+.context-menu-group {
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid var(--border-soft);
+}
+.context-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: 12px/1.35 var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.context-menu-row:hover,
+.context-menu-row:focus-visible {
+  outline: none;
+  background: var(--panel-2);
+}
+.context-menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.context-menu-hint {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim);
+  font: 10.5px/1 var(--mono);
+}
+@keyframes context-menu-in {
+  from { opacity: 0; transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .context-menu { animation: none; }
+}
+
+/* The host owns confirmation because an activated row closes its menu immediately. */
+.context-menu-flash {
+  position: fixed;
+  z-index: 90;
+  left: 50%;
+  bottom: 26px;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  max-width: min(640px, 90vw);
+  padding: 9px 14px;
+  border: 1px solid color-mix(in oklab, var(--idle) 34%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--idle) 12%, var(--panel));
+  box-shadow: var(--shadow);
+  color: var(--fg);
+  font-size: 12px;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.context-menu-flash strong {
+  color: var(--idle);
+  font-weight: 640;
+}
+.context-menu-flash span {
+  overflow: hidden;
+  color: var(--muted);
+  font: 11px/1.3 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.context-menu-flash.is-error {
+  border-color: color-mix(in oklab, var(--danger) 42%, var(--border));
+  background: color-mix(in oklab, var(--danger) 11%, var(--panel));
+}
+.context-menu-flash.is-error strong { color: var(--danger); }
 
 .brand {
   display: flex;

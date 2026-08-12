@@ -66,6 +66,7 @@ import {
   useKeybindings,
   chordFromEvent,
   chordHasCommandModifier,
+  chordIsNonTyping,
   chordYieldsToSelection,
   formatChord,
 } from "./lib/keybindings.ts";
@@ -95,6 +96,10 @@ import {
   type WorkflowBindingTarget,
 } from "./workflows/WorkflowBindingDialog.tsx";
 import { Palette } from "./components/Palette.tsx";
+import {
+  ContextMenuHost,
+  type ContextMenuHostHandle,
+} from "./components/ContextMenu.tsx";
 import type { PaletteStores, PaletteTarget } from "./lib/palette-index.ts";
 import { buildSettingsBindings } from "./lib/settings-search.ts";
 import { useRichText } from "./lib/rich-text.ts";
@@ -424,6 +429,7 @@ export function App(): React.JSX.Element {
   const gridRef = useRef<HTMLElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
+  const contextMenuRef = useRef<ContextMenuHostHandle>(null);
 
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
     if (el) cardEls.current.set(id, el);
@@ -1458,6 +1464,19 @@ export function App(): React.JSX.Element {
       // Preserve the native activation of a focused link or button - including the
       // selected tile's own open button, which the arrow keys put the cursor on.
       if (chord === "Enter" && target?.closest("button, a[href]")) return;
+
+      // The customizable Shift+F10 action and the dedicated Menu key open the same global
+      // surface. It sits above the fleet-only gate because links and fields exist on every
+      // page, and its non-typing default remains reachable from inside those fields. A rebound
+      // printable key still yields to the ordinary typing guard.
+      if (
+        (chord === bindings.contextMenu || e.key === "ContextMenu") &&
+        (!typing || e.key === "ContextMenu" || chordIsNonTyping(chord)) &&
+        contextMenuRef.current?.openFromKeyboard(target)
+      ) {
+        e.preventDefault();
+        return;
+      }
 
       // The palette (⌘K by default) opens from ANY page and stays where it is - it indexes
       // both homes, so it no longer navigates anywhere to open, which is why this block sits
@@ -2799,6 +2818,8 @@ export function App(): React.JSX.Element {
             </>
           )}
         />
+
+        <ContextMenuHost ref={contextMenuRef} />
 
         {/* The dirty-draft gate, outside the page slots because it is raised by LEAVING one:
             back/forward can fire it while the Workflows page is already unmounting, and a

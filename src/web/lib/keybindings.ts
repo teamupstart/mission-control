@@ -22,6 +22,7 @@ export type ActionId =
   | "roundup"
   | "dispatch"
   | "filter"
+  | "contextMenu"
   | "settingsSearch"
   | "workflows"
   | "runs"
@@ -103,6 +104,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Focus filter",
     description: "Jump to the filter box to narrow the grid.",
     defaultBinding: "/",
+    group: "global",
+  },
+  {
+    id: "contextMenu",
+    label: "Open context menu",
+    description: "Show the actions for the focused text, link or field.",
+    defaultBinding: "shift+F10",
     group: "global",
   },
   {
@@ -309,6 +317,9 @@ const RESERVED_KEYS = new Set([
   "ArrowDown",
   "ArrowLeft",
   "ArrowRight",
+  // The dedicated Menu key always opens the context menu. It is structural, like Escape,
+  // rather than a second customizable action that would duplicate the settings row.
+  "ContextMenu",
 ]);
 
 const MOD_TOKENS = ["cmd", "ctrl", "alt", "shift"] as const;
@@ -389,6 +400,7 @@ const KEY_LABEL: Record<string, string> = {
   " ": "Space",
   Backspace: "⌫",
   Delete: "⌦",
+  ContextMenu: "☰",
 };
 
 /** Human-readable form of a chord for keycaps and the editor (e.g. "⌘K", "⇧O", "⇥", "/"). */
@@ -419,6 +431,11 @@ export function isReservedChord(chord: string): boolean {
 export function chordHasCommandModifier(chord: string): boolean {
   const { mods } = parseChord(chord);
   return mods.includes("cmd") || mods.includes("ctrl");
+}
+
+/** A chord that cannot type a character, so a focused text field has no claim on it. */
+export function chordIsNonTyping(chord: string): boolean {
+  return parseChord(chord).key.length !== 1;
 }
 
 /**

@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Durable scout archive plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:#f2f4f7;--paper:#fff;--paper2:#f7f8fa;--ink:#1c232d;--muted:#626d7c;
+      --dim:#7b8593;--line:#dce1e7;--line2:#e9edf1;--blue:#2c73c8;--green:#16815d;
+      --amber:#a66508;--red:#bd3933;--purple:#7252b9;--code:#eef2f6;
+      --shadow:0 18px 54px rgba(28,35,45,.10);
+      --sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    }
+    @media (prefers-color-scheme:dark) {
+      :root {
+        --bg:#0a0c0f;--paper:#14181e;--paper2:#0f1318;--ink:#e7ebf1;--muted:#939eae;
+        --dim:#7c8798;--line:#29313b;--line2:#202730;--blue:#4a9eff;--green:#35c08a;
+        --amber:#f6a733;--red:#f85149;--purple:#a371f7;--code:#1a2028;
+        --shadow:0 20px 58px rgba(0,0,0,.38);
+      }
+    }
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}
+    body{margin:0;min-width:0;background:radial-gradient(900px 520px at 88% -12%,color-mix(in srgb,var(--blue) 11%,transparent),transparent 62%),var(--bg);color:var(--ink);font:15px/1.68 var(--sans)}
+    a{color:var(--blue);text-underline-offset:3px}a:hover{color:color-mix(in srgb,var(--blue) 75%,var(--ink))}
+    .mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 90%,transparent);backdrop-filter:blur(16px)}
+    .mast-inner{max-width:1380px;margin:auto;padding:42px clamp(20px,5vw,66px) 35px}
+    .kicker{margin:0 0 8px;color:var(--blue);font:800 11px/1.2 var(--mono);letter-spacing:.15em;text-transform:uppercase}
+    .mast h1{max-width:850px;margin:0;font-size:clamp(35px,5.5vw,64px);line-height:1.06;letter-spacing:-.045em}
+    .mast-copy{max-width:850px;margin:16px 0 0;color:var(--muted);font-size:17px}
+    .evidence-tabs{display:flex;flex-wrap:wrap;gap:0;margin-top:24px}
+    .evidence-tabs span{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid var(--line);background:var(--paper2);color:var(--muted);font:700 11px/1 var(--mono)}
+    .evidence-tabs span:first-child{border-radius:9px 0 0 9px}.evidence-tabs span:last-child{border-radius:0 9px 9px 0}.evidence-tabs span+span{border-left:0}
+    .evidence-tabs i{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 14%,transparent)}
+    .path{margin-top:16px;color:var(--dim);font:12px/1.5 var(--mono)}
+    .layout{display:grid;grid-template-columns:220px minmax(0,930px);gap:34px;max-width:1240px;margin:0 auto;padding:30px 18px 92px}
+    nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}
+    nav b{display:block;margin:0 0 9px;color:var(--dim);font:800 10px/1.2 var(--mono);letter-spacing:.12em;text-transform:uppercase}
+    nav a{display:block;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}
+    article{min-width:0;padding:10px clamp(18px,4vw,54px) 60px;border:1px solid var(--line);border-radius:17px;background:var(--paper);box-shadow:var(--shadow)}
+    article>h1:first-child{display:none}h2{margin:48px 0 13px;padding-top:7px;border-top:1px solid var(--line);font-size:25px;line-height:1.25;letter-spacing:-.025em}h2:first-of-type{margin-top:22px;border-top:0}
+    h3{margin:30px 0 9px;font-size:18px;line-height:1.35;letter-spacing:-.012em}h4{margin:22px 0 7px}
+    p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:5px 0}strong{color:var(--ink)}
+    code{padding:2px 5px;border:1px solid var(--line2);border-radius:5px;background:var(--code);color:var(--blue);font:12.5px/1.45 var(--mono);overflow-wrap:anywhere}
+    pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}
+    table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font-size:11px}
+    blockquote{margin:18px 0;padding:10px 16px;border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 6%,var(--paper));color:var(--muted)}
+    #approved-decisions{margin-top:56px;padding:22px 24px;border:1px solid color-mix(in srgb,var(--green) 48%,var(--line));border-radius:14px;background:color-mix(in srgb,var(--green) 6%,var(--paper));color:var(--ink)}
+    .flow{max-width:100%;margin:22px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}
+    .flow figcaption{margin-bottom:13px;font-weight:760}.flow svg{display:block;width:100%;height:auto;min-width:760px}.flow p{margin:12px 3px 1px;color:var(--muted);font-size:12px}
+    .flow .edges path{fill:none;stroke:var(--dim);stroke-width:1.7;marker-end:url(#flow-arrow)}.deletion .edges path{marker-end:url(#delete-arrow)}.publication .edges path{marker-end:url(#publish-arrow)}.reconciliation .edges path{marker-end:url(#reconcile-arrow)}.deletion .edges .failure,.publication .edges .failure{stroke:var(--red)}
+    .flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .node.manager rect{fill:color-mix(in srgb,var(--blue) 10%,var(--paper));stroke:var(--blue)}
+    .flow .node.bundle rect,.flow .node.done rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .node.db rect{stroke:var(--purple)}.flow .node.verify rect{stroke:var(--amber)}.flow .node.retry rect{stroke:var(--red);stroke-dasharray:5 4}
+    .flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:480}.flow text.label{fill:var(--dim);font:500 9px var(--mono)}
+    footer{display:flex;justify-content:space-between;gap:20px;max-width:1240px;margin:0 auto 36px;padding:0 18px;color:var(--dim);font:11px/1.5 var(--mono)}
+    @media(max-width:880px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:20px}}
+    @media(max-width:560px){.mast-inner{padding-top:30px}.evidence-tabs span{flex:1;justify-content:center}.layout{padding-inline:8px}article{border-radius:13px}.path{overflow-wrap:anywhere}th,td{min-width:130px}th:first-child,td:first-child{min-width:44px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+    @media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav{display:none}article{border:0}.flow svg{min-width:0}footer{display:none}}
+  </style>
+</head>
+<body>
+  <header class="mast">
+    <div class="mast-inner">
+      <p class="kicker">Mission Control · product and engineering plan</p>
+      <h1>Durable scout archive</h1>
+      <p class="mast-copy">Keep each investigation useful after its session and worktree close, share immutable bundles through ordinary filesystem tools, and rebuild search from the portable library whenever needed.</p>
+      <div class="evidence-tabs" aria-label="Archive contents"><span><i></i>HTML report</span><span><i></i>Support files</span><span><i></i>Manifest</span></div>
+      <p class="path">~/.mission-control/scouts/&lt;producer-id&gt;/&lt;archive-id&gt;/</p>
+    </div>
+  </header>
+  <div class="layout">
+    <nav aria-label="Plan sections"><b>On this page</b><a href="#outcome">Outcome</a><a href="#what-the-repository-does-today">Current state</a><a href="#recommendation">Recommendation</a><a href="#user-experience">User experience</a><a href="#capture-contract">Capture contract</a><a href="#data-and-request-flow">Data flow</a><a href="#persistence-and-lifecycle">Persistence</a><a href="#http-and-live-synchronization">HTTP and SSE</a><a href="#repository-changes">Repository map</a><a href="#security-and-privacy">Security</a><a href="#verification">Verification</a><a href="#acceptance-criteria">Acceptance</a><a href="#approved-decisions">Approved decisions</a></nav>
+    <article><h1 id="durable-scout-archive">Durable scout archive</h1>
+<h2 id="outcome">Outcome</h2>
+<p>Mission Control keeps every completed scout as a machine-local, searchable record after the
+agent, task card, source transcript, and worktree are gone. A scout archive preserves one primary,
+self-contained HTML report and the supporting evidence files the scout produced, including files
+that were never committed. The conversation is not copied into the archive.</p>
+<p>The default scout library lives under the resolved Mission Control state directory:</p>
+<pre><code class="language-text">~/.mission-control/scouts/&lt;producer-id&gt;/&lt;archive-id&gt;/
+</code></pre>
+<p><code>MISSION_HOME</code> and the existing legacy state-directory resolution remain authoritative, so an
+isolated or demo daemon keeps its scouts beside its own database instead of writing into the normal
+home. Archives survive agent-session closure, daemon restarts, database replacement, and Mission
+Control reinstallation when the library directory is retained or restored. An operator may copy or
+sync immutable bundles into this directory with any filesystem tool. Mission Control does not
+provide a network transport, account service, or remote store; it automatically discovers what is
+present in the local library.</p>
+<p>A dedicated <strong>Scouts</strong> view lets the operator search historical questions and findings across local
+and shared producers, open a stable deep link to one archive, read its HTML report, inspect each
+captured supporting artifact, and copy the bundle path for direct filesystem access.</p>
+<h2 id="what-the-repository-does-today">What the repository does today</h2>
+<ul>
+<li><code>Task.kind</code> already distinguishes <code>scout</code> from <code>ship</code>, and the kind is durable in SQLite.</li>
+<li>Completing a task stores only a short <code>outcome</code> before the dashboard stops the session.</li>
+<li>The full task table remains in SQLite, but terminal tasks are capped in Registry memory and the
+SSE snapshot, so old tasks are not a historical browsing surface.</li>
+<li>Conversations are read from harness-owned transcript files through the harness transcript
+capability. Once the session leaves the Registry, the dashboard transcript routes can no longer
+address that conversation, even when the source file happens to remain on disk.</li>
+<li>Session files are read from a live checkout. Reclaiming a task removes that path, and untracked
+scout artifacts disappear with it.</li>
+<li>The shipped, opt-in <code>html-report</code> skill already asks scouts and investigations to produce a
+self-contained <code>docs/reports/&lt;slug&gt;/report.html</code>, and the Files tab already opens that path in a
+sandboxed preview. It is model-invoked today, so a scout task does not guarantee that output.</li>
+<li><code>~/.mission-control</code> is already the daemon-owned local state directory for the database, token,
+logs, uploads, and dispatched worktrees. The daemon is the only SQLite writer.</li>
+<li>Historical pages such as the Ship log fetch bounded data on demand instead of placing all
+history in the opening SSE snapshot. The browser does not poll.</li>
+</ul>
+<p>The missing boundary is therefore not another task status. Mission Control needs an immutable
+archive bundle and an independent catalog, captured before cleanup and addressable after every live
+session object has disappeared.</p>
+<h2 id="recommendation">Recommendation</h2>
+<p>Add a daemon-owned <code>ScoutArchiveManager</code>, a portable bundle format, a background library
+reconciler, and a small disposable SQLite search index.</p>
+<p>The recommended archive contains:</p>
+<ol>
+<li><code>report/report.html</code>: the scout&#x27;s required primary deliverable, copied from
+<code>docs/reports/&lt;slug&gt;/report.html</code>. It is self-contained, works from <code>file://</code>, uses inline CSS and
+SVG rather than JavaScript, and makes no external request.</li>
+<li><code>report/</code>: every bounded regular file produced beside <code>report.html</code>, preserving relative paths so
+the report can refer to a CSV, image, or other supporting output in its own directory.</li>
+<li><code>artifacts/</code>: additional contained regular files the scout explicitly submits from an attached
+worktree. Mission Control does not archive the whole worktree or infer a deliverable from every
+changed file.</li>
+<li><code>manifest.json</code>: a versioned, self-describing snapshot containing the globally stable archive
+key, opaque producer identity, display and search metadata, timing, completion, artifact
+provenance, byte sizes, and SHA-256 digests. Task and session ids are deliberately not
+published into the portable format; local capture jobs may use them only until the final bundle
+exists.</li>
+</ol>
+<p>The bundle is the only durable source of truth for a completed scout. SQLite is a derived search
+cache plus a local capture-job ledger, not a requirement for opening or reconstructing the library.
+Every display field, artifact identity, and search input needed by a fresh installation is in the
+bundle. Deleting the database, original task, or original session must not damage an archive.
+Persist indexed bundle paths relative to the library root so the entire directory can move and be
+reconciled in a fresh Mission Control installation.</p>
+<h3 id="why-not-archive-the-conversation">Why not archive the conversation</h3>
+<p>The useful output of a scout is the finding and its evidence, not the turns spent reaching it. A
+normalized conversation increases storage and privacy exposure, preserves intermediate mistakes,
+and still does not replace a deliberately structured report. The live transcript remains available
+while the session exists, but the durable contract captures only the submitted HTML report directory
+and explicitly named supporting files. Hidden reasoning, system prompts, raw tool protocol,
+credentials, and vendor bookkeeping never enter a scout archive.</p>
+<h3 id="why-not-use-git-refs-as-the-archive">Why not use Git refs as the archive</h3>
+<p>Ensemble refs are appropriate for restorable code snapshots, but a scout archive must remain usable
+when its source repository is moved or deleted. Copying the small evidence set into Mission
+Control&#x27;s state directory also makes screenshots, rendered HTML, notes, and other uncommitted files
+ordinary artifacts rather than Git-specific special cases.</p>
+<h3 id="why-not-copy-the-whole-checkout-by-default">Why not copy the whole checkout by default</h3>
+<p>A full checkout duplicates source and dependencies, grows without a meaningful bound, and can copy
+local configuration that was unrelated to the investigation. The focused archive captures the
+required report directory and explicitly named supporting evidence while recording omissions
+honestly in the manifest.</p>
+<h3 id="why-retain-sqlite-at-all">Why retain SQLite at all</h3>
+<p>Scanning report HTML and artifact metadata for every query would make search cost grow with the whole
+library. Mission Control already owns SQLite, so a derived index provides bounded search,
+pagination, filtering, and snippets without adding another service. Normal bootstrap does not
+reindex existing scouts: a background reconciler compares discovered manifest fingerprints with
+the cache and parses only new or changed bundles. When the database is absent, the empty cache makes
+every valid bundle new and it rebuilds automatically without a prompt.</p>
+<p>The final directory remains independently readable. Database-only labels, annotations, foreign
+keys, and ownership state are forbidden because they would be lost during reconstruction.</p>
+<h2 id="user-experience">User experience</h2>
+<h3 id="information-architecture">Information architecture</h3>
+<p>The recommended entry point is a top-level <code>#/scouts</code> page with a <strong>Scouts</strong> segment in the existing
+topbar, a stable <code>#/scouts/&lt;archive-key&gt;</code> detail route, an <strong>Open Scouts</strong> global action, and a static
+page result in the command palette. The palette opens the page but does not ingest every historical
+record into SSE; search remains on the page that owns the archive catalog.</p>
+<p>This is execution history, not a reusable authored asset, so it should not be inserted into the
+Library&#x27;s authored workflows, Personas, actions, strategies, and missions shelves. The approved
+top-level placement accepts the additional topbar-density cost in exchange for direct historical
+lookup.</p>
+<h3 id="the-page-s-single-job">The page&#x27;s single job</h3>
+<p>The operator is trying to recover an answer without reopening the original agent. The page should
+answer, in order: <strong>what did we investigate, what did we conclude, and what evidence survived?</strong></p>
+<pre><code class="language-text">┌ Scouts ─────────────────────────────────────────────────────────────────────┐
+│ [Search questions, findings, reports, files...] [Source ▾] [When ▾]        │
+├──────────────────────┬──────────────────────────────────┬───────────────────┤
+│ AUG 12               │ Why did resume lose permissions? │ EVIDENCE          │
+│ ● Resume permissions │ repo · agent · completed time    │ ● HTML report     │
+│   3 files · 8 min    │                                  │ ● 3 support files │
+│                      │ Sandboxed report.html            │                   │
+│ AUG 09               │                                  │                   │
+│ ○ Header density     │                                  │ evidence.csv Open │
+│   partial · 1 file   │                                  │ notes.txt    Open │
+│                      │                                  │ Copy bundle path  │
+└──────────────────────┴──────────────────────────────────┴───────────────────┘
+</code></pre>
+<p>The signature element is an <strong>evidence spine</strong> in the detail rail. Its primary HTML report and
+supporting-file stops show what the archive actually contains and navigate to the matching content.
+Ready evidence is green, an incomplete capture is amber, and missing or corrupt evidence is red with
+a sentence explaining the recovery action. This is structure, not decoration: one glance says
+whether an old report is complete enough to trust.</p>
+<p>Use Mission Control&#x27;s existing dark operational palette and type roles rather than introducing a
+new visual system:</p>
+<table><thead><tr><th>Role</th><th>Existing token or value</th><th>Use in Scouts</th></tr></thead><tbody><tr><td>Canvas</td><td><code>#0a0c0f</code> / <code>--bg</code></td><td>Page background</td></tr><tr><td>Dossier</td><td><code>#14181e</code> / <code>--panel</code></td><td>Report reader and rails</td></tr><tr><td>Primary text</td><td><code>#e7ebf1</code> / <code>--fg</code></td><td>Findings and headings</td></tr><tr><td>Secondary text</td><td><code>#939eae</code> / <code>--muted</code></td><td>Provenance and excerpts</td></tr><tr><td>Ready</td><td><code>#35c08a</code> / <code>--idle</code></td><td>Complete archive stops</td></tr><tr><td>Incomplete</td><td><code>#f6a733</code> / <code>--attention</code></td><td>Partial capture and recovery</td></tr></tbody></table>
+<p>System sans remains the reading face; the existing monospace face carries timestamps, paths,
+digests, byte sizes, and manifest labels. The report is the visual thesis, not a dashboard of KPI
+tiles. On a narrow viewport the archive rail becomes the first screen, the selected report replaces
+it, and the evidence rail folds below the report.</p>
+<h3 id="search-and-filters">Search and filters</h3>
+<p>Search is server-side, bounded, and literal substring matching over normalized search segments:</p>
+<ul>
+<li>title, archived question, summary, tags, and visible text extracted from static <code>report.html</code> by a
+nonexecuting server-side HTML parser;</li>
+<li>repository labels, archived tags, producer, agent, model, source, and schedule names;</li>
+<li>report-directory paths plus original supporting artifact paths and filenames.</li>
+</ul>
+<p>Results are newest first and cursor-paginated. Filters cover producer or source, repository, agent,
+completion state, and date range. The route owns <code>q</code>, filters, and the selected archive so a copied
+link reopens the same record. Empty search shows recent archives. A failed request says the archive
+is unavailable; it must not render as an empty history. Background discovery is unobtrusive: the
+page updates after a reconciled batch without a blocking startup screen or a manual reindex prompt.</p>
+<h3 id="detail-and-artifact-reading">Detail and artifact reading</h3>
+<ul>
+<li>Open <code>report/report.html</code> as the selected scout&#x27;s default content using the existing sandboxed HTML
+preview and CSP. The report cannot execute JavaScript or make network requests.</li>
+<li>Show artifact path, repository provenance, media type, bytes, digest, and captured-at time.</li>
+<li>Preview supporting UTF-8 text and Markdown, images, and sandboxed HTML inside Mission Control.
+Reuse the existing HTML sandbox rules and never execute an archived page with dashboard
+privileges.</li>
+<li>Download any artifact through an id-addressed route. For supported files, <strong>Open in Browser</strong>
+reuses the registered open-target mechanism after archive containment is verified.</li>
+<li>Display and copy the absolute bundle directory, resolved from the current library root. The
+composite producer and archive key remains the stable application reference after copying.</li>
+<li>Offer <strong>Delete scout</strong> in the selected scout header and the corresponding archive-row overflow
+menu. Use Mission Control&#x27;s existing <code>btn-danger-ghost</code> treatment so the action is discoverable
+without competing with the report and evidence controls.</li>
+</ul>
+<h3 id="deleting-a-scout-from-the-ui">Deleting a scout from the UI</h3>
+<p>Selecting <strong>Delete scout</strong> opens a modal that names the scout, its producer, archive size, and exact
+local consequence. The operator types <code>DELETE</code> before the destructive button enables. The request
+also echoes the composite archive key, so a stale browser cannot delete whichever record later
+occupies a list position. The modal must say that Mission Control removes the bundle and search entry
+from this local library and does not touch any task, session, repository, or remote service. An
+operator-configured two-way filesystem sync may propagate that file deletion to another machine or
+restore the same immutable bundle later; Mission Control cannot promise either behavior.</p>
+<p>On success, remove the row after the daemon confirms the filesystem move and index transaction,
+select the next visible scout, preserve the active query and filters, and announce <strong>Scout deleted</strong>
+through the existing status treatment. On failure, keep the modal and scout open, show the daemon&#x27;s
+specific reason above the actions, and restore the enabled <strong>Delete scout</strong> control. An unreadable
+archive remains deletable by its server-verified generated path without trusting fields from its
+manifest. Deleting a task or reclaiming its worktree never deletes its scout archive.</p>
+
+<figure class="flow deletion" aria-labelledby="deletion-flow-title">
+  <figcaption id="deletion-flow-title">Delete one scout from the Scouts UI</figcaption>
+  <svg viewBox="0 0 1200 300" role="img" aria-label="The user chooses Delete scout, types DELETE, and submits the bound archive key. The daemon verifies the generated path, atomically moves the bundle to trash, removes derived index rows, and refreshes the UI. Verification failures keep the modal and scout open.">
+    <defs>
+      <marker id="delete-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z"/></marker>
+    </defs>
+    <g class="edges">
+      <path d="M180 88H220"/><path d="M380 88H420"/><path d="M580 88H620"/><path d="M780 88H820"/><path d="M980 88H1020"/>
+      <path d="M1100 128V198"/><path d="M900 128V198"/><path class="failure" d="M700 128V198"/>
+    </g>
+    <g class="node" transform="translate(20 48)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Delete scout</text><text class="sub" x="80" y="53">header or row action</text></g>
+    <g class="node verify" transform="translate(220 48)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Confirm</text><text class="sub" x="80" y="51">type DELETE</text><text class="sub" x="80" y="67">bind archive key</text></g>
+    <g class="node" transform="translate(420 48)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Delete route</text><text class="sub" x="80" y="53">daemon-owned action</text></g>
+    <g class="node verify" transform="translate(620 48)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Verify</text><text class="sub" x="80" y="51">confirmation · identity</text><text class="sub" x="80" y="67">generated containment</text></g>
+    <g class="node retry" transform="translate(820 48)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Move to trash</text><text class="sub" x="80" y="53">atomic local move</text></g>
+    <g class="node db" transform="translate(1020 48)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Remove index</text><text class="sub" x="80" y="53">derived rows only</text></g>
+    <g class="node done" transform="translate(1020 198)"><rect width="160" height="65" rx="13"/><text x="80" y="27">Refresh Scouts</text><text class="sub" x="80" y="47">select next · keep filters</text></g>
+    <g class="node" transform="translate(820 198)"><rect width="160" height="65" rx="13"/><text x="80" y="27">Cleanup</text><text class="sub" x="80" y="47">remove trash entry</text></g>
+    <g class="node retry" transform="translate(620 198)"><rect width="160" height="65" rx="13"/><text x="80" y="27">Keep open</text><text class="sub" x="80" y="47">specific failure reason</text></g>
+  </svg>
+  <p>Deletion targets the composite archive key and the server-verified local path. It never cascades through task or session records.</p>
+</figure>
+<h2 id="capture-contract">Capture contract</h2>
+<h3 id="required-html-output">Required HTML output</h3>
+<p>Mission Control already ships the opt-in <code>html-report</code> skill. It tells investigations and scouts to
+write one self-contained, no-JavaScript page at <code>docs/reports/&lt;slug&gt;/report.html</code>, put supporting
+outputs beside it, and finish with the checkout-relative path. Promote that proven contract from an
+optional model behavior to a server-enforced output contract for every <code>Task.kind === &quot;scout&quot;</code>.</p>
+<p>Mission Control appends the compact report requirements to every scout intent regardless of the
+global Skills toggle. Compose that appendix at the task-delivery boundary so it reaches both a new
+dispatch and a backlog scout assigned to an existing session. The skill remains opt-in for
+non-scout investigations, audits, and research. Keep the runtime appendix and
+<code>skills/html-report/SKILL.md</code> aligned with a focused drift test for the path pattern, offline
+requirement, no-JavaScript rule, answer-first structure, and final path handoff. Update the skill&#x27;s
+current one-sentence exception to say it never applies to a durable scout task: even a short scout
+answer produces the HTML artifact. Do not depend on a model noticing an installed skill to satisfy
+task completion.</p>
+<p>Add a launch-scoped <code>submit_scout_artifacts</code> Mission MCP tool. Scout dispatches require and
+preapprove this tool in the same capability-driven way ensemble members require
+<code>submit_ensemble_result</code>. Ship tasks do not receive the scout submission contract.</p>
+<p>The tool accepts a required primary-worktree-relative <code>reportPath</code> matching
+<code>docs/reports/&lt;slug&gt;/report.html</code>, a bounded plain-text summary, optional tags, and optional
+supporting artifact locators made from a server-issued repository slot plus checkout-relative path.
+The daemon derives session, task, episode, worktrees, agent, and repository from the calling
+environment, and generates the producer and archive ids. The agent never supplies an archive id,
+task id, absolute destination, or filesystem root.</p>
+<p>Submission validates that the report is a contained, nonignored regular HTML file; uses no script,
+form, executable embed, external URL, or runtime-built content; and is within the report and bundle
+limits. Capture the report directory as one relative unit so its local links survive. Additional
+artifact paths pass through the same containment, ignore, symlink, type, and size rules.</p>
+<p>The existing skill teaches reports to link citations back into the live checkout. That is correct in
+the Files tab but would create broken or escaping links after archival. For a scout, update the
+contract so source citations remain visible as <code>&lt;code&gt;path:line&lt;/code&gt;</code> text without an <code>href</code> unless
+the cited file is deliberately placed inside the report directory. Submission permits fragment
+links, <code>data:</code> resources, and normalized relative links that remain inside the report directory. It
+rejects network URLs, URL schemes, protocol-relative URLs, and relative paths that escape the report
+directory. The archived HTML bytes are copied exactly; the daemon does not silently rewrite a
+finished report.</p>
+<p>The shared protocol schema and the MCP server&#x27;s hand-written schema move together. Add the tool to
+the append-only <code>MISSION_MCP_TOOLS</code> registry and extend the existing registration drift test.</p>
+<h3 id="completion-backstop">Completion backstop</h3>
+<p>Every transition that marks a scout <code>done</code> must await <code>ScoutArchiveManager.ensureReady</code> before the
+task status changes. Normal completion requires a successful <code>submit_scout_artifacts</code> call and a
+verified final HTML bundle. It does not fall back to transcript text, the last assistant message, or
+all changed worktree files. A missing or invalid report keeps the scout nonterminal and returns the
+exact required path and validation problem so the agent or operator can correct it.</p>
+<p>This makes scout completion one ordered boundary:</p>
+<ol>
+<li>Resolve the current task and work-episode identity.</li>
+<li>Reserve or replay the archive operation key.</li>
+<li>Capture the submitted HTML report directory and explicit supporting artifacts into staging.</li>
+<li>Write and verify the manifest and content digests.</li>
+<li>Atomically rename the staging directory to its final producer and archive path.</li>
+<li>Notify the background reconciler and optimistically index the new bundle.</li>
+<li>Once the final bundle itself is verified, mark the task done and allow the existing session-stop
+flow to continue. An index failure retries in the background and does not make durable evidence
+depend on the database.</li>
+</ol>
+<p>Refactor the current synchronous <code>TaskManager.complete</code> boundary to await archive preparation and
+update all existing call sites. Do not add a second task-completion path in routes. A capture
+failure leaves the scout nonterminal, keeps its resources, and returns the exact file or validation
+problem to the caller.</p>
+<h3 id="unexpected-exit-and-partial-scouts">Unexpected exit and partial scouts</h3>
+<p><code>Registry.onSessionExit</code> remains the last-chance signal before removal. For an unarchived scout it
+synchronously reserves a durable capture job containing only server-derived checkout locators, then
+a background worker looks for exactly one new conventional <code>docs/reports/*/report.html</code> while the
+retained worktree still exists. A successfully submitted path always wins; ambiguous discovery is
+never guessed.</p>
+<p>Reclaim refuses a scout until its final bundle has been verified. Capture-job recovery resumes
+reserved or interrupted local work before it permits cleanup; this is distinct from library index
+reconciliation. If no valid report can be recovered, the manager publishes a self-describing
+<code>partial</code> manifest that says the primary HTML report is missing; it does not manufacture a report
+from conversation text. The UI never labels that record complete, even when no original task or
+session exists.</p>
+<h3 id="limits-and-honesty">Limits and honesty</h3>
+<p>Use hard limits to protect the local daemon: 32 MiB for <code>report.html</code>, 128 MiB and 256 entries for
+the full report directory, 64 MiB per additional file, 512 entries, and 512 MiB for the complete
+bundle. Keep the constants together and apply them before publishing a ready bundle.</p>
+<p>Crossing a limit refuses completion and names every offending path or count. It must not publish a
+green archive that silently omitted evidence. Symlinks, sockets, devices, paths outside an attached
+realpath, ignored files, and files that change while being copied are rejected. Explicit supporting
+files pass through the same containment and regular-file checks as the report directory.</p>
+<h2 id="data-and-request-flow">Data and request flow</h2>
+<p>Today the scout&#x27;s useful report is an optional untracked checkout file that disappears with worktree
+reclaim. The proposed capture makes a verified HTML output mandatory before normal completion.
+Locally captured bundles and externally copied bundles then enter the same portable library and the
+same disposable index without carrying session conversations.</p>
+
+<figure class="flow" aria-labelledby="data-flow-title">
+  <figcaption id="data-flow-title">Portable scout library data and request flow</figcaption>
+  <svg viewBox="0 0 1200 440" role="img" aria-label="A scout submits a self-contained HTML report and explicit supporting artifacts. Mission Control captures them into the portable library before task completion. Filesystem copy or sync can add immutable bundles from other producers. A background reconciler indexes only new and changed bundles in disposable SQLite, while the Scouts page reads bounded routes from the daemon.">
+    <defs>
+      <marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z"/></marker>
+    </defs>
+    <g class="edges">
+      <path d="M202 90H250"/><path d="M440 90H492"/><path d="M682 90H740"/><path d="M930 90H988"/>
+      <path d="M345 140V214"/><path d="M587 214V140"/><path d="M202 362H740"/>
+      <path d="M835 322V140"/><path d="M740 348C682 348 682 128 682 128"/>
+    </g>
+    <g class="node scout" transform="translate(22 50)"><rect width="180" height="80" rx="14"/><text x="90" y="32">Scout session</text><text class="sub" x="90" y="51">HTML report</text><text class="sub" x="90" y="67">+ explicit artifacts</text></g>
+    <g class="node manager" transform="translate(250 40)"><rect width="190" height="100" rx="14"/><text x="95" y="34">ScoutArchiveManager</text><text class="sub" x="95" y="57">capture · contain · hash</text><text class="sub" x="95" y="75">publish before task terminal</text></g>
+    <g class="node bundle" transform="translate(492 40)"><rect width="190" height="100" rx="14"/><text x="95" y="32">Portable library</text><text class="sub" x="95" y="54">producer / archive</text><text class="sub" x="95" y="72">self-describing bundles</text></g>
+    <g class="node reconcile" transform="translate(740 40)"><rect width="190" height="100" rx="14"/><text x="95" y="34">Reconciler</text><text class="sub" x="95" y="57">bootstrap · watch · cadence</text><text class="sub" x="95" y="75">new and changed only</text></g>
+    <g class="node db" transform="translate(988 50)"><rect width="190" height="80" rx="14"/><text x="95" y="32">SQLite index</text><text class="sub" x="95" y="54">disposable search cache</text></g>
+    <g class="node done" transform="translate(250 214)"><rect width="190" height="80" rx="14"/><text x="95" y="32">TaskManager</text><text class="sub" x="95" y="54">complete after bundle verify</text></g>
+    <g class="node copy" transform="translate(492 214)"><rect width="190" height="80" rx="14"/><text x="95" y="32">Filesystem copy / sync</text><text class="sub" x="95" y="54">other users · any local tool</text></g>
+    <g class="node ui" transform="translate(22 322)"><rect width="180" height="80" rx="14"/><text x="90" y="32">Scouts page</text><text class="sub" x="90" y="54">search · report · evidence</text></g>
+    <g class="node api" transform="translate(740 322)"><rect width="190" height="80" rx="14"/><text x="95" y="32">Daemon HTTP</text><text class="sub" x="95" y="54">bounded list and detail</text></g>
+    <text class="label" x="226" y="78">submit</text><text class="label" x="466" y="78">atomic publish</text><text class="label" x="711" y="78">discover</text><text class="label" x="960" y="78">upsert</text>
+    <text class="label" x="605" y="350">query</text><text class="label" x="706" y="213">contained reads</text>
+  </svg>
+  <p>Completed bundles remain usable without their source task, session, or database row. SQLite accelerates discovery and search but never owns the evidence.</p>
+</figure>
+<p>The publication sequence is intentionally filesystem first. A verified final bundle permits task
+completion even if indexing must retry. A database row pointing at files that were never durably
+renamed cannot be repaired, while any complete bundle can reconstruct its row and search segments.</p>
+
+<figure class="flow publication" aria-labelledby="publication-flow-title">
+  <figcaption id="publication-flow-title">Filesystem-first publication before task completion</figcaption>
+  <svg viewBox="0 0 1180 275" role="img" aria-label="The manager reserves a stable operation key, writes a staging bundle, verifies the manifest and digests, atomically publishes the bundle, and then permits task completion. Publication also notifies the background reconciler, which can retry disposable indexing independently. Verification failures preserve the task and resources for a safe retry.">
+    <defs>
+      <marker id="publish-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z"/></marker>
+    </defs>
+    <g class="edges">
+      <path d="M180 91H218"/><path d="M368 91H406"/><path d="M556 91H594"/><path d="M744 91H790"/>
+      <path d="M669 130V181"/><path d="M820 214H866"/><path class="failure" d="M481 131V224H270"/>
+    </g>
+    <g class="node" transform="translate(30 52)"><rect width="150" height="78" rx="13"/><text x="75" y="31">Reserve</text><text class="sub" x="75" y="53">operation key</text></g>
+    <g class="node" transform="translate(218 52)"><rect width="150" height="78" rx="13"/><text x="75" y="31">Stage</text><text class="sub" x="75" y="53">write bundle</text></g>
+    <g class="node verify" transform="translate(406 52)"><rect width="150" height="78" rx="13"/><text x="75" y="31">Verify</text><text class="sub" x="75" y="53">manifest · digests</text></g>
+    <g class="node bundle" transform="translate(594 52)"><rect width="150" height="78" rx="13"/><text x="75" y="31">Publish</text><text class="sub" x="75" y="53">atomic rename</text></g>
+    <g class="node done" transform="translate(790 52)"><rect width="170" height="78" rx="13"/><text x="85" y="31">Complete</text><text class="sub" x="85" y="53">task may close</text></g>
+    <g class="node reconcile" transform="translate(594 181)"><rect width="226" height="65" rx="13"/><text x="113" y="27">Notify reconciler</text><text class="sub" x="113" y="47">index may retry independently</text></g>
+    <g class="node db" transform="translate(866 181)"><rect width="222" height="65" rx="13"/><text x="111" y="27">Upsert search cache</text><text class="sub" x="111" y="47">derived from final bundle</text></g>
+    <g class="node retry" transform="translate(55 194)"><rect width="215" height="65" rx="13"/><text x="108" y="27">Retry safely</text><text class="sub" x="108" y="47">keep task and resources</text></g>
+  </svg>
+  <p>Task completion depends on a verified final bundle, not on a cache row. Search indexing can retry without risking the scout evidence.</p>
+</figure>
+<p>Discovery and indexing use a separate recurring flow. Bootstrap schedules it after the daemon can
+serve requests, filesystem events provide low-latency hints, and a jittered 60-second cadence is the
+authoritative fallback because filesystem watchers can drop events on synced directories.</p>
+
+<figure class="flow reconciliation" aria-labelledby="reconciliation-flow-title">
+  <figcaption id="reconciliation-flow-title">Incremental background reconciliation</figcaption>
+  <svg viewBox="0 0 1200 290" role="img" aria-label="Bootstrap, filesystem hints, and a recurring cadence trigger manifest discovery. Cached fingerprints let unchanged bundles skip indexing. New or changed bundles settle, validate, and upsert. Missing indexed paths are removed, and a changed batch emits one browser invalidation event.">
+    <defs>
+      <marker id="reconcile-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z"/></marker>
+    </defs>
+    <g class="edges">
+      <path d="M186 86H222"/><path d="M382 86H418"/><path d="M578 86H614"/><path d="M774 86H810"/><path d="M970 86H1006"/>
+      <path d="M498 126V191"/><path d="M302 126V191"/><path d="M1086 126V202"/><path d="M382 224H1006"/>
+    </g>
+    <g class="node" transform="translate(22 46)"><rect width="164" height="80" rx="13"/><text x="82" y="30">Trigger</text><text class="sub" x="82" y="51">bootstrap · watch</text><text class="sub" x="82" y="67">60-second cadence</text></g>
+    <g class="node" transform="translate(222 46)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Discover</text><text class="sub" x="80" y="53">manifest paths</text></g>
+    <g class="node verify" transform="translate(418 46)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Compare</text><text class="sub" x="80" y="53">cached fingerprint</text></g>
+    <g class="node" transform="translate(614 46)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Settle</text><text class="sub" x="80" y="53">stable copied bundle</text></g>
+    <g class="node" transform="translate(810 46)"><rect width="160" height="80" rx="13"/><text x="80" y="31">Validate</text><text class="sub" x="80" y="53">schema · paths · digests</text></g>
+    <g class="node db" transform="translate(1006 46)"><rect width="170" height="80" rx="13"/><text x="85" y="31">Upsert</text><text class="sub" x="85" y="53">derived search rows</text></g>
+    <g class="node skip" transform="translate(418 191)"><rect width="160" height="65" rx="13"/><text x="80" y="27">Skip</text><text class="sub" x="80" y="47">unchanged bodies</text></g>
+    <g class="node retry" transform="translate(222 191)"><rect width="160" height="65" rx="13"/><text x="80" y="27">Remove stale</text><text class="sub" x="80" y="47">missing cache path</text></g>
+    <g class="node done" transform="translate(1006 202)"><rect width="170" height="65" rx="13"/><text x="85" y="27">Notify UI</text><text class="sub" x="85" y="47">one event per batch</text></g>
+    <text class="label" x="596" y="73">new / changed</text><text class="label" x="525" y="163">unchanged</text><text class="label" x="330" y="163">missing</text>
+  </svg>
+  <p>A normal startup reads directory and manifest fingerprints but reparses only changed content. With an empty database, the same loop reconstructs the index automatically.</p>
+</figure>
+<h2 id="persistence-and-lifecycle">Persistence and lifecycle</h2>
+<h3 id="bundle-layout">Bundle layout</h3>
+<pre><code class="language-text">~/.mission-control/scouts/
+  .staging/
+  .trash/
+  &lt;producer-id&gt;/
+    &lt;archive-id&gt;/
+      manifest.json
+      report/
+        report.html
+        &lt;files produced beside the report&gt;
+      artifacts/
+        &lt;repo-slot&gt;/path/from/worktree
+</code></pre>
+<h3 id="version-1-archive-format">Version 1 archive format</h3>
+<p>The canonical v1 container is the directory shown above. It is an artifact bundle, not a transcript
+export. It stays directly inspectable with normal filesystem tools and does not require Mission
+Control to extract a package before opening the report. <code>manifest.json</code> and <code>report/report.html</code> are
+UTF-8 with LF line endings and no byte-order mark. Companion and supporting files retain their
+original bytes. The manifest is pretty-printed with two spaces and a trailing newline so a human can
+inspect it, but readers use fields rather than byte-for-byte JSON formatting.</p>
+<p>A representative manifest is:</p>
+<pre><code class="language-json">{
+  &quot;format&quot;: &quot;mission-control/scout-archive&quot;,
+  &quot;format_version&quot;: 1,
+  &quot;producer&quot;: {
+    &quot;id&quot;: &quot;7aa704fd-d2ab-48b3-a726-0c2643ed91d2&quot;,
+    &quot;label&quot;: &quot;Avery&#x27;s laptop&quot;
+  },
+  &quot;archive&quot;: {
+    &quot;id&quot;: &quot;9f5db6c8-79f5-4f9e-84aa-8b5dc15362f8&quot;,
+    &quot;created_at&quot;: &quot;2026-08-12T18:42:11.000Z&quot;,
+    &quot;completed_at&quot;: &quot;2026-08-12T18:50:03.000Z&quot;,
+    &quot;capture_status&quot;: &quot;complete&quot;,
+    &quot;title&quot;: &quot;Resume permission loss&quot;,
+    &quot;question&quot;: &quot;Why did a resumed agent lose repository permissions?&quot;,
+    &quot;summary&quot;: &quot;Resume rebuilt the session without replaying the repository grant.&quot;,
+    &quot;tags&quot;: [&quot;permissions&quot;, &quot;resume&quot;]
+  },
+  &quot;origin&quot;: {
+    &quot;agent&quot;: &quot;codex&quot;,
+    &quot;model&quot;: &quot;gpt-5.6&quot;,
+    &quot;source&quot;: &quot;manual&quot;,
+    &quot;repositories&quot;: [
+      {
+        &quot;slot&quot;: &quot;repo-01&quot;,
+        &quot;label&quot;: &quot;mission-control&quot;,
+        &quot;head&quot;: &quot;4cc55a1d69bb7f843881001643c76185f5c7db1a&quot;
+      }
+    ]
+  },
+  &quot;content&quot;: {
+    &quot;primary_artifact_id&quot;: &quot;report&quot;,
+    &quot;artifacts&quot;: [
+      {
+        &quot;id&quot;: &quot;report&quot;,
+        &quot;role&quot;: &quot;primary_report&quot;,
+        &quot;repo_slot&quot;: &quot;repo-01&quot;,
+        &quot;original_path&quot;: &quot;docs/reports/resume-permissions/report.html&quot;,
+        &quot;archive_path&quot;: &quot;report/report.html&quot;,
+        &quot;media_type&quot;: &quot;text/html&quot;,
+        &quot;bytes&quot;: 12744,
+        &quot;sha256&quot;: &quot;sha256:&lt;64 lowercase hex&gt;&quot;
+      },
+      {
+        &quot;id&quot;: &quot;artifact-01&quot;,
+        &quot;role&quot;: &quot;report_companion&quot;,
+        &quot;repo_slot&quot;: &quot;repo-01&quot;,
+        &quot;original_path&quot;: &quot;docs/reports/resume-permissions/permission-events.csv&quot;,
+        &quot;archive_path&quot;: &quot;report/permission-events.csv&quot;,
+        &quot;media_type&quot;: &quot;text/csv&quot;,
+        &quot;bytes&quot;: 4821,
+        &quot;sha256&quot;: &quot;sha256:&lt;64 lowercase hex&gt;&quot;
+      },
+      {
+        &quot;id&quot;: &quot;artifact-02&quot;,
+        &quot;role&quot;: &quot;supporting&quot;,
+        &quot;repo_slot&quot;: &quot;repo-01&quot;,
+        &quot;original_path&quot;: &quot;evidence/resume-debug.log&quot;,
+        &quot;archive_path&quot;: &quot;artifacts/repo-01/evidence/resume-debug.log&quot;,
+        &quot;media_type&quot;: &quot;text/plain&quot;,
+        &quot;bytes&quot;: 2911,
+        &quot;sha256&quot;: &quot;sha256:&lt;64 lowercase hex&gt;&quot;
+      }
+    ]
+  },
+  &quot;missing&quot;: [],
+  &quot;content_digest&quot;: &quot;sha256:&lt;64 lowercase hex&gt;&quot;
+}
+</code></pre>
+<p>The example digest values are placeholders. The format contract defines them as lowercase SHA-256.
+<code>content_digest</code> is derived with a format-version-specific canonical encoder over the sorted table
+of content paths, sizes, and individual digests; it excludes <code>manifest.json</code> to avoid a recursive
+hash. Publish golden test vectors with the shared schema so another implementation can create a
+byte-compatible identity without using Mission Control&#x27;s TypeScript code.</p>
+<p>The manifest rules are:</p>
+<ul>
+<li>The producer and archive ids in the manifest must match the generated directory components. Their
+pair is the archive key used by routes and SQLite.</li>
+<li><code>producer.label</code> is optional and unverified. Absolute usernames, home paths, task ids, session ids,
+and worktree paths are not part of the portable manifest.</li>
+<li><code>archive.capture_status</code> is <code>complete</code> or <code>partial</code>. A partial archive lists structured entries in
+<code>missing</code>, each with a kind, expected source, and safe reason. <code>unreadable</code> is an index state for a
+bundle whose manifest cannot be accepted, not a value a manifest can claim for itself.</li>
+<li>Repository slots are generated. Repository labels and commit ids are informational; no remote or
+checkout must exist to read the archive.</li>
+<li><code>content.primary_artifact_id</code> must select exactly one HTML entry with role <code>primary_report</code> for a
+complete archive. Other roles are <code>report_companion</code> and <code>supporting</code>. A partial archive may set
+the primary id to null and must explain the missing report.</li>
+<li>Every archive path uses normalized POSIX separators, is relative to the bundle, and passes the same
+containment and symlink checks during creation, reconciliation, read, open, and delete.</li>
+<li>HTML fragment links and links among report-directory companions stay navigable. In the Scouts
+preview, the existing link bridge resolves only a matching report companion or generated artifact
+id; every unclaimed link remains inert.</li>
+<li>Unknown top-level or nested fields do not authorize behavior. Readers may preserve and ignore them
+within a known format version; unknown newer format versions stay visible as unreadable.</li>
+</ul>
+<p><code>report/report.html</code> is the canonical answer and contains no required machine-readable metadata.
+Metadata belongs in the manifest so the report remains ordinary HTML when opened elsewhere. Its
+first screen carries the title, question, and finding; evidence and limits follow. Static HTML,
+inline CSS, inline SVG, fragment links, and <code>data:</code> images are allowed. JavaScript, external URLs,
+forms, executable embeds, meta refresh, and content that only appears after runtime execution are
+rejected. The Scouts UI renders it with the same sandbox and CSP as the existing Files preview.</p>
+<p>The indexer extracts visible text with a nonexecuting server-side HTML parser after removing style,
+SVG metadata, and hidden content. It never loads the page, follows a link, or evaluates markup. The
+bounded manifest summary provides a useful list snippet even if full-text extraction later fails.</p>
+<p>The daemon stores its opaque cryptographically random producer id in
+<code>$STATE_DIR/scout-producer.json</code>, outside SQLite and outside the syncable <code>scouts/</code> directory, and
+generates a fresh random archive id for every scout. Losing that small local identity file creates a
+new producer namespace for future scouts but does not orphan or rename existing bundles. The
+producer and archive pair is the global archive key.
+Independent users therefore write to different namespaces; copying the same immutable bundle twice
+is idempotent. Mission Control never overwrites an existing final archive path. If external tools
+mutate a ready key or produce two candidates claiming the same key with different digests, the
+reconciler marks the key unreadable instead of silently choosing content. Producer display labels
+are optional, informational, and never trusted as identity.</p>
+<p>Producer ids, archive ids, and internal repo slots are generated values. Operator and agent text
+never becomes a directory component. Original relative paths live in the manifest and are recreated
+only below a generated repository slot after containment checks. The reconciler discovers valid
+two-level bundles regardless of whether they arrived through Mission Control, Finder, <code>cp</code>, a cloud
+drive, or another synchronization tool.</p>
+<h3 id="disposable-sqlite-index">Disposable SQLite index</h3>
+<p>Add additive tables beside their migration path:</p>
+<ul>
+<li><code>scout_archives</code>: composite archive key, producer id, archive id, append-only format version,
+bundle digest, frozen manifest-derived display fields, status (<code>ready</code>, <code>partial</code>, <code>unreadable</code>),
+relative bundle path, manifest fingerprint, counts, bytes, error, last seen reconciliation epoch,
+and timestamps.</li>
+<li><code>scout_artifacts</code>: archive key, generated artifact id, repository slot, original relative path,
+kind, media type, bytes, SHA-256, and deletion marker.</li>
+<li><code>scout_search_segments</code>: archive key, ordinal, source kind, and normalized text used by bounded
+literal search. This keeps full HTML report search independent of the compact archive summary row
+without assuming FTS5 is compiled into every shipped SQLite.</li>
+<li><code>scout_capture_jobs</code>: local operation key, source locators, and capture status for unfinished
+Mission Control tasks. These rows coordinate capture only and are not needed to read completed
+bundles imported from any producer.</li>
+</ul>
+<p>Index status and completion time, producer, repository, and artifact ownership. Completed archive
+rows have no foreign keys to tasks or sessions and no cascade behavior. Search is a local scan over
+bounded segments with a result limit and cursor; do not add an optional SQLite extension as a
+startup requirement.</p>
+<p>The manifest format version and status values are append-only persisted identifiers. Unknown newer
+formats stay listed as unreadable rather than being parsed as the current format.</p>
+<h3 id="automatic-incremental-reconciliation">Automatic incremental reconciliation</h3>
+<p>The daemon starts serving its normal API, then launches one serialized reconciliation loop. Each
+pass walks candidate producer and archive directories while excluding <code>.staging</code>, <code>.trash</code>,
+symlinks, and unexpected depth. It compares relative path plus the manifest size and nanosecond
+modification time with the stored fingerprint. Unchanged scouts skip report, artifact, and search
+parsing. New or changed candidates receive complete validation and replace their derived
+rows in one transaction. Indexed paths not observed in a complete pass are removed from the cache.</p>
+<p>Run this pass at bootstrap, after a debounced filesystem watch hint, and on a jittered 60-second
+cadence. Coalesce overlapping triggers and emit one <code>scout_archive_changed</code> event after a batch, not
+one event per file. A wiped database simply has no fingerprints, so every valid bundle is indexed
+in the background once. There is no reindex prompt, settings action, or blocking startup migration.</p>
+<p>Filesystem synchronization may expose a directory before all payload files arrive. A new or changed
+candidate must remain fingerprint-stable across two observations before digest verification. A
+missing payload or temporary digest mismatch stays pending and retries rather than flashing a
+corrupt record. Once stable, an invalid schema, traversal, unsupported version, or digest conflict is
+listed as unreadable with a safe diagnostic. Completed bundles are immutable; mutation creates a
+new archive id instead of rewriting history.</p>
+<h3 id="crash-recovery">Crash recovery</h3>
+<ul>
+<li>The operation key is stable for one task and work episode, so MCP retries and lost HTTP responses
+return the same archive.</li>
+<li>A valid final directory without an index row is discovered and indexed by reconciliation.</li>
+<li>A staging directory is resumed when its source locators remain valid; otherwise it becomes a
+self-describing failed or partial bundle rather than being discarded.</li>
+<li>A cache row whose bundle disappears is removed after a complete discovery pass. If an external
+sync later restores the bundle, it is indexed again automatically.</li>
+<li>Deletion atomically moves the bundle under <code>.trash</code>, removes derived rows, and then removes the
+trash entry. Reconciliation finishes an interrupted deletion. An external synchronization tool
+may restore a locally deleted archive; Mission Control does not publish portable tombstones.</li>
+<li>No automatic retention sweep touches a ready archive. Ready bundles remain until explicit deletion.</li>
+</ul>
+<h2 id="http-and-live-synchronization">HTTP and live synchronization</h2>
+<p>Add shared request and response types for:</p>
+<pre><code class="language-text">GET    /api/scouts?q=&amp;producer=&amp;repo=&amp;agent=&amp;state=&amp;from=&amp;to=&amp;cursor=&amp;limit=
+GET    /api/scouts/:archiveKey
+GET    /api/scouts/:archiveKey/artifacts/:artifactId
+POST   /api/scouts/:archiveKey/artifacts/:artifactId/open
+DELETE /api/scouts/:archiveKey
+POST   /mcp/scouts/submit
+</code></pre>
+<p>The list route returns compact summaries and snippets. Detail returns manifest-derived provenance,
+completeness, primary report identity, and supporting artifact metadata, but not artifact bodies.
+Artifact routes serve the HTML report and supporting files through generated ids and resolve the
+stored relative path beneath the verified archive root. Reads never accept an arbitrary path. Delete
+requires <code>{ &quot;confirmArchiveKey&quot;: &quot;...&quot; }</code> and
+rejects a key that does not exactly match the route parameter before resolving the generated bundle
+path.</p>
+<p>Historical archives do not belong in the SSE snapshot. Add a lightweight
+<code>scout_archive_changed</code> invalidation event and a browser revision counter. A mounted Scouts page
+refetches its current bounded query after the reconciler commits a changed batch; reconnect
+increments the same counter. The daemon watches and scans the filesystem, while the browser keeps
+one event stream and no polling loop.</p>
+<h2 id="repository-changes">Repository changes</h2>
+<table><thead><tr><th>Area</th><th>Planned change</th></tr></thead><tbody><tr><td><code>package.json</code> and lockfile</td><td>Add one server-only, nonexecuting standards-based HTML parser for validation and visible-text extraction; do not use Electron or a browser to index reports</td></tr><tr><td><code>src/shared/types.ts</code> and a focused <code>src/shared/scouts.ts</code></td><td>Portable manifest, producer, archive key, artifact, summary, detail, completeness, format, and search types; append-only persisted tuples</td></tr><tr><td><code>src/shared/protocol.ts</code></td><td>Strict search, delete, open, and MCP submission schemas</td></tr><tr><td><code>src/server/config.ts</code></td><td>Export the scout library path, opaque local producer identity, reconciliation cadence, and test overrides under <code>STATE_DIR</code></td></tr><tr><td><code>src/server/db.ts</code></td><td>Rebuildable index schema, capture-job ledger, additive migration, readers/writers, indexes, and old-database upgrade tests</td></tr><tr><td><code>src/server/scouts/</code></td><td>Store, capture manager, reconciler, static HTML validator and text extractor, submitted artifact copier, imported manifest verification, recovery, and deletion</td></tr><tr><td><code>src/server/mission-mcp.ts</code> and <code>src/mcp/server.ts</code></td><td>Register and expose <code>submit_scout_artifacts</code>; keep duplicate validation in sync</td></tr><tr><td><code>src/server/dispatcher.ts</code>, <code>src/server/tasks.ts</code>, and <code>skills/html-report/SKILL.md</code></td><td>Require the HTML output contract and MCP tool for every scout, keep the optional skill aligned, and make archive readiness precede completion and reclaim</td></tr><tr><td><code>src/server/routes.ts</code></td><td>Thin validated search, detail, artifact, open, delete, and MCP adapters</td></tr><tr><td><code>src/server/registry.ts</code> and <code>src/web/useEventStream.ts</code></td><td>Emit and exhaustively reduce the archive invalidation revision without snapshotting history</td></tr><tr><td><code>src/web/workflows/useWorkflowRoute.ts</code></td><td>Add stable Scouts list and detail routes, filters, serialization, and parsing</td></tr><tr><td><code>src/web/components/ScoutsPage.tsx</code> and focused helpers</td><td>Search rail, sandboxed primary report, evidence spine, supporting artifact viewer, failures, and deletion</td></tr><tr><td><code>src/web/App.tsx</code>, <code>AppPageShell.tsx</code>, keybindings, palette</td><td>Add the chosen entry point, page slot, deep links, and Open Scouts action</td></tr><tr><td><code>src/web/styles.css</code></td><td>Three-pane dossier layout, responsive fold, focus, preview, and semantic completeness states</td></tr><tr><td><code>docs/README.md</code> and a new product reference</td><td>Document storage layout, portable copying, automatic discovery cadence, contents, limits, search, deletion, recovery, and privacy</td></tr></tbody></table>
+<h2 id="security-and-privacy">Security and privacy</h2>
+<ul>
+<li>Everything remains loopback-only and under the existing daemon authentication boundary.</li>
+<li>The daemon is the only SQLite writer. Its capture path is the only Mission Control archive writer,
+but external tools may place immutable bundles in the library for read-only discovery.</li>
+<li>Capture only real regular files beneath verified worktree realpaths. Reject symlinks before and
+after resolution, special files, traversal, null bytes, and arbitrary absolute paths.</li>
+<li>Treat every externally copied bundle as untrusted input. Strictly validate manifest schema,
+version, generated identities, limits, digests, and containment before indexing it.</li>
+<li>Never trust a manifest read from disk to authorize a path. Join generated index identity to a
+server-verified archive root and verify containment on every read and open.</li>
+<li>HTML previews remain sandboxed with scripts unable to execute in the dashboard origin. Archived
+Markdown uses the existing safe link transformation.</li>
+<li>Search snippets are plain data and follow normal React escaping.</li>
+<li>The archive is local but may contain sensitive investigation content. The UI and documentation
+name the exact directory, state that it is not encrypted by Mission Control, explain that an
+operator-controlled sync tool may copy its contents elsewhere, and make deletion explicit.</li>
+<li>Producer labels and provenance from foreign manifests are descriptive claims, not authenticated
+user identities. The initial design does not add signing or trust badges.</li>
+<li>Do not commit archive contents, screenshots, reports, or generated evidence to the repository.</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<h3 id="fast-and-integration-tests">Fast and integration tests</h3>
+<ul>
+<li>Fresh schema and pre-feature upgrade tests open safely and preserve all existing task history.</li>
+<li>Portable-format tests cover artifact-only manifest v1 fixtures, primary-report selection,
+unknown-field handling, partial evidence, path normalization, digest verification, and published
+golden digest vectors.</li>
+<li>Store tests cover operation-key idempotency, pagination, literal search across every segment kind,
+filters, task deletion independence, nullable provenance, producer namespaces, unknown format
+versions, and interrupted deletion.</li>
+<li>Capture tests cover required HTML submission, report-directory copying, companion and explicit
+supporting files, missing or ambiguous report recovery, script and external-resource refusal,
+multi-repo artifacts, ignored files, symlink and traversal refusal, changing files, limits,
+digests, atomic publication, and crash recovery at each boundary.</li>
+<li>Task tests prove a scout cannot become done or be reclaimed before its archive is ready, while a
+ship task&#x27;s byte-for-byte completion behavior stays unchanged.</li>
+<li>MCP tests prove attribution, kind refusal, duplicate schema coverage, preapproval, idempotent
+replay, and no caller-controlled archive identity or destination.</li>
+<li>Reconciler tests cover nonblocking bootstrap, unchanged fingerprint skips, new and changed bundle
+indexing, missing-path pruning, an empty-database rebuild, trigger coalescing, recurring cadence,
+watch hints, partially copied bundle settling, exact-copy deduplication, producer separation, and
+same-key digest conflict refusal.</li>
+<li>Route tests cover bounded search, missing, partial, foreign, and unreadable bundles, artifact
+content headers, containment, open-target refusal, archive-key confirmation, unreadable-bundle
+deletion, and local-only deletion.</li>
+<li>Router, keybinding, palette, static render, accessibility, responsive-source, SSE invalidation,
+and AppPageShell exhaustiveness tests move with the new page.</li>
+</ul>
+<h3 id="required-playwright-coverage">Required Playwright coverage</h3>
+<p>Add <code>e2e/specs/scout-archive.spec.ts</code> against the built dashboard and fake agents:</p>
+<ol>
+<li>Dispatch a scout with the global HTML Report skill disabled and prove its prompt still requires a
+self-contained <code>docs/reports/&lt;slug&gt;/report.html</code> plus optional supporting artifacts without
+opening a pull request.</li>
+<li>Complete it and prove the task does not close until the archive is ready.</li>
+<li>Reclaim or remove the task and stop the session.</li>
+<li>Open Scouts through the chosen permanent UI entry point, search for visible text found only in the
+HTML report and for a supporting artifact path, and open the stable detail route.</li>
+<li>Read the sandboxed report as the default scout view, preview each supported artifact, copy the
+bundle path, and prove report JavaScript and external requests cannot execute.</li>
+<li>Reload the daemon and prove unchanged bundles are not reindexed while the same deep link and
+search results survive.</li>
+<li>Copy a valid foreign-producer bundle into the library after the page is open and prove it appears
+automatically after reconciliation without browser polling or a user action.</li>
+<li>Stop the daemon, delete only the SQLite database, restart, and prove the background reconciler
+reconstructs search and detail access from the bundle directory.</li>
+<li>Seed a partially transferred bundle, finish copying its payload, and prove it becomes visible
+only after it settles and validates.</li>
+<li>Seed a partial archive and prove it is amber, names the missing evidence, and is never presented
+as complete.</li>
+<li>Delete from both the selected-scout header and archive-row overflow, prove <code>DELETE</code> and the
+composite key are required, and prove success selects the next result without clearing filters.</li>
+<li>Force one deletion failure and prove the modal stays open with the scout still readable; then
+delete successfully and prove another archive and its source task are untouched.</li>
+</ol>
+<p>Run the focused unit and HTTP tests first, then the required gates:</p>
+<pre><code class="language-sh">npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e -- e2e/specs/scout-archive.spec.ts e2e/specs/topbar-one-row.spec.ts
+</code></pre>
+<h2 id="rollout-and-non-goals">Rollout and non-goals</h2>
+<p>Ship the archive for newly completed scouts. Do not attempt to import old terminal task rows or scan
+every harness transcript on first startup: the historical mapping from a transcript to a particular
+scout is not reliable enough to manufacture provenance. Existing scout tasks still running when the
+feature first starts can be archived when they submit or complete. Independently produced valid
+bundles copied into the scout library are in scope immediately and require no original task row.</p>
+<p>Out of scope:</p>
+<ul>
+<li>implementing a cloud provider, peer protocol, account system, or remote search service inside
+Mission Control. Portable bundles and compatibility with operator-selected filesystem sync are in
+scope;</li>
+<li>automatic model-written summaries after the scout has ended;</li>
+<li>archiving ship tasks, workflow evidence, ensemble artifacts, or arbitrary terminal sessions;</li>
+<li>editing an immutable historical report in place;</li>
+<li>restoring a worktree from a scout archive; and</li>
+<li>archiving conversations, hidden reasoning, system prompts, or vendor-specific transcript internals.</li>
+</ul>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>Every normal <code>scout</code> completion publishes one ready archive before its task becomes terminal.</li>
+<li>The archive remains readable after session removal, worktree reclaim, task deletion, daemon
+restart, SQLite deletion, and restoration into a fresh Mission Control state directory.</li>
+<li>A complete record includes one self-contained HTML report, its report-directory companions, every
+explicitly submitted supporting artifact, a manifest, honest completeness, and digests. It does
+not include conversation content.</li>
+<li>Normal bootstrap and recurring reconciliation index only new or changed bundles; they never parse
+unchanged report or artifact bodies.</li>
+<li>A valid foreign-producer bundle copied into the library appears automatically within one
+reconciliation cadence with no import or reindex prompt.</li>
+<li>Independent producer namespaces prevent normal cross-user collisions, exact copies deduplicate,
+and a same-key different-digest bundle is never silently overwritten.</li>
+<li>Search finds visible HTML report text, metadata, and artifact paths without loading history into
+the SSE snapshot or browser polling.</li>
+<li>The dedicated UI has a stable list and detail route, keyboard-accessible search, internal artifact
+previews, a copyable bundle path, visible partial and corrupt states, and <strong>Delete scout</strong> actions
+in both the selected-scout header and row overflow. Confirmation, failure, focus restoration, and
+post-delete selection are keyboard accessible.</li>
+<li>Ship tasks and machines with no scouts behave as before except for the chosen empty-state entry
+point.</li>
+<li>Mission Control never sends archive data over the network. Data leaves the local library only
+through an explicit open, copy, or operator-configured external synchronization tool.</li>
+</ul>
+<h2 id="approved-decisions">Approved decisions</h2>
+<ul>
+<li><strong>Supporting artifacts:</strong> capture the required HTML report directory plus only additional files
+explicitly named by the scout. Do not infer the deliverable from all worktree changes.</li>
+<li><strong>Retention:</strong> keep every ready archive until the operator explicitly deletes it from the Scouts
+UI. Do not add automatic time or size eviction.</li>
+<li><strong>Permanent entry point:</strong> add a top-level <strong>Scouts</strong> segment, stable route, global action, and
+command-palette page result.</li>
+<li><strong>Canonical container:</strong> use a versioned directory bundle containing <code>manifest.json</code>,
+<code>report/report.html</code>, its bounded companion files, and <code>artifacts/</code> as ordinary files.</li>
+<li><strong>Implementation follow-up:</strong> decompose this approved plan into merge-aware implementation phases
+and schedule dependency-linked Mission Control tasks.</li>
+</ul></article>
+  </div>
+  <footer><span>Source of truth: plan.md</span><span>Offline render · no external requests</span></footer>
+</body>
+</html>

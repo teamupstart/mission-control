@@ -1,6 +1,6 @@
 ---
 name: pull-request
-description: Use whenever you are preparing, opening, or reporting a pull request for a Mission Control session. Write a specific, reviewable PR description split into a For Humans section carrying the why, the tradeoffs, the known gaps, the evidence, and the recommended follow-ups, and a For Agents section carrying the design decisions and implementation detail.
+description: Use whenever you are preparing, opening, or reporting a pull request for a Mission Control session - once per repository you changed, when the work spans several. Write a specific, reviewable PR description split into a For Humans section carrying the why, the tradeoffs, the known gaps, the evidence, and the recommended follow-ups, and a For Agents section carrying the design decisions and implementation detail.
 metadata:
   mission:
     category: shipping
@@ -12,6 +12,21 @@ metadata:
 Use this skill whenever this Mission Control session prepares, opens, or reports a pull
 request, including when you write the description before running `gh pr create`. Treat
 the pull request as the handoff to a reviewer, not as a log of commands you ran.
+
+## One pull request per repository you changed
+
+Nearly every session works in one repository and opens one pull request, and everything below
+describes that. A session dispatched across several repositories is the exception, and the
+rule for it is: **one pull request per repository whose worktree you actually changed, and
+none for a repository you left alone.** They are not one change split up - each is reviewed on
+its own, gated on its own, and merged on its own, so each needs a description that stands by
+itself.
+
+Apply this whole skill once per repository. Write each description for a reviewer who is
+looking at that repository alone: name the cross-repository work in `### Why`, and say plainly
+which sibling pull requests it lands with and what breaks if one merges without the others.
+Everything else - `### What changed`, the tradeoffs, the evidence - is about the slice of the
+change in front of them, not the whole set.
 
 ## Every description has exactly two top-level sections
 
@@ -52,7 +67,8 @@ below is its own `###` subsection, in this order.
    subsection should understand the point of the pull request.
 2. **What changed** - a concise description of the total feature, in the user's terms. Name
    the user-visible or engineering behavior and the surface it lands on. A list of changed
-   files is not a description, and neither is a restatement of the diff.
+   files is not a description, and neither is a restatement of the diff. When the work spans
+   several repositories, this is what changed *here*; the whole feature belongs in **Why**.
 3. **Tradeoffs** - what the change deliberately gives up, and the alternatives you rejected.
    State them plainly rather than defending them.
 4. **Known gaps** - what the change does not cover. Unhandled cases, surfaces left untouched,
@@ -88,3 +104,7 @@ Review the final title and description for specificity. A reviewer must be able 
 verified; an agent must be able to read `## For Agents` and understand how it works. Open a
 new pull request with that description. Before reporting an existing one, verify its current
 description carries both sections to the same standard and update it if it does not.
+
+Do this for each repository in turn, and report every pull request you opened with the
+repository it is in. A repository you changed and did not open one for is unshipped work, and
+a report naming one url for a change that spans three is a report of a third of it.

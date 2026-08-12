@@ -64,6 +64,12 @@ export interface PrHandoffInput {
   runId: string;
   originalGoal: string;
   skillCommand: string;
+  /**
+   * The repository this run reviews, or null when it is the session's own checkout. Same
+   * reason `SessionActionPacketOrigin` carries one: the handoff asks for a pull request, and
+   * a session running two reviews must be told which repository's.
+   */
+  repoRoot: string | null;
 }
 
 /**
@@ -93,7 +99,22 @@ export type RenderedSessionAction =
  * a per-delivery fact can live.
  */
 export type SessionActionPacketOrigin =
-  | { kind: "run"; workflowName: string; workflowVersion: number; runId: string }
+  | {
+      kind: "run";
+      workflowName: string;
+      workflowVersion: number;
+      runId: string;
+      /**
+       * The repository this run reviews, or null when it is the session's own checkout.
+       *
+       * A run is one repository, and a multi-repo task's session runs several of them at once
+       * into ONE pane. Without this the two packets differ only by a run id, and an action
+       * that says "open the pull request for the work you just had reviewed" cannot be told
+       * which work that was. Null everywhere else, and the line is then omitted entirely, so
+       * a single-repo packet is byte-identical to what it always was.
+       */
+      repoRoot: string | null;
+    }
   | { kind: "session"; sessionId: string };
 
 export interface SessionActionPacketInput {
@@ -404,6 +425,9 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
       ? [
         `Workflow: ${sanitizeWorkflowFeedback(input.origin.workflowName)} v${input.origin.workflowVersion}`,
         `Run: ${input.origin.runId}`,
+        ...(input.origin.repoRoot
+          ? [`Repository: ${sanitizeWorkflowFeedback(input.origin.repoRoot)}`]
+          : []),
       ]
       : [`Session: ${sanitizeWorkflowFeedback(input.origin.sessionId)}`]),
     "",
@@ -451,9 +475,11 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     "",
     `Workflow: ${bounded(input.workflowName)} v${input.workflowVersion}`,
     `Run: ${input.runId}`,
+    ...(input.repoRoot ? [`Repository: ${bounded(input.repoRoot)}`] : []),
   ].join("\n");
-  const instruction =
-    "Use the invoked pull-request skill to commit all reviewed work, push it, and open the pull request with a reviewer-ready description and concrete proof.";
+  const instruction = input.repoRoot
+    ? "Use the invoked pull-request skill to commit the reviewed work in the repository named above, push it, and open that repository's pull request with a reviewer-ready description and concrete proof. Leave the task's other repositories alone; each has its own review and its own pull request."
+    : "Use the invoked pull-request skill to commit all reviewed work, push it, and open the pull request with a reviewer-ready description and concrete proof.";
   return {
     ...finalizePacket(body, truncated, instruction),
     failedPersonaCount: 0,

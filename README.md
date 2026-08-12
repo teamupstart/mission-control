@@ -41,6 +41,12 @@ request and spending its own repair budget - so a finding in one repo restarts t
 review alone and never holds up a sibling's merge. A repo the task never touched gets no run
 at all. The card shows one workflow chip per review, each naming its repository.
 
+Everything typed at the agent is per repository too. Each review's packets name the repository
+they are about, and Foreman's review follow-through - the nudge that puts a parked session back
+on unresolved comments or a red CI - tracks each pull request separately, so one repository's
+feedback is never mistaken for another's or lost behind it. They share the pane, so they take
+turns in it: one instruction at a time, never two in a turn expecting neither.
+
 ![Mission Control dispatch](docs/images/dispatch.png)
 
 ## Build the operating system around the work

@@ -7,8 +7,14 @@ Prepare the reviewed work as a reviewer-ready pull request.
 Use the invoked pull-request skill to turn the work this workflow just reviewed into one open
 pull request. Commit everything that was reviewed, push the branch, and open the pull request.
 
-Do this once. If an open pull request already exists for this branch and its head matches the
-work you just pushed, update that pull request rather than opening a second one.
+This is about one repository and one branch: the repository named in the packet above, or the
+one you are standing in when it names none. If an open pull request already exists for that
+branch and its head matches the work you just pushed, update that pull request rather than
+opening a second one for it.
+
+A task that changed several repositories gets one review, and one of these, per repository -
+so a second packet naming a different repository is not a repeat of this one. Answer each in
+its own repository, and leave the others to theirs.
 
 ## What the description has to contain
 
@@ -31,5 +37,7 @@ assumed. A list of changed files is not a description. Neither is a restatement 
   never run.
 - Do not claim evidence that was not produced. "Should work" is not proof.
 - Do not merge, and do not ask for the pull request to be merged. Opening it is the whole job;
-  the workflow's final gate reviews it afterwards.
+  this run's final gate reviews it afterwards.
+- Do not fold another repository's changes into this pull request, and do not skip a repository
+  because this one is open. Each is reviewed, gated and merged on its own.
 - Do not add an agent as a commit co-author.

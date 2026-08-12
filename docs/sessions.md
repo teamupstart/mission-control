@@ -28,6 +28,14 @@ This keeps the **PR chip** honest without a terminal session sharing the checkou
 all, and the PR poller finds a session's pull request by asking
 `gh pr list --head <branch>`. Capturing either fact only once would leave live changes invisible.
 
+The chip is that one pull request: the one on the branch of the checkout the session is
+standing in. A session running a
+[multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) owns one in each
+repository it changed, and the poller asks `gh` inside every attached worktree as well - still
+one call per checkout. Those do not crowd the chip, which keeps naming the session's own
+checkout; they appear as the card's per-repository lines, and it is those the completion
+quorum and Foreman's [PR follow-through](work-queues.md#keeping-a-pr-on-track) read.
+
 ### The title bar stays compact at half-screen
 
 The **fleet pulse** is one readout, not a row of pills: the connection state leads it

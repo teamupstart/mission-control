@@ -267,6 +267,16 @@ A task whose pull request merged ends as **done**, with that pull request as its
 instead of as `failed`. This is **not tied to YOLO mode** - a pull request you merged
 yourself on GitHub lands its task exactly the same way.
 
+Everything in this section is written about the task's pull request, singular, which is what
+a task attached to one repository has. A
+[multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) reads the same
+way with one substitution: **every** rule below that turns on "its pull request merged" turns
+instead on *every repository it changed* having merged. One sibling landing settles nothing
+on its own, in any of the situations below - not the finished-episode conclusion, not the
+departed-agent one, and not the polled-by-url upgrade. A repository whose branch never moved
+off the commit it was cut at is not one it changed and holds nothing up. The outcome then
+names every pull request that landed, and the outcome link stays the primary repository's.
+
 It matters because `failed` means "ended with no outcome recorded", and a failed task
 reports as a *stopped* blocker - so every task declared to wait on it deadlocks behind
 work that actually shipped. A task left unsettled costs more than a stale row, too: a live
@@ -312,7 +322,7 @@ had already been written off:
 
 | Status when the merge is observed | What happens |
 |---|---|
-| `running`, `dispatching`, agent gone | **done**, with the pull request as its outcome |
+| `running`, `dispatching`, agent gone | **done**, with the pull request as its outcome - or, for a multi-repo task, nothing until the last changed repository's has merged too |
 | `running`, `dispatching`, agent still here | nothing yet - the narrower rule above owns it, because the agent may be mid-turn |
 | `failed`, `cancelled` | **upgraded to done**: the error is cleared and the pull request becomes the outcome |
 | `done` | untouched - your outcome is never overwritten |

@@ -1787,6 +1787,36 @@ export interface TaskRepoPrSummary {
   prState: string | null;
   /** When that pull request was observed merged, or null. */
   mergedAt: number | null;
+  /**
+   * The live feedback on this repository's pull request, or null when the last poll did not
+   * see one OPEN here.
+   *
+   * The three fields beside it are DURABLE - the association this task made with a pull
+   * request, which is never retracted once made, because that is what a card and the
+   * completion quorum need. This one is the opposite and deliberately so: it is the same
+   * observation `Session.prChecks`/`Session.inspector` carry for the session's own checkout,
+   * made per repository, and it is retracted the moment a poll stops seeing an open pull
+   * request there. Foreman's review follow-through reads it, and a nudge about a pull request
+   * that has since been closed is exactly the mistake the retraction prevents.
+   */
+  feedback: RepoPrFeedback | null;
+}
+
+/**
+ * What Foreman's review follow-through reads about ONE pull request of a multi-repo task.
+ *
+ * The per-repository twin of the `Session` scalars a single-repo session is followed up
+ * through (`prNumber`, `prChecks`, `inspector`), carrying the same facts under the same
+ * meanings so one decision core can read either. Its presence means the poll saw this
+ * repository's pull request open; see `TaskRepoPrSummary.feedback`.
+ */
+export interface RepoPrFeedback {
+  /** The pull request's number, for `gh` commands scoped to its own repository. */
+  prNumber: number;
+  /** That pull request's CI rollup as of the last poll, or null when it reported none. */
+  prChecks: PrChecks | null;
+  /** The Inspector's state for it, or null when the Inspector never adopted it. */
+  inspector: InspectorSummary | null;
 }
 
 export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";

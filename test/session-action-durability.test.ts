@@ -642,7 +642,7 @@ test("an over-long prompt is refused at authoring and at the published snapshot"
 
 test("a packet that cannot be sent whole is REFUSED, never truncated to a prefix", () => {
   const packet = renderSessionAction({
-    origin: { kind: "run", workflowName: "Review", workflowVersion: 3, runId: "run-1" },
+    origin: { kind: "run", workflowName: "Review", workflowVersion: 3, runId: "run-1", repoRoot: null },
     actionName: "Tidy",
     promptMarkdown: "# Tidy\n\nRemove the scratch file.\n",
     skillCommand: null,
@@ -657,7 +657,7 @@ test("a packet that cannot be sent whole is REFUSED, never truncated to a prefix
 
   // A version minted by some other build, carrying a prompt this one cannot send whole.
   const oversize = renderSessionAction({
-    origin: { kind: "run", workflowName: "Review", workflowVersion: 3, runId: "run-1" },
+    origin: { kind: "run", workflowName: "Review", workflowVersion: 3, runId: "run-1", repoRoot: null },
     actionName: "Tidy",
     promptMarkdown: "y".repeat(WORKFLOW_LIMITS.sessionActionPacketBytes + 1),
     skillCommand: null,

@@ -2242,6 +2242,7 @@ export class WorkflowManager {
       runId: run.id,
       originalGoal: this.originalGoal(run.id),
       skillCommand: skill.command,
+      repoRoot: binding.repoRoot || null,
     });
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
@@ -4155,6 +4156,10 @@ export class WorkflowManager {
         workflowName: this.store.runSummary(run.id)?.workflowName ?? "Workflow",
         workflowVersion: version.version,
         runId: run.id,
+        // Empty means the session's own checkout - see `workflow_bindings.repo_root` - and
+        // the packet then names no repository at all, exactly as it did before runs could
+        // be per-repository.
+        repoRoot: binding.repoRoot || null,
       },
       actionName: snapshot.name,
       promptMarkdown: snapshot.promptMarkdown,

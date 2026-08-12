@@ -122,8 +122,22 @@ test("a silent pill does not take the multi-repo pull-request row with it", () =
   // `silent`) draws an empty stub over the row instead of a heading.
   const summary = mkTaskSummary({
     repoPrs: [
-      { repoRoot: "/repos/demo", primary: true, prUrl: null, prState: null, mergedAt: null },
-      { repoRoot: "/repos/second", primary: false, prUrl: null, prState: null, mergedAt: null },
+      {
+        repoRoot: "/repos/demo",
+        primary: true,
+        prUrl: null,
+        prState: null,
+        mergedAt: null,
+        feedback: null,
+      },
+      {
+        repoRoot: "/repos/second",
+        primary: false,
+        prUrl: null,
+        prState: null,
+        mergedAt: null,
+        feedback: null,
+      },
     ],
   });
   const session = mkSession({ name: summary.title, task: summary });

@@ -30,6 +30,7 @@ const REPO_PRS: TaskRepoPrSummary[] = [
     prUrl: "https://github.com/example/api/pull/10",
     prState: "merged",
     mergedAt: 5_000,
+    feedback: null,
   },
   {
     repoRoot: "/Users/dev/work/web",
@@ -37,6 +38,7 @@ const REPO_PRS: TaskRepoPrSummary[] = [
     prUrl: "https://github.com/example/web/pull/20",
     prState: "open",
     mergedAt: null,
+    feedback: null,
   },
   {
     repoRoot: "/Users/dev/work/docs",
@@ -44,6 +46,7 @@ const REPO_PRS: TaskRepoPrSummary[] = [
     prUrl: null,
     prState: null,
     mergedAt: null,
+    feedback: null,
   },
 ];
 

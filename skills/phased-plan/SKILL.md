@@ -48,6 +48,28 @@ a valid, testable state. A phase is an implementation and merge unit, not a chap
 Number phase files in a topological presentation order. Numbering does not imply serialization:
 independent `phase-2-*` and `phase-3-*` files may both depend only on Phase 1 and run concurrently.
 
+### A phase that has to land in more than one repository
+
+Nearly every plan lives in one repository and every phase produces one pull request; that is the
+case above and it is unchanged. Occasionally a phase cannot be made operable inside one
+repository (a contract and the consumer that has to move with it), and then the phase is still
+**one merge unit**, delivered by one Mission Control task with the other repositories attached to
+it. Its agent works in every attached checkout in one session and opens **one pull request per
+repository it actually changed**; the phase is done when all of them have merged, which is what
+the task waits for. Do not split such a phase into one task per repository: that is two agents
+editing two halves of one contract with no shared context, and each half is unreviewable alone.
+
+Two consequences for the plan you are writing:
+
+- Say so in the phase file. Name every repository the phase touches, and state per repository what
+  lands there and what breaks if it merges without its siblings. The phase's exit criteria cover
+  the whole set.
+- **You cannot schedule it here.** `create_task` files a task in the calling session's repository
+  only. A multi-repo phase must be dispatched from the dashboard with its repositories attached, so
+  schedule the phases you can, and report the multi-repo one by name with the repositories it needs
+  so the human dispatches it deliberately. Never quietly file it as a single-repo task: it would
+  dispatch an agent that can see one side of the change.
+
 ## Write the artifacts beside the source plan
 
 Create these files in the source plan's directory:

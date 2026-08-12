@@ -98,6 +98,13 @@ eligible adopted pull request after the Inspector's required gates are satisfied
 A task is Mission Control's durable unit of requested work. It records the work request
 and, when dispatched, its execution details and outcome.
 
+## [Multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository)
+
+A multi-repo task is a task with secondary repositories attached to its primary one. It
+dispatches as a single session holding a worktree of each, and produces one pull request,
+one review run, and one merge per repository it actually changed - completing only once all
+of them have merged.
+
 ## [Workflow](workflows.md#workflows-and-personas)
 
 A workflow is a versioned, durable process composed from persona, check, and session-action

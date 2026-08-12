@@ -93,7 +93,7 @@ test("a retro packet names the receiving session and claims no workflow run", ()
 
 test("a run's packet still names its workflow and run", () => {
   const packet = renderSessionAction({
-    origin: { kind: "run", workflowName: "Review", workflowVersion: 3, runId: "run-1" },
+    origin: { kind: "run", workflowName: "Review", workflowVersion: 3, runId: "run-1", repoRoot: null },
     actionName: "Tidy",
     promptMarkdown: "# Tidy\n",
     skillCommand: null,
@@ -103,4 +103,43 @@ test("a run's packet still names its workflow and run", () => {
   assert.ok(packet.payload.includes("Workflow: Review v3"));
   assert.ok(packet.payload.includes("Run: run-1"));
   assert.ok(!packet.payload.includes("Session:"));
+});
+
+test("a run reviewing one repository of a multi-repo task names it in the packet", () => {
+  // Two of a session's reviews deliver into ONE pane, so a packet that named only its run id
+  // left the agent to guess which repository the instruction was about - and "open the pull
+  // request for the work you just had reviewed" is unanswerable without it.
+  const packet = renderSessionAction({
+    origin: {
+      kind: "run",
+      workflowName: "Review",
+      workflowVersion: 3,
+      runId: "run-2",
+      repoRoot: "/work/beta",
+    },
+    actionName: "Pull Request",
+    promptMarkdown: "# Pull Request\n",
+    skillCommand: null,
+  });
+  assert.equal(packet.ok, true);
+  if (!packet.ok) return;
+  assert.match(packet.payload, /Repository: \/work\/beta/);
+});
+
+test("a run on the session's own checkout names no repository at all", () => {
+  const packet = renderSessionAction({
+    origin: {
+      kind: "run",
+      workflowName: "Review",
+      workflowVersion: 3,
+      runId: "run-1",
+      repoRoot: null,
+    },
+    actionName: "Tidy",
+    promptMarkdown: "# Tidy\n",
+    skillCommand: null,
+  });
+  assert.equal(packet.ok, true);
+  if (!packet.ok) return;
+  assert.doesNotMatch(packet.payload, /Repository:/);
 });

@@ -49,8 +49,9 @@ CI runs typecheck, tests, build, and bundle smoke tests on Node.js 24 and 26, th
 5. Validate in proportion to the change. UI changes require runtime or visual verification, not diff inspection alone.
 6. New UI features and UI behavior changes require a Playwright spec in `e2e/`. See below.
 7. Commit only task-related files on a feature branch.
+8. A task that attaches more than one repository produces one pull request per repository it changed, and none for a repository it left alone. Each is reviewed, gated, and merged on its own; the task finishes when all of them have merged. See [dispatch and the backlog](docs/dispatch-and-backlog.md#attaching-more-than-one-repository).
 
-When a review workflow passes, do not rerun it to address Inspector feedback. Fix the feedback, resolve conflicts, push, and monitor the existing PR and CI until green.
+When a review workflow passes, do not rerun it to address Inspector feedback. Fix the feedback, resolve conflicts, push, and monitor that pull request and its CI until green - per pull request, so a session holding one in each of several repositories follows through on each.
 
 ## Code style and examples
 
@@ -207,6 +208,6 @@ Treat these paths as controlled:
 - `npm run test:e2e` passes when UI surfaces changed, with a spec covering the new behavior.
 - README and linked technical docs match the implementation.
 - The worktree contains no unrelated edits.
-- Requested PR and CI work is complete before reporting completion.
+- Requested PR and CI work is complete before reporting completion - for every pull request the task opened, one per repository it changed.
 
 Plans belong in `docs/plans/<name>/plan.md`; a written plan is not an implementation.

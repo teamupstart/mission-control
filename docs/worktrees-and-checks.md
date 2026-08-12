@@ -6,6 +6,14 @@ solves this with a pool of pre-warmed git worktrees ("manage worktrees without
 managing worktrees"): each session gets its own isolated tree, and dependencies
 / build cache aren't re-paid every time.
 
+One tree per session, with one exception. A
+[multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) is dispatched
+with a worktree per attached repository - each from that repository's own pool, or a plain
+`git worktree` where it has none - and all of them are handed to one session. Everything on
+this page then applies per tree: each is leased, pinned and reaped on its own. Provisioning is
+all-or-nothing, so a dispatch that cannot cut one of them hands back the ones it already took
+rather than starting an agent with half its repositories.
+
 `make session` makes treehouse a one-command "start a clean session":
 
 ```sh
@@ -54,7 +62,8 @@ that, because `treehouse get` is precisely what fails when the pool is dry.
 It hands back only the leases it can prove are dead, and only its **own**. A tree
 is returned **only** when it is leased to `mission-control` (the holder both `make
 session` and dispatch record), treehouse reports no processes under it, no live
-session's cwd is inside it, no task the harness tracks still records it, it has no
+session's cwd is inside it, no task the harness tracks still records it - including as one of
+a multi-repo task's attached repositories, whose trees no session's cwd is inside - it has no
 uncommitted changes, and origin's default branch already contains its HEAD.
 Anything else - including any uncertainty - leaves the lease alone: a leaked lease
 costs a slot, a wrong reap costs your work.

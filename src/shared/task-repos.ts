@@ -17,7 +17,13 @@
 // `taskRepoRefs` is the only enumeration in the codebase that returns both, and every
 // function here is built on it so nothing can iterate half a task by accident.
 
-import type { Task, TaskRepoEntry, TaskRepoPrSummary, WorktreeProvider } from "./types.ts";
+import type {
+  RepoPrFeedback,
+  Task,
+  TaskRepoEntry,
+  TaskRepoPrSummary,
+  WorktreeProvider,
+} from "./types.ts";
 
 /** Which half of the additive data shape an entry came from. */
 export type TaskRepoRole = "primary" | "secondary";
@@ -91,20 +97,28 @@ export function taskRepoRefs(task: TaskRepoSource): TaskRepoRef[] {
  * live on the task row at all - it lives on the work-episode binding, which is server-side
  * state. This function's job is to put it in the same list as the secondaries, so no surface
  * has to remember that the primary is stored somewhere else.
+ *
+ * `feedbackFor` is passed in for the same reason and answers for the primary and the
+ * secondaries alike: the live observation lives in the registry, keyed on what the poller
+ * asked, and nothing here should know where. It returns null whenever the last poll saw no
+ * open pull request for that repository - see `TaskRepoPrSummary.feedback`.
  */
 export function taskRepoPrSummaries(
   task: TaskRepoSource,
   primaryPr: { prUrl: string | null; prState: string | null; mergedAt: number | null },
+  feedbackFor: (repoRoot: string, prUrl: string | null) => RepoPrFeedback | null,
 ): TaskRepoPrSummary[] {
   if (task.extraRepos.length === 0) return [];
   return taskRepoRefs(task).map((ref) => {
     const entry = ref.role === "primary" ? null : task.extraRepos[ref.position - 1];
+    const prUrl = entry ? entry.prUrl : primaryPr.prUrl;
     return {
       repoRoot: ref.repoRoot,
       primary: ref.role === "primary",
-      prUrl: entry ? entry.prUrl : primaryPr.prUrl,
+      prUrl,
       prState: entry ? entry.prState : primaryPr.prState,
       mergedAt: entry ? entry.mergedAt : primaryPr.mergedAt,
+      feedback: feedbackFor(ref.repoRoot, prUrl),
     };
   });
 }

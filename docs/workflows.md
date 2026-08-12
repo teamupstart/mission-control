@@ -830,6 +830,9 @@ unchanged:
 - Its repair budget is its own. A finding in one repository restarts that repository's graph
   and spends one of that run's rounds; the sibling's rounds are untouched.
 - Its checks run in its own checkout.
+- Every packet it types **names its repository**, so a session receiving two of them in one
+  pane can tell which work each is about. An instruction to open a pull request is the one
+  that most needs it: each run asks for one, in its own repository, and for no other.
 
 Two things are shared, and both are the session itself. The **turn**: all of a conversation's
 reviews deliver into one pane, so at most one repair packet or session action is outstanding
@@ -1091,7 +1094,9 @@ labels the Persona bypass and offers an explicit confirmed restart of the full w
 
 If no adopted PR exists, the published policy waits, offers **Prepare PR in session**, or prepares
 it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate
-itself never pushes or opens a pull request. The offered action prepares the packet under Preview
+itself never pushes or opens a pull request. When the run reviews an attached repository the
+prompt names it and asks for that repository's pull request alone, because a session running
+several reviews receives them all in one pane. The offered action prepares the packet under Preview
 or sends it under Live delivery. Automatic preparation is scheduled only for a Live binding.
 When that handoff opens an already-reviewed clean commit, its durable adoption record pins the PR.
 The record must belong to the bound session, match its exact known repository root, and have been

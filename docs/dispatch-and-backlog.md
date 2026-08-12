@@ -211,8 +211,12 @@ whole dialog.
 sessions. They are durable scheduling constraints, not notes: if any selected dependency
 is incomplete, **Dispatch now** becomes **Schedule after dependencies** and the new task is
 forced into the backlog. Every task or standalone active session completes only when its
-PR is observed **merged**; merely opening its PR does not release dependents, and an
-ordinary **Mark done** does not either. The explicit completion override is the exception:
+PR is observed **merged** - and for a task with
+[several repositories attached](#attaching-more-than-one-repository), when *every*
+repository it changed has; merely opening a PR does not release dependents, and an
+ordinary **Mark done** does not either. A dependency edge itself names the prerequisite's
+primary repository's pull request, but what releases it is the prerequisite's own
+completion, which is the stronger condition. The explicit completion override is the exception:
 use it only when the prerequisite's work is already in place (see [Resolve a stopped
 dependency](#resolve-a-stopped-dependency)). Active sessions without observable hook
 instrumentation are not eligible dependencies because Mission Control cannot distinguish

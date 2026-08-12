@@ -197,6 +197,22 @@ Each nudge is typed into the session's pane, so it carries the usual gates and o
   (dry-run drafts and findings still being posted do not count) - the failing-CI half works
   regardless.
 
+**A session holding several pull requests is followed through on each of them.** A
+[multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) opens one per
+repository it changed, and each is tracked separately here: its own Inspector rounds, its own
+CI-failure episodes, its own re-arming. Repo B's review landing does not re-relay what repo A
+was already told, and a red CI in one repository is nudged even while the other is green -
+which before this was invisible, because the trigger only ever looked at the pull request on
+the session's own checkout.
+
+The one thing they share is the pane. At most **one nudge per session per pass** is typed,
+the primary repository's first, and the others wait for a later pass rather than landing two
+instructions in a turn expecting neither - the same rule the concurrent
+[per-repository reviews](workflows.md#one-review-per-repository) follow. A nudge about an
+attached repository names it, tells the agent which worktree to stand in, and scopes its `gh`
+commands to that repository, so "do not open a new pull request" is read as being about that
+one rather than as a ban on a sibling it has not opened yet.
+
 ## Backlog autopilot (Foreman schedules the fleet)
 
 A work queue drains one *session*. The **backlog autopilot** drains the *fleet's*

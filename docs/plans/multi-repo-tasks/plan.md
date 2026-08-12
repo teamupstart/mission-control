@@ -1,6 +1,6 @@
 # Multi-repo tasks
 
-**Status:** Scoped. Decisions adopted 2026-08-05. Phased into four serial phases - see [phased-plan.md](phased-plan.md) ([rendered](phased-plan.html)). Implementation not started; no tasks scheduled.
+**Status:** Delivered. Decisions adopted 2026-08-05. Phased into four serial phases - see [phased-plan.md](phased-plan.md) ([rendered](phased-plan.html)) - all four merged (#491, #493, #494, and the policy-and-prose phase). The out-of-scope list below is unchanged and is where any follow-on work starts.
 **Rendered page:** [plan.html](plan.html)
 
 ## Goal

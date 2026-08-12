@@ -34,6 +34,7 @@ import type {
   WorkItem,
   InspectorInspection,
   InspectorSummary,
+  RepoPrFeedback,
   InspectionUpdated,
   KeepAwakeStatus,
   RetroSummary,
@@ -296,6 +297,13 @@ export interface RepoPrPollTarget {
 /** The `(session, repo)` key a repo poll result is carried under. */
 export function repoPrTargetKey(sessionId: string, repoRoot: string): string {
   return `${sessionId}\0${repoRoot}`;
+}
+
+/** One repository's open pull request as the last poll saw it. See `Registry.livePrs`. */
+interface LivePrObservation {
+  url: string;
+  number: number;
+  checks: PrChecks | null;
 }
 
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
@@ -601,6 +609,23 @@ export class Registry extends EventEmitter {
   private sweptSessions = false;
   /** The Inspector's ledger, by PR key. Rebuilt from the DB; see `refreshInspections`. */
   private inspections = new Map<string, InspectorInspection>();
+  /**
+   * The last poll's answer for each `(session, repo)` of a multi-repo task, while it was OPEN.
+   *
+   * The per-repository twin of the `prUrl`/`prNumber`/`prChecks` scalars `reconcilePrs` writes
+   * onto a session, and it exists because those scalars answer for the session's own checkout
+   * only: a secondary repository's pull request is polled (`extraRepoPrPollTargets` gives it
+   * its own `gh` call) and its checks were then thrown away, so nothing downstream could tell
+   * a red sibling from a green one.
+   *
+   * In memory and RETRACTED, unlike the durable per-repo association in `work_episode_prs`.
+   * That association is never taken back once made - a card and the completion quorum need it
+   * to survive the worktree - but "is there an open pull request here right now" is an
+   * observation, and Foreman types instructions off it. A poll that reports no open pull
+   * request for a repository deletes its entry; a poll that ERRORED (`skip`) changes nothing,
+   * because `gh` failing says nothing about the pull request.
+   */
+  private livePrs = new Map<string, LivePrObservation>();
   /**
    * Session ids whose transcript has shown a human turn beyond the opening brief.
    *
@@ -3312,9 +3337,25 @@ export class Registry extends EventEmitter {
   reconcileRepoPrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     const at = Date.now();
     const touchedTasks = new Set<string>();
+    const observedSessions = new Set<string>();
     for (const target of this.extraRepoPrPollTargets()) {
       if (skip.has(target.key)) continue;
       const match = found.get(target.key);
+      // The live observation, recorded before the durable one and on a different rule: this
+      // repository has an open pull request right now, or it has not. `!match` here is `gh`
+      // answering "nothing on this branch", which the durable association below deliberately
+      // ignores and Foreman's follow-through must not.
+      const moved = this.recordLivePr(
+        target.key,
+        match && match.state === "open" && match.number !== null
+          ? { url: match.url, number: match.number, checks: match.checks }
+          : null,
+      );
+      // A live observation moving changes this session's card and nothing in the DATABASE, so
+      // the durable refresh below cannot notice it: a repository whose pull request merely
+      // went red touches no row. Without this the new reading waits for the next poll pass to
+      // rebuild the summary for some unrelated reason, and Foreman decides on the old one.
+      if (moved) observedSessions.add(target.sessionId);
       if (!match) continue;
       // A merged pull request whose merge instant `gh` did not report is not yet a merge -
       // the same refusal `reconcilePrs` makes, so nothing lands a null `mergedAt`.
@@ -3334,6 +3375,9 @@ export class Registry extends EventEmitter {
       }
     }
     for (const taskId of touchedTasks) this.refreshTaskRepoPrs(taskId);
+    // After the durable refresh, which already resyncs the sessions it moved: this covers the
+    // ones it did not, and re-deriving a summary that is already current is a no-op.
+    for (const sessionId of observedSessions) this.resyncSessionTask(sessionId);
   }
 
   /**
@@ -3420,6 +3464,50 @@ export class Registry extends EventEmitter {
     const task = this.activeTaskFor(s.id, s.cwd);
     if (!task || task.extraRepos.length === 0) return s.task;
     return this.taskSummaryFor(s.id, s.cwd);
+  }
+
+  /**
+   * Record (or retract) what a poll saw of ONE repository's pull request. See `livePrs`.
+   *
+   * `null` is the retraction and it is the whole reason this is a method rather than two map
+   * writes: the caller that has an answer and the caller that has "nothing here" must reach
+   * the same place, or the map keeps saying `open` about a pull request somebody closed.
+   */
+  private recordLivePr(key: string, observed: LivePrObservation | null): boolean {
+    const prev = this.livePrs.get(key) ?? null;
+    if (
+      prev?.url === observed?.url &&
+      prev?.number === observed?.number &&
+      prev?.checks === observed?.checks
+    ) {
+      return false;
+    }
+    if (observed) this.livePrs.set(key, observed);
+    else this.livePrs.delete(key);
+    return true;
+  }
+
+  /**
+   * The live feedback for one repository of a multi-repo task, or null when the last poll saw
+   * no open pull request there.
+   *
+   * The url is compared, not just the key: the durable association and the live observation
+   * are written by different passes, and answering with the checks of a pull request this
+   * repository has since moved off would be worse than answering with nothing.
+   */
+  private repoPrFeedbackFor(
+    sessionId: string,
+    repoRoot: string,
+    prUrl: string | null,
+  ): RepoPrFeedback | null {
+    if (!prUrl) return null;
+    const live = this.livePrs.get(repoPrTargetKey(sessionId, repoRoot));
+    if (!live || live.url !== prUrl) return null;
+    return {
+      prNumber: live.number,
+      prChecks: live.checks,
+      inspector: this.inspectorSummaryForUrl(prUrl),
+    };
   }
 
   /**
@@ -3603,6 +3691,20 @@ export class Registry extends EventEmitter {
         });
       } else {
         this.prObservations.delete(id);
+      }
+      // The PRIMARY repository's live observation, recorded on exactly the rule its
+      // secondaries get in `reconcileRepoPrs` - because to the follow-through the primary is
+      // a repository like any other, and reading its feedback off the session scalars while
+      // reading its siblings' off this map is how the two come apart. Written for every
+      // session; only a multi-repo task's summary ever reads it back.
+      const primaryRoot = this.activeTaskFor(id, live.cwd)?.repoRoot;
+      if (primaryRoot !== undefined) {
+        this.recordLivePr(
+          repoPrTargetKey(id, primaryRoot),
+          match && state === "open" && number !== null
+            ? { url: match.url, number, checks }
+            : null,
+        );
       }
       // A multi-repo task's per-repo lines live on THIS session's card, and the PRIMARY
       // repo's line moves the moment the merge recorded just above lands. Nothing else
@@ -4552,6 +4654,12 @@ export class Registry extends EventEmitter {
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.prObservations.delete(id);
+    // Per-repo observations are keyed `(session, repo)`, so one session leaves several. The
+    // poller retracts them while the session lives; this is what stops a finished multi-repo
+    // task's entries outliving the row that could ever read them again.
+    for (const key of this.livePrs.keys()) {
+      if (key.startsWith(repoPrTargetKey(id, ""))) this.livePrs.delete(key);
+    }
     this.announcedPrs.delete(id);
     this.discoveredIdentity.delete(id);
     this.clearSessionEffortTracking(id);
@@ -5065,7 +5173,8 @@ export class Registry extends EventEmitter {
           repoPrs:
             t.extraRepos.length === 0
               ? []
-              : taskRepoPrSummaries(t, primaryRepoPrForTask(t.id)),
+              : taskRepoPrSummaries(t, primaryRepoPrForTask(t.id), (repoRoot, prUrl) =>
+                  this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
         }
       : null;
   }
@@ -5736,8 +5845,19 @@ export class Registry extends EventEmitter {
    * a PR chip and no inspector chip is saying that PR came from somewhere else.
    */
   private inspectorSummaryFor(s: Session): InspectorSummary | null {
-    if (!s.prUrl) return null;
-    const parsed = parsePrUrl(s.prUrl);
+    return this.inspectorSummaryForUrl(s.prUrl);
+  }
+
+  /**
+   * The same projection for a pull request named by url rather than by session.
+   *
+   * Split out for the per-repository summaries: a multi-repo task's secondary pull request is
+   * in this very ledger and reaches no session scalar, so the only difference between its chip
+   * facts and the primary's is which url you ask about.
+   */
+  private inspectorSummaryForUrl(prUrl: string | null): InspectorSummary | null {
+    if (!prUrl) return null;
+    const parsed = parsePrUrl(prUrl);
     if (!parsed) return null;
     const row = this.inspections.get(parsed.key);
     if (!row) return null;
@@ -5819,6 +5939,12 @@ export class Registry extends EventEmitter {
     for (const [id, s] of this.sessions) {
       const updated: Session = { ...s };
       this.resolveInspectionSummaries(updated);
+      // A THIRD summary off the same rows, for a multi-repo task: each repository's line
+      // carries that repository's own findings, and this is the only pass that runs when they
+      // move. Without it a secondary pull request's review would land and nothing on the wire
+      // would say so until the branch poller happened to change something else. A no-op for a
+      // single-repo session, which gets its existing summary back by identity.
+      updated.task = this.repoPrSummaryFor(updated);
       // Both summaries, because both are derived from the row this just re-read: a round
       // that resolves the last finding clears the chip AND is the moment the retro becomes
       // worth offering, and checking only the chip would hold the offer back until some

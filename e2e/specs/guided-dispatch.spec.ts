@@ -323,6 +323,47 @@ test("Clear after the pass has handed over asks the questions again", async ({ d
   await expect(taskBox(dialog)).not.toBeFocused();
 });
 
+test("confirming the harness you are already on keeps the model and effort overrides", async ({
+  dashboard,
+}) => {
+  const dialog = await openDispatch(dashboard);
+
+  // Both overrides live in the always-visible Crew row, so this needs no fold opened - and
+  // the draft outlives a close, so a reopened form can carry them into a pass too.
+  const model = dialog.getByRole("combobox", { name: "Model", exact: true });
+  const effort = dialog.getByRole("combobox", { name: /^Effort for dispatched/ });
+  await model.selectOption({ index: 1 });
+  await effort.selectOption({ index: 1 });
+  const pinnedModel = await model.inputValue();
+  const pinnedEffort = await effort.inputValue();
+  expect(pinnedModel, "the Model select should offer a real override").not.toBe("");
+  expect(pinnedEffort, "the Effort select should offer a real override").not.toBe("");
+
+  await dialog.getByRole("switch", { name: "Guided" }).click();
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await dashboard.keyboard.press("t");
+
+  // Claude Code is already the harness, so `c` is the fastest way past this question - and
+  // it is a confirmation, not a switch. A `<select>` fires no `onChange` for re-picking its
+  // own value, so the form never dropped anything here; the pass must not either.
+  await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
+  await dashboard.keyboard.press("c");
+
+  await expect(agentSelect(dialog)).toHaveValue("claude");
+  await expect(model).toHaveValue(pinnedModel);
+  await expect(effort).toHaveValue(pinnedEffort);
+
+  // And the guard has not gone too far the other way: an actual switch still drops both,
+  // because neither selection travels across harnesses.
+  await rail(dialog).getByRole("button", { name: "Harness: Claude Code" }).click();
+  await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
+  await dashboard.keyboard.press("x");
+
+  await expect(agentSelect(dialog)).toHaveValue("codex");
+  await expect(model).toHaveValue("");
+  await expect(effort).toHaveValue("");
+});
+
 test("an answered rung jumps back to its question", async ({ dashboard }) => {
   const dialog = await openGuided(dashboard);
 

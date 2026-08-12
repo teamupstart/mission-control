@@ -1030,6 +1030,28 @@ function DispatchModal({
     return stashed === NO_STASH ? {} : { workflowId: stashed };
   }
 
+  /**
+   * The overrides a harness switch carries with it, as a patch fragment - the same shape as
+   * `afterWorkForKind` above, and guarded the same way for the same reason.
+   *
+   * Neither the model nor the effort selection is portable across harnesses, so switching
+   * drops both back to the defaults of the one now chosen. CONFIRMING the harness already
+   * selected is not a switch, and drops nothing.
+   *
+   * That second sentence had nowhere to live until the guided pass existed. A `<select>`
+   * never fires `onChange` for re-picking its own value, so the no-op case was unreachable
+   * through the form; the pass reaches it, because it commits whichever option is taken,
+   * changed or not. Unguarded, pressing `c` on the already-selected Claude Code - the fastest
+   * way to move the pass along - silently wiped a Model or Effort override set moments
+   * earlier, with nothing on screen to say so.
+   *
+   * Here rather than in the option's `commit` so that the pass and the `<select>` read one
+   * rule. Two copies of this expression are what let them disagree in the first place.
+   */
+  function overridesForAgent(agent: AgentType): Partial<DispatchDraft> {
+    return agent === draft.agent ? {} : { model: "", effort: "" };
+  }
+
   // ---- the guided pass ----------------------------------------------------------------
   //
   // A phase of THIS dialog, not a second one: `OVERLAY_IDS.dispatch` keeps its single entry
@@ -1066,6 +1088,14 @@ function DispatchModal({
     const chosen = (workflowId: DispatchDraft["workflowId"]): void => {
       // Chosen by hand, exactly as the `<select>`'s own handler reads it: a later kind
       // switch must not hand back what scout put aside and revert this underneath them.
+      //
+      // Unguarded on purpose, unlike `overridesForAgent` above, and the difference is what
+      // the gesture MEANS. Dropping an override is a consequence of switching harness, and
+      // confirming the current one is not a switch - so it must drop nothing. Dropping the
+      // stash is a consequence of choosing for yourself, and being asked "what runs after
+      // the work?" and answering IS choosing for yourself, even when the answer is the row
+      // that was already lit. Taking None at that question therefore stands, and a later
+      // kind switch leaves it alone.
       stashedWorkflowId.current = NO_STASH;
       update({ workflowId });
     };
@@ -1134,9 +1164,9 @@ function DispatchModal({
       accent: AGENT_IDENTITY[a].accent,
       sub: harnessDefaultsLine(a, defaults),
       hotkey: GUIDED_HARNESS_KEYS[a],
-      // And identical to the Agent `<select>`'s: neither override travels across harnesses,
-      // so both go back to the defaults of the one now chosen.
-      commit: () => update({ agent: a, model: "", effort: "" }),
+      // And identical to the Agent `<select>`'s, `overridesForAgent` and all - including its
+      // guard, which is what keeps confirming the current harness from dropping anything.
+      commit: () => update({ agent: a, ...overridesForAgent(a) }),
     })),
     afterWork: afterWorkOptions,
   };
@@ -2031,7 +2061,7 @@ function DispatchModal({
                         // While the pass is asking this question, using the control it is
                         // about answers it - the same write, and the pass moves on.
                         if (guidedTakeValue("harness", agent)) return;
-                        update({ agent, model: "", effort: "" });
+                        update({ agent, ...overridesForAgent(agent) });
                       }}
                     >
                     {/* Driven off the union, so a harness that exists cannot be one the

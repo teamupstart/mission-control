@@ -23,6 +23,7 @@ export type ActionId =
   | "dispatch"
   | "filter"
   | "settingsSearch"
+  | "contextMenu"
   | "workflows"
   | "runs"
   | "expand"
@@ -119,6 +120,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Search everything",
     description: "Open the palette over workflows, runs, ensembles, missions and settings.",
     defaultBinding: "cmd+k",
+    group: "global",
+  },
+  {
+    id: "contextMenu",
+    label: "Open context menu",
+    description: "Show the actions for the focused item or text field.",
+    defaultBinding: "shift+F10",
     group: "global",
   },
   {
@@ -305,6 +313,7 @@ const ACTION_BY_ID = new Map<ActionId, ActionDef>(ACTIONS.map((a) => [a.id, a]))
 const RESERVED_KEYS = new Set([
   "Escape",
   "Enter",
+  "ContextMenu",
   "ArrowUp",
   "ArrowDown",
   "ArrowLeft",
@@ -389,6 +398,7 @@ const KEY_LABEL: Record<string, string> = {
   " ": "Space",
   Backspace: "⌫",
   Delete: "⌦",
+  ContextMenu: "☰",
 };
 
 /** Human-readable form of a chord for keycaps and the editor (e.g. "⌘K", "⇧O", "⇥", "/"). */
@@ -419,6 +429,19 @@ export function isReservedChord(chord: string): boolean {
 export function chordHasCommandModifier(chord: string): boolean {
   const { mods } = parseChord(chord);
   return mods.includes("cmd") || mods.includes("ctrl");
+}
+
+/**
+ * True when a chord's key cannot insert a character into a focused text field.
+ *
+ * This is deliberately separate from `chordHasCommandModifier`: Command/Control chords are
+ * unambiguous despite carrying a printable key, while function keys and named navigation keys
+ * are unambiguous because they do not type at all. Dead/IME composition keys are the exception
+ * to the named-key shape and stay with the field.
+ */
+export function chordIsNonTyping(chord: string): boolean {
+  const { key } = parseChord(chord);
+  return key.length !== 1 && key !== "Dead" && key !== "Process" && key !== "Compose";
 }
 
 /**

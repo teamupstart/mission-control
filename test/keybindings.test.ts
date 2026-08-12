@@ -45,6 +45,7 @@ const {
   bindingValidationError,
   chordFromEvent,
   chordHasCommandModifier,
+  chordIsNonTyping,
   findConflicts,
   formatChord,
   isReservedChord,
@@ -150,6 +151,8 @@ test("formatChord leaves an unmodified letter lower-case", () => {
 
 test("formatChord leaves uncased and named keys alone", () => {
   assert.equal(formatChord("shift+Tab"), "⇧⇥");
+  assert.equal(formatChord("shift+F10"), "⇧F10");
+  assert.equal(formatChord("ContextMenu"), "☰");
   assert.equal(formatChord("cmd++"), "⌘+");
   assert.equal(formatChord("+"), "+");
   assert.equal(formatChord("/"), "/");
@@ -183,10 +186,28 @@ test("chordHasCommandModifier flags only cmd/ctrl, so a text-field bypass is saf
   assert.equal(chordHasCommandModifier("+"), false);
 });
 
+test("chordIsNonTyping lets named keys through a text field without claiming characters", () => {
+  assert.equal(chordIsNonTyping("shift+F10"), true);
+  assert.equal(chordIsNonTyping("ContextMenu"), true);
+  assert.equal(chordIsNonTyping("shift+Tab"), true);
+  assert.equal(chordIsNonTyping("Backspace"), true);
+  assert.equal(chordIsNonTyping("shift+o"), false);
+  assert.equal(chordIsNonTyping("+"), false);
+  assert.equal(chordIsNonTyping("Dead"), false);
+  assert.equal(chordIsNonTyping("Process"), false);
+});
+
 test("bare Tab is reserved while modified Tab chords remain bindable", () => {
   assert.equal(isReservedChord("Tab"), true);
   assert.equal(isReservedChord("shift+Tab"), false);
   assert.equal(isReservedChord("ctrl+Tab"), false);
+});
+
+test("the dedicated ContextMenu key is structural while Shift+F10 remains bindable", () => {
+  assert.equal(isReservedChord("ContextMenu"), true);
+  assert.equal(isReservedChord("shift+F10"), false);
+  assert.equal(chordFromEvent(key("ContextMenu")), "ContextMenu");
+  assert.equal(chordFromEvent(key("F10", { shift: true })), "shift+F10");
 });
 
 test("file actions own Shift+F and Shift+O and every default round-trips from a keypress", () => {
@@ -228,8 +249,17 @@ test("file actions own Shift+F and Shift+O and every default round-trips from a 
     chordFromEvent(key("k")),
     chordFromEvent(key("k", { meta: true })),
     chordFromEvent(key("f", { meta: true })),
+    chordFromEvent(key("F10", { shift: true })),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
+});
+
+test("context menu is one global action with Shift+F10 as its customizable chord", () => {
+  const menu = ACTIONS.find((action) => action.id === "contextMenu");
+  assert.ok(menu, "contextMenu missing from the customizable registry");
+  assert.equal(menu.defaultBinding, "shift+F10");
+  assert.equal(menu.group, "global");
+  assert.equal(formatChord(menu.defaultBinding), "⇧F10");
 });
 
 test("Fleet, Library and Runs are separate global actions with direct bindings", () => {

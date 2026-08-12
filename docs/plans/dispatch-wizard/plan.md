@@ -39,17 +39,26 @@ Four steps, in order:
 
 | Step | Options | Keys |
 |---|---|---|
-| Repo | all 202 | type to filter, digits to pick; seeded on `readLastDispatchRepo()` so <kbd>↵</kbd> alone takes it |
+| Repo | all 202 | type to filter, <kbd>↑</kbd><kbd>↓</kbd> + <kbd>↵</kbd> to pick; seeded on `readLastDispatchRepo()` so <kbd>↵</kbd> alone takes it |
 | Kind | ship, scout | <kbd>p</kbd> / <kbd>t</kbd> - the letter that distinguishes them, since both start with `s` |
 | Harness | Claude Code, Codex, Pi | <kbd>c</kbd> / <kbd>x</kbd> / <kbd>i</kbd> |
 | After work | dispatch default, None, any active published Workflow | <kbd>d</kbd> / <kbd>n</kbd>, then per-workflow |
 
 The three closed-set steps also take <kbd>↑</kbd><kbd>↓</kbd> + <kbd>↵</kbd> and a position
 digit, and print their mnemonic on each option, so nothing has to be memorised to be fast.
-Repo is the exception and takes no mnemonics: it is an open filter, so there every letter is
-a letter. <kbd>⌫</kbd> steps back (and inside Repo, deletes a character first),
-<kbd>⇥</kbd> abandons the guided pass and drops straight into the form with whatever has been
-answered so far, <kbd>esc</kbd> cancels the dispatch outright.
+Repo is the exception and takes neither mnemonics nor position digits: it is an open filter, so
+there every character is a character - repository names contain digits, and a digit that picked
+by position would make a repo called `service2` unfilterable. <kbd>⌫</kbd> steps back (and
+inside Repo, deletes a character first), <kbd>⇥</kbd> abandons the guided pass and drops
+straight into the form with whatever has been answered so far, and <kbd>esc</kbd> cancels the
+dispatch outright.
+
+Escape has one exception, in the Repo step, and it is not a choice: `RepoCombobox` swallows
+Escape to close its own portalled listbox, deliberately, so that an open list does not let one
+keypress close the whole modal. There it is progressive - the first press dismisses the list and
+ends the guided pass, leaving you in the ordinary form with the field as typed, and a second
+closes the modal. That is what the form already does today. See
+[phase 4](phase-4-repo-step.md).
 
 A default dispatch is therefore <kbd>+</kbd> <kbd>↵</kbd> <kbd>p</kbd> <kbd>c</kbd>
 <kbd>↵</kbd> and you are typing the task.
@@ -72,9 +81,11 @@ already runs on mount (`DispatchModal.tsx:925`). <kbd>⌘↵</kbd> dispatches fr
 as it does today.
 
 Because the picker has to be able to leave the panel, `.modal`'s `overflow: hidden` has to
-move: corners go onto `.modal-head` and `.modal-foot`, or the picker portals the way
-`RepoCombobox` already does. The latter is the established answer and is probably the one to
-take, since `RepoCombobox` is also the control the Repo step drives.
+move. Investigating settled this: `overflow: visible` is scoped to `.dispatch-modal` and the
+corner radii move onto its head and foot, rather than the picker portalling. `RepoCombobox`
+portals because it must clear a scrollable ancestor, and these pickers have none -
+`.dispatch-body` carries no `overflow`, unlike the generic `.modal-body`. The override must
+never be widened to `.modal`, which every other dialog in the app shares.
 
 ### It changes no dispatch semantics
 
@@ -163,14 +174,25 @@ should be asserted, not assumed.
 - Rebindable wizard mnemonics. They are printed on screen; if they need to be configurable
   that is a second change with its own settings surface.
 
-## Still open
+## Decided while phasing
 
-- Whether the strip's answered rungs should be clickable *back* (jump to that step) or only
-  informational. D makes them clickable, which is A's behavior and is what makes the strip
-  worth its row - but jumping back to Kind mid-pass has to decide what happens to the
-  after-work stash, and the honest answer is probably "the same thing the form already does".
-- Whether the picker portals (like `RepoCombobox`) or the modal's corners move. Portalling is
-  the established pattern; the mockup takes the cheaper route and says so.
+Both of the questions this section used to leave open were settled by investigating the code,
+and are recorded here so this file does not disagree with the phase that owns them. See
+[phase 2](phase-2-guided-pass.md) for the reasoning.
+
+- **The strip's answered rungs are clickable**, and jumping back re-runs `afterWorkForKind`
+  exactly as the Kind `<select>` does - same stash, same hand-back, no special case. The
+  honest answer turned out to be the predicted one: the wizard has no opinion the form does
+  not already have.
+- **The pickers are ordinary absolutely-positioned children, not portals.** `RepoCombobox`
+  portals because it must escape a scrollable ancestor; these have none, because
+  `.dispatch-body` carries no `overflow` of its own. So `overflow: visible` is scoped to
+  `.dispatch-modal` - never to `.modal`, which every other dialog shares - and the corner radii
+  move onto its head and foot.
+
+[Phase 4](phase-4-repo-step.md) then corrected two details of the step table above, both forced
+by `RepoCombobox` owning behavior this plan had assigned elsewhere. They are stated inline in
+that table rather than left here.
 
 ## Validation
 
@@ -184,6 +206,8 @@ should be asserted, not assumed.
 - Because it now ships on, one spec should assert the **upgrade path** explicitly: a fresh
   profile presses <kbd>+</kbd>, gets the guided pass, presses <kbd>⇥</kbd>, and lands on a
   form indistinguishable from today's.
-- `test/` covers the pure parts: the step machine, and the kind → after-work resolution if it
-  moves into a shared helper.
+- `test/` covers the pure parts: the step machine. The kind → after-work resolution needs no new
+  unit test and no extraction - `afterWorkForKind` is a closure inside `DispatchModal`, and the
+  guided pass lives in the same component and calls it, so the existing e2e spec already covers
+  both entry points.
 - README and `docs/dispatch-and-backlog.md` describe the new path and the preference.

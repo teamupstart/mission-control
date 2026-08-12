@@ -159,7 +159,8 @@ here, without also removing `RepoCombobox` from the step - which the plan forbid
   possibly `RepoCombobox.tsx`, and the dispatch e2e specs; Phase 3 owns the settings registry,
   page, panel, search index and `App.tsx`. Either may merge first.
 - Corrected two statements in the source plan - Escape and digit keys - rather than inheriting a
-  contradiction. Both are recorded above with the reason, and Phase 5's documentation must
-  describe the corrected behaviour, not the plan's original table.
+  contradiction. Both are recorded above with the reason, `plan.md` was updated so its step table
+  and key prose state the corrected behaviour rather than contradicting this phase, and Phase 5's
+  documentation must describe that same corrected behaviour.
 - Phase 2's exit criterion that focus lands in the Task textarea is re-verified here rather than
   assumed, because prepending a step changes which control the pass focuses first.

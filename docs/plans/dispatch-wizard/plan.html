@@ -102,7 +102,7 @@ form with the answers in place.</p>
 <table>
 <thead><tr><th>Step</th><th>Options</th><th>Keys</th></tr></thead>
 <tbody>
-<tr><td>Repo</td><td>all 202</td><td>type to filter, digits to pick; seeded on <code>readLastDispatchRepo()</code> so <kbd>↵</kbd> alone takes it</td></tr>
+<tr><td>Repo</td><td>all 202</td><td>type to filter, <kbd>↑</kbd><kbd>↓</kbd> + <kbd>↵</kbd> to pick; seeded on <code>readLastDispatchRepo()</code> so <kbd>↵</kbd> alone takes it</td></tr>
 <tr><td>Kind</td><td>ship, scout</td><td><kbd>p</kbd> / <kbd>t</kbd> - the letter that distinguishes them, since both start with <code>s</code></td></tr>
 <tr><td>Harness</td><td>Claude Code, Codex, Pi</td><td><kbd>c</kbd> / <kbd>x</kbd> / <kbd>i</kbd></td></tr>
 <tr><td>After work</td><td>dispatch default, None, any active published Workflow</td><td><kbd>d</kbd> / <kbd>n</kbd>, then per-workflow</td></tr>
@@ -112,10 +112,19 @@ form with the answers in place.</p>
 
 <p>The three closed-set steps also take <kbd>↑</kbd><kbd>↓</kbd> + <kbd>↵</kbd> and a position
 digit, and print their mnemonic on each option, so nothing has to be memorised to be fast.
-Repo is the exception and takes no mnemonics: it is an open filter, so there every letter is
-a letter. <kbd>⌫</kbd> steps back (and inside Repo, deletes a character first),
-<kbd>⇥</kbd> abandons the guided pass and drops straight into the form with whatever has been
-answered so far, <kbd>esc</kbd> cancels the dispatch outright.</p>
+Repo is the exception and takes neither mnemonics nor position digits: it is an open filter, so
+there every character is a character - repository names contain digits, and a digit that picked
+by position would make a repo called <code>service2</code> unfilterable. <kbd>⌫</kbd> steps back
+(and inside Repo, deletes a character first), <kbd>⇥</kbd> abandons the guided pass and drops
+straight into the form with whatever has been answered so far, and <kbd>esc</kbd> cancels the
+dispatch outright.</p>
+
+<p>Escape has one exception, in the Repo step, and it is not a choice: <code>RepoCombobox</code>
+swallows Escape to close its own portalled listbox, deliberately, so that an open list does not
+let one keypress close the whole modal. There it is progressive - the first press dismisses the
+list and ends the guided pass, leaving you in the ordinary form with the field as typed, and a
+second closes the modal. That is what the form already does today. See
+<a href="phase-4-repo-step.md">phase 4</a>.</p>
 
 <p>A default dispatch is therefore <kbd>+</kbd> <kbd>↵</kbd> <kbd>p</kbd> <kbd>c</kbd>
 <kbd>↵</kbd> and you are typing the task.</p>
@@ -139,10 +148,13 @@ focused by the same <code>intentRef.current?.focus()</code> that already runs on
 today.</p>
 
 <p>Because the picker has to be able to leave the panel, <code>.modal</code>'s
-<code>overflow: hidden</code> has to move: corners go onto <code>.modal-head</code> and
-<code>.modal-foot</code>, or the picker portals the way <code>RepoCombobox</code> already does.
-The latter is the established answer and is probably the one to take, since
-<code>RepoCombobox</code> is also the control the Repo step drives.</p>
+<code>overflow: hidden</code> has to move. Investigating settled this:
+<code>overflow: visible</code> is scoped to <code>.dispatch-modal</code> and the corner radii move
+onto its head and foot, rather than the picker portalling. <code>RepoCombobox</code> portals
+because it must clear a scrollable ancestor, and these pickers have none -
+<code>.dispatch-body</code> carries no <code>overflow</code>, unlike the generic
+<code>.modal-body</code>. The override must never be widened to <code>.modal</code>, which every
+other dialog in the app shares.</p>
 
 <h3>It changes no dispatch semantics</h3>
 
@@ -247,16 +259,28 @@ picks the primary and nothing else.</li>
 that is a second change with its own settings surface.</li>
 </ul>
 
-<h2>Still open</h2>
+<h2>Decided while phasing</h2>
+
+<p>Both of the questions this section used to leave open were settled by investigating the code,
+and are recorded here so this file does not disagree with the phase that owns them. See
+<a href="phase-2-guided-pass.md">phase 2</a> for the reasoning.</p>
 
 <ul>
-<li>Whether the strip's answered rungs should be clickable <em>back</em> (jump to that step) or
-only informational. D makes them clickable, which is A's behavior and is what makes the strip
-worth its row - but jumping back to Kind mid-pass has to decide what happens to the after-work
-stash, and the honest answer is probably "the same thing the form already does".</li>
-<li>Whether the picker portals (like <code>RepoCombobox</code>) or the modal's corners move.
-Portalling is the established pattern; the mockup takes the cheaper route and says so.</li>
+<li><strong>The strip's answered rungs are clickable</strong>, and jumping back re-runs
+<code>afterWorkForKind</code> exactly as the Kind <code>&lt;select&gt;</code> does - same stash,
+same hand-back, no special case. The honest answer turned out to be the predicted one: the wizard
+has no opinion the form does not already have.</li>
+<li><strong>The pickers are ordinary absolutely-positioned children, not portals.</strong>
+<code>RepoCombobox</code> portals because it must escape a scrollable ancestor; these have none,
+because <code>.dispatch-body</code> carries no <code>overflow</code> of its own. So
+<code>overflow: visible</code> is scoped to <code>.dispatch-modal</code> - never to
+<code>.modal</code>, which every other dialog shares - and the corner radii move onto its head and
+foot.</li>
 </ul>
+
+<p><a href="phase-4-repo-step.md">Phase 4</a> then corrected two details of the step table above,
+both forced by <code>RepoCombobox</code> owning behavior this plan had assigned elsewhere. They
+are stated inline in that table rather than left here.</p>
 
 <h2>Validation</h2>
 
@@ -271,8 +295,10 @@ behavior; and editing a backlog task never enters the pass.</li>
 <li>Because it now ships on, one spec should assert the <strong>upgrade path</strong> explicitly:
 a fresh profile presses <kbd>+</kbd>, gets the guided pass, presses <kbd>⇥</kbd>, and lands on a
 form indistinguishable from today's.</li>
-<li><code>test/</code> covers the pure parts: the step machine, and the kind → after-work
-resolution if it moves into a shared helper.</li>
+<li><code>test/</code> covers the pure parts: the step machine. The kind → after-work resolution
+needs no new unit test and no extraction - <code>afterWorkForKind</code> is a closure inside
+<code>DispatchModal</code>, and the guided pass lives in the same component and calls it, so the
+existing e2e spec already covers both entry points.</li>
 <li>README and <code>docs/dispatch-and-backlog.md</code> describe the new path and the
 preference.</li>
 </ul>

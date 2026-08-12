@@ -217,9 +217,10 @@ Later phases must not:
 - The e2e fixture pin was considered for Phase 1 and deliberately placed here: it has no meaning
   until something reads the preference, and this is where the specs that need the opposite value
   are written. Recorded in the index's cross-phase contracts as a Phase 5 dependency.
-- Resolved both of the source plan's "Still open" items - picker placement and rung clickability
+- Resolved both of the source plan's two open questions - picker placement and rung clickability
   - because this phase builds both surfaces. Phase 4 inherits the picker decision rather than
-  re-taking it.
+  re-taking it. `plan.md` was updated to record both answers under **Decided while phasing**, so
+  a reader who opens only the plan is not told they are still open.
 - The plan's line about the task textarea being focused "by the same `intentRef.current?.focus()`
   that already runs on mount" is corrected here: that effect runs at the *start* of the opening,
   so it is made conditional rather than relied on.

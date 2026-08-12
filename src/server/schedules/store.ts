@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { openDb } from "../db.ts";
-import { AGENT_TYPES, THINKING_LEVELS } from "@shared/types.ts";
+import { AGENT_TYPES, TASK_KINDS, THINKING_LEVELS } from "@shared/types.ts";
 import { TASK_PRIORITIES, normalizeLabels } from "@shared/task.ts";
 import {
   SCHEDULE_DECISION_KINDS,
@@ -122,7 +122,7 @@ function parseTemplate(raw: string): ScheduleTemplate | null {
   if (typeof t.title !== "string" || t.title === "") return null;
   if (typeof t.intent !== "string") return null;
   if (typeof t.repoRoot !== "string" || t.repoRoot === "") return null;
-  const kind = t.kind === "ship" || t.kind === "scout" ? t.kind : null;
+  const kind = readPersistedEnum(TASK_KINDS, typeof t.kind === "string" ? t.kind : null);
   if (kind === null) return null;
   const agent = readPersistedEnum(AGENT_TYPES, typeof t.agent === "string" ? t.agent : null);
   if (agent === null) return null;

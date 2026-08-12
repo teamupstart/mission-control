@@ -8,7 +8,7 @@ import { CLAUDE_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
-import { AGENT_TYPES, SESSION_RUNTIMES, THINKING_LEVELS } from "./types.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "./types.ts";
 import type { AgentType, SessionRuntime, Task } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
@@ -605,7 +605,7 @@ export const DispatchSchema = z
     extraRepoRoots: z.array(z.string().min(1)).max(8).default([]),
     intent: z.string().min(1),
     title: z.string().optional(),
-    kind: z.enum(["ship", "scout"]).default("ship"),
+    kind: z.enum(TASK_KINDS).default("ship"),
     agent: z.enum(AGENT_TYPES).default("claude"),
     /**
      * Run this agent on a specific model instead of the harness default. Omitted
@@ -761,7 +761,7 @@ export const UpdateTaskSchema = z
     extraRepoRoots: z.array(z.string().min(1)).max(8).optional(),
     intent: z.string().min(1).optional(),
     title: z.string().optional(),
-    kind: z.enum(["ship", "scout"]).optional(),
+    kind: z.enum(TASK_KINDS).optional(),
     agent: z.enum(AGENT_TYPES).optional(),
     enabled: z.boolean().optional(),
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
@@ -1738,6 +1738,7 @@ export const UI_CONFIG_DEFAULTS = {
   alerts: { notifications: false, sound: true },
   richText: true,
   keybindingHints: true,
+  guidedDispatch: false,
   trustStaged: [],
 } as const;
 
@@ -1778,6 +1779,16 @@ export const UiConfigSchema = z.object({
    * it. The off switch is for an operator who has learnt them and wants the chrome back.
    */
   keybindingHints: z.boolean().default(UI_CONFIG_DEFAULTS.keybindingHints),
+  /**
+   * Whether pressing the dispatch shortcut runs the guided pass - the keyboard walk over
+   * repo, kind, harness and after-work - before handing over the ordinary dispatch form.
+   *
+   * Off in this build because nothing reads it yet; see
+   * `docs/plans/dispatch-wizard/phased-plan.md`. The shipped default is the ONE line that
+   * decides which dispatch every operator gets on upgrade, so it moves on its own, in its
+   * own change, once the e2e suite has stopped depending on it.
+   */
+  guidedDispatch: z.boolean().default(UI_CONFIG_DEFAULTS.guidedDispatch),
   /**
    * Repos the Trust panel has STAGED - added to the matrix but granted nothing yet.
    *
@@ -4268,7 +4279,7 @@ const ScheduleTemplateSchema = z
     title: z.string().trim().min(1).max(200),
     intent: z.string().trim().min(1),
     repoRoot: z.string().min(1),
-    kind: z.enum(["ship", "scout"]).default("ship"),
+    kind: z.enum(TASK_KINDS).default("ship"),
     agent: z.enum(AGENT_TYPES).default("claude"),
     priority: z.enum(TASK_PRIORITIES).nullable().default(null),
     labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),

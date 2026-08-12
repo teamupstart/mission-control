@@ -95,6 +95,7 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     },
     richText: raw?.richText ?? UI_CONFIG_DEFAULTS.richText,
     keybindingHints: raw?.keybindingHints ?? UI_CONFIG_DEFAULTS.keybindingHints,
+    guidedDispatch: raw?.guidedDispatch ?? UI_CONFIG_DEFAULTS.guidedDispatch,
     // A fresh array either way: the default is a shared frozen literal, and the cache must
     // hand back something the Trust panel can build its next patch from without mutating it.
     trustStaged: raw?.trustStaged ? [...raw.trustStaged] : [],

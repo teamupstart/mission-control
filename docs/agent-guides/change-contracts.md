@@ -432,6 +432,20 @@ Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched i
 
 A fourth layout also requires render selection, expansion state, Escape handling, expand shortcuts, command bar behavior, `layoutNav.ts`, and `LayoutPanel`.
 
+## Copying to the clipboard
+
+There is one way in, and it is `src/web/lib/clipboard.ts`. Never call `navigator.clipboard` from a component.
+
+- `copyText(text)` is the write. It prefers the async Clipboard API and falls back to a selected read-only `<textarea>` plus `execCommand("copy")`, which is the only route that works in the Electron renderer when the async API is permission-blocked after a direct click. It throws rather than returning falsy. `test/clipboard.test.ts` pins its exact call ordering, so add layers on top of it rather than editing its body.
+- `useCopyFeedback()` is the control. It owns the write and the confirmation together, so a `Copied` label cannot flip on a copy that did not happen. It holds its timer in a ref, clears a prior timer before arming a new one, clears on unmount, and lets the last call win.
+- `resetOn` is what gives a failure its lifetime, because a refusal arms no hold to expire. Pass it whenever the surface can change subject without remounting, and key it to **what the control is about** rather than to the nearest identifier: `FileWorkspace` keys on the conflict, not the file, because resolving one conflict and hitting another on the same path leaves the path unchanged and would put the old refusal back on screen before the reader had touched anything.
+- `copy()` never rejects, and resolves with **the state the control is in once the attempt settles** - this attempt's outcome while it is still the current one, and whatever overtook it when it is not. A surface with one shared error line routes that sentence into it with a plain `if (error !== null)`; a control with its own line renders `error` from the hook instead. Never route an attempt's *own* outcome into a shared surface: copy buttons do not disable while in flight, so two clicks can settle out of order and the loser will contradict the winner.
+- `COPY_FEEDBACK_HOLD_MS` is 1600 and `COPY_FEEDBACK_LABEL` is `"Copied"`, app-wide. No decorated variant.
+
+A copy control that reports nothing is incomplete. Confirm the success and say something on failure - either the hook's `error` beside the button, or the surface's own error line.
+
+**A control routing into a shared error line clears it before every attempt**, the way `mutate` and the resubmit handler in `WorkflowRuns.tsx` already do. Writing only on failure leaves a refusal standing underneath the next successful copy's `Copied` - a confirmation and a contradiction for one button. This was got wrong at three of the five migrated sites, so check it rather than assume it.
+
 ## Registries
 
 Extend existing registries instead of adding parallel lists:

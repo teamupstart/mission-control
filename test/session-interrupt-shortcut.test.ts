@@ -171,8 +171,11 @@ test("the offer needs both a mechanism and a turn to stop", () => {
   const embedded = mkSession({ runtime: "sdk", agent: "claude" });
   assert.equal(canInterruptSession(embedded), true);
   assert.equal(canInterruptSession({ ...embedded, agent: "codex" }), true);
-  // No driver, so nothing to interrupt - and no pane mechanism exists in this build either.
-  assert.equal(canInterruptSession({ ...embedded, agent: "pi", runtime: "terminal" }), false);
+  // pi has no driver at all, so the pane keystroke is not one of two mechanisms for it -
+  // it is the only one, and it is the reason pi can be interrupted here despite `sdk: null`.
+  assert.equal(canInterruptSession({ ...embedded, agent: "pi", runtime: "terminal" }), true);
+  // And the runtime pi does NOT have stays refused, rather than inheriting the pane answer.
+  assert.equal(canInterruptSession({ ...embedded, agent: "pi", runtime: "sdk" }), false);
   // A mechanism, but no turn: interrupting an idle agent is a key that does nothing.
   assert.equal(canInterruptSession({ ...embedded, state: "idle" }), false);
   assert.equal(canInterruptSession({ ...embedded, state: "exited" }), false);
@@ -184,20 +187,22 @@ test("the offer needs both a mechanism and a turn to stop", () => {
   assert.equal(canInterruptSession({ ...embedded, stateConfirmed: false }), true);
 });
 
-test("this phase ships the sdk runtime only, and the terminal refusal says which", () => {
+test("both runtimes are interruptible, and a runtime a harness lacks is still refused", () => {
+  // The gesture now resolves to a mechanism on every shipped harness/runtime pair that
+  // exists: the driver primitive for an embedded session, `Escape` into the pane for a
+  // terminal one. Pi is terminal-only because it has no driver, not because it is behind.
   assert.equal(canInterrupt("claude", "sdk"), true);
-  assert.equal(canInterrupt("claude", "terminal"), false);
-  assert.equal(canInterrupt("pi", "terminal"), false);
+  assert.equal(canInterrupt("claude", "terminal"), true);
+  assert.equal(canInterrupt("codex", "terminal"), true);
+  assert.equal(canInterrupt("pi", "terminal"), true);
   assert.equal(interruptUnsupportedWhy("claude", "sdk"), null);
+  assert.equal(interruptUnsupportedWhy("claude", "terminal"), null);
+  assert.equal(interruptUnsupportedWhy("pi", "terminal"), null);
+  // The per-runtime refusal is still reachable and still names the runtime - pi declares no
+  // `sdk`, so asking for one is the case that sentence exists for.
   assert.match(
-    interruptUnsupportedWhy("claude", "terminal") ?? "",
-    /can't yet stop a Claude Code turn running in a terminal/,
-  );
-  // The two absences are different facts and are worded differently: one is "not on this
-  // runtime yet", the other is "not at all".
-  assert.match(
-    interruptUnsupportedWhy("pi", "terminal") ?? "",
-    /can't stop a Pi turn once it has started/,
+    interruptUnsupportedWhy("pi", "sdk") ?? "",
+    /can't yet stop a Pi turn running in the Agent SDK/,
   );
 });
 
@@ -229,13 +234,20 @@ test("a working embedded session gets a live control", () => {
   assert.match(html, /Interrupt/);
 });
 
-test("a terminal session gets the control DISABLED with a reason, not a missing button", () => {
-  // The shape the next phase turns on by declaring a capability rather than by touching
-  // this component. Hidden, it would teach an operator that terminal sessions have no such
-  // gesture; disabled with a sentence, it teaches them it is coming.
+test("a working terminal session gets the same live control, with no component change", () => {
+  // The point of routing the offer through a capability: this component was written once,
+  // for the embedded runtime, and terminal cards lit up when `interrupt.runtimes` gained
+  // `"terminal"`. If this ever needs a runtime test in the component, the capability has
+  // stopped being the single gate.
   const html = cardBar(mkSession({ runtime: "terminal", task: null }));
-  assert.match(interruptButton(html), /disabled/);
-  assert.match(html, /can&#x27;t yet stop a Claude Code turn running in a terminal/);
+  assert.doesNotMatch(interruptButton(html), /disabled/);
+  assert.match(html, /Interrupt/);
+  assert.doesNotMatch(html, /can&#x27;t yet stop/);
+});
+
+test("a pi session gets it too, on the only runtime pi has", () => {
+  const html = cardBar(mkSession({ runtime: "terminal", agent: "pi", task: null }));
+  assert.doesNotMatch(interruptButton(html), /disabled/);
 });
 
 test("an idle session's control says there is nothing to stop, rather than failing on click", () => {

@@ -72,6 +72,17 @@ import type {
 const KEY_FORMS: Record<Key, { via: "csi"; final: string } | { via: "named"; name: string }> = {
   // Enter is a bare CR, which has no CSI form; `send key` is the only way to send one.
   enter: { via: "named", name: "enter" },
+  /**
+   * Escape is a bare ESC, so it is in the `named` group for exactly Enter's reason:
+   * `perform action "csi:X"` emits `ESC [ X`, and there is no final byte that reduces that
+   * to the single 0x1B this key IS.
+   *
+   * The spelling was measured, not inferred, because this table rejects what it does not
+   * know: `send key "escape"` exits 0 and delivers one 0x1B, while `esc`, `ESCAPE` and
+   * `escape_key` are each `Unknown key name (-1700)`. Note the case sensitivity - the
+   * capitalized form tmux wants is an error here, which is the whole reason `Key` exists.
+   */
+  escape: { via: "named", name: "escape" },
   up: { via: "csi", final: "A" },
   down: { via: "csi", final: "B" },
   left: { via: "csi", final: "D" },

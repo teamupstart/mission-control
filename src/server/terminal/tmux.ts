@@ -47,6 +47,9 @@ import type {
  */
 const KEY_NAMES: Record<Key, string> = {
   enter: "Enter",
+  // Capitalized like every other name here, which is tmux's own convention for a named key.
+  // Measured: `send-keys -t <pane> -- Escape` delivers exactly one 0x1B to the pane's pty.
+  escape: "Escape",
   up: "Up",
   down: "Down",
   left: "Left",
@@ -61,6 +64,34 @@ const CAPTURE_TIMEOUT_MS = 1000;
 /** Session teardown and creation are user-visible actions, not poll work. */
 const SESSION_TIMEOUT_MS = 10000;
 
+/**
+ * The field separator for the two `-F` formats, and it is PRINTABLE for a measured reason.
+ *
+ * This was `\x1f` - the ASCII unit separator, the obviously correct choice for a field no
+ * text can contain. It does not survive the round trip, and the two ways it fails are
+ * different on different tmux versions, which is why neither showed up on a developer's Mac:
+ *
+ *   - **tmux 3.3a (Debian 12), client locale not UTF-8:** tmux strips non-printable bytes
+ *     out of a client's argv, and a `-F` format string is argv. Every `\x1f` reaches the
+ *     server as `_`. Measured: `A\x1fB` prints `A_B`. A UTF-8 locale avoids it.
+ *   - **tmux 3.4 (Ubuntu 24.04):** the byte survives argv but comes back ESCAPED - the
+ *     output carries the four literal characters `\037`. Measured at every locale, and on
+ *     a server freshly started under one, so there is nothing to configure around it.
+ *   - **tmux 3.6b (macOS):** passes through intact, which is why this went unnoticed.
+ *
+ * In both broken cases `parsePanes` finds no separator and returns NOTHING. Not a degraded
+ * read - zero panes, so every tmux session on the machine goes uncarded and any agent on a
+ * tty is discovered process-only, with no pane to focus, type into, or interrupt. Ubuntu
+ * 24.04 is the current LTS, so that is not an exotic configuration.
+ *
+ * A printable separator sidesteps both mechanisms: nothing sanitizes it and nothing escapes
+ * it. The cost is that it is no longer a byte text cannot contain, so the parse below stops
+ * trusting the split and validates instead - see `parsePanes`. Three characters rather than
+ * one, because the risk is a field containing the separator and `~|~` is not a sequence that
+ * turns up in a session name, a window name, or a path.
+ */
+export const SEP = "~|~";
+
 const PANE_FMT = [
   "#{session_name}",
   "#{window_index}",
@@ -69,9 +100,9 @@ const PANE_FMT = [
   "#{pane_pid}",
   "#{pane_tty}",
   "#{pane_current_path}",
-].join("\x1f"); // unit separator: safe against spaces in names/paths
+].join(SEP);
 
-const CLIENT_FMT = ["#{client_tty}", "#{client_session}"].join("\x1f");
+const CLIENT_FMT = ["#{client_tty}", "#{client_session}"].join(SEP);
 
 /**
  * A SPACE, not the unit separator the two `-F` formats use, and the difference is
@@ -83,18 +114,24 @@ const CLIENT_FMT = ["#{client_tty}", "#{client_session}"].join("\x1f");
  * the round trip: the probe below fails to parse, reads as "not in a mode", and the
  * guard it exists to power silently stops guarding on exactly those machines.
  *
- * The `-F` formats above get away with `\x1f` because they are read back off stdout rather
- * than passed through the same sanitizer, and because a session name or path may legitimately
- * contain a space. Neither field HERE can - `pane_in_mode` is `0` or `1`, and tmux's mode
- * names are single words (`copy-mode`, `view-mode`, ...) - so nothing is lost, and the parse
- * below rejoins the tail anyway rather than assuming that stays true.
+ * This comment used to claim the `-F` formats "get away with" `\x1f` because they are read
+ * back off stdout rather than passed through the same sanitizer. That was wrong twice over -
+ * a format string is argv like any other argument, and tmux 3.4 mangles the byte on the way
+ * OUT as well - and it cost the product every tmux pane on two of the three versions
+ * measured. `SEP` above carries the finding; both formats are printable now.
+ *
+ * A space is still right HERE, and for a different reason than survivability: this one needs
+ * a separator no FIELD can contain, and neither field here can contain a space
+ * (`pane_in_mode` is `0` or `1`, and tmux's mode names are single words: `copy-mode`,
+ * `view-mode`, ...) while a session name or a path certainly can. The parse below rejoins
+ * the tail anyway rather than assuming that stays true.
  */
 const MODE_FMT = ["#{pane_in_mode}", "#{pane_mode}"].join(" ");
 
-/** Split one `-F` line on the unit separator, or null when it is blank or short. */
+/** Split one `-F` line on the field separator, or null when it is blank or short. */
 function fields(line: string, want: number): string[] | null {
   if (!line.trim()) return null;
-  const f = line.split("\x1f");
+  const f = line.split(SEP);
   return f.length < want ? null : f;
 }
 
@@ -110,6 +147,14 @@ export function parsePanes(stdout: string): MuxPane[] {
   for (const line of stdout.split("\n")) {
     const f = fields(line, 7);
     if (!f) continue;
+    // `SEP` is printable, so unlike the unit separator it once was, a field COULD contain it
+    // and shift everything after it by one. Validated rather than trusted, because the
+    // damage from a silent shift is specific and bad: `paneId` is what every write is
+    // addressed to, so a shifted line would send an operator's keystrokes to a pane chosen
+    // by a substring of somebody's window name. tmux pane ids are always `%<digits>`, which
+    // makes the check exact, and a line that fails it is DROPPED - one pane missing from the
+    // fleet is a visible absence, where one pane misaddressed is an invisible wrong.
+    if (!/^%\d+$/.test(f[3] ?? "")) continue;
     panes.push({
       session: f[0] ?? "",
       // The same string, and that is the whole reason `sessionName` had to become its own

@@ -1136,6 +1136,65 @@ async function injectShiftTab(session: Session): Promise<ActionResult> {
   return sendKeys(pane, ["shift-tab"]);
 }
 
+/**
+ * Write one Escape into a session's pane - the keystroke the Claude, Codex and Pi TUIs each
+ * read as "stop this turn".
+ *
+ * The dashboard gesture for this is Ctrl+C and the byte is deliberately NOT Ctrl+C. In all
+ * three TUIs ⌃C clears the input line and, pressed twice, quits the CLI, so forwarding the
+ * operator's literal keystroke would destroy the session it was meant to interrupt. Verified
+ * live on each: Claude and Codex stop streaming (Codex prints "Conversation interrupted",
+ * and its own footer advertises "esc to interrupt"), pi prints "Operation aborted" and
+ * records `stopReason: "aborted"` in its transcript. All three survive and take a next turn,
+ * which is the entire distinction from Kill.
+ *
+ * Like `injectShiftTab`, a success here only proves the byte reached the pane. Nothing on
+ * this path reports back that the turn actually ended - the pane cannot be asked - which is
+ * why the browser draws an optimistic "interrupting" that the next real reading retires.
+ */
+async function injectEscape(session: Session, deps: PaneDeps): Promise<ActionResult> {
+  const pane = deps.pane(session);
+  if (!pane) return { ok: false, error: NO_HANDLE };
+  return sendKeys(pane, ["escape"]);
+}
+
+/**
+ * Stop a pane-backed session's current turn.
+ *
+ * Two deliberate refusals here, both of which look like gaps until the reason is stated.
+ *
+ * **Copy-mode is honoured, not overridden.** This goes through `sendKeys` like every other
+ * keystroke, so `paneWriteBlock` refuses with `paneBlocked` when tmux reports the pane is in
+ * a mode. An exemption is the obvious thing to reach for - an interrupt is a foreground human
+ * act, and the human is right there - and it would buy nothing: Escape is the key that EXITS
+ * tmux copy-mode, so an ungated write would yank the operator out of the scrollback they were
+ * reading and the agent would keep running. The refusal is the better outcome and it is
+ * actionable, which is what the route's 409 and the sentence attached to it are for. Do not
+ * "fix" this by cancelling the mode first; that is the behavior `paneWriteBlock` rejects by
+ * name, and reversing it for one caller re-opens it for all of them.
+ *
+ * **The lock refuses rather than waits.** `withPaneLock`, never `withPaneLockWait`. An
+ * interrupt queued behind an in-flight write lands after that write's turn has already
+ * started, which is a worse outcome than a clear "busy, try again" - and `withPaneLockWait`
+ * is reserved for the compound reset. This is the opposite of what the SDK arm does with its
+ * send FIFO, and both are the correct local answer: that FIFO holds OUR queued sends, which
+ * an interrupt should overtake, while this lock holds an in-flight KEYSTROKE SEQUENCE, which
+ * must not be interleaved mid-write.
+ *
+ * Returns the `ActionResult` unchanged, `paneBlocked` and all, and emits nothing. Recording
+ * and broadcast are the route's job, exactly as they are for the permission-mode walk.
+ */
+export async function interruptPaneSession(
+  session: Session,
+  deps: PaneDeps = defaultPaneDeps,
+): Promise<ActionResult> {
+  return withPaneLock<ActionResult>(
+    session,
+    () => ({ ok: false, error: PANE_BUSY }),
+    () => injectEscape(session, deps),
+  );
+}
+
 /** Result of a mode change: the mode the pane was actually in when we stopped. */
 export interface ModeResult extends ActionResult {
   /** Observed from the pane, not assumed. Null when we couldn't read it. */

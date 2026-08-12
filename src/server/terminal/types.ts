@@ -104,6 +104,16 @@ export interface TerminalResult {
  */
 const KEYS = {
   enter: true,
+  /**
+   * A bare ESC (0x1B) - what the Claude, Codex and Pi TUIs all read as "stop this turn".
+   *
+   * Named rather than spelled, like every key here, and for a sharper reason than usual:
+   * the dashboard gesture for this is Ctrl+C, and Ctrl+C is precisely what must NOT reach a
+   * pane. In all three TUIs it clears the input line and, pressed twice, quits the CLI - so
+   * forwarding the operator's literal keystroke would destroy the session it was meant to
+   * interrupt. The chord and the byte are different facts, and this is the byte.
+   */
+  escape: true,
   up: true,
   down: true,
   left: true,

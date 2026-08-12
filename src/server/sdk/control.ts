@@ -1,5 +1,12 @@
 import type { Session } from "@shared/types.ts";
-import { kill, type ActionResult } from "../actions.ts";
+import { agentActive } from "@shared/session.ts";
+import {
+  defaultPaneDeps,
+  interruptPaneSession,
+  kill,
+  type ActionResult,
+  type PaneDeps,
+} from "../actions.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
 
 /**
@@ -67,10 +74,11 @@ export async function interruptSession(
   session: Session,
   supervisor: SdkSupervisor | undefined,
   pendingTurns?: PendingTurnQueueDrop,
+  paneDeps?: PaneDeps,
 ): Promise<InterruptResult> {
   const stopped = session.runtime === "sdk"
     ? await interruptDriver(session, supervisor)
-    : await interruptPane(session);
+    : await interruptPane(session, paneDeps);
   // Gated on a turn having GENUINELY been in flight, not merely on the request succeeding.
   //
   // Two failures this closes, and the second is the one that is easy to miss. A refused
@@ -108,19 +116,32 @@ async function interruptDriver(
 }
 
 /**
- * The pane arm, which Phase 2 implements by writing `Escape` into the bound terminal.
+ * The pane arm: one Escape into the bound terminal, which is what all three TUIs read as
+ * "stop this turn".
  *
- * Written as a refusal rather than left out, so the fan-out has both arms from the start and
- * the next phase has exactly one function body to replace - the route, the result shape and
- * the queue drop above it do not move. Unreachable today: no harness declares the terminal
- * runtime interruptible, so `interruptUnsupportedWhy` refuses at the route first. It is here
- * for the caller that forgets to ask.
+ * `stoppedTurn` is the honest half, and it is answered the same way the driver arm answers
+ * it - by reporting what was FOUND rather than what was asked for. A pane cannot be asked
+ * whether the keystroke landed (`actions.ts` returns as soon as the bytes are written, and
+ * no TUI acknowledges), so the evidence available is the daemon's own reading of the
+ * session, through the very predicate that decided to offer the control. That keeps the
+ * queue drop gated on a turn genuinely having been in flight, which is what stops an
+ * interrupt arriving just after a turn ended from deleting durable outbox rows that were
+ * about to be delivered normally.
+ *
+ * It is weaker evidence than the SDK arm's, and deliberately not dressed up as more: a
+ * terminal session's state is re-derived from its transcript on a poll tick rather than
+ * maintained by an event pump, so the window between "the turn ended" and "we know" is a
+ * tick rather than an RPC. The consequence of being wrong is bounded and in the safe
+ * direction - a queue that survives an interrupt is delivered, which the operator can see
+ * and undo, while a queue dropped in error is gone.
  */
-async function interruptPane(session: Session): Promise<InterruptResult> {
-  return {
-    ok: false,
-    error: `Mission Control cannot yet write an interrupt into a ${session.runtime} session's pane.`,
-  };
+async function interruptPane(
+  session: Session,
+  paneDeps: PaneDeps = defaultPaneDeps,
+): Promise<InterruptResult> {
+  const wasWorking = agentActive(session);
+  const sent = await interruptPaneSession(session, paneDeps);
+  return sent.ok ? { ...sent, stoppedTurn: wasWorking } : sent;
 }
 
 export async function stopSession(

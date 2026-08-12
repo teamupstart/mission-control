@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   injectPrompt,
+  interruptPaneSession,
   selectPaneOption,
   sendText,
   type InjectDeps,
@@ -144,6 +145,37 @@ test("sendText is refused, and types nothing, when the pane is in a mode", async
   assert.equal(r.paneBlocked, true, "the caller can tell this from a broken send");
   assert.match(r.error ?? "", /copy-mode/);
   assert.deepEqual(h.argv, [], "neither the text nor the Enter was sent");
+});
+
+test("the interrupt Escape is refused in a mode, and does NOT cancel the mode", async () => {
+  // The one writer where an exemption is genuinely tempting: an interrupt is a foreground
+  // human act and the human is right there, unlike the background writes this guard was
+  // built for. It is refused anyway, and the reason is specific rather than consistency for
+  // its own sake - Escape is the key that EXITS tmux copy-mode. An ungated interrupt would
+  // spend itself pulling the operator out of the scrollback they are reading and the agent
+  // would still be running: strictly worse than refusing, on both counts.
+  //
+  // `argv` empty is the load-bearing assertion. It says the mode was neither written
+  // through NOR cancelled first, which is the "fix" a later reader is most likely to reach
+  // for. The route turns this into a 409 rather than a 500 because it clears on its own.
+  const h = harness("1");
+  const r = await interruptPaneSession(tmuxSession(), paneDeps(h));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.paneBlocked, true, "transient, so nobody should spend a retry budget on it");
+  assert.match(r.error ?? "", /copy-mode/, "the operator is told which mode to leave");
+  assert.deepEqual(h.argv, [], "no Escape, and nothing that would have cancelled the mode");
+});
+
+test("the same Escape goes straight through on a pane in no mode", async () => {
+  // The control the test above needs: it must fail because of the MODE, not because the
+  // interrupt cannot reach a pane at all. Also the one place the rendered argv is pinned -
+  // `Escape`, tmux's own spelling, and not the operator's literal Ctrl+C.
+  const h = harness("0");
+  const r = await interruptPaneSession(tmuxSession(), paneDeps(h));
+
+  assert.equal(r.ok, true);
+  assert.deepEqual(h.argv, ["tmux send-keys -t %1 -- Escape"]);
 });
 
 test("the Enter that answers a menu is refused when the pane is in a mode", async () => {

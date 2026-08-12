@@ -7,6 +7,8 @@ import { goalLine } from "./goal.ts";
  * tier and the fallback tier are bounded by one number rather than two that can drift.
  */
 export const TITLE_MAX_CHARS = 60;
+/** Longest title detail projected to the browser, matching accepted task-title inputs. */
+export const TITLE_DETAIL_MAX_CHARS = 200;
 
 // Small words a title leaves lowercase unless they lead it, so an auto-derived title reads
 // the way a person would write one rather than Shouting Every Word.
@@ -18,7 +20,7 @@ const TITLE_MINOR_WORDS = new Set([
 /** The complete first-line title behind the bounded title stored on an untitled task. */
 export function deriveFullTitle(intent: string): string {
   const line = intent.split("\n").map((part) => part.trim()).find(Boolean) ?? "task";
-  return line
+  const title = line
     .split(/\s+/)
     .map((word, index) => {
       if (!word || /[A-Z]/.test(word)) return word;
@@ -26,6 +28,9 @@ export function deriveFullTitle(intent: string): string {
       return word.charAt(0).toUpperCase() + word.slice(1);
     })
     .join(" ");
+  return title.length > TITLE_DETAIL_MAX_CHARS
+    ? title.slice(0, TITLE_DETAIL_MAX_CHARS - 1) + "…"
+    : title;
 }
 
 /** A bounded fallback title for an untitled task. */

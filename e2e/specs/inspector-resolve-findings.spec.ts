@@ -136,7 +136,10 @@ test("an operator resolves a stuck finding from the Inspector ledger", async ({
   // The count is not optimistic: it changes when the daemon has agreed, because a finding
   // count is evidence about a public pull request rather than the state of a local control.
   await expect(row).toContainText("clean");
-  await expect(row).toContainText("2 fixed");
+  // "closed", not "fixed": an operator resolving a finding is not evidence a push fixed it,
+  // and the ledger stores one `resolved` status for all three routes without recording which.
+  await expect(row).toContainText("2 closed");
+  await expect(row).not.toContainText("2 fixed");
   // And the control retires with the state it was for - there is nothing left to resolve.
   await expect(resolve).toHaveCount(0);
   await shoot(dashboard, "inspector-findings-resolved");

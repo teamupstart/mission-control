@@ -1890,6 +1890,36 @@ test("/api/inspector/resolve-findings closes every open finding and clears the s
   assert.equal(rows.find((r) => r.key === key)?.mergeBlock, null);
 });
 
+test("/api/inspector/resolve-findings leaves a block reason it did not answer", async () => {
+  openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments");
+  const now = 1_800_000_000_000;
+  adoptAt(24, now);
+  const key = "owner/repo#24";
+  // `mergeVerdict` reports only the FIRST failing gate, and several are checked ahead of
+  // `findings`. A push landing since the last review reads `not-reviewed` while the previous
+  // head's findings are still open - so this resolve is a real edit that does not make
+  // `not-reviewed` any less true.
+  updateInspectorPr(key, { mergeBlock: "not-reviewed", round: 5, headSha: "head-1" }, now);
+  seedFinding(key, "aaa", "open");
+
+  const res = await app.request("/api/inspector/resolve-findings", {
+    method: "POST",
+    headers: { ...LOOPBACK, "content-type": "application/json" },
+    body: JSON.stringify({ prKey: key }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { resolved: 1 });
+
+  const rows = (await (
+    await app.request("/api/inspector/prs", { headers: LOOPBACK })
+  ).json()) as Array<{ key: string; mergeBlock: string | null }>;
+  assert.equal(
+    rows.find((r) => r.key === key)?.mergeBlock,
+    "not-reviewed",
+    "blanking this would report no known block on a PR that is waiting for a review",
+  );
+});
+
 test("/api/inspector/resolve-findings refuses a CLOSED pull request, and touches nothing", async () => {
   openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments");
   const now = 1_800_000_000_000;

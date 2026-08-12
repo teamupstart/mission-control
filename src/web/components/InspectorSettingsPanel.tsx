@@ -206,7 +206,7 @@ const EMPTY_FILTER: Record<InspectionBucket, string> = {
 const COLUMNS: readonly ConsoleColumn[] = [
   { label: "Pull request" },
   { label: "Verdict" },
-  { label: "Fixed" },
+  { label: "Closed" },
   { label: "Reviewed", className: "sc-when" },
   { label: "Resolve", className: "sc-act" },
 ];
@@ -464,11 +464,35 @@ export function InspectorSettingsPanel({
                   <span className={`sc-verdict sc-verdict-${bucket}`}>
                     {inspectionSummary(row)}
                   </span>
-                  {/* The Inspector's own evidence that it was worth running, and the one
-                      tally nothing else in the app shows. Blank rather than "0", so the
-                      column reads as a list of wins instead of a column of zeroes. */}
+                  {/* Findings that are no longer open, and the one tally nothing else in the
+                      app shows. Blank rather than "0", so the column reads as a list of
+                      outcomes instead of a column of zeroes.
+
+                      It says "closed", not "fixed", and the distinction is the honest one:
+                      `resolvedFindings` sums a single `resolved` status that three different
+                      things now write - a review round confirming a push fixed it, the
+                      Inspector dropping its own finding in conversation, and an operator
+                      asserting it was handled. Only the first is evidence a fix landed, and
+                      the ledger does not record which of the three it was, so a column
+                      labelled "fixed" would be claiming provenance the number does not
+                      carry. The tooltip names all three rather than picking the flattering
+                      one. */}
                   <span className="sc-fixed">
-                    {row.resolvedFindings > 0 ? `${row.resolvedFindings} fixed` : ""}
+                    {row.resolvedFindings > 0 ? (
+                      <Tooltip
+                        label={
+                          `${row.resolvedFindings} finding${row.resolvedFindings === 1 ? "" : "s"} ` +
+                          "on this pull request are no longer open. A finding closes when a review " +
+                          "round confirms a push fixed it, when the Inspector drops it while " +
+                          "answering a reply, or when an operator resolves it here - this count " +
+                          "does not distinguish them."
+                        }
+                      >
+                        <span>{row.resolvedFindings} closed</span>
+                      </Tooltip>
+                    ) : (
+                      ""
+                    )}
                   </span>
                   <span className="sc-when">{ago(row.lastReviewedAt, now)}</span>
                   {/* The way out of a finding that has genuinely been addressed and that

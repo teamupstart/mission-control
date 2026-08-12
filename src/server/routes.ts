@@ -3354,12 +3354,25 @@ export function buildApp(
       );
     }
     const resolved = resolveInspectorFindings(parsed.data.prKey, Date.now());
-    // The recorded block reason is derived from the ledger we just changed, so it is stale
-    // the moment this returns - and `recordBlock` only rewrites it when the answer CHANGES,
-    // so leaving it would keep publishing "the Inspector has open findings" about a pull
-    // request that no longer has any. Null is the honest reading until the next sweep
-    // re-derives it, and it is what an adopted-but-unevaluated row already carries.
-    if (resolved > 0) updateInspectorPr(parsed.data.prKey, { mergeBlock: null }, Date.now());
+    // Clear the recorded block ONLY when it was the one this call just answered.
+    //
+    // `findings` is derived from the ledger we changed, so it is stale the moment this
+    // returns - and `recordBlock` only rewrites the reason when the answer CHANGES, so
+    // leaving it would keep publishing "the Inspector has open findings" about a pull
+    // request that no longer has any. Null is the honest reading until the next sweep, and
+    // it is what an adopted-but-unevaluated row already carries.
+    //
+    // Any OTHER reason has to survive untouched, which is the part that is easy to miss:
+    // `mergeVerdict` reports only the FIRST failing gate, and several of them are checked
+    // ahead of `findings`. A pull request that has been pushed to since its last review
+    // reads `not-reviewed` while still carrying the previous head's open findings, so
+    // resolving them there is a real edit to the ledger that does not make `not-reviewed`
+    // any less true. Blanking it would replace an accurate reason with "nothing known" for
+    // the ~90s until the next sweep re-derives it - self-healing, and still the panel
+    // confidently reporting no known block on a pull request that is waiting for a review.
+    if (resolved > 0 && pr.mergeBlock === "findings") {
+      updateInspectorPr(parsed.data.prKey, { mergeBlock: null }, Date.now());
+    }
     // The panels poll, but the per-session chip rides SSE off this same ledger, so the
     // count on the card would otherwise stay wrong until the Inspector's own 90s sweep.
     registry.refreshInspections();

@@ -251,3 +251,21 @@ test("the resolve control names the pull request it acts on, so a table of them 
   assert.match(clean, /<span class="sc-act"><\/span>/);
   assert.doesNotMatch(clean, /aria-label="Resolve/);
 });
+
+// The Closed column counts a single `resolved` status that THREE things now write: a review
+// round confirming a push fixed it, the Inspector dropping its own finding in conversation,
+// and an operator asserting it was handled. Only the first is evidence a fix landed, and the
+// ledger does not record which route produced the row - so a column labelled "fixed" claims a
+// provenance the number does not carry. This is a wording contract, which is exactly the kind
+// that rots silently.
+test("the resolved tally says closed rather than fixed, because it cannot tell them apart", () => {
+  const html = render(
+    state({ inspections: [row({ number: 494, openFindings: 0, resolvedFindings: 2, round: 5 })] }),
+  );
+  assert.match(html, /2 closed/);
+  assert.doesNotMatch(html, /2 fixed/, "the count cannot claim a push fixed anything");
+  assert.match(html, /<span>Closed<\/span>/, "and the column header agrees with the cell");
+  // The tooltip is where the three routes are named, so the number is not merely vague.
+  assert.match(html, /review round confirms a push fixed it/);
+  assert.match(html, /an operator resolves it here/);
+});

@@ -183,8 +183,12 @@ let it speak.
 
 Each row says where that PR stands: `queued` (adopted, not yet looked at), `failed` (the
 last round errored - hover the link for why), a finding count, or `clean`, beside a count
-of the findings a later push has since fixed and - on an open PR still carrying findings -
-a **Resolve** control that closes them ([why that exists](#how-a-finding-gets-closed)). A PR that has since closed reads `merged` or
+of the findings that are no longer open and - on an open PR still carrying findings -
+a **Resolve** control that closes them ([why that exists](#how-a-finding-gets-closed)).
+
+That second number says `closed`, not `fixed`, because it cannot tell you which: a finding
+closes in [three ways](#how-a-finding-gets-closed) and only one of them is a push that fixed
+it. The ledger records the outcome, not which route produced it. A PR that has since closed reads `merged` or
 `closed` and is dimmed: it left the sweep for good, so it is history rather than a queue. A
 closed PR that *was* reviewed keeps its findings, because what the Inspector said about
 something that landed is the more useful fact.

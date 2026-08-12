@@ -824,6 +824,133 @@ test("live controls reach the handle and persist what restart will reuse", async
   }
 });
 
+test("an interrupt reaches the driver, and says so when there is no driver to reach", async () => {
+  const handle = fakeHandle();
+  let interrupts = 0;
+  handle.interrupt = async () => void (interrupts += 1);
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
+    assert.equal(interrupts, 1);
+    // The refusal is a NULL rather than a throw, because "there is nothing driving this
+    // session" is a fact the route reports as a 500 with a sentence, not an exception - and
+    // it is a third answer, distinct from both "stopped a turn" and "found none".
+    assert.equal(await supervisor.interrupt("sdk:not-a-session"), null);
+    assert.equal(interrupts, 1);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("an interrupt that arrives after the turn ended reports finding nothing", async () => {
+  // The race the whole gesture has to survive, and the reason this returns an outcome rather
+  // than a boolean. A card renders `working` from an SSE frame, so it is always slightly
+  // behind; a turn that finishes in the window between the operator's keypress and the
+  // request landing leaves the control live and the request legitimate, while there is no
+  // longer anything to stop. Both drivers accept a late interrupt without complaint, so the
+  // call succeeding says nothing - and the caller's next act (dropping this session's queued
+  // messages) is destructive, so it must not run on the strength of it.
+  const handle = fakeHandle();
+  let interrupts = 0;
+  handle.interrupt = async () => void (interrupts += 1);
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
+
+    // The launch turn completes on its own.
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    assert.equal(await supervisor.interrupt(session.id), "idle");
+    // The driver was still asked. It is idempotent, both adapters document tolerating a late
+    // interrupt, and asking covers the opposite race - a turn begun in a gap the daemon's own
+    // accounting has not caught up with.
+    assert.equal(interrupts, 2, "a late interrupt is still delivered, just not claimed");
+
+    // And a new turn makes it a real stop again.
+    await supervisor.send(session.id, { text: "another go" });
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("an interrupt is not queued behind the send it exists to cancel", async () => {
+  // The whole point, and the thing a `serialize()` here would silently undo: an interrupt
+  // that waits for the in-flight delivery to finish arrives after the turn it was meant to
+  // stop has already started. `send` is held open below, and the interrupt must land while
+  // it is still held - not after.
+  const handle = fakeHandle();
+  let releaseSend!: () => void;
+  const held = new Promise<void>((resolve) => (releaseSend = resolve));
+  const order: string[] = [];
+  handle.send = async (turn) => {
+    order.push("send:start");
+    handle.sent.push(turn);
+    await held;
+    order.push("send:done");
+    return "started" as const;
+  };
+  handle.interrupt = async () => void order.push("interrupt");
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    const sending = supervisor.send(session.id, { text: "go down the wrong path" });
+    await waitFor(() => order.includes("send:start"));
+
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
+    assert.deepEqual(order, ["send:start", "interrupt"], "the interrupt overtook the send");
+
+    releaseSend();
+    await sending;
+    assert.deepEqual(order, ["send:start", "interrupt", "send:done"]);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("the driver's own turn_done reconciles an interrupted turn, with no help from the control", async () => {
+  // The finding this phase is built on, pinned. `unfinishedTurns` and `turn_in_progress`
+  // look like state the interrupt should clear, and clearing them would double-count: the
+  // event pump already retires the turn when the driver reports it finished, which both
+  // drivers do after an interrupt. A restart reads exactly these two values, so a
+  // hand-reconciled interrupt would have the daemon re-drive the cancelled turn.
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    handle.push({ kind: "state", state: "working", activity: null });
+    await waitFor(() => registry.getSession(session.id)?.state === "working");
+    assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+
+    assert.equal(await supervisor.interrupt(session.id), "interrupted");
+    // Nothing yet: the interrupt has been accepted, the driver has not reported back, and
+    // the row still honestly says a turn is outstanding.
+    assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    await waitFor(() => registry.getSession(session.id)?.state === "idle");
+
+    // And exactly once. A second completion arriving on top of a hand-decremented counter
+    // is what would have gone negative; this asserts the counter was only ever the pump's.
+    await supervisor.send(session.id, { text: "do the right thing instead" });
+    assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+  } finally {
+    fake.restore();
+  }
+});
+
 test("a cleared Codex replacement conversation is durably idle", async () => {
   const handle = fakeHandle();
   handle.clearContext = async () => {

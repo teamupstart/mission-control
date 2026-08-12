@@ -60,7 +60,7 @@ const { MODEL_PICKER_XHIGH } = await import("./fixtures/claude-panes.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-type SplitCap = "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp";
+type SplitCap = "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp" | "interrupt";
 
 /** An agent whose harness declares the capability, and one that declares it null. */
 function split<K extends SplitCap>(cap: K) {
@@ -120,6 +120,7 @@ test("the server harness registry IS the shared record, plus what needs a filesy
     assert.equal(harness.clearContext, caps.clearContext);
     assert.equal(harness.mcp, caps.mcp);
     assert.equal(harness.effort, caps.effort);
+    assert.equal(harness.interrupt, caps.interrupt);
   }
 });
 
@@ -163,8 +164,20 @@ test("every capability's null path is exercised, by a real harness or a named fi
   // capability that gains a null declarer must leave `BY_FIXTURE`, and one that loses its
   // last declarer must join it - either way this fails first, rather than a loop over an
   // empty `hasnt` quietly asserting nothing.
+  //
+  // `interrupt` joins with pi as its real null declarer: pi has no embedded driver, so
+  // there is no interrupt primitive to reach and the pane mechanism does not exist for any
+  // harness yet. If a later phase gives pi a terminal interrupt, the slot loses that
+  // declarer and has to move onto this list - which is what this assertion is for.
   const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext"];
-  for (const cap of ["permissionModes", "skills", "workQueue", "clearContext", "mcp"] as const) {
+  for (const cap of [
+    "permissionModes",
+    "skills",
+    "workQueue",
+    "clearContext",
+    "mcp",
+    "interrupt",
+  ] as const) {
     const declared = split(cap).hasnt.length > 0;
     if (BY_FIXTURE.includes(cap)) {
       assert.equal(declared, false, `${cap} has a real null declarer again - drop it from BY_FIXTURE`);

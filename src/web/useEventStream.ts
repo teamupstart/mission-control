@@ -20,6 +20,7 @@ import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { dropSessionView } from "./lib/conversation-view.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
+import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
 
@@ -204,6 +205,10 @@ export function useEventStream(): MissionState {
           setHasSnapshot(true);
           break;
         case "session_upsert":
+          // A real reading retires the optimistic "interrupting" badge the moment it says
+          // the agent has stopped, so the transient presentation hands over to the durable
+          // one rather than waiting out its own timeout on top of the truth.
+          reconcileInterrupting(msg.session);
           setSessions((prev) => new Map(prev).set(msg.session.id, msg.session));
           break;
         case "session_remove":
@@ -216,6 +221,7 @@ export function useEventStream(): MissionState {
           dropSessionDrafts(msg.id);
           dropHistory(msg.id);
           dropSessionView(msg.id);
+          dropInterrupting(msg.id);
           setSessions((prev) => {
             const next = new Map(prev);
             next.delete(msg.id);

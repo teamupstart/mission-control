@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AGENT_TYPES, type KeepAwakeStatus, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
-import { backlogTasks, canCycleMode } from "@shared/session.ts";
+import { backlogTasks, canCycleMode, canInterruptSession } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
@@ -66,10 +66,12 @@ import {
   useKeybindings,
   chordFromEvent,
   chordHasCommandModifier,
+  chordYieldsToSelection,
   formatChord,
 } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
+import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
 import { FileWindow } from "./components/FileWindow.tsx";
 import { FilePicker } from "./components/FilePicker.tsx";
@@ -112,6 +114,7 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
   ["handoff", "handoff"],
   ["queue", "toggleQueue"],
   ["mode", "cycleMode"],
+  ["interrupt", "requestInterrupt"],
   ["complete", "requestComplete"],
   ["kill", "requestKill"],
 ];
@@ -1422,6 +1425,36 @@ export function App(): React.JSX.Element {
       // overlay. The inline diff uses this for its file list.
       if (e.defaultPrevented) return;
 
+      // The interrupt chord yields to a live text selection, and this is the ONE gate that
+      // makes it do so - ahead of every dispatch path below rather than inside any of them.
+      //
+      // ⌃C is Copy on Windows and Linux, which the Electron shell inherits, so the plan's
+      // second decision is that a selection wins. Placing that check inside the typing
+      // bypass further down would look sufficient and would not be: `typing` is true only
+      // for focus inside an editable field, so selecting a transcript line, a diff hunk or
+      // captured terminal output leaves it FALSE and falls straight through to the
+      // `BAR_ACTIONS` dispatch, which calls `preventDefault()` unconditionally - as does the
+      // board arm. Copying read-only text off a card is the most common copy in this app,
+      // and it is exactly the case a bypass-local check would have broken while appearing to
+      // handle the obvious one.
+      //
+      // Returning WITHOUT `preventDefault` is the whole point: the browser then performs the
+      // copy it was always going to.
+      const field = target as Partial<HTMLTextAreaElement> | null;
+      if (
+        chordYieldsToSelection({
+          chord,
+          interruptChord: bindings.interrupt,
+          documentSelection: window.getSelection()?.toString() ?? "",
+          fieldSelection:
+            typeof field?.selectionStart === "number" || typeof field?.selectionEnd === "number"
+              ? { start: field.selectionStart ?? null, end: field.selectionEnd ?? null }
+              : null,
+        })
+      ) {
+        return;
+      }
+
       // Preserve the native activation of a focused link or button - including the
       // selected tile's own open button, which the arrow keys put the cursor on.
       if (chord === "Enter" && target?.closest("button, a[href]")) return;
@@ -1547,6 +1580,29 @@ export function App(): React.JSX.Element {
             setConsoleZone("rail");
             focusReaderRail(readerSession.id);
           }
+          return;
+        }
+      }
+
+      // Interrupt is the second action allowed to fire from inside a text field, and the
+      // only one that HAS to be. The whole reason the gesture exists is that the
+      // replacement instruction gets typed immediately, so the cursor is usually already in
+      // the composer when it is pressed - and the guard below would otherwise make this the
+      // one chord that is dead exactly where it is most wanted.
+      //
+      // Gated on a ⌘/⌃ modifier the way the palette above is, so a rebinding to a bare key
+      // falls back behind the guard rather than eating that character out of a half-written
+      // message. The selection case is already settled at the top of this handler and must
+      // not be re-implemented here.
+      //
+      // It runs against the selected card's own bar, which is the same handle the
+      // `BAR_ACTIONS` dispatch below reaches; with no bar mounted there is no composer to
+      // have been typing in, so the guard takes it.
+      if (typing && chord === bindings.interrupt && chordHasCommandModifier(chord)) {
+        const bar = selectedId ? actionHandles.current.get(selectedId) : undefined;
+        if (bar) {
+          e.preventDefault();
+          bar.requestInterrupt();
           return;
         }
       }
@@ -1855,6 +1911,26 @@ export function App(): React.JSX.Element {
       if (run === "cycleMode") {
         e.preventDefault();
         if (overviewSel && canCycleMode(overviewSel)) void api.cycleMode(overviewSel.id);
+        return;
+      }
+      // Interrupt is the second of those, for the identical reason: stopping an agent is a
+      // live control, not a reveal, and drilling into a detail nobody asked for while the
+      // agent goes on working is the bug the arm above was added to fix. The shared
+      // `canInterruptSession` is the same gate the ActionBar button reads, so a tile and a
+      // card cannot disagree about whether the key does anything - and the optimistic badge
+      // is raised here too, or the board would show nothing at all until the driver replied.
+      if (run === "requestInterrupt") {
+        e.preventDefault();
+        if (overviewSel && canInterruptSession(overviewSel)) {
+          markInterrupting(overviewSel.id);
+          void api.interrupt(overviewSel.id).then((r) => {
+            // `stoppedTurn: false` alongside it: the turn ended on its own before the request
+            // landed, so there is no stop for the badge to be describing. The overview draws
+            // no flash, so retiring the badge is the whole of what this surface can say - and
+            // the tile's own state, which is about to read `idle`, is the honest answer.
+            if (!r.ok || r.stoppedTurn === false) clearInterrupting(overviewSel.id);
+          });
+        }
         return;
       }
       e.preventDefault();
@@ -2770,7 +2846,14 @@ function CommandBar({
   expanded: boolean;
   onToggleExpand: () => void;
   onAction: (
-    action: "startSend" | "focusPane" | "handoff" | "toggleQueue" | "cycleMode" | "requestKill",
+    action:
+      | "startSend"
+      | "focusPane"
+      | "handoff"
+      | "toggleQueue"
+      | "cycleMode"
+      | "requestInterrupt"
+      | "requestKill",
   ) => void;
   onDiff: () => void;
   onFiles: () => void;
@@ -2854,6 +2937,18 @@ function CommandBar({
               <Tooltip label="Rename this session's tab">
                 <button className="keycap-btn" onClick={onRename}>
                   <kbd>{formatChord(bindings.rename)}</kbd> rename
+                </button>
+              </Tooltip>
+            )}
+            {/* Conditional like `mode` and `rename` above rather than standing chrome: this
+                strip is a row of offers, and a key that does nothing on an idle agent is
+                worse here than absent, because there is no tooltip-carrying disabled state
+                in a bar made entirely of keycaps. The shared gate is the same one the card's
+                button reads. */}
+            {canInterruptSession(session) && (
+              <Tooltip label="Stop what this agent is doing now and drop its queued messages">
+                <button className="keycap-btn" onClick={() => onAction("requestInterrupt")}>
+                  <kbd>{formatChord(bindings.interrupt)}</kbd> interrupt
                 </button>
               </Tooltip>
             )}

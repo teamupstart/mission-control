@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
-import { canCycleMode } from "@shared/session.ts";
+import { canCycleMode, canInterruptSession } from "@shared/session.ts";
+import { interruptUnsupportedWhy } from "@shared/harness-capabilities.ts";
 import { canMessage, muxHandle } from "@shared/pane.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
+import { clearInterrupting, interruptReport, markInterrupting } from "../lib/interrupting.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import {
   latestEditablePendingTurn,
@@ -31,6 +33,14 @@ export interface ActionBarHandle {
   cycleMode: () => void;
   requestComplete: () => void;
   requestKill: () => void;
+  /**
+   * Stop the current turn, drop the queue, and put the cursor in the composer.
+   *
+   * Unlike its neighbours it opens no dialog: interrupt is neither destructive nor
+   * irreversible, and a confirm between the operator and a stop they want immediately is
+   * the feature failing.
+   */
+  requestInterrupt: () => void;
   cancel: () => void;
   /**
    * Hand an embedded session to a terminal. A no-op on a pane-backed one, which is
@@ -51,8 +61,14 @@ const HANDOFF_LABEL =
 
 /**
  * Per-session controls: focus its pane, send a message into its prompt, show its
- * work queue, reset its checkout, complete its task, or terminate it. "Send" puts a
- * cursor in this card's one compose box; "Queue" toggles the work-queue panel.
+ * work queue, reset its checkout, stop the turn it is running, complete its task, or
+ * terminate it. "Send" puts a cursor in this card's one compose box; "Queue" toggles the
+ * work-queue panel.
+ *
+ * "Interrupt" is the one control here that acts immediately and asks nothing, and that is
+ * the measure of it: it ends a TURN, not the session, so there is nothing to undo and
+ * nothing to warn about. A confirm in front of a stop the operator wants right now is the
+ * feature failing at the moment it is used.
  *
  * "Reset", "Complete" and "Kill" all open an APP-LEVEL confirm rather than deciding
  * anything here. Kill used to arm itself in place on a first click; it moved out for
@@ -88,10 +104,11 @@ export function ActionBar({
   workflowRun?: WorkflowRunSummary | null;
   /**
    * Which control set to draw. "card" (default, unchanged) is the grid's full row -
-   * Send / Focus / Queue / Reset / Kill. "foot" is the console's detail footer, which
-   * matches the mockup: Focus / Diff / Reset / Kill, since Send is the conversation's own
-   * reply box and Queue is a tab. The imperative HANDLE is identical either way, so every
-   * keyboard shortcut still works in both - only the buttons drawn differ. */
+   * Send / Focus / Queue / Reset / Interrupt / Kill. "foot" is the console's detail
+   * footer, which matches the mockup: Focus / Diff / Reset / Interrupt / Kill, since Send
+   * is the conversation's own reply box and Queue is a tab. The imperative HANDLE is
+   * identical either way, so every keyboard shortcut still works in both - only the buttons
+   * drawn differ. */
   variant?: "card" | "foot";
   /** Reveal the session detail's Diff tab. Only drawn by the "foot" variant. */
   onDiff?: () => void;
@@ -177,6 +194,16 @@ export function ActionBar({
   const killLabel = killsMux
     ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" - confirms first (${formatChord(bindings.kill)})`
     : `Terminates the agent process - confirms first (${formatChord(bindings.kill)})`;
+  // Drawn on every card, and DISABLED rather than hidden when it cannot be used, because
+  // the two reasons it cannot are worth different sentences and both are worth reading. A
+  // harness/runtime pair with no mechanism gets the capability's own words - which is what
+  // makes the next phase turn this control on by declaring a capability rather than by
+  // touching this file. An idle agent gets the plainer fact: there is nothing to stop.
+  const interruptable = canInterruptSession(session);
+  const interruptLabel = interruptUnsupportedWhy(session.agent, session.runtime)
+    ?? (interruptable
+      ? `Stop what this session is doing now and drop its queued messages - the conversation stays (${formatChord(bindings.interrupt)})`
+      : "This session isn't running a turn, so there is nothing to stop");
 
   async function run<T extends ActionResult>(label: string, fn: () => Promise<T>): Promise<T> {
     setBusy(label);
@@ -317,6 +344,39 @@ export function ActionBar({
     onKill?.();
   }
 
+  /**
+   * Stop the turn, drop the queue, and hand the operator the composer.
+   *
+   * Deliberately NOT a dialog, which is the one way it differs from the two above. Kill and
+   * Complete confirm because they are irreversible and settle a task; this ends a turn and
+   * keeps everything else, and a confirm step in front of a stop someone wants immediately
+   * is the feature failing at the moment it is used.
+   *
+   * `startSend` rather than a focus call of its own, so the cursor lands wherever this card
+   * puts a composer - the transcript's reply box when one is mounted, this bar's own box
+   * otherwise. That is the same routing the `s` chord takes, and it is the point of the
+   * gesture: the replacement instruction gets typed now, not after the agent finishes work
+   * nobody wants.
+   *
+   * The optimistic badge is raised before the request and cleared on refusal, because the
+   * failure the operator must never see is a card that says "interrupting" about a stop the
+   * daemon declined. A success leaves it up for the next real reading to retire.
+   */
+  async function requestInterrupt(): Promise<void> {
+    if (!interruptable || busy === "interrupt") return;
+    markInterrupting(session.id);
+    const result = await run("interrupt", () => api.interrupt(session.id));
+    const report = interruptReport(result);
+    // `settled` covers both the refusal and the stop that found nothing. Neither will produce
+    // a reading that retires the badge, so it has to be taken back here or it sits there
+    // describing something that did not happen for its whole timeout.
+    if (report.settled) clearInterrupting(session.id);
+    if (report.flash) showFlash({ text: report.flash, ok: true }, 6000);
+    // The composer regardless, including on a stop that found nothing: the operator pressed
+    // this key in order to type, and a failed stop does not make that less true.
+    if (result.ok) startSend();
+  }
+
   // Escape's job here is now only the compose box. The dialogs are overlays and peel
   // themselves off first - App stands down while any is open (`overlays.anyOpen`), so
   // clearing their state from here would be reaching across that boundary.
@@ -331,10 +391,12 @@ export function ActionBar({
   // Register a stable handle that always calls the latest closures, so App can
   // drive this bar by keyboard without re-registering on every render.
   const latest = useRef({
-    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill, cancel, handoff,
+    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill,
+    requestInterrupt, cancel, handoff,
   });
   latest.current = {
-    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill, cancel, handoff,
+    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill,
+    requestInterrupt, cancel, handoff,
   };
   useEffect(() => {
     if (!registerActions) return;
@@ -345,6 +407,7 @@ export function ActionBar({
       cycleMode: () => latest.current.cycleMode(),
       requestComplete: () => latest.current.requestComplete(),
       requestKill: () => latest.current.requestKill(),
+      requestInterrupt: () => void latest.current.requestInterrupt(),
       cancel: () => latest.current.cancel(),
       handoff: () => latest.current.handoff(),
     };
@@ -441,9 +504,10 @@ export function ActionBar({
           </Tooltip>
         </div>
       ) : variant === "foot" ? (
-        // The console footer: the mockup's Focus / Diff / Reset / Kill. Send lives in the
-        // conversation's reply box and Queue is a tab, so neither is drawn here - but the
-        // handle above still carries startSend and toggleQueue, so `s` and `q` work.
+        // The console footer: the mockup's Focus / Diff / Reset / Kill, plus Interrupt.
+        // Send lives in the conversation's reply box and Queue is a tab, so neither is
+        // drawn here - but the handle above still carries startSend and toggleQueue, so
+        // `s` and `q` work.
         <>
           {isEmbedded ? (
             <Tooltip label={HANDOFF_LABEL}>
@@ -485,6 +549,18 @@ export function ActionBar({
               </button>
             </Tooltip>
           )}
+          <Tooltip label={interruptLabel}>
+            <button
+              className="act act-interrupt"
+              onClick={() => void requestInterrupt()}
+              disabled={!interruptable || busy === "interrupt"}
+            >
+              {/* "interrupt", not "stop": the badge beside it already says "stopping" for
+                  a session being evicted, and two words a keystroke apart meaning end-the-
+                  turn and end-the-session is the confusion this control exists to remove. */}
+              <Keycap action="interrupt" /> {busy === "interrupt" ? "interrupting…" : "interrupt"}
+            </button>
+          </Tooltip>
           {onComplete && (
             <Tooltip label={completeLabel}>
               <button
@@ -575,6 +651,16 @@ export function ActionBar({
               </button>
             </Tooltip>
           )}
+          <Tooltip label={interruptLabel}>
+            <button
+              className="btn btn-interrupt"
+              onClick={() => void requestInterrupt()}
+              disabled={!interruptable || busy === "interrupt"}
+            >
+              <Keycap action="interrupt" />{" "}
+              {busy === "interrupt" ? "Interrupting…" : "Interrupt"}
+            </button>
+          </Tooltip>
           {onComplete && (
             <Tooltip label={completeLabel}>
               <button className="btn btn-complete" onClick={requestComplete} disabled={!session.task}>

@@ -59,6 +59,42 @@ test("sdkFor is the accessor, and reports the same absence the capability does",
   }
 });
 
+test("an interruptible sdk runtime is the same fact as the driver that performs it", () => {
+  // The third one-fact-two-files pair on this axis, and the failure it guards is the one
+  // the operator feels: a capability that says a session can be stopped over the Agent SDK
+  // while `HARNESSES[a].sdk` is null draws a live control whose route can only ever answer
+  // "this session has no live embedded driver". The interrupt IS the driver's own primitive
+  // (`SdkSessionHandle.interrupt`), so the declaration cannot outrun it.
+  for (const agent of AGENT_TYPES) {
+    if (!capabilitiesFor(agent).interrupt?.runtimes.includes("sdk")) continue;
+    assert.notEqual(
+      HARNESSES[agent].sdk,
+      null,
+      `${agent}: declares its sdk turn interruptible with no driver to interrupt`,
+    );
+    assert.ok(
+      capabilitiesFor(agent).runtimes.includes("sdk"),
+      `${agent}: declares an sdk interrupt on a runtime it does not offer`,
+    );
+  }
+});
+
+test("a harness with no driver declares no interrupt, so the null path is a real one", () => {
+  // The complement, and the reason `interrupt` stays off `harness-capabilities.test.ts`'s
+  // `BY_FIXTURE` list: pi exercises the null for real rather than through a stub. Nothing
+  // here says a driverless harness can NEVER be interrupted - the pane mechanism is a later
+  // phase - only that this build ships no way to, and says so.
+  const driverless = AGENT_TYPES.filter((agent) => sdkFor(agent) === null);
+  assert.ok(driverless.length > 0, "no harness exercises the driverless path any more");
+  for (const agent of driverless) {
+    assert.equal(
+      capabilitiesFor(agent).interrupt,
+      null,
+      `${agent}: has no driver and no pane interrupt exists yet, so this must be null`,
+    );
+  }
+});
+
 test("the capability record cannot have a hole in it", () => {
   // The `Record<AgentType, ...>` enforcement, proven at runtime as well as at compile time:
   // a new agent id added to AGENT_TYPES and nowhere else fails here even if someone reaches

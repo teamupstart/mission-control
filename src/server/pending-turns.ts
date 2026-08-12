@@ -7,6 +7,7 @@ import {
   claimNextPendingTurn,
   createPendingTurn,
   deleteClaimedPendingTurn,
+  dropQueuedPendingTurns,
   markPendingTurnUncertain,
   recallPendingTurn,
   recoverSendingPendingTurns,
@@ -265,6 +266,29 @@ export class PendingTurnManager {
     const recalled = recallPendingTurn(key, id, revision);
     if (recalled) this.registry.refreshPendingTurns(key);
     return recalled;
+  }
+
+  /**
+   * Drop everything still waiting to be delivered to this session, and say how much went.
+   *
+   * `recall`'s bulk sibling, and the queue half of the interrupt gesture: stopping the turn
+   * while leaving the outbox armed would restart, seconds later, exactly the work the
+   * operator just stopped - so the two are one act. It is runtime-independent, which is why
+   * it lives on the manager rather than in either arm of the interrupt's runtime fan-out.
+   *
+   * Only `queued` rows go; `sending` and `uncertain` are left alone for the reasons
+   * `dropQueuedPendingTurns` states. This is not a recall: the text is discarded rather
+   * than handed back to a composer, because the operator is about to type a replacement
+   * and a queue that reappeared in the box would be in the way of it.
+   */
+  dropQueued(sessionId: string): number {
+    if (!this.started) return 0;
+    const session = this.registry.getSession(sessionId);
+    if (!session) return 0;
+    const key = noteKeyFor(session);
+    const dropped = dropQueuedPendingTurns(key);
+    if (dropped > 0) this.registry.refreshPendingTurns(key);
+    return dropped;
   }
 
   retry(sessionId: string, id: string, revision: number): PendingTurn | null {

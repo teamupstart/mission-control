@@ -81,9 +81,28 @@ export type ClaudeSdkPermissionResult =
  */
 export type ClaudeSdkPermissionUpdate = Record<string, unknown>;
 
+/**
+ * What an interrupt reports back: the uuids of async user messages that survived it.
+ *
+ * Optional, and both halves of that are load-bearing. The field rides the CLI's
+ * `interrupt_receipt_v1` capability, so an older CLI answers with an empty success payload
+ * and there is nothing to read. And Mission Control never builds a driver-side queue - its
+ * two send paths are the supervisor's serialized `send` (whose mid-turn deliveries steer
+ * into the active turn) and `sendWhenIdle` (which only ever delivers to an idle session),
+ * with everything else waiting in the daemon's own durable outbox. So a non-empty list is
+ * not a case to handle, it is a surprise: something put work into the driver's queue that
+ * this daemon does not know about. The adapter logs it and acts on nothing.
+ *
+ * `cancel_queued`, the wire flag that would have emptied that queue, is unreachable from
+ * here in any case: the pinned SDK declares `interrupt()` with no parameters.
+ */
+export interface ClaudeSdkInterruptReceipt {
+  still_queued?: string[];
+}
+
 /** The live query object, narrowed to the controls this driver drives. */
 export interface ClaudeSdkQuery extends AsyncIterable<ClaudeSdkMessage> {
-  interrupt(): Promise<unknown>;
+  interrupt(): Promise<ClaudeSdkInterruptReceipt | undefined>;
   setPermissionMode(mode: string): Promise<void>;
   applyFlagSettings(settings: { effortLevel?: ThinkingLevel | null }): Promise<void>;
   setModel(model?: string): Promise<void>;

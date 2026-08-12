@@ -11,6 +11,7 @@ import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type {
   ClaudeSdkDeps,
+  ClaudeSdkInterruptReceipt,
   ClaudeSdkMessage,
   ClaudeSdkPermissionResult,
   ClaudeSdkQuery,
@@ -64,9 +65,12 @@ class FakeQuery implements ClaudeSdkQuery {
     }
   }
 
-  async interrupt(): Promise<unknown> {
+  /** Answers the way a CLI without `interrupt_receipt_v1` does: success, and no receipt. */
+  interruptReceipt: ClaudeSdkInterruptReceipt | undefined = undefined;
+
+  async interrupt(): Promise<ClaudeSdkInterruptReceipt | undefined> {
     this.control.push("interrupt");
-    return undefined;
+    return this.interruptReceipt;
   }
 
   async setPermissionMode(mode: string): Promise<void> {

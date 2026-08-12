@@ -1381,3 +1381,70 @@ test("overlapping resets hold delivery until the final reset finishes", async ()
   f.manager.stop();
   clearPendingTurns(f.key);
 });
+
+test("an interrupt drops what is still editable and leaves what has left or is in doubt", async () => {
+  // The queue half of the interrupt gesture, and the three states are the whole test.
+  //
+  // A `queued` row has not been delivered and nobody is waiting on it, so stopping the turn
+  // has to take it too - leaving it armed would restart, seconds later, exactly the work the
+  // operator just stopped. A `sending` row has already left for the harness, so deleting it
+  // would erase Mission Control's only record of a message that may be mid-flight. An
+  // `uncertain` row is a question waiting for a human ("did this land?"), and the person
+  // pressing Ctrl+C is not answering it.
+  const f = sdkFixture("interrupt-drops-queue", async () => "started");
+  // Working, so the manager's own drain leaves these rows alone and the only thing that
+  // moves them is the interrupt under test.
+  working(f.registry, f.id);
+
+  // Oldest first, because `claimNextPendingTurn` takes the head of the queue: the row that
+  // has already left is the one that was next in line.
+  const inFlight = createPendingTurn({
+    id: "left-already",
+    noteKey: f.key,
+    text: "already sending",
+    now: 1,
+  });
+  createPendingTurn({ id: "gone-1", noteKey: f.key, text: "first queued", now: 2 });
+  createPendingTurn({ id: "gone-2", noteKey: f.key, text: "second queued", now: 3 });
+  const claimed = claimNextPendingTurn(f.key, 4);
+  assert.equal(claimed?.id, inFlight.id, "the oldest queued row is the one that leaves");
+  f.registry.refreshPendingTurns(f.key);
+  assert.deepEqual(
+    listPendingTurns(f.key).map((turn) => [turn.text, turn.state]),
+    [["already sending", "sending"], ["first queued", "queued"], ["second queued", "queued"]],
+  );
+
+  assert.equal(f.manager.dropQueued(f.id), 2);
+  assert.deepEqual(
+    listPendingTurns(f.key).map((turn) => [turn.text, turn.state]),
+    [["already sending", "sending"]],
+  );
+  // And the card was told, or the drawer would keep drawing rows the database no longer has.
+  assert.deepEqual(
+    f.registry.getSession(f.id)?.pendingTurns.map((turn) => turn.text),
+    ["already sending"],
+  );
+
+  // The uncertain row, from the same starting point: still there afterwards, because it
+  // carries information the operator has not been given a chance to act on.
+  markPendingTurnUncertain(claimed!.id, claimed!.revision, "delivery was ambiguous", 5);
+  f.registry.refreshPendingTurns(f.key);
+  createPendingTurn({ id: "gone-3", noteKey: f.key, text: "queued after the doubt", now: 6 });
+  f.registry.refreshPendingTurns(f.key);
+
+  assert.equal(f.manager.dropQueued(f.id), 1);
+  assert.deepEqual(
+    listPendingTurns(f.key).map((turn) => [turn.text, turn.state]),
+    [["already sending", "uncertain"]],
+  );
+
+  // Idempotent, and honest about it: a second press has nothing left to take.
+  assert.equal(f.manager.dropQueued(f.id), 0);
+  // A session the registry has never heard of is a no-op rather than a throw - the route
+  // above it has already answered 404 for that case, and this must not be a second way to
+  // fail one request.
+  assert.equal(f.manager.dropQueued("sdk:no-such-session"), 0);
+
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});

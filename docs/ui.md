@@ -628,6 +628,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session - its terminal home, or an Agent SDK session's own durable name | Selected session |
 | <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then request session shutdown; press <kbd>Enter</kbd> to confirm. The detail closes once shutdown is accepted while an Agent SDK session drains in the background. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
 | <kbd>k</kbd> | Request shutdown of the selected session and close its detail once accepted (press <kbd>Enter</kbd> to confirm) | Selected session |
+| <kbd>⌃</kbd><kbd>C</kbd> | [Interrupt](sessions.md#interrupt-stop-the-turn-without-ending-the-session) the selected session: stop the turn it is running, drop everything queued behind it, and put the cursor in its composer. No confirm - the conversation survives. Works from inside the composer, and from the Board overview without opening a detail. **Yields to a live text selection**, so <kbd>⌃</kbd><kbd>C</kbd> still copies whenever anything is selected. Agent SDK sessions only for now; a terminal-runtime card shows the control disabled with the reason | Selected working session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move between Session, the stages, their reviewers and End. <kbd>Home</kbd> / <kbd>End</kbd> jump to either terminus | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 | <kbd>⌥</kbd><kbd>←</kbd> <kbd>⌥</kbd><kbd>→</kbd> | Move the focused stage earlier or later in the chain | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
@@ -652,8 +653,9 @@ while a card in that strip has focus - so they are fixed for the same reason.
 ### Keycaps on the buttons
 
 The buttons those shortcuts drive print the key on their own face - Terminal and
-Codex / Claude in the conversation toolbar; Send, Focus, Files, Queue, Reset, Complete and
-Kill on a card; Focus, Diff, Reset, Complete and Kill in the Console footer; the Console's
+Codex / Claude in the conversation toolbar; Send, Focus, Files, Queue, Reset, Interrupt,
+Complete and Kill on a card; Focus, Diff, Reset, Interrupt, Complete and Kill in the Console
+footer; the Console's
 Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board card's workflow disclosure; and the settings
 rail's search box. They

@@ -14,6 +14,7 @@ import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import { costTone } from "@shared/cost.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
 import { compactTokens, contextTone, fmtUsd, repoLeaf, stateDisplay } from "../lib/format.ts";
+import { useInterrupting } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -1305,7 +1306,10 @@ export function StateBadge({
   session: Session;
   onOpenReviews?: () => void;
 }): React.JSX.Element {
-  const st = stateDisplay(session);
+  // The transient stop lives beside the durable state rather than replacing it: one badge,
+  // and the same one, so a card never grows a second place that says what a session is
+  // doing. Cards and the Console detail both draw this component, so both follow.
+  const st = stateDisplay(session, useInterrupting(session.id));
   if (session.pendingReviews > 0 && onOpenReviews) {
     return (
       <Tooltip

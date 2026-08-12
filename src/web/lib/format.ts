@@ -271,7 +271,7 @@ export interface StateDisplay {
  *
  * Mirrors reportBucket's precedence (see src/shared/session.ts).
  */
-export function stateDisplay(session: Session): StateDisplay {
+export function stateDisplay(session: Session, interrupting = false): StateDisplay {
   if (session.state === "exited") return { label: "exited", tone: "exited" };
   if (session.state === "stopping") return { label: "stopping", tone: "working" };
   // A pending review always needs you, regardless of the agent's own state.
@@ -286,6 +286,17 @@ export function stateDisplay(session: Session): StateDisplay {
   if (activePaneDialog(session)) {
     return { label: "needs an answer", tone: "attention" };
   }
+  // The one label here that is not a reading: the operator's own stop, in flight. Held
+  // client-side (`lib/interrupting.ts`) and retired by the next real reading or by its own
+  // timeout, which is why it can sit here without a `SessionState` member behind it.
+  //
+  // Below everything above it on purpose - those all outrank it, and each for its own
+  // reason. A session already exiting is past being interrupted; a review or a menu on the
+  // screen is a thing needing a HUMAN, which is more urgent than the progress of a request
+  // that human just made. Above the state map, because that is what it is a transient
+  // stand-in for. And it keeps the `working` tone: the agent has not stopped yet, and
+  // colouring it otherwise would claim a result that has not arrived.
+  if (interrupting) return { label: "interrupting", tone: "working" };
   if (!session.stateConfirmed) {
     return { label: "running", tone: "neutral" };
   }

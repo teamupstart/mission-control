@@ -124,7 +124,11 @@ import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog } from "@shared/session.ts";
-import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
+import {
+  capabilitiesFor,
+  interruptUnsupportedWhy,
+  workQueueBlockedReason,
+} from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
 import {
@@ -149,7 +153,7 @@ import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
-import { requestSessionStop } from "./sdk/control.ts";
+import { interruptSession, requestSessionStop } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
@@ -2585,6 +2589,27 @@ export function buildApp(
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
     const r = await requestSessionStop(session, sdkSessions);
+    return c.json(r, r.ok ? 200 : 500);
+  });
+
+  /**
+   * Stop this session's current turn, and everything queued behind it, without ending it.
+   *
+   * The gap between "wait" and "kill". No request body, because there is nothing to choose:
+   * an interrupt has one meaning, and the queue drop is not an option the caller may decline
+   * - leaving the outbox armed would restart the work the operator just stopped.
+   *
+   * 400 rather than 500 when the harness/runtime pair has no mechanism. A refusal here is
+   * not a failure of this request but a property of this session that no retry can change,
+   * and the card already draws the control disabled with the identical sentence - so a 400
+   * is what a client hitting it anyway has actually done.
+   */
+  app.post("/api/sessions/:id/interrupt", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
+    if (unsupported) return c.json({ error: unsupported }, 400);
+    const r = await interruptSession(session, sdkSessions, pendingTurns);
     return c.json(r, r.ok ? 200 : 500);
   });
 

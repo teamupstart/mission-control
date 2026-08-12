@@ -27,6 +27,16 @@ import {
   type SdkSessionStatus,
 } from "./store.ts";
 
+/**
+ * What an interrupt FOUND, as distinct from whether the driver took the call.
+ *
+ * `idle` is the case that needs a name. A driver accepts an interrupt that arrives after its
+ * turn already ended, so a successful call is not evidence that anything was stopped - and
+ * the follow-through the operator asked for (dropping the messages queued behind that turn)
+ * is destructive, so it has to know the difference. See `SdkSupervisor.interrupt`.
+ */
+export type SdkInterruptOutcome = "interrupted" | "idle";
+
 const RESTART_CONTINUATION_PROMPT =
   "Mission Control restarted while your previous turn was still in progress. " +
   "Continue that work from the current checkout and conversation. Inspect the current " +
@@ -436,6 +446,60 @@ export class SdkSupervisor {
       await handle.clearContext();
       return true;
     });
+  }
+
+  /**
+   * Stop the turn this session is running right now, and leave the session alive.
+   *
+   * The thing `stop` is not. Kill and Complete end the conversation; this ends only what the
+   * agent is doing, so the context worth keeping survives and the next instruction can be
+   * typed into the same session. Both shipped drivers already implement the primitive
+   * (`claude/sdk.ts` calls the vendor `query.interrupt()`, `codex/sdk.ts` issues
+   * `turn/interrupt`) and both tolerate arriving a moment after the turn finished; this
+   * method is the first caller above them that is not `stop()` or `clearContext()`.
+   *
+   * Two decisions here look like oversights and are not:
+   *
+   * NOT SERIALIZED. `send()` runs a per-session FIFO and this deliberately does not enter
+   * it, reading `this.handles` directly the way `stop(id)` does. An interrupt queued behind
+   * the turn it exists to cancel would be delivered after that turn ended, which is the
+   * same as not delivering it.
+   *
+   * NO TURN BOOKKEEPING. `unfinishedTurns` and `sdk_sessions.turn_in_progress` look like
+   * state an interrupt should clear, and clearing them here would be a double-count. They
+   * are maintained by the event pump on `turn_done`, and both drivers emit `turn_done`
+   * after an interrupt - Claude on the CLI's `result` message, Codex through
+   * `turn/completed`. The reconciliation is theirs; touching it from here would leave the
+   * counter negative-clamped at zero with a turn still outstanding, and restart recovery
+   * reads exactly those two values.
+   *
+   * WHAT IT REPORTS is not whether the call succeeded. Both drivers accept an interrupt that
+   * arrives after the turn already ended - Codex returns early with a comment saying a late
+   * one must not error - so "the driver took it" says nothing about whether anything was
+   * stopped. The distinction is not academic: everything the caller does NEXT is destructive
+   * (it drops the session's queued messages) and must not happen on a stop that found
+   * nothing. `unfinishedTurns` is the daemon's own answer to "is a turn outstanding", the
+   * same value restart recovery is cut from, so it is the one to ask.
+   *
+   * Read BEFORE the driver call, deliberately. A turn can still finish inside the await, so
+   * this is not a race that can be closed - only narrowed, from the seconds between a card
+   * rendering `working` and an operator's keypress reaching the daemon, down to the length of
+   * one RPC. Reading after would be strictly worse: it would report `idle` for every
+   * interrupt that WORKED, since a successful one ends the turn.
+   *
+   * The driver is asked either way. It is idempotent, both adapters document tolerating it,
+   * and doing so covers the opposite race - a turn that started in a gap our accounting has
+   * not seen yet.
+   *
+   * Null means there is no live driver at all, which is a different fact and the caller's to
+   * report as one.
+   */
+  async interrupt(id: string): Promise<SdkInterruptOutcome | null> {
+    const handle = this.handles.get(id);
+    if (!handle) return null;
+    const running = (this.unfinishedTurns.get(id) ?? 0) > 0;
+    await handle.interrupt();
+    return running ? "interrupted" : "idle";
   }
 
   /**

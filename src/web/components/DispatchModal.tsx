@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
+  TASK_KINDS,
   type Task,
   type Session,
   type TaskKind,
@@ -12,7 +13,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { HarnessesConfig, TaskDependencyInput } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
-import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
+import { MAX_LABELS, PRIORITY_LABELS, TASK_KIND_INFO, TASK_PRIORITIES } from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
@@ -1594,8 +1595,14 @@ function DispatchModal({
                     update({ kind, ...afterWorkForKind(kind) });
                   }}
                 >
-                  <option value="ship">ship</option>
-                  <option value="scout">scout</option>
+                  {/* Driven off the tuple for the reason the harness select above it is:
+                      a hand-written pair goes stale silently, and the array's order is
+                      the order every surface that offers the choice lists it in. */}
+                  {TASK_KINDS.map((k) => (
+                    <option key={k} value={k}>
+                      {TASK_KIND_INFO[k].label}
+                    </option>
+                  ))}
                 </select>
               </Tooltip>
             </label>

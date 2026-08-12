@@ -30,6 +30,23 @@ test("a fresh dispatch leads with the task and folds the backlog details", () =>
   assert.doesNotMatch(html, /placeholder="e\.g\. bug, infra"/);
 });
 
+test("the Kind control offers both kinds, in the registry's order", () => {
+  // The options moved from two hand-written `<option>`s onto `TASK_KINDS`, and the point
+  // of pinning it here is that the move was a REFACTOR: same two options, same values,
+  // same order, same text. Order is the contract - the tuple's order is picker order.
+  const html = fresh();
+  const options = [...html.matchAll(/<option value="(ship|scout)"[^>]*>([^<]*)<\/option>/g)];
+  assert.deepEqual(
+    options.map((m) => [m[1], m[2]]),
+    [
+      ["ship", "ship"],
+      ["scout", "scout"],
+    ],
+  );
+  // Selected by the draft, not by document order, so a scout draft still opens on scout.
+  assert.match(html, /<option value="ship" selected=""/);
+});
+
 test("a fresh dispatch quick-selects published after-work Workflows outside backlog details", () => {
   const html = renderToStaticMarkup(
     withOverlayHost(createElement(DispatchLayer, {

@@ -1412,8 +1412,19 @@ export type PrChecks = "passing" | "failing" | "pending";
 
 // ---- dispatched tasks (agents) ----
 
-/** ship = deliver a change (PR/merge); scout = investigate/plan/audit and report. */
-export type TaskKind = "ship" | "scout";
+/**
+ * What a dispatched task is FOR: ship = deliver a change (PR/merge);
+ * scout = investigate/plan/audit and report.
+ *
+ * A tuple rather than a bare union, for the reason `AGENT_TYPES` above is one: half the
+ * consumers need the ids as VALUES (a `z.enum`, a `<select>`), a union alone cannot
+ * produce them, and the pair had accordingly been written out by hand in seven more
+ * places. Array order is picker order - the order the dispatch form lists the kinds in,
+ * and `test/task-kinds.test.ts` fails on a second copy of the set.
+ */
+export const TASK_KINDS = ["ship", "scout"] as const;
+
+export type TaskKind = (typeof TASK_KINDS)[number];
 
 /**
  * Coarse lifecycle of a dispatched task. Deliberately does NOT mirror the live

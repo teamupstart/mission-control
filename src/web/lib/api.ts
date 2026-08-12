@@ -22,6 +22,7 @@ import type {
   SessionFileSaveResult,
   SessionQueue,
   SkillsView,
+  TaskKind,
   TaskPriority,
   TranscriptMessage,
 } from "@shared/types.ts";
@@ -813,7 +814,7 @@ export interface DispatchInput {
   extraRepoRoots?: string[];
   intent: string;
   title?: string;
-  kind: "ship" | "scout";
+  kind: TaskKind;
   agent: AgentType;
   /** Optional urgency; omitted or null means unset, which is not the same as "low". */
   priority?: TaskPriority | null;

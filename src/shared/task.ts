@@ -1,13 +1,47 @@
-// Priority and label vocabulary for dispatched tasks, shared by the server (route
+// Kind, priority and label vocabulary for dispatched tasks, shared by the server (route
 // validation, the roundup report, task sources) and the web app (the dispatch form,
 // the board's backlog column, the roundup panel) so the two can never disagree about
 // what a label is or which task outranks which.
 //
-// Both fields are OPTIONAL and default to nothing: `priority: null` and `labels: []`.
-// Nothing in the product infers either one - a task carries a priority because a human
-// or a task source said so, never because we guessed from its text.
+// Priority and labels are OPTIONAL and default to nothing: `priority: null` and
+// `labels: []`. Nothing in the product infers either one - a task carries a priority
+// because a human or a task source said so, never because we guessed from its text.
+// Kind is not optional; every task is a ship or a scout, and `ship` is the default.
 
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
+
+/**
+ * How each kind PRESENTS itself. Where a surface offers the choice, its copy comes from
+ * here - with two exceptions that predate this record and are not yet converted, because
+ * converging them changes what a person reads: `TaskSourcesPanel` and `ScheduleEditor`
+ * still spell their own `<option>`s, and each spells them differently. They are named in
+ * `KNOWN_HAND_WRITTEN` (`test/task-kinds.test.ts`), which lets that list shrink and never
+ * grow, so this is the home a third surface must use rather than a fourth wording.
+ *
+ * The ids themselves live in `TASK_KINDS` (`types.ts`), which the server validates
+ * against; this is the copy half, kept out of `types.ts` for the reason `AGENT_IDENTITY`
+ * is kept out of it - what a thing is called is not what a thing is.
+ *
+ * `Record<TaskKind, …>` is the enforcement: a third kind does not compile until it has
+ * said how it is offered. One record of two fields rather than two parallel records over
+ * the same domain, matching `AGENT_IDENTITY` - the registry the select directly above the
+ * Kind select renders from - because label and blurb are one question ("what is this
+ * choice, to a human?") asked at one surface.
+ *
+ * `label` is lowercase because it is the option's own text and these are jargon, not
+ * proper nouns; it reads as the word the task carries, not as a heading.
+ */
+export interface TaskKindInfo {
+  /** The option's text. */
+  label: string;
+  /** One line saying what choosing it means, for a picker that has room to say so. */
+  blurb: string;
+}
+
+export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
+  ship: { label: "ship", blurb: "Deliver a change, as a pull request." },
+  scout: { label: "scout", blurb: "Investigate and report. No diff, so no after-work." },
+};
 
 /**
  * The priorities, in ascending urgency. Array order is picker order, sort order, and

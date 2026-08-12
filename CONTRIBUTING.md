@@ -99,8 +99,10 @@ the expected bar is `npm run typecheck`, `npm run lint`, and `npm test`. Changes
 build or runtime surfaces also need `npm run build` and `npm run smoke`; UI changes
 also need `npm run test:e2e` with a matching spec.
 
-CI runs typecheck, tests, build, and smoke on Node 24 and 26, plus e2e on Node 24.
-Lint is required locally but is not currently a CI job.
+CI runs three jobs in parallel, reporting as five checks: `gates` (typecheck and lint),
+`unit (node 24)` and `unit (node 26)` (tests, build, and smoke), and `e2e (shard 1/2)`
+and `e2e (shard 2/2)` (the browser suite, on Node 24 only). Lint is a CI job, so it no
+longer passes silently when it is skipped locally.
 
 Use the pull request template. Its human-facing section explains why, what changed,
 tradeoffs, known gaps, proof of work, and follow-up work. Its agent-facing section

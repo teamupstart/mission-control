@@ -164,6 +164,39 @@ test("arrows and Enter reach the same place as the mnemonics", async ({ dashboar
   await expect(agentSelect(dialog)).toHaveValue("codex");
 });
 
+test("a position digit takes the option at that position", async ({ dashboard }) => {
+  const dialog = await openGuided(dashboard);
+
+  // Out of range first, while the list is short enough to be certain it is: nothing is taken
+  // and the question stays put. That is the `if (!guidedList[index]) return false` guard,
+  // and without it a stray digit would fall through to whatever is behind the dialog.
+  await dashboard.keyboard.press("9");
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+
+  // 2 is the SECOND option - not the third, and not the first. This is the assertion the
+  // `Number(event.key) - 1` in the digit branch exists to be wrong about.
+  await dashboard.keyboard.press("2");
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+
+  // Third of three, so the digit is not quietly capped at the pair the Kind step offered.
+  await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
+  await dashboard.keyboard.press("3");
+  await expect(agentSelect(dialog)).toHaveValue("pi");
+
+  // And 1 is the first, asserted on the one question whose row the previous answer has
+  // already moved: scout left this on None, so taking position 1 is a real move to the
+  // dispatch default rather than a confirmation of where the list already sat.
+  await expect(picker(dialog, "What runs after the work?")).toBeVisible();
+  await expect(afterWorkSelect(dialog)).toHaveValue("__none");
+  await dashboard.keyboard.press("1");
+  await expect(afterWorkSelect(dialog)).toHaveValue("__default");
+
+  // Three questions answered by digit alone, so the pass is spent like any other route.
+  await expect(rail(dialog)).toBeHidden();
+  await expect(taskBox(dialog)).toBeFocused();
+});
+
 test("Backspace steps back and the rung returns to unanswered", async ({ dashboard }) => {
   const dialog = await openGuided(dashboard);
 

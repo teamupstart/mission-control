@@ -1,15 +1,45 @@
 name: CI
 
-# Exercises the repository's quality gates - typecheck, tests, build, and a boot
-# smoke - on every push to main and every pull request. Mirrors `make check` (typecheck
-# + tests) plus a production build and a check that the built bundles actually RUN.
+# Exercises the repository's quality gates - typecheck, lint, tests, build, a boot smoke,
+# and the browser end-to-end suite - on every push to main and every pull request.
 #
-# That last step is not redundant with Build, and the comment it replaces claimed it was:
+# The smoke step is not redundant with Build, and the comment it replaces claimed it was:
 # it said a production build meant "a broken bundle can't merge unnoticed", which was
 # false and shipped. `npm run build` only asserts that esbuild emitted a file. A daemon
 # bundle that throws on its first line still builds, still typechecks, and still passes
 # every unit test - because the tests import from `src/`, and nothing here ever ran the
 # artifact. See `scripts/smoke-bundles.mjs`.
+#
+# ## How this pipeline is sized
+#
+# Blacksmith bills exactly $0.002 per x64 vCPU-minute at every runner size, so a job's
+# cost is `vCPU x minutes` and nothing else. Two consequences drive every choice below:
+#
+#   1. Doubling the runner size is free IF the work scales, and pure waste if it does not.
+#      The cheapest configuration is the one that burns the fewest vCPU-seconds, which is
+#      not the one that finishes first.
+#   2. A runner whose cores sit idle is billed for them anyway. The single largest defect
+#      in the previous shape was buying 4 vCPU and then running 2 test workers on it.
+#
+# The numbers below were measured on this repository, not assumed - 44 configurations
+# across five benchmark runs. The load-bearing results:
+#
+#   * Unit suite, 6960 tests. 4 vCPU at concurrency 6 costs 444 vCPU-seconds; at the old
+#     concurrency 2 it cost 676. 8 vCPU at concurrency 8 is faster in wall-clock but costs
+#     600, and 16 vCPU costs 1136 to save a further 4 seconds. 4 vCPU is the knee.
+#   * E2E suite, 250 tests, ~760 CPU-seconds of real work. It parallelises almost
+#     perfectly, so the shard count is a latency dial that costs a little more each turn.
+#   * Playwright's `retain-on-failure` records every test and deletes the recording when it
+#     passes, so a green run pays for artifacts nobody reads: 24s for trace and 16s for
+#     video, of a 126s shard. Video is now off. See `e2e/playwright.config.ts`.
+#   * Oversubscription buys nothing and eventually costs correctness. 5 e2e workers on
+#     4 vCPU was no faster than 4; 6 workers, 16-on-16, and 4-on-2 each failed a test
+#     outright. 4 workers per 4 vCPU is the last configuration that is fast and green.
+#   * arm64 was measured and rejected. It is billed 37.5% less per vCPU-minute and ran
+#     2-2.5x slower per core on this workload (typecheck 34s against 13s, unit suite 291s
+#     against 117s), so it is a net loss of roughly 50%.
+#   * Only `gates` belongs on a GitHub-hosted runner. The unit suite takes 486s there
+#     against 127s, and e2e took 1129s and still failed.
 
 on:
   push:
@@ -27,28 +57,98 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    # Blacksmith, not `ubuntu-latest`. 4 vCPU / 16 GB is the same SHAPE as the GitHub
-    # runner it replaces - deliberately, because `npm test` runs two isolated test-file
-    # workers and the gates after it are sequential precisely so they don't compete for
-    # that budget. The win here is faster cores and a colocated cache, not more of them;
-    # widening the runner without widening the test concurrency buys only the non-test
-    # gates. Blacksmith's image mirrors actions/runner-images, so `xvfb-run` and the rest
-    # of the preinstalled toolchain are the same ones this job already relies on.
-    #
-    # NOTE: no `useblacksmith/*` action forks. Blacksmith's cache is transparent to the
-    # upstream actions - `actions/setup-node`'s `cache: npm` below already lands on it -
-    # and the forks (`useblacksmith/setup-node`, `useblacksmith/cache`) are archived
-    # upstream. Pinning one would be adopting an unmaintained action for no cache gain.
+  # The gates that do not care which Node runs them: `tsc` typechecks the same source
+  # whatever interpreter drives it, and so does the linter. They used to run inside every
+  # matrix leg, which paid for them twice on metered hardware.
+  #
+  # This is the one job on a GitHub-hosted runner, and it is deliberate. GitHub Pro
+  # includes 3000 private-repo Linux minutes a month; this repository runs ~420 CI runs a
+  # month, so the allowance is ~7 minutes per run and almost none of it was being spent.
+  # A 2-core GitHub runner is slower than Blacksmith - typecheck is 29s here against 13s -
+  # but this job is off the critical path either way, so the latency is invisible and the
+  # cost is zero. It is sized to stay far inside the allowance; do not migrate the test or
+  # e2e jobs here, because past 3000 minutes GitHub bills $0.004 per vCPU-minute, twice
+  # Blacksmith's rate, on cores that are slower.
+  #
+  # Lint is new to CI. It was previously a local-only check, which meant it was a required
+  # standard nothing enforced. It costs under a second, so the honest place for it is here.
+  #
+  # ## Why no job in this file has `needs:`
+  #
+  # The old pipeline ran typecheck -> test -> build -> smoke -> e2e as sequential steps in
+  # one job, so any failure skipped everything after it. Splitting into parallel jobs gives
+  # that up: a red run now pays for jobs the old shape would have skipped. That is a real
+  # regression and it was priced rather than waved through, twice. Both times the answer was
+  # the same, because a `needs:` edge is paid on EVERY run and only refunded on failing ones.
+  #
+  # Measured over the 291 completed runs before the split - 26 failed, 8.9%:
+  #
+  #   `needs: gates` (typecheck/lint before the paid jobs)
+  #     catches   2 of 291 runs, 0.69%  ->  saves 0.7% of spend
+  #     costs     +48s on 100% of runs  ->  145s becomes 193s, +33%
+  #
+  #   `needs: unit` (tests before e2e)
+  #     catches   8 of 291 runs, 2.75%  ->  saves 1.4% of spend
+  #     costs     +137s on 100% of runs ->  157s becomes 294s, +87%
+  #
+  # The second one is also worse than its own arithmetic looks. Gating e2e behind unit means
+  # a branch that breaks both is told about the unit failure, fixed, pushed, and only then
+  # told about e2e - two cycles where one would do. One extra cycle costs a whole pipeline,
+  # which is 70 runs' worth of the savings gating was supposed to produce. Running both and
+  # reporting both is usually the cheaper answer, not the more wasteful one.
+  #
+  # Note the historical numbers understate that: because the old shape skipped e2e whenever
+  # `Test` failed, there is no run on record where both are known to have failed. The rate
+  # of double failures cannot be measured from a design that hid it.
+  #
+  # Revisit if the caught-rate climbs. If typecheck starts failing on a tenth of runs rather
+  # than 0.69%, `needs: gates` becomes correct on cost alone.
+  gates:
+    name: gates (typecheck, lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+  # The gates that DO care which Node runs them. >=24 is required (node:sqlite is used
+  # unflagged from Node 24); this pins the supported floor and the current release. Node 25
+  # is EOL.
+  #
+  # Build and smoke stay inside this matrix rather than moving to `gates`, and that is not
+  # an oversight. Smoke is the only step here that executes the built bundle, so it is
+  # exactly the step whose result can differ between Node 24 and Node 26. Running it on both
+  # costs a 5s build plus a 1s boot per leg, which is the cheapest coverage in this file.
+  unit:
+    name: unit (node ${{ matrix.node-version }})
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # >=24 is required (node:sqlite is used unflagged from Node 24). Test the
-        # supported floor and the current release. Node 25 is EOL.
         node-version: ['24', '26']
 
-    name: check (node ${{ matrix.node-version }})
+    env:
+      # 4 vCPU, and the suite is dominated by per-file `tsx` transpile rather than by
+      # steady CPU, so oversubscribing the cores is what actually fills them. Measured on
+      # this suite: concurrency 2 -> 169s, 4 -> 117s, 6 -> 111s. Past 6 the curve is flat
+      # and the runner is just billed for more idle.
+      MISSION_TEST_CONCURRENCY: '6'
 
     steps:
       - name: Checkout
@@ -68,11 +168,6 @@ jobs:
       - name: Install Electron test runtime
         run: npm exec -- install-electron --no
 
-      - name: Typecheck
-        run: npm run typecheck
-
-      # `npm test` runs two isolated test files at a time. Keeping the remaining gates
-      # sequential avoids competing with those workers for the runner's CPU and memory.
       - name: Test
         run: xvfb-run -a npm test
 
@@ -83,30 +178,94 @@ jobs:
       - name: Smoke the built bundles
         run: npm run smoke
 
-      # Browser-level end-to-end tests. Runs after Build because it drives the BUILT
-      # dashboard served by the BUILT daemon - `dist/web` and `dist/server/index.mjs` both
-      # have to exist, which is also why this suite lives in `e2e/` and not `test/`.
-      #
-      # Gated to one Node version rather than the matrix. The matrix exists to pin the
-      # `node:sqlite` floor and the current release for the DAEMON; the browser layer gains
-      # nothing from being run twice, and this is the slowest gate on the PR path.
-      #
-      # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every
-      # `MISSION_*_BIN` at a local fake, and nothing in `src/` reaches a model API by any
-      # other route. See that file for why that is a property of the daemon, not a hope.
+  # Browser-level end-to-end tests, sharded. This suite drives the BUILT dashboard served
+  # by the BUILT daemon - `dist/web` and `dist/server/index.mjs` both have to exist, which
+  # is also why it lives in `e2e/` and not `test/`.
+  #
+  # Each shard builds its own `dist/` rather than downloading one from `unit`. A build is
+  # 5 seconds; uploading and downloading an artifact is slower than that, and it would also
+  # make every shard wait on a job it otherwise has no reason to know about.
+  #
+  # Gated to Node 24 rather than the matrix. The matrix exists to pin the `node:sqlite`
+  # floor and the current release for the DAEMON; the browser layer gains nothing from
+  # being run twice.
+  #
+  # Two shards, because that is where the curve stops paying. Each shard costs one more
+  # fixed setup, so the shard count is a latency dial billed by the turn: 1 shard is a 240s
+  # job, 2 is 130s for $0.003 more, and 3 is 93s - but the `unit` job next door takes 125s,
+  # so a third shard buys 5 seconds of pipeline and a fourth buys nothing at all. Raise this
+  # only if `unit` gets faster first.
+  #
+  # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
+  # at a local fake, and nothing in `src/` reaches a model API by any other route. See that
+  # file for why that is a property of the daemon, not a hope.
+  #
+  # This job runs even when `unit` is red, which the old sequential shape did not. See the
+  # `needs:` arithmetic above the `gates` job - gating it here saves 1.4% of spend and costs
+  # 87% of the wall-clock win.
+  e2e:
+    name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The one place the shard count is written down. The denominator passed to
+        # Playwright is `strategy.job-total`, which GitHub derives from this list, because
+        # `--shard=X/N` partitions purely by the N it is handed and never checks it against
+        # how many jobs actually ran. Hardcoding the denominator would mean editing this
+        # list alone silently runs a fraction of the suite and still reports green.
+        shard: [1, 2]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Keyed on the resolved Playwright version, because a browser build is only valid for
+      # the version that asked for it. `runner.arch` is in the key so an x64 cache can never
+      # be restored onto a different architecture.
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "v=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browser
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.pw.outputs.v }}
+
+      # Skipped outright on a cache hit, which is the normal case - the key only changes
+      # when Playwright is upgraded. A restored browser needs no system packages on this
+      # image: the benchmark that established this ran the full suite green from a warm
+      # cache with `install-deps` never invoked. `--with-deps` is kept on the miss path so
+      # the cold case stays correct if the image ever stops carrying them.
       - name: Install Playwright browser
-        if: matrix.node-version == '24'
+        if: steps.pw-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps chromium
 
-      - name: End-to-end tests
-        if: matrix.node-version == '24'
-        run: npm run test:e2e
+      - name: Build
+        run: npm run build
 
+      - name: End-to-end tests
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+      # Artifact names have to be unique per shard: `upload-artifact@v4` refuses to write
+      # the same name twice in one run.
       - name: Upload e2e report
-        if: failure() && matrix.node-version == '24'
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-shard-${{ matrix.shard }}
           path: playwright-report/
           retention-days: 7
 
@@ -115,12 +274,10 @@ jobs:
   # There are no native modules to rebuild (node:sqlite is a builtin), so this just
   # bundles + wraps with electron-builder and uploads the dmg as an artifact.
   #
-  # Stays on the GitHub-hosted macOS runner while `check` moves to Blacksmith, and the
-  # asymmetry is deliberate: this job is off the PR path, so it is not where CI latency
-  # is felt, and Blacksmith's macOS runners are billed per minute outside the free
-  # allowance. Blacksmith also publishes no macos-14 image, so moving it would silently
-  # bump the OS the shipped dmg is built on - a release-artifact change wearing a CI
-  # change's clothes.
+  # Stays on the GitHub-hosted macOS runner while everything else is on Blacksmith, and the
+  # asymmetry is deliberate: this job is off the PR path, so it is not where CI latency is
+  # felt, and Blacksmith publishes no macos-14 image. Moving it would silently bump the OS
+  # the shipped dmg is built on - a release-artifact change wearing a CI change's clothes.
   package:
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: macos-14

@@ -30,15 +30,33 @@ npm run package
 
 `npm run smoke` and `npm run test:e2e` both require a successful `npm run build` first. `npm run test:e2e` additionally needs the Playwright browser, which `npm install` does not fetch - run `npx playwright install chromium` once per machine. `npm run package` builds the macOS application.
 
-Run one test file with the same concurrency and loader as the full suite:
+Run one test file with the same loader as the full suite:
 
 ```sh
-node --test --test-concurrency=2 --import tsx test/session-contracts.test.ts
+node --test --import tsx test/session-contracts.test.ts
+```
+
+`--test-concurrency` is deliberately not in that command. It caps how many test *files* run
+at once, so naming a single file makes it inert, and carrying it here implied a single-file
+run reproduces the suite's concurrency when it cannot.
+
+`npm test` runs two files at a time. `MISSION_TEST_CONCURRENCY` changes that, and CI sets it
+to 6, which is where the suite stops getting faster on a 4 vCPU runner. A failure that only
+appears under that contention needs the whole suite, not one file:
+
+```sh
+MISSION_TEST_CONCURRENCY=6 npm test
 ```
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI runs typecheck, tests, build, and bundle smoke tests on Node.js 24 and 26, then the `e2e/` Playwright suite on Node.js 24 only. Lint is a required local check but is not currently a CI job.
+CI runs three jobs in parallel, reporting as five checks: `gates` (typecheck and lint, on a
+GitHub-hosted runner), `unit (node 24)` and `unit (node 26)` (tests, build, and bundle smoke,
+on Blacksmith), and `e2e (shard 1/2)` and `e2e (shard 2/2)` (the `e2e/` Playwright suite, on
+Node.js 24 only). Lint is now a CI job rather than a local-only check, so a lint failure now
+turns CI red - `main` carries no branch protection, so that is a signal to act on and not a
+mechanical block. `.github/workflows/ci.yml` documents how each runner size and worker count
+was measured - read it before changing one.
 
 ## Working rules
 

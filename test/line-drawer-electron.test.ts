@@ -38,6 +38,10 @@ import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
  * And one that is a fact about the row rather than the panel: a row is the SAME height
  * whatever it is saying. Three rows is a cap you can state only if a row is one height.
  *
+ * Two of those are comparisons between pages loaded into one window in turn, which makes the
+ * window's size a premise rather than a detail - see `VIEWPORT` and `at` below, and the note
+ * at the top of `fixtures/measuring-window.cjs`.
+ *
  * createElement, not JSX, because the runner's glob only matches .test.ts.
  */
 
@@ -45,6 +49,13 @@ const require = createRequire(import.meta.url);
 
 /** Same backstop the other geometry tests use: a hung browser fails, slowly. */
 const ELECTRON_TIMEOUT_MS = 240_000;
+
+/**
+ * What the fixture gets of that, leaving the rest for launch and exit - the strip file's
+ * note explains why it is a budget and not a smaller per-call ceiling. It matters more here:
+ * this file measures eight cases, and the fixture's worst case is per page.
+ */
+const FIXTURE_BUDGET_MS = ELECTRON_TIMEOUT_MS - 30_000;
 
 /**
  * The cap, as used height, in a 900px window.
@@ -56,6 +67,18 @@ const ELECTRON_TIMEOUT_MS = 240_000;
  * before it doubles.
  */
 const BODY_CAP = { min: 150, max: 200 };
+
+/**
+ * The window every number below is read in, and the 900px the band above is stated against.
+ *
+ * The cases here are compared with each other - the board's top with the drawer open against
+ * with it shut, a card on the grid page against the same card beside a drawer - and each of
+ * those boxes is sized off `100dvh`. Two pages measured in two different windows therefore
+ * differ by exactly the amount the window moved, and the assertion blames the drawer for it.
+ * The sibling strip file has CI's example of that failure written out in full; the window is
+ * handed to the fixture here and checked per case on the way back by `at`.
+ */
+const VIEWPORT = { width: 1400, height: 900 };
 
 const run = (over: Partial<WorkflowRunSummary>): WorkflowRunSummary => ({
   ...LADDER_SUMMARY,
@@ -197,6 +220,8 @@ interface Measured {
   shellBodyBottomOverflow: number | null;
   cardHeight: number | null;
   cardWidth: number | null;
+  /** The viewport this case's rects were laid out in, read beside them. */
+  viewport: { width: number; height: number };
 }
 
 function page(styles: string, body: string): string {
@@ -218,6 +243,17 @@ const gridShell = (drawerHtml: string): string =>
      <div class="card expanded" style="width:900px"><div class="card-panels"></div></div>
    </div>`;
 
+const CASES: Array<[string, string]> = [
+  ["console-many", consoleShell(drawer(MANY))],
+  ["console-two", consoleShell(drawer(MANY.slice(0, 2)))],
+  ["console-wordy", consoleShell(drawer(WORDY))],
+  ["console-piled", consoleShell(drawer(PILED))],
+  ["console-backlog", consoleShell(backlogDrawer(QUEUE))],
+  ["console-closed", consoleShell("")],
+  ["grid-open", gridShell(drawer(MANY))],
+  ["grid-closed", gridShell("")],
+];
+
 let measured: Record<string, Measured>;
 
 before(() => {
@@ -229,17 +265,7 @@ before(() => {
   const userData = mkdtempSync(join(tmpdir(), "mission-line-drawer-profile-"));
   try {
     const styles = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
-    const cases: Array<[string, string]> = [
-      ["console-many", consoleShell(drawer(MANY))],
-      ["console-two", consoleShell(drawer(MANY.slice(0, 2)))],
-      ["console-wordy", consoleShell(drawer(WORDY))],
-      ["console-piled", consoleShell(drawer(PILED))],
-      ["console-backlog", consoleShell(backlogDrawer(QUEUE))],
-      ["console-closed", consoleShell("")],
-      ["grid-open", gridShell(drawer(MANY))],
-      ["grid-closed", gridShell("")],
-    ];
-    const paths = cases.map(([name, body]) => {
+    const paths = CASES.map(([name, body]) => {
       const path = join(dir, `${name}.html`);
       writeFileSync(path, page(styles, body));
       return path;
@@ -248,6 +274,11 @@ before(() => {
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
       fileURLToPath(new URL("fixtures/line-drawer-browser.cjs", import.meta.url)),
+      "--viewport",
+      `${VIEWPORT.width}x${VIEWPORT.height}`,
+      "--budget-ms",
+      String(FIXTURE_BUDGET_MS),
+      // Last, because it takes the rest of the line.
       "--pages",
       ...paths,
     ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
@@ -258,8 +289,38 @@ before(() => {
   }
 });
 
+/**
+ * A case's numbers, refused unless they were measured in the window that was asked for.
+ *
+ * Every assertion in this file goes through here, so a window that changed size between two
+ * loads can only ever be reported as a window that changed size - never as "the drawer took
+ * height out of the card", which is a sentence that sends somebody to read a component that
+ * is behaving perfectly.
+ */
+function at(name: string): Measured {
+  const m = measured[name];
+  assert.ok(m, `the fixture measured no case called ${name}`);
+  const got = `${m.viewport.width}x${m.viewport.height}`;
+  const want = `${VIEWPORT.width}x${VIEWPORT.height}`;
+  assert.equal(
+    got,
+    want,
+    `${name} was measured in a ${got} window, not the ${want} it asked for - these numbers `
+      + `describe the window, not the layout, and every 100dvh box in them is out by the `
+      + `difference`,
+  );
+  return m;
+}
+
+test("every case is measured in the window the fixture asked for", () => {
+  // The harness's own claim, stated where it can fail on its own terms. A viewport that
+  // wobbled is a fact about the machine; folded into a `100dvh` height it arrives dressed as
+  // a regression in a panel that never moved.
+  for (const [name] of CASES) at(name);
+});
+
 test("twelve runs make a drawer no taller than three, and it scrolls inside itself", () => {
-  const m = measured["console-many"]!;
+  const m = at("console-many");
   assert.equal(m.rows, 12, "every live run is in the DOM; the cap is on the panel, not the list");
   assert.ok(
     m.bodyClientHeight !== null
@@ -277,8 +338,8 @@ test("twelve runs make a drawer no taller than three, and it scrolls inside itse
 test("a drawer with less in it than the cap is shorter, not padded out to it", () => {
   // The cap is a ceiling and not a height. A panel that always took its full budget would
   // spend a third of the viewport saying "two runs are live".
-  const two = measured["console-two"]!;
-  const many = measured["console-many"]!;
+  const two = at("console-two");
+  const many = at("console-many");
   assert.equal(two.rows, 2);
   assert.ok(
     (two.bodyClientHeight ?? 0) < (many.bodyClientHeight ?? 0),
@@ -289,9 +350,9 @@ test("a drawer with less in it than the cap is shorter, not padded out to it", (
 
 test("every row is one height, and a row too wide for its columns clips", () => {
   // Three rows is a number you can put in a design budget only if a row is one height.
-  const heights = new Set(measured["console-many"]!.rowHeights);
+  const heights = new Set(at("console-many").rowHeights);
   assert.equal(heights.size, 1, `rows laid out at ${[...heights].join(", ")}px`);
-  const wordy = measured["console-wordy"]!;
+  const wordy = at("console-wordy");
   assert.deepEqual(
     [...new Set(wordy.rowHeights)],
     [...heights],
@@ -310,7 +371,7 @@ test("a group bar is exactly one row high, so the three-row cap still lands on a
   // child of `.line-drawer-rows` is that one height - a bar carrying the mockup's two-line
   // explanatory paragraph would leave half a row peeking over the edge of the cap. No
   // assertion on markup can see this; it is used height in a laid-out engine.
-  const piled = measured["console-piled"]!;
+  const piled = at("console-piled");
   // Four blocked runs became one bar, and the two live runs stayed rows. That is 3 children,
   // and the bar sorts first because a stopped run outranks one that is merely running.
   assert.equal(piled.rows, 3, "the four blocked runs did not fold into one bar");
@@ -320,7 +381,7 @@ test("a group bar is exactly one row high, so the three-row cap still lands on a
     1,
     `the bar and the rows laid out at ${[...heights].join(", ")}px`,
   );
-  assert.deepEqual([...heights], [...new Set(measured["console-many"]!.rowHeights)]);
+  assert.deepEqual([...heights], [...new Set(at("console-many").rowHeights)]);
   // And the bar really was too wide for its columns, so the height above is not passing on a
   // bar with nothing in it: three long titles and a `+1` clip rather than wrapping to line two.
   assert.ok(
@@ -333,8 +394,8 @@ test("a group bar is exactly one row high, so the three-row cap still lands on a
 });
 
 test("the footer sits under the cap, not inside it, and costs the rows nothing", () => {
-  const backlog = measured["console-backlog"]!;
-  const many = measured["console-many"]!;
+  const backlog = at("console-backlog");
+  const many = at("console-many");
   // Seven queued items across two bands, every one of them in the DOM: the cap is on the
   // panel and never on the list, on this drawer as on the others.
   assert.equal(backlog.rows, 7, "the whole queue is in the DOM, capped only by the panel");
@@ -379,8 +440,8 @@ test("the footer sits under the cap, not inside it, and costs the rows nothing",
 });
 
 test("the board moves down by the drawer, and the shell still ends at the viewport", () => {
-  const open = measured["console-many"]!;
-  const closed = measured["console-closed"]!;
+  const open = at("console-many");
+  const closed = at("console-closed");
   assert.ok(open.shellBodyTop !== null && closed.shellBodyTop !== null);
   // Down by exactly the drawer's footprint. A drawer that was not `flex: none` would take a
   // different amount, and one that overlaid would take none at all.
@@ -405,8 +466,8 @@ test("a session card is the same card with the drawer open", () => {
   // The plan's third decision, in as many words: no data changes, no layout changes, no
   // resizing in any drawer state. `.card.expanded` sizes itself off the MEASURED `--topbar-h`,
   // so this breaks by putting the drawer somewhere that changes that measurement.
-  const open = measured["grid-open"]!;
-  const closed = measured["grid-closed"]!;
+  const open = at("grid-open");
+  const closed = at("grid-closed");
   assert.ok(open.cardHeight && closed.cardHeight, "both grid cases must measure a card");
   assert.equal(open.cardHeight, closed.cardHeight, "the drawer took height out of the card");
   assert.equal(open.cardWidth, closed.cardWidth, "the drawer took width off the card");

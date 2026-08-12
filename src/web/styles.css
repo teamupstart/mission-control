@@ -17702,6 +17702,13 @@ span.line-run-prov {
   min-width: 170px;
   justify-content: flex-end;
 }
+/* Every ordinary ensemble row now carries its dossier/decision move plus Cancel. Reserve the
+   width of the longer pair so a finalizing row, where cancel is deliberately absent, does not
+   pull the state column sideways. */
+.line-ens-ops {
+  min-width: 218px;
+  justify-content: flex-end;
+}
 .line-run-ops .btn,
 .line-ens-ops .btn,
 .line-intake-ops .btn,

@@ -732,7 +732,29 @@ test("an ensemble awaiting an answer sorts first and wears the decisive verb", (
   assert.match(html, /waiting for your decision/);
 });
 
-test("the Decide drawer lists only live runs and escalates rather than deciding", () => {
+test("the Decide drawer offers confirmed cancellation only while a run can be stopped", () => {
+  const html = decideDrawer([
+    { id: "live", title: "Still racing" },
+    { id: "finalizing", title: "Already promoting", status: "finalizing" },
+    { id: "cancelling", title: "Already stopping", status: "cancelling" },
+  ]);
+  assert.match(html, /aria-label="Cancel Still racing"/);
+  assert.match(html, />Cancel run…</);
+  assert.doesNotMatch(html, /aria-label="Cancel Already promoting"/);
+  assert.doesNotMatch(html, /aria-label="Cancel Already stopping"/);
+
+  // An unreadable run is the one null-status exception. The daemon can still find and clean
+  // its member Tasks even when this build cannot interpret the stored run state.
+  const unreadable = decideDrawer([{
+    id: "future",
+    title: "Written by a newer build",
+    status: null,
+    unreadable: { reason: "unknown status future", fields: ["status"] },
+  }]);
+  assert.match(unreadable, /aria-label="Cancel Written by a newer build"/);
+});
+
+test("the Decide drawer lists only live runs and keeps the decision on the dossier", () => {
   const html = decideDrawer([
     { id: "live", title: "Live one" },
     { id: "done", title: "Finished one", status: "completed" },
@@ -740,7 +762,8 @@ test("the Decide drawer lists only live runs and escalates rather than deciding"
   assert.match(html, /1 ensemble live/);
   assert.doesNotMatch(html, /Finished one/);
   // The decision itself is one-shot and lives on the full page with its confirmation. The
-  // drawer carries the verb and the link, never the form.
+  // drawer carries the verb and the link, never the form. Cancel is generic run lifecycle,
+  // not a strategy-specific decision, so it remains available at this triage grain.
   assert.doesNotMatch(html, /<textarea/);
   assert.doesNotMatch(html, /rationale/i);
 });

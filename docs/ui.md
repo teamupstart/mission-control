@@ -47,7 +47,7 @@ reads it:
 | ☰ Backlog | **Drawer** - the queue in the order autopilot would take it, with the triage moves on each row, escalating to the [Sitrep](attention-and-alerts.md#roundup) |
 | ▶ Working | The fleet, with the filter cleared - so the count and the cards agree again |
 | ⌁ Review | **Drawer** - one ladder per live run |
-| ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble |
+| ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble, with confirmed cancellation |
 | ⚑ Shipped | **Drawer** - the week's adopted pull requests, newest first, escalating to the [Ship log](library-and-line.md#the-ship-log) |
 
 Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
@@ -86,10 +86,12 @@ therefore hold **three** states rather than two - loading, failed, and the answe
 `fetchJson` resolves null on every failure, and a drawer that read that as "nothing here" would
 report an unreachable daemon as a healthy empty intake or a quiet week.
 
-Review and Backlog can also *act*. Review acts only where the summary by itself proves the run
+Review, Decide and Backlog can also *act*. Review acts only where the summary by itself proves the run
 has stopped and the route needs no argument beyond the run id - which is what keeps `Reattach`
 (needs a session), resolving a delivery (needs a delivery and a choice) and disabling a
-reviewer (needs a stage member) on the full page, one click deeper. Backlog carries the three
+reviewer (needs a stage member) on the full page, one click deeper. Decide can cancel a run
+after confirmation because the summary carries everything the generic ensemble cancel action
+needs; decisions, retries and member actions remain on the full dossier. Backlog carries the three
 moves triage is actually made of, each on a route that already existed: dispatch, the
 enable/disable switch, and the priority picker. **A refused request is reported on the drawer
 and the row stays** - on both of them, for the same reason: a triage surface that dropped a row

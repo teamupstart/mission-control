@@ -5504,6 +5504,29 @@ export function resolveUncertainPendingTurn(id: string, revision: number): boole
   );
 }
 
+/**
+ * Drop every still-editable row in one conversation's outbox, and nothing else.
+ *
+ * What an interrupt does to the queue, in SQL. `state = 'queued'` is the whole predicate
+ * and the exclusions are the point: a `sending` row has already left for the harness, so
+ * deleting it here would erase Mission Control's only record of a message that may be
+ * mid-flight, and an `uncertain` row exists precisely because nobody knows whether it
+ * landed - it is a question waiting for a human, and this is not the human answering it.
+ *
+ * Distinct from `clearPendingTurns`, which is reset's tool: that one empties the outbox and
+ * takes an explicit preserve list, because reset is discarding the conversation those rows
+ * were written for. An interrupt keeps the conversation.
+ *
+ * Returns how many rows went, so the caller can say so.
+ */
+export function dropQueuedPendingTurns(noteKey: string): number {
+  return Number(
+    openDb()
+      .prepare(`DELETE FROM pending_turns WHERE note_key = ? AND state = 'queued'`)
+      .run(noteKey).changes,
+  );
+}
+
 export function clearPendingTurns(noteKey: string, preserveIds: readonly string[] = []): number {
   const d = openDb();
   if (preserveIds.length === 0) {

@@ -334,6 +334,32 @@ export interface MultiRepoDispatchSpec {
   sdk: boolean;
 }
 
+/**
+ * Stopping the turn this session is running right now, without ending the session.
+ *
+ * The gesture is one key (Ctrl+C on the dashboard) and the mechanism is per-runtime, which
+ * is the whole reason this is a spec rather than a boolean: an embedded session is stopped
+ * through its driver's own interrupt primitive, and a pane-backed one by writing `Escape`
+ * into the terminal - never by forwarding the operator's literal Ctrl+C, which both shipped
+ * TUIs read as "clear the input line" and, pressed twice, as "quit".
+ *
+ * It carries the RUNTIMES and nothing else, because that is the only part of the answer the
+ * browser needs: whether to offer the control on this card, and what to say in the tooltip
+ * when it cannot. The concrete keystroke is a terminal `Key`, which lives in
+ * `src/server/terminal/` and cannot be named from a browser-safe module - the same split
+ * `runtimes`/`sdk` and `resumes`/`resume` already use.
+ *
+ * Null means this harness cannot be interrupted on any runtime at all. That is a permanent
+ * incapacity rather than a gap in the plumbing, and the consequence is stated rather than
+ * hidden: the card draws the control disabled with the sentence
+ * `interruptUnsupportedWhy` composes, so an operator learns the turn has to finish or the
+ * session has to be killed instead of pressing a key that silently does nothing.
+ */
+export interface InterruptSpec {
+  /** Runtimes on which this harness's current turn can be stopped. */
+  runtimes: readonly SessionRuntime[];
+}
+
 /** One agent's capabilities, as far as they can be stated without touching a disk. */
 export interface HarnessCapabilities {
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
@@ -380,6 +406,8 @@ export interface HarnessCapabilities {
   effort: EffortSpec | null;
   /** Null for a harness whose write scope could not be widened past cwd at launch. */
   multiRepoDispatch: MultiRepoDispatchSpec | null;
+  /** Null for a harness whose running turn cannot be stopped on any runtime. */
+  interrupt: InterruptSpec | null;
 }
 
 const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
@@ -468,6 +496,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // directory passed at launch (`sdk.d.ts`), so a sibling repository is reachable only
     // by naming it here.
     multiRepoDispatch: { launchArgs: (dirs) => dirs.flatMap((dir) => ["--add-dir", dir]), sdk: true },
+    // The embedded driver calls the vendor SDK's own `query.interrupt()`
+    // (`harness/claude/sdk.ts`), which aborts the running turn and leaves the conversation
+    // open. `terminal` is absent because the pane mechanism - `Escape` into the bound
+    // window - does not exist yet; the key is not in the terminal vocabulary at all.
+    interrupt: { runtimes: ["sdk"] },
   },
   codex: {
     id: "codex",
@@ -586,6 +619,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       launchArgs: (dirs) => ["-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(dirs)}`],
       sdk: true,
     },
+    // `turn/interrupt` over the app-server RPC (`harness/codex/sdk.ts`), which the driver
+    // already tolerates being sent a moment late. `terminal` is absent for Claude's reason.
+    interrupt: { runtimes: ["sdk"] },
   },
   pi: {
     id: "pi",
@@ -655,6 +691,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // multi-repo task that launches an agent which cannot write to half of it. Measuring
     // it later is a one-line change with its evidence attached.
     multiRepoDispatch: null,
+    // Null, and it is the slot's real null declarer: pi has no embedded driver
+    // (`runtimes` is terminal-only, `HARNESSES.pi.sdk` is null), so there is no interrupt
+    // primitive to reach, and the pane mechanism does not exist for any harness yet. The
+    // card draws a disabled control carrying that sentence rather than a key that no-ops.
+    interrupt: null,
   },
 };
 
@@ -723,6 +764,53 @@ export interface ResolvedSessionRuntime {
 /** Whether this harness can be driven over `runtime` at all. */
 export function harnessOffersRuntime(agent: AgentType, runtime: SessionRuntime): boolean {
   return HARNESS_CAPABILITIES[agent].runtimes.includes(runtime);
+}
+
+/** How a runtime is named to a person, so the refusal below reads as English. */
+const RUNTIME_PROSE: Record<SessionRuntime, string> = {
+  terminal: "a terminal",
+  sdk: "the Agent SDK",
+};
+
+/**
+ * Whether this harness's current turn can be stopped while it is running over `runtime`.
+ *
+ * The ONE gate the whole gesture asks - the keydown handler, the action-bar button, the
+ * board overview's in-place arm and the daemon's own route - so a card cannot offer a stop
+ * the route would refuse, and the route cannot accept one no mechanism exists for. Beside
+ * `harnessOffersRuntime` because it is the same shape of question about the same axis.
+ */
+export function canInterrupt(agent: AgentType, runtime: SessionRuntime): boolean {
+  return HARNESS_CAPABILITIES[agent].interrupt?.runtimes.includes(runtime) ?? false;
+}
+
+/**
+ * Why this harness/runtime pair cannot be interrupted, or null when it can.
+ *
+ * Two absences, worded differently because they are different facts and lead different
+ * places. A harness with no `interrupt` capability at all can never be stopped mid-turn -
+ * the only ways out are waiting and Kill. A harness that CAN be interrupted, but not on the
+ * runtime this session happens to be running over, is a mechanism that has not been built
+ * yet, and naming the runtime is what tells the operator that the same session dispatched
+ * the other way would answer to the key.
+ *
+ * Composed here rather than typed at each refusing surface, for the reason
+ * `workQueueUnsupportedWhy` gives: the disabled button's tooltip and the daemon's 400 have
+ * to give the same answer, and a sentence written twice is how they stop.
+ */
+export function interruptUnsupportedWhy(
+  agent: AgentType,
+  runtime: SessionRuntime,
+): string | null {
+  const spec = HARNESS_CAPABILITIES[agent].interrupt;
+  const who = AGENT_IDENTITY[agent].label;
+  if (!spec) {
+    return `Mission Control can't stop a ${who} turn once it has started, so this one has to finish or the session has to be killed.`;
+  }
+  if (!spec.runtimes.includes(runtime)) {
+    return `Mission Control can't yet stop a ${who} turn running in ${RUNTIME_PROSE[runtime]}, so this one has to finish or the session has to be killed.`;
+  }
+  return null;
 }
 
 /**

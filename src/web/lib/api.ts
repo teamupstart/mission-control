@@ -881,6 +881,12 @@ export const api = {
   rename: (id: string, name: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
+  /**
+   * Stop what the session is doing right now and drop what was queued behind it, leaving
+   * the conversation open. Nothing to send: the gesture has one meaning.
+   */
+  interrupt: (id: string): Promise<ActionResult & { droppedQueued?: number }> =>
+    post(`/api/sessions/${encodeURIComponent(id)}/interrupt`),
   cycleMode: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/mode/cycle`),
   /**
    * Drive a session to a specific permission mode through its harness's native live

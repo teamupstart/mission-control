@@ -221,6 +221,10 @@ test("file actions own Shift+F and Shift+O and every default round-trips from a 
     chordFromEvent(key("Tab", { shift: true })),
     chordFromEvent(key("R", { shift: true })),
     chordFromEvent(key("c")),
+    // ⌃C. Produced from the same "c" the bare `complete` chord is, which is the point of
+    // deriving this set from real keydowns rather than listing strings: the modifier has to
+    // survive the round trip or the interrupt would be a shortcut nobody could press.
+    chordFromEvent(key("c", { ctrl: true })),
     chordFromEvent(key("k")),
     chordFromEvent(key("k", { meta: true })),
     chordFromEvent(key("f", { meta: true })),

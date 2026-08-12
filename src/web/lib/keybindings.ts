@@ -42,6 +42,7 @@ export type ActionId =
   | "rename"
   | "complete"
   | "kill"
+  | "interrupt"
   | "reset";
 
 export interface ActionDef {
@@ -246,6 +247,25 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "selection",
   },
   {
+    // Immediately BEFORE the Complete/Kill pair, never between them: those two are the ways
+    // a session ENDS and their adjacency is deliberate. This is the answer that is short of
+    // both - stop what it is doing, keep everything else - so it reads as the first rung of
+    // the same ladder, in the panel and in the button row that follows this order.
+    //
+    // ⌃C, which is the gesture in the two TUIs this app drives, and NOT the byte those
+    // TUIs receive: Ctrl+C into a pane clears the composer and, twice, quits the CLI. The
+    // dashboard chord and the wire mechanism are separate on purpose (see
+    // `HarnessCapabilities.interrupt`). It yields to a live text selection, because ⌃C is
+    // also copy on Windows and Linux and the Electron shell inherits that - see
+    // `chordYieldsToSelection`, which App's keydown handler consults ahead of every
+    // dispatch path.
+    id: "interrupt",
+    label: "Interrupt turn",
+    description: "Stop what the selected session is doing now and drop its queued messages.",
+    defaultBinding: "ctrl+c",
+    group: "selection",
+  },
+  {
     // Sits immediately before Kill, in both this list and the panel it orders, because
     // the pair is the point: they are the two ways a session ends, and the whole reason
     // Complete exists is that Kill was the only one. An operator who finished the work
@@ -399,6 +419,48 @@ export function isReservedChord(chord: string): boolean {
 export function chordHasCommandModifier(chord: string): boolean {
   const { mods } = parseChord(chord);
   return mods.includes("cmd") || mods.includes("ctrl");
+}
+
+/**
+ * Whether a keypress must be handed back to the browser because it is a copy in progress.
+ *
+ * The interrupt chord defaults to ⌃C, which on Windows and Linux - and so in the Electron
+ * shell, which inherits the platform's editing keys - is also Copy. The rule the plan
+ * settled on is that a live selection wins: while text is selected the browser keeps the
+ * keystroke, and otherwise it stops the agent.
+ *
+ * Its CALLER's placement is the part that matters, and it is why this takes a flat record
+ * instead of reading the DOM. App's `typing` guard is true only for focus inside an
+ * editable field, so the selections this has to protect are mostly NOT typing: a transcript
+ * line, a diff hunk, captured terminal output. Those reach the action-bar dispatch, which
+ * calls `preventDefault()` unconditionally. So the check belongs in ONE gate ahead of every
+ * dispatch path rather than inside the composer bypass, where it would look sufficient and
+ * would break the single most common copy in the app.
+ *
+ * Two kinds of selection, because they are held in two places and a check that knew about
+ * only one would break the other's copy. `documentSelection` is what
+ * `window.getSelection()` reports, which covers ordinary and contenteditable text and is
+ * EMPTY for a selection inside an `<input>` or `<textarea>`; `fieldSelection` is that
+ * field's own span, which is how a half-selected draft in the composer keeps its ⌃C.
+ *
+ * Scoped to the interrupt chord alone. Nothing else in the registry is a platform editing
+ * key, and yielding every chord to a stray selection would make shortcuts fail for reasons
+ * an operator could not see.
+ */
+export function chordYieldsToSelection(input: {
+  chord: string;
+  /** The resolved interrupt chord; empty when the action could not claim one. */
+  interruptChord: string;
+  /** `window.getSelection()?.toString() ?? ""` at the call site. */
+  documentSelection: string;
+  /** The focused field's own selection span, or null when focus is not in one. */
+  fieldSelection: { start: number | null; end: number | null } | null;
+}): boolean {
+  if (!input.interruptChord || input.chord !== input.interruptChord) return false;
+  if (input.documentSelection.length > 0) return true;
+  const field = input.fieldSelection;
+  if (!field || field.start === null || field.end === null) return false;
+  return field.start !== field.end;
 }
 
 // ---- store ----------------------------------------------------------------

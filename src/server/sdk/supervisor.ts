@@ -439,6 +439,40 @@ export class SdkSupervisor {
   }
 
   /**
+   * Stop the turn this session is running right now, and leave the session alive.
+   *
+   * The thing `stop` is not. Kill and Complete end the conversation; this ends only what the
+   * agent is doing, so the context worth keeping survives and the next instruction can be
+   * typed into the same session. Both shipped drivers already implement the primitive
+   * (`claude/sdk.ts` calls the vendor `query.interrupt()`, `codex/sdk.ts` issues
+   * `turn/interrupt`) and both tolerate arriving a moment after the turn finished; this
+   * method is the first caller above them that is not `stop()` or `clearContext()`.
+   *
+   * Two decisions here look like oversights and are not:
+   *
+   * NOT SERIALIZED. `send()` runs a per-session FIFO and this deliberately does not enter
+   * it, reading `this.handles` directly the way `stop(id)` does. An interrupt queued behind
+   * the turn it exists to cancel would be delivered after that turn ended, which is the
+   * same as not delivering it.
+   *
+   * NO TURN BOOKKEEPING. `unfinishedTurns` and `sdk_sessions.turn_in_progress` look like
+   * state an interrupt should clear, and clearing them here would be a double-count. They
+   * are maintained by the event pump on `turn_done`, and both drivers emit `turn_done`
+   * after an interrupt - Claude on the CLI's `result` message, Codex through
+   * `turn/completed`. The reconciliation is theirs; touching it from here would leave the
+   * counter negative-clamped at zero with a turn still outstanding, and restart recovery
+   * reads exactly those two values.
+   *
+   * False means there is no live driver to interrupt, which is the caller's to report.
+   */
+  async interrupt(id: string): Promise<boolean> {
+    const handle = this.handles.get(id);
+    if (!handle) return false;
+    await handle.interrupt();
+    return true;
+  }
+
+  /**
    * Accept an operator stop without making the HTTP request wait for driver exit.
    *
    * `stop()` remains the draining primitive used by terminal handoff and daemon shutdown.

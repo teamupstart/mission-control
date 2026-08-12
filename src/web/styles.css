@@ -3636,6 +3636,15 @@ a.btn {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* Interrupt keeps the plain `.btn` chrome for the reason `.act-interrupt` states: it ends a
+   turn, not a session, and colouring it beside Kill would read as a second way to end one.
+   Only the disabled treatment is its own, because unlike its neighbours it is disabled most
+   of the time - a session with no turn running has nothing to stop, and the tooltip says so
+   rather than the control vanishing and reappearing as the agent works. */
+.btn-interrupt:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 /* Reset is destructive-but-recoverable-adjacent: a cautionary amber ghost that
    reads as "careful" without competing with the red Kill next to it. */
 .btn-reset {
@@ -18895,6 +18904,16 @@ span.line-run-prov {
   color: var(--attention);
   border-color: color-mix(in oklab, var(--attention) 60%, var(--border));
   background: color-mix(in oklab, var(--attention) 13%, var(--panel-2));
+}
+/* Interrupt sits beside Kill and must not read like it. It ends a TURN and keeps the
+   session, so it takes the neutral chrome of an ordinary control rather than a consequence
+   colour - the red belongs to the one button that ends the conversation, and spending it
+   twice in a row would flatten the distinction the control exists to draw. Disabled is a
+   standing state here (an idle agent has nothing to stop), so it fades rather than
+   disappearing, and the tooltip carries the reason. */
+.act-interrupt:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .act-danger {
   color: color-mix(in oklab, var(--danger) 82%, var(--fg));

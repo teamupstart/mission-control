@@ -410,7 +410,16 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   async interrupt(): Promise<void> {
-    await this.query?.interrupt();
+    const receipt = await this.query?.interrupt();
+    // Reported, never acted on - see `ClaudeSdkInterruptReceipt`. Nothing in this daemon
+    // puts work into the CLI's own queue, so a survivor here means something did, and the
+    // operator who pressed stop is about to watch it start anyway.
+    const stillQueued = receipt?.still_queued ?? [];
+    if (stillQueued.length > 0) {
+      console.warn(
+        `[claude-sdk] interrupt left ${stillQueued.length} queued command(s) on ${this.agentSessionId ?? "an unbound session"}: ${stillQueued.join(", ")}`,
+      );
+    }
   }
 
   /**

@@ -4,6 +4,7 @@ import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { liveActivity } from "@shared/session.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
+import { useInterrupting } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import {
   AgentDot,
@@ -87,7 +88,10 @@ export function SessionTile({
   /** This member's run summary, for the flag's hover copy. Null until its SSE summary lands. */
   ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
-  const st = stateDisplay(session);
+  // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
+  // be asked for here too - Ctrl+C works from the board overview, so this is a surface where
+  // it is pressed.
+  const st = stateDisplay(session, useInterrupting(session.id));
   const ticker = liveActivity(session);
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule

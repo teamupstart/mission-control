@@ -82,9 +82,12 @@ function setHints(on: boolean): void {
 test("hints are on out of the box, so the shortcuts are discoverable without being sought", () => {
   resetAll();
   setHints(true);
-  // The card row in drawn order: Send, Focus, Files, Queue, Reset, Complete, Kill - every
-  // one of them bound, and every one of them silent about it before this.
-  assert.deepEqual(keycaps(cardBar()), ["s", "p", "⇧F", "q", "⌃R", "c", "k"]);
+  // The card row in drawn order: Send, Focus, Files, Queue, Reset, Interrupt, Complete,
+  // Kill - every one of them bound, and every one of them silent about it before this.
+  // Interrupt sits immediately BEFORE the Complete/Kill pair rather than inside it: those
+  // two are the ways a session ends and their adjacency is deliberate, while this is the
+  // rung short of both.
+  assert.deepEqual(keycaps(cardBar()), ["s", "p", "⇧F", "q", "⌃R", "⌃C", "c", "k"]);
 });
 
 test("turning the preference off leaves the buttons, and not one keycap", () => {
@@ -95,7 +98,7 @@ test("turning the preference off leaves the buttons, and not one keycap", () => 
   assert.ok(!card.includes("kb-hint"), "no empty keycap element left behind either");
   // The controls themselves are untouched - this is a presentation switch, not a feature
   // flag on the action row.
-  for (const label of ["Send", "Focus", "Files", "Queue", "Reset", "Complete", "Kill"]) {
+  for (const label of ["Send", "Focus", "Files", "Queue", "Reset", "Interrupt", "Complete", "Kill"]) {
     assert.ok(card.includes(label), `${label} is still drawn`);
   }
   setHints(true);
@@ -108,7 +111,7 @@ test("the console footer answers to the same switch the card does", () => {
   setHints(false);
   assert.equal(keycaps(footBar()).length, 0);
   setHints(true);
-  assert.deepEqual(keycaps(footBar()), ["p", "d", "⌃R", "c", "k"]);
+  assert.deepEqual(keycaps(footBar()), ["p", "d", "⌃R", "⌃C", "c", "k"]);
 });
 
 test("a rebind moves what the buttons print, so a keycap is never a stale default", () => {

@@ -5,7 +5,7 @@
 
 import type { PaneDialog, Session, Task } from "./types.ts";
 import { byPriorityThenAge } from "./task.ts";
-import { capabilitiesFor } from "./harness-capabilities.ts";
+import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
 import { canWriteTo } from "./pane.ts";
 
 /**
@@ -23,6 +23,28 @@ export function canCycleMode(session: Session): boolean {
     capabilitiesFor(session.agent).permissionModes?.liveControl.kind === "cycle" &&
     canWriteTo(session)
   );
+}
+
+/**
+ * Whether Ctrl+C can stop what this session is doing right now.
+ *
+ * Two facts, and both are needed. The harness/runtime pair must have a mechanism
+ * (`canInterrupt`), and there must be a turn to stop: interrupting an idle agent is a key
+ * that does nothing, and the honest presentation of that is a disabled control saying so
+ * rather than a live one that appears to have failed.
+ *
+ * `canCycleMode`'s job, for the other live control - the ONE gate the keydown handler, the
+ * board overview's in-place arm and the ActionBar button share, so a tile, a card and the
+ * bar can never disagree about when the stop is offered.
+ *
+ * Reads the RAW lifecycle state through `agentActive` rather than its confidence, which is
+ * deliberate: a session whose state was never confirmed presents as running and is presumed
+ * to be working, and refusing to interrupt exactly the sessions we know least about would
+ * strand the case the gesture exists for. An interrupt aimed at a driver that has already
+ * finished is a no-op both drivers document tolerating.
+ */
+export function canInterruptSession(session: Session): boolean {
+  return agentActive(session) && canInterrupt(session.agent, session.runtime);
 }
 
 export type ReportBucket = "needs-you" | "working" | "idle" | "exited";

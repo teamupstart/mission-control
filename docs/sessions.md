@@ -373,6 +373,43 @@ It is one way. After the handoff the terminal session is the one holding the con
 the embedded card goes away. Nothing is lost if the terminal cannot be opened - the error
 tells you the exact resume command to run yourself.
 
+### Interrupt: stop the turn without ending the session
+
+<kbd>⌃</kbd><kbd>C</kbd>, or the **Interrupt** button beside Kill. It stops what the agent is
+doing right now, drops every message still queued behind it, and puts the cursor in that
+session's composer so the replacement instruction can be typed immediately.
+
+The distinction from **Kill** is the whole point. Kill terminates the agent and settles its
+task; the conversation, and all the context in it, is gone. Interrupt ends only the turn. The
+session, its conversation, its checkout and its task are all still there a moment later, and
+the next thing you type continues from everything the agent already knows.
+
+The queue goes with it, and that is not incidental: a stop that left queued messages armed
+would deliver them the moment the agent reported idle, restarting the work you just stopped.
+Messages that have already left for the agent are kept, as are any whose delivery is marked
+uncertain - the second kind is a question waiting for you, and interrupting is not an answer
+to it.
+
+**The key you press and the key the agent receives are not the same.** In both the Claude
+Code and Codex TUIs, <kbd>Esc</kbd> interrupts a running turn while <kbd>⌃</kbd><kbd>C</kbd>
+clears the input line and, pressed twice, quits the CLI - so forwarding your literal
+<kbd>⌃</kbd><kbd>C</kbd> into a terminal would kill the session it was meant to interrupt.
+An Agent SDK session is stopped through its driver's own interrupt instead, which is why the
+control is offered there first.
+
+Terminal-runtime cards show the button **disabled with the reason**, not hidden: the pane
+mechanism is not built yet, and a control that vanished would teach you the gesture does not
+exist rather than that it is coming.
+
+<kbd>⌃</kbd><kbd>C</kbd> is also Copy on Windows and Linux, which the desktop app inherits.
+**Whenever text is selected the browser keeps the keystroke** and performs the copy - whether
+that is a half-written draft in the composer or a transcript line, a diff hunk or captured
+terminal output you have dragged across. With nothing selected, it stops the agent. Like
+every other shortcut it is rebindable in **Settings → Keyboard**.
+
+The button is disabled when there is nothing to stop - an idle agent - and the tooltip says
+which of the two reasons applies.
+
 ### What each agent can do is declared, not assumed
 
 Claude Code, Codex and Pi are not the same product, and several features below reach

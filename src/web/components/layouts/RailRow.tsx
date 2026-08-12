@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
+import { useInterrupting } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import {
   AgentDot,
@@ -54,7 +55,9 @@ export function RailRow({
   /** This member's run summary, for the glyph's hover copy. Null until its SSE summary lands. */
   ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
-  const st = stateDisplay(session);
+  // The rail draws its own badge, so it asks for the transient stop directly - the Console
+  // is where a session is watched while it works, and so where the wait is most visible.
+  const st = stateDisplay(session, useInterrupting(session.id));
   // The same shared sentence the Board tile and the Cards card read. The rail shows more
   // rows per screen than either, so it is the surface where "the section rule scrolled
   // away" happens soonest - the row has to carry its own answer here most of all.

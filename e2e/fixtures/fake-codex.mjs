@@ -284,8 +284,18 @@ function runTurn(turnId, input) {
   // still answer synchronously and keep every other spec's fast path.
   if (prompt === HELD_TURN) {
     const turnState = { prompts: [prompt] };
+    // The cancel handle and the completion the interrupt has to emit, held on the turn so
+    // `turn/interrupt` can end it the way the real app-server does. Acknowledging that RPC
+    // without ending the turn would leave the card working until this timer fired anyway,
+    // and a spec asserting the interrupt landed would pass on a build where it never
+    // reached the driver.
+    turnState.timer = setTimeout(() => finish(turnState.prompts), HELD_TURN_MS);
+    turnState.interrupt = () => {
+      clearTimeout(turnState.timer);
+      // No agent message: the turn was cut off, so it never finished saying anything.
+      finish([]);
+    };
     openTurn = turnState;
-    setTimeout(() => finish(turnState.prompts), HELD_TURN_MS);
     return;
   }
   if (prompt === FINAL_ANSWER_HELD_TURN) {
@@ -348,9 +358,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       respond(id, {});
       return;
     }
-    case "turn/interrupt":
+    case "turn/interrupt": {
+      // Ends the running turn rather than merely acknowledging it - see the held-turn branch
+      // in `runTurn` for why an acknowledgement alone would let a spec pass for the wrong
+      // reason. A late interrupt (nothing running) is a plain success, which is what the
+      // driver's own early return already assumes.
+      const running = openTurn;
       respond(id, {});
+      running?.interrupt?.();
       return;
+    }
     default:
       // Unknown methods get an empty result rather than an error: this fake implements the
       // frames the driver needs, and a refusal would turn an unrelated future call into a

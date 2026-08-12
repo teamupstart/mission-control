@@ -518,8 +518,29 @@ rl.on("line", (line) => {
   }
 
   if (frame.type === "control_request") {
-    // Every subtype gets a success. `get_usage` arrives repeatedly (once per init and per
-    // result) and the driver .catch()es a missing answer, but answering keeps the log clean.
+    // `interrupt` is answered by ABORTING, not merely acknowledged. The real CLI stops the
+    // running turn and then emits that turn's `result` - which is the frame the driver turns
+    // into `turn_done`, and therefore the only thing that takes a card out of "working".
+    //
+    // Answering it with a bare success (which every other subtype gets, below) would leave
+    // the held turn's timer running and the card would return to idle five seconds later on
+    // the fake's own schedule. A spec asserting that the interrupt worked would then be
+    // green on a build where the request never reached the driver at all - the exact
+    // false pass this fake exists to make impossible.
+    if (frame.request?.subtype === "interrupt") {
+      const running = openTurn;
+      ok(frame.request_id, { still_queued: [] });
+      if (running) {
+        clearTimeout(running.timer);
+        openTurn = null;
+        // No assistant text: the turn was cut off, so there is nothing it finished saying.
+        emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
+      }
+      return;
+    }
+    // Every other subtype gets a success. `get_usage` arrives repeatedly (once per init and
+    // per result) and the driver .catch()es a missing answer, but answering keeps the log
+    // clean.
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});
     return;
   }
@@ -613,11 +634,11 @@ rl.on("line", (line) => {
     // the real SDK busy state and pending-turn route without spending model tokens.
     if (prompt === HELD_TURN) {
       const turnState = { prompts: [prompt] };
-      openTurn = turnState;
-      setTimeout(() => {
+      turnState.timer = setTimeout(() => {
         openTurn = null;
         answer(turnState.prompts);
       }, HELD_TURN_MS);
+      openTurn = turnState;
       return;
     }
     answer([prompt]);

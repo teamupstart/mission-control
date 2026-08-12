@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mockup A - Launch Rail</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  .rail-shell {
+    width: min(840px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    min-height: 460px;
+  }
+  .rail-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 18px;
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--panel-2);
+  }
+  .rail-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .rail-head .step-count { font: 10.5px var(--mono); color: var(--dim); }
+  .rail-main { display: grid; grid-template-columns: 232px 1fr; min-height: 0; }
+
+  /* ---- the rail: every answer stays on screen, and stays clickable ---- */
+  .rail {
+    border-right: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-2) 60%, transparent);
+    padding: 14px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .rail-step {
+    position: relative;
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    align-items: start;
+    gap: 8px;
+    padding: 8px 14px 8px 12px;
+    cursor: pointer;
+    border: none;
+    background: none;
+    font: inherit;
+    text-align: left;
+    width: 100%;
+    color: var(--dim);
+  }
+  .rail-step .num {
+    display: grid;
+    place-items: center;
+    width: 20px; height: 20px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    font: 10px var(--mono);
+    color: var(--dim);
+  }
+  .rail-step .name { font-size: 11.5px; font-weight: 560; color: var(--muted); line-height: 20px; }
+  .rail-step .answer { grid-column: 2; font-size: 12px; color: var(--fg); margin-top: 1px; display: flex; align-items: center; gap: 6px; }
+  .rail-step.pending .name { color: var(--dim); }
+  .rail-step.done .num { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 42%, var(--border)); }
+  .rail-step.active .num {
+    color: #fff;
+    background: color-mix(in oklab, var(--working) 82%, #1b2a44);
+    border-color: color-mix(in oklab, var(--working) 70%, var(--border));
+  }
+  .rail-step.active .name { color: var(--fg); }
+  .rail-step.active::before {
+    content: "";
+    position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
+    background: var(--working); border-radius: 0 2px 2px 0;
+  }
+  .rail-spacer { flex: 1; }
+  .rail-foot { padding: 10px 14px 2px; font-size: 11px; color: var(--dim); line-height: 1.5; border-top: 1px solid var(--border-soft); margin-top: 8px; }
+
+  /* ---- the question ---- */
+  .ask { padding: 26px 28px; display: flex; flex-direction: column; min-height: 0; }
+  .ask-kicker { font: 10.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+  .ask-title { margin: 7px 0 3px; font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+  .ask-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 20px; }
+
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; }
+  .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    flex: 1 1 150px;
+    min-width: 138px;
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--bg-2);
+    padding: 14px 14px 13px;
+    cursor: pointer;
+    font: inherit;
+    color: var(--fg);
+    transition: border-color .14s ease, background .14s ease, transform .1s ease;
+  }
+  .card:hover { border-color: color-mix(in oklab, var(--working) 40%, var(--border)); }
+  .card.sel {
+    border-color: color-mix(in oklab, var(--working) 62%, var(--border));
+    background: color-mix(in oklab, var(--working) 9%, var(--bg-2));
+  }
+  .card .cap {
+    position: absolute; top: 12px; right: 12px;
+    font-family: var(--mono); font-size: 10.5px; line-height: 1;
+    color: var(--muted); background: var(--panel);
+    border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 5px; padding: 3px 5px; min-width: 15px; text-align: center;
+  }
+  .card.sel .cap { color: var(--fg); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); }
+  .card .lede { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; padding-right: 26px; }
+  u { text-underline-offset: 3px; text-decoration: underline; text-decoration-color: color-mix(in oklab, var(--working) 70%, transparent); text-decoration-thickness: 2px; }
+  .card .desc { display: block; margin-top: 6px; font-size: 11.5px; line-height: 1.5; color: var(--dim); }
+  .card .tag { margin-top: auto; padding-top: 9px; }
+  .card .tag i { display: inline-flex; align-items: center; gap: 5px; font: 10px var(--mono); font-style: normal; color: var(--dim); border: 1px solid var(--border-soft); border-radius: 999px; padding: 3px 7px; }
+  .card.sel .tag i { color: color-mix(in oklab, var(--working) 70%, var(--fg)); border-color: color-mix(in oklab, var(--working) 32%, var(--border)); }
+
+  .rail-foot-bar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 18px;
+    border-top: 1px solid var(--border-soft);
+    background: var(--panel-2);
+    font-size: 11.5px; color: var(--dim);
+  }
+  .rail-foot-bar .grp { display: inline-flex; align-items: center; gap: 6px; }
+
+  /* repo step */
+  .repo-input { font-size: 14px; padding: 11px 12px; font-family: var(--mono); }
+  .repo-list { margin: 8px 0 0; padding: 4px; list-style: none; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); max-height: 168px; overflow: auto; }
+  .repo-list li { padding: 7px 9px; border-radius: 6px; font: 12px var(--mono); color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .repo-list li.sel { background: color-mix(in oklab, var(--working) 16%, var(--bg-2)); color: var(--fg); }
+  .repo-list li .recent { margin-left: auto; font: 10px var(--mono); color: var(--dim); }
+
+  /* the handoff */
+  .crew { display: grid; grid-template-columns: 1.05fr 0.55fr 1.2fr 1.1fr; gap: 10px; }
+  .crew .field-label { font-size: 11px; }
+  .stack { display: flex; flex-direction: column; gap: 14px; }
+  .wf {
+    position: relative; display: grid; grid-template-columns: 28px minmax(0,1fr) auto;
+    align-items: center; gap: 10px; padding: 8px 11px 8px 8px; border-radius: 9px;
+    border: 1px solid color-mix(in oklab, var(--working) 38%, var(--border));
+    background: color-mix(in oklab, var(--working) 7%, var(--bg-2));
+  }
+  .wf-mark { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid color-mix(in oklab, var(--working) 45%, var(--border)); border-radius: 7px; color: var(--working); background: var(--panel); font: 11px var(--mono); }
+  .wf-ctl { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 8px; }
+  .wf-state { font: 10px var(--mono); color: color-mix(in oklab, var(--working) 76%, var(--fg)); white-space: nowrap; }
+  .more { display: flex; align-items: center; gap: 10px; width: 100%; color: var(--muted); background: transparent; border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 12px; font: inherit; }
+  .more b { font-size: 12px; font-weight: 560; }
+  .more span { font-size: 11.5px; color: var(--dim); }
+  .caret { display: inline-block; width: 1px; height: 15px; background: var(--fg); animation: blink 1.06s steps(1) infinite; vertical-align: -3px; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .filled { color: var(--fg); }
+  .settle { animation: settle .22s ease; }
+  @keyframes settle { from { opacity: 0; transform: translateY(4px); } }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="stage-topbar"><b style="color:var(--fg)">Mission Control</b><span>fleet</span><span>library</span><span>runs</span></div>
+  <div class="stage-grid">
+    <div class="stage-card"></div><div class="stage-card"></div><div class="stage-card"></div>
+    <div class="stage-card"></div><div class="stage-card"></div><div class="stage-card"></div>
+  </div>
+</div>
+
+<div class="backdrop"><div id="root"></div></div>
+
+<nav class="mock-nav">
+  <a href="index.html">← all mockups</a>
+  <a href="a-launch-rail.html" class="on">A · Launch Rail</a>
+  <a href="b-chord-bar.html">B · Chord Bar</a>
+  <a href="c-inline-reveal.html">C · Inline Reveal</a>
+  <span class="keys">interactive — try <kbd>p</kbd> <kbd>t</kbd> <kbd>c</kbd> <kbd>↵</kbd> <kbd>⌫</kbd></span>
+</nav>
+
+<script>
+const REPOS = [
+  { path: "/Users/jordanmance/workspace/ai-harness", tag: "last used" },
+  { path: "/Users/jordanmance/workspace/upstartclaw", tag: "2d ago" },
+  { path: "/Users/jordanmance/workspace/mission-docs", tag: "5d ago" },
+  { path: "/Users/jordanmance/workspace/treehouse", tag: "" },
+];
+const KINDS = [
+  { id: "ship", key: "p", label: "shi<u>p</u>", plain: "ship", desc: "Deliver a change. Gets a worktree, a branch and a pull request, and the task finishes when that PR merges.", tag: "after work → No-Mistakes Review" },
+  { id: "scout", key: "t", label: "scou<u>t</u>", plain: "scout", desc: "Investigate and report back. No diff is expected, so nothing is queued to review one.", tag: "after work → None" },
+];
+const AGENTS = [
+  { id: "claude", key: "c", label: "<u>C</u>laude Code", plain: "Claude Code", accent: "var(--claude)", desc: "Opus 5 · xhigh", tag: "default harness" },
+  { id: "codex", key: "x", label: "Code<u>x</u>", plain: "Codex", accent: "var(--codex)", desc: "gpt-5.2-codex · high", tag: "" },
+  { id: "pi", key: "i", label: "P<u>i</u>", plain: "Pi", accent: "var(--pi)", desc: "pi-1 · medium", tag: "" },
+];
+const WORKFLOWS = [
+  { id: "nm", key: "d", label: "No-Mistakes Review · v8", plain: "Dispatch default — No-Mistakes Review · v8", desc: "Reviews the diff, repairs what it finds, then gates the merge.", tag: "dispatch default" },
+  { id: "none", key: "n", label: "None", plain: "None", desc: "Finish at Foreman Complete with nothing armed after it.", tag: "" },
+  { id: "docs", key: "o", label: "D<u>o</u>cs Sweep · v3", plain: "Docs Sweep · v3", desc: "Checks the README and linked docs against the change.", tag: "" },
+];
+
+const S = { step: 0, sel: 0, repo: REPOS[0], repoQuery: "", kind: null, agent: null, wf: null, wfTouched: false };
+
+const STEPS = [
+  { id: "repo",  name: "Repo" },
+  { id: "kind",  name: "Kind" },
+  { id: "agent", name: "Harness" },
+  { id: "wf",    name: "After work" },
+  { id: "brief", name: "Brief" },
+];
+
+function optionsFor(step) {
+  if (step === "kind") return KINDS;
+  if (step === "agent") return AGENTS;
+  if (step === "wf") return WORKFLOWS;
+  if (step === "repo") return REPOS.filter((r) => r.path.includes(S.repoQuery));
+  return [];
+}
+function answerFor(id) {
+  if (id === "repo") return S.repo ? `<span class="filled" style="font:12px var(--mono)">${S.repo.path.split("/").pop()}</span>` : null;
+  if (id === "kind") return S.kind ? `<span class="filled">${S.kind.plain}</span>` : null;
+  if (id === "agent") return S.agent ? `<span class="dot" style="background:${S.agent.accent}"></span><span class="filled">${S.agent.plain}</span>` : null;
+  if (id === "wf") return S.wf ? `<span class="filled">${S.wf.label}</span>` : null;
+  return null;
+}
+
+function commit(opt) {
+  const id = STEPS[S.step].id;
+  if (id === "repo") S.repo = opt;
+  if (id === "kind") {
+    S.kind = opt;
+    // Mirrors the shipped form: scout moves After work to None, ship hands it back.
+    if (!S.wfTouched) S.wf = opt.id === "scout" ? WORKFLOWS[1] : WORKFLOWS[0];
+  }
+  if (id === "agent") S.agent = opt;
+  if (id === "wf") { S.wf = opt; S.wfTouched = true; }
+  S.step += 1;
+  S.sel = 0;
+  if (STEPS[S.step] && STEPS[S.step].id === "wf" && S.wf) {
+    S.sel = WORKFLOWS.findIndex((w) => w.id === S.wf.id);
+  }
+  render();
+}
+
+function back() {
+  if (S.step === 0) return;
+  S.step -= 1;
+  S.sel = 0;
+  render();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (S.step >= STEPS.length) return;
+  const id = STEPS[S.step].id;
+  const opts = optionsFor(id);
+  if (e.key === "ArrowDown" || (id !== "repo" && e.key === "ArrowRight")) { S.sel = (S.sel + 1) % opts.length; render(); return e.preventDefault(); }
+  if (e.key === "ArrowUp" || (id !== "repo" && e.key === "ArrowLeft")) { S.sel = (S.sel - 1 + opts.length) % opts.length; render(); return e.preventDefault(); }
+  if (e.key === "Enter") { if (opts[S.sel]) commit(opts[S.sel]); return e.preventDefault(); }
+  if (e.key === "Backspace" && id !== "repo") { back(); return e.preventDefault(); }
+  if (e.key === "Tab") { S.step = STEPS.length - 1; render(); return e.preventDefault(); }
+  if (id === "repo") return;
+  const hit = opts.findIndex((o) => o.key === e.key.toLowerCase());
+  if (hit >= 0) { S.sel = hit; render(); setTimeout(() => commit(opts[hit]), 90); return e.preventDefault(); }
+  const n = Number(e.key);
+  if (n >= 1 && n <= opts.length) { S.sel = n - 1; render(); setTimeout(() => commit(opts[n - 1]), 90); e.preventDefault(); }
+});
+
+function railHtml() {
+  return `<div class="rail">${STEPS.map((s, i) => {
+    const cls = i === S.step ? "active" : i < S.step ? "done" : "pending";
+    const a = answerFor(s.id);
+    return `<button class="rail-step ${cls}">
+      <span class="num">${i < S.step ? "✓" : i + 1}</span>
+      <span class="name">${s.name}</span>
+      ${a && i !== S.step ? `<span class="answer">${a}</span>` : ""}
+    </button>`;
+  }).join("")}
+  <div class="rail-spacer"></div>
+  <div class="rail-foot">Model and effort stay on the harness default. Change them, or anything else, on the form at the end.</div>
+  </div>`;
+}
+
+function cardsHtml(opts) {
+  return `<div class="cards">${opts.map((o, i) => `
+    <button class="card ${i === S.sel ? "sel" : ""}">
+      <span class="cap">${o.key}</span>
+      <span class="lede">${o.accent ? `<span class="dot" style="background:${o.accent}"></span>` : ""}<span>${o.label}</span></span>
+      <span class="desc">${o.desc}</span>
+      ${o.tag ? `<span class="tag"><i>${o.tag}</i></span>` : ""}
+    </button>`).join("")}</div>`;
+}
+
+function askHtml() {
+  const step = STEPS[S.step];
+  if (step.id === "repo") {
+    const opts = optionsFor("repo");
+    return `<div class="ask settle">
+      <div class="ask-kicker">step 1 of 4</div>
+      <h3 class="ask-title">Which repository?</h3>
+      <p class="ask-sub">Starts on the one you dispatched into last. Type to filter 202 repos.</p>
+      <input class="field-input repo-input" value="${S.repo.path}" />
+      <ul class="repo-list">${opts.map((r, i) => `<li class="${i === S.sel ? "sel" : ""}">${r.path}${r.tag ? `<span class="recent">${r.tag}</span>` : ""}</li>`).join("")}</ul>
+    </div>`;
+  }
+  const copy = {
+    kind: ["step 2 of 4", "What kind of run is this?", "Sets the completion rule and what gets queued after the work."],
+    agent: ["step 3 of 4", "Which harness?", "Model and effort follow this harness's defaults from Settings."],
+    wf: ["step 4 of 4", "What runs after the work?", S.kind && S.kind.id === "scout" ? "A scout has no diff to review, so None is preselected." : "Preselected from Settings → Workflows → Dispatch default."],
+  }[step.id];
+  return `<div class="ask settle">
+    <div class="ask-kicker">${copy[0]}</div>
+    <h3 class="ask-title">${copy[1]}</h3>
+    <p class="ask-sub">${copy[2]}</p>
+    ${cardsHtml(optionsFor(step.id))}
+  </div>`;
+}
+
+function formHtml() {
+  return `<div class="modal settle">
+    <div class="modal-head">
+      <h2>Dispatch an agent</h2>
+      <span style="font:10px var(--mono);color:var(--idle);border:1px solid color-mix(in oklab,var(--idle) 35%,var(--border));border-radius:999px;padding:4px 8px">guided · 4 keys</span>
+      <button class="btn btn-ghost">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="stack">
+        <div class="field" style="margin-top:10px">
+          <span class="field-label">Repo</span>
+          <div class="field-input" style="font-family:var(--mono);font-size:12.5px">${S.repo.path}</div>
+        </div>
+        <div class="field">
+          <span class="field-label">Task <span class="field-hint">drop or paste images to attach them</span></span>
+          <div class="field-input" style="min-height:90px;border-color:color-mix(in oklab,var(--working) 50%,var(--border))"><span class="caret"></span></div>
+        </div>
+        <div>
+          <span class="field-label" style="display:block;margin-bottom:6px">Crew</span>
+          <div class="crew">
+            <div class="field"><span class="field-label">Agent</span><div class="fake-select"><span class="dot" style="background:${S.agent.accent}"></span>${S.agent.plain}</div></div>
+            <div class="field"><span class="field-label">Kind</span><div class="fake-select">${S.kind.plain}</div></div>
+            <div class="field"><span class="field-label">Model</span><div class="fake-select">Default - Opus 5</div></div>
+            <div class="field"><span class="field-label">Effort</span><div class="fake-select">Default - xhigh</div></div>
+          </div>
+        </div>
+        <div class="wf">
+          <span class="wf-mark">⌘</span>
+          <div class="wf-ctl"><span class="field-label">After work</span><div class="fake-select">${S.wf.plain}</div></div>
+          <span class="wf-state">→ Foreman complete</span>
+        </div>
+        <button class="more"><b>Backlog details</b><span>no priority · no labels · title summarized · no dependencies</span></button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost">Add to backlog</button>
+      <button class="btn btn-ghost">Clear</button>
+      <span class="spacer"></span>
+      <button class="btn">Cancel</button>
+      <button class="btn btn-primary">Dispatch now <kbd style="margin-left:6px;background:transparent;border-color:rgba(255,255,255,.35);color:#fff">⌘↵</kbd></button>
+    </div>
+  </div>`;
+}
+
+function render() {
+  const root = document.getElementById("root");
+  if (S.step >= STEPS.length - 1) { root.innerHTML = formHtml(); return; }
+  root.innerHTML = `<div class="rail-shell">
+    <div class="rail-head">
+      <h2>Dispatch an agent</h2>
+      <span class="step-count">${S.step + 1}/4</span>
+      <span class="spacer"></span>
+      <button class="btn btn-ghost" style="font-size:11.5px">Use the full form <kbd style="margin-left:5px">⇥</kbd></button>
+      <button class="btn btn-ghost">✕</button>
+    </div>
+    <div class="rail-main">${railHtml()}${askHtml()}</div>
+    <div class="rail-foot-bar">
+      <span class="grp"><kbd>↑</kbd><kbd>↓</kbd> move</span>
+      <span class="grp"><kbd>↵</kbd> select</span>
+      <span class="grp"><kbd>⌫</kbd> back</span>
+      <span class="grp">or press the letter on a card</span>
+      <span class="spacer"></span>
+      <span class="grp"><kbd>esc</kbd> cancel</span>
+    </div>
+  </div>`;
+}
+render();
+</script>
+</body>
+</html>

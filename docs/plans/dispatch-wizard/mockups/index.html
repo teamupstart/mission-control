@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Guided dispatch - mockups</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  body { background:
+    radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+    var(--bg); min-height: 100vh; }
+  main { max-width: 940px; margin: 0 auto; padding: 56px 24px 96px; }
+  h1 { font-size: 26px; font-weight: 640; letter-spacing: -0.015em; margin: 0 0 8px; }
+  .lede { font-size: 14px; line-height: 1.65; color: var(--muted); max-width: 66ch; margin: 0 0 36px; }
+  .cards { display: grid; gap: 14px; }
+  a.card {
+    display: grid; grid-template-columns: 42px 1fr auto; gap: 16px; align-items: start;
+    text-decoration: none; color: inherit;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--panel); padding: 18px 20px;
+    transition: border-color .14s ease, background .14s ease;
+  }
+  a.card:hover { border-color: color-mix(in oklab, var(--working) 45%, var(--border)); background: color-mix(in oklab, var(--working) 5%, var(--panel)); }
+  .badge { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); font: 600 14px var(--mono); color: var(--muted); }
+  .card h2 { margin: 0 0 5px; font-size: 16px; font-weight: 600; }
+  .card p { margin: 0 0 10px; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .fact { font: 10.5px var(--mono); color: var(--dim); border: 1px solid var(--border-soft); border-radius: 999px; padding: 3px 8px; }
+  .go { font-size: 11.5px; color: var(--dim); align-self: center; }
+  .note { margin-top: 34px; font-size: 12px; line-height: 1.7; color: var(--dim); border-top: 1px solid var(--border-soft); padding-top: 18px; }
+  a.card.chosen { border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); background: color-mix(in oklab, var(--idle) 6%, var(--panel)); }
+  a.card.chosen .badge { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 42%, var(--border)); }
+  .chip { display: inline-block; margin-left: 8px; font: 10px var(--mono); color: var(--idle); border: 1px solid color-mix(in oklab, var(--idle) 35%, var(--border)); border-radius: 999px; padding: 3px 8px; vertical-align: 2px; }
+  .sub-h { margin: 38px 0 14px; font-size: 11px; font-family: var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Guided dispatch</h1>
+  <p class="lede">Pressing <kbd>+</kbd> asks a short sequence of keyboard questions instead of
+  opening the eight-control form, then hands you the form with every answer already filled in
+  and the cursor in the task box. Four takes, all interactive - open one and drive it with the
+  keyboard. <b style="color:var(--fg)">D is the direction being taken forward</b>; A, B and C
+  are the explorations it was synthesized from, kept for the record.</p>
+
+  <div class="cards">
+    <a class="card chosen" href="d-rail-reveal.html">
+      <span class="badge">D</span>
+      <span>
+        <h2>Rail + Reveal <span class="chip">chosen direction</span></h2>
+        <p>C's in-place choreography with A's rail laid on its side: the form never moves and
+        every picker floats over its own control, while a strip under the header keeps every
+        answer on screen and clickable. Asks for the repo first, as a filter over the field
+        that already holds it. The strip leaves when the pass is done, so the modal ends up
+        in exactly its normal shape.</p>
+        <span class="facts"><span class="fact">4 steps</span><span class="fact">no new surface</span><span class="fact">answers stay visible</span><span class="fact">form never reflows</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+  </div>
+
+  <p class="sub-h">the three it came from</p>
+
+  <div class="cards">
+    <a class="card" href="a-launch-rail.html">
+      <span class="badge">A</span>
+      <span>
+        <h2>Launch Rail</h2>
+        <p>A wide, focused panel. One question at a time in large type, answers accumulating
+        down a left rail you can click back into. Asks for the repo too, so nothing is
+        assumed.</p>
+        <span class="facts"><span class="fact">4 steps</span><span class="fact">new surface</span><span class="fact">most legible</span><span class="fact">most discoverable</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+
+    <a class="card" href="b-chord-bar.html">
+      <span class="badge">B</span>
+      <span>
+        <h2>Chord Bar</h2>
+        <p>A ⌘K-shaped strip. Answers collapse into chips on one line, every step filters as
+        you type, backspace unpicks. Ends in a composer, so a whole dispatch can be finished
+        without the form ever opening.</p>
+        <span class="facts"><span class="fact">fastest</span><span class="fact">type-to-filter</span><span class="fact">form optional</span><span class="fact">least discoverable</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+
+    <a class="card" href="c-inline-reveal.html">
+      <span class="badge">C</span>
+      <span>
+        <h2>Inline Reveal</h2>
+        <p>No new surface at all. The real dispatch modal opens, everything dims except the
+        control being asked about, and each answer settles into the exact select it will live
+        in. By the last step the modal is simply the filled form.</p>
+        <span class="facts"><span class="fact">3 steps</span><span class="fact">no new surface</span><span class="fact">teaches the form</span><span class="fact">cheapest to maintain</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+  </div>
+
+  <p class="note">Mockups only - static HTML beside the plan, nothing here is wired to the
+  daemon. Colours, radii, type scale and control shapes are lifted from
+  <code>src/web/styles.css</code>; harness accents from <code>AGENT_IDENTITY</code>.</p>
+</main>
+</body>
+</html>

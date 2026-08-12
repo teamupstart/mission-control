@@ -446,7 +446,7 @@ Extend existing registries instead of adding parallel lists:
 - Terminal backends: ID tuples and `MULTIPLEXERS` or `EMULATORS`
 - Open targets: `OPEN_TARGET_INFO` and `OPEN_TARGETS`
 - Task sources: `TASK_SOURCE_KIND_INFO` and `TASK_SOURCES`
-- Task kinds: `TASK_KINDS` (`src/shared/types.ts`) for the ids and their picker order, `TASK_KIND_INFO` (`src/shared/task.ts`) for how they are named. Every `z.enum`, guard and `<option>` list reads the tuple; `test/task-kinds.test.ts` fails on a second copy of the pair
+- Task kinds: `TASK_KINDS` (`src/shared/types.ts`) for the ids and their picker order, `TASK_KIND_INFO` (`src/shared/task.ts`) for how they are named. Anything that enumerates the SET - a `z.enum`, a check over a persisted value, an `<option>` list - reads the tuple. Comparing against one kind (`kind === "scout"`) is ordinary code and needs nothing. Two `<option>` lists are grandfathered: `TaskSourcesPanel.tsx` and `ScheduleEditor.tsx` still hand-write the pair, each with its own wording, because converging them changes what a person reads and owes an `e2e/` spec. `test/task-kinds.test.ts` names those two in `KNOWN_HAND_WRITTEN` and compares the offender set exactly, so a third copy fails and a converted one must be deleted from the list in the same change: it shrinks, never grows
 - Ensemble strategies: shared strategy info and server compiler registry
 - Shared model choice: `resolveModelChoice`
 - Shared predicates: keep one implementation in `src/shared`

@@ -11,7 +11,12 @@
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
 
 /**
- * How each kind PRESENTS itself, wherever a surface has to offer the choice.
+ * How each kind PRESENTS itself. Where a surface offers the choice, its copy comes from
+ * here - with two exceptions that predate this record and are not yet converted, because
+ * converging them changes what a person reads: `TaskSourcesPanel` and `ScheduleEditor`
+ * still spell their own `<option>`s, and each spells them differently. They are named in
+ * `KNOWN_HAND_WRITTEN` (`test/task-kinds.test.ts`), which lets that list shrink and never
+ * grow, so this is the home a third surface must use rather than a fourth wording.
  *
  * The ids themselves live in `TASK_KINDS` (`types.ts`), which the server validates
  * against; this is the copy half, kept out of `types.ts` for the reason `AGENT_IDENTITY`

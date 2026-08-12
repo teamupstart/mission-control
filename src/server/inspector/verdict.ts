@@ -50,6 +50,35 @@ export const InspectorVerdictSchema = z.object({
 });
 export type InspectorVerdict = z.infer<typeof InspectorVerdictSchema>;
 
+/**
+ * A follow-up answer in one of our own threads, and whether writing it settled the issue.
+ *
+ * `reply` used to be the whole contract - the model returned prose and we posted it. That
+ * threw away the one judgment the reply is most likely to contain. The Inspector is told
+ * (see `buildReplyPrompt`) to drop a finding when the author shows it was wrong, and it
+ * does: on the pull request this schema was written for it answered "Dropping the finding"
+ * and the ledger row stayed open forever, because the conversation and the ledger were two
+ * independent opinions and only the REVIEW round could write to the second one. The review
+ * round cannot correct that either - it returns early once the head has been reviewed - so
+ * the finding blocked the merge for the life of the PR.
+ *
+ * `resolved` is that judgment made machine-readable, and it is strictly NARROWING in the
+ * same sense `InspectorVerdict.resolved` is: it carries no fingerprint, so the only thing
+ * it can close is the one thread being answered. A model that could name the issue would be
+ * a model that could close any of them.
+ *
+ * Defaults to false. A reply that omits the field is an answer, not a retraction - the same
+ * fail-closed reading the review round gives a finding the model merely stopped mentioning.
+ */
+export const InspectorReplySchema = z.object({
+  reply: z.preprocess(
+    (v) => (typeof v === "string" ? clampTo(4000)(v) : v),
+    z.string().min(1),
+  ),
+  resolved: z.boolean().default(false),
+});
+export type InspectorReply = z.infer<typeof InspectorReplySchema>;
+
 /** One of our existing threads on the PR, as read back from GitHub. */
 export interface OurThread {
   fingerprint: string;

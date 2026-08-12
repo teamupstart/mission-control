@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   InspectorSettingsPanel,
+  canResolveFindings,
   inspectionSummary,
 } from "../src/web/components/InspectorSettingsPanel.tsx";
 import { INSPECTOR_MODEL_SPEC } from "../src/shared/inspector.ts";
@@ -112,6 +113,7 @@ function state(over: Partial<InspectorState> = {}): InspectorState {
     inspections: [],
     model: null,
     update: async () => true,
+    resolveFindings: async () => true,
     error: null,
     ...over,
   };
@@ -210,4 +212,42 @@ test("the model is a picker filtered by the provider, never a free-text box", ()
   // Filtered: Codex's catalog, and none of Claude's.
   assert.match(html, /GPT-5\.6 Sol/);
   assert.doesNotMatch(html, /Opus 5/);
+});
+
+// Who gets the Resolve control, and who must not.
+//
+// This is the operator's only route out of a finding that has genuinely been addressed and
+// that nothing else can close: a review round resolves only fingerprints the model lists,
+// and rounds stop once the head has been reviewed. `e2e/specs/inspector-resolve-findings.spec.ts`
+// proves the click reaches the daemon; what is pinned here is the predicate deciding which
+// rows are offered it at all, because both wrong answers are quiet ones - a missing control
+// on the row that needs it strands the pull request, and a control on a retired row rewrites
+// what the Inspector said about work that has already landed.
+test("the resolve control is offered on open rows carrying findings, and nowhere else", () => {
+  assert.equal(canResolveFindings(row({ openFindings: 2, state: "open" })), true);
+  assert.equal(canResolveFindings(row({ openFindings: 0, state: "open" })), false);
+  assert.equal(canResolveFindings(row({ openFindings: 2, state: "closed" })), false);
+  // A merged pull request is closed too, and is the case most likely to still carry rows.
+  assert.equal(
+    canResolveFindings(row({ openFindings: 3, state: "closed", mergedAt: 123 })),
+    false,
+  );
+});
+
+test("the resolve control names the pull request it acts on, so a table of them stays legible", () => {
+  const html = render(
+    state({ inspections: [row({ number: 494, openFindings: 2, round: 5, state: "open" })] }),
+  );
+  // Named by pull request rather than by position: every row in this table would otherwise
+  // offer an identically-named control, which is unusable by keyboard or screen reader.
+  // The apostrophe arrives escaped - this is static markup, not a live DOM.
+  assert.match(html, /aria-label="Resolve the Inspector&#x27;s findings on repo#494"/);
+  // In the ledger's own action cell, under a column that names it.
+  assert.match(html, /<span class="sc-act"><button type="button" class="settings-link"/);
+  assert.match(html, /<span class="sc-act">Resolve<\/span>/);
+  // And a row with nothing to resolve leaves the cell empty rather than dropping it, or the
+  // grid would shift every column on the rows that do offer it.
+  const clean = render(state({ inspections: [row({ number: 495, openFindings: 0, round: 5 })] }));
+  assert.match(clean, /<span class="sc-act"><\/span>/);
+  assert.doesNotMatch(clean, /aria-label="Resolve/);
 });

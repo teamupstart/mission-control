@@ -208,7 +208,19 @@ const COLUMNS: readonly ConsoleColumn[] = [
   { label: "Verdict" },
   { label: "Fixed" },
   { label: "Reviewed", className: "sc-when" },
+  { label: "Resolve", className: "sc-act" },
 ];
+
+/**
+ * Whether this row can be handed to `resolveFindings`.
+ *
+ * Open pull requests carrying findings only. A retired row is out of the sweep for good,
+ * so closing its ledger would change nothing anyone can see and would quietly rewrite the
+ * record of what the Inspector said about something that has already landed.
+ */
+export function canResolveFindings(row: InspectorInspection): boolean {
+  return row.state === "open" && row.openFindings > 0;
+}
 
 export function InspectorSettingsPanel({
   state,
@@ -223,6 +235,8 @@ export function InspectorSettingsPanel({
   const allowlist = config?.repoAllowlist ?? [];
   const now = Date.now();
   const [filter, setFilter] = useState<string | null>(null);
+  /** The PR key whose findings are being resolved right now, so its button can say so. */
+  const [resolving, setResolving] = useState<string | null>(null);
   const tallies = inspectionTallies(inspections);
   const health = inspectorHealth(inspections);
   // The tile the filter belongs to, so the ledger's own chrome can say what is being
@@ -457,6 +471,37 @@ export function InspectorSettingsPanel({
                     {row.resolvedFindings > 0 ? `${row.resolvedFindings} fixed` : ""}
                   </span>
                   <span className="sc-when">{ago(row.lastReviewedAt, now)}</span>
+                  {/* The way out of a finding that has genuinely been addressed and that
+                      nothing else can close - see `resolveInspectorFindings`. Blank on
+                      every row that has nothing to resolve, like the Fixed column beside
+                      it, so the column reads as "these need you" rather than as a row of
+                      buttons daring you to press one. */}
+                  <span className="sc-act">
+                    {canResolveFindings(row) && (
+                      <Tooltip
+                        label={
+                          `Mark the Inspector's ${row.openFindings} open ` +
+                          `finding${row.openFindings === 1 ? "" : "s"} on ${row.repo}#${row.number} ` +
+                          "as resolved, for when they have been addressed but no review round " +
+                          "is left to say so. This does not merge anything: every other gate, " +
+                          "including unresolved review threads on GitHub, is still checked."
+                        }
+                      >
+                        <button
+                          type="button"
+                          className="settings-link"
+                          aria-label={`Resolve the Inspector's findings on ${row.repo}#${row.number}`}
+                          disabled={resolving === row.key}
+                          onClick={() => {
+                            setResolving(row.key);
+                            void state.resolveFindings(row.key).finally(() => setResolving(null));
+                          }}
+                        >
+                          {resolving === row.key ? "Resolving…" : "Resolve"}
+                        </button>
+                      </Tooltip>
+                    )}
+                  </span>
                 </div>
               );
             }}

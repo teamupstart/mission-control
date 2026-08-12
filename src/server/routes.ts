@@ -28,6 +28,7 @@ import {
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  ResolveFindingsSchema,
   ShippingConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
@@ -102,7 +103,7 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import type { TaskDependencyInput } from "@shared/protocol.ts";
+import type { ResolveFindingsResult, TaskDependencyInput } from "@shared/protocol.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -184,6 +185,9 @@ import {
   loadHumanResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
+  getInspectorPr,
+  resolveInspectorFindings,
+  updateInspectorPr,
   episodeById,
   recentEpisodes,
 } from "./db.ts";
@@ -3315,6 +3319,36 @@ export function buildApp(
       return c.json({ error: "adoptedSince must be an epoch-ms timestamp" }, 400);
     }
     return c.json(loadInspectionsAdoptedSince(since));
+  });
+  /**
+   * Close the findings the Inspector is carrying on one pull request.
+   *
+   * The one mutating verb on this subsystem that is not a config change, and it exists
+   * because a finding that has genuinely been addressed could otherwise hold
+   * `mergeBlock: findings` forever - see `resolveInspectorFindings` for the mechanism and
+   * for what this pointedly does not loosen.
+   *
+   * Refuses a PR the ledger has never heard of rather than reporting a no-op success: the
+   * caller supplied the key, so a miss is a mistyped or stale key, and "resolved 0
+   * findings" reads as "there were none" for a pull request nobody is tracking at all.
+   */
+  app.post("/api/inspector/resolve-findings", async (c) => {
+    const parsed = await parseBody(c, ResolveFindingsSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!getInspectorPr(parsed.data.prKey)) {
+      return c.json({ error: "no adopted pull request with that key" }, 404);
+    }
+    const resolved = resolveInspectorFindings(parsed.data.prKey, Date.now());
+    // The recorded block reason is derived from the ledger we just changed, so it is stale
+    // the moment this returns - and `recordBlock` only rewrites it when the answer CHANGES,
+    // so leaving it would keep publishing "the Inspector has open findings" about a pull
+    // request that no longer has any. Null is the honest reading until the next sweep
+    // re-derives it, and it is what an adopted-but-unevaluated row already carries.
+    if (resolved > 0) updateInspectorPr(parsed.data.prKey, { mergeBlock: null }, Date.now());
+    // The panels poll, but the per-session chip rides SSE off this same ledger, so the
+    // count on the card would otherwise stay wrong until the Inspector's own 90s sweep.
+    registry.refreshInspections();
+    return c.json({ resolved } satisfies ResolveFindingsResult);
   });
   // What the Inspector will actually spawn with, resolved HERE rather than in the panel
   // for the reason `ForemanStatus.models` documents: the env layer is invisible to the

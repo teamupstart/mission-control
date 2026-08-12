@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REVIEW_PROMPT_CAPS, buildReviewPrompt } from "../src/server/inspector/prompt.ts";
-import type { ReviewPromptInput } from "../src/server/inspector/prompt.ts";
+import { REVIEW_PROMPT_CAPS, buildReplyPrompt, buildReviewPrompt } from "../src/server/inspector/prompt.ts";
+import { InspectorReplySchema } from "../src/server/inspector/verdict.ts";
+import type { ReplyPromptInput, ReviewPromptInput } from "../src/server/inspector/prompt.ts";
 import type { StandardsBundle } from "../src/server/standards.ts";
 import type { InspectorComment, InspectorSeverity } from "../src/shared/types.ts";
 
@@ -147,4 +148,62 @@ test("the worst-case prompt is pinned, with every truncation announced", () => {
   assert.ok(prompt.includes("1800 omitted simply stay open"));
   assert.ok(prompt.includes("Some standards documents were omitted for length."));
   assert.ok(prompt.includes("## The diff (TRUNCATED for length"));
+});
+
+// The reply prompt carries a MACHINE contract now, not just prose. Its `resolved` field is
+// the only thing that can close a finding the Inspector drops in conversation, and the
+// worker parses the answer with `InspectorReplySchema` - so a prompt that stopped asking
+// for the object, or asked for a different shape, would silently return the subsystem to
+// the defect this contract was added for: the Inspector says "dropping the finding" and the
+// ledger goes on blocking the merge over it.
+
+function replyInput(over: Partial<ReplyPromptInput> = {}): ReplyPromptInput {
+  return {
+    brief: { text: "Review carefully.", source: "default", truncated: false },
+    original: { path: "src/example.ts", title: "Prior issue", body: "the original comment" },
+    thread: [
+      { author: "operator", ours: true, body: "the original comment" },
+      { author: "author", ours: false, body: "handled by the guard above" },
+    ],
+    diff: "diff --git a/src/example.ts b/src/example.ts",
+    diffTruncated: false,
+    ...over,
+  };
+}
+
+test("the reply prompt asks for the object the worker parses, and says what closes a finding", () => {
+  const prompt = buildReplyPrompt(replyInput());
+
+  // The shape, and an answer that validates against the schema the worker actually uses.
+  assert.ok(prompt.includes('"reply"'), "the comment text is asked for by name");
+  assert.ok(prompt.includes('"resolved": true | false'), "and so is the judgment");
+  assert.equal(
+    InspectorReplySchema.safeParse({ reply: "You are right.", resolved: true }).success,
+    true,
+  );
+
+  // The one instruction that closes the gap: prose saying "dropping this" is not the act.
+  assert.ok(
+    prompt.includes(
+      "Saying you are dropping the finding in the reply text does NOT\nclose it; this field does",
+    ),
+    "the prompt must separate saying it from doing it",
+  );
+  assert.ok(prompt.includes("False is the safe answer."), "the default is stated as safe");
+
+  // Trailing, for recency - the review prompt does the same with its own contract.
+  assert.ok(
+    prompt.trimEnd().endsWith("False is the safe answer."),
+    "the output contract is the last thing the model reads",
+  );
+
+  // The untrusted halves are still fenced, and the reply is still told it is public.
+  assert.ok(prompt.includes("<reply from author>"));
+  assert.ok(prompt.includes("<inspector>"));
+  assert.ok(prompt.includes("Your reply is PUBLIC"));
+});
+
+test("the reply prompt marks a truncated diff, so absence is never read as evidence", () => {
+  assert.ok(buildReplyPrompt(replyInput({ diffTruncated: true })).includes("## The diff (truncated)"));
+  assert.ok(buildReplyPrompt(replyInput()).includes("## The diff"));
 });

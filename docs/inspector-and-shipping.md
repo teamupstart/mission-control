@@ -81,6 +81,30 @@ honest version of the trade, which is why the panel prints it beside the provide
 It never approves or requests changes; it comments. It does not chase comments to
 resolution - it surfaces issues and resolves what later pushes fix.
 
+### How a finding gets closed
+
+A finding is resolved in three ways, and it is worth knowing all three, because an open one
+blocks [YOLO mode](#what-has-to-be-true) outright:
+
+1. **A later review round lists it as fixed.** The usual path. A model that merely stops
+   mentioning a finding does *not* close it - silence is not evidence that anything was
+   fixed - so it has to name the fingerprint.
+2. **The Inspector drops it in conversation.** If you reply in one of its threads and it
+   agrees its comment was wrong, it says so, resolves the thread, and closes the finding.
+   Its answer and its ledger are the same act; it cannot say "dropping this" and go on
+   blocking the merge over it.
+3. **You resolve it yourself** - **Resolve**, on the row in **Settings → Inspector →
+   Inspections**. This is the way out of the case the first two cannot reach: a finding
+   whose fix was pushed and reviewed once, and which the review then never mentions again.
+   Rounds stop at a head that has already been reviewed, so no later round exists to close
+   it, and without this it blocked the pull request for good.
+
+**Resolve** closes Mission Control's own ledger and nothing else. It does not merge
+anything and it relaxes no gate - in particular, GitHub's own unresolved review threads are
+counted separately, so a pull request whose threads are still open moves from *findings* to
+*threads* rather than to merged. It is offered only on open pull requests that are actually
+carrying findings.
+
 ### INSPECTOR.md
 
 Put one in the repository being reviewed, at `personas/INSPECTOR.md` or at the root. It tells
@@ -154,7 +178,8 @@ let it speak.
 
 Each row says where that PR stands: `queued` (adopted, not yet looked at), `failed` (the
 last round errored - hover the link for why), a finding count, or `clean`, beside a count
-of the findings a later push has since fixed. A PR that has since closed reads `merged` or
+of the findings a later push has since fixed and - on an open PR still carrying findings -
+a **Resolve** control that closes them ([why that exists](#how-a-finding-gets-closed)). A PR that has since closed reads `merged` or
 `closed` and is dimmed: it left the sweep for good, so it is history rather than a queue. A
 closed PR that *was* reviewed keeps its findings, because what the Inspector said about
 something that landed is the more useful fact.
@@ -191,7 +216,7 @@ Every one of these, on the same read of the pull request:
 | The Inspector reviewed **this** push | a review of the previous head is not a review of what would land |
 | The Inspector **published** that review | on, **live**, and the repo on *its* allowlist - see below |
 | No active Inspector-gated workflow owns the PR | YOLO mode cannot merge around incomplete Personas or final-gate handling |
-| No open Inspector findings | posted or previewed in dry run - a finding is a finding |
+| No open Inspector findings | posted or previewed in dry run - a finding is a finding. [Three ways one closes](#how-a-finding-gets-closed) |
 | No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
 | Nobody requested changes, no required review outstanding | a human veto outranks a clean automated review |
 | **CI passing** on the head commit | a commit with **no** checks does not pass this: it has never been asked |

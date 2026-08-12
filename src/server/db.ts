@@ -6397,6 +6397,48 @@ export function upsertInspectorComment(c: InspectorComment): void {
     );
 }
 
+/**
+ * Close every finding still counted as open on one pull request, at an operator's word.
+ * Returns how many rows actually changed.
+ *
+ * The recovery route for a ledger the Inspector cannot correct itself. `closeRow` in the
+ * worker is driven by the model - by a review round listing a fingerprint as resolved, or
+ * by a follow-up reply dropping its own finding - and neither can reach a finding whose
+ * fix was pushed, reviewed once, and then simply never mentioned again: the review round
+ * returns early on a head it has already reviewed, so no later round exists to list it.
+ * That left `mergeBlock: findings` permanent, with no path out at all, and pull requests
+ * had to be merged by hand.
+ *
+ * What this deliberately does NOT do is weaken the gate. `mergeVerdict` still refuses on
+ * any open finding, `openFindings` still counts every non-resolved row, and a merge still
+ * has to clear the `threads` gate - which counts unresolved review threads from GITHUB's
+ * own snapshot, ours and everyone else's. So this closes our ledger's opinion and nothing
+ * else: an operator who clicks it while the review threads are still open has moved the
+ * pull request from `findings` to `threads`, not to merged.
+ *
+ * Every row NOT already `resolved` is closed, rather than only the `open` ones: `drafted`
+ * (previewed in dry run, never posted) and `posting` (a round whose response was lost) are
+ * the two other ways a row is counted open by `openFindings`, and both strand a pull
+ * request in exactly the same way.
+ *
+ * Written row-by-row through `upsertInspectorComment` rather than as one `UPDATE ... SET
+ * status`, and that is the point rather than an oversight. There are two POLICIES that
+ * resolve a finding - the worker's `closeRow`, driven by the model, and this one, driven by
+ * an operator - and they must not become two independent answers to "what a resolved row
+ * looks like". Sharing the one upsert keeps a single statement in the whole tree that can
+ * write this column, so the two paths cannot drift on the status vocabulary or on what
+ * `updated_at` means; `test/inspector-resolution-writer.test.ts` pins that. The cost is one
+ * statement per open finding instead of one per pull request, on an operator's click rather
+ * than in the sweep, against a set the round cap bounds at 20.
+ */
+export function resolveInspectorFindings(prKey: string, now: number): number {
+  const open = loadInspectorComments(prKey).filter((c) => c.status !== "resolved");
+  for (const row of open) {
+    upsertInspectorComment({ ...row, status: "resolved", updatedAt: now });
+  }
+  return open.length;
+}
+
 export function loadInspectorComments(prKey: string): InspectorComment[] {
   const rows = openDb()
     .prepare(`SELECT * FROM inspector_comments WHERE pr_key = ? ORDER BY created_at ASC`)

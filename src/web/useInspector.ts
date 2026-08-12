@@ -37,6 +37,15 @@ export interface InspectorState {
    * grant here has actually landed (see `ForemanState.update`).
    */
   update: (patch: InspectorConfigPatch) => Promise<boolean>;
+  /**
+   * Close the findings on one pull request, and refresh the list so the row says so.
+   *
+   * Not optimistic, unlike `update`. A finding count is evidence about a public pull
+   * request rather than the state of a control the operator is holding: showing it at zero
+   * before the daemon has agreed would be claiming the review is settled when it may not
+   * be. The refetch is awaited instead, so the number changes when it is true.
+   */
+  resolveFindings: (prKey: string) => Promise<boolean>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
 }
@@ -129,5 +138,17 @@ export function useInspector(): InspectorState {
     [setConfig],
   );
 
-  return { config, inspections, model, update, error };
+  const resolveFindings = useCallback(async (prKey: string): Promise<boolean> => {
+    const res = await api.resolveInspectorFindings(prKey);
+    if (!res.ok) {
+      setError(whyItFailed(res.error));
+      return false;
+    }
+    setError(null);
+    const prs = await fetchInspectorPrs();
+    if (prs) setInspections(prs);
+    return true;
+  }, []);
+
+  return { config, inspections, model, update, resolveFindings, error };
 }

@@ -13,7 +13,8 @@ import { fileURLToPath, URL } from "node:url";
 // every write below would 401.
 process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-http-"));
 
-const { openDb, adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
+const { openDb, adoptInspectorPr, loadInspectorComments, updateInspectorPr, upsertInspectorComment } =
+  await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -23,7 +24,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { normTty } = await import("../src/server/discovery/tty.ts");
 const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { Session, Task, WorkItem } from "../src/shared/types.ts";
+import type { InspectorCommentStatus, Session, Task, WorkItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 openDb();
@@ -1823,4 +1824,81 @@ test("/api/inspector/prs refuses an adoptedSince it cannot read, rather than gue
   const epoch = await app.request("/api/inspector/prs?adoptedSince=0", { headers: LOOPBACK });
   assert.equal(epoch.status, 200);
   assert.equal(((await epoch.json()) as unknown[]).length, 3);
+});
+
+// `POST /api/inspector/resolve-findings` is the operator's way out of a finding that has
+// genuinely been addressed and that nothing else can close - the review round only resolves
+// fingerprints the model lists, and it stops running once the head has been reviewed.
+
+/** One finding on one PR, in whichever state counts as open. */
+function seedFinding(prKey: string, fingerprint: string, status: InspectorCommentStatus): void {
+  upsertInspectorComment({
+    id: `id-${fingerprint}`,
+    prKey,
+    fingerprint,
+    path: "src/example.ts",
+    line: 1,
+    title: `Issue ${fingerprint}`,
+    body: "detail",
+    severity: "major",
+    round: 1,
+    status,
+    replies: 0,
+    answeredCommentId: null,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+}
+
+test("/api/inspector/resolve-findings closes every open finding and clears the stale block", async () => {
+  openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments");
+  const now = 1_800_000_000_000;
+  adoptAt(21, now);
+  const key = "owner/repo#21";
+  updateInspectorPr(key, { mergeBlock: "findings", round: 5, headSha: "head-1" }, now);
+  // All three statuses the tally counts as open, because all three stick the same way: a
+  // posted finding, a dry-run preview, and a round whose response was lost.
+  seedFinding(key, "aaa", "open");
+  seedFinding(key, "bbb", "drafted");
+  seedFinding(key, "ccc", "posting");
+  seedFinding(key, "ddd", "resolved");
+
+  const res = await app.request("/api/inspector/resolve-findings", {
+    method: "POST",
+    headers: { ...LOOPBACK, "content-type": "application/json" },
+    body: JSON.stringify({ prKey: key }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { resolved: 3 }, "the already-resolved row is not recounted");
+
+  assert.deepEqual(
+    loadInspectorComments(key).map((c) => c.status),
+    ["resolved", "resolved", "resolved", "resolved"],
+  );
+  // The recorded reason was derived from the ledger this just changed, and `recordBlock`
+  // only rewrites it when the answer CHANGES - so left alone it would go on saying "the
+  // Inspector has open findings" about a pull request that no longer has any.
+  const rows = (await (
+    await app.request("/api/inspector/prs", { headers: LOOPBACK })
+  ).json()) as Array<{ key: string; mergeBlock: string | null }>;
+  assert.equal(rows.find((r) => r.key === key)?.mergeBlock, null);
+});
+
+test("/api/inspector/resolve-findings refuses a pull request the ledger never adopted", async () => {
+  openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments");
+  // A miss is a mistyped or stale key, and "resolved 0 findings" would read as "there were
+  // none" for a pull request nobody is tracking at all.
+  const res = await app.request("/api/inspector/resolve-findings", {
+    method: "POST",
+    headers: { ...LOOPBACK, "content-type": "application/json" },
+    body: JSON.stringify({ prKey: "owner/repo#404" }),
+  });
+  assert.equal(res.status, 404);
+
+  const empty = await app.request("/api/inspector/resolve-findings", {
+    method: "POST",
+    headers: { ...LOOPBACK, "content-type": "application/json" },
+    body: JSON.stringify({ prKey: "" }),
+  });
+  assert.equal(empty.status, 400, "an empty key is rejected by the schema, not looked up");
 });

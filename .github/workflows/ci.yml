@@ -163,18 +163,36 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Keyed on the version the lockfile actually installed rather than the range in
+      # package.json, because the cache holds one exact binary. `runner.arch` is in the key
+      # for the reason the Playwright cache further down has it: an x64 artifact must never
+      # restore onto another architecture.
+      - name: Resolve Electron version
+        id: electron
+        run: echo "v=$(node -p "require('./node_modules/electron/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # Deliberately NOT keyed on the Node version, so the two legs of this matrix share one
+      # cache: whichever downloads it first serves the other, and in practice that has been
+      # the leg whose network worked.
+      - name: Cache the Electron runtime
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.v }}
+
       # Electron 42+ downloads its runtime on first use instead of during npm install.
       # Provision it explicitly so GUI fixtures only exercise the application under test.
       #
-      # Retried, because this download is the one step here that depends on a third party
-      # being up. It comes from the GitHub releases CDN, and that CDN has failed this job
-      # three times in one afternoon - once `503`, twice `TypeError: fetch failed` - each
-      # time reddening a run whose diff had nothing to do with Electron, and each time
-      # BEFORE a single test executed. Nothing about the download is order-dependent or
-      # partially applied, so re-attempting is the whole mitigation.
+      # `electron/install.js` reads the cache above and reaches the network only on a miss,
+      # which is what stops this step depending on a third party being reachable on every
+      # run. The retry covers the cold path that remains.
       #
-      # Deliberately a loop rather than a retry action: this is three lines of bash against
-      # a supply-chain dependency that would otherwise run on every unit job of every PR.
+      # Both exist because this one download has reddened this job four times in an
+      # afternoon - once `503`, three times an immediate `TypeError: fetch failed` - always
+      # on the node 26 leg, always on a diff with nothing to do with Electron, and always
+      # BEFORE a single test executed. The retry alone was not enough: all three attempts
+      # failed inside a second each, so the outage outlasts any backoff worth putting in a
+      # job. Caching is the part that actually removes the dependency.
       - name: Install Electron test runtime
         run: |
           for attempt in 1 2 3; do

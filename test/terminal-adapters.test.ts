@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { binEnv, resolveBin, TMUX_BIN, WEZTERM_BIN } from "../src/server/terminal/bin.ts";
-import { parseClients, parsePanes, tmuxMultiplexer } from "../src/server/terminal/tmux.ts";
+import { parseClients, parsePanes, SEP, tmuxMultiplexer } from "../src/server/terminal/tmux.ts";
 import { parsePanes as parseEmulatorPanes, weztermEmulator } from "../src/server/terminal/wezterm.ts";
 import { shellCommand } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
@@ -317,7 +317,7 @@ test("each backend enumerates through its own adapter, and normalizes at that bo
   // Enumeration moved off `discovery/*` and onto the adapters, so this is where the format
   // strings and the JSON shape are now pinned - against verbatim backend output, which is
   // the only way it asserts anything on a machine with neither installed.
-  const tmuxOut = ["api\x1f1\x1fagent\x1f%3\x1f42\x1f/dev/ttys028\x1f/w/api", ""].join("\n");
+  const tmuxOut = [["api", "1", "agent", "%3", "42", "/dev/ttys028", "/w/api"].join(SEP), ""].join("\n");
   const tmux = recorder([stubRun({ stdout: tmuxOut, stderr: "", code: 0 })]);
   const [muxPane] = await tmuxMultiplexer(tmux.exec).list();
   assert.deepEqual(tmux.calls[0]!.args.slice(0, 3), ["list-panes", "-a", "-F"]);
@@ -359,15 +359,60 @@ test("an absent or unparseable backend enumerates as empty, never as a throw", a
   assert.deepEqual(await weztermEmulator(recorder([dead]).exec).list!(), []);
 
   // Short lines and non-JSON are the same answer: a half-parsed pane is no more use than none.
-  assert.deepEqual(parsePanes("\n  \napi\x1f1\n"), []);
+  assert.deepEqual(parsePanes(`\n  \napi${SEP}1\n`), []);
   assert.deepEqual(parseClients("nosep\n"), []);
   assert.deepEqual(parseEmulatorPanes("<html>not json</html>"), []);
   assert.deepEqual(parseEmulatorPanes('{"panes":[]}'), [], "an object is not the array we asked for");
 });
 
 test("a client with no tty is dropped rather than joined against every pane that has none", () => {
-  assert.deepEqual(parseClients("/dev/ttys028\x1fapi"), [{ tty: "ttys028", session: "api" }]);
-  assert.deepEqual(parseClients("\x1fapi"), []);
+  assert.deepEqual(parseClients(`/dev/ttys028${SEP}api`), [{ tty: "ttys028", session: "api" }]);
+  assert.deepEqual(parseClients(`${SEP}api`), []);
+});
+
+test("the pane format separator is printable, or tmux enumerates nothing at all", () => {
+  // A regression guard on a bug that produced no error and no partial read - zero panes, on
+  // two of the three tmux versions measured, which meant every tmux session on the machine
+  // went uncarded and every agent on a tty was discovered with no pane to write to.
+  //
+  // The separator was `\x1f`, the ASCII unit separator - exactly the byte you would pick,
+  // and the one tmux will not carry:
+  //
+  //   * tmux 3.3a (Debian 12) with a non-UTF-8 client locale strips non-printable bytes out
+  //     of argv, and a `-F` format string IS argv, so every `\x1f` reached the server as `_`.
+  //   * tmux 3.4 (Ubuntu 24.04, the current LTS) returns it ESCAPED, as the four literal
+  //     characters `\037`, at every locale.
+  //   * tmux 3.6b (macOS, homebrew) passes it through, which is why no developer saw this.
+  //
+  // Asserting the separator is printable is the whole guard: both failure modes are things
+  // tmux does to non-printable bytes and to nothing else.
+  assert.ok(SEP.length > 0);
+  for (const ch of SEP) {
+    const code = ch.codePointAt(0)!;
+    assert.ok(
+      code > 0x20 && code < 0x7f,
+      `tmux mangles non-printable bytes in a -F format; ${JSON.stringify(ch)} is not printable ASCII`,
+    );
+  }
+});
+
+test("a field containing the separator drops its pane rather than misaddressing a write", () => {
+  // The cost of a printable separator: it is no longer a byte a field cannot contain. A
+  // window name is whatever the shell reports, so `~|~` in one would shift every field after
+  // it - and field 3 is `paneId`, which is what every keystroke is addressed to. A shifted
+  // line would send an operator's Escape, or their prompt, to a pane named by a fragment of
+  // somebody else's window title.
+  //
+  // So the parse validates instead of trusting, and drops what it cannot vouch for. One pane
+  // missing from the fleet is a visible absence; one pane misaddressed is an invisible wrong.
+  const shifted = ["api", "1", `weird${SEP}name`, "%3", "42", "/dev/ttys028", "/w/api"].join(SEP);
+  assert.deepEqual(parsePanes(shifted), [], "a line whose pane id is not %<digits> is dropped");
+
+  // And the control: the identical line without the collision parses, so the test above
+  // fails for the collision rather than for the shape of the fixture.
+  const clean = ["api", "1", "weird-name", "%3", "42", "/dev/ttys028", "/w/api"].join(SEP);
+  assert.equal(parsePanes(clean).length, 1);
+  assert.equal(parsePanes(clean)[0]!.paneId, "%3");
 });
 
 test("a backend drops its own environment pin, and only its own", async () => {

@@ -288,6 +288,63 @@ test("the run id copy survives a renderer whose Clipboard API refuses", async ({
   await reader.close();
 });
 
+test("a copy that works clears the refusal an earlier copy left on the page", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * This page keeps ONE error line that every action writes to, and the two copy controls
+   * used to write to it on failure only. A refusal therefore outlived every later copy that
+   * worked - and on a finished run, whose audit disclosure may never fire another action, it
+   * had nothing left to clear it at all.
+   *
+   * Browser-only: the claim is about the lifetime of a rendered banner across two clicks on
+   * two different controls, which is not a property of any function.
+   */
+  const { runId } = await seedRun(dashboard, daemon, "pass");
+
+  // A clipboard that refuses, then stops refusing, so both clicks are driven from one page.
+  // `execCommand` follows the same flag or `copyText`'s fallback would rescue the first click.
+  await dashboard.addInitScript(() => {
+    const state = { blocked: true };
+    Reflect.set(window, "__missionCopyState", state);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: () => (state.blocked
+          ? Promise.reject(new Error("Write permission denied."))
+          : Promise.resolve()),
+      },
+    });
+    document.execCommand = () => !state.blocked;
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  // The page is already on this origin, so that `goto` only changed the hash - a same-document
+  // navigation, which does not re-run an init script. Without this reload the stub above never
+  // installs and the copy quietly succeeds.
+  await dashboard.reload();
+  await expect(dashboard.evaluate(() => Reflect.has(window, "__missionCopyState")))
+    .resolves.toBe(true);
+
+  const audit = auditOf(dashboard);
+  await audit.getByText("Audit and bug reports").click();
+  await audit.getByRole("button", { name: "Copy" }).click();
+
+  const failure = dashboard.locator("p.wf-run-error");
+  await expect(failure).toHaveText(/Could not copy the run id\./);
+
+  await dashboard.evaluate(() => {
+    const state = Reflect.get(window, "__missionCopyState") as { blocked: boolean };
+    state.blocked = false;
+  });
+
+  // A different control, which is the point: one line, last write wins.
+  const header = dashboard.locator("header.wf-run-head");
+  await header.getByRole("button", { name: "Copy feedback" }).click();
+  await expect(header.getByRole("button", { name: "Copied" })).toBeVisible();
+  await expect(failure).toHaveCount(0);
+});
+
 test("an opened disclosure survives the run's own live updates", async ({ dashboard, daemon }) => {
   const { runId } = await seedRun(dashboard, daemon, "fail");
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);

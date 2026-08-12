@@ -1784,9 +1784,14 @@ export function WorkflowRuns({
    * The flag comes down as a prop now, which is the arrangement `WorkflowLadder` already had.
    *
    * The failure sentence still lands in this page's own `error` slot, read off `copy()`'s
-   * return so that one line keeps last-write-wins across every action that writes to it. It
-   * keeps naming WHICH copy failed, because the reason `copyText` throws ("The browser refused
-   * the clipboard copy") describes the mechanism and not the button that was pressed.
+   * return. It keeps naming WHICH copy failed, because the reason `copyText` throws ("The
+   * browser refused the clipboard copy") describes the mechanism and not the button that was
+   * pressed.
+   *
+   * Both clear that slot before they attempt, which is what actually makes it last-write-wins:
+   * writing only on failure leaves a refusal on screen through every later copy that worked,
+   * and the audit disclosure on a finished run may never fire another action to clear it. That
+   * is `mutate` and the resubmit handler's own pattern above, and `WorkflowLadder`'s.
    *
    * `resetOn` is load-bearing and not decoration. The view used to hold these flags and
    * `setDetail(null)` unmounted it on every run change, so selecting another run cleared them
@@ -1798,6 +1803,7 @@ export function WorkflowRuns({
 
   const copyFeedback = (): void => {
     if (!detail) return;
+    setError(null);
     void feedbackCopy.copy(() => workflowFeedbackText(detail))
       .then(({ error: caught }) => {
         if (caught !== null) setError(`Could not copy workflow feedback. ${caught}`);
@@ -1814,6 +1820,7 @@ export function WorkflowRuns({
    */
   const copyRunId = (): void => {
     if (!detail) return;
+    setError(null);
     void runIdCopy.copy(() => detail.run.id)
       .then(({ error: caught }) => {
         if (caught !== null) setError(`Could not copy the run id. ${caught}`);

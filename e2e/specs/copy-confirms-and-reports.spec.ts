@@ -66,6 +66,27 @@ async function refuseTheAsyncClipboard(page: Page): Promise<void> {
 }
 
 /**
+ * Prove the stub above actually installed, after navigating.
+ *
+ * An init script only runs on a real document load, and `goto` between two hashes of the same
+ * origin is a same-document navigation. Get that wrong and the copy simply succeeds through
+ * the real clipboard - so the test still passes, while proving nothing about the fallback it
+ * exists to cover. Asserted rather than assumed, because a silently vacuous regression test is
+ * worse than none.
+ */
+async function expectTheClipboardToRefuse(page: Page): Promise<void> {
+  const refuses = await page.evaluate(async () => {
+    try {
+      await navigator.clipboard.writeText("probe");
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  expect(refuses, "the rejecting clipboard stub did not install").toBe(true);
+}
+
+/**
  * Read the real clipboard from a page that is not the one under test.
  *
  * The page under test may be holding the rejecting stub above, so it cannot read its own
@@ -131,6 +152,9 @@ async function seedPersona(daemon: DaemonHandle): Promise<string> {
 async function openPersonaEditor(page: Page, daemon: DaemonHandle): Promise<void> {
   const personaId = await seedPersona(daemon);
   await page.goto(`${daemon.baseURL}/#/library/personas/${personaId}`);
+  // A real document load, so any init script this test registered installs. See
+  // `expectTheClipboardToRefuse`.
+  await page.reload();
   await expect(page.locator("section.persona-fields").getByLabel("Name"))
     .toHaveValue("Shelf reviewer");
 }
@@ -176,6 +200,7 @@ test("the sitrep copy survives a renderer whose Clipboard API refuses", async ({
   await refuseTheAsyncClipboard(dashboard);
   await seedBacklogTask(daemon);
   await dashboard.reload();
+  await expectTheClipboardToRefuse(dashboard);
   await openSitrep(dashboard);
 
   const panel = dashboard.getByRole("dialog", { name: "Sitrep" });
@@ -221,6 +246,7 @@ test("the Persona markdown copy confirms, and survives a refusing Clipboard API"
 }) => {
   await refuseTheAsyncClipboard(dashboard);
   await openPersonaEditor(dashboard, daemon);
+  await expectTheClipboardToRefuse(dashboard);
 
   const copy = dashboard.getByRole("button", { name: "Copy Markdown" });
   await copy.click();

@@ -32,7 +32,17 @@ export default defineConfig({
     // and a replayable recording of what the browser did.
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    video: "retain-on-failure",
+    // Off, not `retain-on-failure`. Both settings record every test and throw the
+    // recording away when it passes, so a green run pays for artifacts nobody reads -
+    // measured on a CI shard, trace costs 24s and video costs a further 16s of a 126s
+    // run. Trace earns its 24s for the reason above. Video does not: it shows what a
+    // trace already shows, with less of it, and the trace viewer replays the same frames.
+    //
+    // The alternative was `on-first-retry` for both, which is 6s cheaper still and was
+    // rejected: with `retries: 1`, it captures nothing for the attempt that actually
+    // failed, and a flake that passes on retry is exactly the case this suite has needed
+    // to diagnose before.
+    video: "off",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });

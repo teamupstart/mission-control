@@ -31,10 +31,14 @@ npx playwright show-trace test-results/<dir>/trace.zip
 ## Evidence
 
 Successful-path artifacts go to gitignored `e2e/.artifacts/<topic>/` because a green Playwright
-run leaves nothing behind on its own: `screenshot`, `video` and `trace` are all configured
+run leaves nothing behind on its own: `screenshot` and `trace` are both configured
 `on-failure`, so success is exactly the case with no record. Attach the generated screenshots
 and transcripts to the pull request. Never commit them, including evidence produced for or
 submitted to workflow personas.
+
+Video is off. Recording it cost 16s of every CI shard whether or not anything failed, and it
+showed nothing the trace does not already replay. A failure still leaves a trace and a
+screenshot; open the trace with `npx playwright show-trace`.
 
 ### Full workflow graph canvas
 

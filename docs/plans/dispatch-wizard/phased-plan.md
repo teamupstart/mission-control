@@ -170,13 +170,13 @@ After Phase 5 merges:
 
 ## Task mapping
 
-Filled in when the implementation tasks are created; every task also depends on the planning
-session that publishes these files.
+Every task additionally depends on the planning session that publishes these files, so none of
+them dispatch until this plan reaches the default branch.
 
-| Phase | Task |
-|---|---|
-| 1 | _pending_ |
-| 2 | _pending_ |
-| 3 | _pending_ |
-| 4 | _pending_ |
-| 5 | _pending_ |
+| Phase | Task id | Direct task prerequisites |
+|---|---|---|
+| 1 | `188b55db-18a1-490b-8ab1-35c599951947` | planning session only |
+| 2 | `c9af0524-5440-4535-8932-2f5fd0530931` | 1 |
+| 3 | `5da5306f-8d7b-4904-9364-ca8ace3cffb8` | 2 |
+| 4 | `7d6d8442-04c6-4d84-9bbe-ecddd11139f0` | 2 |
+| 5 | `b989e07a-79fa-40d8-be21-83e2a8664216` | 3, 4 |

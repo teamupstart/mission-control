@@ -67,18 +67,36 @@ jobs:
   # Lint is new to CI. It was previously a local-only check, which meant it was a required
   # standard nothing enforced. It costs under a second, so the honest place for it is here.
   #
-  # There is deliberately no `needs: gates` on `unit` or `e2e`, and this is a real tradeoff
-  # rather than an oversight. Gating them would mean a typecheck or lint failure costs
-  # nothing instead of a full paid pipeline - but it also delays every run by the length of
-  # this job. Measured over the last 291 completed runs before the split:
+  # ## Why no job in this file has `needs:`
   #
-  #   26 failed (8.9%), and only 2 of 291 (0.69%) failed in a way `gates` would have caught
-  #   first. The common failure is `Test` (8 runs), which gating does nothing about.
+  # The old pipeline ran typecheck -> test -> build -> smoke -> e2e as sequential steps in
+  # one job, so any failure skipped everything after it. Splitting into parallel jobs gives
+  # that up: a red run now pays for jobs the old shape would have skipped. That is a real
+  # regression and it was priced rather than waved through, twice. Both times the answer was
+  # the same, because a `needs:` edge is paid on EVERY run and only refunded on failing ones.
   #
-  # So `needs: gates` would save 0.69% of CI spend and add ~48s to 100% of runs, taking the
-  # pipeline from 145s to 193s (+33%). The regression it would fix costs about 1% of what
-  # this change saves. Revisit if that 0.69% climbs - if typecheck starts failing on a tenth
-  # of runs, the arithmetic flips and `needs: gates` becomes correct.
+  # Measured over the 291 completed runs before the split - 26 failed, 8.9%:
+  #
+  #   `needs: gates` (typecheck/lint before the paid jobs)
+  #     catches   2 of 291 runs, 0.69%  ->  saves 0.7% of spend
+  #     costs     +48s on 100% of runs  ->  145s becomes 193s, +33%
+  #
+  #   `needs: unit` (tests before e2e)
+  #     catches   8 of 291 runs, 2.75%  ->  saves 1.4% of spend
+  #     costs     +137s on 100% of runs ->  157s becomes 294s, +87%
+  #
+  # The second one is also worse than its own arithmetic looks. Gating e2e behind unit means
+  # a branch that breaks both is told about the unit failure, fixed, pushed, and only then
+  # told about e2e - two cycles where one would do. One extra cycle costs a whole pipeline,
+  # which is 70 runs' worth of the savings gating was supposed to produce. Running both and
+  # reporting both is usually the cheaper answer, not the more wasteful one.
+  #
+  # Note the historical numbers understate that: because the old shape skipped e2e whenever
+  # `Test` failed, there is no run on record where both are known to have failed. The rate
+  # of double failures cannot be measured from a design that hid it.
+  #
+  # Revisit if the caught-rate climbs. If typecheck starts failing on a tenth of runs rather
+  # than 0.69%, `needs: gates` becomes correct on cost alone.
   gates:
     name: gates (typecheck, lint)
     runs-on: ubuntu-latest
@@ -175,6 +193,10 @@ jobs:
   # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
   # at a local fake, and nothing in `src/` reaches a model API by any other route. See that
   # file for why that is a property of the daemon, not a hope.
+  #
+  # This job runs even when `unit` is red, which the old sequential shape did not. See the
+  # `needs:` arithmetic above the `gates` job - gating it here saves 1.4% of spend and costs
+  # 87% of the wall-clock win.
   e2e:
     name: e2e (shard ${{ matrix.shard }}/2)
     runs-on: blacksmith-4vcpu-ubuntu-2404

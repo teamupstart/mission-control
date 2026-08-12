@@ -60,6 +60,27 @@ export function agentActive(s: Session): boolean {
 }
 
 /**
+ * The activity line when it describes something happening RIGHT NOW, or null.
+ *
+ * `activity` is written on every lifecycle event, not only the busy ones, so the field
+ * outlives the work it described: once a session settles it holds a status label -
+ * `"idle"`, `"ended (logout)"` - that the state badge beside it already carries, and a
+ * surface that animates it would be animating a session that is not moving. `instrumented`
+ * is the freshness half of the same problem: when a terminal session's hooks lapse past
+ * the overlay TTL the passive poller refreshes `state` from the transcript and leaves
+ * `activity` at its stale overlay value, so only a current push channel makes the label
+ * worth drawing as live.
+ *
+ * Established by the board tile's ticker and now shared with the conversation's
+ * in-progress row, because the two would otherwise carry a copy each of a rule whose
+ * every conjunct is load-bearing and none of which is obvious from the field name.
+ */
+export function liveActivity(s: Session): string | null {
+  if (!s.instrumented || !agentActive(s)) return null;
+  return s.activity ?? null;
+}
+
+/**
  * The menu this session is parked on and can still be answered, or null.
  *
  * `paneDialog` outlives the pane it was read from: a session that vanishes is marked

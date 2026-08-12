@@ -193,11 +193,14 @@ test("a session with no objective yet adds no empty line to the identity block",
   assert.ok(!render(mkSession({ goal: null })).includes('class="goal'));
 });
 
-test("the transcript's leading children are one shorter, and .transcript stays a direct child", () => {
+test("the conversation has no leading status band, and .transcript stays a direct child", () => {
+  // Both halves of D4 have now left this container - the objective for `.detail-title`
+  // (above) and the activity line for the tail of the log (`transcript-in-progress-row`) -
+  // so with nothing to answer first the transcript is the FIRST thing under the tab row.
+  //
   // `.detail-conv > .pane-dialog` and `.detail-conv > .transcript` are child combinators in
-  // shipped CSS and in `pane-dialog-scroll.test.ts`, so the objective had to leave without a
-  // wrapper appearing in its place.
-  const html = render(mkSession({ goal: goal(), activity: "running Bash" }));
+  // shipped CSS and in `pane-dialog-scroll.test.ts`, so neither could leave by being wrapped.
+  const html = render(mkSession({ goal: goal(), activity: "running Bash", state: "working" }));
   const conv = html.slice(html.indexOf('<div class="detail-conv">'));
-  assert.match(conv, /^<div class="detail-conv"><p class="activity">running Bash<\/p>/);
+  assert.match(conv, /^<div class="detail-conv"><div class="transcript"/);
 });

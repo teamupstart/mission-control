@@ -117,6 +117,43 @@ Phase 3 may rely on:
 - The in-progress row being the only place `session.activity` appears in the console detail. Phase 3
   must not reintroduce it into the header while re-laying out the bands.
 
+### As shipped
+
+Six things this file either left open or did not anticipate. Full reasoning is in the pull request;
+recorded here because phase 3 re-lays out the bands above this container.
+
+- **Ordering: the row is drawn BEFORE `session.pendingTurns`**, which is the answer the finding above
+  guessed at. A pending turn is a message the human has queued and the agent has not received; the
+  row is the step it is on right now. The other order reads as though the queue had already been
+  answered.
+- **The gate is `liveActivity(session)` in `src/shared/session.ts`**, not a local expression. The
+  board tile already had this rule - `instrumented && running && activity` - with a paragraph
+  explaining why each conjunct is load-bearing, and a second copy here would have been a parallel
+  source of truth for a subtle rule. `SessionTile` now calls the shared predicate. That is a change
+  to a file the source plan lists as out of scope, and it is a no-op refactor: same three operands,
+  same order, no rendering change, `session-leaf-parity` untouched.
+- **Every host that mounts `TranscriptPanel` gets the row**, including an expanded `SessionCard`,
+  which therefore shows both its own `.activity` line near the top and the row at the tail of the
+  panel below. Deliberate. The two alternatives were worse: suppressing the card's line while
+  expanded removes information the plan says the card keeps, and gating the row on a new host prop
+  pre-empts the host-provides-X contract phase 3 owns and makes the same conversation differ between
+  two surfaces. The card's line is a field in its status block, ~290px and three components away.
+- **The terminal drawing needed its own rule.** Found in a browser, not in the diff: `.transcript-log`
+  under `data-view="terminal"` has no flex gap, a 24px inset and a spine with a node per entry, so
+  the row sat flush against the last entry and two dozen pixels to the left of it. It takes
+  `.pty-entry` in that rendering and joins the stream, with a shorter tail and a matching spine stop.
+- **F4 defect one is currently masked, and the dependency is added anyway.** An activity change can
+  only arrive as a whole-session upsert, and `session.pendingTurns` is re-parsed to a fresh array by
+  every one of those, so the neighbouring dependency already re-runs the tail-following effect on
+  the same tick. Measured: dropping `inProgress` alone leaves the browser spec green; cutting the
+  array to `[messages]` fails it at 28px off the bottom. So the e2e spec pins the invariant a person
+  has and the unit test pins the wiring, and the effect states its own dependency rather than
+  relying on an accident of the transport.
+- **The single line is pinned as geometry, in `test/transcript-scroll-electron.test.ts`.** The 48px
+  threshold is a used-height fact, so the fixture session was made live with an activity string
+  wider than any pane it is measured in, and all nine cases assert the row is under half that
+  budget, clipped rather than wrapped, and inside the log's width. No case was added or loosened.
+
 ## Cross-phase audit record
 
 - **Against phase 1:** phase 1 removes `GoalLine` from `.detail-conv` and this phase removes

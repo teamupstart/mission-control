@@ -51,6 +51,12 @@ app.whenReady().then(async () => {
         const activity = host.querySelector('.activity-rail');
         const toggle = host.querySelector('.activity-toggle');
         const body = host.querySelector('.activity-body');
+        // The in-progress row at the tail of the log. Its height is a correctness fact,
+        // not a style one: the log follows its tail only while the reader is within 48px
+        // of the bottom, so a row that wrapped would push a pinned reader out of that
+        // window and stop the pane following the conversation.
+        const progress = host.querySelector('.turn-progress');
+        const progressText = host.querySelector('.turn-progress-text');
         const boxRect = box.getBoundingClientRect();
         const composeRect = compose.getBoundingClientRect();
         // Ask for the bottom and report where it landed: a region that cannot scroll
@@ -94,6 +100,13 @@ app.whenReady().then(async () => {
           activityContentHeight,
           activityViewHeight,
           activityScrolledTo,
+          progressHeight: progress ? Math.round(progress.getBoundingClientRect().height) : null,
+          progressRightOverflow: progress
+            ? Math.round(progress.getBoundingClientRect().right - log.getBoundingClientRect().right)
+            : null,
+          progressClipped: progressText
+            ? progressText.scrollWidth > progressText.clientWidth
+            : null,
         };
       }
       return out;

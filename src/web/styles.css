@@ -4934,6 +4934,71 @@ kbd {
 .pending-turn-error {
   flex-basis: 100%;
 }
+
+/* ---- the turn currently arriving (TranscriptPanel's InProgressRow) ----
+   The log's last row when the agent is mid-step, and the one row in it that is not a
+   record: every other row was read back out of a transcript, while this is the session's
+   live report of what it is doing, replaced by the next real turn. It is drawn to say so -
+   no bubble, no timestamp, the byline dimmed - so a reader can tell at a glance which part
+   of the tail already happened.
+
+   Do NOT confuse it with `.activity-rail` ("Observed activity"), which is a different
+   feature two columns to the right: that one lists calls the transcript RECORDED and is
+   forbidden from claiming any of them is running. This one claims exactly that, about one
+   step, and takes the claim from the session rather than from the log.
+
+   `white-space: nowrap` is load-bearing rather than cosmetic. `.transcript-log` follows its
+   tail only while the reader is within 48px of the bottom, so a row free to wrap to three
+   lines would appear underneath a bottom-pinned reader, push them past that threshold, and
+   stop the pane following the conversation. One line can never spend that budget. */
+.turn-progress {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* Typography comes from `.turn-role`, which this composes with - one byline vocabulary for
+   the whole log. All it needs of its own is to stop shrinking, so the words that follow are
+   what gives way when the row runs out of width. */
+.turn-progress-who {
+  flex: none;
+}
+/* The one part in the working tone: the marker says "live", the words stay muted, so the
+   row reads as ambient beside turns that are the conversation itself. */
+.turn-progress-glyph {
+  flex: none;
+  font-size: 10px;
+  color: var(--working);
+  animation: activity-spin 1.6s linear infinite;
+}
+.turn-progress-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn-progress-glyph {
+    animation: none;
+  }
+}
+/* In the terminal drawing the row is a `.pty-entry` (see `InProgressRow`), which gives it
+   the stream's inset, spine and node. Two things it does not give: the byline is still the
+   chat log's sans, and the entry's 17px tail would be dead space under a row that is
+   always last. The spine's `:last-child` stop is measured against the shorter box. */
+.transcript[data-view="terminal"] .turn-progress-who {
+  font-family: var(--mono);
+}
+.transcript[data-view="terminal"] .turn-progress {
+  padding-bottom: 6px;
+}
+.transcript[data-view="terminal"] .turn-progress:last-child::before {
+  bottom: 12px;
+}
 /* Foreman's turns, told apart from the human's at a glance - in a supervised session
    most of the "user" side of the conversation is Foreman, and a reader who can't see
    which is which can't tell what they themselves asked for. `--foreman`, because the
@@ -18270,10 +18335,13 @@ span.line-run-prov {
   flex-direction: column;
   overflow: hidden;
 }
-/* Conversation: fill and pin. The leading bits (activity, note, gate strip) stay put and
-   the transcript scrolls inside itself, so the reply box never leaves the pane. The
-   objective is no longer among them - it reads with the name it belongs to, in
-   `.detail-title`. */
+/* Conversation: fill and pin. The leading bits (note, gate strip) stay put and the
+   transcript scrolls inside itself, so the reply box never leaves the pane.
+
+   Two things that used to lead this container no longer do, and neither is coming back:
+   the objective reads with the name it belongs to in `.detail-title`, and the activity
+   line reads at the tail of the log (`.turn-progress`) where the turn it describes is
+   arriving. What is left are the things a reader must answer before reading on. */
 .detail-conv {
   flex: 1;
   min-height: 0;
@@ -20405,7 +20473,7 @@ span.line-run-prov {
   flex: none;
   font-size: 10px;
   color: var(--working);
-  animation: tile-activity-spin 1.6s linear infinite;
+  animation: activity-spin 1.6s linear infinite;
 }
 .tile-activity .ta-txt {
   min-width: 0;
@@ -20413,7 +20481,10 @@ span.line-run-prov {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-@keyframes tile-activity-spin {
+/* The ticker glyph's rotation, shared with the conversation's in-progress row: both draw
+   the same `session.activity` for the same reason, and one of them animating at a different
+   speed from the other would say they were different signals. */
+@keyframes activity-spin {
   to {
     transform: rotate(360deg);
   }

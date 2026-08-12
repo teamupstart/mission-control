@@ -40,8 +40,12 @@ asks those three as single keystrokes inside the same dialog, then hands over th
 form with the answers already set and the caret in the task box. A default dispatch is
 <kbd>+</kbd> <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd> and you are typing.
 
-It is **off by default**. The switch is the way to turn it on, it is where you turn it off
-again mid-dispatch, and the setting is per machine.
+It is **off by default**, and the setting is per machine. Two surfaces write it. The switch in
+the modal's header is the one to reach for mid-dispatch, because it is already on screen while
+you are deciding. **Settings → Dispatch** is where you look it up when you are not dispatching:
+it carries the same checkbox, deep-links at `#/settings/dispatch`, and puts the preference in
+⌘K under **Guided dispatch**, where a search result flips it in place. They are one value, so
+neither can disagree with the other.
 
 | Key | What it does |
 |---|---|

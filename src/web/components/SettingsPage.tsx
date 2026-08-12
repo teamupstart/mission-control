@@ -19,6 +19,7 @@ import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
+import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useTaskSources } from "../useTaskSources.ts";
 import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindings.ts";
@@ -480,6 +481,13 @@ export function SettingsPage({
         );
       case "keyboard":
         return <KeyboardPanel />;
+      case "dispatch":
+        // Its own rail peer rather than a fourth panel stacked under Display: Display is
+        // "how the dashboard arranges sessions, and how transcripts are drawn", and how the
+        // dispatch form asks its questions is neither. Filing it there would have widened
+        // that category into a drawer of browser preferences, which is the thing its own
+        // stacking comment above exists to avoid.
+        return <DispatchSettingsPanel />;
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":

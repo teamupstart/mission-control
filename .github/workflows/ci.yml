@@ -165,8 +165,24 @@ jobs:
 
       # Electron 42+ downloads its runtime on first use instead of during npm install.
       # Provision it explicitly so GUI fixtures only exercise the application under test.
+      #
+      # Retried, because this download is the one step here that depends on a third party
+      # being up. It comes from the GitHub releases CDN, and that CDN has failed this job
+      # three times in one afternoon - once `503`, twice `TypeError: fetch failed` - each
+      # time reddening a run whose diff had nothing to do with Electron, and each time
+      # BEFORE a single test executed. Nothing about the download is order-dependent or
+      # partially applied, so re-attempting is the whole mitigation.
+      #
+      # Deliberately a loop rather than a retry action: this is three lines of bash against
+      # a supply-chain dependency that would otherwise run on every unit job of every PR.
       - name: Install Electron test runtime
-        run: npm exec -- install-electron --no
+        run: |
+          for attempt in 1 2 3; do
+            if npm exec -- install-electron --no; then exit 0; fi
+            echo "::warning::Electron runtime download failed (attempt ${attempt}/3)"
+            sleep $((attempt * 10))
+          done
+          exit 1
 
       - name: Test
         run: xvfb-run -a npm test

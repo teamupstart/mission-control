@@ -10,7 +10,7 @@ import {
   stageSummary,
 } from "@shared/workflow-stages.ts";
 import { duration } from "../lib/format.ts";
-import { copyText } from "../lib/clipboard.ts";
+import { useCopyFeedback } from "../lib/clipboard.ts";
 import { api } from "../lib/api.ts";
 import {
   retroCallView,
@@ -685,7 +685,8 @@ export function WorkflowLadderPanel({
 }): React.JSX.Element {
   const disclosureRegionId = useId();
   const [refreshRevision, setRefreshRevision] = useState(0);
-  const [feedbackCopied, setFeedbackCopied] = useState(false);
+  // `resetOn` carries what the `[run.id]` effect below used to do by hand for this flag.
+  const feedback = useCopyFeedback({ resetOn: run.id });
   const [localError, setLocalError] = useState<string | null>(null);
   /**
    * The retro request, keyed by the SESSION it is about rather than by the run.
@@ -704,7 +705,6 @@ export function WorkflowLadderPanel({
    */
   const [retroCall, setRetroCall] = useState<RetroCall | null>(null);
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
-  const copyReset = useRef<number | null>(null);
   const mounted = useRef(false);
   const refreshGeneration = useRef(0);
   const refreshCommit = useRef(createWorkflowLoadCommitBarrier());
@@ -729,7 +729,6 @@ export function WorkflowLadderPanel({
     return () => {
       mounted.current = false;
       refreshCommit.current.release();
-      if (copyReset.current !== null) window.clearTimeout(copyReset.current);
     };
   }, []);
   useEffect(() => {
@@ -743,7 +742,6 @@ export function WorkflowLadderPanel({
   }, [refreshRevision, state]);
   useEffect(() => {
     refreshCommit.current.release();
-    setFeedbackCopied(false);
     setLocalError(null);
     setConfirm(null);
     // `retroCall` is deliberately NOT reset here. It is about the session, which has not
@@ -803,20 +801,14 @@ export function WorkflowLadderPanel({
   const sessionBound = detail.binding.sessionId !== null;
   const copyFeedback = (): void => {
     setLocalError(null);
-    void copyText(workflowFeedbackText(detail))
-      .then(() => {
-        setFeedbackCopied(true);
-        if (copyReset.current !== null) window.clearTimeout(copyReset.current);
-        copyReset.current = window.setTimeout(() => {
-          setFeedbackCopied(false);
-          copyReset.current = null;
-        }, 1600);
-      })
-      .catch((caught) => {
-        setFeedbackCopied(false);
-        setLocalError(caught instanceof Error
-          ? caught.message
-          : "Could not copy workflow feedback");
+    // Into `localError` rather than rendered from `feedback.error`, so this panel keeps ONE
+    // error line with last-write-wins. Two sources for one `<p>` is how a stale copy refusal
+    // ends up masking the sentence from whatever the operator did next.
+    void feedback.copy(() => workflowFeedbackText(detail))
+      .then(({ error }) => {
+        // Named, because this panel's error line sits well below the button and the reason
+        // `copyText` throws describes the mechanism rather than what was being copied.
+        if (error !== null) setLocalError(`Could not copy workflow feedback. ${error}`);
       });
   };
   const runPost = (
@@ -925,7 +917,7 @@ export function WorkflowLadderPanel({
         if (prUrl) window.open(prUrl, "_blank", "noopener,noreferrer");
       }}
       onResolveDelivery={resolveDelivery}
-      feedbackCopied={feedbackCopied}
+      feedbackCopied={feedback.copied}
       actionError={localError ?? call.error ?? controller.error}
       sessionBound={sessionBound}
       isPending={controller.isPending}

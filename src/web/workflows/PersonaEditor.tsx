@@ -18,6 +18,7 @@ import { FileEditor } from "../components/FileEditor.tsx";
 import { Markdown } from "../components/Markdown.tsx";
 import { ModelField, ModelSuggestions } from "../components/ModelField.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { personaMarkdownBlob, personaRequest } from "./personaApi.ts";
 
 export interface PersonaDraftSeed {
@@ -270,7 +271,7 @@ export function PersonaEditor({
   const [conflict, setConflict] = useState<PersonaView | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const copy = useCopyFeedback();
   const [guidanceMode, setGuidanceMode] = useState<"editor" | "preview">("editor");
   const archived = persona?.archivedAt != null;
   const builtin = persona?.builtin === true;
@@ -391,14 +392,18 @@ export function PersonaEditor({
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  async function copyMarkdown(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(draft.guidanceMarkdown);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setError("Clipboard access was blocked. The Markdown remains in the editor.");
-    }
+  /*
+   * Through `useCopyFeedback`, and so through `copyText`, which is the whole point of the
+   * change: this called `navigator.clipboard.writeText` directly, so it never reached the
+   * selected-textarea fallback and copied nothing in the Electron renderer - where the async
+   * Clipboard API can be permission-blocked even after a direct click.
+   */
+  function copyMarkdown(): void {
+    void copy.copy(() => draft.guidanceMarkdown).then(({ error: caught }) => {
+      if (caught !== null) {
+        setError(`Clipboard access was blocked, and the Markdown remains in the editor. ${caught}`);
+      }
+    });
   }
 
   function downloadMarkdown(): void {
@@ -446,7 +451,7 @@ export function PersonaEditor({
             <button className="btn" disabled={readOnly || saving || exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes || (persona !== null && !dirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
           </Tooltip>
           <Tooltip label="Copy this Persona's guidance markdown to the clipboard">
-            <button className="btn btn-ghost" onClick={() => void copyMarkdown()}>{copied ? "Copied ✓" : "Copy Markdown"}</button>
+            <button className="btn btn-ghost" onClick={copyMarkdown}>{copy.copied ? COPY_FEEDBACK_LABEL : "Copy Markdown"}</button>
           </Tooltip>
           <Tooltip label="Save this Persona's guidance to a markdown file">
             <button className="btn btn-ghost" onClick={downloadMarkdown}>Download .md</button>

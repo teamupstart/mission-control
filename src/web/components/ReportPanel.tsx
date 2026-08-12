@@ -9,6 +9,7 @@ import {
 } from "@shared/session.ts";
 import { backlogIndex, declaredBlockers, deadBlockersFor } from "@shared/backlog.ts";
 import { api } from "../lib/api.ts";
+import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { repoLeaf } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import {
@@ -209,7 +210,6 @@ export function ReportPanel({
   scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const { bindings } = useKeybindings();
-  const [copied, setCopied] = useState(false);
   const [marking, setMarking] = useState<string | null>(null);
   const [outcome, setOutcome] = useState("");
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
@@ -244,16 +244,29 @@ export function ReportPanel({
   const branchOf = (s: Session): string | null =>
     s.gitBranch ?? (s.task ? taskById.get(s.task.id)?.branch ?? null : null);
 
-  async function copyMarkdown(): Promise<void> {
-    try {
-      const text = await (await fetch("/api/report.md")).text();
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    } catch {
-      /* clipboard blocked - the JSON report is still on /api/report */
-    }
-  }
+  /*
+   * The sitrep's own markdown, fetched and then copied.
+   *
+   * Both halves used to fail silently into the same empty `catch`, so a daemon that answered
+   * 500 and a renderer that refused the clipboard were indistinguishable and neither produced
+   * anything on screen. The fetch is the hook's producer now, which puts both failures on one
+   * path with one sentence, and the write goes through `copyText` - it called
+   * `navigator.clipboard.writeText` directly before, so it had no fallback in the desktop
+   * build.
+   *
+   * The response status is checked because `fetch` resolves for a 500, and copying the body of
+   * an error page is the one outcome worse than saying nothing.
+   */
+  const copy = useCopyFeedback();
+  const copyMarkdown = (): void => {
+    void copy.copy(async () => {
+      const response = await fetch("/api/report.md");
+      if (!response.ok) {
+        throw new Error(`The sitrep markdown could not be read (${response.status}).`);
+      }
+      return await response.text();
+    });
+  };
 
   async function markDone(taskId: string): Promise<void> {
     const o = outcome.trim();
@@ -321,8 +334,8 @@ export function ReportPanel({
             is up, and act on it next time. */}
         <kbd aria-hidden>{formatChord(bindings.roundup)}</kbd>
         <Tooltip label="Copy this whole sitrep to the clipboard as markdown">
-          <button className="btn btn-ghost report-copy" onClick={() => void copyMarkdown()}>
-            {copied ? "Copied ✓" : "Copy as markdown"}
+          <button className="btn btn-ghost report-copy" onClick={copyMarkdown}>
+            {copy.copied ? COPY_FEEDBACK_LABEL : "Copy as markdown"}
           </button>
         </Tooltip>
         <Tooltip label="Close the sitrep (Escape)">
@@ -331,6 +344,12 @@ export function ReportPanel({
           </button>
         </Tooltip>
       </header>
+
+      {/* Its own band under the header rather than a fourth item inside it: the header is one
+          flex row whose actions are pinned right, and a sentence in there would either squeeze
+          the copy button or wrap the row. `role="alert"` because the reader has just pressed a
+          button and nothing else on screen changed. */}
+      {copy.error && <p className="report-copy-error" role="alert">{copy.error}</p>}
 
       <div className="report-body">
         <Section title="Needs you" tone="attention" count={needsYou.length} empty="Nothing blocked on you.">

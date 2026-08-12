@@ -30,7 +30,7 @@ import {
 } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRunTone } from "../components/session-bits.tsx";
-import { copyText } from "../lib/clipboard.ts";
+import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { relativeTime, repoLeaf } from "../lib/format.ts";
 import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
@@ -430,8 +430,10 @@ export function WorkflowRunView({
   onNextMove = () => {},
   onCancel,
   onConfirm = () => {},
-  onCopyFeedback = async () => {},
-  onCopyRunId = async () => {},
+  onCopyFeedback = () => {},
+  onCopyRunId = () => {},
+  feedbackCopied = false,
+  runIdCopied = false,
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
   onRestartFull = async () => {},
@@ -462,14 +464,26 @@ export function WorkflowRunView({
   onCancel: () => Promise<void>;
   /** Destructive confirmations, hosted by the overlay registry rather than `window.confirm`. */
   onConfirm?: (request: WorkflowConfirmRequest) => void;
-  onCopyFeedback?: () => Promise<void>;
   /**
-   * Copy the durable run id. A callback rather than a `copyText()` call in here for the same
-   * reason `onCopyFeedback` is one: the clipboard can refuse, and the sentence saying so
-   * belongs on the page's own error surface, which the host owns. It must REJECT on failure -
-   * that is what keeps the `Copied` flip honest.
+   * Ask the host to copy. A callback rather than a `copyText()` call in here because the
+   * clipboard can refuse, and the sentence saying so belongs on the page's own error surface,
+   * which the host owns.
    */
-  onCopyRunId?: () => Promise<void>;
+  onCopyFeedback?: () => void;
+  /** Copy the durable run id. Same division of labour as `onCopyFeedback`. */
+  onCopyRunId?: () => void;
+  /**
+   * Whether each copy is inside its confirmation hold, from the host's `useCopyFeedback`.
+   *
+   * A PROP rather than state in here, which is what makes the `Copied` flip honest: the flag
+   * and the `copyText` call it reports on now belong to one hook in the host, so a copy that
+   * refused cannot flip it. This view used to hold both flags and set them after awaiting the
+   * callback, which worked only as long as that callback remembered to re-throw - and then
+   * swallowed the reason in a bare `catch`. `WorkflowLadder` already took `feedbackCopied`
+   * this way; these two are the same arrangement.
+   */
+  feedbackCopied?: boolean;
+  runIdCopied?: boolean;
   onOpenSession?: () => void;
   onOpenInspectorSettings?: () => void;
   onRestartFull?: (confirmation?: string) => Promise<void>;
@@ -598,8 +612,6 @@ export function WorkflowRunView({
     ) return [];
     return [{ id: event.id, completionKind, marker, summary, state }];
   });
-  const [feedbackCopied, setFeedbackCopied] = useState(false);
-  const [runIdCopied, setRunIdCopied] = useState(false);
   const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
   /**
    * The one thing to do about this run, and the sentence for when there is nothing.
@@ -745,15 +757,7 @@ export function WorkflowRunView({
             <button
               className="btn btn-ghost"
               disabled={feedbackAction.disabled}
-              onClick={() => void (async () => {
-                try {
-                  await onCopyFeedback();
-                  setFeedbackCopied(true);
-                  window.setTimeout(() => setFeedbackCopied(false), 1600);
-                } catch {
-                  setFeedbackCopied(false);
-                }
-              })()}
+              onClick={onCopyFeedback}
             >
               {feedbackAction.label}
             </button>
@@ -1443,19 +1447,8 @@ export function WorkflowRunView({
             <dd className="wf-run-audit-id">{detail.run.id}</dd>
             <dd className="wf-run-audit-act">
               <Tooltip label="Copy this durable workflow run id">
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => void (async () => {
-                    try {
-                      await onCopyRunId();
-                      setRunIdCopied(true);
-                      window.setTimeout(() => setRunIdCopied(false), 1600);
-                    } catch {
-                      setRunIdCopied(false);
-                    }
-                  })()}
-                >
-                  {runIdCopied ? "Copied" : "Copy"}
+                <button className="btn btn-ghost" onClick={onCopyRunId}>
+                  {runIdCopied ? COPY_FEEDBACK_LABEL : "Copy"}
                 </button>
               </Tooltip>
             </dd>
@@ -1781,32 +1774,50 @@ export function WorkflowRuns({
     }
   };
 
-  const copyFeedback = async (): Promise<void> => {
+  /*
+   * Both clipboard controls on this page, hosted here rather than in the view.
+   *
+   * `useCopyFeedback` owns the write and the confirmation together, so `Copied` cannot flip on
+   * a copy that did not happen. That used to be a contract rather than a structure: the view
+   * held the flag, this host held the `copyText` call, and only a documented re-throw across
+   * the prop boundary connected them - with the view's `catch` then swallowing the reason.
+   * The flag comes down as a prop now, which is the arrangement `WorkflowLadder` already had.
+   *
+   * The failure sentence still lands in this page's own `error` slot, read off `copy()`'s
+   * return so that one line keeps last-write-wins across every action that writes to it. It
+   * keeps naming WHICH copy failed, because the reason `copyText` throws ("The browser refused
+   * the clipboard copy") describes the mechanism and not the button that was pressed.
+   *
+   * `resetOn` is load-bearing and not decoration. The view used to hold these flags and
+   * `setDetail(null)` unmounted it on every run change, so selecting another run cleared them
+   * for free; this host stays mounted across that, so without the reset a run nobody copied
+   * would read `Copied` for the rest of the previous run's hold.
+   */
+  const feedbackCopy = useCopyFeedback({ resetOn: selected });
+  const runIdCopy = useCopyFeedback({ resetOn: selected });
+
+  const copyFeedback = (): void => {
     if (!detail) return;
-    try {
-      await copyText(workflowFeedbackText(detail));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not copy workflow feedback");
-      throw caught;
-    }
+    void feedbackCopy.copy(() => workflowFeedbackText(detail))
+      .then(({ error: caught }) => {
+        if (caught !== null) setError(`Could not copy workflow feedback. ${caught}`);
+      });
   };
 
   /**
    * The audit disclosure's run-id copy.
    *
-   * Through `copyText()` like every other clipboard control on this page. The button it
-   * replaced called `navigator.clipboard.writeText` behind a `void`, so in the Electron
-   * renderer - where the async Clipboard API can be permission-blocked even after a direct
-   * click - it copied nothing and said nothing.
+   * Through `copyText()` - via the hook - like every other clipboard control in the app. The
+   * button it replaced called `navigator.clipboard.writeText` behind a `void`, so in the
+   * Electron renderer, where the async Clipboard API can be permission-blocked even after a
+   * direct click, it copied nothing and said nothing.
    */
-  const copyRunId = async (): Promise<void> => {
+  const copyRunId = (): void => {
     if (!detail) return;
-    try {
-      await copyText(detail.run.id);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not copy the run id");
-      throw caught;
-    }
+    void runIdCopy.copy(() => detail.run.id)
+      .then(({ error: caught }) => {
+        if (caught !== null) setError(`Could not copy the run id. ${caught}`);
+      });
   };
 
   const loadMoreEvents = async (): Promise<void> => {
@@ -2059,6 +2070,8 @@ export function WorkflowRuns({
             }}
             onCopyFeedback={copyFeedback}
             onCopyRunId={copyRunId}
+            feedbackCopied={feedbackCopy.copied}
+            runIdCopied={runIdCopy.copied}
             onLoadEvents={loadMoreEvents}
             onLoadCalls={loadMoreCalls}
             onRestartFull={async (confirmation) => {

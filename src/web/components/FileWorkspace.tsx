@@ -11,6 +11,7 @@ import { FileEditor } from "./FileEditor.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
+import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -199,6 +200,21 @@ export function FileWorkspace({
   );
   const files = state?.files ?? [];
   const selectedPath = state?.selectedPath ?? null;
+  /*
+   * The conflict notice's "Copy local".
+   *
+   * It called `navigator.clipboard.writeText` behind a `void` and rendered nothing either way,
+   * so the one moment a reader most needs to know their text is safe - the file changed under
+   * them and they are about to discard or overwrite - was the moment the control said least.
+   * Through `copyText` now, and it confirms and reports like every other copy in the app.
+   *
+   * Keyed to the selected path, because this component does NOT remount between files. A
+   * refusal arms no hold, so without the reset that red sentence would have no lifetime at
+   * all: it would outlive the conflict it was raised in and reappear in the next file's
+   * notice, beside the two buttons that discard or overwrite, describing a copy of a
+   * different file that was never attempted.
+   */
+  const copyLocal = useCopyFeedback({ resetOn: selectedPath });
   const buffer = selectedPath ? state?.buffers[selectedPath] : null;
   const mode = state?.mode ?? "preview";
   const previewable = buffer?.document.kind === "html" || buffer?.document.kind === "markdown";
@@ -463,7 +479,10 @@ export function FileWorkspace({
             <Tooltip label="Overwrite the newer file on disk with your local edits"><button className="btn btn-danger" disabled={!buffer.conflict.revision} onClick={() => {
               if (window.confirm("Overwrite the newer file on disk with your local edits?")) controller.overwriteDisk(session.id, buffer.document.path);
             }}>Overwrite disk</button></Tooltip>
-            <Tooltip label="Copy your local version to the clipboard"><button className="btn" onClick={() => void navigator.clipboard.writeText(buffer.text)}>Copy local</button></Tooltip>
+            <Tooltip label="Copy your local version to the clipboard"><button className="btn" onClick={() => { void copyLocal.copy(() => buffer.text); }}>{copyLocal.copied ? COPY_FEEDBACK_LABEL : "Copy local"}</button></Tooltip>
+            {/* Its own class so it opts out of the `.file-notice > span` rule that pins the
+                leading sentence left - this one belongs beside the button it reports on. */}
+            {copyLocal.error && <span className="file-notice-error" role="alert">{copyLocal.error}</span>}
           </div>
         )}
       </div>

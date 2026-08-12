@@ -424,6 +424,16 @@ Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched i
 
 A fourth layout also requires render selection, expansion state, Escape handling, expand shortcuts, command bar behavior, `layoutNav.ts`, and `LayoutPanel`.
 
+## Copying to the clipboard
+
+There is one way in, and it is `src/web/lib/clipboard.ts`. Never call `navigator.clipboard` from a component.
+
+- `copyText(text)` is the write. It prefers the async Clipboard API and falls back to a selected read-only `<textarea>` plus `execCommand("copy")`, which is the only route that works in the Electron renderer when the async API is permission-blocked after a direct click. It throws rather than returning falsy. `test/clipboard.test.ts` pins its exact call ordering, so add layers on top of it rather than editing its body.
+- `useCopyFeedback()` is the control. It owns the write and the confirmation together, so a `Copied` label cannot flip on a copy that did not happen. It holds its timer in a ref, clears a prior timer before arming a new one, clears on unmount, and lets the last call win. `copy()` never rejects: it publishes the failure on `error` and also returns it, so a surface with one shared error line can route the sentence there instead of rendering a second competing source.
+- `COPY_FEEDBACK_HOLD_MS` is 1600 and `COPY_FEEDBACK_LABEL` is `"Copied"`, app-wide. No decorated variant.
+
+A copy control that reports nothing is incomplete. Confirm the success and say something on failure - either the hook's `error` beside the button, or the surface's own error line.
+
 ## Registries
 
 Extend existing registries instead of adding parallel lists:

@@ -204,12 +204,17 @@ jobs:
   # `needs:` arithmetic above the `gates` job - gating it here saves 1.4% of spend and costs
   # 87% of the wall-clock win.
   e2e:
-    name: e2e (shard ${{ matrix.shard }}/2)
+    name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        # The one place the shard count is written down. The denominator passed to
+        # Playwright is `strategy.job-total`, which GitHub derives from this list, because
+        # `--shard=X/N` partitions purely by the N it is handed and never checks it against
+        # how many jobs actually ran. Hardcoding the denominator would mean editing this
+        # list alone silently runs a fraction of the suite and still reports green.
         shard: [1, 2]
 
     steps:
@@ -252,7 +257,7 @@ jobs:
         run: npm run build
 
       - name: End-to-end tests
-        run: npm run test:e2e -- --shard=${{ matrix.shard }}/2
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
       # Artifact names have to be unique per shard: `upload-artifact@v4` refuses to write
       # the same name twice in one run.

@@ -397,8 +397,14 @@ export function PersonaEditor({
    * change: this called `navigator.clipboard.writeText` directly, so it never reached the
    * selected-textarea fallback and copied nothing in the Electron renderer - where the async
    * Clipboard API can be permission-blocked even after a direct click.
+   *
+   * It clears the editor's error line before attempting, which is what `save` and `reload` here
+   * already do and what the two other migrated copy sites do. Writing only on failure left a
+   * refusal standing underneath a later `Copied` - a confirmation and a contradiction for the
+   * same button.
    */
   function copyMarkdown(): void {
+    setError(null);
     void copy.copy(() => draft.guidanceMarkdown).then(({ error: caught }) => {
       if (caught !== null) {
         setError(`Clipboard access was blocked, and the Markdown remains in the editor. ${caught}`);

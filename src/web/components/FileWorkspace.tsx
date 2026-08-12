@@ -200,6 +200,9 @@ export function FileWorkspace({
   );
   const files = state?.files ?? [];
   const selectedPath = state?.selectedPath ?? null;
+  const buffer = selectedPath ? state?.buffers[selectedPath] : null;
+  const mode = state?.mode ?? "preview";
+  const previewable = buffer?.document.kind === "html" || buffer?.document.kind === "markdown";
   /*
    * The conflict notice's "Copy local".
    *
@@ -208,16 +211,23 @@ export function FileWorkspace({
    * them and they are about to discard or overwrite - was the moment the control said least.
    * Through `copyText` now, and it confirms and reports like every other copy in the app.
    *
-   * Keyed to the selected path, because this component does NOT remount between files. A
-   * refusal arms no hold, so without the reset that red sentence would have no lifetime at
-   * all: it would outlive the conflict it was raised in and reappear in the next file's
-   * notice, beside the two buttons that discard or overwrite, describing a copy of a
-   * different file that was never attempted.
+   * Keyed to THE CONFLICT, not to the file, because this component never remounts and a
+   * refusal arms no hold to expire - so that red sentence has whatever lifetime this key gives
+   * it and no other. The file alone is too coarse in both directions: it leaves a refusal
+   * standing after Reload disk or Overwrite disk has settled the conflict it was about, and it
+   * puts that same stale sentence back on screen the instant a LATER edit reopens a conflict on
+   * the same file, before the reader has attempted anything. Resolving to `selectedPath` while
+   * there is no conflict is what makes both transitions a change.
+   *
+   * The path goes last so that a path containing the separator cannot shift the fields before
+   * it; revision and the deleted flag never contain one.
    */
-  const copyLocal = useCopyFeedback({ resetOn: selectedPath });
-  const buffer = selectedPath ? state?.buffers[selectedPath] : null;
-  const mode = state?.mode ?? "preview";
-  const previewable = buffer?.document.kind === "html" || buffer?.document.kind === "markdown";
+  const conflict = buffer?.conflict ?? null;
+  const copyLocal = useCopyFeedback({
+    resetOn: conflict
+      ? `${conflict.revision ?? "none"}:${conflict.deleted ? "gone" : "changed"}:${selectedPath ?? ""}`
+      : selectedPath,
+  });
   const [previewText, setPreviewText] = useState("");
   useEffect(() => {
     let live = true;

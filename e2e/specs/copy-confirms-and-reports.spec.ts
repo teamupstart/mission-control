@@ -263,3 +263,48 @@ test("the Persona markdown copy confirms, and survives a refusing Clipboard API"
 
   await expect(copy).toBeVisible({ timeout: 4000 });
 });
+
+test("a Persona copy that works clears the refusal an earlier one left", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The editor keeps ONE error line that saving, reloading and copying all write to, and this
+   * copy wrote to it on failure only - so a refusal stood underneath a later `Copied`, a
+   * confirmation and a contradiction for the same button.
+   *
+   * Both clipboard routes are blocked and then unblocked together, so the failure and the
+   * later success come from one page and one document.
+   */
+  await dashboard.addInitScript(() => {
+    const state = { blocked: true };
+    Reflect.set(window, "__missionCopyState", state);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: () => (state.blocked
+          ? Promise.reject(new Error("Write permission denied."))
+          : Promise.resolve()),
+      },
+    });
+    document.execCommand = () => !state.blocked;
+  });
+  await openPersonaEditor(dashboard, daemon);
+  await expectTheClipboardToRefuse(dashboard);
+
+  const copy = dashboard.getByRole("button", { name: "Copy Markdown" });
+  await copy.click();
+
+  const banner = dashboard.getByText("Clipboard access was blocked");
+  await expect(banner).toBeVisible();
+  await expect(dashboard.getByRole("button", { name: "Copied" })).toHaveCount(0);
+
+  await dashboard.evaluate(() => {
+    const state = Reflect.get(window, "__missionCopyState") as { blocked: boolean };
+    state.blocked = false;
+  });
+
+  await copy.click();
+  await expect(dashboard.getByRole("button", { name: "Copied" })).toBeVisible();
+  await expect(banner).toHaveCount(0);
+});

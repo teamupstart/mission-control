@@ -103,7 +103,13 @@ async function sessionCwd(daemon: DaemonHandle): Promise<string> {
  * Order matters: the document has to be ON SCREEN before the file is rewritten, because the
  * revision the save will be checked against is the one captured when it loaded.
  */
-async function conflictNotice(page: Page, daemon: DaemonHandle) {
+async function conflictNotice(page: Page, daemon: DaemonHandle): Promise<{
+  notice: Locator;
+  /** The checkout, so a test can go on changing the file underneath the open document. */
+  cwd: string;
+  /** Stale the open document again and type, raising a fresh conflict on the same file. */
+  reconflict: (contents: string) => Promise<void>;
+}> {
   await dispatch(page, daemon);
   const cwd = await sessionCwd(daemon);
   // Untracked and not ignored, which is what keeps them in the Files list.
@@ -137,7 +143,17 @@ async function conflictNotice(page: Page, daemon: DaemonHandle) {
 
   const notice = page.locator(".file-notice.is-conflict");
   await expect(notice).toBeVisible();
-  return notice;
+  return {
+    notice,
+    cwd,
+    reconflict: async (contents: string) => {
+      writeFileSync(join(cwd, SOURCE), contents);
+      await editor.click();
+      await page.keyboard.press("ControlOrMeta+Home");
+      await page.keyboard.type(TYPED);
+      await expect(notice).toBeVisible();
+    },
+  };
 }
 
 test("Copy local confirms, and puts the local version on the clipboard", async ({
@@ -145,7 +161,7 @@ test("Copy local confirms, and puts the local version on the clipboard", async (
   daemon,
 }) => {
   await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  const notice = await conflictNotice(dashboard, daemon);
+  const { notice } = await conflictNotice(dashboard, daemon);
 
   const copy = notice.getByRole("button", { name: "Copy local" });
   await expect(copy).toBeVisible();
@@ -176,7 +192,7 @@ test("a Copy local the renderer refuses says so beside the button", async ({
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
     document.execCommand = () => false;
   });
-  const notice = await conflictNotice(dashboard, daemon);
+  const { notice } = await conflictNotice(dashboard, daemon);
 
   await notice.getByRole("button", { name: "Copy local" }).click();
 
@@ -201,5 +217,40 @@ test("a Copy local the renderer refuses says so beside the button", async ({
   await expect(notice).toBeHidden();
   await files.getByRole("option", { name: SOURCE }).click();
   await expect(notice).toBeVisible();
+  await expect(notice.getByRole("alert")).toHaveCount(0);
+});
+
+test("a refusal does not follow the file into its next conflict", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The same sentence, and the same file. Keying the reset to the PATH alone was not enough:
+   * resolving a conflict and then hitting a new one on that file leaves the path untouched, so
+   * a refusal from the first conflict rendered again the instant the notice came back - before
+   * the reader had attempted anything, and beside the buttons that discard or overwrite. The
+   * reset is keyed to the conflict itself now.
+   *
+   * Deterministic for the same reason as the case above: a refusal arms no hold, so nothing
+   * here races the 1600ms confirmation.
+   */
+  await dashboard.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    document.execCommand = () => false;
+  });
+  const { notice, reconflict } = await conflictNotice(dashboard, daemon);
+
+  await notice.getByRole("button", { name: "Copy local" }).click();
+  await expect(notice.getByRole("alert")).toHaveText("The browser refused the clipboard copy");
+
+  // Settle it the way a reader would, taking the version on disk. The notice goes with it.
+  dashboard.once("dialog", (dialog) => void dialog.accept());
+  await notice.getByRole("button", { name: "Reload disk" }).click();
+  await expect(notice).toBeHidden();
+
+  // The file changes underneath the reloaded document, raising a fresh conflict on it.
+  await reconflict("export const reconnectBudgetMs = 60_000; // and again\n");
+
+  await expect(notice.getByRole("button", { name: "Copy local" })).toBeVisible();
   await expect(notice.getByRole("alert")).toHaveCount(0);
 });

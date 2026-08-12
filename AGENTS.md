@@ -41,11 +41,13 @@ sets it to 6, which is where the suite stops getting faster on a 4 vCPU runner.
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI runs three jobs in parallel. `gates` runs typecheck and lint on a GitHub-hosted runner;
-`unit` runs the tests, build, and bundle smoke on Node.js 24 and 26 on Blacksmith; `e2e`
-runs the `e2e/` Playwright suite on Node.js 24 only, split across two shards. Lint is now a
-CI job, so a lint failure blocks a merge. `.github/workflows/ci.yml` documents how each
-runner size and worker count was measured - read it before changing one.
+CI runs three jobs in parallel, reporting as five checks: `gates` (typecheck and lint, on a
+GitHub-hosted runner), `unit (node 24)` and `unit (node 26)` (tests, build, and bundle smoke,
+on Blacksmith), and `e2e (shard 1/2)` and `e2e (shard 2/2)` (the `e2e/` Playwright suite, on
+Node.js 24 only). Lint is now a CI job rather than a local-only check, so a lint failure now
+turns CI red - `main` carries no branch protection, so that is a signal to act on and not a
+mechanical block. `.github/workflows/ci.yml` documents how each runner size and worker count
+was measured - read it before changing one.
 
 ## Working rules
 

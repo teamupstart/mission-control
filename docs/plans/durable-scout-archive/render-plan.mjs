@@ -168,9 +168,18 @@ const phasedFlow = `
 const diagrams = isPhased
   ? [phasedFlow]
   : [deletionFlow, dataFlow, publicationFlow, reconciliationFlow];
+const mermaidBlock = /<pre><code class="language-mermaid">[\s\S]*?<\/code><\/pre>/g;
+const mermaidBlocks = body.match(mermaidBlock) ?? [];
+if (mermaidBlocks.length !== diagrams.length) {
+  throw new Error(
+    `${sourceName} contains ${mermaidBlocks.length} Mermaid blocks, but the renderer defines ` +
+      `${diagrams.length} inline SVG diagrams`,
+  );
+}
+let diagramIndex = 0;
 body = body.replace(
-  /<pre><code class="language-mermaid">[\s\S]*?<\/code><\/pre>/g,
-  () => diagrams.shift() ?? "",
+  mermaidBlock,
+  () => diagrams[diagramIndex++],
 );
 
 const toc = isPhased

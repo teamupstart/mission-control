@@ -236,6 +236,9 @@ Phase 3 consumes C1-C12. The complete result matches the source plan without a c
 portable reads, index reconstruction, server deletion, and invalidation. Phase 2 alone owns task
 attribution, capture, completion, and cleanup gating. Phase 3 consumes their public contracts for
 routing, preview, refresh, and explicit deletion. No requirement has two behavior owners.</li>
+<li>2026-08-12: review tightened the renderer contract. It now refuses to render when the number of
+Markdown Mermaid blocks and hand-authored inline SVG diagrams differs, preventing a later plan edit
+from silently dropping or attaching the wrong flow.</li>
 </ul></article>
   </div>
   <footer><span>Source of truth: phased-plan.md</span><span>Offline render · no external requests</span></footer>

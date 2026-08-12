@@ -179,3 +179,6 @@ evidence artifact is committed to the repository.
   portable reads, index reconstruction, server deletion, and invalidation. Phase 2 alone owns task
   attribution, capture, completion, and cleanup gating. Phase 3 consumes their public contracts for
   routing, preview, refresh, and explicit deletion. No requirement has two behavior owners.
+- 2026-08-12: review tightened the renderer contract. It now refuses to render when the number of
+  Markdown Mermaid blocks and hand-authored inline SVG diagrams differs, preventing a later plan edit
+  from silently dropping or attaching the wrong flow.

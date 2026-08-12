@@ -1,10 +1,23 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+
+const EVIDENCE = artifactsDir("file-conflict-copy-local");
+
+/** Photograph a state this spec has already asserted on. See copy-confirms-and-reports.spec.ts. */
+async function shoot(target: Locator, page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await target.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/file-conflict-copy-local/${name}.png`);
+}
 
 /**
  * "Copy local", in the one notice it appears in, actually confirming.
@@ -141,6 +154,7 @@ test("Copy local confirms, and puts the local version on the clipboard", async (
   // The whole point of the change: it says something. The same word every other copy control in
   // the app says.
   await expect(notice.getByRole("button", { name: "Copied" })).toBeVisible();
+  await shoot(notice, dashboard, "01-copy-local-copied");
 
   // And what it copied is the reader's own text - not the version on disk that is about to
   // replace it, which is the only reason to reach for this button.
@@ -170,6 +184,7 @@ test("a Copy local the renderer refuses says so beside the button", async ({
   // And it did not claim otherwise.
   await expect(notice.getByRole("button", { name: "Copy local" })).toBeVisible();
   await expect(notice.getByRole("button", { name: "Copied" })).toHaveCount(0);
+  await shoot(notice, dashboard, "02-copy-local-refused");
 
   /*
    * The sentence belongs to the file it was raised on, and this component does not remount

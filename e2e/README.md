@@ -907,6 +907,67 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### A copy that confirms, and one that admits it failed
+
+`e2e/.artifacts/copy-confirms-and-reports/` carries three frames from
+`specs/copy-confirms-and-reports.spec.ts`, and they exist because two of the states they show
+could not be reached at all before: the Sitrep's copy and the Persona editor's called
+`navigator.clipboard.writeText` directly, so in the packaged Electron build - where the async
+Clipboard API can be permission-blocked even after a direct click - they copied nothing and
+said nothing.
+
+`01-sitrep-copied.png` and `03-persona-copied.png` are the confirmation, and the reason to look
+at them is the word: `Copied`, not the `Copied ✓` both of these buttons used to read. One
+confirmation label across the app is what the context menu builds on, and a decorated variant
+is only visible as a picture.
+
+`02-sitrep-copy-failed.png` is the one that had no prior state to compare against. The Sitrep's
+copy fetches `/api/report.md` first and swallowed every error into an empty `catch`, so a daemon
+answering 500 and a blocked clipboard were indistinguishable and both produced nothing on
+screen. The frame is the band that now sits under the panel header saying which happened. A
+count and a text node prove the sentence is in the DOM; only the picture shows it did not
+squeeze the header row it hangs beneath.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/copy-confirms-and-reports.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
+### Copy local, in the notice that decides what happens to your edits
+
+`e2e/.artifacts/file-conflict-copy-local/` carries two frames from
+`specs/file-conflict-copy-local.spec.ts`. `Copy local` had no feedback of any kind - it wrote
+behind a `void` and rendered nothing either way - and it sits in the conflict notice, beside
+the two buttons that discard your edits or overwrite someone else's.
+
+`01-copy-local-copied.png` is the notice with the confirmation in it, which is the whole
+change: before it, a reader staking their work on the next click had no way to tell a
+successful copy from a refused one. `02-copy-local-refused.png` is the refusal, and it is worth
+a picture because the sentence has to sit beside its own button rather than take the slack the
+notice's leading sentence does - a layout claim no DOM assertion makes.
+
+Reaching either needs a real revision conflict, so the spec dispatches a session, loads a file
+from its checkout, rewrites that file on disk underneath the open document, and types to
+trigger the autosave. The 409 is deterministic rather than raced: the save carries the revision
+captured at load and the daemon compares hashes.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/file-conflict-copy-local.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

@@ -1,7 +1,30 @@
-import type { Page } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+
+const EVIDENCE = artifactsDir("copy-confirms-and-reports");
+
+/**
+ * Photograph a state this spec has already asserted on.
+ *
+ * Inside the regression test rather than in a staged capture, for the reason
+ * `line-drawers.spec.ts` gives: the point of the picture is that the assertions around it
+ * passed on the same run, so the image and the measurement cannot drift apart.
+ */
+async function shoot(target: Locator, page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and the
+  // button being photographed is what the pointer was last over.
+  await page.mouse.move(0, 0);
+  await target.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/copy-confirms-and-reports/${name}.png`);
+}
 
 /**
  * Every copy control writes through `copyText`, confirms with the same word, and says so when
@@ -138,6 +161,7 @@ test("the sitrep copy puts the markdown on the clipboard and confirms it", async
   // satisfied by the decorated label this phase removed.
   await expect(panel.getByRole("button", { name: "Copied" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Copied ✓" })).toHaveCount(0);
+  await shoot(panel.locator("header.report-head"), dashboard, "01-sitrep-copied");
 
   expectTheSitrepDigest(await dashboard.evaluate(() => navigator.clipboard.readText()));
 
@@ -188,6 +212,7 @@ test("a sitrep copy that cannot read the report says so instead of nothing", asy
   // And it did not claim to have copied anything.
   await expect(panel.getByRole("button", { name: "Copy as markdown" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Copied" })).toHaveCount(0);
+  await shoot(panel, dashboard, "02-sitrep-copy-failed");
 });
 
 test("the Persona markdown copy confirms, and survives a refusing Clipboard API", async ({
@@ -204,6 +229,7 @@ test("the Persona markdown copy confirms, and survives a refusing Clipboard API"
   await expect(dashboard.getByRole("button", { name: "Copied ✓" })).toHaveCount(0);
   // The editor's own error banner stayed away, because nothing failed.
   await expect(dashboard.getByText("Clipboard access was blocked")).toHaveCount(0);
+  await shoot(dashboard.locator("header.persona-editor-head"), dashboard, "03-persona-copied");
 
   // The guidance really is on the clipboard, written by the fallback this control could not
   // reach before. This is the assertion that would have failed in the packaged app.

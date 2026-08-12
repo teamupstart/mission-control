@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mockup D - Rail + Reveal</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  .dispatch-modal { width: min(640px, 100%); }
+  /* The picker has to be able to leave the panel, the way RepoCombobox's portal already
+     does. Corners move onto the head and foot so nothing needs clipping. */
+  .modal { overflow: visible; }
+  .modal-head { border-radius: 14px 14px 0 0; }
+  .modal-foot { border-radius: 0 0 14px 14px; }
+  .dispatch-body { display: flex; flex-direction: column; gap: 14px; padding: 18px; }
+  .crew { display: grid; grid-template-columns: 1.05fr 0.55fr 1.2fr 1.1fr; gap: 10px; align-items: start; }
+  .crew .field { gap: 4px; }
+  .crew .field-label { font-size: 11px; }
+
+  .dim { opacity: .34; transition: opacity .18s ease; }
+  .lit { transition: opacity .18s ease; }
+
+  .guided-toggle {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 1px solid color-mix(in oklab, var(--idle) 34%, var(--border));
+    background: color-mix(in oklab, var(--idle) 8%, var(--panel));
+    border-radius: 999px; padding: 4px 9px 4px 7px;
+    font: 11px var(--sans); color: var(--fg); cursor: pointer;
+  }
+  .guided-toggle .sw { width: 22px; height: 12px; border-radius: 999px; background: color-mix(in oklab, var(--idle) 70%, var(--border)); position: relative; }
+  .guided-toggle .sw::after { content: ""; position: absolute; top: 1.5px; right: 1.5px; width: 9px; height: 9px; border-radius: 50%; background: #0c1512; }
+
+  /* ---- A's rail, laid on its side so it costs a row instead of a column ----
+     Every answer stays on screen and stays clickable, which is the whole point of A's rail;
+     horizontal is what lets C keep the 640px form width and its exact field positions. */
+  .rail {
+    display: flex; align-items: center; gap: 2px;
+    padding: 7px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+    overflow: hidden;
+  }
+  .rung {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 4px 9px; border-radius: 7px;
+    border: 1px solid transparent; background: none; font: inherit;
+    font-size: 11.5px; color: var(--dim);
+    white-space: nowrap; cursor: default;
+  }
+  .rung .n {
+    display: grid; place-items: center;
+    width: 15px; height: 15px; border-radius: 4px;
+    border: 1px solid var(--border); background: var(--panel);
+    font: 9px var(--mono); color: var(--dim); flex: none;
+  }
+  .rung.done { color: var(--muted); cursor: pointer; }
+  .rung.done:hover { border-color: var(--border); color: var(--fg); }
+  .rung.done .n { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 42%, var(--border)); }
+  .rung.done .v { color: var(--fg); display: inline-flex; align-items: center; gap: 5px; }
+  .rung.active {
+    color: var(--fg);
+    border-color: color-mix(in oklab, var(--working) 48%, var(--border));
+    background: color-mix(in oklab, var(--working) 12%, var(--panel-2));
+  }
+  .rung.active .n {
+    color: #fff; border-color: color-mix(in oklab, var(--working) 70%, var(--border));
+    background: color-mix(in oklab, var(--working) 82%, #1b2a44);
+  }
+  .rung .k { font: 9.5px var(--mono); color: var(--dim); }
+  .tick { color: var(--border); font-size: 10px; flex: none; }
+  .rail .spacer { flex: 1; }
+  .rail .out { font-size: 11px; color: var(--dim); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+  .anchor { position: relative; }
+  .picker {
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 5;
+    min-width: 100%; width: max-content; max-width: 340px;
+    display: flex; flex-direction: column; gap: 2px;
+    border: 1px solid color-mix(in oklab, var(--working) 50%, var(--border));
+    border-radius: 8px; background: var(--bg-2);
+    box-shadow: var(--shadow), 0 12px 32px rgba(0,0,0,.5);
+    padding: 4px;
+    animation: pop .16s ease;
+  }
+  .picker.wide { max-width: none; }
+  .picker-q {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 7px 6px;
+    font-size: 11px; color: color-mix(in oklab, var(--working) 62%, var(--fg));
+    border-bottom: 1px solid var(--border-soft); margin-bottom: 2px;
+  }
+  .picker-q .keys { margin-left: auto; display: inline-flex; gap: 4px; color: var(--dim); }
+  .picker-q kbd { font-size: 9.5px; padding: 2px 4px; min-width: 12px; }
+  @keyframes pop { from { opacity: 0; transform: translateY(-3px); } }
+
+  .opt {
+    display: grid; grid-template-columns: 19px 1fr auto; align-items: center; gap: 7px;
+    padding: 6px 7px; border-radius: 6px; cursor: pointer;
+    border: 1px solid transparent; background: none; font: inherit; text-align: left; color: var(--fg);
+  }
+  .opt.sel { background: color-mix(in oklab, var(--working) 20%, var(--bg-2)); border-color: color-mix(in oklab, var(--working) 34%, transparent); }
+  .opt .cap {
+    font-family: var(--mono); font-size: 10px; line-height: 1; text-align: center;
+    color: var(--muted); background: var(--panel);
+    border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 4px; padding: 3px 0;
+  }
+  .opt.sel .cap { color: var(--fg); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); }
+  .opt .l { font-size: 12px; display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .opt .l.mono { font-family: var(--mono); font-size: 11.5px; }
+  .opt .sub { grid-column: 2; font-size: 10.5px; color: var(--dim); margin-top: 1px; }
+  .opt .note { font: 10px var(--mono); color: var(--dim); white-space: nowrap; }
+  .opt.sel .note { color: color-mix(in oklab, var(--working) 70%, var(--fg)); }
+  u { text-underline-offset: 3px; text-decoration: underline; text-decoration-thickness: 2px; text-decoration-color: color-mix(in oklab, var(--working) 70%, transparent); }
+
+  .wf {
+    position: relative; display: grid; grid-template-columns: 28px minmax(0,1fr) auto;
+    align-items: center; gap: 10px; padding: 8px 11px 8px 8px; border-radius: 9px;
+    border: 1px solid var(--border-soft); background: color-mix(in srgb, var(--bg-2) 58%, transparent);
+  }
+  .wf.armed { border-color: color-mix(in oklab, var(--working) 38%, var(--border)); background: color-mix(in oklab, var(--working) 7%, var(--bg-2)); }
+  .wf-mark { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 7px; color: var(--dim); background: var(--panel); font: 11px var(--mono); }
+  .wf.armed .wf-mark { color: var(--working); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); }
+  .wf-ctl { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 8px; min-width: 0; }
+  .wf-state { font: 10px var(--mono); color: var(--dim); white-space: nowrap; }
+  .wf.armed .wf-state { color: color-mix(in oklab, var(--working) 76%, var(--fg)); }
+
+  .more { display: flex; align-items: center; gap: 10px; width: 100%; color: var(--muted); background: transparent; border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 12px; font: inherit; text-align: left; }
+  .more b { font-size: 12px; font-weight: 560; }
+  .more span { font-size: 11.5px; color: var(--dim); }
+  .caret { display: inline-block; width: 1.5px; height: 15px; background: var(--fg); animation: blink 1.06s steps(1) infinite; vertical-align: -3px; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .drop { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); padding: 8px 10px; min-height: 90px; font-size: 13px; color: var(--dim); }
+  .drop.on { border-color: color-mix(in oklab, var(--working) 50%, var(--border)); }
+  .repo-field { font-family: var(--mono); font-size: 12.5px; }
+  .repo-field.on { border-color: color-mix(in oklab, var(--working) 55%, var(--border)); }
+  .typed { color: var(--fg); }
+  .hair { height: 2px; background: var(--border-soft); position: relative; }
+  .hair i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--working); transition: width .2s ease; display: block; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="stage-topbar"><b style="color:var(--fg)">Mission Control</b><span>fleet</span><span>library</span><span>runs</span></div>
+  <div class="stage-grid">
+    <div class="stage-card"></div><div class="stage-card"></div><div class="stage-card"></div>
+    <div class="stage-card"></div><div class="stage-card"></div><div class="stage-card"></div>
+  </div>
+</div>
+
+<div class="backdrop"><div id="root"></div></div>
+
+<nav class="mock-nav">
+  <a href="index.html">← all mockups</a>
+  <a href="a-launch-rail.html">A · Launch Rail</a>
+  <a href="b-chord-bar.html">B · Chord Bar</a>
+  <a href="c-inline-reveal.html">C · Inline Reveal</a>
+  <a href="d-rail-reveal.html" class="on">D · Rail + Reveal</a>
+  <span class="keys">try typing to filter, then <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd> <kbd>⌫</kbd></span>
+</nav>
+
+<script>
+const REPOS = [
+  { id: "ai-harness", label: "ai-harness", path: "/Users/jordanmance/workspace/ai-harness", note: "last used" },
+  { id: "upstartclaw", label: "upstartclaw", path: "/Users/jordanmance/workspace/upstartclaw", note: "2d ago" },
+  { id: "mission-docs", label: "mission-docs", path: "/Users/jordanmance/workspace/mission-docs", note: "5d ago" },
+  { id: "treehouse", label: "treehouse", path: "/Users/jordanmance/workspace/treehouse", note: "" },
+];
+const KINDS = [
+  { id: "ship", key: "p", label: "shi<u>p</u>", plain: "ship", sub: "change + PR" },
+  { id: "scout", key: "t", label: "scou<u>t</u>", plain: "scout", sub: "investigate and report" },
+];
+const AGENTS = [
+  { id: "claude", key: "c", label: "<u>C</u>laude Code", plain: "Claude Code", accent: "var(--claude)", sub: "Opus 5 · xhigh", note: "default" },
+  { id: "codex", key: "x", label: "Code<u>x</u>", plain: "Codex", accent: "var(--codex)", sub: "gpt-5.2-codex · high" },
+  { id: "pi", key: "i", label: "P<u>i</u>", plain: "Pi", accent: "var(--pi)", sub: "pi-1 · medium" },
+];
+const WFS = [
+  { id: "nm", key: "d", label: "Dispatch <u>d</u>efault — No-Mistakes Review · v8", plain: "Dispatch default — No-Mistakes Review · v8", sub: "review the diff, repair findings, gate the merge" },
+  { id: "none", key: "n", label: "<u>N</u>one — finish without a Workflow", plain: "None — finish without a Workflow" },
+  { id: "docs", key: "o", label: "D<u>o</u>cs Sweep · v3", plain: "Docs Sweep · v3" },
+];
+
+const STEPS = [
+  { id: "repo", name: "Repo" },
+  { id: "kind", name: "Kind" },
+  { id: "agent", name: "Harness" },
+  { id: "wf", name: "After work" },
+  { id: "brief", name: "Brief" },
+];
+const QUESTION = {
+  repo: "Which repository?",
+  kind: "What kind of run is this?",
+  agent: "Which harness runs it?",
+  wf: "What runs after the work?",
+};
+
+const S = { i: 0, sel: 0, q: "", repo: null, kind: null, agent: null, wf: null, wfTouched: false, escaped: false };
+
+function pool(step) {
+  if (step === "repo") {
+    // Match the repo NAME, not the whole path. Every path here starts /Users/, so a path
+    // match means typing "u" returns all 202 - the filter has to earn its first keystroke.
+    const q = S.q.toLowerCase();
+    return q ? REPOS.filter((r) => r.label.toLowerCase().includes(q)) : REPOS;
+  }
+  return { kind: KINDS, agent: AGENTS, wf: WFS }[step] || [];
+}
+
+function commit(o) {
+  const s = STEPS[S.i].id;
+  if (s === "repo") S.repo = o;
+  if (s === "kind") { S.kind = o; if (!S.wfTouched) S.wf = o.id === "scout" ? WFS[1] : WFS[0]; }
+  if (s === "agent") S.agent = o;
+  if (s === "wf") { S.wf = o; S.wfTouched = true; }
+  S.i += 1; S.sel = 0; S.q = "";
+  if (STEPS[S.i] && STEPS[S.i].id === "wf" && S.wf) S.sel = WFS.findIndex((w) => w.id === S.wf.id);
+  render();
+}
+function back() { if (S.i === 0) return; S.i -= 1; S.sel = 0; S.q = ""; render(); }
+
+document.addEventListener("keydown", (e) => {
+  const step = STEPS[S.i].id;
+  if (S.escaped || step === "brief") return;
+  const opts = pool(step);
+  if (e.key === "ArrowDown") { S.sel = (S.sel + 1) % opts.length; render(); return e.preventDefault(); }
+  if (e.key === "ArrowUp") { S.sel = (S.sel - 1 + opts.length) % opts.length; render(); return e.preventDefault(); }
+  if (e.key === "Enter") { if (opts[S.sel]) commit(opts[S.sel]); return e.preventDefault(); }
+  if (e.key === "Backspace") {
+    if (step === "repo" && S.q) { S.q = S.q.slice(0, -1); S.sel = 0; render(); } else back();
+    return e.preventDefault();
+  }
+  if (e.key === "Tab") {
+    S.escaped = true;
+    if (!S.repo) S.repo = REPOS[0];
+    if (!S.kind) S.kind = KINDS[0];
+    if (!S.agent) S.agent = AGENTS[0];
+    if (!S.wf) S.wf = WFS[0];
+    S.i = STEPS.length - 1; render(); return e.preventDefault();
+  }
+  if (e.key.length !== 1 || e.metaKey || e.ctrlKey) return;
+  // Repo is a filter, so every letter is a letter. The other steps are closed sets, so a
+  // letter is a mnemonic.
+  if (step === "repo") { S.q += e.key; S.sel = 0; render(); return e.preventDefault(); }
+  const hit = opts.findIndex((o) => o.key === e.key.toLowerCase());
+  if (hit >= 0) { S.sel = hit; render(); setTimeout(() => commit(opts[hit]), 80); e.preventDefault(); }
+});
+
+function railHtml() {
+  const done = S.i;
+  const rungs = STEPS.slice(0, 4).map((s, i) => {
+    const val = { repo: S.repo && S.repo.label, kind: S.kind && S.kind.plain,
+                  agent: S.agent && S.agent.plain, wf: S.wf && (S.wf.id === "none" ? "None" : S.wf.plain.replace("Dispatch default — ", "")) }[s.id];
+    const cls = S.escaped ? "done" : i === done ? "active" : i < done ? "done" : "";
+    const dot = s.id === "agent" && S.agent ? `<span class="dot" style="background:${S.agent.accent}"></span>` : "";
+    return `<button class="rung ${cls}">
+      <span class="n">${i < done || S.escaped ? "✓" : i + 1}</span>
+      ${cls === "done" && val ? `<span class="v">${dot}${val}</span>` : `<span>${s.name}</span>`}
+    </button>`;
+  }).join('<span class="tick">›</span>');
+  return `<div class="rail">${rungs}<span class="spacer"></span>
+    <span class="out"><kbd style="font-size:9.5px;padding:2px 4px">⇥</kbd> use the form</span></div>`;
+}
+
+function pickerHtml(step, opts, wide) {
+  const esc = S.i === 0 ? `<kbd>⇥</kbd> skip` : `<kbd>⌫</kbd> back`;
+  const q = step === "wf" && S.kind && S.kind.id === "scout"
+    ? "A scout has no diff, so None is preselected."
+    : step === "repo" && S.q
+      ? `${opts.length} of 202 match “${S.q}”`
+      : QUESTION[step];
+  return `<div class="picker ${wide ? "wide" : ""}">
+    <div class="picker-q">${q}<span class="keys"><kbd>↑↓</kbd><kbd>↵</kbd>${esc}</span></div>
+    ${opts.map((o, i) => `
+    <button class="opt ${i === S.sel ? "sel" : ""}">
+      <span class="cap">${step === "repo" ? i + 1 : o.key}</span>
+      <span class="l ${step === "repo" ? "mono" : ""}">${o.accent ? `<span class="dot" style="background:${o.accent}"></span>` : ""}<span>${step === "repo" ? o.path : o.label}</span></span>
+      ${o.note ? `<span class="note">${o.note}</span>` : "<span></span>"}
+      ${o.sub ? `<span class="sub">${o.sub}</span>` : ""}
+    </button>`).join("") || `<div class="opt"><span></span><span class="l" style="color:var(--dim)">no repo matches</span></div>`}
+  </div>`;
+}
+
+function sel(text, accent, hot) {
+  return `<div class="fake-select" ${hot ? 'style="border-color:color-mix(in oklab, var(--working) 55%, var(--border))"' : ""}>${accent ? `<span class="dot" style="background:${accent}"></span>` : ""}${text}</div>`;
+}
+
+function render() {
+  const step = STEPS[S.i].id;
+  const asking = (s) => step === s && !S.escaped;
+  const rest = step === "brief" || S.escaped;
+  const cls = (s) => (rest || asking(s) ? "lit" : "dim");
+
+  const repoText = asking("repo") && S.q
+    ? `<span class="typed">${S.q}</span>`
+    : (S.repo ? S.repo.path : REPOS[0].path);
+
+  const kindCell = sel(S.kind ? S.kind.plain : "ship", null, asking("kind"))
+    + (asking("kind") ? pickerHtml("kind", KINDS) : "");
+  const agentCell = sel(S.agent ? S.agent.plain : "Claude Code", S.agent ? S.agent.accent : "var(--claude)", asking("agent"))
+    + (asking("agent") ? pickerHtml("agent", AGENTS) : "");
+  const wfArmed = !S.wf || S.wf.id !== "none";
+  const wfBody = sel(S.wf ? S.wf.plain : "Dispatch default — No-Mistakes Review · v8", null, asking("wf"))
+    + (asking("wf") ? pickerHtml("wf", WFS) : "");
+
+  document.getElementById("root").innerHTML = `<div class="modal dispatch-modal">
+    <div class="modal-head">
+      <h2>Dispatch an agent</h2>
+      <button class="guided-toggle"><span class="sw"></span>Guided</button>
+      <button class="btn btn-ghost">✕</button>
+    </div>
+    ${rest ? "" : railHtml()}
+    <div class="hair"><i style="width:${rest ? 100 : (S.i / 4) * 100}%"></i></div>
+    <div class="dispatch-body">
+
+      <div class="field anchor ${cls("repo")}">
+        <span class="field-label">Repo <span class="field-hint">202 repos found - type to filter</span></span>
+        <div class="field-input repo-field ${asking("repo") ? "on" : ""}">${repoText}${asking("repo") ? '<span class="caret"></span>' : ""}</div>
+        ${asking("repo") ? pickerHtml("repo", pool("repo"), true) : ""}
+      </div>
+
+      <div class="field ${rest ? "lit" : "dim"}">
+        <span class="field-label">Task <span class="field-hint">drop or paste images to attach them</span></span>
+        <div class="drop ${rest ? "on" : ""}">${rest ? '<span class="caret"></span>' : "What should this agent do?"}</div>
+      </div>
+
+      <div class="field">
+        <span class="field-label" style="margin-bottom:2px">Crew</span>
+        <div class="crew">
+          <div class="field anchor ${cls("agent")}"><span class="field-label">Agent</span>${agentCell}</div>
+          <div class="field anchor ${cls("kind")}"><span class="field-label">Kind</span>${kindCell}</div>
+          <div class="field ${rest ? "lit" : "dim"}"><span class="field-label">Model</span>${sel("Default - Opus 5")}</div>
+          <div class="field ${rest ? "lit" : "dim"}"><span class="field-label">Effort</span>${sel("Default - xhigh")}</div>
+        </div>
+        <span class="field-hint ${rest ? "" : "dim"}">Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides.</span>
+      </div>
+
+      <div class="wf ${wfArmed ? "armed" : ""} ${cls("wf")}">
+        <span class="wf-mark">⌘</span>
+        <div class="wf-ctl anchor"><span class="field-label">After work</span>${wfBody}</div>
+        <span class="wf-state">→ ${wfArmed ? "Foreman complete" : "No handoff"}</span>
+      </div>
+
+      <button class="more ${rest ? "lit" : "dim"}"><b>Backlog details</b><span>no priority · no labels · title summarized · no dependencies</span><span style="margin-left:auto;color:var(--dim);font-size:10px">▾</span></button>
+    </div>
+    <div class="modal-foot ${rest ? "lit" : "dim"}">
+      <button class="btn btn-ghost">Add to backlog</button>
+      <button class="btn btn-ghost">Clear</button>
+      <span class="spacer"></span>
+      <button class="btn">Cancel</button>
+      <button class="btn btn-primary">Dispatch now <kbd style="margin-left:6px;background:transparent;border-color:rgba(255,255,255,.35);color:#fff">⌘↵</kbd></button>
+    </div>
+  </div>`;
+}
+render();
+</script>
+</body>
+</html>

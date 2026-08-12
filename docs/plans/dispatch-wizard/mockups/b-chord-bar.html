@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mockup B - Chord Bar</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  .backdrop { align-items: flex-start; padding-top: 96px; background: rgba(4,6,9,.62); }
+  .bar {
+    width: min(560px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 24px 64px rgba(0,0,0,.6);
+    overflow: hidden;
+  }
+  /* ---- the line you are always typing on ---- */
+  .line {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-wrap: wrap;
+    padding: 12px 13px;
+    min-height: 46px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--fg);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 5px 8px;
+    white-space: nowrap;
+  }
+  .chip.repo { font-family: var(--mono); font-size: 11.5px; }
+  .chip.armed {
+    border-color: color-mix(in oklab, var(--working) 38%, var(--border));
+    background: color-mix(in oklab, var(--working) 10%, var(--panel-2));
+  }
+  .chip.off { color: var(--dim); }
+  .chip .x { color: var(--dim); font-size: 10px; }
+  .sep { color: var(--dim); font-size: 11px; }
+  .query {
+    flex: 1;
+    min-width: 90px;
+    font: inherit;
+    font-size: 13.5px;
+    color: var(--fg);
+    background: none;
+    border: none;
+    outline: none;
+    padding: 3px 0;
+  }
+  .query::placeholder { color: var(--dim); }
+  .ghost { color: var(--dim); font-size: 13.5px; }
+  .caret { display: inline-block; width: 1.5px; height: 16px; background: var(--working); animation: blink 1.06s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---- the list under it ---- */
+  .list { border-top: 1px solid var(--border-soft); padding: 5px; max-height: 260px; overflow: auto; }
+  .list-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 9px 5px;
+    font: 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; color: var(--dim);
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 22px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 9px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .row.sel { background: color-mix(in oklab, var(--working) 15%, var(--bg-2)); }
+  .row .cap {
+    font-family: var(--mono); font-size: 10.5px; line-height: 1; text-align: center;
+    color: var(--muted); background: var(--bg-2);
+    border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 5px; padding: 3px 0;
+  }
+  .row.sel .cap { color: var(--fg); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); }
+  .row .main { min-width: 0; }
+  .row .t { font-size: 12.5px; color: var(--fg); display: flex; align-items: center; gap: 7px; }
+  .row .t u { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 2px; text-decoration-color: color-mix(in oklab, var(--working) 70%, transparent); }
+  .row .d { font-size: 11px; color: var(--dim); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .note { font: 10px var(--mono); color: var(--dim); white-space: nowrap; }
+  .row.sel .note { color: color-mix(in oklab, var(--working) 70%, var(--fg)); }
+
+  .foot {
+    display: flex; align-items: center; gap: 13px;
+    padding: 8px 13px;
+    border-top: 1px solid var(--border-soft);
+    background: var(--panel-2);
+    font-size: 11px; color: var(--dim);
+  }
+  .foot .grp { display: inline-flex; align-items: center; gap: 5px; }
+  .foot kbd { font-size: 10px; padding: 2px 4px; }
+
+  /* ---- final: the bar becomes the composer ---- */
+  .compose { padding: 4px 13px 13px; }
+  .compose textarea {
+    width: 100%; min-height: 104px; resize: none;
+    font: inherit; font-size: 13.5px; line-height: 1.55; color: var(--fg);
+    background: transparent; border: none; outline: none; padding: 0;
+  }
+  .compose textarea::placeholder { color: var(--dim); }
+  .settle { animation: settle .18s ease; }
+  @keyframes settle { from { opacity: 0; transform: translateY(-3px); } }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="stage-topbar"><b style="color:var(--fg)">Mission Control</b><span>fleet</span><span>library</span><span>runs</span></div>
+  <div class="stage-grid">
+    <div class="stage-card"></div><div class="stage-card"></div><div class="stage-card"></div>
+    <div class="stage-card"></div><div class="stage-card"></div><div class="stage-card"></div>
+  </div>
+</div>
+
+<div class="backdrop"><div id="root"></div></div>
+
+<nav class="mock-nav">
+  <a href="index.html">← all mockups</a>
+  <a href="a-launch-rail.html">A · Launch Rail</a>
+  <a href="b-chord-bar.html" class="on">B · Chord Bar</a>
+  <a href="c-inline-reveal.html">C · Inline Reveal</a>
+  <span class="keys">interactive — try <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd> <kbd>⌫</kbd>, or just type</span>
+</nav>
+
+<script>
+const REPOS = [
+  { id: "ai-harness", label: "ai-harness", path: "~/workspace/ai-harness", note: "last used" },
+  { id: "upstartclaw", label: "upstartclaw", path: "~/workspace/upstartclaw", note: "2d ago" },
+  { id: "mission-docs", label: "mission-docs", path: "~/workspace/mission-docs", note: "5d ago" },
+  { id: "treehouse", label: "treehouse", path: "~/workspace/treehouse", note: "" },
+];
+const KINDS = [
+  { id: "ship", key: "p", label: "shi<u>p</u>", plain: "ship", d: "Deliver a change - worktree, branch, pull request, merge.", note: "default" },
+  { id: "scout", key: "t", label: "scou<u>t</u>", plain: "scout", d: "Investigate and report. No diff expected.", note: "" },
+];
+const AGENTS = [
+  { id: "claude", key: "c", label: "<u>C</u>laude Code", plain: "Claude Code", accent: "var(--claude)", d: "Opus 5 · xhigh", note: "default" },
+  { id: "codex", key: "x", label: "Code<u>x</u>", plain: "Codex", accent: "var(--codex)", d: "gpt-5.2-codex · high", note: "" },
+  { id: "pi", key: "i", label: "P<u>i</u>", plain: "Pi", accent: "var(--pi)", d: "pi-1 · medium", note: "" },
+];
+const WFS = [
+  { id: "nm", key: "d", label: "No-Mistakes Review · v8", plain: "No-Mistakes Review · v8", d: "Review the diff, repair findings, gate the merge.", note: "dispatch default" },
+  { id: "none", key: "n", label: "<u>N</u>one", plain: "None", d: "Finish at Foreman Complete with nothing after it.", note: "" },
+  { id: "docs", key: "o", label: "D<u>o</u>cs Sweep · v3", plain: "Docs Sweep · v3", d: "Check README and linked docs against the change.", note: "" },
+];
+
+const STEPS = ["repo", "kind", "agent", "wf", "brief"];
+const HEAD = { repo: "repository · 202", kind: "kind", agent: "harness", wf: "after work" };
+const PLACEHOLDER = { repo: "filter repos…", kind: "ship or scout…", agent: "claude, codex or pi…", wf: "pick a workflow…" };
+
+const S = { i: 0, sel: 0, q: "", repo: null, kind: null, agent: null, wf: null, wfTouched: false, brief: "" };
+
+function pool(step) {
+  const src = { repo: REPOS, kind: KINDS, agent: AGENTS, wf: WFS }[step] || [];
+  if (!S.q) return src;
+  const q = S.q.toLowerCase();
+  return src.filter((o) => (o.plain || o.label).toLowerCase().includes(q) || (o.path || "").toLowerCase().includes(q));
+}
+
+function commit(o) {
+  const step = STEPS[S.i];
+  if (step === "repo") S.repo = o;
+  if (step === "kind") {
+    S.kind = o;
+    if (!S.wfTouched) S.wf = o.id === "scout" ? WFS[1] : WFS[0];
+  }
+  if (step === "agent") S.agent = o;
+  if (step === "wf") { S.wf = o; S.wfTouched = true; }
+  S.i += 1; S.sel = 0; S.q = "";
+  if (STEPS[S.i] === "wf" && S.wf) S.sel = WFS.findIndex((w) => w.id === S.wf.id);
+  render();
+}
+
+function back() {
+  if (S.i === 0) return;
+  S.i -= 1; S.sel = 0; S.q = "";
+  const step = STEPS[S.i];
+  if (step === "repo") S.repo = null;
+  if (step === "kind") S.kind = null;
+  if (step === "agent") S.agent = null;
+  if (step === "wf") { S.wf = null; S.wfTouched = false; }
+  render();
+}
+
+document.addEventListener("keydown", (e) => {
+  const step = STEPS[S.i];
+  if (step === "brief") {
+    if (e.key === "Backspace" && !S.brief) { e.preventDefault(); back(); }
+    return;
+  }
+  const opts = pool(step);
+  if (e.key === "ArrowDown") { S.sel = (S.sel + 1) % opts.length; render(); return e.preventDefault(); }
+  if (e.key === "ArrowUp") { S.sel = (S.sel - 1 + opts.length) % opts.length; render(); return e.preventDefault(); }
+  if (e.key === "Enter") { if (opts[S.sel]) commit(opts[S.sel]); return e.preventDefault(); }
+  if (e.key === "Tab") { S.i = STEPS.length - 1; if (!S.repo) S.repo = REPOS[0]; if (!S.kind) S.kind = KINDS[0]; if (!S.agent) S.agent = AGENTS[0]; if (!S.wf) S.wf = WFS[0]; render(); return e.preventDefault(); }
+  if (e.key === "Backspace") {
+    if (S.q) { S.q = S.q.slice(0, -1); S.sel = 0; render(); } else back();
+    return e.preventDefault();
+  }
+  if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+    // A mnemonic wins on an empty query; once you are filtering, letters are just letters.
+    if (!S.q && step !== "repo") {
+      const hit = opts.findIndex((o) => o.key === e.key.toLowerCase());
+      if (hit >= 0) { S.sel = hit; render(); setTimeout(() => commit(opts[hit]), 80); return e.preventDefault(); }
+    }
+    S.q += e.key; S.sel = 0; render(); e.preventDefault();
+  }
+});
+
+function chips() {
+  const out = [];
+  if (S.repo) out.push(`<span class="chip repo">${S.repo.label}</span>`);
+  if (S.kind) out.push(`<span class="chip">${S.kind.plain}</span>`);
+  if (S.agent) out.push(`<span class="chip"><span class="dot" style="background:${S.agent.accent}"></span>${S.agent.plain}</span>`);
+  // The kind → after-work inference has already run, but the chip only appears once its own
+  // step is behind you. A chip that jumped the queue read as an answer nobody gave.
+  if (S.wf && S.i > STEPS.indexOf("wf")) out.push(S.wf.id === "none"
+    ? `<span class="chip off">⌘ none after</span>`
+    : `<span class="chip armed">⌘ ${S.wf.plain}</span>`);
+  return out.join('<span class="sep">›</span>');
+}
+
+function listHtml(step) {
+  const opts = pool(step);
+  return `<div class="list settle">
+    <div class="list-head">${HEAD[step]}${S.q ? ` · matching “${S.q}”` : ""}</div>
+    ${opts.map((o, i) => `<div class="row ${i === S.sel ? "sel" : ""}">
+      <span class="cap">${step === "repo" ? i + 1 : o.key}</span>
+      <span class="main">
+        <span class="t">${o.accent ? `<span class="dot" style="background:${o.accent}"></span>` : ""}<span>${o.label}</span></span>
+        <span class="d">${o.d || o.path}</span>
+      </span>
+      ${o.note ? `<span class="note">${o.note}</span>` : ""}
+    </div>`).join("") || `<div class="row"><span></span><span class="main"><span class="d">no match</span></span></div>`}
+  </div>`;
+}
+
+function render() {
+  const step = STEPS[S.i];
+  const root = document.getElementById("root");
+  if (step === "brief") {
+    root.innerHTML = `<div class="bar settle">
+      <div class="line" style="padding-bottom:8px">${chips()}<span class="spacer"></span>
+        <span class="note" style="font:10px var(--mono);color:var(--dim)">⌫ to unpick</span></div>
+      <div class="compose">
+        <textarea placeholder="What should this agent do?" autofocus></textarea>
+      </div>
+      <div class="foot">
+        <span class="grp"><kbd>⌘↵</kbd> dispatch now</span>
+        <span class="grp"><kbd>⇧↵</kbd> add to backlog</span>
+        <span class="grp"><kbd>⇥</kbd> open the full form</span>
+        <span class="spacer"></span>
+        <span class="grp" style="color:var(--muted)">model + effort: harness default</span>
+      </div>
+    </div>`;
+    root.querySelector("textarea").addEventListener("input", (ev) => { S.brief = ev.target.value; });
+    root.querySelector("textarea").focus();
+    return;
+  }
+  root.innerHTML = `<div class="bar">
+    <div class="line">
+      ${chips()}${S.repo || S.kind || S.agent ? '<span class="sep">›</span>' : ""}
+      <span class="query">${S.q ? S.q : `<span class="ghost">${PLACEHOLDER[step]}</span>`}<span class="caret"></span></span>
+    </div>
+    ${listHtml(step)}
+    <div class="foot">
+      <span class="grp"><kbd>↵</kbd> pick</span>
+      <span class="grp"><kbd>⌫</kbd> unpick</span>
+      <span class="grp">type to filter</span>
+      <span class="spacer"></span>
+      <span class="grp"><kbd>⇥</kbd> full form</span>
+      <span class="grp"><kbd>esc</kbd> cancel</span>
+    </div>
+  </div>`;
+}
+render();
+</script>
+</body>
+</html>

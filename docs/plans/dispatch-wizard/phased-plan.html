@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Guided dispatch - phased implementation</title>
+<style>
+:root {
+  --bg: #ffffff; --fg: #1b1f24; --muted: #57606a; --line: #d8dee4;
+  --box: #f6f8fa; --accent: #0969da; --code: #eaeef2; --hot: #0969da;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
+    --box: #161b22; --accent: #4493f8; --code: #1f242c; --hot: #4493f8;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto; max-width: 900px; padding: 40px 22px 90px;
+  background: var(--bg); color: var(--fg);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+h1 { font-size: 2em; margin: 0 0 .3em; letter-spacing: -.02em; }
+h2 { font-size: 1.35em; margin: 1.9em 0 .5em; padding-bottom: .25em; border-bottom: 1px solid var(--line); }
+h3 { font-size: 1.08em; margin: 1.5em 0 .4em; }
+a { color: var(--accent); }
+strong { font-weight: 640; }
+code {
+  font: .87em ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  background: var(--code); padding: .15em .38em; border-radius: 5px;
+}
+kbd {
+  font: .82em ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--box); border: 1px solid var(--line); border-bottom-width: 2px;
+  border-radius: 5px; padding: .1em .4em; white-space: nowrap;
+}
+.lede { color: var(--muted); font-size: 1.06em; }
+.table-wrap { overflow-x: auto; margin: 14px 0; }
+table { border-collapse: collapse; width: 100%; font-size: .93em; }
+th, td { border: 1px solid var(--line); padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: var(--box); font-weight: 620; }
+ul, ol { padding-left: 1.35em; }
+li { margin: .3em 0; }
+.finding { background: var(--box); border: 1px solid var(--line); border-left: 3px solid var(--hot); border-radius: 0 9px 9px 0; padding: 12px 16px; margin: 14px 0; }
+.finding p { margin: 0; }
+.diagram-wrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--box); padding: 18px; }
+.svgbox { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; rx: 8; }
+.svgbox-hot { fill: var(--bg); stroke: var(--hot); stroke-width: 2; rx: 8; }
+.svgt { fill: var(--fg); font: 13px -apple-system, system-ui, sans-serif; }
+.svgedge { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#a); }
+footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid var(--line); color: var(--muted); font-size: .87em; }
+</style>
+</head>
+<body>
+
+<h1>Guided dispatch - phased implementation</h1>
+
+<p class="lede">Implementation index for <a href="plan.md">plan.md</a>
+(<a href="plan.html">rendered</a>). Five phases, each an independently reviewable pull request
+that leaves the repository operable.</p>
+
+<h2>Source</h2>
+<ul>
+<li>Approved plan: <code>docs/plans/dispatch-wizard/plan.md</code></li>
+<li>Interaction mockups (interactive, self-contained):
+<code>docs/plans/dispatch-wizard/mockups/</code>, with
+<a href="mockups/d-rail-reveal.html"><code>d-rail-reveal.html</code></a> the chosen direction.</li>
+</ul>
+
+<h2>Incorporated human decisions</h2>
+<p>These were submitted against the plan and are requirements here, not open questions.</p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Decision</th><th>Answer</th><th>Owned by</th></tr></thead>
+<tbody>
+<tr><td>Interaction model</td><td><strong>D · Rail + Reveal</strong> - C's in-place reveal carrying A's rail as a horizontal strip</td><td>Phase 2</td></tr>
+<tr><td>Repo</td><td><strong>Asked, first</strong>, as a filter over the field that already holds it</td><td>Phase 4</td></tr>
+<tr><td>Shipped default</td><td><strong>On</strong>, with <kbd>⇥</kbd> as the one-key escape</td><td>Phase 5</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Investigated findings that shaped the phase boundaries</h2>
+<p>Five things the repository said that the plan did not know. Each moved a boundary.</p>
+
+<div class="finding"><p><strong>1. Shipping on by default breaks roughly 49 existing e2e
+specs.</strong> Eleven specs treat the dispatch modal as their subject and about thirty-eight
+more drive it only to get a session onto the fleet, all of them by clicking <strong>Dispatch</strong>,
+filling the repo placeholder and tabbing through native selects. A guided pass that intercepts
+keys and dims the form invalidates every one of them. Splitting the flip into its own phase is
+not enough on its own - the fixture has to stop depending on the shipped default <em>before</em>
+the default can move. <strong>Phase 2 pins <code>guidedDispatch</code> explicitly in
+<code>e2e/fixtures/test.ts</code></strong>, which turns Phase 5 into a one-line change to
+<code>UI_CONFIG_DEFAULTS</code> plus its own spec, instead of a 49-file rewrite. This is the
+single most important contract in this plan.</p></div>
+
+<div class="finding"><p><strong>2. <code>Settings → Dispatch</code> is the most expensive of the
+three toggle surfaces, not the cheapest.</strong> The plan called it "the only one that has to
+exist". In fact <code>SETTINGS_CATEGORIES</code> (<code>src/web/lib/settings-registry.ts:90</code>)
+is a twelve-entry registry whose new member must be contiguous within its group (the arrow keys
+walk the flat array while the rail draws group-by-group, pinned by
+<code>test/settings-sidebar-render.test.ts:134</code>), must supply a panel component to an
+exhaustive switch, must render at least one <code>data-anchor</code> under a static render with no
+props, and must contribute at least one entry to <code>SETTINGS_CONTROLS</code>
+(<code>test/settings-search.test.ts:116</code>). That is a phase's worth of work with its own test
+surface, so it became <strong>Phase 3</strong> rather than a line item.</p></div>
+
+<div class="finding"><p><strong>3. The kind → after-work rule does not need extracting.</strong>
+The plan hedged that it might "move into a shared helper". It does not have to:
+<code>afterWorkForKind</code> (<code>DispatchModal.tsx:911-923</code>) is a closure over
+<code>draft</code> and a <code>stashedWorkflowId</code> ref <em>inside</em>
+<code>DispatchModal</code>, and the guided pass lives inside the same component, so it calls
+<code>update({ kind, ...afterWorkForKind(kind) })</code> exactly as the Kind
+<code>&lt;select&gt;</code> already does. No extraction, no second source of truth.</p></div>
+
+<div class="finding"><p><strong>4. The modal autofocuses the Task textarea on mount, which would
+eat every mnemonic.</strong> <code>useEffect(() =&gt; { intentRef.current?.focus(); }, [])</code>
+(<code>DispatchModal.tsx:925-927</code>) runs at the <em>start</em> of the opening.
+<code>Overlay.onKeyDown</code> is a window listener, so during a guided pass pressing
+<kbd>p</kbd> would both advance the wizard and type <code>p</code> into the task box. The plan read
+this effect as the thing that focuses the box at the <em>end</em> of the pass. It is the same
+effect, but it has to become conditional - Phase 2 owns that.</p></div>
+
+<div class="finding"><p><strong>5. Escape inside the repo step is already spoken for.</strong>
+<code>RepoCombobox</code> closes its portalled listbox on Escape and calls
+<code>stopPropagation</code>, deliberately, so Escape does not close the modal while the list is
+open (<code>e2e/README.md</code> names this as trap #3). The plan says "<kbd>esc</kbd> cancels the
+dispatch outright". Both cannot be true in the repo step. Phase 4 owns resolving it and states the
+resolution rather than inheriting a contradiction.</p></div>
+
+<h3>Decisions taken against the repository</h3>
+<ul>
+<li><strong>Keep <code>Settings → Dispatch</code> as a new category</strong> (group
+<code>screen</code>, scope <code>browser</code>) despite finding 2. It is what the approved plan
+chose; <code>UiConfig</code> booleans live under browser-scope categories (<code>display</code>,
+<code>keyboard</code>), and neither of those fits a dispatch preference. The cheaper alternative -
+fold it into <code>harnesses</code>, which already owns <code>harnesses/auto-mode</code> ("Auto
+mode on dispatch") and whose keywords already include <code>dispatch</code> - is a scope mismatch:
+that category is <code>scope: "machine"</code> and daemon-backed. <strong>This is the one decision
+here worth overturning cheaply if the reviewer disagrees</strong>; it is isolated in Phase 3.</li>
+<li><strong>Do not extract a shared after-work helper</strong>, per finding 3. The plan's
+<code>test/</code> line about covering "the kind → after-work resolution if it moves into a shared
+helper" is therefore satisfied by the existing e2e coverage, and Phase 2 adds no unit test for
+it.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Direct prerequisites</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><a href="phase-1-shared-contracts.md">Shared task kinds and the guided-dispatch preference</a></td><td><code>TASK_KINDS</code> registry; <code>guidedDispatch</code> on <code>UiConfig</code> end to end. No UI change.</td><td>-</td></tr>
+<tr><td>2</td><td><a href="phase-2-guided-pass.md">The guided pass over Kind, Harness and After work</a></td><td>The feature, opt-in from the modal header toggle. Rail strip, floating pickers, key handling, e2e fixture pin.</td><td>1</td></tr>
+<tr><td>3</td><td><a href="phase-3-settings-home.md">Settings → Dispatch, the durable home</a></td><td>New settings category, panel, toggle, ⌘K indexing.</td><td>2</td></tr>
+<tr><td>4</td><td><a href="phase-4-repo-step.md">The Repo step</a></td><td>Repo becomes step 1, driving <code>RepoCombobox</code>. Resolves the Escape and filter questions.</td><td>2</td></tr>
+<tr><td>5</td><td><a href="phase-5-default-on.md">On by default, and the documentation</a></td><td>Flip <code>UI_CONFIG_DEFAULTS</code>; upgrade-path spec; README and docs.</td><td>3, 4</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Dependency graph</h2>
+<div class="diagram-wrap">
+<svg viewBox="0 0 790 250" width="790" height="250" role="img" aria-label="Phase 1 leads to phase 2; phase 2 leads to phases 3 and 4, which run concurrently; both lead to phase 5.">
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="currentColor" style="color:var(--muted)"/>
+    </marker>
+  </defs>
+  <rect class="svgbox-hot" x="12" y="102" width="150" height="44"/>
+  <text class="svgt" x="27" y="129">1 · contracts</text>
+
+  <rect class="svgbox-hot" x="212" y="102" width="150" height="44"/>
+  <text class="svgt" x="227" y="129">2 · guided pass</text>
+
+  <rect class="svgbox" x="412" y="36" width="150" height="44"/>
+  <text class="svgt" x="427" y="63">3 · settings home</text>
+
+  <rect class="svgbox" x="412" y="168" width="150" height="44"/>
+  <text class="svgt" x="427" y="195">4 · repo step</text>
+
+  <rect class="svgbox-hot" x="612" y="102" width="164" height="44"/>
+  <text class="svgt" x="627" y="129">5 · default on</text>
+
+  <path class="svgedge" d="M162,124 L206,124"/>
+  <path class="svgedge" d="M362,118 C388,118 388,60 406,58"/>
+  <path class="svgedge" d="M362,130 C388,130 388,188 406,190"/>
+  <path class="svgedge" d="M562,58 C588,58 588,116 606,118"/>
+  <path class="svgedge" d="M562,190 C588,190 588,132 606,130"/>
+
+  <text class="svgt" x="412" y="128" style="font-size:11px;fill:var(--muted)">3 and 4 concurrent</text>
+</svg>
+</div>
+<div class="diagram-wrap">
+<svg viewBox="0 0 660 120" width="660" height="120" role="img" aria-label="Merge order: phase 1, then phase 2, then phases 3 and 4 in either order, then phase 5.">
+  <rect class="svgbox" x="12" y="38" width="96" height="40"/>
+  <text class="svgt" x="42" y="63">1</text>
+  <rect class="svgbox" x="150" y="38" width="96" height="40"/>
+  <text class="svgt" x="180" y="63">2</text>
+  <rect class="svgbox" x="288" y="38" width="140" height="40"/>
+  <text class="svgt" x="310" y="63">3 and 4</text>
+  <rect class="svgbox" x="470" y="38" width="96" height="40"/>
+  <text class="svgt" x="500" y="63">5</text>
+  <path class="svgedge" d="M108,58 L144,58"/>
+  <path class="svgedge" d="M246,58 L282,58"/>
+  <path class="svgedge" d="M428,58 L464,58"/>
+  <text class="svgt" x="288" y="98" style="font-size:11px;fill:var(--muted)">either order</text>
+</svg>
+</div>
+
+<h2>Concurrency groups</h2>
+<ul>
+<li><strong>Group A:</strong> Phase 1 alone.</li>
+<li><strong>Group B:</strong> Phase 2 alone.</li>
+<li><strong>Group C:</strong> Phases 3 and 4, concurrently.</li>
+<li><strong>Group D:</strong> Phase 5 alone.</li>
+</ul>
+
+<p>Phases 3 and 4 own disjoint files. Phase 3 owns <code>src/web/lib/settings-registry.ts</code>,
+<code>src/web/components/SettingsPage.tsx</code>, a new settings panel,
+<code>src/web/lib/settings-search.ts</code>, <code>src/web/App.tsx</code> and the settings tests.
+Phase 4 owns <code>src/web/components/DispatchModal.tsx</code>,
+<code>src/web/components/RepoCombobox.tsx</code> and the dispatch e2e specs. They can merge in
+either order.</p>
+
+<p>The one file both may touch is <code>src/web/styles.css</code>. Ownership is by region: Phase 4
+owns the <code>.dispatch-*</code> block (from line 6874) and the guided-pass classes Phase 2
+introduces beside it; Phase 3 owns the settings block and should reuse the existing
+<code>settings-toggle</code> vocabulary rather than adding classes at all. A conflict here is a
+textual one in a 23,000-line file, not a semantic one.</p>
+
+<p>Nothing else runs concurrently, and that is a property of the code rather than a scheduling
+choice: phases 2, 4 and 5 all edit <code>DispatchModal.tsx</code>, and two agents rewriting the
+same component's key handling is a merge no review can usefully check.</p>
+
+<h2>Merge order</h2>
+<p>1 → 2 → (3 ∥ 4) → 5. Phase 5 must be last: it is the only phase whose merge changes behaviour
+for someone who has not opted in, and it should not do that until both the Settings home and the
+Repo step are in.</p>
+
+<h2>Cross-phase contracts</h2>
+<p>These are the interfaces later phases rely on. Changing one is a change to this index, not a
+local decision.</p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Contract</th><th>Introduced</th><th>Consumed by</th><th>Rule</th></tr></thead>
+<tbody>
+<tr><td><code>TASK_KINDS</code> (ordered tuple + labels) in <code>src/shared/</code></td><td>1</td><td>2</td><td>The wizard and the Kind <code>&lt;select&gt;</code> both render from it. Order is the display order.</td></tr>
+<tr><td><code>UiConfig.guidedDispatch: boolean</code></td><td>1</td><td>2, 3, 5</td><td>Default is <code>false</code> until Phase 5. Adding it to <code>UI_CONFIG_DEFAULTS</code>, <code>UiConfigSchema</code> <strong>and</strong> <code>uiCache.coerce()</code> is one atomic obligation - omitting the third resets it on every cold paint.</td></tr>
+<tr><td><code>useGuidedDispatch()</code> hook</td><td>1</td><td>2, 3</td><td>The only read/write path. Shaped like <code>useRichText</code>.</td></tr>
+<tr><td>The e2e fixture pins <code>guidedDispatch</code> explicitly</td><td>2</td><td>5</td><td><code>e2e/fixtures/test.ts</code>'s <code>dashboard</code> fixture must set it, so no spec depends on the shipped default. Phase 5's flip is safe only because of this.</td></tr>
+<tr><td>The guided pass is a phase of the existing <code>OVERLAY_IDS.dispatch</code> open</td><td>2</td><td>3, 4</td><td>No second overlay. The stand-down at <code>App.tsx:1522</code> keeps working untouched.</td></tr>
+<tr><td><code>afterWorkForKind</code> stays a <code>DispatchModal</code> closure</td><td>2</td><td>4</td><td>Not extracted. Both the wizard and the <code>&lt;select&gt;</code> call it.</td></tr>
+<tr><td>Wizard step order and the step machine's shape</td><td>2</td><td>4</td><td>Phase 4 inserts Repo at the front; it does not redesign the machine.</td></tr>
+<tr><td>Settings category id <code>dispatch</code>, anchor prefix <code>dispatch/</code></td><td>3</td><td>5</td><td>Docs in Phase 5 name this path.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Final verification</h2>
+<p>After Phase 5 merges:</p>
+<ul>
+<li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+<code>npm run build</code>, <code>npm run smoke</code>.</li>
+<li><code>npm run test:e2e</code> in full, not a shard - the claim that the fixture pin protected
+the existing suite is only proved by running all of it after the default has moved.</li>
+<li>A manual pass through the four steps in the built app at the shipped default, including
+<kbd>⇥</kbd> at each step and <kbd>⌫</kbd> from each step.</li>
+<li><code>docs/dispatch-and-backlog.md</code>, <code>docs/ui.md</code> and the README describe the
+pass, its keys and the preference, and no longer describe <kbd>+</kbd> as opening the form
+directly.</li>
+</ul>
+
+<h2>Task mapping</h2>
+<p>Every task also depends on the planning session that publishes these files, so none of them
+dispatch until this pull request merges.</p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Phase</th><th>Task id</th><th>Direct task prerequisites</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>188b55db-18a1-490b-8ab1-35c599951947</code></td><td>planning session only</td></tr>
+<tr><td>2</td><td><code>c9af0524-5440-4535-8932-2f5fd0530931</code></td><td>1</td></tr>
+<tr><td>3</td><td><code>5da5306f-8d7b-4904-9364-ca8ace3cffb8</code></td><td>2</td></tr>
+<tr><td>4</td><td><code>7d6d8442-04c6-4d84-9bbe-ecddd11139f0</code></td><td>2</td></tr>
+<tr><td>5</td><td><code>b989e07a-79fa-40d8-be21-83e2a8664216</code></td><td>3, 4</td></tr>
+</tbody>
+</table>
+</div>
+
+<footer>
+Rendering of <code>docs/plans/dispatch-wizard/phased-plan.md</code>, which stays the source of
+truth. The approved plan is <a href="plan.html">plan.html</a>.
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mockup C - Inline Reveal</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  .dispatch-modal { width: min(640px, 100%); }
+  /* The picker has to be able to leave the panel, the way RepoCombobox's portal already
+     does. Corners move onto the head and foot so nothing needs clipping. */
+  .modal { overflow: visible; }
+  .modal-head { border-radius: 14px 14px 0 0; }
+  .modal-foot { border-radius: 0 0 14px 14px; }
+  .dispatch-body { display: flex; flex-direction: column; gap: 14px; padding: 18px; }
+  .crew { display: grid; grid-template-columns: 1.05fr 0.55fr 1.2fr 1.1fr; gap: 10px; align-items: start; }
+  .crew .field { gap: 4px; }
+  .crew .field-label { font-size: 11px; }
+
+  /* Everything not being asked about right now recedes but stays legible and in place. */
+  .dim { opacity: .34; transition: opacity .18s ease; }
+  .lit { transition: opacity .18s ease; }
+
+  /* The guided badge in the header - the same place the Single agent / Ensemble toggle lives. */
+  .guided-toggle {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 1px solid color-mix(in oklab, var(--idle) 34%, var(--border));
+    background: color-mix(in oklab, var(--idle) 8%, var(--panel));
+    border-radius: 999px; padding: 4px 9px 4px 7px;
+    font: 11px var(--sans); color: var(--fg); cursor: pointer;
+  }
+  .guided-toggle .sw { width: 22px; height: 12px; border-radius: 999px; background: color-mix(in oklab, var(--idle) 70%, var(--border)); position: relative; }
+  .guided-toggle .sw::after { content: ""; position: absolute; top: 1.5px; right: 1.5px; width: 9px; height: 9px; border-radius: 50%; background: #0c1512; }
+  .guided-toggle .n { font: 10px var(--mono); color: var(--dim); }
+
+  /* The picker floats under its own select, exactly like the app's ::picker(select) - same
+     4px offset, same radius, same shadow. Nothing below it moves, so the form you end up
+     with is standing in its final position the whole time. */
+  .anchor { position: relative; }
+  .picker {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 5;
+    min-width: 100%;
+    width: max-content;
+    max-width: 330px;
+    display: flex; flex-direction: column; gap: 2px;
+    border: 1px solid color-mix(in oklab, var(--working) 50%, var(--border));
+    border-radius: 8px;
+    background: var(--bg-2);
+    box-shadow: var(--shadow), 0 12px 32px rgba(0,0,0,.5);
+    padding: 4px;
+    animation: pop .16s ease;
+  }
+  .picker.right { left: auto; right: 0; }
+  .picker-q {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 7px 6px;
+    font-size: 11px; color: color-mix(in oklab, var(--working) 62%, var(--fg));
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 2px;
+  }
+  .picker-q .keys { margin-left: auto; display: inline-flex; gap: 4px; color: var(--dim); }
+  .picker-q kbd { font-size: 9.5px; padding: 2px 4px; min-width: 12px; }
+  @keyframes pop { from { opacity: 0; transform: translateY(-3px); } }
+  .opt {
+    display: grid; grid-template-columns: 19px 1fr; align-items: center; gap: 7px;
+    padding: 6px 7px; border-radius: 6px; cursor: pointer;
+    border: 1px solid transparent; background: none; font: inherit; text-align: left; color: var(--fg);
+  }
+  .opt.sel { background: color-mix(in oklab, var(--working) 20%, var(--bg-2)); border-color: color-mix(in oklab, var(--working) 34%, transparent); }
+  .opt .cap {
+    font-family: var(--mono); font-size: 10px; line-height: 1; text-align: center;
+    color: var(--muted); background: var(--panel);
+    border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 4px; padding: 3px 0;
+  }
+  .opt.sel .cap { color: var(--fg); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); }
+  .opt .l { font-size: 12px; display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .opt .l u { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 2px; text-decoration-color: color-mix(in oklab, var(--working) 70%, transparent); }
+  .opt .sub { grid-column: 2; font-size: 10.5px; color: var(--dim); margin-top: 1px; }
+
+  .wf {
+    position: relative; display: grid; grid-template-columns: 28px minmax(0,1fr) auto;
+    align-items: center; gap: 10px; padding: 8px 11px 8px 8px; border-radius: 9px;
+    border: 1px solid var(--border-soft); background: color-mix(in srgb, var(--bg-2) 58%, transparent);
+  }
+  .wf.armed { border-color: color-mix(in oklab, var(--working) 38%, var(--border)); background: color-mix(in oklab, var(--working) 7%, var(--bg-2)); }
+  .wf.asking { align-items: start; }
+  .wf-mark { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 7px; color: var(--dim); background: var(--panel); font: 11px var(--mono); }
+  .wf.armed .wf-mark { color: var(--working); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); }
+  .wf-ctl { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 8px; min-width: 0; }
+  .wf.asking .wf-ctl { align-items: start; }
+  .wf.asking .wf-ctl .field-label { padding-top: 9px; }
+  .wf-state { font: 10px var(--mono); color: var(--dim); white-space: nowrap; }
+  .wf.armed .wf-state { color: color-mix(in oklab, var(--working) 76%, var(--fg)); }
+
+  .more { display: flex; align-items: center; gap: 10px; width: 100%; color: var(--muted); background: transparent; border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 12px; font: inherit; text-align: left; }
+  .more b { font-size: 12px; font-weight: 560; }
+  .more span { font-size: 11.5px; color: var(--dim); }
+  .caret { display: inline-block; width: 1.5px; height: 15px; background: var(--fg); animation: blink 1.06s steps(1) infinite; vertical-align: -3px; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .drop { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); padding: 8px 10px; min-height: 90px; font-size: 13px; color: var(--dim); }
+  .drop.on { border-color: color-mix(in oklab, var(--working) 50%, var(--border)); }
+  .hair { height: 2px; background: var(--border-soft); position: relative; }
+  .hair i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--working); transition: width .2s ease; display: block; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="stage-topbar"><b style="color:var(--fg)">Mission Control</b><span>fleet</span><span>library</span><span>runs</span></div>
+  <div class="stage-grid">
+    <div class="stage-card"></div><div class="stage-card"></div><div class="stage-card"></div>
+    <div class="stage-card"></div><div class="stage-card"></div><div class="stage-card"></div>
+  </div>
+</div>
+
+<div class="backdrop"><div id="root"></div></div>
+
+<nav class="mock-nav">
+  <a href="index.html">← all mockups</a>
+  <a href="a-launch-rail.html">A · Launch Rail</a>
+  <a href="b-chord-bar.html">B · Chord Bar</a>
+  <a href="c-inline-reveal.html" class="on">C · Inline Reveal</a>
+  <span class="keys">interactive — try <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd> <kbd>⌫</kbd> <kbd>⇥</kbd></span>
+</nav>
+
+<script>
+const KINDS = [
+  { id: "ship", key: "p", label: "shi<u>p</u>", plain: "ship", sub: "change + PR" },
+  { id: "scout", key: "t", label: "scou<u>t</u>", plain: "scout", sub: "investigate" },
+];
+const AGENTS = [
+  { id: "claude", key: "c", label: "<u>C</u>laude Code", plain: "Claude Code", accent: "var(--claude)", sub: "Opus 5 · xhigh" },
+  { id: "codex", key: "x", label: "Code<u>x</u>", plain: "Codex", accent: "var(--codex)", sub: "gpt-5.2-codex · high" },
+  { id: "pi", key: "i", label: "P<u>i</u>", plain: "Pi", accent: "var(--pi)", sub: "pi-1 · medium" },
+];
+const WFS = [
+  { id: "nm", key: "d", label: "Dispatch <u>d</u>efault — No-Mistakes Review · v8", plain: "Dispatch default — No-Mistakes Review · v8", sub: "review the diff, repair findings, gate the merge" },
+  { id: "none", key: "n", label: "<u>N</u>one — finish without a Workflow", plain: "None — finish without a Workflow", sub: "" },
+  { id: "docs", key: "o", label: "D<u>o</u>cs Sweep · v3", plain: "Docs Sweep · v3", sub: "" },
+];
+const STEPS = ["kind", "agent", "wf", "brief"];
+const S = { i: 0, sel: 0, kind: null, agent: null, wf: null, wfTouched: false, escaped: false };
+
+function pool(s) { return { kind: KINDS, agent: AGENTS, wf: WFS }[s] || []; }
+
+function commit(o) {
+  const s = STEPS[S.i];
+  if (s === "kind") { S.kind = o; if (!S.wfTouched) S.wf = o.id === "scout" ? WFS[1] : WFS[0]; }
+  if (s === "agent") S.agent = o;
+  if (s === "wf") { S.wf = o; S.wfTouched = true; }
+  S.i += 1; S.sel = 0;
+  if (STEPS[S.i] === "wf" && S.wf) S.sel = WFS.findIndex((w) => w.id === S.wf.id);
+  render();
+}
+function back() { if (S.i === 0) return; S.i -= 1; S.sel = 0; render(); }
+
+document.addEventListener("keydown", (e) => {
+  if (S.escaped || STEPS[S.i] === "brief") return;
+  const opts = pool(STEPS[S.i]);
+  if (e.key === "ArrowDown") { S.sel = (S.sel + 1) % opts.length; render(); return e.preventDefault(); }
+  if (e.key === "ArrowUp") { S.sel = (S.sel - 1 + opts.length) % opts.length; render(); return e.preventDefault(); }
+  if (e.key === "Enter") { commit(opts[S.sel]); return e.preventDefault(); }
+  if (e.key === "Backspace") { back(); return e.preventDefault(); }
+  if (e.key === "Tab") {
+    // Abandon the guided pass and use the form. Nothing already answered is lost.
+    S.escaped = true;
+    if (!S.kind) S.kind = KINDS[0];
+    if (!S.agent) S.agent = AGENTS[0];
+    if (!S.wf) S.wf = WFS[0];
+    S.i = STEPS.length - 1; render(); return e.preventDefault();
+  }
+  const hit = opts.findIndex((o) => o.key === e.key.toLowerCase());
+  if (hit >= 0) { S.sel = hit; render(); setTimeout(() => commit(opts[hit]), 80); e.preventDefault(); }
+});
+
+const QUESTION = {
+  kind: "What kind of run is this?",
+  agent: "Which harness runs it?",
+  wf: "What runs after the work?",
+};
+
+function pickerHtml(step, opts, side) {
+  const back = S.i === 0 ? `<kbd>⇥</kbd> skip` : `<kbd>⌫</kbd> back`;
+  const q = step === "wf" && S.kind && S.kind.id === "scout"
+    ? "A scout has no diff, so None is preselected."
+    : QUESTION[step];
+  return `<div class="picker ${side || ""}">
+    <div class="picker-q">${q}<span class="keys"><kbd>↑↓</kbd><kbd>↵</kbd>${back}</span></div>
+    ${opts.map((o, i) => `
+    <button class="opt ${i === S.sel ? "sel" : ""}">
+      <span class="cap">${o.key}</span>
+      <span class="l">${o.accent ? `<span class="dot" style="background:${o.accent}"></span>` : ""}<span>${o.label}</span></span>
+      ${o.sub ? `<span class="sub">${o.sub}</span>` : ""}
+    </button>`).join("")}</div>`;
+}
+
+function sel(text, accent, hot) {
+  return `<div class="fake-select" ${hot ? 'style="border-color:color-mix(in oklab, var(--working) 55%, var(--border))"' : ""}>${accent ? `<span class="dot" style="background:${accent}"></span>` : ""}${text}</div>`;
+}
+
+function render() {
+  const step = STEPS[S.i];
+  const asking = (s) => step === s && !S.escaped;
+  const done = STEPS.indexOf(step);
+  const cls = (s) => (S.escaped || step === "brief" ? "lit" : asking(s) ? "lit" : "dim");
+
+  const kindCell = sel(S.kind ? S.kind.plain : "ship", null, asking("kind"))
+    + (asking("kind") ? pickerHtml("kind", KINDS) : "");
+  const agentCell = sel(S.agent ? S.agent.plain : "Claude Code", S.agent ? S.agent.accent : "var(--claude)", asking("agent"))
+    + (asking("agent") ? pickerHtml("agent", AGENTS) : "");
+
+  // No answer yet still means the dispatch default, which is armed. The rail must not say
+  // "No handoff" while the control beside it names a Workflow.
+  const wfArmed = !S.wf || S.wf.id !== "none";
+  const wfBody = sel(S.wf ? S.wf.plain : "Dispatch default — No-Mistakes Review · v8", null, asking("wf"))
+    + (asking("wf") ? pickerHtml("wf", WFS) : "");
+
+  document.getElementById("root").innerHTML = `<div class="modal dispatch-modal">
+    <div class="modal-head">
+      <h2>Dispatch an agent</h2>
+      <button class="guided-toggle" title="Turn the guided pass off for good">
+        <span class="sw"></span>Guided <span class="n">${step === "brief" ? "done" : `${done + 1}/3`}</span>
+      </button>
+      <button class="btn btn-ghost">✕</button>
+    </div>
+    <div class="hair"><i style="width:${step === "brief" ? 100 : (done / 3) * 100}%"></i></div>
+    <div class="dispatch-body">
+
+      <div class="field ${step === "brief" ? "lit" : "dim"}">
+        <span class="field-label">Repo <span class="field-hint">202 repos found - type to filter</span></span>
+        <div class="field-input" style="font-family:var(--mono);font-size:12.5px">/Users/jordanmance/workspace/ai-harness</div>
+      </div>
+
+      <div class="field ${step === "brief" ? "lit" : "dim"}">
+        <span class="field-label">Task <span class="field-hint">drop or paste images to attach them</span></span>
+        <div class="drop ${step === "brief" ? "on" : ""}">${step === "brief" ? '<span class="caret"></span>' : "What should this agent do?"}</div>
+      </div>
+
+      <div class="field">
+        <span class="field-label" style="margin-bottom:2px">Crew</span>
+        <div class="crew">
+          <div class="field anchor ${cls("agent")}"><span class="field-label">Agent</span>${agentCell}</div>
+          <div class="field anchor ${cls("kind")}"><span class="field-label">Kind</span>${kindCell}</div>
+          <div class="field ${step === "brief" || S.escaped ? "lit" : "dim"}"><span class="field-label">Model</span>${sel("Default - Opus 5")}</div>
+          <div class="field ${step === "brief" || S.escaped ? "lit" : "dim"}"><span class="field-label">Effort</span>${sel("Default - xhigh")}</div>
+        </div>
+        <span class="field-hint ${step === "brief" || S.escaped ? "" : "dim"}">Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides.</span>
+      </div>
+
+      <div class="wf ${wfArmed ? "armed" : ""} ${cls("wf")}">
+        <span class="wf-mark">⌘</span>
+        <div class="wf-ctl anchor"><span class="field-label">After work</span>${wfBody}</div>
+        <span class="wf-state">→ ${wfArmed ? "Foreman complete" : "No handoff"}</span>
+      </div>
+
+      <button class="more ${step === "brief" ? "lit" : "dim"}"><b>Backlog details</b><span>no priority · no labels · title summarized · no dependencies</span><span style="margin-left:auto;color:var(--dim);font-size:10px">▾</span></button>
+    </div>
+    <div class="modal-foot ${step === "brief" ? "lit" : "dim"}">
+      <button class="btn btn-ghost">Add to backlog</button>
+      <button class="btn btn-ghost">Clear</button>
+      <span class="spacer"></span>
+      <button class="btn">Cancel</button>
+      <button class="btn btn-primary">Dispatch now <kbd style="margin-left:6px;background:transparent;border-color:rgba(255,255,255,.35);color:#fff">⌘↵</kbd></button>
+    </div>
+  </div>`;
+}
+render();
+</script>
+</body>
+</html>

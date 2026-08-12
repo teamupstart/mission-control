@@ -600,6 +600,56 @@ that is on screen the whole time, and repeating it on hover is noise. Anything y
 on has one, and `tooltip-coverage.test.ts` fails the build if a new control arrives
 without one, or if a native `title` attribute creeps back in.
 
+## The right-click menu
+
+Right-click anything and get the actions that belong to it. The menu is one DOM component
+used by both builds, which matters most in the desktop app: Electron ships no context menu
+of its own, so until this arrived the packaged build had **no right-click Copy and no
+right-click Paste anywhere**.
+
+<kbd>⇧</kbd>+right-click falls through to the browser's own menu, so View Source and Inspect
+stay one modifier away.
+
+Two rules decide what a menu holds.
+
+- **Actions stack by specificity.** A link inside a message inside a card is three targets at
+  once, so the hit resolves into a chain - the thing under the cursor, then the container it
+  lives in - and each contributes its own rows, most specific first. The chain stops at two,
+  which keeps every menu readable; a menu that grew a section per ancestor is one nobody
+  reads.
+- **The label names its payload.** A bare `Copy` that copies something you did not point at
+  is worse than no row, so `Copy` appears only when there is a real selection or a link text
+  behind it. Otherwise the row is named for what it writes - `Copy URL`. Two rows that would
+  write the *same* string collapse into one, which is why a bare pasted URL offers `Copy URL`
+  rather than that and an identical `Copy`.
+
+What is offered today:
+
+| You right-clicked | The menu offers |
+|-----|--------|
+| Selected text | `Copy` - exactly what <kbd>⌘</kbd><kbd>C</kbd> would give you |
+| A link, or a bare URL in plain text | `Copy` (the link's text, when it differs from the address) · `Copy URL` · `Open link` |
+| A text box | `Cut` · `Copy` · `Paste`, and `Paste as quote` in a multi-line box, which wraps the clipboard in `>` |
+
+Right-clicking **outside** a selection clears it first, the way every browser does, so `Copy`
+can never write text you are no longer pointing at. Right-clicking **inside** one keeps it.
+
+`Open link` hands the address to your browser through the desktop bridge rather than
+navigating the app window at it. `Paste` is the one row a web menu does worse than the
+operating system's: reading the clipboard needs permission, which the desktop app already has
+and a browser tab asks for the first time - if it is refused the menu says so and points at
+<kbd>⌘</kbd><kbd>V</kbd>, which always works.
+
+The menu is reachable from the keyboard with <kbd>⇧</kbd><kbd>F10</kbd> or the <kbd>☰</kbd>
+Menu key, **including from inside a message box**, which is where `Paste` lives. Arrow keys
+walk the rows, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> closes and hands focus back. While it
+is open it takes every key, so no fleet shortcut fires behind it. Opening it never disturbs
+what you had selected.
+
+Transcript rows (`Copy message`, `Quote in reply`, `Copy code`) and session-card rows
+(`Copy branch`, `Copy checkout path`) are the next two steps - see
+`docs/plans/context-menus/plan.md`.
+
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - use the arrow keys to navigate Cards and Board, to walk
@@ -619,6 +669,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
+| <kbd>⇧</kbd><kbd>F10</kbd> | Open [the right-click menu](#the-right-click-menu) on whatever has the keyboard, anchored under it. The dedicated <kbd>☰</kbd> Menu key does the same and is fixed rather than rebindable. Both work from inside a text box, which is where `Paste` lives | Anywhere |
 | <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
@@ -654,7 +705,11 @@ trying to reuse an assigned key is refused inline. You can reset any one shortcu
 of them); if another custom binding has claimed that shortcut's default, resetting clears
 the override and leaves the shortcut unset until its default is free. The arrow keys,
 <kbd>Enter</kbd>, <kbd>Esc</kbd> and bare <kbd>Tab</kbd> drive layout navigation and Console
-reading, and can't be reassigned; <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
+reading, and can't be reassigned; <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The
+<kbd>☰</kbd> Menu key is fixed for a different reason: it is the operating system's key for
+opening a context menu, and this app now does that - rebinding it would take away the only
+key that already means what it says. <kbd>⇧</kbd><kbd>F10</kbd> opens the same menu and is
+rebindable like everything else. The pipeline
 editor's four rows above are in-surface keys rather than fleet chords - they only exist
 while a card in that strip has focus - so they are fixed for the same reason.
 

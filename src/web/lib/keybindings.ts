@@ -22,6 +22,7 @@ export type ActionId =
   | "roundup"
   | "dispatch"
   | "filter"
+  | "contextMenu"
   | "settingsSearch"
   | "workflows"
   | "runs"
@@ -103,6 +104,27 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Focus filter",
     description: "Jump to the filter box to narrow the grid.",
     defaultBinding: "/",
+    group: "global",
+  },
+  {
+    // The right-click menu, from the keyboard. Without it the whole feature is mouse-only,
+    // which is an accessibility gap rather than a missing shortcut - so it ships in v1 (Q5).
+    //
+    // ONE action, not two, even though two keys open the menu. The dedicated `ContextMenu`
+    // key is handled structurally beside Escape and the arrows and is in `RESERVED_KEYS`: it
+    // is the OS's key for precisely this and should not be rebindable to something else, and
+    // a second registry entry for the same behaviour would put two rows in the settings panel
+    // and two keycaps on one control.
+    //
+    // ⇧F10 needs no grammar change - `chordFromEvent` sends any key longer than one character
+    // down the named-key branch, which is the same path `shift+Tab` already ships - but it is
+    // the first default binding that carries no ⌘/⌃ and still has to fire from inside a text
+    // field. `chordIsNonTyping` is the predicate that lets it, and a field is exactly where
+    // the menu is most wanted, because that is where Paste lives.
+    id: "contextMenu",
+    label: "Open the context menu",
+    description: "Show the right-click actions for whatever has the keyboard (or the Menu key).",
+    defaultBinding: "shift+F10",
     group: "global",
   },
   {
@@ -302,6 +324,12 @@ const ACTION_BY_ID = new Map<ActionId, ActionDef>(ACTIONS.map((a) => [a.id, a]))
 // and everywhere else it is the browser's own "activate the focused control". A binding
 // on it would work in some layouts and silently not in others, which is the one promise
 // the shortcut table makes.
+//
+// ContextMenu - the dedicated Menu key - is reserved for a third reason: it is the operating
+// system's key for exactly one thing, and this app now does that thing. `contextMenu` is a
+// registry action with its own rebindable ⇧F10, and this key opens the same menu structurally
+// beside it, so binding it to something else would take the only key a keyboard user can
+// reach the menu with on the assumption that it does what it says.
 const RESERVED_KEYS = new Set([
   "Escape",
   "Enter",
@@ -309,6 +337,7 @@ const RESERVED_KEYS = new Set([
   "ArrowDown",
   "ArrowLeft",
   "ArrowRight",
+  "ContextMenu",
 ]);
 
 const MOD_TOKENS = ["cmd", "ctrl", "alt", "shift"] as const;
@@ -389,6 +418,9 @@ const KEY_LABEL: Record<string, string> = {
   " ": "Space",
   Backspace: "⌫",
   Delete: "⌦",
+  // The dedicated Menu key, which keycaps draw as a stack of lines. Without an entry the
+  // settings editor renders the literal string "ContextMenu" inside a <kbd>.
+  ContextMenu: "☰",
 };
 
 /** Human-readable form of a chord for keycaps and the editor (e.g. "⌘K", "⇧O", "⇥", "/"). */
@@ -419,6 +451,30 @@ export function isReservedChord(chord: string): boolean {
 export function chordHasCommandModifier(chord: string): boolean {
   const { mods } = parseChord(chord);
   return mods.includes("cmd") || mods.includes("ctrl");
+}
+
+/** F1 through F24. */
+const FUNCTION_KEY = /^F([1-9]|1\d|2[0-4])$/;
+
+/**
+ * True when a chord CANNOT TYPE A CHARACTER, so a focused text field has no claim on it.
+ *
+ * The second way past App's `typing` guard, beside `chordHasCommandModifier`. A sibling rather
+ * than a widening of that predicate, whose truth table is pinned by test and whose meaning -
+ * "unambiguous mid-sentence" - is about ⌘/⌃ specifically. The justification written above it
+ * is in fact narrower than the predicate: what makes a bare `k` unsafe inside a composer is
+ * that it types a `k`. ⇧F10 types nothing, so nothing is taken from the operator by letting it
+ * through, and the context menu it opens is most wanted exactly where Paste lives.
+ *
+ * Deliberately just the function keys and the Menu key. Escape, Tab, Enter, Backspace, Delete
+ * and the arrows also type no character, but a text field uses every one of them - so a
+ * predicate that swept them in would hand a global shortcut the key that was moving the
+ * operator's caret. "Cannot type" is not the same claim as "the field does not want it", and
+ * this is the smaller of the two.
+ */
+export function chordIsNonTyping(chord: string): boolean {
+  const { key } = parseChord(chord);
+  return FUNCTION_KEY.test(key) || key === "ContextMenu";
 }
 
 /**
@@ -602,7 +658,7 @@ export function bindingValidationError(
   chord: string,
 ): string | null {
   if (isReservedChord(chord)) {
-    return `${formatChord(chord)} is reserved for grid navigation.`;
+    return `${formatChord(chord)} is reserved and cannot be rebound.`;
   }
   const owner = findConflicts({ ...bindings, [id]: chord }).get(id)?.[0];
   if (!owner) return null;

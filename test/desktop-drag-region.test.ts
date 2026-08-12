@@ -150,6 +150,25 @@ test("the page segment lives in the topbar's explicit no-drag button coverage", 
   );
 });
 
+test("the cursor-anchored context menu cancels the drag region", () => {
+  // Named rather than left to the sweep below, because it is the one layer in this list whose
+  // reach needs no argument. Every other entry is here after someone reasoned about whether
+  // its anchor could put it inside the bar - and several were added only once the answer
+  // turned out to be yes. A context menu opens AT THE CURSOR, so it opens wherever the cursor
+  // is: right-click a link near the top of a transcript scrolled under the sticky topbar and
+  // the menu is drawn straight into the drag rectangle, where the OS eats every row.
+  for (const cls of ["ctx-menu", "ctx-flash"]) {
+    assert.ok(
+      ALL.some(
+        (rule) =>
+          rule.selectors.includes(`.is-desktop .${cls}`)
+          && /-webkit-app-region:\s*no-drag/.test(rule.body),
+      ),
+      `.${cls} floats over the topbar with no no-drag, so the desktop shell eats its clicks`,
+    );
+  }
+});
+
 test("every floating layer cancels the topbar's drag region", () => {
   const { uncovered, staleExemptions } = scan(bare);
 

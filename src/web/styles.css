@@ -1465,7 +1465,14 @@ body {
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
-.is-desktop .bl-planner-pop {
+.is-desktop .bl-planner-pop,
+/* The right-click menu, and the only entry in this list that needs no argument about whether
+   its layout can reach the bar: it opens at the cursor, so it opens wherever the cursor is -
+   including on the titlebar itself, where a right-click on a link near the top of a transcript
+   scrolled under the topbar puts it. Its confirmation line follows it in for the same reason
+   the launch chooser is here: listing it costs nothing. */
+.is-desktop .ctx-menu,
+.is-desktop .ctx-flash {
   -webkit-app-region: no-drag;
 }
 
@@ -23267,6 +23274,118 @@ span.line-run-prov {
 }
 .source-provenance-warn {
   color: var(--attention);
+}
+
+/* ---- the right-click menu ----
+
+   Cursor-anchored, so it can open at ANY coordinate - including under the desktop shell's
+   titlebar, which is why `.ctx-menu` is in the `.is-desktop` no-drag allow-list above rather
+   than after the first bug report.
+
+   Above `.modal-backdrop` (z-index 50), because the menu has to work inside a dialog: the
+   composer in a dispatch modal is one of the places Paste is most wanted. Below `.tooltip`
+   (70), because every row carries one. */
+.ctx-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 196px;
+  max-width: 268px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* Dense rows - label plus a right-aligned hint (decision D4). Measured against the blurb
+   variant in the mockups, the same five rows are 147x196 dense against 250x258 with blurbs,
+   and 70% taller flips above the cursor far more often. */
+.ctx-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: 12px var(--sans);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-row:hover,
+.ctx-row:focus-visible {
+  background: var(--panel-2);
+  outline: none;
+}
+.ctx-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The payload cue. Not decoration: it is what makes "the label names its payload" checkable
+   at a glance where the label alone is ambiguous - which `Copy` this is. */
+.ctx-hint {
+  margin-left: auto;
+  flex: none;
+  font: 10.5px var(--mono);
+  color: var(--dim);
+}
+.ctx-sep {
+  height: 1px;
+  margin: 3px 6px;
+  background: var(--border-soft);
+}
+
+/* The confirmation, rendered by the HOST rather than the menu: the menu closes on activation,
+   so a line inside it would die with the click that earned it. `role="status"` announces the
+   outcome, mirroring `.action-flash`, which the transcript already uses for the same job.
+
+   `pointer-events: none` because a message is not a control - it floats over the bottom of a
+   surface the reader may be clicking through. It is in the no-drag list anyway: the list costs
+   nothing and the alternative is an exemption in `test/desktop-drag-region.test.ts` that has to
+   stay true. */
+.ctx-flash {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  z-index: 70;
+  pointer-events: none;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  max-width: min(640px, 90vw);
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--idle) 34%, var(--border));
+  background: color-mix(in oklab, var(--idle) 12%, var(--panel));
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  color: var(--fg);
+}
+.ctx-flash.is-error {
+  border-color: color-mix(in oklab, var(--exited) 40%, var(--border));
+  background: color-mix(in oklab, var(--exited) 12%, var(--panel));
+}
+.ctx-flash b {
+  font-weight: 640;
+  color: var(--idle);
+}
+.ctx-flash.is-error b {
+  color: var(--exited);
+}
+.ctx-flash span {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 1080px) {

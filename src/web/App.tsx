@@ -7,6 +7,7 @@ import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
+import { ContextMenuHost, type ContextMenuHandle } from "./components/ContextMenu.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
@@ -66,6 +67,7 @@ import {
   useKeybindings,
   chordFromEvent,
   chordHasCommandModifier,
+  chordIsNonTyping,
   chordYieldsToSelection,
   formatChord,
 } from "./lib/keybindings.ts";
@@ -388,6 +390,13 @@ export function App(): React.JSX.Element {
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
+  // The one right-click menu, reached from the keyboard. Registered rather than reffed
+  // through, the way an ActionBar registers itself - there is exactly one host, and it is
+  // mounted at the bottom of this tree.
+  const contextMenu = useRef<ContextMenuHandle | null>(null);
+  const registerContextMenu = useCallback((handle: ContextMenuHandle | null) => {
+    contextMenu.current = handle;
+  }, []);
   // Board workflow disclosures stay local to their tiles, but the global, rebindable
   // expand action needs to drive the selected one through the exact same transition as
   // its Show full workflow / Collapse workflow button.
@@ -1494,6 +1503,28 @@ export function App(): React.JSX.Element {
       if (shortcutTarget) {
         e.preventDefault();
         navigate(shortcutTarget);
+        return;
+      }
+
+      // The right-click menu, from the keyboard (Q5) - ⇧F10 by default, plus the dedicated
+      // Menu key, which is structural like Escape and the arrows rather than a second registry
+      // entry for one behaviour.
+      //
+      // Above the fleet-only return because a right-click means the same thing on every page,
+      // and above the overlay stand-down below because the inside of a dispatch dialog's
+      // textarea is precisely where Paste is wanted. It is also the first default binding to
+      // pass the `typing` gate on something other than a ⌘/⌃ modifier: ⇧F10 types no
+      // character, so a focused field has no claim on it.
+      //
+      // The menu answers whether it had anything to offer, and the key is only eaten when it
+      // did - so on a surface with no actions the browser's own menu still opens.
+      if (
+        (chord === bindings.contextMenu || chord === "ContextMenu")
+        && (!typing || chordIsNonTyping(chord))
+        && target
+        && contextMenu.current?.openAtElement(target)
+      ) {
+        e.preventDefault();
         return;
       }
 
@@ -2818,6 +2849,13 @@ export function App(): React.JSX.Element {
             onClose={cancelPending}
           />
         )}
+
+        {/* The right-click menu, mounted once for the whole application. Components get no
+            right-click code of their own: one delegated listener resolves the hit against the
+            registry in `lib/context-actions.ts`, and adding a target is an entry there. It
+            renders its menu and its confirmation into body-level portals, so this is a
+            mounting point rather than a place in the layout. */}
+        <ContextMenuHost register={registerContextMenu} />
       </div>
     </OverlayHost>
   );

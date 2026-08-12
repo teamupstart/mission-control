@@ -1081,7 +1081,7 @@ story is worthless if the daemon under test is not the one it thinks it is:
 
 There are no `data-testid` attributes and none should be added - there are 229 `aria-label`s
 and 155 `role`s, so `getByRole`/`getByLabel`/`getByPlaceholder` already work and stay
-correct through refactors. Seven traps, all of which have cost time already:
+correct through refactors. Eight traps, all of which have cost time already:
 
 1. **Never use `{ exact: true }` on a button name.** Keyboard hints render as `<kbd>` inside
    the label and are part of the accessible name: the dispatch button is `"+Dispatch"`.
@@ -1114,6 +1114,21 @@ correct through refactors. Seven traps, all of which have cost time already:
    on a build with the fix reverted, which is the only way to find that out. `git stash push`
    the fix, rebuild, run the case, see it red, then restore. If it cannot be made red, it is
    not pinning anything.
+8. **The selection is not an observable around a right-click.** Chromium edits it on both
+   sides of the app's handler: `Shift`+mousedown is the browser's own extend-selection
+   gesture, and a plain right-click on unselected text selects the word under the cursor. So
+   "the selection survived" and "the selection was cleared" are both claims about Chromium
+   rather than about the dashboard, and `context-menu.spec.ts` failed twice asserting them.
+   What IS observable is whether the app claimed the event: add a `contextmenu` listener on
+   `window` in the BUBBLE phase - registered after the app's, so it observes rather than
+   pre-empts - and read `event.defaultPrevented`, which is exactly what opening the custom
+   menu does and what `Shift`+right-click must not do. Better still, arrange for both halves
+   to open a menu and assert on the ROWS, so nothing rests on an absence. Two more, for the
+   same reason: a raw `page.mouse.click(x, y)` gets none of Playwright's actionability, so
+   scroll the target into view and `settled()` it before computing a point - `.transcript-log`
+   auto-scrolls, and by the third turn the first one is off-screen with client rects the mouse
+   cannot reach - and take the point from the text's own client rect, because a turn is a
+   full-width block whose box centre is usually beside the words rather than on them.
 
 Each test gets its own daemon (`fixtures/test.ts`). That costs about a second and a half and
 buys independence: a spec asserting "exactly one session on the fleet" must not silently

@@ -177,12 +177,12 @@ drive the fleet behind it. The direct Fleet, Library and Runs shortcuts remain a
 focus is not in a text field.
 
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
-settings reach. That is the question a flat list of twelve peers could not answer: which of
+settings reach. That is the question a flat list of thirteen peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
-| **This screen** | This browser | **Display** (layout + message formatting), **Keyboard** |
+| **This screen** | This browser | **Display** (layout + message formatting), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Models** |
 | **Leaves the machine** | Acts on GitHub | **Inspector**, **Shipping**, **Trust** |
@@ -211,9 +211,21 @@ it gains by being here is everything a drawer could not have: a rail row, a scop
 link, and a place in ⌘K, so the one switch in this app that can type into somebody's live agent
 session is findable by searching for what it does. The runs page header keeps a link to it.
 
+**Dispatch** joined last, and it is the one row holding a single checkbox - **Guided
+dispatch**, which is the same preference the **Guided** switch in the dispatch modal's header
+writes. That reads against the paragraph above, so here is the reasoning. Display absorbed a
+lone checkbox because message formatting *is* how this screen draws the fleet, which is the
+whole of what Display claims to be; how the dispatch form asks its questions is not. The other
+category whose blurb says "dispatch" is Harnesses, and that one is *This machine* and
+daemon-backed - filing a browser-local preference there would have put it under a badge
+promising it changes what the daemon does, for sessions this page never opened. A thin row
+costs less than a badge that overclaims. What the row buys is the thing the header switch
+could not: the preference is now in ⌘K by name, flippable from a search result without
+leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
+
 **Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the
-split those three panels needed and the other nine do not - their knobs are set once,
+split those three panels needed and the other ten do not - their knobs are set once,
 while their ledgers are read repeatedly and answer the only questions those subsystems
 raise (*what did the review say*, *why has nothing merged*, *what has Foreman been
 deciding*). As a 12px list at the foot of a vertical form, the ledger was the least
@@ -256,7 +268,7 @@ arrives (a cold tab, a reconnect) the dots stay dark rather than claim an all-cl
 
 ### Reaching a setting from the palette
 
-Roughly seventy controls span the twelve categories, so search is how you reach one you
+Roughly seventy controls span the thirteen categories, so search is how you reach one you
 half-remember without knowing which panel it lives in - and that search is the app-wide
 <kbd>⌘</kbd><kbd>K</kbd> palette, not a settings-only box. See
 [The palette (⌘K)](ui.md#the-palette-k) for the whole surface; what matters here is what it does

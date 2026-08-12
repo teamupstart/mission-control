@@ -119,6 +119,19 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   },
   ...KEYBOARD_CONTROLS,
   {
+    id: "guided-dispatch",
+    label: "Guided dispatch",
+    description:
+      "Ask for kind, harness and after work before handing over the dispatch form.",
+    category: "dispatch",
+    anchor: "dispatch/guided",
+    // "wizard" and "walkthrough" are what someone calls this who has not read the label;
+    // "kind", "harness" and "after work" are the questions themselves, which is what an
+    // operator who met the pass and wants it gone will actually remember about it.
+    keywords: ["guided", "wizard", "walkthrough", "steps", "questions", "kind", "harness", "after work"],
+    kind: "toggle",
+  },
+  {
     id: "auto-mode",
     label: "Auto mode on dispatch",
     description: "Launch every dispatched session in its most autonomous permission mode.",
@@ -430,6 +443,7 @@ export type ToggleSource = { value: boolean; set: (on: boolean) => void } | null
  */
 export function buildSettingsBindings(sources: {
   formatMessages: { value: boolean; set: (on: boolean) => void };
+  guidedDispatch: { value: boolean; set: (on: boolean) => void };
   autoMode: ToggleSource;
   skillsEnabled: ToggleSource;
   costTrack: ToggleSource;
@@ -438,6 +452,13 @@ export function buildSettingsBindings(sources: {
   map.set("format-messages", {
     get: () => sources.formatMessages.value,
     set: sources.formatMessages.set,
+  });
+  // Not a `ToggleSource`, for the same reason formatting is not: both are browser-local
+  // `UiConfig` booleans with shipped defaults, so there is no pre-poll interval in which
+  // their value is unknown and no honest reason to degrade either to a jump.
+  map.set("guided-dispatch", {
+    get: () => sources.guidedDispatch.value,
+    set: sources.guidedDispatch.set,
   });
   const put = (id: string, source: ToggleSource): void => {
     if (source) map.set(id, { get: () => source.value, set: source.set });

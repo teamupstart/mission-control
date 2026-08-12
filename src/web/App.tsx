@@ -98,6 +98,7 @@ import { Palette } from "./components/Palette.tsx";
 import type { PaletteStores, PaletteTarget } from "./lib/palette-index.ts";
 import { buildSettingsBindings } from "./lib/settings-search.ts";
 import { useRichText } from "./lib/rich-text.ts";
+import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -609,10 +610,14 @@ export function App(): React.JSX.Element {
   // The formatting store, read here so the palette can flip that toggle from any page.
   // `AppearancePanel` reads the same module-level store, so there is no second copy.
   const [richText, setRichText] = useRichText();
+  // The guided-dispatch preference, read here for the same reason: the palette may flip it
+  // from any page, and `DispatchSettingsPanel` and the dispatch modal's header switch read
+  // the same module-level store, so this is a third reader of one value rather than a copy.
+  const [guidedDispatch, setGuidedDispatch] = useGuidedDispatch();
   /**
    * Runtime get/set for the settings toggles the palette may flip in place.
    *
-   * Two of the four are wired, and the other two are `null` ON PURPOSE. `buildSettingsBindings`
+   * Three of the five are wired, and the other two are `null` ON PURPOSE. `buildSettingsBindings`
    * already states the rule: a source that has not loaded gets NO binding, and the control
    * degrades to a jump rather than drawing a switch for a value nobody has read. Auto mode and
    * the Skills master switch are backed by daemon configs that the Settings page alone polls
@@ -620,20 +625,22 @@ export function App(): React.JSX.Element {
    * you leave it) - so from a palette that opens on ANY page there is no loaded value for
    * them, and they jump to their panel, consistently, from everywhere.
    *
-   * The formatting toggle is a browser-local store with shipped defaults and cost telemetry is
-   * already App-owned, so both are honestly bindable wherever the palette opens.
+   * The formatting and guided-dispatch toggles are browser-local stores with shipped defaults
+   * and cost telemetry is already App-owned, so all three are honestly bindable wherever the
+   * palette opens.
    */
   const paletteBindings = useMemo(
     () =>
       buildSettingsBindings({
         formatMessages: { value: richText, set: setRichText },
+        guidedDispatch: { value: guidedDispatch, set: setGuidedDispatch },
         autoMode: null,
         skillsEnabled: null,
         costTrack: cost.status
           ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
           : null,
       }),
-    [richText, setRichText, cost.status, cost.update],
+    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update],
   );
   /**
    * Session names, for the run rows that are bound to one.

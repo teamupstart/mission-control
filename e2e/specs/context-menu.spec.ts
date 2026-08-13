@@ -120,6 +120,7 @@ test("context actions work by pointer and keyboard without leaking grid shortcut
 
   // The same live selection is no longer relevant when the pointer moves elsewhere. The host
   // collapses it before resolving, so it cannot offer Copy for words the reader did not point at.
+  await selectPhrase(body, SELECTED);
   expect(await dashboard.evaluate(() => window.getSelection()?.toString())).toBe(SELECTED);
   await dashboard.locator(".brand").click({ button: "right" });
   await expect(menu).toHaveCount(0);

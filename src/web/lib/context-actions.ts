@@ -122,11 +122,41 @@ function quoteClipboardText(text: string): string {
   return `${text.split(/\r?\n/).map((line) => `> ${line}`.trimEnd()).join("\n")}\n\n`;
 }
 
+interface FieldMutationSnapshot {
+  value: string;
+  start: number;
+  end: number;
+}
+
+function fieldMutationIsCurrent(
+  field: HTMLInputElement | HTMLTextAreaElement,
+  snapshot: FieldMutationSnapshot,
+): boolean {
+  return field.isConnected &&
+    !field.readOnly &&
+    !field.disabled &&
+    field.value === snapshot.value &&
+    field.selectionStart === snapshot.start &&
+    field.selectionEnd === snapshot.end;
+}
+
+function reportStaleFieldMutation(
+  environment: ContextActionEnvironment,
+  operation: "cut" | "paste",
+): void {
+  environment.status(
+    `Field changed before ${operation}`,
+    operation === "cut" ? "Nothing was removed." : "Nothing was pasted.",
+    true,
+  );
+}
+
 function fieldActions(target: Element): ContextAction[] {
   const field = target as HTMLInputElement | HTMLTextAreaElement;
   const start = field.selectionStart ?? 0;
   const end = field.selectionEnd ?? start;
-  const picked = end > start ? field.value.slice(start, end) : "";
+  const snapshot = { value: field.value, start, end } satisfies FieldMutationSnapshot;
+  const picked = end > start ? snapshot.value.slice(start, end) : "";
   const mutable = !field.readOnly && !field.disabled;
   const actions: ContextAction[] = [];
 
@@ -141,6 +171,10 @@ function fieldActions(target: Element): ContextAction[] {
         payload: picked,
         run: async (environment) => {
           if (await environment.copy(picked, "Cut")) {
+            if (!fieldMutationIsCurrent(field, snapshot)) {
+              reportStaleFieldMutation(environment, "cut");
+              return;
+            }
             replaceFieldRange(field, start, end, "", "deleteByCut");
           }
         },
@@ -162,6 +196,10 @@ function fieldActions(target: Element): ContextAction[] {
       run: async (environment) => {
         try {
           const text = await environment.readClipboard();
+          if (!fieldMutationIsCurrent(field, snapshot)) {
+            reportStaleFieldMutation(environment, "paste");
+            return;
+          }
           if (text === "") {
             field.focus({ preventScroll: true });
             environment.status("Clipboard is empty");
@@ -174,7 +212,7 @@ function fieldActions(target: Element): ContextAction[] {
             asQuote ? quoteClipboardText(text) : text,
             "insertFromPaste",
           );
-          environment.status(asQuote ? "Pasted as quote" : "Pasted", text);
+          environment.status(asQuote ? "Pasted as quote" : "Pasted");
         } catch {
           field.focus({ preventScroll: true });
           environment.status(

@@ -206,6 +206,70 @@ test("context actions work by pointer and keyboard without leaking grid shortcut
   await expect(composer).toHaveValue("pasted this draft");
   await expect(dashboard.getByRole("status").filter({ hasText: "Pasted" })).toBeVisible();
 
+  // A clipboard read that settles after the field changes cannot apply stale offsets.
+  await composer.fill("captured draft");
+  await composer.evaluate((field: HTMLTextAreaElement) => field.setSelectionRange(0, 8));
+  await dashboard.evaluate(() => {
+    const clipboard = navigator.clipboard;
+    const original = clipboard.readText.bind(clipboard);
+    const gate: {
+      original: () => Promise<string>;
+      resolve: ((text: string) => void) | null;
+    } = { original, resolve: null };
+    (window as unknown as { contextClipboardGate: typeof gate }).contextClipboardGate = gate;
+    Object.defineProperty(clipboard, "readText", {
+      configurable: true,
+      value: () => new Promise<string>((resolve) => { gate.resolve = resolve; }),
+    });
+  });
+  await dashboard.keyboard.press("Shift+F10");
+  menu = dashboard.getByRole("menu", { name: "Actions" });
+  await menu.getByRole("menuitem").filter({ hasText: /^Paste⌘V$/ }).click();
+  await composer.fill("newer draft");
+  await dashboard.evaluate(() => {
+    const gate = (window as unknown as {
+      contextClipboardGate: { resolve: ((text: string) => void) | null };
+    }).contextClipboardGate;
+    gate.resolve?.("stale clipboard");
+  });
+  await expect(composer).toHaveValue("newer draft");
+  await expect(
+    dashboard.getByRole("status").filter({ hasText: "Field changed before paste" }),
+  ).toBeVisible();
+  await dashboard.evaluate(() => {
+    const host = window as unknown as {
+      contextClipboardGate: { original: () => Promise<string> };
+    };
+    Object.defineProperty(navigator.clipboard, "readText", {
+      configurable: true,
+      value: host.contextClipboardGate.original,
+    });
+    Reflect.deleteProperty(host, "contextClipboardGate");
+  });
+
+  // Paste confirmation never repeats clipboard contents, including values pasted as passwords.
+  const secret = "context-menu-secret-sentinel";
+  const password = dashboard.getByLabel("Password context menu specimen");
+  await dashboard.evaluate(async (value) => {
+    const field = document.createElement("input");
+    field.type = "password";
+    field.setAttribute("aria-label", "Password context menu specimen");
+    field.style.position = "fixed";
+    field.style.left = "12px";
+    field.style.bottom = "12px";
+    document.body.append(field);
+    field.focus();
+    await navigator.clipboard.writeText(value);
+  }, secret);
+  await dashboard.keyboard.press("Shift+F10");
+  menu = dashboard.getByRole("menu", { name: "Actions" });
+  await menu.getByRole("menuitem").filter({ hasText: /^Paste⌘V$/ }).click();
+  await expect(password).toHaveValue(secret);
+  const pasteStatus = dashboard.getByRole("status").filter({ hasText: "Pasted" });
+  await expect(pasteStatus).toBeVisible();
+  await expect(pasteStatus).not.toContainText(secret);
+  await password.evaluate((field) => field.remove());
+
   // A readonly field can still copy its selection, but never offers an action that mutates it.
   const locked = dashboard.getByLabel("Readonly context menu specimen");
   await dashboard.evaluate(() => {

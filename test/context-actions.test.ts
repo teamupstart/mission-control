@@ -5,6 +5,7 @@ import {
   resolveContextActions,
   urlAtPoint,
   type ContextAction,
+  type ContextActionEnvironment,
   type ContextInfo,
   type ContextTarget,
 } from "../src/web/lib/context-actions.ts";
@@ -34,6 +35,17 @@ function fakeElement(options: FakeElementOptions = {}): Element {
     selectionEnd: options.field?.end ?? null,
     readOnly: options.field?.readOnly ?? false,
     disabled: options.field?.disabled ?? false,
+    isConnected: true,
+    ownerDocument: { defaultView: null },
+    focus(): void {},
+    setRangeText(replacement: string, start: number, end: number): void {
+      self.value = `${self.value.slice(0, start)}${replacement}${self.value.slice(end)}`;
+      self.selectionStart = start + replacement.length;
+      self.selectionEnd = self.selectionStart;
+    },
+    dispatchEvent(): boolean {
+      return true;
+    },
     closest(selector: string): Element | null {
       if (options.closest && selector in options.closest) return options.closest[selector] ?? null;
       if (selector === "a[href]" && options.href) return self as unknown as Element;
@@ -113,6 +125,76 @@ test("readonly and disabled fields expose copying but no mutating actions", () =
   assert.deepEqual(labels(locked("disabled", 0, 6)), ["Copy"]);
   assert.deepEqual(labels(locked("readOnly", 2, 2)), []);
   assert.deepEqual(labels(locked("disabled", 2, 2)), []);
+});
+
+function actionEnvironment(
+  overrides: Partial<ContextActionEnvironment> = {},
+): ContextActionEnvironment {
+  return {
+    copy: async () => true,
+    readClipboard: async () => "clipboard",
+    openExternal: async () => {},
+    status: () => {},
+    ...overrides,
+  };
+}
+
+test("async field mutations stop when the captured value or selection changes", async () => {
+  const field = fakeElement({
+    tagName: "TEXTAREA",
+    field: { value: "captured draft", start: 0, end: 8 },
+  }) as HTMLTextAreaElement;
+  const actions = resolveContextActions(field, EMPTY);
+  const cut = actions.find((item) => item.id === "field-cut");
+  const paste = actions.find((item) => item.id === "field-paste");
+  assert.ok(cut);
+  assert.ok(paste);
+
+  let finishCopy!: (copied: boolean) => void;
+  const copy = new Promise<boolean>((resolve) => { finishCopy = resolve; });
+  const statuses: string[] = [];
+  const cutRun = cut.run(actionEnvironment({
+    copy: async () => copy,
+    status: (message) => { statuses.push(message); },
+  }));
+  field.value = "newer draft";
+  finishCopy(true);
+  await cutRun;
+  assert.equal(field.value, "newer draft");
+  assert.deepEqual(statuses, ["Field changed before cut"]);
+
+  field.value = "captured draft";
+  field.selectionStart = 0;
+  field.selectionEnd = 8;
+  let finishRead!: (text: string) => void;
+  const read = new Promise<string>((resolve) => { finishRead = resolve; });
+  const pasteStatuses: string[] = [];
+  const pasteRun = paste.run(actionEnvironment({
+    readClipboard: async () => read,
+    status: (message) => { pasteStatuses.push(message); },
+  }));
+  field.selectionStart = field.selectionEnd = field.value.length;
+  finishRead("stale clipboard");
+  await pasteRun;
+  assert.equal(field.value, "captured draft");
+  assert.deepEqual(pasteStatuses, ["Field changed before paste"]);
+});
+
+test("paste confirmation never repeats the clipboard payload", async () => {
+  const secret = "not-for-a-status-toast";
+  const field = fakeElement({
+    tagName: "INPUT",
+    field: { value: "", start: 0, end: 0 },
+  }) as HTMLInputElement;
+  const paste = resolveContextActions(field, EMPTY).find((item) => item.id === "field-paste");
+  assert.ok(paste);
+  const statuses: Array<{ message: string; detail: string | undefined }> = [];
+  await paste.run(actionEnvironment({
+    readClipboard: async () => secret,
+    status: (message, detail) => { statuses.push({ message, detail }); },
+  }));
+  assert.equal(field.value, secret);
+  assert.deepEqual(statuses, [{ message: "Pasted", detail: undefined }]);
 });
 
 function action(id: string, label: string, payload: string, kind = "copy"): ContextAction {

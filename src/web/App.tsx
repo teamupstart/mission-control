@@ -7,7 +7,6 @@ import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
-import { ContextMenuHost, type ContextMenuHandle } from "./components/ContextMenu.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
@@ -67,7 +66,7 @@ import {
   useKeybindings,
   chordFromEvent,
   chordHasCommandModifier,
-  chordIsNonTyping,
+  chordUsesFunctionKey,
   chordYieldsToSelection,
   formatChord,
 } from "./lib/keybindings.ts";
@@ -97,9 +96,11 @@ import {
   type WorkflowBindingTarget,
 } from "./workflows/WorkflowBindingDialog.tsx";
 import { Palette } from "./components/Palette.tsx";
+import { ContextMenuHost, type ContextMenuHandle } from "./components/ContextMenu.tsx";
 import type { PaletteStores, PaletteTarget } from "./lib/palette-index.ts";
 import { buildSettingsBindings } from "./lib/settings-search.ts";
 import { useRichText } from "./lib/rich-text.ts";
+import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -360,6 +361,7 @@ export function App(): React.JSX.Element {
   // of step with what is actually on screen - which is what used to happen when a new
   // overlay was added and one of the lists here was missed.
   const overlays = useOverlayHost();
+  const contextMenuRef = useRef<ContextMenuHandle>(null);
 
   // Read by the global key handler below instead of closing over `overlays` directly.
   // That handler is installed by a passive effect, so a closure over `overlays` keeps the
@@ -390,13 +392,6 @@ export function App(): React.JSX.Element {
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
-  // The one right-click menu, reached from the keyboard. Registered rather than reffed
-  // through, the way an ActionBar registers itself - there is exactly one host, and it is
-  // mounted at the bottom of this tree.
-  const contextMenu = useRef<ContextMenuHandle | null>(null);
-  const registerContextMenu = useCallback((handle: ContextMenuHandle | null) => {
-    contextMenu.current = handle;
-  }, []);
   // Board workflow disclosures stay local to their tiles, but the global, rebindable
   // expand action needs to drive the selected one through the exact same transition as
   // its Show full workflow / Collapse workflow button.
@@ -618,10 +613,14 @@ export function App(): React.JSX.Element {
   // The formatting store, read here so the palette can flip that toggle from any page.
   // `AppearancePanel` reads the same module-level store, so there is no second copy.
   const [richText, setRichText] = useRichText();
+  // The guided-dispatch preference, read here for the same reason: the palette may flip it
+  // from any page, and `DispatchSettingsPanel` and the dispatch modal's header switch read
+  // the same module-level store, so this is a third reader of one value rather than a copy.
+  const [guidedDispatch, setGuidedDispatch] = useGuidedDispatch();
   /**
    * Runtime get/set for the settings toggles the palette may flip in place.
    *
-   * Two of the four are wired, and the other two are `null` ON PURPOSE. `buildSettingsBindings`
+   * Three of the five are wired, and the other two are `null` ON PURPOSE. `buildSettingsBindings`
    * already states the rule: a source that has not loaded gets NO binding, and the control
    * degrades to a jump rather than drawing a switch for a value nobody has read. Auto mode and
    * the Skills master switch are backed by daemon configs that the Settings page alone polls
@@ -629,20 +628,22 @@ export function App(): React.JSX.Element {
    * you leave it) - so from a palette that opens on ANY page there is no loaded value for
    * them, and they jump to their panel, consistently, from everywhere.
    *
-   * The formatting toggle is a browser-local store with shipped defaults and cost telemetry is
-   * already App-owned, so both are honestly bindable wherever the palette opens.
+   * The formatting and guided-dispatch toggles are browser-local stores with shipped defaults
+   * and cost telemetry is already App-owned, so all three are honestly bindable wherever the
+   * palette opens.
    */
   const paletteBindings = useMemo(
     () =>
       buildSettingsBindings({
         formatMessages: { value: richText, set: setRichText },
+        guidedDispatch: { value: guidedDispatch, set: setGuidedDispatch },
         autoMode: null,
         skillsEnabled: null,
         costTrack: cost.status
           ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
           : null,
       }),
-    [richText, setRichText, cost.status, cost.update],
+    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update],
   );
   /**
    * Session names, for the run rows that are bound to one.
@@ -1490,6 +1491,25 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // The customizable Shift+F10 action and the keyboard's dedicated Menu key open the
+      // same global host, from every page and from inside text fields. A rebound editing,
+      // navigation or printable key still respects the typing guard; function keys have no
+      // native text-field behavior and may keep the default's access from the composer.
+      if (
+        (e.key === "ContextMenu" || chord === bindings.contextMenu)
+        && (
+          !typing
+          || e.key === "ContextMenu"
+          || chordUsesFunctionKey(bindings.contextMenu)
+        )
+      ) {
+        const focusTarget = target ?? (document.activeElement instanceof Element
+          ? document.activeElement
+          : null);
+        if (contextMenuRef.current?.openFromKeyboard(focusTarget)) e.preventDefault();
+        return;
+      }
+
       // Fleet, Library and Runs are direct destinations rather than toggles. Their chords
       // fire off every page and sit above the fleet-only guard for that reason. The shared
       // pure helper keeps their typing/rename/overlay stand-downs testable without a DOM.
@@ -1503,28 +1523,6 @@ export function App(): React.JSX.Element {
       if (shortcutTarget) {
         e.preventDefault();
         navigate(shortcutTarget);
-        return;
-      }
-
-      // The right-click menu, from the keyboard (Q5) - ⇧F10 by default, plus the dedicated
-      // Menu key, which is structural like Escape and the arrows rather than a second registry
-      // entry for one behaviour.
-      //
-      // Above the fleet-only return because a right-click means the same thing on every page,
-      // and above the overlay stand-down below because the inside of a dispatch dialog's
-      // textarea is precisely where Paste is wanted. It is also the first default binding to
-      // pass the `typing` gate on something other than a ⌘/⌃ modifier: ⇧F10 types no
-      // character, so a focused field has no claim on it.
-      //
-      // The menu answers whether it had anything to offer, and the key is only eaten when it
-      // did - so on a surface with no actions the browser's own menu still opens.
-      if (
-        (chord === bindings.contextMenu || chord === "ContextMenu")
-        && (!typing || chordIsNonTyping(chord))
-        && target
-        && contextMenu.current?.openAtElement(target)
-      ) {
-        e.preventDefault();
         return;
       }
 
@@ -2136,6 +2134,7 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
         <header className="topbar" ref={topbarRef}>
           <div className="brand">
@@ -2849,13 +2848,6 @@ export function App(): React.JSX.Element {
             onClose={cancelPending}
           />
         )}
-
-        {/* The right-click menu, mounted once for the whole application. Components get no
-            right-click code of their own: one delegated listener resolves the hit against the
-            registry in `lib/context-actions.ts`, and adding a target is an entry there. It
-            renders its menu and its confirmation into body-level portals, so this is a
-            mounting point rather than a place in the layout. */}
-        <ContextMenuHost register={registerContextMenu} />
       </div>
     </OverlayHost>
   );

@@ -37,7 +37,7 @@ test("a session's own choice beats the default, in both directions", () => {
 
 test("the shipped default is what an unconfigured dashboard resolves to", () => {
   assert.equal(resolveConversationView(null), UI_CONFIG_DEFAULTS.conversationView);
-  assert.equal(UI_CONFIG_DEFAULTS.conversationView, "chat");
+  assert.equal(UI_CONFIG_DEFAULTS.conversationView, "terminal");
 });
 
 test("an override is per session, not per dashboard", () => {

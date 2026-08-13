@@ -1,493 +1,349 @@
-/**
- * What is at stake: the packaged desktop app has no context menu at all.
- *
- * Electron installs none - `src/main/menu.ts` is an application menu and `src/main/tray.ts` a
- * tray menu, and neither is a `webContents` menu - so until this feature the shipped build had
- * no right-click Copy and no right-click Paste anywhere. A browser tab has Chromium's own,
- * which is why the menu is one DOM implementation used by both builds.
- *
- * This is the only layer that can prove any of it. The registry test asserts which rows a
- * resolved hit produces; the markup test asserts what a row is called. Neither can show that a
- * right-click reached the resolver, that the row it drew wrote the clipboard, or that the
- * selection under the cursor survived the gesture that read it - and every one of those is a
- * link in the chain the feature is.
- *
- * Two negatives are asserted here, and neither is allowed to pass vacuously (README trap 5).
- * Both are bracketed by the same gesture at the same point succeeding, and neither rests on
- * the selection, which is NOT an observable around a right-click: Chromium edits it on both
- * sides of the app's handler, extending it on Shift+mousedown and selecting the word under the
- * cursor on a plain right-click over unselected text. Asserting on it failed twice before that
- * was understood (README trap 8). So `Shift`+right-click is checked by reading whether the app
- * called `preventDefault`, and the cleared-selection case is checked on the ROWS of a menu that
- * opens either way - a link whose `Copy` exists only while a selection under the cursor gives
- * it something of its own to write.
- */
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
-import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
 
-const EVIDENCE = artifactsDir("context-menu");
-
-/**
- * A menu photographed where it opened.
- *
- * No `mouse.move(0, 0)` first, unlike the other evidence helpers in this suite: this menu is
- * anchored to the cursor, so the pointer's resting place is part of what the picture is of.
- * The first row's tooltip is showing because the row has focus, which is also true of the
- * real thing the moment it opens.
- */
-async function shoot(page: Page, name: string): Promise<void> {
-  if (!process.env.MC_E2E_EVIDENCE) return;
-  mkdirSync(EVIDENCE, { recursive: true });
-  await page.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-}
-
-const PROSE = "the resolver reads the caret and not the event target";
-const LINK_TURN = "the failing run is https://example.test/run/9 today";
-const RUN_URL = "https://example.test/run/9";
+const TRAILING_URL = "https://example.com/docs_(draft)";
+const TURN = `Context menu selection target and [CI page](https://example.com/menu-target). Raw \`${TRAILING_URL},\` follows.`;
+const SELECTED = "selection target";
+const PASTED = "pasted from the context menu";
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
-
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
-  // The repo combobox portals its listbox over the fields below and stops this Escape itself,
-  // so it closes the list rather than the modal.
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill("exercise the context menu");
-  await dialog
-    .locator("select")
-    .filter({ hasText: "finish without a Workflow" })
-    .selectOption("__none");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 }
 
-/** A dispatched session with its conversation open, and the composer ready. */
-async function conversation(page: Page, daemon: DaemonHandle): Promise<Locator> {
-  await dispatch(page, daemon);
-  const card = page.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
-  await expect(card.getByPlaceholder(/^Reply to this session/)).toBeEnabled();
-  return card;
-}
-
-/**
- * Send a turn and wait for the log to go quiet again.
- *
- * The echoed reply matters as much as the turn itself: it arrives asynchronously and pushes
- * the log, which auto-scrolls, which moves every turn above it. A point computed before that
- * lands somewhere else by the time the mouse gets there - and a right-click a few pixels off
- * its target is exactly the gesture this file is about.
- */
-async function say(card: Locator, text: string): Promise<Locator> {
-  const composer = card.getByPlaceholder(/^Reply to this session/);
-  await composer.fill(text);
-  await composer.press("Enter");
-  const turn = card.locator(".turn-user:not(.pending-turn)").filter({ hasText: text });
-  await expect(turn).toBeVisible();
-  await expect(card.locator(".turn-text").filter({ hasText: `Mock reply to: ${text}` })).toBeVisible();
-  return turn;
-}
-
-/**
- * Right-click ON THE GLYPHS of an element, at a point computed the instant before the click.
- *
- * `locator.click()` would be simpler, but it aims at the centre of the BOX, and a turn is a
- * block: its box runs the full width of the bubble while its text may be a third of that, so
- * the centre is usually beside the words rather than on them. Every assertion in this file is
- * about what is under the cursor, so the cursor has to be on it.
- *
- * Everything else here is because a raw `page.mouse.click(x, y)` gets NONE of Playwright's
- * actionability. Computing a point once and reusing it later made two of these tests flaky:
- * `.transcript-log` auto-scrolls to the newest turn, and the card reflows as a session settles
- * from working to idle, so a coordinate is only good for the moment it was read. Scroll,
- * settle, measure and click are one step for that reason, and the measurement asserts it
- * actually landed on the intended element rather than letting a stale point fail later as a
- * menu that mysteriously did not open.
- */
-async function rightClickText(
-  page: Page,
+/** Find one text run, optionally make it the live Selection, and return its centre point. */
+async function pointForText(
   locator: Locator,
-  modifiers: string[] = [],
-): Promise<void> {
-  await locator.scrollIntoViewIfNeeded();
-  await settled(locator);
-  const point = await locator.evaluate((node) => {
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    const rect = range.getClientRects()[0];
-    if (!rect) throw new Error("the element drew no text to point at");
-    const x = rect.left + Math.min(rect.width / 2, 40);
-    const y = rect.top + rect.height / 2;
-    const hit = document.elementFromPoint(x, y);
-    if (!hit || !(node.contains(hit) || hit.contains(node))) {
-      throw new Error(
-        `the point on this element is covered by <${hit?.tagName.toLowerCase() ?? "nothing"} `
-          + `class="${hit?.className ?? ""}">`,
-      );
+  needle: string,
+  select: boolean,
+  characterOffset?: number,
+): Promise<{ x: number; y: number }> {
+  return locator.evaluate((root, input) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+      const text = node.textContent ?? "";
+      const at = text.indexOf(input.needle);
+      if (at >= 0) {
+        const selectionRange = document.createRange();
+        selectionRange.setStart(node, at);
+        selectionRange.setEnd(node, at + input.needle.length);
+        if (input.select) {
+          const selection = window.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(selectionRange);
+        }
+        const pointRange = input.characterOffset === undefined
+          ? selectionRange
+          : document.createRange();
+        if (input.characterOffset !== undefined) {
+          pointRange.setStart(node, at + input.characterOffset);
+          pointRange.setEnd(node, at + input.characterOffset + 1);
+        }
+        const rect = pointRange.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      }
+      node = walker.nextNode();
     }
-    return { x, y };
-  });
-  for (const modifier of modifiers) await page.keyboard.down(modifier);
-  await page.mouse.click(point.x, point.y, { button: "right" });
-  for (const modifier of modifiers) await page.keyboard.up(modifier);
+    throw new Error(`Could not find text: ${input.needle}`);
+  }, { needle, select, characterOffset });
 }
 
-/**
- * Whether the app claimed each right-click, newest last.
- *
- * Registered on `window` in the bubble phase and therefore AFTER the app's own listener, so it
- * observes the decision instead of pre-empting it. `preventDefault()` is exactly what opening
- * the custom menu does and what Shift+right-click must not do, and Chromium's own menu is
- * native and invisible to Playwright - so this is the only direct evidence of the difference.
- */
-async function watchRightClicks(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const claimed: boolean[] = [];
-    Object.assign(window, { __claimed: claimed });
-    window.addEventListener("contextmenu", (event) => claimed.push(event.defaultPrevented));
-  });
-}
-
-function claimedRightClicks(page: Page): Promise<boolean[]> {
-  return page.evaluate(() => (window as unknown as { __claimed: boolean[] }).__claimed);
-}
-
-/** Select an element's contents the way a drag would. */
-async function selectContents(locator: Locator): Promise<void> {
-  await locator.evaluate((node) => {
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-  });
-}
-
-function liveSelection(page: Page): Promise<string> {
-  return page.evaluate(() => window.getSelection()?.toString().trim() ?? "");
-}
-
-function clipboard(page: Page): Promise<string> {
-  return page.evaluate(() => navigator.clipboard.readText());
-}
-
-/**
- * Every row's name is exactly its label.
- *
- * README trap 1 warns off `exact: true` on a control's name because `<kbd>` hints are folded
- * into it. A menu row carries a payload cue - "selection", "link text" - which would do the
- * same thing, so it is `aria-hidden` and the tooltip says it in full instead. That is a
- * deliberate accessibility decision (`Copy` and `Copy URL` have to stay two distinguishable
- * names), it is pinned by `test/context-menu-render.test.ts`, and it is what makes an exact
- * match the right locator here rather than a risky one.
- */
-function menuOf(page: Page): Locator {
-  return page.getByRole("menu", { name: "Context actions" });
-}
-
-function row(page: Page, name: string): Locator {
-  return menuOf(page).getByRole("menuitem", { name, exact: true });
-}
-
-test("right-clicking a selection copies exactly what was selected", async ({
+test("context actions work by pointer and keyboard without leaking keys to the grid", async ({
   dashboard,
   daemon,
 }) => {
   await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  const card = await conversation(dashboard, daemon);
-  const turn = await say(card, PROSE);
-  // A live card reflows for about a second - the titler's rename, the model line, the pulse -
-  // and Playwright refuses to click an unstable box.
-  await settled(card);
-
-  const body = turn.locator(".turn-text");
-  await selectContents(body);
-  const selected = await liveSelection(dashboard);
-  expect(selected).toContain(PROSE);
-
-  await rightClickText(dashboard, body);
-  await expect(menuOf(dashboard)).toBeVisible();
-  await shoot(dashboard, "selection");
-
-  // Driven from the keyboard even though a pointer opened it. A pointer-opened menu parks
-  // focus on the menu rather than its first row - a row's tooltip fires on focus and would be
-  // painted over the very text being pointed at - so this also pins that the first ArrowDown
-  // from there lands on the first row rather than somewhere a modulo put it.
-  await dashboard.keyboard.press("ArrowDown");
-  await expect(row(dashboard, "Copy")).toBeFocused();
-  await dashboard.keyboard.press("Enter");
-  await expect(menuOf(dashboard)).toBeHidden();
-
-  expect(await clipboard(dashboard)).toBe(selected);
-  // The confirmation is the host's, not the menu's: the menu closes on activation, so a line
-  // inside it would die with the click that earned it.
-  await expect(dashboard.getByRole("status").filter({ hasText: "Copied" })).toBeVisible();
-  await shoot(dashboard, "copied");
-});
-
-test("right-clicking outside a selection clears it, so Copy is never offered for it", async ({
-  dashboard,
-  daemon,
-}) => {
-  const card = await conversation(dashboard, daemon);
-  const elsewhere = await say(card, PROSE);
-  const here = await say(card, LINK_TURN);
-  await settled(card);
-
-  /*
-   * Both halves right-click THE SAME LINK and both open a menu; only the rows differ. That is
-   * deliberate, and it is what makes the negative mean something.
-   *
-   * The obvious version of this test - right-click plain prose with the selection elsewhere,
-   * assert no menu - proves less than it appears to and is unreadable besides: Chromium
-   * answers a right-click on unselected text by selecting the word under the cursor, so the
-   * selection is non-empty again by the time anything can be read, and the menu's absence is
-   * an absence, which a web-first assertion will happily agree with before the app has done
-   * anything at all.
-   *
-   * This link is autolinked from bare text, so its link text IS its href and `Copy` collapses
-   * into `Copy URL` - UNLESS a live selection under the cursor gives `Copy` something else to
-   * write. So the row's presence is exactly the question "did the selection survive", asked
-   * where the answer is a visible row rather than a missing menu.
-   */
-  const link = card.locator(`a[href="${RUN_URL}"]`).first();
-
-  await selectContents(here.locator(".turn-text"));
-  expect(await liveSelection(dashboard)).toContain(RUN_URL);
-  await link.click({ button: "right" });
-  await expect(menuOf(dashboard).getByRole("menuitem")).toHaveCount(3);
-  await expect(row(dashboard, "Copy")).toBeVisible();
-  await dashboard.keyboard.press("Escape");
-  await expect(menuOf(dashboard)).toBeHidden();
-
-  // Now the selection is in the turn above and the cursor is not in it. The right-click
-  // collapses it before resolving anything, which is what every browser does and what stops
-  // `Copy` writing something the reader is no longer pointing at.
-  await selectContents(elsewhere.locator(".turn-text"));
-  expect(await liveSelection(dashboard)).toContain(PROSE);
-  await link.click({ button: "right" });
-
-  await expect(menuOf(dashboard).getByRole("menuitem")).toHaveCount(2);
-  await expect(row(dashboard, "Copy")).toHaveCount(0);
-  await expect(row(dashboard, "Copy URL")).toBeVisible();
-  expect(await liveSelection(dashboard)).not.toContain(PROSE);
-});
-
-test("Shift+right-click falls through to the browser's own menu", async ({
-  dashboard,
-  daemon,
-}) => {
-  const card = await conversation(dashboard, daemon);
-  const turn = await say(card, PROSE);
-  await settled(card);
-
-  const body = turn.locator(".turn-text");
-  await watchRightClicks(dashboard);
-
-  await selectContents(body);
-  await rightClickText(dashboard, body, ["Shift"]);
-
-  // The handler returns before it touches anything, so the event goes back to the browser with
-  // its default intact - which is a read, once, of the decision itself rather than a wait on
-  // an absence. Deliberately NOT asserted by comparing the selection: Shift+mousedown is the
-  // browser's own extend-selection gesture, so the selection legitimately moves here.
-  expect(await claimedRightClicks(dashboard)).toEqual([false]);
-  await expect(menuOf(dashboard)).toHaveCount(0);
-
-  // Same point, no modifier: the custom menu opens and takes the event. Decision D1 is that
-  // the browser's menu is one modifier away on a developer tool, not that right-click is
-  // unhandled. Re-selected first, because the Shift+click above moved the selection.
-  await selectContents(body);
-  await rightClickText(dashboard, body);
-  await expect(row(dashboard, "Copy")).toBeVisible();
-  expect(await claimedRightClicks(dashboard)).toEqual([false, true]);
-});
-
-test("a link offers its URL once, and opens through the desktop bridge", async ({
-  dashboard,
-  daemon,
-}) => {
-  await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  const card = await conversation(dashboard, daemon);
-  await say(card, LINK_TURN);
-  await settled(card);
-
-  const link = card.locator(`a[href="${RUN_URL}"]`).first();
-  await expect(link).toBeVisible();
-  await link.click({ button: "right" });
-
-  // The dedupe rule, in a real browser. This link was autolinked from bare text, so its link
-  // text IS its href - `Copy` and `Copy URL` would write the same string, and the label that
-  // survives has to be the one that says what it writes.
-  await expect(menuOf(dashboard).getByRole("menuitem")).toHaveCount(2);
-  await expect(row(dashboard, "Copy URL")).toBeVisible();
-  await expect(row(dashboard, "Open link")).toBeVisible();
-  await shoot(dashboard, "link");
-
-  await row(dashboard, "Copy URL").click();
-  expect(await clipboard(dashboard)).toBe(RUN_URL);
-
-  // `Open link` is the first caller `missionDesktop.openExternal` has ever had. The bridge is
-  // absent in a browser tab, so it is stood up here to assert the desktop path specifically -
-  // the branch that stops the app window starting a navigation away from the dashboard and
-  // being caught on the way out by `will-navigate`.
-  await dashboard.evaluate(() => {
-    const opened: string[] = [];
-    Object.assign(window, {
-      __opened: opened,
-      missionDesktop: {
-        isDesktop: true,
-        openExternal: (url: string) => {
-          opened.push(url);
-          return Promise.resolve();
-        },
-      },
-    });
-  });
-  await link.click({ button: "right" });
-  await row(dashboard, "Open link").click();
-
-  expect(await dashboard.evaluate(() => (window as unknown as { __opened: string[] }).__opened))
-    .toEqual([RUN_URL]);
-  await expect(dashboard.getByRole("status").filter({ hasText: "Opened" })).toBeVisible();
-  expect(dashboard.url()).toContain("#/fleet");
-
-  // And a shell that REFUSES says so. `shell.openExternal` rejects on a scheme with no
-  // registered handler, and that travels back over the IPC invoke - so the notice has to be
-  // the failure rather than the same "Opened" the success path shows.
-  await dashboard.evaluate(() => {
-    Object.assign(window, {
-      missionDesktop: {
-        isDesktop: true,
-        openExternal: () => Promise.reject(new Error("No application knows how to open this")),
-      },
-    });
-  });
-  await link.click({ button: "right" });
-  await row(dashboard, "Open link").click();
-
-  await expect(
-    dashboard.getByRole("status").filter({ hasText: "No application knows how to open this" }),
-  ).toBeVisible();
-  await expect(dashboard.getByRole("status").filter({ hasText: "Opened" })).toHaveCount(0);
-});
-
-test("no fleet shortcut reaches the card behind an open menu", async ({ dashboard, daemon }) => {
-  /*
-   * The gap this menu closes for itself rather than inherits.
-   *
-   * `test/overlay-registry.test.ts` records six anchored popovers that are deliberately outside
-   * the Overlay registry, and the consequence it also records is unfixed: while one is open,
-   * focus sits on a button so App's `typing` guard is false and `anyOpen` is false, and the
-   * grid shortcuts - INCLUDING kill and reset - still act on the card behind it. A context menu
-   * is opened ON a target with the operator's hands on the keyboard, so it is the surface where
-   * a stray `k` matters most.
-   */
   await dispatch(dashboard, daemon);
+
   const card = dashboard.locator("article.card").first();
-  await settled(card);
-
-  // Select the card the way the keyboard does, then prove `k` really does reach it from here.
-  // Without this the assertion below would hold on a build where `k` was bound to nothing.
-  await dashboard.keyboard.press("ArrowDown");
-  await dashboard.keyboard.press("k");
-  const kill = dashboard.getByRole("dialog", { name: "Kill session" });
-  await expect(kill).toBeVisible();
-  await dashboard.keyboard.press("Escape");
-  await expect(kill).toBeHidden();
-
   await card.getByRole("button", { name: "Expand conversation" }).click();
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
-  await composer.click({ button: "right" });
-  await expect(menuOf(dashboard)).toBeVisible();
+  await composer.fill(TURN);
+  await composer.press("Enter");
 
+  const turn = card.locator(".turn-user:not(.pending-turn)").filter({ hasText: "Context menu selection target" });
+  await expect(turn).toBeVisible();
+  await settled(card);
+
+  // A right-click inside the live selection preserves it and Copy writes those exact bytes.
+  const selectedPoint = await pointForText(turn, SELECTED, true);
+  await dashboard.mouse.click(selectedPoint.x, selectedPoint.y, { button: "right" });
+  let menu = dashboard.getByRole("menu", { name: "Actions for this item" });
+  await expect(menu).toBeVisible();
+  await menu.getByRole("menuitem", { name: /^Copy$/ }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(SELECTED);
+  await expect(dashboard.getByRole("status").filter({ hasText: "Copied" })).toBeVisible();
+
+  // Pointing somewhere else collapses the old selection before resolution, so that remote
+  // selection can never be copied by accident.
+  const outsidePoint = await pointForText(turn, "Context menu", false);
+  await dashboard.mouse.click(outsidePoint.x, outsidePoint.y, { button: "right" });
+  await expect(menu).toBeHidden();
+  await expect(dashboard.getByRole("menuitem", { name: /^Copy$/ })).toHaveCount(0);
+
+  const link = turn.getByRole("link", { name: "CI page" });
+  await link.click({ button: "right" });
+  menu = dashboard.getByRole("menu", { name: "Actions for this item" });
+  await expect(menu.getByRole("menuitem", { name: "Copy URL" })).toBeVisible();
+
+  // While the anchored menu owns the keyboard, a bare grid shortcut cannot reach the selected
+  // card behind it. The menu stays up and no Kill dialog appears.
   await dashboard.keyboard.press("k");
+  await expect(menu).toBeVisible();
+  await expect(dashboard.getByRole("dialog", { name: "Kill session" })).toHaveCount(0);
+  await menu.getByRole("menuitem", { name: "Copy URL" }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(
+    "https://example.com/menu-target",
+  );
 
-  // The menu is still up, which is the positive half of this: the keystroke was swallowed by
-  // the surface that owns the keyboard, not merely ignored by something that had stood down.
-  await expect(menuOf(dashboard)).toBeVisible();
-  await expect(kill).toHaveCount(0);
-});
+  // Keyboard invocation has no pointer proving an unrelated live selection belongs to this
+  // focused link. Its first Copy action therefore uses the visible link text.
+  await pointForText(turn, SELECTED, true);
+  await link.focus();
+  await dashboard.keyboard.press("Shift+F10");
+  await dashboard.getByRole("menuitem", { name: /^Copy$/ }).first().click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("CI page");
 
-test("Cut takes the selection out of the composer and onto the clipboard", async ({
-  dashboard,
-  daemon,
-}) => {
-  /*
-   * The one row that both writes the clipboard AND mutates the DOM, so this is the only place
-   * `replaceFieldRange` runs at all: `test/context-actions.test.ts` decides which rows exist
-   * and never touches a real field. If `execCommand("delete")` stops taking the range, or the
-   * native-value-setter fallback is wrong, this is what goes red.
-   */
-  await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  const card = await conversation(dashboard, daemon);
-  await settled(card);
+  // The host drops a selection that does not intersect the keyboard target, so an otherwise
+  // actionless focused control cannot open a menu for text somewhere else in the document.
+  const collapse = card.getByRole("button", { name: "Collapse conversation" });
+  await collapse.focus();
+  await pointForText(turn, SELECTED, true);
+  await dashboard.keyboard.press("Shift+F10");
+  await expect(menu).toBeHidden();
 
-  const composer = card.getByPlaceholder(/^Reply to this session/);
+  // A URL-shaped text run stops before prose punctuation, even though the punctuation is in
+  // the same text node. Both clipboard and open actions therefore receive the usable URL.
+  const rawUrlPoint = await pointForText(turn, TRAILING_URL, false);
+  await dashboard.mouse.click(rawUrlPoint.x, rawUrlPoint.y, { button: "right" });
+  await dashboard.getByRole("menuitem", { name: "Copy URL" }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(TRAILING_URL);
+
+  // The first caret position after the URL belongs to its trailing comma, not to the URL.
+  const commaPoint = await pointForText(turn, `${TRAILING_URL},`, false, TRAILING_URL.length);
+  await dashboard.mouse.click(commaPoint.x, commaPoint.y, { button: "right" });
+  await expect(menu).toBeHidden();
+
+  // The desktop preload bridge wins when it exists, and opening never navigates this page.
+  const dashboardUrl = dashboard.url();
+  await dashboard.evaluate(() => {
+    const probe = window as Window & { __contextMenuOpened?: string };
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        openExternal: async (url: string) => { probe.__contextMenuOpened = url; },
+      },
+    });
+  });
+  await link.click({ button: "right" });
+  await dashboard.getByRole("menuitem", { name: "Open link" }).click();
+  await expect.poll(() => dashboard.evaluate(
+    () => (window as Window & { __contextMenuOpened?: string }).__contextMenuOpened,
+  )).toBe("https://example.com/menu-target");
+  expect(dashboard.url()).toBe(dashboardUrl);
+
+  // A desktop bridge refusal reaches the visible error path instead of becoming an unhandled
+  // rejection or implying that the link opened.
+  await dashboard.evaluate(() => {
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        openExternal: async () => { throw new Error("no registered handler"); },
+      },
+    });
+  });
+  await link.click({ button: "right" });
+  await dashboard.getByRole("menuitem", { name: "Open link" }).click();
+  await expect(
+    dashboard.getByRole("status").filter({ hasText: "Could not open link" }),
+  ).toBeVisible();
+
+  // Firefox's Shift+right-click convention remains the escape hatch to the native menu.
+  await link.click({ button: "right", modifiers: ["Shift"] });
+  await expect(menu).toBeHidden();
+
+  // Shift+F10 bypasses the text-field typing guard, captures the field offsets before focus
+  // moves into the menu, and the selected Paste row drives the controlled React textarea.
+  await dashboard.evaluate((text) => navigator.clipboard.writeText(text), PASTED);
+  await composer.fill("Before ");
+  await composer.focus();
+  await dashboard.keyboard.press("Shift+F10");
+  menu = dashboard.getByRole("menu", { name: "Actions for this item" });
+  await expect(menu.getByRole("menuitem", { name: /^Paste$/ })).toBeVisible();
+  await menu.getByRole("menuitem", { name: /^Paste$/ }).click();
+  await expect(composer).toHaveValue(`Before ${PASTED}`);
+
+  // Cut exercises the other DOM-mutation path with a partial selection, so this cannot pass
+  // through a field clear that happens to produce the same visible result.
   await composer.fill("ship the fix");
-  // The LAST WORD only, so what this pins is a range splice rather than a field clear - the
-  // two are indistinguishable when the selection is everything.
-  await composer.press("End");
-  for (let step = 0; step < 3; step += 1) await composer.press("Shift+ArrowLeft");
-  // Opened from the keyboard on purpose: right-clicking a field can move the caret, and the
-  // captured selection is the thing under test.
-  await composer.press("Shift+F10");
-  await expect(row(dashboard, "Cut")).toBeVisible();
-
-  await row(dashboard, "Cut").click();
-  await expect(menuOf(dashboard)).toBeHidden();
-
-  expect(await clipboard(dashboard)).toBe("fix");
+  await composer.evaluate((field: HTMLTextAreaElement) => {
+    field.focus();
+    field.setSelectionRange(9, 12);
+  });
+  await dashboard.keyboard.press("Shift+F10");
+  await menu.getByRole("menuitem", { name: /^Cut$/ }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("fix");
   await expect(composer).toHaveValue("ship the ");
-  // The caret is left where the text was, so typing continues from there rather than from
-  // wherever focus happened to land.
-  expect(
-    await composer.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
-  ).toEqual([9, 9]);
-});
+  expect(await composer.evaluate((field: HTMLTextAreaElement) => [
+    field.selectionStart,
+    field.selectionEnd,
+  ])).toEqual([9, 9]);
 
-test("Shift+F10 and the Menu key open the menu from inside the composer", async ({
-  dashboard,
-  daemon,
-}) => {
-  await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  const card = await conversation(dashboard, daemon);
-  await settled(card);
+  // A clipboard read that settles after the field changes cannot apply stale offsets.
+  await composer.fill("captured draft");
+  await composer.evaluate((field: HTMLTextAreaElement) => {
+    field.focus();
+    field.setSelectionRange(0, 8);
+  });
+  await dashboard.evaluate(() => {
+    const clipboard = navigator.clipboard;
+    const original = clipboard.readText.bind(clipboard);
+    const gate: {
+      original: () => Promise<string>;
+      resolve: ((text: string) => void) | null;
+    } = { original, resolve: null };
+    (window as unknown as { contextClipboardGate: typeof gate }).contextClipboardGate = gate;
+    Object.defineProperty(clipboard, "readText", {
+      configurable: true,
+      value: () => new Promise<string>((resolve) => { gate.resolve = resolve; }),
+    });
+  });
+  await dashboard.keyboard.press("Shift+F10");
+  await menu.getByRole("menuitem", { name: /^Paste$/ }).click();
+  await composer.fill("newer draft");
+  await dashboard.evaluate(() => {
+    const gate = (window as unknown as {
+      contextClipboardGate: { resolve: ((text: string) => void) | null };
+    }).contextClipboardGate;
+    gate.resolve?.("stale clipboard");
+  });
+  await expect(composer).toHaveValue("newer draft");
+  await expect(
+    dashboard.getByRole("status").filter({ hasText: "Field changed before paste" }),
+  ).toBeVisible();
+  await dashboard.evaluate(() => {
+    const host = window as unknown as {
+      contextClipboardGate: { original: () => Promise<string> };
+    };
+    Object.defineProperty(navigator.clipboard, "readText", {
+      configurable: true,
+      value: host.contextClipboardGate.original,
+    });
+    Reflect.deleteProperty(host, "contextClipboardGate");
+  });
 
-  const composer = card.getByPlaceholder(/^Reply to this session/);
-  await composer.fill("ship the fix");
-  // A real selection gesture, and the one App's typing guard used to make unreachable: ⇧F10
-  // carries no ⌘/⌃, so before `chordIsNonTyping` it was eaten inside every text field - which
-  // is exactly where Paste lives.
-  await composer.press("Shift+Home");
-  await composer.press("Shift+F10");
+  // Paste confirmation never repeats clipboard contents, including a password-field value.
+  const secret = "context-menu-secret-sentinel";
+  const password = dashboard.getByLabel("Password context menu specimen");
+  await dashboard.evaluate(async (value) => {
+    const field = document.createElement("input");
+    field.type = "password";
+    field.setAttribute("aria-label", "Password context menu specimen");
+    field.style.position = "fixed";
+    field.style.left = "12px";
+    field.style.bottom = "12px";
+    document.body.append(field);
+    field.focus();
+    await navigator.clipboard.writeText(value);
+  }, secret);
+  await dashboard.keyboard.press("Shift+F10");
+  await menu.getByRole("menuitem", { name: /^Paste$/ }).click();
+  await expect(password).toHaveValue(secret);
+  const pasteStatus = dashboard.getByRole("status").filter({ hasText: "Pasted" });
+  await expect(pasteStatus).toBeVisible();
+  await expect(pasteStatus).not.toContainText(secret);
+  await password.evaluate((field) => field.remove());
 
-  await expect(menuOf(dashboard)).toBeVisible();
-  await expect(menuOf(dashboard).getByRole("menuitem")).toHaveCount(4);
-  for (const name of ["Cut", "Copy", "Paste", "Paste as quote"]) {
-    await expect(row(dashboard, name)).toBeVisible();
+  // A readonly field can copy its selection, but never offers an action that mutates it.
+  const readonly = dashboard.getByLabel("Readonly context menu specimen");
+  await dashboard.evaluate(() => {
+    const field = document.createElement("input");
+    field.setAttribute("aria-label", "Readonly context menu specimen");
+    field.value = "locked draft";
+    field.readOnly = true;
+    field.style.position = "fixed";
+    field.style.left = "12px";
+    field.style.bottom = "12px";
+    document.body.append(field);
+    field.focus();
+    field.setSelectionRange(0, 6);
+  });
+  await dashboard.keyboard.press("Shift+F10");
+  await expect(menu.getByRole("menuitem", { name: /^Copy$/ })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /^Cut$/ })).toHaveCount(0);
+  await expect(menu.getByRole("menuitem", { name: /^Paste/ })).toHaveCount(0);
+  await menu.getByRole("menuitem", { name: /^Copy$/ }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("locked");
+  await expect(readonly).toHaveValue("locked draft");
+  await readonly.evaluate((field) => field.remove());
+
+  // Copy itself does not manage field focus, so the host restores the invoking textarea and
+  // typing can continue after the menu action completes.
+  await composer.selectText();
+  await dashboard.keyboard.press("Shift+F10");
+  await dashboard.getByRole("menuitem", { name: /^Copy$/ }).click();
+  await expect(composer).toBeFocused();
+  await dashboard.keyboard.type("!");
+  await expect(composer).toHaveValue("!");
+
+  // The fixed Menu key is a structural alias, not a second row in Keyboard settings.
+  await composer.evaluate((field) => {
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true }));
+  });
+  await expect(menu).toBeVisible();
+  await dashboard.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(composer).toBeFocused();
+
+  // Passive viewport dismissal returns keyboard control to the invoking field. Outside clicks
+  // keep their separate non-restoring path so the pointer's new target can receive focus.
+  for (const eventType of ["wheel", "touchmove", "resize"] as const) {
+    await dashboard.keyboard.press("Shift+F10");
+    await expect(menu).toBeVisible();
+    await dashboard.evaluate((type) => window.dispatchEvent(new Event(type)), eventType);
+    await expect(menu).toBeHidden();
+    await expect(composer).toBeFocused();
   }
-  await shoot(dashboard, "composer-shift-f10");
 
-  // A field's selection is its own - `window.getSelection()` is empty inside a textarea - and
-  // it is captured before the menu takes focus, or it is gone by the time a row is clicked.
-  await row(dashboard, "Copy").click();
-  expect(await clipboard(dashboard)).toBe("ship the fix");
+  // A customizable named key with native field behavior remains native while typing. The same
+  // binding can still open the global menu outside text fields.
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ keybindings: { contextMenu: "Backspace" } }),
+  });
+  const body = (await response.json()) as {
+    config?: { keybindings?: { contextMenu?: string } };
+  };
+  expect(body.config?.keybindings?.contextMenu).toBe("Backspace");
+  await dashboard.reload();
 
-  // The desktop build's first right-click Paste, driven from the keyboard end to end.
-  await dashboard.evaluate(() => navigator.clipboard.writeText("pasted from the menu"));
-  await composer.fill("");
-  await composer.press("ContextMenu");
-  await expect(menuOf(dashboard)).toBeVisible();
-  await row(dashboard, "Paste").click();
-  await expect(composer).toHaveValue("pasted from the menu");
+  const reboundCard = dashboard.locator("article.card").first();
+  await expect(reboundCard).toBeVisible();
+  const expand = reboundCard.getByRole("button", { name: "Expand conversation" });
+  if (await expand.isVisible()) await expand.click();
+  const reboundComposer = reboundCard.getByPlaceholder(/^Reply to this session/);
+  await reboundComposer.fill("native edit");
+  await reboundComposer.focus();
+  await dashboard.keyboard.press("Backspace");
+  await expect(reboundComposer).toHaveValue("native edi");
+  const reboundMenu = dashboard.getByRole("menu", { name: "Actions for this item" });
+  await expect(reboundMenu).toBeHidden();
+
+  await reboundCard.getByRole("link", { name: "CI page" }).first().focus();
+  await dashboard.keyboard.press("Backspace");
+  await expect(reboundMenu).toBeVisible();
 });

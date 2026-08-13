@@ -45,7 +45,7 @@ const {
   bindingValidationError,
   chordFromEvent,
   chordHasCommandModifier,
-  chordIsNonTyping,
+  chordUsesFunctionKey,
   findConflicts,
   formatChord,
   isReservedChord,
@@ -151,6 +151,8 @@ test("formatChord leaves an unmodified letter lower-case", () => {
 
 test("formatChord leaves uncased and named keys alone", () => {
   assert.equal(formatChord("shift+Tab"), "⇧⇥");
+  assert.equal(formatChord("shift+F10"), "⇧F10");
+  assert.equal(formatChord("ContextMenu"), "☰");
   assert.equal(formatChord("cmd++"), "⌘+");
   assert.equal(formatChord("+"), "+");
   assert.equal(formatChord("/"), "/");
@@ -184,59 +186,30 @@ test("chordHasCommandModifier flags only cmd/ctrl, so a text-field bypass is saf
   assert.equal(chordHasCommandModifier("+"), false);
 });
 
-test("chordIsNonTyping is the other way past the typing guard, and it is the narrow one", () => {
-  // A sibling of the predicate above rather than a widening of it. What makes a bare `k`
-  // unsafe inside a composer is that it types a `k`; ⇧F10 types nothing, so a focused field
-  // has no claim on it - which matters because the field is exactly where the context menu is
-  // most wanted, since that is where Paste lives.
-  assert.equal(chordIsNonTyping("shift+F10"), true);
-  assert.equal(chordIsNonTyping("F1"), true);
-  assert.equal(chordIsNonTyping("F24"), true);
-  assert.equal(chordIsNonTyping("ContextMenu"), true);
-  assert.equal(chordIsNonTyping("k"), false);
-  assert.equal(chordIsNonTyping("shift+o"), false);
-  assert.equal(chordIsNonTyping("cmd+k"), false);
-  // These type no character either, and every one of them is a key a text field is USING.
-  // "cannot type" is not the same claim as "the field does not want it", and letting a global
-  // shortcut take the key that was moving the operator's caret is the bug this narrowness
-  // exists to avoid.
-  for (const chord of ["Escape", "Tab", "shift+Tab", "Backspace", "Delete", "ArrowLeft"]) {
-    assert.equal(chordIsNonTyping(chord), false, `${chord} moves or edits inside a field`);
-  }
-  // Not a function key, whatever it looks like.
-  assert.equal(chordIsNonTyping("f"), false);
-  assert.equal(chordIsNonTyping("F25"), false);
-});
-
-test("the context menu is one action with two ways in: a rebindable ⇧F10 and the Menu key", () => {
-  // Two ACTIONS entries for one behaviour would put two rows in the settings panel and two
-  // keycaps on the same control, so the dedicated Menu key is structural - reserved, like
-  // Escape and the arrows, because it is the operating system's key for precisely this and
-  // rebinding it to something else takes away the only key a keyboard user can reach the menu
-  // with on the assumption that it does what it says.
-  const action = ACTIONS.find((a) => a.id === "contextMenu");
-  assert.ok(action, "contextMenu missing from the customizable registry");
-  assert.equal(action.defaultBinding, "shift+F10");
-  assert.equal(action.group, "global", "a right-click means the same thing on every page");
-  assert.equal(chordFromEvent(key("F10", { shift: true })), "shift+F10");
-  assert.equal(formatChord("shift+F10"), "⇧F10");
-  assert.equal(isReservedChord("shift+F10"), false, "⇧F10 is rebindable");
-
-  assert.equal(chordFromEvent(key("ContextMenu")), "ContextMenu");
-  assert.equal(isReservedChord("ContextMenu"), true);
-  // Without a KEY_LABEL entry the settings editor draws the literal string "ContextMenu"
-  // inside a <kbd>.
-  assert.equal(formatChord("ContextMenu"), "☰");
-  assert.match(
-    bindingValidationError(defaults(), "kill", "ContextMenu") ?? "",
-    /☰ is reserved/,
-  );
+test("only function-key bindings bypass native behavior in a text field", () => {
+  assert.equal(chordUsesFunctionKey("shift+F10"), true);
+  assert.equal(chordUsesFunctionKey("cmd+F24"), true);
+  assert.equal(chordUsesFunctionKey("ContextMenu"), false);
+  assert.equal(chordUsesFunctionKey("shift+Tab"), false);
+  assert.equal(chordUsesFunctionKey("Backspace"), false);
+  assert.equal(chordUsesFunctionKey("Delete"), false);
+  assert.equal(chordUsesFunctionKey("Home"), false);
+  assert.equal(chordUsesFunctionKey("End"), false);
+  assert.equal(chordUsesFunctionKey("cmd+k"), false);
+  assert.equal(chordUsesFunctionKey("shift+o"), false);
 });
 
 test("bare Tab is reserved while modified Tab chords remain bindable", () => {
   assert.equal(isReservedChord("Tab"), true);
   assert.equal(isReservedChord("shift+Tab"), false);
   assert.equal(isReservedChord("ctrl+Tab"), false);
+});
+
+test("the dedicated ContextMenu key is structural while Shift+F10 remains bindable", () => {
+  assert.equal(isReservedChord("ContextMenu"), true);
+  assert.equal(isReservedChord("shift+F10"), false);
+  assert.equal(chordFromEvent(key("ContextMenu")), "ContextMenu");
+  assert.equal(chordFromEvent(key("F10", { shift: true })), "shift+F10");
 });
 
 test("file actions own Shift+F and Shift+O and every default round-trips from a keypress", () => {
@@ -269,10 +242,6 @@ test("file actions own Shift+F and Shift+O and every default round-trips from a 
     chordFromEvent(key("q")),
     chordFromEvent(key("y")),
     chordFromEvent(key("Tab", { shift: true })),
-    // ⇧F10. A function key has no character to bake shift into, so it takes the named-key
-    // branch exactly as Tab does - which is the whole reason opening the context menu from
-    // the keyboard needed no change to the chord grammar.
-    chordFromEvent(key("F10", { shift: true })),
     chordFromEvent(key("R", { shift: true })),
     chordFromEvent(key("c")),
     // ⌃C. Produced from the same "c" the bare `complete` chord is, which is the point of
@@ -282,8 +251,17 @@ test("file actions own Shift+F and Shift+O and every default round-trips from a 
     chordFromEvent(key("k")),
     chordFromEvent(key("k", { meta: true })),
     chordFromEvent(key("f", { meta: true })),
+    chordFromEvent(key("F10", { shift: true })),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
+});
+
+test("context menu is one global action with Shift+F10 as its customizable chord", () => {
+  const menu = ACTIONS.find((action) => action.id === "contextMenu");
+  assert.ok(menu, "contextMenu missing from the customizable registry");
+  assert.equal(menu.defaultBinding, "shift+F10");
+  assert.equal(menu.group, "global");
+  assert.equal(formatChord(menu.defaultBinding), "⇧F10");
 });
 
 test("Fleet, Library and Runs are separate global actions with direct bindings", () => {

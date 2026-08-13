@@ -495,7 +495,7 @@ fleet when something finally navigates.
 
 ### The Line's drawers
 
-`e2e/.artifacts/line-drawers/` carries sixteen frames and the
+`e2e/.artifacts/line-drawers/` carries seventeen frames and the
 run's own stdout, written by `specs/line-drawers.spec.ts` under the same `MC_E2E_EVIDENCE`
 flag. The frames answer what only a picture can: `review-open.png` is a live run's ladder with
 the session card **below it at full size**, `board-pushed-down.png` and `board-returned.png`
@@ -511,6 +511,11 @@ that alignment in pixels, and the picture is what makes it legible.
 `review-grouped.png`, `review-pair-not-a-pile.png` and `review-group-expanded.png` are the
 fold: two runs stopped for one reason stay two rows, three become one bar, and the caret
 produces all three back.
+
+`decide-cancel.png` is a live ensemble in the Decide drawer with its dossier action still
+leading and **Cancel run…** beside it. The same browser case opens the confirmation, backs out
+once, then confirms and proves the action reaches the daemon, tears down the fake member Tasks,
+and removes the terminal run from the drawer over SSE without a reload.
 
 `shipped-adopted.png` and `shipped-open.png` are the fourth drawer, which used to be a
 navigation. The first is the real path - a dispatched session, the `gh pr create` hook, and
@@ -533,7 +538,7 @@ asserts that geometry in pixels; this is what makes it legible. The second is th
 the autopilot armed, reading `Autopilot on · 0/3 agents · nothing launches until Foreman is
 live` beside the switch that wrote it.
 
-Regenerate all seventeen with:
+Regenerate all eighteen with:
 
 ```sh
 set -o pipefail   # or the pipe below reports tee's success, not Playwright's
@@ -544,9 +549,9 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/line-drawers/transcript.txt
 ```
 
-`--workers=1` keeps the twenty-one tests' output from interleaving, and the `tee` is the only
-thing that produces `transcript.txt` - without it you regenerate sixteen files out of
-seventeen.
+`--workers=1` keeps the twenty-two tests' output from interleaving, and the `tee` is the only
+thing that produces `transcript.txt` - without it you regenerate seventeen files out of
+eighteen.
 
 ### The topbar's one row
 
@@ -1081,7 +1086,7 @@ story is worthless if the daemon under test is not the one it thinks it is:
 
 There are no `data-testid` attributes and none should be added - there are 229 `aria-label`s
 and 155 `role`s, so `getByRole`/`getByLabel`/`getByPlaceholder` already work and stay
-correct through refactors. Eight traps, all of which have cost time already:
+correct through refactors. Seven traps, all of which have cost time already:
 
 1. **Never use `{ exact: true }` on a button name.** Keyboard hints render as `<kbd>` inside
    the label and are part of the accessible name: the dispatch button is `"+Dispatch"`.
@@ -1114,21 +1119,6 @@ correct through refactors. Eight traps, all of which have cost time already:
    on a build with the fix reverted, which is the only way to find that out. `git stash push`
    the fix, rebuild, run the case, see it red, then restore. If it cannot be made red, it is
    not pinning anything.
-8. **The selection is not an observable around a right-click.** Chromium edits it on both
-   sides of the app's handler: `Shift`+mousedown is the browser's own extend-selection
-   gesture, and a plain right-click on unselected text selects the word under the cursor. So
-   "the selection survived" and "the selection was cleared" are both claims about Chromium
-   rather than about the dashboard, and `context-menu.spec.ts` failed twice asserting them.
-   What IS observable is whether the app claimed the event: add a `contextmenu` listener on
-   `window` in the BUBBLE phase - registered after the app's, so it observes rather than
-   pre-empts - and read `event.defaultPrevented`, which is exactly what opening the custom
-   menu does and what `Shift`+right-click must not do. Better still, arrange for both halves
-   to open a menu and assert on the ROWS, so nothing rests on an absence. Two more, for the
-   same reason: a raw `page.mouse.click(x, y)` gets none of Playwright's actionability, so
-   scroll the target into view and `settled()` it before computing a point - `.transcript-log`
-   auto-scrolls, and by the third turn the first one is off-screen with client rects the mouse
-   cannot reach - and take the point from the text's own client rect, because a turn is a
-   full-width block whose box centre is usually beside the words rather than on them.
 
 Each test gets its own daemon (`fixtures/test.ts`). That costs about a second and a half and
 buys independence: a spec asserting "exactly one session on the fleet" must not silently

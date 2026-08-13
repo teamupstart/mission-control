@@ -1453,6 +1453,10 @@ body {
 .is-desktop .workflow-library-sidebar,
 .is-desktop .workflow-builder-right,
 .is-desktop .wf-pipeline-item-menu-pop,
+/* The global context menu is cursor-anchored, so it can be summoned inside the titlebar
+   itself. Its confirmation is fixed too and stays explicit even though it is not clickable. */
+.is-desktop .ctx-menu-pop,
+.is-desktop .ctx-menu-flash,
 /* The "Open in" popover is only ever anchored under a files toolbar, which sounds like it
    could never reach the bar - but `.file-window` above is a window the human DRAGS, and it
    can be parked with its toolbar at y=0. */
@@ -1465,14 +1469,7 @@ body {
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
-.is-desktop .bl-planner-pop,
-/* The right-click menu, and the only entry in this list that needs no argument about whether
-   its layout can reach the bar: it opens at the cursor, so it opens wherever the cursor is -
-   including on the titlebar itself, where a right-click on a link near the top of a transcript
-   scrolled under the topbar puts it. Its confirmation line follows it in for the same reason
-   the launch chooser is here: listing it costs nothing. */
-.is-desktop .ctx-menu,
-.is-desktop .ctx-flash {
+.is-desktop .bl-planner-pop {
   -webkit-app-region: no-drag;
 }
 
@@ -3301,6 +3298,90 @@ body {
 .open-in-note { margin: 0; padding: 6px 8px; color: var(--dim); font: 10.5px/1.4 var(--sans); }
 .open-in-text .open-in-note { padding: 0; }
 .open-in-note.is-error { color: var(--danger); }
+
+/* ---- global context menu ----
+
+   One compact body-level panel in both browser and desktop builds. Its width is also the
+   placement constant in ContextMenu.tsx: the label gets the room, while payload/shortcut
+   hints stay mono and right-aligned like the rest of Mission Control's operator furniture. */
+.ctx-menu-pop {
+  position: fixed;
+  z-index: 100;
+  width: 196px;
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid color-mix(in oklab, var(--working) 24%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--panel) 94%, black);
+  box-shadow: 0 16px 38px rgb(0 0 0 / .52), 0 0 0 1px rgb(255 255 255 / .025) inset;
+}
+.ctx-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fg);
+  background: transparent;
+  font: 12px/1.35 var(--sans);
+  text-align: left;
+  cursor: default;
+}
+.ctx-menu-row.has-divider {
+  min-height: 34px;
+  margin-top: 3px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.ctx-menu-row:hover,
+.ctx-menu-row:focus-visible {
+  color: white;
+  background: color-mix(in oklab, var(--working) 17%, var(--panel-2));
+  outline: none;
+}
+.ctx-menu-row:focus-visible {
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 64%, transparent) inset;
+}
+.ctx-menu-hint {
+  max-width: 82px;
+  overflow: hidden;
+  color: var(--dim);
+  font: 10.5px/1.2 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-menu-row:hover .ctx-menu-hint,
+.ctx-menu-row:focus-visible .ctx-menu-hint { color: var(--muted); }
+.ctx-menu-flash.action-flash {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 100;
+  width: auto;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+  text-align: center;
+  transform: translateX(-50%);
+}
+.ctx-menu-flash.action-flash.is-ok {
+  border-color: color-mix(in oklab, var(--idle) 36%, var(--border));
+  color: var(--idle);
+}
+.ctx-menu-flash.action-flash.is-error {
+  border-color: color-mix(in oklab, var(--danger) 36%, var(--border));
+  color: var(--danger);
+}
 .file-content { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .file-content > .file-empty,
 .file-content > .file-error { margin: auto; padding: 24px; }
@@ -5716,8 +5797,7 @@ mark.find-hit.is-current {
 /* ---- conversation: the Native PTY rendering ----
    The second reading of a conversation (docs/plans/conversation-native-pty/plan.md): the
    same rows, drawn as one terminal stream. Everything here is scoped under the frame or
-   the `pty-` prefix, so the chat log's rules are untouched and the default rendering
-   cannot regress from this block. */
+   the `pty-` prefix, so the chat log's rules remain untouched. */
 .pty-frame {
   /* Takes the height `.find-split` takes in the chat rendering, and passes it on: the
      `min-height: 0` chain from `.transcript` down to `.transcript-log` runs THROUGH this
@@ -6920,6 +7000,13 @@ mark.find-hit.is-current {
   grid-template-columns: 1.05fr 0.55fr 1.2fr 1.1fr;
   gap: 10px;
 }
+/* Agent and Kind sit in a cell rather than being grid items themselves, so the guided
+   pass's list can hang off the field from OUTSIDE its `<label>` - see the note at that
+   markup. Always present, so a pass starting does not restructure the row. */
+.dispatch-crew-cell {
+  position: relative;
+  min-width: 0;
+}
 .dispatch-crew .field {
   gap: 4px;
 }
@@ -7012,6 +7099,325 @@ mark.find-hit.is-current {
   margin-top: -6px;
   font-size: 11.5px;
   color: var(--attention);
+}
+
+/* ---- guided dispatch ----
+   The guided pass floats a list under the field it is asking about, and that list has to be
+   able to leave the panel. `.modal` is `overflow: hidden` and is shared by EVERY dialog in
+   the app, so the override is scoped to `.dispatch-modal` alone and the corner radii move
+   onto its head and foot - which is all `overflow: hidden` was doing here. Never widen this
+   to `.modal`: the pane, review, kill and reset dialogs all rely on that clip.
+   A portal was the alternative and buys nothing: `RepoCombobox` portals because it must
+   escape a scrollable ancestor, and there is none between these pickers and the panel edge -
+   `.dispatch-body` carries no `overflow` of its own, unlike the generic `.modal-body`. */
+.dispatch-modal {
+  overflow: visible;
+}
+.dispatch-modal .modal-head {
+  border-radius: 14px 14px 0 0;
+}
+.dispatch-modal .modal-foot {
+  border-radius: 0 0 14px 14px;
+}
+
+/* Beside the launch mode in the header, which the title's `flex: 1` already pushes against
+   the close button - so no group wrapper is needed for the two to sit together. */
+.dispatch-guided-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font: 11.5px var(--sans);
+  cursor: pointer;
+}
+.dispatch-guided-toggle.is-on {
+  border-color: color-mix(in oklab, var(--idle) 42%, var(--border));
+  background: color-mix(in oklab, var(--idle) 10%, var(--panel));
+  color: var(--fg);
+}
+.dispatch-guided-switch {
+  position: relative;
+  width: 22px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background 0.15s ease;
+}
+/* The knob, at the end the state points to. Sized off the track so the two cannot drift. */
+.dispatch-guided-switch::after {
+  content: "";
+  position: absolute;
+  top: 1.5px;
+  left: 1.5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.dispatch-guided-toggle.is-on .dispatch-guided-switch {
+  background: color-mix(in oklab, var(--idle) 70%, var(--border));
+}
+.dispatch-guided-toggle.is-on .dispatch-guided-switch::after {
+  transform: translateX(10px);
+  background: var(--bg);
+}
+
+/* The strip: the rail from the chosen mockup, laid on its side. Horizontal is what lets the
+   form keep its width and every field its exact vertical position while the pass runs. */
+.dispatch-guided-rail {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+}
+.dispatch-guided-rungs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  list-style: none;
+}
+.dispatch-guided-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.dispatch-guided-rung {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  font: 11.5px var(--sans);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.dispatch-guided-rung.is-active {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 48%, var(--border));
+  background: color-mix(in oklab, var(--working) 12%, var(--panel-2));
+}
+button.dispatch-guided-rung {
+  color: var(--muted);
+  cursor: pointer;
+}
+button.dispatch-guided-rung:hover {
+  border-color: var(--border);
+  color: var(--fg);
+}
+.dispatch-guided-num {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  font: 9px var(--mono);
+  color: var(--dim);
+}
+.dispatch-guided-rung.is-active .dispatch-guided-num {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 70%, var(--border));
+  background: color-mix(in oklab, var(--working) 55%, var(--panel));
+}
+button.dispatch-guided-rung .dispatch-guided-num {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 42%, var(--border));
+}
+.dispatch-guided-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+}
+.dispatch-guided-tick {
+  flex: none;
+  font-size: 10px;
+  color: var(--border);
+}
+.dispatch-guided-out {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.dispatch-guided-out kbd {
+  font-size: 9.5px;
+  padding: 2px 4px;
+}
+/* Sits ON the rail's bottom border rather than in a row of its own, so answering a question
+   moves nothing: the strip is one height for the whole pass and leaves with it. */
+.dispatch-guided-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+}
+.dispatch-guided-progress i {
+  display: block;
+  height: 100%;
+  background: var(--working);
+  transition: width 0.2s ease;
+}
+
+/* Everything that is not the question recedes. `pointer-events` only inside the body: a
+   click into the task box mid-pass would put the caret where the next mnemonic is swallowed
+   rather than typed, whereas the footer is dim because it is not the question - not because
+   Cancel has stopped working. */
+.dispatch-guided-dim {
+  opacity: 0.34;
+  transition: opacity 0.18s ease;
+}
+.dispatch-body .dispatch-guided-dim {
+  pointer-events: none;
+}
+
+/* The anchor is the field the question is about; z-index lifts it over `.dispatch-workflow`,
+   which is `position: relative` and would otherwise paint over a picker from the crew row
+   above it. Deliberately single digits - `desktop-drag-region.test.ts` treats anything above
+   10 as chrome that has to declare its drag behaviour. */
+.dispatch-guided-anchor {
+  position: relative;
+  z-index: 6;
+}
+.dispatch-guided-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 100%;
+  width: max-content;
+  max-width: 340px;
+  padding: 4px;
+  border: 1px solid color-mix(in oklab, var(--working) 50%, var(--border));
+  border-radius: 8px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow), 0 12px 32px rgba(0, 0, 0, 0.5);
+  cursor: default;
+  animation: guided-pop 0.16s ease;
+}
+/* Opens upward instead, for a control with the footer beneath it. Only the direction
+   changes: same geometry, same 4px gap, measured from the other edge. */
+.dispatch-guided-picker.is-above {
+  top: auto;
+  bottom: calc(100% + 4px);
+  animation-name: guided-pop-up;
+}
+@keyframes guided-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+@keyframes guided-pop-up {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+.dispatch-guided-question {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+  padding: 5px 7px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 11px;
+  color: color-mix(in oklab, var(--working) 62%, var(--fg));
+}
+.dispatch-guided-keys {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--dim);
+}
+.dispatch-guided-keys kbd {
+  font-size: 9.5px;
+  padding: 2px 4px;
+  min-width: 12px;
+}
+.dispatch-guided-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  outline: none;
+}
+.dispatch-guided-option {
+  display: grid;
+  grid-template-columns: 19px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 6px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dispatch-guided-option.is-on {
+  background: color-mix(in oklab, var(--working) 20%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--working) 34%, transparent);
+}
+/* The letter that takes it, drawn as the key it is. A keycap the operator can read is what
+   makes "nothing has to be memorised to be fast" true rather than aspirational. */
+.dispatch-guided-cap {
+  padding: 3px 0;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--muted);
+  font: 10px var(--mono);
+  line-height: 1;
+  text-align: center;
+}
+.dispatch-guided-option.is-on .dispatch-guided-cap {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.dispatch-guided-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dispatch-guided-sub {
+  grid-column: 2;
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: var(--dim);
 }
 
 /* A select wearing its harness's accent: the same inline --agent-accent every card and
@@ -17383,6 +17789,13 @@ span.line-run-prov {
   min-width: 170px;
   justify-content: flex-end;
 }
+/* Every ordinary ensemble row now carries its dossier/decision move plus Cancel. Reserve the
+   width of the longer pair so a finalizing row, where cancel is deliberately absent, does not
+   pull the state column sideways. */
+.line-ens-ops {
+  min-width: 218px;
+  justify-content: flex-end;
+}
 .line-run-ops .btn,
 .line-ens-ops .btn,
 .line-intake-ops .btn,
@@ -23274,124 +23687,6 @@ span.line-run-prov {
 }
 .source-provenance-warn {
   color: var(--attention);
-}
-
-/* ---- the right-click menu ----
-
-   Cursor-anchored, so it can open at ANY coordinate - including under the desktop shell's
-   titlebar, which is why `.ctx-menu` is in the `.is-desktop` no-drag allow-list above rather
-   than after the first bug report.
-
-   Above `.modal-backdrop` (z-index 50), because the menu has to work inside a dialog: the
-   composer in a dispatch modal is one of the places Paste is most wanted. Below `.tooltip`
-   (70), because every row carries one. */
-.ctx-menu {
-  position: fixed;
-  z-index: 60;
-  min-width: 196px;
-  max-width: 268px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--panel);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-/* A pointer-opened menu parks focus on the menu itself rather than its first row, so the row's
-   tooltip is not painted over whatever was just clicked. The menu is the surface, not a
-   control, so it draws no ring of its own - the focused ROW is what should ever look focused. */
-.ctx-menu:focus {
-  outline: none;
-}
-/* Dense rows - label plus a right-aligned hint (decision D4). Measured against the blurb
-   variant in the mockups, the same five rows are 147x196 dense against 250x258 with blurbs,
-   and 70% taller flips above the cursor far more often. */
-.ctx-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 5px 9px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  font: 12px var(--sans);
-  color: var(--fg);
-  text-align: left;
-  cursor: pointer;
-}
-.ctx-row:hover,
-.ctx-row:focus-visible {
-  background: var(--panel-2);
-  outline: none;
-}
-.ctx-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* The payload cue. Not decoration: it is what makes "the label names its payload" checkable
-   at a glance where the label alone is ambiguous - which `Copy` this is. */
-.ctx-hint {
-  margin-left: auto;
-  flex: none;
-  font: 10.5px var(--mono);
-  color: var(--dim);
-}
-.ctx-sep {
-  height: 1px;
-  margin: 3px 6px;
-  background: var(--border-soft);
-}
-
-/* The confirmation, rendered by the HOST rather than the menu: the menu closes on activation,
-   so a line inside it would die with the click that earned it. `role="status"` announces the
-   outcome, mirroring `.action-flash`, which the transcript already uses for the same job.
-
-   `pointer-events: none` because a message is not a control - it floats over the bottom of a
-   surface the reader may be clicking through. It is in the no-drag list anyway: the list costs
-   nothing and the alternative is an exemption in `test/desktop-drag-region.test.ts` that has to
-   stay true. */
-.ctx-flash {
-  position: fixed;
-  left: 50%;
-  bottom: 26px;
-  transform: translateX(-50%);
-  z-index: 70;
-  pointer-events: none;
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-  max-width: min(640px, 90vw);
-  padding: 9px 14px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in oklab, var(--idle) 34%, var(--border));
-  background: color-mix(in oklab, var(--idle) 12%, var(--panel));
-  box-shadow: var(--shadow);
-  font-size: 12px;
-  color: var(--fg);
-}
-.ctx-flash.is-error {
-  border-color: color-mix(in oklab, var(--exited) 40%, var(--border));
-  background: color-mix(in oklab, var(--exited) 12%, var(--panel));
-}
-.ctx-flash b {
-  font-weight: 640;
-  color: var(--idle);
-}
-.ctx-flash.is-error b {
-  color: var(--exited);
-}
-.ctx-flash span {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 @media (max-width: 1080px) {

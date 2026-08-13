@@ -190,6 +190,78 @@ test("the Conversation rendering is reachable by the words someone would half-re
   assert.ok(!labels.includes(control.label), "two controls answer to the same name");
 });
 
+// Guided dispatch, named on its own for the reason above the Conversation picker: the
+// sweeps only ask their questions of whatever the array happens to hold, so a control that
+// was never added passes every one of them by not existing. This one has a second thing to
+// pin that the picker does not - it is the whole point of the Settings home. The preference
+// was reachable ONLY from the dispatch modal's header, which is to say only to someone
+// already dispatching. If it stops being indexed, it goes back to being undiscoverable and
+// nothing else in the suite notices.
+test("guided dispatch is indexed under Dispatch, anchored at the panel that draws it", () => {
+  const control = SETTINGS_CONTROLS.find((c) => c.id === "guided-dispatch");
+  assert.ok(control, "the guided-dispatch preference is not in the search index at all");
+  assert.equal(control.category, "dispatch");
+  assert.equal(control.anchor, "dispatch/guided");
+  // Rendered by the DISPATCH panel specifically. The sweep above proves every anchor is
+  // rendered by some category; this proves the jump lands on the page the row promises.
+  assert.match(renderCategory("dispatch"), /data-anchor="dispatch\/guided"/);
+  // And the panel draws the control itself, not merely an anchored container: the row is a
+  // checkbox, which is what makes the palette's in-place flip and the panel agree.
+  assert.match(renderCategory("dispatch"), /data-anchor="dispatch\/guided"[^>]*>.*?type="checkbox"/s);
+});
+
+test("guided dispatch flips from a search row rather than jumping", () => {
+  const control = SETTINGS_CONTROLS.find((c) => c.id === "guided-dispatch")!;
+  // A boolean with shipped defaults and no consent copy to read first, so the palette can
+  // set it in place. Declaring it a `jump` would still work and be worse: ⌘K would open the
+  // panel and leave the operator to find the switch they already named.
+  assert.equal(control.kind, "toggle");
+  assert.ok(!control.risky, "a preference about how a form asks questions is not consent-gated");
+  assert.ok(
+    BINDABLE_CONTROL_IDS.includes("guided-dispatch"),
+    "a non-risky toggle must be bindable, or the palette row degrades to a jump",
+  );
+});
+
+test("guided dispatch is reachable by the words someone would half-remember", () => {
+  const control = SETTINGS_CONTROLS.find((c) => c.id === "guided-dispatch")!;
+  const searchable = [control.label, control.description, ...control.keywords]
+    .join(" ")
+    .toLowerCase();
+  // Spelled out rather than looped from `control.keywords`, which would pass whatever that
+  // array happened to hold. "wizard" and "walkthrough" are the words for this feature that
+  // are nowhere in its own label or description - someone who never read either will type
+  // one of them - and "kind", "harness" and "after work" are the questions themselves, which
+  // is what an operator who met the pass and wants it gone actually remembers about it.
+  const TERMS = [
+    "guided",
+    "wizard",
+    "walkthrough",
+    "steps",
+    "questions",
+    "kind",
+    "harness",
+    "after work",
+  ];
+  for (const term of TERMS) {
+    assert.ok(searchable.includes(term), `"${term}" reaches nothing in the settings index`);
+  }
+  assert.deepEqual(
+    [...control.keywords].sort(),
+    [...TERMS].sort(),
+    "the entry's keywords and the vocabulary this test pins have drifted apart",
+  );
+  // "dispatch" alone must NOT be what this row rests on: the Dispatch shortcut, both harness
+  // cards and the Harnesses category already answer to that word, so a preference findable
+  // only as "dispatch" is a preference buried under four better-matching rows.
+  assert.ok(
+    !control.keywords.includes("dispatch"),
+    "leaning on the word four other controls already carry is not being findable",
+  );
+  const labels = SETTINGS_CONTROLS.filter((c) => c.id !== control.id).map((c) => c.label);
+  assert.ok(!labels.includes(control.label), "two controls answer to the same name");
+});
+
 // The D5 exemption set: booleans whose consent copy has to be on screen when they change,
 // so they always jump to their panel rather than flipping from a search row. YOLO merges
 // code and the Inspector's two publish under the operator's GitHub account; Live workflow
@@ -244,12 +316,14 @@ test("daemon-backed toggles get no binding until their config has loaded", () =>
   const noop = () => {};
   const loading = buildSettingsBindings({
     formatMessages: { value: true, set: noop },
+    guidedDispatch: { value: false, set: noop },
     autoMode: null,
     skillsEnabled: null,
     costTrack: null,
   });
-  // The browser-local formatting toggle is always bindable (shipped defaults, no poll).
+  // The two browser-local toggles are always bindable (shipped defaults, no poll).
   assert.ok(loading.has("format-messages"));
+  assert.ok(loading.has("guided-dispatch"));
   // The three daemon-backed toggles are withheld until loaded.
   assert.ok(!loading.has("auto-mode"));
   assert.ok(!loading.has("skills-enabled"));
@@ -257,6 +331,7 @@ test("daemon-backed toggles get no binding until their config has loaded", () =>
 
   const loaded = buildSettingsBindings({
     formatMessages: { value: true, set: noop },
+    guidedDispatch: { value: false, set: noop },
     autoMode: { value: false, set: noop },
     skillsEnabled: { value: true, set: noop },
     costTrack: { value: false, set: noop },

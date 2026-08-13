@@ -31,7 +31,7 @@ beforeEach(() => {
 test("an unset key reads as the shipped defaults", () => {
   const config = getUiConfig();
   assert.equal(config.layout, "grid");
-  assert.equal(config.conversationView, "chat");
+  assert.equal(config.conversationView, "terminal");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.deepEqual(config.keybindings, {});
@@ -55,10 +55,10 @@ test("the guided dispatch preference round-trips, and a row from before it parse
 test("the conversation rendering round-trips, and an unknown one is refused", () => {
   // Stored as a named mode rather than a boolean, so the daemon can reject a value this
   // build does not ship instead of coercing it to "not chat".
-  setUiConfig({ conversationView: "terminal" });
-  assert.equal(getUiConfig().conversationView, "terminal");
+  setUiConfig({ conversationView: "chat" });
+  assert.equal(getUiConfig().conversationView, "chat");
   assert.throws(() => setUiConfig({ conversationView: "hologram" } as never));
-  assert.equal(getUiConfig().conversationView, "terminal", "a refused patch changed the store");
+  assert.equal(getUiConfig().conversationView, "chat", "a refused patch changed the store");
 });
 
 test("a key from a retired preference is dropped rather than carried forever", () => {

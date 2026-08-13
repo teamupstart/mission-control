@@ -26,6 +26,10 @@ export interface WorkflowConfirmRequest {
    * bubble over the dialog when the button takes focus.
    */
   confirmHint: string;
+  /** What the close control preserves. Workflow surfaces use the default. */
+  closeHint?: string;
+  /** What backing out preserves. Workflow surfaces use the default; shared callers name theirs. */
+  cancelHint?: string;
   /** Whether the confirm button reads as destructive. Removals do. */
   danger?: boolean;
   /**
@@ -88,7 +92,7 @@ export function WorkflowConfirmModal({
       >
         <header className="modal-head">
           <h2>{request.title}</h2>
-          <Tooltip label="Close without changing the workflow (Escape)">
+          <Tooltip label={request.closeHint ?? "Close without changing the workflow (Escape)"}>
             <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
               ✕
             </button>
@@ -113,7 +117,7 @@ export function WorkflowConfirmModal({
         </div>
         <footer className="modal-foot">
           <span className="actions-spacer" />
-          <Tooltip label="Leave the workflow as it is">
+          <Tooltip label={request.cancelHint ?? "Leave the workflow as it is"}>
             <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
           </Tooltip>
           <Tooltip label={request.requirePhrase && !satisfied

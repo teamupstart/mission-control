@@ -102,17 +102,39 @@ function validResponse(prompt: string): string {
   });
 }
 
+/**
+ * A controllable clock, for the tests that need an infrastructure backoff to actually elapse.
+ *
+ * The default `armTimer` in this file never fires, which is what the pure-restart tests want.
+ * Anything mixing restarts with provider failures has to let the retry ladder run, and it has to
+ * run in zero real time.
+ */
+function fastClock(startAt = 10_000) {
+  let now = startAt;
+  return {
+    now: () => now,
+    armTimer: (delayMs: number, fire: () => void) => {
+      now += delayMs;
+      const timer = setTimeout(fire, 0);
+      timer.unref?.();
+      return () => clearTimeout(timer);
+    },
+  };
+}
+
 function makeEngine(
   store: Store,
   gateway: Gateway,
   runModel: (prompt: string) => Promise<string>,
+  clock?: { now: () => number; armTimer: (delayMs: number, fire: () => void) => () => void },
 ): Engine {
   return new EnsembleEngine({
     store,
     tasks: gateway,
     publish: () => {},
     adapters: reviewAdapters(),
-    armTimer: () => () => {},
+    armTimer: clock?.armTimer ?? (() => () => {}),
+    ...(clock ? { now: clock.now } : {}),
     review: {
       scheduler: <T>(fn: () => Promise<T>) => fn(),
       resolveExecution: () => ({ runnerId: "claude" as const, modelId: "judge-model", unknownRunner: null }),
@@ -245,8 +267,8 @@ test("two restarts in a row still reach a decision, against a budget of two atte
 test("a crash loop cannot spin attempt rows forever", async () => {
   // Not charging a restart is what makes this backstop necessary: a daemon that dies in the same
   // place every time would otherwise open a fresh, free attempt on every boot, forever. The
-  // ceiling is the hard limit on a stage's attempts, counted in ROWS here rather than in spent
-  // budget - which is the only counter a run of pure interruptions ever moves.
+  // ceiling is the hard limit on a stage's attempts, counted over INTERRUPTIONS - the rows that
+  // neither retry budget bounds, and the only counter a run of pure interruptions ever moves.
   const store = new EnsembleStore(db);
   const gateway = new FakeGateway();
   const engine = makeEngine(store, gateway, () => new Promise<string>(() => {}));
@@ -263,7 +285,7 @@ test("a crash loop cannot spin attempt rows forever", async () => {
   assert.equal(
     reviewAttempts(store, run.id).length,
     ENSEMBLE_HARD_LIMITS.maxStageAttempts,
-    "the ceiling is on rows opened, and it holds",
+    "the ceiling is on interruptions, and a pure crash loop opens nothing else",
   );
   assert.ok(
     reviewAttempts(store, run.id).every((a) => a.status === "interrupted"),
@@ -274,6 +296,87 @@ test("a crash loop cannot spin attempt rows forever", async () => {
     Array.from({ length: ENSEMBLE_HARD_LIMITS.maxStageAttempts }, (_, i) => i + 1),
     "and every attempt number is still monotonic and unique",
   );
+});
+
+test("restarts before a provider outage still park the run rather than ending it", async () => {
+  // The ceiling used to be counted over ROWS, and `maxAttempts` (2) plus the infrastructure
+  // budget (3) is exactly the ceiling (5), so a stage had no room to be interrupted at all. Two
+  // restarts and then three provider failures is five rows, and the row that spent the last of
+  // the infrastructure budget - the row whose whole job is to say "park this for a person" - was
+  // also the row that hit the ceiling. The ceiling answered first and the run died on it.
+  const store = new EnsembleStore(db);
+  const gateway = new FakeGateway();
+  const run = makeRun(store, bestOfNPlan(2));
+  await submitMembers(makeEngine(store, gateway, () => new Promise<string>(() => {})), gateway, store, run.id);
+  await waitFor(() => reviewAttempts(store, run.id).length === 1);
+
+  // Two restarts: rows 1 and 2 settle `interrupted`, charged to neither budget.
+  await makeEngine(store, gateway, () => new Promise<string>(() => {})).recover(run.id);
+  await waitFor(() => reviewAttempts(store, run.id).length === 2);
+
+  // Then the provider goes down for good, and its own budget of 3 runs out on row 5.
+  const dead = makeEngine(
+    store,
+    gateway,
+    () => Promise.reject(new Error("provider unreachable")),
+    fastClock(),
+  );
+  await dead.recover(run.id);
+  await waitFor(() => reviewAttempts(store, run.id).length === ENSEMBLE_HARD_LIMITS.maxStageAttempts);
+  await waitFor(() => reviewAttempts(store, run.id).every((a) => a.status !== "running"));
+
+  const attempts = reviewAttempts(store, run.id);
+  assert.deepEqual(
+    attempts.map((a) => a.status),
+    ["interrupted", "interrupted", "failed", "failed", "failed"],
+    "two free interruptions and three charged to infrastructure",
+  );
+  assert.equal(
+    store.getRun(run.id)!.status,
+    "evaluating",
+    "parked for an operator, not ended: the infrastructure budget is what ran out, and the candidates are intact",
+  );
+  assert.ok(store.listArtifacts(run.id).every((a) => a.status === "ready"));
+});
+
+test("a run that has been interrupted four times can still be rescued by one working call", async () => {
+  // The same defect at a different mix, and the one that shows it was never about the sum of the
+  // two budgets: four restarts and a single provider blip is five rows with NEITHER budget spent.
+  // A ceiling counted over rows ended this run; counted over interruptions, the fifth restart is
+  // still the bound and this run simply finishes.
+  const store = new EnsembleStore(db);
+  const gateway = new FakeGateway();
+  const run = makeRun(store, bestOfNPlan(2));
+  await submitMembers(makeEngine(store, gateway, () => new Promise<string>(() => {})), gateway, store, run.id);
+  await waitFor(() => reviewAttempts(store, run.id).length === 1);
+
+  for (let restart = 1; restart < 4; restart += 1) {
+    await makeEngine(store, gateway, () => new Promise<string>(() => {})).recover(run.id);
+    await waitFor(() => reviewAttempts(store, run.id).length === restart + 1);
+  }
+
+  let calls = 0;
+  const recovered = makeEngine(
+    store,
+    gateway,
+    (prompt) => {
+      calls += 1;
+      return calls === 1
+        ? Promise.reject(new Error("provider unreachable"))
+        : Promise.resolve(validResponse(prompt));
+    },
+    fastClock(),
+  );
+  await recovered.recover(run.id);
+  await waitFor(() => store.getRun(run.id)!.status === "awaiting_decision");
+
+  const attempts = reviewAttempts(store, run.id);
+  assert.deepEqual(
+    attempts.map((a) => a.status),
+    ["interrupted", "interrupted", "interrupted", "interrupted", "failed", "succeeded"],
+    "four interruptions, one blip, and then an answer",
+  );
+  assert.deepEqual(attempts.map((a) => a.attempt), [1, 2, 3, 4, 5, 6], "attempt numbers stay monotonic");
 });
 
 test("recovery completes a running review stage from its succeeded evaluation", async () => {

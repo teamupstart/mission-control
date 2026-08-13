@@ -383,11 +383,17 @@ export const ENSEMBLE_HARD_LIMITS = {
    * The ceiling on one stage's attempts, in both of the senses a stage has to bound.
    *
    * It caps the `maxAttempts` any strategy config may ask for - how many times a MODEL is
-   * allowed to answer badly - and it is also the hard ceiling on attempt ROWS one stage may
-   * ever open, whatever settled the earlier ones. The second is the backstop the first cannot
-   * provide once the budget stopped being the attempt number: an interruption spends no budget
-   * and an infrastructure failure spends its own, so without a row ceiling a daemon
-   * crash-looping through the same review would open a free attempt on every boot, forever.
+   * allowed to answer badly - and it is also the ceiling on how many times one stage may be
+   * INTERRUPTED without settling. The second is the backstop the first cannot provide once the
+   * budget stopped being the attempt number: a model failure is capped by `maxAttempts` and an
+   * unreachable provider by its own budget, so those two can only open a bounded number of rows,
+   * but an interruption is deliberately free - and a daemon crash-looping through the same review
+   * would otherwise open a free attempt on every boot, forever.
+   *
+   * It counts interruptions rather than rows for a reason worth keeping: the two budgets sum to
+   * exactly this number at the shipped defaults, so a ceiling on ROWS left a stage no headroom to
+   * be interrupted at all, and a couple of restarts before a provider outage would fail a run at
+   * the very moment its infrastructure budget asked to park it for a person.
    *
    * A stage that reaches it is no longer retrying, it is thrashing, and the run fails saying so.
    */

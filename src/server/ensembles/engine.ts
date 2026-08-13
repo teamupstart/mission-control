@@ -406,6 +406,16 @@ interface ReviewStageBudget {
   consumed: number;
   /** Attempts charged to the infrastructure budget: no answer was ever reached. */
   infrastructure: number;
+  /**
+   * Attempts charged to NEITHER budget, which is what makes them the thing to bound.
+   *
+   * A model failure is capped by `maxAttempts` and an unreachable provider by
+   * `MAX_REVIEW_INFRA_ATTEMPTS`, so those two can only ever open a bounded number of rows. An
+   * interruption is free by design - that is this whole change - so a daemon dying in the same
+   * place on every boot is the one thing that could open rows forever, and it is what the hard
+   * ceiling actually has to count.
+   */
+  interrupted: number;
   /** The highest attempt number this stage has opened. Never reused, never reordered. */
   latestNumber: number;
   /** Wall clock the next attempt must wait for, from the newest row when it owes a backoff. */
@@ -418,6 +428,7 @@ function reviewStageBudget(
 ): ReviewStageBudget {
   let consumed = 0;
   let infrastructure = 0;
+  let interrupted = 0;
   let latestNumber = 0;
   let latest: EnsembleStageAttempt | null = null;
   for (const attempt of attempts) {
@@ -426,7 +437,9 @@ function reviewStageBudget(
       latestNumber = attempt.attempt;
       latest = attempt;
     }
-    // `interrupted` and `cancelled` spend nothing: nobody read an answer, so nobody gave one.
+    // `interrupted` and `cancelled` spend neither budget: nobody read an answer, so nobody gave
+    // one. Interruptions are still counted, because the ceiling below is a bound on exactly them.
+    if (attempt.status === "interrupted") interrupted += 1;
     if (attempt.status !== "failed") continue;
     const charge: EnsembleReviewCharge = readReviewAttemptReceipt(attempt.output).charge;
     if (charge === "infrastructure") infrastructure += 1;
@@ -435,7 +448,7 @@ function reviewStageBudget(
   // Only the NEWEST row can owe a wait. An older backoff was either already served or made moot
   // by whatever opened a row after it - a restart's interruption included.
   const receipt = latest && latest.status === "failed" ? readReviewAttemptReceipt(latest.output) : null;
-  return { consumed, infrastructure, latestNumber, retryAt: receipt?.retryAt ?? null };
+  return { consumed, infrastructure, interrupted, latestNumber, retryAt: receipt?.retryAt ?? null };
 }
 
 /** A run's status while it still accepts new observations and submissions. */
@@ -1495,18 +1508,29 @@ export class EnsembleEngine {
     // true for the stage attempt and not only for the evaluation underneath it.
     if (attempt.status === "failed" || attempt.status === "interrupted") {
       const budget = reviewStageBudget(state.stageAttempts, stage.id);
-      // The backstop against a crash loop, before either retry policy: rows are the thing that
-      // cannot be allowed to grow without bound, whatever settled them. The same hard ceiling
-      // that caps a stage's configured budget caps the rows it may open, so a stage configured
-      // at the maximum spends its interruption slack out of that budget rather than beyond it.
-      if (budget.latestNumber >= ENSEMBLE_HARD_LIMITS.maxStageAttempts) return "failed";
+      // Each budget is asked about in the order of what spending it MEANS, and the ceiling is
+      // asked last, because it is a backstop and not a policy.
+      //
+      // Asking the ceiling first made it outrank both. `maxAttempts` defaults to 2 and
+      // `MAX_REVIEW_INFRA_ATTEMPTS` is 3, which sums to exactly the ceiling of 5, so a stage had
+      // no row headroom for interruptions at all: two restarts and then three provider blips is
+      // five rows, and the run died on the ceiling at the very moment the infrastructure budget
+      // said "park this for a person". Four restarts and a single blip did the same with neither
+      // budget spent. Both are the failure this change exists to remove, arriving through the
+      // bound instead of through `maxAttempts`.
       if (budget.consumed >= stage.maxAttempts) return "failed";
       // Only a review parks. The charge receipt is written by the review path alone, so this
       // would be inert for the other kinds anyway - saying so here keeps it that way rather than
       // leaving a finalize stage one stray `output` key away from a state it has no door out of.
+      //
+      // Safe to answer before the ceiling: a blocked stage opens no further row on its own, so
+      // preferring it can never be the thing that lets a loop spin.
       if (stage.driverKind === "review" && budget.infrastructure >= MAX_REVIEW_INFRA_ATTEMPTS) {
         return "blocked";
       }
+      // The crash-loop backstop, counted over the rows nothing else bounds. See
+      // `ReviewStageBudget.interrupted`.
+      if (budget.interrupted >= ENSEMBLE_HARD_LIMITS.maxStageAttempts) return "failed";
       return "not_started";
     }
     return "running";
@@ -1681,10 +1705,10 @@ export class EnsembleEngine {
     const now = this.now();
     const budget = reviewStageBudget(state.stageAttempts, stage.id);
     const attemptNumber = budget.latestNumber + 1;
-    if (attemptNumber > ENSEMBLE_HARD_LIMITS.maxStageAttempts) {
+    if (budget.interrupted >= ENSEMBLE_HARD_LIMITS.maxStageAttempts) {
       void this.failRun(
         state.run.id,
-        `review stage ${stage.id} opened ${budget.latestNumber} attempts without settling`,
+        `review stage ${stage.id} was interrupted ${budget.interrupted} times without settling`,
       );
       return;
     }

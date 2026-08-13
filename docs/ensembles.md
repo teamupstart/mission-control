@@ -654,9 +654,12 @@ post-selection review, and neither ensemble completion nor a rank-1 recommendati
   preview shows initial, maximum, concurrency, waves and evaluation calls before you confirm.
 - Hard ceilings no strategy config or driver output may exceed: **16** members, **8** concurrent,
   **8** waves, **5** stage attempts. That last one bounds a stage two ways: the attempts it may
-  charge to its budget, and the attempt rows it may open at all - so a crash loop cannot spin rows
-  forever even though restarts and provider blips are never charged. Strategy-specific candidate,
-  judge, result, and material bounds are listed below.
+  charge to its budget, and the number of times it may be **interrupted** without settling - so a
+  daemon crash loop cannot spin free attempts forever even though restarts are never charged. It
+  counts interruptions rather than rows because the two retry budgets already bound themselves,
+  and at the shipped defaults they sum to exactly this ceiling: a bound on rows would leave a
+  stage no room to be interrupted at all. Strategy-specific candidate, judge, result, and material
+  bounds are listed below.
 - Every evaluator result is advisory and tool-less: it cannot launch, promote, publish, cancel, reap
   or delete. Every destructive finalization requires an explicit human confirmation. A Consensus
   run performs no destructive finalization at all, and still requires the human answer before it

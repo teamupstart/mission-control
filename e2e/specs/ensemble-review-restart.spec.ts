@@ -216,10 +216,11 @@ test("a dead provider parks the review for the operator instead of ending the ru
   // The amber half of the evidence pair.
   await shootPipeline(dashboard, "blocked-amber");
 
-  // 5. Now spend the run. Each press grants exactly one more attempt against a provider that is
-  //    still dead, and the hard ceiling on attempt ROWS is what finally ends it - the bound that
-  //    stops a parked run being retried forever. Driven through the button rather than the API,
-  //    because the door being real is half of what "parks for the operator" means.
+  // 5. The door is real and it stays open. Each press grants exactly one more attempt against a
+  //    provider that is still dead, and the run comes back to the same parked state rather than
+  //    being spent by trying - because a daemon must never decide that a run holding intact
+  //    candidate work is over. Driven through the button rather than the API, because the door
+  //    being real is half of what "parks for the operator" means.
   for (const rows of [4, 5]) {
     // The door closes while the attempt it granted is in flight and reopens when that attempt
     // settles, so each press waits for the previous one to land rather than for a row to exist.
@@ -234,17 +235,33 @@ test("a dead provider parks the review for the operator instead of ending the ru
         { message: `press ${rows - 3} should settle attempt row ${rows}`, timeout: 60_000 },
       )
       .toBe(Array.from({ length: rows }, () => "failed").join(","));
+    expect(
+      (await detail(daemon, runId)).run.status,
+      "retrying a parked review must never be what ends the run",
+    ).toBe("evaluating");
   }
+  await expect(review).toHaveClass(/is-blocked/);
+  await expect(review).toContainText("paused after 5 infrastructure errors");
+  expect((await detail(daemon, runId)).artifacts.filter((a) => a.status === "ready").length).toBe(2);
+
+  // 6. So a PERSON ends it. That is the whole shape of this change: the run is not spent by
+  //    failing to reach a model, it waits, and the operator is the one who calls it. Cancelling
+  //    keeps every submitted snapshot, which is why it is a safe answer to a dead provider.
+  await dashboard.getByRole("button", { name: "Cancel run…" }).click();
+  await dashboard
+    .getByRole("group", { name: "Confirm cancel" })
+    .getByRole("button", { name: "Cancel run", exact: true })
+    .click();
   await expect
     .poll(async () => (await detail(daemon, runId)).run.status, {
-      message: "the row ceiling should end a run that cannot stop failing",
+      message: "the operator's cancel is what ends a parked run",
       timeout: 60_000,
     })
-    .toBe("failed");
+    .toBe("cancelled");
 
-  // 6. Over, and drawn as over: red, no explanation to act on, and no door left. The same
-  //    component and the same page as the amber frame above, which is what makes the pair a
-  //    comparison rather than two pictures.
+  // Over, and drawn as over: red, no explanation to act on, and no door left. The same component
+  // and the same page as the amber frame above, which is what makes the pair a comparison rather
+  // than two pictures.
   await expect(review).toHaveClass(/is-failed/);
   await expect(review).not.toHaveClass(/is-blocked/);
   await expect(retry).toHaveCount(0);

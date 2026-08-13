@@ -228,7 +228,7 @@ test("Display renders the layout picker, the conversation picker and the formatt
   );
 });
 
-test("the conversation picker offers both renderings, with chat the shipped default", () => {
+test("the conversation picker offers both renderings, with terminal the shipped default", () => {
   const html = render("display");
   const radios = (html.match(/<input[^>]*type="radio"[^>]*>/g) ?? []).filter((i) =>
     i.includes('name="conversation-view"'),
@@ -236,10 +236,10 @@ test("the conversation picker offers both renderings, with chat the shipped defa
   assert.equal(radios.length, CONVERSATION_VIEW_OPTIONS.length, "one radio per rendering");
   // Rendered with no daemon and no storage, so the shared config store holds the shipped
   // defaults. What this pins is that default reaching the control: a session opens as the
-  // chat log unless someone chose otherwise.
+  // terminal stream unless someone chose otherwise.
   const checked = radios.filter((i) => i.includes("checked"));
   assert.equal(checked.length, 1, "exactly one rendering is checked");
-  assert.match(checked[0]!, /value="chat"/);
+  assert.match(checked[0]!, /value="terminal"/);
   for (const o of CONVERSATION_VIEW_OPTIONS) {
     assert.ok(html.includes(o.label), `picker missing ${o.label}`);
   }

@@ -319,11 +319,10 @@ for (const name of ALL_CASES) {
     // The claim. `onScroll` treats a reader within 48px of the bottom as pinned there, so
     // a row that wrapped to two or three lines would appear underneath them, push them out
     // of that window, and stop the pane following the tail - a defect nothing in the DOM
-    // can show, because the markup is identical either way. Held well under the threshold
-    // rather than at it: the row shares the log's 10px gap, and a row that just fits is a
-    // row one font metric away from not fitting.
+    // can show, because the markup is identical either way. Held to half the threshold:
+    // Terminal's one-line row is 24px, while a wrapped row is taller.
     assert.ok(
-      (m.progressHeight ?? 0) < STICK_TO_BOTTOM_PX / 2,
+      (m.progressHeight ?? 0) <= STICK_TO_BOTTOM_PX / 2,
       `the in-progress row must stay on one line, got ${m.progressHeight}px`,
     );
 

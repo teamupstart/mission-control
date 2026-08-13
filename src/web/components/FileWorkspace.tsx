@@ -228,21 +228,39 @@ export function FileWorkspace({
       ? `${conflict.revision ?? "none"}:${conflict.deleted ? "gone" : "changed"}:${selectedPath ?? ""}`
       : selectedPath,
   });
-  const [previewText, setPreviewText] = useState("");
+  /**
+   * The last debounced/stylesheet-inlined rendering, including the file it belongs to.
+   *
+   * The path is load-bearing. A newly mounted workspace can already have its selected
+   * buffer in the shared controller, while this component-local preparation starts empty.
+   * Rendering that empty string made the iframe white until the debounce and every local
+   * stylesheet read completed. A different path therefore falls back to the selected
+   * buffer's raw HTML immediately; once preparation lands, it replaces the same document
+   * with its inlined form. Edits to the SAME path keep the prepared copy for the existing
+   * 180 ms debounce instead of reloading the iframe on every keystroke.
+   */
+  const [preparedPreview, setPreparedPreview] = useState<{
+    path: string;
+    text: string;
+  } | null>(null);
+  const previewText = buffer && preparedPreview?.path === buffer.document.path
+    ? preparedPreview.text
+    : (buffer?.text ?? "");
   useEffect(() => {
     let live = true;
     const abort = new AbortController();
     const timer = setTimeout(() => {
       const text = buffer?.text ?? "";
+      const path = buffer?.document.path ?? "";
       if (buffer?.document.kind !== "html") {
-        setPreviewText(text);
+        setPreparedPreview({ path, text });
         return;
       }
       void inlinePreviewStyles(text, buffer.document.path, async (assetPath) => {
         const result = await api.readFile(session.id, assetPath, abort.signal);
         return result.ok ? result.file.text : null;
       }, abort.signal).then((next) => {
-        if (live) setPreviewText(next);
+        if (live) setPreparedPreview({ path, text: next });
       });
     }, 180);
     return () => {

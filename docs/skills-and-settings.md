@@ -66,10 +66,12 @@ agent's own loading path; the harness never reimplements it.
 The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
 PR. Inspector-gated workflows also require it for **Prepare PR in session** and invoke it
 through the bound harness's native skill syntax, so that final handoff is enforced rather
-than left to model selection. Its reviewer-ready description contract - two sections, **For
-Humans** for the why, the concise feature description, the tradeoffs, the known gaps, the
-evidence and the recommended follow-ups, and **For Agents** for the design decisions and
-implementation detail - lives in
+than left to model selection. Its reviewer-ready description contract has two sections: a
+concise, bullet-forward **For Humans** for the why, feature description, tradeoffs, known gaps,
+evidence, and recommended follow-ups; and **For Agents** for direct links to the plan and
+technical documentation, technical context those documents do not cover, and deliberately
+handled failure modes. It does not inventory changed tests or repeat design detail already
+covered by the linked documents. The full contract lives in
 [`skills/pull-request/SKILL.md`](../skills/pull-request/SKILL.md).
 
 The opt-in **Retro** row carries the retrospective procedure: read a finished session back

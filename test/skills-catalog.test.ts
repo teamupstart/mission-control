@@ -351,9 +351,16 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
     at = found;
   }
 
-  // What each side of the split owes a reader. Screenshots are human evidence, and the design
-  // and implementation reasoning is what the agent section exists to carry.
+  // What each side of the split owes a reader. Human prose stays short and scannable. The agent
+  // section links existing design sources instead of duplicating them, omits a test inventory,
+  // and preserves deliberate failure-mode context.
   assert.match(text, /screenshots/i);
-  assert.match(text, /design decisions/i);
-  assert.match(text, /implementation detail/i);
+  assert.match(text, /Concision is a requirement/i);
+  assert.match(text, /use bullets wherever possible/i);
+  assert.match(text, /Remove filler/i);
+  assert.match(text, /plan document exists.*link directly/is);
+  assert.match(text, /technical documentation.*link directly/is);
+  assert.match(text, /Do not repeat design decisions or implementation detail/i);
+  assert.match(text, /Do not list tests added or modified/i);
+  assert.match(text, /Always list the failure modes and edge cases/i);
 });

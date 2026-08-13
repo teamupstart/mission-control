@@ -76,7 +76,7 @@ import {
   type PendingTurnResetBoundary,
 } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
-import { homeAlive } from "./terminal/home.ts";
+import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
@@ -2209,25 +2209,61 @@ export class TaskManager {
   async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
-    // Before the kill and the teardown, while the checkout still exists. Cancelling a scout
-    // that had already written its page keeps that page; cancelling one that had not leaves an
-    // honest partial saying so. Neither is a reason to lose the tree quietly.
+    // Stop an agent we launched BEFORE inspecting its checkout. Otherwise a scout can finish
+    // writing after capture published an immutable partial but before teardown deletes the
+    // tree. Assigned tasks own no worktree and no home, so this deliberately preserves the
+    // existing rule that Cancel never kills the operator's own agent.
+    try {
+      await this.stopEmbeddedAgentBeforeReclaim(t);
+      if (t.homeName) {
+        const session = t.sessionId ? this.registry.getSession(t.sessionId) : undefined;
+        if (session) {
+          const stopped = await this.closeMergedSessionDeps.kill(session);
+          if (!stopped.ok) throw new Error(stopped.error ?? "could not stop the task agent");
+        } else {
+          const alive = await homeAlive(t.homeName);
+          if (alive !== false) {
+            const stopped = await killHome(t.homeName);
+            if (!stopped.asked || !stopped.ok) {
+              throw new Error(stopped.error ?? `no terminal backend could stop ${t.homeName}`);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: `could not stop task agent: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+
+    // The agent is now quiescent and the checkout still exists. A report that was complete at
+    // the stop boundary is captured; a failure keeps every resource tracked for a retry.
     const archived = await this.settleScoutArchive(id);
-    if (!archived.ok) return archived;
     this.autoCompleted.delete(id);
+    if (!archived.ok) {
+      const current = this.registry.getTask(id) ?? t;
+      const now = Date.now();
+      this.registry.upsertTask({
+        ...current,
+        status: "cancelled",
+        completedAt: now,
+        updatedAt: now,
+      });
+      return {
+        ok: false,
+        error: `task cancelled, but its resources remain tracked: ${archived.error ?? "the scout archive could not be published"}`,
+      };
+    }
 
     let teardownError: string | null = null;
     // Which worktrees actually came back. Null means every one of them did - the ordinary
     // case - and a partial failure narrows it to the ones that are really gone.
     let reclaimed: readonly string[] | null = null;
     try {
-      await this.stopEmbeddedAgentBeforeReclaim(t);
-      if (t.sessionId && t.homeName) {
-        const s = this.registry.getSession(t.sessionId);
-        if (s) await kill(s);
-      }
       // Re-read before tearing down so we don't miss resources a concurrent dispatch
-      // created during the kill above. teardownWorktree also kills the terminal home.
+      // created during the stop/capture awaits. teardownWorktree also closes the terminal
+      // home if it survived the direct stop above.
       const teardownTarget = this.registry.getTask(id) ?? t;
       await teardownWorktree(teardownTarget);
     } catch (error) {

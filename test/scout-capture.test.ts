@@ -281,6 +281,42 @@ test("a symlink anywhere on a supporting path is refused, leaf or directory", as
   }
 });
 
+test("a parent symlink swap cannot redirect a validated source outside the checkout", async () => {
+  const outside = mkdirp(join(home, `parent-swap-${++checkouts}`));
+  writeFileSync(join(outside, "secret.txt"), "outside bytes that must not be archived");
+  const root = makeCheckout({
+    "docs/reports/resume/report.html": validReportHtml(),
+    "evidence/secret.txt": "validated checkout bytes",
+  });
+  const source = join(root, "evidence/secret.txt");
+  const sourceParent = join(root, "evidence");
+  const { job } = makeJob({
+    root,
+    reportPath: "docs/reports/resume/report.html",
+    supporting: [{ repoSlot: "repo-01", path: "evidence/secret.txt" }],
+  });
+  let swapped = false;
+  const outcome = await captureScoutArchive(job, {
+    ...deps,
+    beforeCopy: async (plannedSource) => {
+      if (plannedSource !== source) return;
+      rmSync(sourceParent, { recursive: true, force: true });
+      symlinkSync(outside, sourceParent, "dir");
+      swapped = true;
+    },
+  });
+
+  assert.equal(swapped, true, "the parent changed after validation and before open");
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(outcome.problems.join(" "), /changed after its checkout path was validated/);
+  const read = await verifyScoutBundle(library, {
+    producerId: PRODUCER,
+    archiveId: job.archiveId,
+  });
+  assert.equal(read.kind, "absent");
+});
+
 test("a symlink beside the report is recorded as missing rather than followed", async () => {
   const outside = mkdirp(join(home, "companion-target"));
   writeFileSync(join(outside, "secret.txt"), "not yours");

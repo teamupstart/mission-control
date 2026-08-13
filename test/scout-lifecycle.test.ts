@@ -484,6 +484,43 @@ test("cancelling a scout that wrote nothing publishes an honest partial, never a
   assert.ok(page.archives[0]!.missingCount > 0);
 });
 
+test("cancelling a launched scout stops it before recovery scans the checkout", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree();
+  const task = mkScout({
+    worktreePath: cwd,
+    repoRoot,
+    provider: "git",
+    branch: null,
+    homeName: `launched-scout-${++seq}`,
+  });
+  h.registry.upsertTask(task);
+  bindSession(h, task, cwd);
+  let stopped = false;
+  const controlled = new TaskManager(
+    h.registry,
+    {
+      resetWouldDestroyWork: async () => null,
+      kill: async () => {
+        stopped = true;
+        mkdirp(join(cwd, "docs/reports/resume"));
+        writeFileSync(join(cwd, "docs/reports/resume/report.html"), validReportHtml());
+        return { ok: true };
+      },
+    },
+    undefined,
+    undefined,
+    h.scouts,
+  );
+
+  const cancelled = await controlled.cancel(task.id);
+  assert.equal(cancelled.ok, true, cancelled.error);
+  assert.equal(stopped, true);
+  const job = h.scouts.captureJobsForTask(task.id)[0]!;
+  assert.equal(job.status, "published");
+  assert.equal(job.captureStatus, "complete", "capture ran after the stop wrote its final bytes");
+});
+
 test("a capture failure refuses the cleanup and keeps the resources tracked", async () => {
   const h = harness();
   const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });

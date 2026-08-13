@@ -82,6 +82,8 @@ export interface ScoutCaptureDeps {
   producerLabel: string | null;
   /** Injected so a test can prove a failed publication leaves the previous state readable. */
   rename?: (from: string, to: string) => Promise<void>;
+  /** Injected so a test can swap a validated path immediately before its source is opened. */
+  beforeCopy?: (source: string) => Promise<void>;
   now?: () => number;
 }
 
@@ -156,6 +158,9 @@ function primaryRoot(roots: readonly ResolvedRoot[]): ResolvedRoot | null {
 interface PlannedFile {
   /** Absolute, realpath'd, proven to be a regular file with no symlinked component. */
   source: string;
+  /** The validated file identity. The opened handle must still name this exact inode. */
+  sourceDev: number;
+  sourceIno: number;
   /** Where it lands inside the bundle. Already `validateScoutArchivePath`-legal. */
   archivePath: string;
   role: ScoutManifestArtifact["role"];
@@ -206,6 +211,8 @@ async function planSubmitted(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promi
   } else {
     files.push({
       source: report.path,
+      sourceDev: report.dev,
+      sourceIno: report.ino,
       archivePath: SCOUT_PRIMARY_REPORT_PATH,
       role: "primary_report",
       repoSlot: primary.slot,
@@ -289,6 +296,8 @@ async function planRecovery(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promis
   const files: PlannedFile[] = [
     {
       source: report.path,
+      sourceDev: report.dev,
+      sourceIno: report.ino,
       archivePath: SCOUT_PRIMARY_REPORT_PATH,
       role: "primary_report",
       repoSlot: only.root.slot,
@@ -442,6 +451,8 @@ async function planReportDirectory(
       }
       files.push({
         source: absolute,
+        sourceDev: info.dev,
+        sourceIno: info.ino,
         archivePath,
         role: "report_companion",
         repoSlot: root.slot,
@@ -518,6 +529,8 @@ async function planSupporting(
     claimed.add(archivePath);
     files.push({
       source: resolved.path,
+      sourceDev: resolved.dev,
+      sourceIno: resolved.ino,
       archivePath,
       role: "supporting",
       repoSlot: root.slot,
@@ -559,7 +572,7 @@ function limitProblems(files: readonly PlannedFile[]): string[] {
 // ---------------------------------------------------------------------------
 
 type ResolvedCheckoutFile =
-  | { ok: true; path: string; bytes: number }
+  | { ok: true; path: string; bytes: number; dev: number; ino: number }
   | { ok: false; reason: string };
 
 /**
@@ -600,7 +613,7 @@ async function resolveCheckoutFile(realRoot: string, relativePath: string): Prom
   if (!real || !isInside(realRoot, real)) {
     return { ok: false, reason: "resolves outside the checkout" };
   }
-  return { ok: true, path: real, bytes: info.size };
+  return { ok: true, path: real, bytes: info.size, dev: info.dev, ino: info.ino };
 }
 
 /**
@@ -667,6 +680,7 @@ async function publish(
     const copyProblems: string[] = [];
     let ordinal = 0;
     for (const file of plan.files) {
+      await deps.beforeCopy?.(file.source);
       const copied = await copyIntoBundle(file, stageDir);
       if (!copied.ok) {
         copyProblems.push(`${file.originalPath}: ${copied.reason}`);
@@ -794,10 +808,11 @@ function stagedProblem(read: Awaited<ReturnType<typeof verifyScoutBundle>>): str
 /**
  * Copy one file into the staging bundle, hashing as it goes and re-checking afterwards.
  *
- * Opened with `O_NOFOLLOW` so a symlink swapped in between the plan and this open is refused
- * by the kernel rather than followed, and the size is taken from the OPEN handle rather than
- * from the earlier `lstat` - the same reason `digestFile` does. The second `fstat` at the end
- * is what turns "the file changed while we were reading it" from a silent half-copy with a
+ * Opened with `O_NOFOLLOW` so a final-component symlink swapped in between the plan and this
+ * open is refused by the kernel. Parent symlinks are followed by `open`, so the device/inode
+ * from the opened handle must also match the identity validated during planning. The size is
+ * taken from the OPEN handle rather than the earlier `lstat`, and the second `fstat` at the
+ * end turns "the file changed while we were reading it" from a silent half-copy with a
  * confident digest into a named failure.
  */
 async function copyIntoBundle(
@@ -817,6 +832,9 @@ async function copyIntoBundle(
   try {
     const before = await source.stat();
     if (!before.isFile()) return { ok: false, reason: "is not an ordinary file" };
+    if (before.dev !== file.sourceDev || before.ino !== file.sourceIno) {
+      return { ok: false, reason: "changed after its checkout path was validated" };
+    }
     const cap = capFor(file);
     if (before.size > cap) return { ok: false, reason: `exceeds its ${cap}-byte limit` };
 
@@ -833,7 +851,12 @@ async function copyIntoBundle(
       await sink.write(buffer, 0, bytesRead);
     }
     const after = await source.stat();
-    if (after.size !== bytes || after.mtimeMs !== before.mtimeMs || after.ino !== before.ino) {
+    if (
+      after.size !== bytes ||
+      after.mtimeMs !== before.mtimeMs ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino
+    ) {
       return { ok: false, reason: "changed while it was being archived" };
     }
     const digest = formatScoutDigest(hash.digest("hex"));

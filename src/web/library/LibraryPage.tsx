@@ -151,6 +151,7 @@ export function LibraryPage({
   personaUpstream,
   sessionActions = [],
   workflowCommands = [],
+  hasSnapshot = false,
   workflowRuns = [],
   ensembleSummaries = [],
   ensembleAttentionCount = 0,
@@ -173,6 +174,15 @@ export function LibraryPage({
    * `commandCards`, which projects the registry rather than this list.
    */
   workflowCommands?: WorkflowCommandView[];
+  /**
+   * Whether the SSE snapshot has landed.
+   *
+   * Defaults to FALSE, which is the safe direction rather than the convenient one: every fact
+   * derived from it is a claim about durable state, and a page that assumed it was loaded
+   * would publish those claims with no evidence. Only the Commands shelf reads it today - the
+   * other five draw cards from lists that are simply empty until they arrive.
+   */
+  hasSnapshot?: boolean;
   /** Read for the per-shelf cross-link counts only; no run is rendered on this page. */
   workflowRuns?: WorkflowRunSummary[];
   ensembleSummaries?: EnsembleSummary[];
@@ -194,7 +204,7 @@ export function LibraryPage({
   const actions = actionCards(sessionActions);
   const strategies = ensembleStrategyCards();
   const missions = missionCards(schedules);
-  const commands = commandCards(workflowCommands);
+  const commands = commandCards(workflowCommands, hasSnapshot);
 
   return (
     <main className="lib-page">

@@ -227,16 +227,37 @@ export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {
 }
 
 /**
+ * What a card says while the catalog has not arrived.
+ *
+ * Not "Not configured", which is the whole point: that is a claim about what this machine has
+ * stored, and drawing it before the daemon has answered invites an operator to type over a
+ * global default that merely has not loaded yet. Deliberately the same sentence
+ * `commandRevisionLine` gives an editor with no view, because it answers both halves of the
+ * same absence honestly - the snapshot has not landed yet, or the daemon has stopped
+ * answering, and the shelf cannot tell those apart either.
+ */
+export const COMMAND_FACT_UNKNOWN = "Waiting for the daemon";
+
+/**
  * The four portable Command slots, always all four and always in registry order.
  *
  * Driven off `WORKFLOW_CHECK_SLOTS` rather than off the passed catalog, so a slot the daemon
- * has not answered for yet is still a card: "unconfigured" and "not loaded" would otherwise
- * be the same missing tile, and the first is a state an operator acts on.
+ * has not answered for yet is still a card: the slots are a fixed vocabulary that ships with
+ * the build, so their EXISTENCE is knowable without the daemon. What each one runs is not,
+ * which is what `hasSnapshot` decides.
+ *
+ * `hasSnapshot` is required rather than defaulted, and that is the safety property: the
+ * optimistic default is exactly the bug - a caller who forgot it would silently publish a
+ * durable claim nobody had evidence for. A caller that genuinely knows the catalog is loaded
+ * has to say so.
  *
  * There is no ＋ New card on this shelf and there cannot be one. The slots ship with the
  * product; what an operator authors is what each one runs.
  */
-export function commandCards(views: readonly WorkflowCommandView[]): LibraryCard[] {
+export function commandCards(
+  views: readonly WorkflowCommandView[],
+  hasSnapshot: boolean,
+): LibraryCard[] {
   const bySlot = new Map(views.map((view) => [view.slot, view]));
   return WORKFLOW_CHECK_SLOTS.map((slot) => ({
     id: slot,
@@ -246,7 +267,13 @@ export function commandCards(views: readonly WorkflowCommandView[]): LibraryCard
     // Durable configuration, never run status. `Not configured` is not toned as a warning:
     // a slot nobody configured is a gate that passes with a note, which is the designed
     // behaviour of a portable workflow rather than something to fix.
-    fact: workflowCommandFact(bySlot.get(slot)),
+    //
+    // A view that HAS arrived is trusted whatever the snapshot flag says, which is the same
+    // rule the editor's rail follows: the flag exists to describe an absence, and a slot the
+    // stream has already delivered is not absent.
+    fact: hasSnapshot || bySlot.has(slot)
+      ? workflowCommandFact(bySlot.get(slot))
+      : COMMAND_FACT_UNKNOWN,
   }));
 }
 

@@ -119,6 +119,45 @@ test("the Commands shelf is the sixth question, with four built-in cards and no 
   await shoot(dashboard, "shelf");
 });
 
+test("an unloaded catalog says so, rather than claiming four unconfigured slots", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * `Not configured` is a claim about what this machine has stored, and the browser cannot
+   * make it until the catalog has actually arrived. Drawn too early it is worse than blank:
+   * an operator who reads it on a slot that does have a global default is being invited to
+   * type over configuration that merely has not loaded.
+   *
+   * The window is milliseconds on a healthy daemon, so it is held open here by severing the
+   * event stream before the page asks for it - which is also the state a daemon that has
+   * stopped answering leaves the shelf in permanently.
+   */
+  await dashboard.route("**/events", (route) => route.abort());
+  // A RELOAD, not a hash navigation. `#/library` from the fleet is same-document, so the
+  // EventSource opened before the interception was installed would survive it and the
+  // snapshot would already be in hand - the window this case exists to hold open would never
+  // occur, and the test would pass against the unfixed build.
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  await dashboard.reload();
+
+  const shelf = dashboard.getByRole("region", { name: "What does each standard gate run?" });
+  await expect(shelf).toBeVisible();
+  for (const slot of SLOTS) {
+    // Still four cards - the slots are a fixed vocabulary that ships with the build, so their
+    // existence is knowable without the daemon. What they RUN is not.
+    await expect(card(dashboard, slot)).toBeVisible();
+    await expect(card(dashboard, slot)).toContainText("Waiting for the daemon");
+  }
+  await expect(shelf).not.toContainText("Not configured");
+
+  // And the claim appears the moment the catalog does. Same page, no reload: the stream is
+  // restored and the browser's own reconnect brings the snapshot in.
+  await dashboard.unroute("**/events");
+  await expect(card(dashboard, "test")).toContainText("Not configured", { timeout: 30_000 });
+  await expect(shelf).not.toContainText("Waiting for the daemon");
+});
+
 test("a global default is typed, previewed, saved, and lands in the daemon's catalog", async ({
   dashboard,
   daemon,

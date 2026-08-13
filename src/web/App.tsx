@@ -2140,6 +2140,7 @@ export function App(): React.JSX.Element {
             personaUpstream={personaDrift.upstream}
             sessionActions={sessionActions}
             workflowCommands={workflowCommands}
+            hasSnapshot={hasSnapshot}
             workflowRuns={workflowRuns}
             ensembleSummaries={ensembleSummaries}
             ensembleAttentionCount={ensembleAttentionCount}

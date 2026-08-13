@@ -19,6 +19,7 @@ import {
   personaCards,
   workflowCards,
   workflowRunsCrossLink,
+  COMMAND_FACT_UNKNOWN,
   LIBRARY_SHELF_COPY,
 } from "../src/web/library/library-model.ts";
 
@@ -116,6 +117,9 @@ function page(overrides: Record<string, unknown> = {}): string {
     onOpenEnsembles: () => {},
     onOpenMissions: () => {},
     onOpenTaskSources: () => {},
+    // Loaded, unless a case says otherwise. Every durable claim on this page needs the
+    // snapshot to have landed, and the unloaded reading has its own case below.
+    hasSnapshot: true,
     ...overrides,
   }));
 }
@@ -279,7 +283,7 @@ test("Commands is the sixth shelf, with one card per built-in slot and no New ca
     LIBRARY_SHELF_COPY.map((shelf) => shelf.id),
     ["workflows", "personas", "actions", "ensembles", "missions", "commands"],
   );
-  const cards = commandCards([]);
+  const cards = commandCards([], true);
   assert.deepEqual(cards.map((card) => card.id), ["test", "lint", "typecheck", "build"]);
   // Every one is built-in and none of them is creatable, which is the difference between
   // this shelf and the three above it.
@@ -299,26 +303,26 @@ test("a Command card states durable configuration, and nothing about a run", () 
     ...over,
   });
   // The four readings the shelf has to be able to tell apart.
-  assert.equal(commandCards([catalog({})])[0]?.fact, "Not configured");
+  assert.equal(commandCards([catalog({})], true)[0]?.fact, "Not configured");
   assert.equal(
-    commandCards([catalog({ defaultCommand: ["npm", "test"] })])[0]?.fact,
+    commandCards([catalog({ defaultCommand: ["npm", "test"] })], true)[0]?.fact,
     "Global default",
   );
   assert.equal(
-    commandCards([catalog({ overrides: [{ repoRoot: "/a", command: ["a"] }] })])[0]?.fact,
+    commandCards([catalog({ overrides: [{ repoRoot: "/a", command: ["a"] }] })], true)[0]?.fact,
     "1 override · no global default",
   );
   assert.equal(
     commandCards([catalog({
       defaultCommand: ["npm", "test"],
       overrides: [{ repoRoot: "/a", command: ["a"] }, { repoRoot: "/b", command: ["b"] }],
-    })])[0]?.fact,
+    })], true)[0]?.fact,
     "Global default · 2 overrides",
   );
   // A slot the catalog has not answered for is still a card, reading as unconfigured rather
   // than vanishing - "unconfigured" and "not loaded" must not be the same missing tile.
   assert.deepEqual(
-    commandCards([]).map((card) => card.fact),
+    commandCards([], true).map((card) => card.fact),
     ["Not configured", "Not configured", "Not configured", "Not configured"],
   );
   // Rendered through the page, so the fact reaches the DOM rather than only the model.
@@ -326,4 +330,42 @@ test("a Command card states durable configuration, and nothing about a run", () 
     page({ workflowCommands: [catalog({ defaultCommand: ["npm", "test"] })] }),
     /class="lib-asset-fact">Global default</,
   );
+});
+
+// The claim `Not configured` is about what this MACHINE has stored, so it needs the catalog
+// to have arrived. Drawn early it is worse than blank: an operator reading it on a slot that
+// does have a global default is being invited to type over configuration that merely has not
+// loaded. The editor's rail already drew this distinction; the shelf did not.
+test("an unloaded catalog is said out loud, not drawn as four unconfigured slots", () => {
+  const unloaded = commandCards([], false);
+  assert.deepEqual(
+    unloaded.map((card) => card.fact),
+    Array.from({ length: 4 }, () => COMMAND_FACT_UNKNOWN),
+  );
+  // The cards themselves stay: the four slots ship with the build, so their existence is
+  // knowable without the daemon even though what they run is not.
+  assert.deepEqual(unloaded.map((card) => card.id), ["test", "lint", "typecheck", "build"]);
+
+  // A view that HAS arrived is trusted whatever the flag says - the flag describes an
+  // absence, and a slot the stream already delivered is not absent.
+  const partial = commandCards(
+    [{ ...emptyWorkflowCommandView("lint"), defaultCommand: ["npm", "run", "lint"] }],
+    false,
+  );
+  assert.equal(partial.find((card) => card.id === "lint")?.fact, "Global default");
+  assert.equal(partial.find((card) => card.id === "test")?.fact, COMMAND_FACT_UNKNOWN);
+
+  // And through the page, which defaults to unloaded for the same reason the projection
+  // requires the flag: the optimistic default is exactly the bug.
+  const html = renderToStaticMarkup(createElement(LibraryPage, {
+    onOpenAsset: () => {},
+    onCreateAsset: () => {},
+    onLaunchEnsemble: () => {},
+    onOpenRuns: () => {},
+    onOpenEnsembles: () => {},
+    onOpenMissions: () => {},
+    onOpenTaskSources: () => {},
+  }));
+  assert.match(html, new RegExp(COMMAND_FACT_UNKNOWN));
+  assert.doesNotMatch(html, /Not configured/);
 });

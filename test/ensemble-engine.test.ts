@@ -235,6 +235,32 @@ test("retrying a member whose wave already succeeded still dispatches it, not le
   assert.equal(store.getRun(run.id)!.status, "waiting", "the run returned to waiting for the retried member");
 });
 
+test("member retry refuses once the run is terminal, even with budget and a reclaimed worktree", async () => {
+  const { store, gateway, engine } = harness();
+  const plan = reviewPlan(2, 2);
+  plan.budget.maxMembers = 4; // room for two retries, so a refusal here is about the RUN, not the budget
+  const { run } = store.createRun(runInsert(plan));
+  await engine.launch(run.id);
+  const [t1, t2] = gateway.dispatched.map((d) => d.taskId);
+  const memberId = store.listAttempts(run.id).find((a) => a.taskId === t1)!.memberId;
+
+  // Both members' tasks end without submitting: everyone is settled with nothing eligible, so the
+  // review barrier can never be met and the run fails terminally. This is the exact state the
+  // docs describe, and the one where the detail page used to keep offering Retry.
+  gateway.fail(t1!);
+  gateway.fail(t2!);
+  await engine.wake(run.id);
+  assert.equal(store.getRun(run.id)!.status, "failed");
+  assert.equal(store.getMember(memberId)!.status, "failed", "a failed run leaves failed members behind");
+  gateway.vanish(t1!); // failing the run reaped its worktree
+
+  const createdBefore = gateway.created.length;
+  assert.equal(await engine.retryMember(run.id, memberId), false, "a terminal run relaunches nobody");
+  assert.equal(gateway.created.length, createdBefore, "no Task was created for the refused retry");
+  assert.equal(store.listAttempts(run.id).filter((a) => a.memberId === memberId).length, 1);
+  assert.equal(store.getRun(run.id)!.status, "failed", "the refusal left the terminal run untouched");
+});
+
 test("member retry refuses before Task creation when the lifetime launch budget is spent", async () => {
   const { store, gateway, engine } = harness();
   const { run } = store.createRun(runInsert(singleWavePlan(2)));

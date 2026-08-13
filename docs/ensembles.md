@@ -617,9 +617,15 @@ Every effect is persist-before-act, so a daemon restart resumes rather than rest
 - **Cancel ensemble** cancels every launching or active member task through TaskManager; submitted
   refs survive.
 - **Cancel/withdraw member** marks that member withdrawn after its task is cleaned up.
-- If work settles with **fewer than two** eligible artifacts, the run fails with an explanation and
-  offers **Retry member**, **Restore result**, or **Cancel** - a competition is never manufactured
-  from one artifact.
+- If work settles with **fewer than two** eligible artifacts, the run **fails** with an explanation
+  naming the barrier that can no longer be met - a competition is never manufactured from one
+  artifact. That failure is terminal and is a hard stop, not a pause: every member's agent is
+  stopped and its worktree reclaimed on the way out, so there is no member to retry (a terminal run
+  refuses `retry_member`), no live checkout left to restore a result into, and nothing still running
+  to cancel. What survives is the evidence - each submitted snapshot remains a private ref under
+  `refs/mission-control/ensembles/`, and its diff is re-derived from the shared git dir, so the
+  Artifacts and comparison views keep working for as long as the run is retained. The way on from a
+  failed run is to read those artifacts and start a new run, not to revive this one.
 - A cleanup step that cannot finish leaves the run `finalizing` with an actionable error, resumed by
   **resolve finalization**.
 

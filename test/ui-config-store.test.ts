@@ -36,19 +36,20 @@ test("an unset key reads as the shipped defaults", () => {
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.deepEqual(config.keybindings, {});
   assert.equal(config.keybindingHints, true);
-  assert.equal(config.guidedDispatch, false);
+  assert.equal(config.guidedDispatch, true);
 });
 
-test("the guided dispatch preference round-trips, and a row from before it parses", () => {
+test("the guided dispatch default and an explicit off preference both round-trip", () => {
   // Two directions, one key. Forward: a config saved by a build that had never heard of
   // this preference still opens, and reads as the shipped default rather than throwing -
   // which is what `.default()` on the field buys, and the reason adding a preference owes
-  // no migration. Backward: what an operator turns on is what comes back.
-  setUiConfig({ layout: "board" });
-  assert.equal(getUiConfig().guidedDispatch, false);
-  setUiConfig({ guidedDispatch: true });
+  // no migration. Backward: what an operator turns off is what comes back after the default
+  // moves on.
+  setAppConfig("ui", { layout: "board" });
+  assert.equal(getUiConfig().guidedDispatch, true);
+  setUiConfig({ guidedDispatch: false });
   const config = getUiConfig();
-  assert.equal(config.guidedDispatch, true);
+  assert.equal(config.guidedDispatch, false);
   assert.equal(config.layout, "board", "an unrelated patch cleared the layout");
 });
 

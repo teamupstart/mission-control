@@ -1755,7 +1755,7 @@ export const UI_CONFIG_DEFAULTS = {
   alerts: { notifications: false, sound: true },
   richText: true,
   keybindingHints: true,
-  guidedDispatch: false,
+  guidedDispatch: true,
   trustStaged: [],
 } as const;
 
@@ -1799,10 +1799,10 @@ export const UiConfigSchema = z.object({
    * Whether pressing the dispatch shortcut runs the guided pass - the keyboard walk over
    * repo, kind, harness and after-work - before handing over the ordinary dispatch form.
    *
-   * Off in this build because nothing reads it yet; see
-   * `docs/plans/dispatch-wizard/phased-plan.md`. The shipped default is the ONE line that
-   * decides which dispatch every operator gets on upgrade, so it moves on its own, in its
-   * own change, once the e2e suite has stopped depending on it.
+   * On by default: <kbd>Tab</kbd> hands the operator back to the ordinary form in one key,
+   * while an explicit off preference remains off. This is the ONE line that decides which
+   * dispatch an unconfigured profile gets, so the e2e dashboard fixture pins its own choice
+   * instead of inheriting this product default.
    */
   guidedDispatch: z.boolean().default(UI_CONFIG_DEFAULTS.guidedDispatch),
   /**

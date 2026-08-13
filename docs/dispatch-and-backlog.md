@@ -1,7 +1,8 @@
 # Dispatch an agent
 
 The dashboard isn't just a mirror - you can launch new agents from it. Click **＋
-Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daemon:
+Dispatch** or press <kbd>+</kbd> to start the guided pass, answer its four questions (or press
+<kbd>⇥</kbd> to use the ordinary form), describe the task, and the daemon:
 
 1. provisions an **isolated worktree** for the task (a pooled
    [treehouse](worktrees-and-checks.md#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
@@ -31,31 +32,33 @@ calling an unverified task running.
 
 ## The guided pass
 
-The form opens with eight controls, and for most dispatches five of them are already right.
-The decisions that actually change are **Kind**, **Harness** and **After work** - and all
-three sit behind a tab-walk or a pointer trip, because the task box takes the caret on open.
+The form has eight controls, and for most dispatches five of them are already right. Guided
+dispatch asks the four choices that start the work as a keyboard pass inside that same dialog,
+then hands over the ordinary form with the answers set and the caret in the task box:
 
-**Guided**, the switch in the modal's header, inverts that. With it on, pressing <kbd>+</kbd>
-asks those three as single keystrokes inside the same dialog, then hands over the ordinary
-form with the answers already set and the caret in the task box. A default dispatch is
-<kbd>+</kbd> <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd> and you are typing.
+| Step | Choices | Keys |
+|---|---|---|
+| **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
+| **Kind** | ship, scout | <kbd>p</kbd>, <kbd>t</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
+| **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
+| **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
-It is **off by default**, and the setting is per machine. Two surfaces write it. The switch in
-the modal's header is the one to reach for mid-dispatch, because it is already on screen while
-you are deciding. **Settings → Dispatch** is where you look it up when you are not dispatching:
-it carries the same checkbox, deep-links at `#/settings/dispatch`, and puts the preference in
-⌘K under **Guided dispatch**, where a search result flips it in place. They are one value, so
-neither can disagree with the other.
+A common dispatch is <kbd>+</kbd> <kbd>↵</kbd> <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd>, then
+the task. Digits are ordinary filter characters during Repo and position shortcuts in the
+three closed lists. <kbd>⌫</kbd> deletes from the Repo filter; in later steps it goes back one
+question and un-answers it. <kbd>⇥</kbd> leaves the pass from any step, keeps every answer so
+far, and focuses the task box. <kbd>⌘↵</kbd> dispatches from the form as before.
 
-| Key | What it does |
-|---|---|
-| the printed letter | takes that option - <kbd>p</kbd> ship, <kbd>t</kbd> scout, <kbd>c</kbd> Claude Code, <kbd>x</kbd> Codex, <kbd>i</kbd> Pi, <kbd>d</kbd> dispatch default, <kbd>n</kbd> None |
-| <kbd>1</kbd>…<kbd>9</kbd> | takes the option in that position |
-| <kbd>↑</kbd><kbd>↓</kbd> <kbd>↵</kbd> | walk the list and take the highlighted one |
-| <kbd>⌫</kbd> | back one question, which un-answers it |
-| <kbd>⇥</kbd> | leave the pass and use the form, keeping every answer so far |
-| <kbd>esc</kbd> | closes the dispatch, exactly as it does from the form |
-| <kbd>⌘↵</kbd> | dispatches, exactly as it does from the form |
+<kbd>Esc</kbd> closes the dispatch from the three closed-list steps. Repo is progressive
+because its existing combobox owns Escape: the first press closes that list and ends the
+guided pass, leaving the typed repository in the ordinary form; a second closes the modal.
+
+Guided dispatch is **on by default**. An installation that never chose a value picks it up on
+upgrade, while an explicit off choice stays off. The switch in the modal's header is the one
+to reach for mid-dispatch. **Settings → Dispatch** is its durable home: it carries the same
+checkbox, deep-links at `#/settings/dispatch`, and puts the preference in ⌘K under **Guided
+dispatch**, where a search result flips it in place. Both surfaces write one value, so they
+cannot disagree.
 
 Nothing moves while it runs. The modal keeps its width and every field keeps its position;
 the questions float over the control they are about, the way that control's own dropdown

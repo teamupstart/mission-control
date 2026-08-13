@@ -621,18 +621,27 @@ Every effect is persist-before-act, so a daemon restart resumes rather than rest
 - **Cancel ensemble** cancels every launching or active member task through TaskManager; submitted
   refs survive.
 - **Cancel/withdraw member** marks that member withdrawn after its task is cleaned up.
-- If work settles with **fewer than two** eligible artifacts, the run fails with an explanation and
-  offers **Retry member**, **Restore result**, or **Cancel** - a competition is never manufactured
-  from one artifact.
+- If work settles with **fewer than two** eligible artifacts, the run **fails** with an explanation
+  naming the barrier that can no longer be met - a competition is never manufactured from one
+  artifact. That failure is terminal and is a hard stop, not a pause: every member's agent is
+  stopped and its worktree reclaimed on the way out, so there is no member to retry (a terminal run
+  refuses `retry_member`), no live checkout left to restore a result into, and nothing still running
+  to cancel. What survives is the evidence - each submitted snapshot remains a private ref under
+  `refs/mission-control/ensembles/`, and its diff is re-derived from the shared git dir, so the
+  Artifacts and comparison views keep working for as long as the run is retained. The way on from a
+  failed run is to read those artifacts and start a new run, not to revive this one.
 - A review that cannot **reach** a model - a spawn failure, a timeout, a provider blip - spends its
   own bounded budget rather than the evaluator's, waits longer before each retry (1s, then 4s), and
-  after three of them **parks** the run instead of failing it. Parking is deliberate: the expensive,
-  irreplaceable part of a run is the candidate work already on disk, so a provider outage leaves it
-  intact and waits for you. The pipeline marks that stage *paused* rather than failed - amber, naming
-  how many infrastructure errors it took and leaving the evaluator count untouched - because red
-  would say the candidates were gone when they are not. **Retry stage** grants one further attempt
-  per press. A review that DOES reach a model and comes back unusable is the evaluator's failure,
-  spends its attempt budget, and fails the run when that budget runs out.
+  after three of them **parks** the run instead of failing it. This is the one review outcome that
+  is a pause rather than a hard stop, and the distinction is the point: nothing reached a model, so
+  nothing was learned about the candidates, and the expensive, irreplaceable part of a run is the
+  candidate work already on disk. The pipeline marks that stage *paused* rather than failed - amber,
+  naming how many infrastructure errors it took and leaving the evaluator count untouched - because
+  red would say the candidates were gone when they are not. **Retry stage** grants one further
+  attempt per press, however the last one settled, and a restart that interrupts a granted attempt
+  leaves the stage parked and still asking for you. Only a person ends a parked run. A review that
+  DOES reach a model and comes back unusable is the evaluator's failure, spends its attempt budget,
+  and fails the run when that budget runs out.
 - A cleanup step that cannot finish leaves the run `finalizing` with an actionable error, resumed by
   **resolve finalization**.
 

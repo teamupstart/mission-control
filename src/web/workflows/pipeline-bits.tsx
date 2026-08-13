@@ -18,11 +18,14 @@ import { Tooltip } from "../components/Tooltip.tsx";
  * drawn on a session card cannot drift into two colour languages.
  *
  * `stopped` is the fifth and the newest, and it is a genuinely different claim rather than a
- * shade of the other four: a stage that was CANCELLED where it stood. `orphanBinding` marks
- * a lost session's queued reviewer attempts `cancelled`, and until this tone existed the
- * chip for them read amber `Reviewers` - which says "these are about to run" about attempts
- * that are dead. Grey, because absence is what actually happened; failed would blame the
- * reviewers for a session that disappeared underneath them.
+ * shade of the other four: NOTHING HAPPENED HERE. A stage that was CANCELLED where it stood is
+ * one way to arrive at it - `orphanBinding` marks a lost session's queued reviewer attempts
+ * `cancelled`, and until this tone existed the chip for them read amber `Reviewers`, which says
+ * "these are about to run" about attempts that are dead. A stage CARRIED FORWARD from an
+ * earlier round is the other: it did not run here either, and the same amber lie was being told
+ * about it. Grey, because absence is what actually happened in both - failed would blame the
+ * reviewers for a session that disappeared underneath them, and passed would credit a carried
+ * stage with an execution this round never gave it.
  */
 
 export const PIPELINE_STATUS_TONES = ["running", "waiting", "passed", "failed", "stopped"] as const;
@@ -34,7 +37,7 @@ export interface PipelineStatus {
   /** Why this status was skipped or otherwise needs more context. */
   tooltip?: string;
   /** Machine-readable reason for a deliberate skip; labels remain presentation only. */
-  skipKind?: "inspector_repair" | "unconfigured_check" | "unavailable_check";
+  skipKind?: "carried_pass" | "unconfigured_check" | "unavailable_check";
   /**
    * This advanced the pipeline without being earned - a check that was skipped or could not
    * run, rather than one that ran and succeeded.
@@ -209,6 +212,8 @@ export function StageCard({
   openLabel = null,
   onToggleDisabled = null,
   toggleLabel = null,
+  carried = false,
+  footer = null,
   children,
 }: {
   name: string;
@@ -224,6 +229,14 @@ export function StageCard({
   openLabel?: string | null;
   onToggleDisabled?: (() => void) | null;
   toggleLabel?: string | null;
+  /**
+   * This stage did not run in the round being read. It recedes rather than disappears: the
+   * pipeline's shape is what makes the gap legible, so hiding it would cost the reader the
+   * very structure that explains why the stages below it are the only ones working.
+   */
+  carried?: boolean;
+  /** The provenance slot under the members - where a carried stage names the round it passed in. */
+  footer?: ReactNode;
   children: ReactNode;
 }): React.JSX.Element {
   const title = (
@@ -240,7 +253,7 @@ export function StageCard({
   );
   return (
     <section
-      className={`wf-pipeline-stage${stateClass(state)}${disabled ? " is-disabled" : ""}${hasDirective ? " has-directive" : ""}`}
+      className={`wf-pipeline-stage${stateClass(state)}${disabled ? " is-disabled" : ""}${hasDirective ? " has-directive" : ""}${carried ? " is-carried" : ""}`}
       onDragOver={frame.onDragOver}
       onDrop={frame.onDrop}
     >
@@ -260,7 +273,50 @@ export function StageCard({
         {actions && <span className="wf-pipeline-stage-actions">{actions}</span>}
       </header>
       {children}
+      {footer}
     </section>
+  );
+}
+
+/**
+ * Where a carried stage's pass actually lives, and the way back to it.
+ *
+ * This exists because the alternative shipped first and was the whole defect: a stage that did
+ * not run showed no outcome at all, so confirming it had passed meant leaving the round you
+ * were reading, finding the earlier one in the scrubber, and reading it there. The round is
+ * NAMED here so the answer needs no navigation, and it is a BUTTON so the proof behind the
+ * answer needs one click rather than a hunt.
+ *
+ * The tick is the only green on a carried stage, and it belongs to this line rather than to the
+ * status chip for a reason worth keeping: it is making a claim about a DIFFERENT round. The
+ * chip speaks for the round on screen, where nothing ran.
+ */
+export function CarriedProvenance({
+  roundLabel,
+  onOpen = null,
+}: {
+  roundLabel: string;
+  onOpen?: (() => void) | null;
+}): React.JSX.Element {
+  const body = (
+    <>
+      <span className="wf-carried-tick" aria-hidden>✓</span>
+      <span className="wf-carried-text">Passed in {roundLabel}</span>
+    </>
+  );
+  if (!onOpen) return <p className="wf-carried">{body}</p>;
+  return (
+    <Tooltip label={`Show ${roundLabel}, where this stage earned its pass`}>
+      <button
+        type="button"
+        className="wf-carried is-link"
+        onClick={onOpen}
+        aria-label={`Passed in ${roundLabel}. Show that round.`}
+      >
+        {body}
+        <span className="wf-carried-go" aria-hidden>→</span>
+      </button>
+    </Tooltip>
   );
 }
 

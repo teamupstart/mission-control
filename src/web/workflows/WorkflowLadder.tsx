@@ -24,11 +24,12 @@ import {
 } from "../components/session-bits.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { Keycap } from "../components/Keycap.tsx";
-import type { PipelineStatus } from "./pipeline-bits.tsx";
+import { CarriedProvenance, type PipelineStatus } from "./pipeline-bits.tsx";
 import {
   actionBlockSentence,
   actionWaitSentence,
-  canShowInspectorOnlySkip,
+  carriedStageStatus,
+  carriedStatus,
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
@@ -36,13 +37,13 @@ import {
   disabledStatusFor,
   endStatus,
   gateWaitSentence,
+  inheritedAttempts,
+  inheritedPasses,
   inspectorFooterStatus,
   inspectorOnlyRoundSentence,
-  inspectorOnlySkipStatus,
   latestAttemptsFor,
+  newestInheritedSource,
   nodeStatusesForSubmission,
-  previousFullWorkflowAttempts,
-  priorAttemptPassed,
   reviewerStatus,
   runStatusLabel,
   selectedSubmission,
@@ -161,6 +162,7 @@ function Rung({
   terminal = false,
   pending = false,
   fixed = false,
+  carried = false,
   children = null,
 }: {
   name: string;
@@ -168,6 +170,8 @@ function Rung({
   status: PipelineStatus;
   terminal?: boolean;
   pending?: boolean;
+  /** Not run in this round because an earlier one already passed it. Recedes, never hides. */
+  carried?: boolean;
   /**
    * This rung is the completion POLICY, not an authored stage: it sits after the End and
    * nothing about it can be edited from any surface. A word rather than only a class, for
@@ -193,6 +197,7 @@ function Rung({
         rungState(status, pending),
         terminal ? "is-terminal" : "",
         fixed ? "is-fixed" : "",
+        carried ? "is-carried" : "",
       ].filter(Boolean).join(" ")}
     >
       <div className="wf-ladder-row">
@@ -277,9 +282,12 @@ export function WorkflowLadder({
   const session = submissionStatus(submission, changesRequested);
   const end = endStatus(detail, submission, true);
   const inspectorOnly = submission?.mode === "inspector_only";
-  const previousFullAttempts = inspectorOnly
-    ? previousFullWorkflowAttempts(detail, submission)
-    : new Map();
+  // Both shapes that leave a node without an attempt of its own, through the one derivation
+  // the runs monitor uses. The ladder has no scrubber, so its provenance line names the round
+  // without linking to it - "Open run" is the route to the round itself.
+  const inherited = inheritedPasses(detail, submission);
+  // The wider set behind it, for rows that need the nearest recorded OUTCOME rather than a pass.
+  const inheritedOutcomes = inheritedAttempts(detail, submission);
   const gate = detail.inspectorGate
     && detail.inspectorGate.state.waitReason !== null
     ? detail.inspectorGate
@@ -322,10 +330,14 @@ export function WorkflowLadder({
             const nodeId = member.nodeId;
             const node = nodeId ? nodes.get(nodeId) : undefined;
             const attempt = nodeId ? attempts.get(nodeId) : undefined;
-            const priorAttempt = nodeId ? previousFullAttempts.get(nodeId) : undefined;
+            const carried = nodeId ? inherited.get(nodeId) ?? null : null;
+            // The nearest recorded outcome, not the carried PASS: an unconfigured command
+            // records `skipped`, so reading this from the pass map would strip the sentence
+            // that explains why the row is amber.
+            const previous = nodeId ? inheritedOutcomes.get(nodeId) : undefined;
             const outcome = attempt
               ? checkOutcomeOf(attempt)
-              : inspectorOnly && priorAttempt ? checkOutcomeOf(priorAttempt) : null;
+              : previous ? checkOutcomeOf(previous.attempt) : null;
             // The runs monitor's override, read-only here and under the same boundary: a
             // switched-off gate the round has not reached reads Disabled, while an outcome
             // this round already recorded keeps its real chip on the session tile too. An
@@ -342,14 +354,8 @@ export function WorkflowLadder({
             const actionState = member.kind === "session_action" && attempt
               ? sessionActionProgress(attempt)
               : null;
-            const status = canShowInspectorOnlySkip(
-              inspectorOnly,
-              nodeId,
-              node !== undefined,
-              attempt !== undefined,
-              priorAttemptPassed(member.kind, priorAttempt),
-            )
-              ? inspectorOnlySkipStatus()
+            const status = carried
+              ? carriedStatus(carried.roundLabel)
               : (member.kind === "session_action"
                 ? null
                 : disabledStatusFor(detail.run.disabledNodeIds, nodeId, attempt))
@@ -368,12 +374,13 @@ export function WorkflowLadder({
                 : member.kind === "session_action" ? "Missing session action" : "Missing persona";
             const verdict = attempt ? verdictOf(attempt) : null;
             const meta = attempt ? verdictMeta(attempt, calls) : null;
-            return { member, name, attempt, outcome, status, verdict, meta, actionState };
+            return { member, name, attempt, outcome, status, verdict, meta, actionState, carried };
           });
-          const status = inspectorOnly
-            && members.length > 0
-            && members.every((member) => member.status.skipKind === "inspector_repair")
-            ? inspectorOnlySkipStatus()
+          const carriedPasses = members.flatMap((member) => member.carried ? [member.carried] : []);
+          const stageCarried = members.length > 0 && carriedPasses.length === members.length;
+          const carriedSource = stageCarried ? newestInheritedSource(carriedPasses) : null;
+          const status = stageCarried
+            ? carriedStageStatus(carriedPasses.map((pass) => pass.roundLabel))
             : stageStatus(members.map((member) => member.status), stage.kind);
           const objection = members.find((member) => member.verdict?.verdict === "fail");
           const repeatOffenders = status.tone === "failed"
@@ -389,6 +396,7 @@ export function WorkflowLadder({
               name={stageName(stage, index, personaNames, actionNames)}
               sub={stageSummary(stage)}
               status={status}
+              carried={stageCarried}
             >
               {/* EVERY member, whatever the stage folded to. A stage that hid its rows once it
                   passed threw away the only thing that says who passed it: "All passed" beside
@@ -461,6 +469,12 @@ export function WorkflowLadder({
                   })}
                 </ul>
               )}
+              {/* UNDER the members, which is where the runs monitor puts it too. The members are
+                  the evidence of the pass this line is citing, so the line reads as their
+                  conclusion rather than as a heading over rows it does not describe - and one
+                  placement across both surfaces keeps a reader who moves between them from
+                  meeting two arrangements of the same three facts. */}
+              {carriedSource && <CarriedProvenance roundLabel={carriedSource.roundLabel} />}
               {objection?.verdict?.verdict === "fail" && (
                 <p className="wf-ladder-why">
                   <strong>{objection.name}:</strong> {objection.verdict.summary}

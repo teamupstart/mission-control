@@ -53,11 +53,11 @@ import {
   deliveryStateView,
   gateSummaryStatus,
   gateWaitSentence,
+  inheritedAttempts,
+  inheritedPasses,
   inspectorFooterStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
-  previousFullWorkflowAttempts,
-  priorAttemptPassed,
   readCapturedContext,
   reviewerAttempts,
   runRounds,
@@ -583,17 +583,12 @@ export function WorkflowRunView({
   /** A published graph that CANNOT produce a verdict, which is a different empty than "not yet". */
   const reviewerlessVersion = version ? !version.graph.nodes.some(isVerdictNode) : false;
   const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
-  const previousFullAttempts = inspectorOnly
-    ? previousFullWorkflowAttempts(detail, viewed)
-    : new Map<string, WorkflowNodeAttempt>();
-  const priorPassedNodeIds = inspectorOnly && version
-    ? version.graph.nodes.flatMap((node) => {
-        if (node.kind !== "persona" && node.kind !== "check" && node.kind !== "session_action") {
-          return [];
-        }
-        return priorAttemptPassed(node.kind, previousFullAttempts.get(node.id)) ? [node.id] : [];
-      })
-    : [];
+  // Every pass this round carries rather than re-earns, with the round each came from. One
+  // derivation for both shapes that produce them - a continuation segment and an
+  // Inspector-only round - so the two cannot drift into two ways of saying "did not run here".
+  const inherited = inheritedPasses(detail, viewed);
+  // The wider set behind it, for rows that need the nearest recorded OUTCOME rather than a pass.
+  const inheritedOutcomes = inheritedAttempts(detail, viewed);
   const statuses = nodeStatusesForSubmission(detail, viewed?.id ?? null);
   const calls = detail.llmCalls ?? [];
   const completionClaims = detail.events.flatMap((event) => {
@@ -896,14 +891,17 @@ export function WorkflowRunView({
             // Read from the attempt's recorded outcome, never inferred from its verdict: a
             // check that was skipped or could not run passes the gate, so the verdict says
             // "pass" for a command that never executed.
+            // The wider `inheritedAttempts` rather than the carried PASSES, because an
+            // unconfigured command records `skipped` and never `passed`: reading this from the
+            // pass map would drop the sentence explaining why the row is amber.
             const attempt = latestAttemptByNode.get(nodeId);
-            const prior = inspectorOnly ? previousFullAttempts.get(nodeId) : undefined;
+            const previous = inheritedOutcomes.get(nodeId)?.attempt;
             return attempt
               ? checkOutcomeOf(attempt)?.status ?? null
-              : prior ? checkOutcomeOf(prior)?.status ?? null : null;
+              : previous ? checkOutcomeOf(previous)?.status ?? null : null;
           }}
-          inspectorOnly={inspectorOnly}
-          priorPassedNodeIds={priorPassedNodeIds}
+          inherited={inherited}
+          onOpenRound={onRound}
           actionWaitFor={(nodeId) => {
             // The attempt's OWN durable state, not `summary.actionWait`. A repair round can
             // run several actions in turn and the summary carries one; scrubbing to an

@@ -54,6 +54,7 @@ export function EnsembleRuns({
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionErrorKind, setActionErrorKind] = useState<string | null>(null);
+  const [actionErrorMemberId, setActionErrorMemberId] = useState<string | null>(null);
   const loadGeneration = useRef(0);
   const actionGeneration = useRef(0);
   const observedRunIds = useRef(new Set<string>());
@@ -137,15 +138,21 @@ export function EnsembleRuns({
     setActionPending(null);
     setActionError(null);
     setActionErrorKind(null);
+    setActionErrorMemberId(null);
   }, [selected]);
 
   const runAction = (body: EnsembleActionBody): void => {
     const actedRunId = selected;
     if (!actedRunId) return;
+    // An action that NAMES a member is answered on that member's card. Read off the body rather
+    // than from a second per-card error channel, so every member verb the generic action schema
+    // grows is addressed correctly without a new piece of state to keep in step.
+    const actedMemberId = "memberId" in body ? body.memberId : null;
     const actionToken = ++actionGeneration.current;
     setActionPending(body.kind);
     setActionError(null);
     setActionErrorKind(null);
+    setActionErrorMemberId(null);
     void ensembleAction(actedRunId, body).then((result) => {
       if (
         selectedRef.current !== actedRunId ||
@@ -160,6 +167,7 @@ export function EnsembleRuns({
         // A 409 means the run moved on; show the fresh state, never replay automatically.
         setActionError(result.error);
         setActionErrorKind(body.kind);
+        setActionErrorMemberId(actedMemberId);
         if (result.status === 409) load(actedRunId, false);
       }
     });
@@ -172,6 +180,7 @@ export function EnsembleRuns({
     setActionPending("delete");
     setActionError(null);
     setActionErrorKind(null);
+    setActionErrorMemberId(null);
     void deleteEnsemble(actedRunId, confirmId).then((result) => {
       if (
         selectedRef.current !== actedRunId ||
@@ -208,6 +217,9 @@ export function EnsembleRuns({
     setActionPending("submit_member");
     setActionError(null);
     setActionErrorKind(null);
+    // Deliberately NOT addressed to the card: the manual submission form renders its own refusal
+    // inline, beside the button that raised it, from the string this returns.
+    setActionErrorMemberId(null);
     const response = await submitEnsembleMember(actedRunId, memberId, result);
     if (
       selectedRef.current !== actedRunId ||
@@ -348,6 +360,7 @@ export function EnsembleRuns({
             actionPending={actionPending}
             actionError={actionError}
             actionErrorKind={actionErrorKind}
+            actionErrorMemberId={actionErrorMemberId}
             onAction={runAction}
             onDelete={runDelete}
             onLoadPatch={loadPatch}

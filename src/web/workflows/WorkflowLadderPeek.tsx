@@ -8,9 +8,12 @@ import {
 } from "@shared/workflow-stages.ts";
 import { workflowRunLabel, workflowRunTone } from "../components/session-bits.tsx";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
+import type { InheritedPass } from "./run-model.ts";
 import {
   actionBlockSentence,
   actionWaitSentence,
+  carriedStageStatus,
+  carriedStatus,
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
@@ -18,7 +21,9 @@ import {
   endStatus,
   gateSummaryStatus,
   gateWaitSentence,
+  inheritedPasses,
   latestAttemptsFor,
+  newestInheritedSource,
   nodeStatusesForSubmission,
   reviewerStatus,
   selectedSubmission,
@@ -42,6 +47,8 @@ export interface WorkflowLadderPeekView {
   status: PipelineStatus;
   members: WorkflowLadderPeekMember[];
   sentence: string | null;
+  /** `3 stages carried from Round 1 · evidence 1`, or null when this round ran them all. */
+  carried: string | null;
 }
 
 interface StagePeek {
@@ -54,12 +61,31 @@ interface StagePeek {
   degradedSentence: string | null;
 }
 
+/**
+ * Which rung is worth the tile's one slot.
+ *
+ * A CARRIED stage sorts as resolved rather than as a wait, and that ordering is the whole
+ * correctness of this function on a continuation segment. Carried stages have no attempt in the
+ * viewed submission, so before this they fell through to amber `waiting` and won the sort ahead
+ * of the action actually running - the tile named "Stage 1", a stage that had already passed
+ * and would never run again, while the Pull Request below it was the live work. A tile that
+ * points at the wrong rung is worse than one that points at nothing.
+ */
 function peekPriority(stage: StagePeek): number {
   if (stage.status.tone === "failed") return 0;
   if (stage.status.tone === "running") return 1;
   if (stage.status.degraded) return 2;
+  if (stage.status.skipKind === "carried_pass") return 4;
   if (stage.status.tone === "waiting") return 3;
   return 4;
+}
+
+/** The tile's one line about everything this round did not have to run again. */
+function carriedLine(passes: readonly InheritedPass[], stages: number): string | null {
+  if (stages === 0) return null;
+  const source = newestInheritedSource(passes);
+  if (!source) return null;
+  return `${stages} stage${stages === 1 ? "" : "s"} carried from ${source.roundLabel}`;
 }
 
 /**
@@ -82,6 +108,7 @@ export function workflowLadderPeekView(
       status: { tone: "waiting", label: view.label },
       members: [],
       sentence: view.sentence,
+      carried: null,
     };
   }
 
@@ -102,6 +129,7 @@ export function workflowLadderPeekView(
       status: gateSummaryStatus(summary.gate),
       members: [],
       sentence: gateWaitSentence(gate.state.waitReason),
+      carried: null,
     };
   }
 
@@ -123,6 +151,7 @@ export function workflowLadderPeekView(
   const statuses = nodeStatusesForSubmission(detail, submission.id);
   const changesRequested = [...attempts.values()]
     .some((attempt) => verdictOf(attempt)?.verdict === "fail");
+  const inherited = inheritedPasses(detail, submission);
 
   if (submission.mode === "inspector_only") {
     return {
@@ -131,26 +160,42 @@ export function workflowLadderPeekView(
       status: submissionStatus(submission, changesRequested),
       members: [],
       sentence: null,
+      // Counted in STAGES rather than nodes, so the tile and the ladder beside it agree on
+      // what a unit is. An Inspector-only round bypasses whole stages at a time.
+      carried: carriedLine(
+        [...inherited.values()],
+        pipeline.stages.filter((stage) => {
+          const ids = stageMembers(stage).flatMap((member) =>
+            member.nodeId ? [member.nodeId] : []);
+          return ids.length > 0 && ids.every((id) => inherited.has(id));
+        }).length,
+      ),
     };
   }
 
+  let carriedStages = 0;
   const stages: StagePeek[] = pipeline.stages.map((stage, index) => {
     let sentence: string | null = null;
     let degradedSentence: string | null = null;
+    const stageCarriedPasses: InheritedPass[] = [];
     const members = stageMembers(stage).map((member, memberIndex) => {
       const nodeId = member.nodeId;
       const node = nodeId ? nodes.get(nodeId) : undefined;
       const attempt = nodeId ? attempts.get(nodeId) : undefined;
+      const carried = nodeId ? inherited.get(nodeId) ?? null : null;
+      if (carried) stageCarriedPasses.push(carried);
       const outcome = attempt ? checkOutcomeOf(attempt) : null;
       // Not gated on `waiting`, for the full ladder's reason: a block is `state: "error"`.
       const actionState = member.kind === "session_action" && attempt
         ? sessionActionProgress(attempt)
         : null;
-      const status = member.kind === "session_action"
-        ? sessionActionStatus(nodeId ? statuses[nodeId] : undefined, actionState?.wait ?? null)
-        : member.kind === "check"
-          ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
-          : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
+      const status = carried
+        ? carriedStatus(carried.roundLabel)
+        : member.kind === "session_action"
+          ? sessionActionStatus(nodeId ? statuses[nodeId] : undefined, actionState?.wait ?? null)
+          : member.kind === "check"
+            ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
+            : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
       const name = node
         ? nodeLabel(graph, node, personaNames, actionNames)
         : member.kind === "check"
@@ -177,17 +222,22 @@ export function workflowLadderPeekView(
         status,
       };
     });
+    const stageCarried = members.length > 0 && stageCarriedPasses.length === members.length;
+    if (stageCarried) carriedStages += 1;
     return {
       index,
       name: stageName(stage, index, personaNames, actionNames),
       sub: stageSummary(stage),
-      status: stageStatus(members.map((member) => member.status), stage.kind),
+      status: stageCarried
+        ? carriedStageStatus(stageCarriedPasses.map((pass) => pass.roundLabel))
+        : stageStatus(members.map((member) => member.status), stage.kind),
       members,
       sentence,
       degradedSentence,
     };
   });
 
+  const carried = carriedLine([...inherited.values()], carriedStages);
   const active = stages
     .slice()
     .sort((left, right) => peekPriority(left) - peekPriority(right) || left.index - right.index)[0];
@@ -198,6 +248,7 @@ export function workflowLadderPeekView(
       status: active.status,
       members: active.members,
       sentence: active.sentence ?? active.degradedSentence,
+      carried,
     };
   }
 
@@ -209,6 +260,7 @@ export function workflowLadderPeekView(
       status: end,
       members: [],
       sentence: null,
+      carried,
     };
   }
 
@@ -220,6 +272,7 @@ export function workflowLadderPeekView(
         status: lastStage.status,
         members: lastStage.members,
         sentence: lastStage.sentence ?? lastStage.degradedSentence,
+        carried,
       }
     : {
         name: pipeline.endOutcome,
@@ -227,6 +280,7 @@ export function workflowLadderPeekView(
         status: end,
         members: [],
         sentence: null,
+        carried,
       };
 }
 
@@ -291,6 +345,14 @@ export function WorkflowLadderPeek({
             <p className="wf-tile-peek-sentence">
               {sentence.lead && <strong>{sentence.lead}</strong>}{" "}
               {sentence.rest}
+            </p>
+          )}
+          {/* Last, and outside the rung's own reading: it is about the stages this tile is
+              NOT showing, so putting it above the active rung would answer a question the
+              reader has not asked yet. */}
+          {view.carried && (
+            <p className="wf-tile-peek-carried">
+              <span className="wf-carried-tick" aria-hidden>✓</span> {view.carried}
             </p>
           )}
         </div>

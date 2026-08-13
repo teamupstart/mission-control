@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -301,7 +301,18 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
         : 0;
     }).toBeGreaterThanOrEqual(1_500);
   };
-  await expect(card.getByText(`Mock reply to: ${TASK}`)).toBeVisible();
+  /**
+   * A RECORDED turn carrying this text - never the live activity line above it.
+   *
+   * `.turn-progress` echoes what the session reports it is doing right now, and for this fake
+   * that is the first line of the very reply being waited on. So while a turn is in flight the
+   * same string is on screen twice, in `.turn-progress-text` and in the transcript's own
+   * `.turn-text`, and an unscoped `getByText` resolves to two elements - a strict-mode violation
+   * that fails as if the reply never arrived. Seen on a loaded machine under the full suite.
+   */
+  const turn = (text: string): Locator => card.locator(".turn").getByText(text, { exact: true });
+
+  await expect(turn(`Mock reply to: ${TASK}`)).toBeVisible();
   await waitForDriverIdle();
 
   // Three messages, each with a distinct reply. A single message would pass even if only
@@ -311,15 +322,15 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   for (const message of messages) {
     await reply.fill(message);
     await reply.press("Enter");
-    await expect(card.getByText(`Mock reply to: ${message}`)).toBeVisible();
+    await expect(turn(`Mock reply to: ${message}`)).toBeVisible();
     await waitForDriverIdle();
   }
 
   // All three are still on screen together - the conversation accumulated rather than
   // replacing itself - and the user's own turns are rendered too, not just the replies.
   for (const message of messages) {
-    await expect(card.getByText(`Mock reply to: ${message}`)).toBeVisible();
-    await expect(card.getByText(message, { exact: true })).toBeVisible();
+    await expect(turn(`Mock reply to: ${message}`)).toBeVisible();
+    await expect(turn(message)).toBeVisible();
   }
 
   // Visual evidence of the SUCCESSFUL path. Playwright's own `screenshot` setting captures

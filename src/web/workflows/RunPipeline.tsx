@@ -15,6 +15,7 @@ import {
   type StageNode,
 } from "@shared/workflow-stages.ts";
 import {
+  CarriedProvenance,
   InspectorFooter,
   PipelineFrame,
   ReviewerRow,
@@ -26,12 +27,14 @@ import {
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import {
-  canShowInspectorOnlySkip,
+  carriedStageStatus,
+  carriedStatus,
   checkStatus,
-  inspectorOnlySkipStatus,
+  newestInheritedSource,
   reviewerStatus,
   sessionActionStatus,
   stageStatus,
+  type InheritedPass,
 } from "./run-model.ts";
 
 function PipelineActionsMenu({
@@ -101,8 +104,8 @@ export function RunPipeline({
   end,
   metaFor,
   checkOutcomeFor,
-  inspectorOnly = false,
-  priorPassedNodeIds,
+  inherited,
+  onOpenRound,
   actionWaitFor,
   inspectorDetail = null,
   inspectorStatus = null,
@@ -129,10 +132,16 @@ export function RunPipeline({
    * distinction rather than asserting the wrong half of it.
   */
   checkOutcomeFor?: (nodeId: string) => WorkflowCheckStatus | null;
-  /** This round bypassed stages that passed before an Inspector-requested repair. */
-  inspectorOnly?: boolean;
-  /** Nodes with an earned pass in the preceding full-workflow round. */
-  priorPassedNodeIds?: readonly string[];
+  /**
+   * Node id -> the earlier round's pass this round carries rather than re-earning.
+   *
+   * Computed by the caller, which is the only party holding the whole run: whether a node was
+   * legitimately not re-run is a question about SUBMISSIONS - the continuation chain, or an
+   * Inspector-only bypass - and this component is deliberately scoped to one round's statuses.
+   */
+  inherited?: ReadonlyMap<string, InheritedPass>;
+  /** Scrub the reader to the round a carried stage passed in. Absent leaves it unlinked. */
+  onOpenRound?: (submissionId: string) => void;
   /**
    * What a session action node is waiting FOR, when it is waiting.
    *
@@ -182,10 +191,6 @@ export function RunPipeline({
   const disabledSet = useMemo(
     () => new Set(disabledNodeIds ?? []),
     [disabledNodeIds],
-  );
-  const priorPassedSet = useMemo(
-    () => new Set(priorPassedNodeIds ?? []),
-    [priorPassedNodeIds],
   );
 
   if (!pipeline) {
@@ -248,6 +253,7 @@ export function RunPipeline({
           const directiveActive = member.kind === "persona" && Boolean(
             member.nodeId && directiveFor?.(member.nodeId),
           );
+          const carried = member.nodeId ? inherited?.get(member.nodeId) ?? null : null;
           return {
             key: member.nodeId ?? `${index}:${stageMemberKey(member)}`,
             nodeId: member.nodeId,
@@ -256,15 +262,10 @@ export function RunPipeline({
             togglable,
             disabled,
             directiveActive,
+            carried,
             meta: member.nodeId ? metaFor(member.nodeId) : null,
-            status: canShowInspectorOnlySkip(
-              inspectorOnly,
-              member.nodeId,
-              node !== undefined,
-              member.nodeId !== null && statuses[member.nodeId] !== undefined,
-              member.nodeId !== null && priorPassedSet.has(member.nodeId),
-            )
-              ? inspectorOnlySkipStatus()
+            status: carried
+              ? carriedStatus(carried.roundLabel)
               // The chip is the viewed round's history: Disabled only when the auto-pass
               // will convert (or synthesized) this node's attempt, never over an outcome the
               // round already reached - a recorded failure painted as Disabled would claim
@@ -304,16 +305,30 @@ export function RunPipeline({
         const openStageFeedback = stageFeedbackNodeId && onOpenPersonaDirective
           ? () => onOpenPersonaDirective(stageFeedbackNodeId)
           : null;
+        // A stage is carried only when EVERY member was. A stage half of whose members ran
+        // here is a stage that ran, and folding it to "Not re-run" would hide live work.
+        const carriedPasses = members.flatMap((member) => member.carried ? [member.carried] : []);
+        const stageCarried = members.length > 0 && carriedPasses.length === members.length;
+        const carriedSource = stageCarried ? newestInheritedSource(carriedPasses) : null;
         return (
           <div className="wf-pipeline-slot" key={`stage:${index}`}>
             <StageCard
               name={stageTitle}
               subtitle={stageSummary(stage)}
-              status={inspectorOnly
-                && members.length > 0
-                && members.every((member) => member.status.skipKind === "inspector_repair")
-                ? inspectorOnlySkipStatus()
+              status={stageCarried
+                ? carriedStageStatus(carriedPasses.map((pass) => pass.roundLabel))
                 : stageStatus(members.map((member) => member.status), stage.kind)}
+              carried={stageCarried}
+              footer={carriedSource
+                ? (
+                    <CarriedProvenance
+                      roundLabel={carriedSource.roundLabel}
+                      onOpen={onOpenRound
+                        ? () => onOpenRound(carriedSource.submission.id)
+                        : null}
+                    />
+                  )
+                : null}
               disabled={stageDisabled}
               hasDirective={members.some((member) => member.directiveActive)}
               onOpen={openStageFeedback}

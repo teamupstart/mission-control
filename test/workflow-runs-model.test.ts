@@ -16,7 +16,8 @@ import type {
   WorkflowSubmission,
 } from "../src/shared/workflow.ts";
 import {
-  canShowInspectorOnlySkip,
+  carriedStageStatus,
+  carriedStatus,
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
@@ -27,16 +28,18 @@ import {
   eventLine,
   eventsByRound,
   gateWaitSentence,
-  inspectorOnlySkipStatus,
-  latestAttemptsFor,
-  nodeStatusesForSubmission,
-  previousFullWorkflowAttempts,
+  inheritedAttempts,
+  inheritedPasses,
   priorAttemptPassed,
+  latestAttemptsFor,
+  newestInheritedSource,
+  nodeStatusesForSubmission,
   readCapturedContext,
   reviewerStatus,
   runRounds,
   selectedSubmission,
   stageStatus,
+  submissionRoundLabel,
   submissionStatus,
 } from "../src/web/workflows/run-model.ts";
 
@@ -282,31 +285,118 @@ test("a stage says how much of its gate was real", () => {
   assert.equal(stageStatus([notRun, checkStatus("fail", "failed")]).tone, "failed");
 });
 
-test("an Inspector-only repair marks previously passed stages as green skipped", () => {
-  assert.deepEqual(inspectorOnlySkipStatus(), {
-    tone: "passed",
-    label: "Skipped",
-    tooltip: "Skipped because this stage passed in the prior full workflow round. This Inspector repair round only rechecks Inspector.",
-    skipKind: "inspector_repair",
+/** A published version holding just the node kinds `inheritedPasses` reads. */
+const version = (
+  nodes: Array<{ id: string; kind: "persona" | "check" | "session_action" | "all_pass" }>,
+): Partial<WorkflowRunDetail> => ({ version: { graph: { nodes } } } as never);
+
+const PIPELINE = version([
+  { id: "persona-node", kind: "persona" },
+  { id: "check-node", kind: "check" },
+  { id: "action-node", kind: "session_action" },
+  { id: "join", kind: "all_pass" },
+]);
+
+const passed = (id: string, submissionId: string, nodeId: string): WorkflowNodeAttempt =>
+  attempt(id, submissionId, nodeId, { verdict: { verdict: "pass" } as never });
+
+/**
+ * A check that RAN and succeeded, which is a different attempt from one that merely passed.
+ *
+ * Three of the four check outcomes advance the graph and only this one was earned, so a check
+ * carries its outcome in `output` and the synthetic pass verdict beside it proves nothing.
+ */
+const passedCheck = (id: string, submissionId: string, nodeId: string): WorkflowNodeAttempt =>
+  attempt(id, submissionId, nodeId, {
+    verdict: { verdict: "pass" } as never,
+    output: {
+      status: "passed",
+      slot: "test",
+      command: ["npm", "test"],
+      exitCode: 0,
+      output: "",
+      truncatedBytes: 0,
+      note: "The command exited 0.",
+    },
   });
+
+test("a carried stage reads as neutral and names the round its pass came from", () => {
+  // NOT `tone: "passed"`. The stage did not run in the round being read, and a green chip on
+  // it is the same false assurance `degraded` exists to prevent elsewhere. The round is in the
+  // tooltip because reaching it used to mean leaving the round on screen to go and look.
+  assert.deepEqual(carriedStatus("Round 1 · evidence 1"), {
+    tone: "stopped",
+    label: "Not re-run",
+    tooltip: "Not re-run in this round. It passed in Round 1 · evidence 1, and that pass still stands.",
+    skipKind: "carried_pass",
+  });
+  // One source named; several collapse rather than picking one and claiming it for all.
+  assert.equal(carriedStageStatus(["Round 1", "Round 1"]).tooltip, carriedStatus("Round 1").tooltip);
+  assert.match(carriedStageStatus(["Round 1", "Round 2"]).tooltip!, /Every member passed/);
+  assert.equal(carriedStageStatus(["Round 1", "Round 2"]).skipKind, "carried_pass");
 });
 
-test("an Inspector-only repair never treats a missing pipeline member as previously passed", () => {
-  assert.equal(canShowInspectorOnlySkip(true, null, false, false, true), false);
-  assert.equal(canShowInspectorOnlySkip(true, "stale-node", false, false, true), false);
-  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, false, true), true);
-  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, true, true), false);
-  assert.equal(canShowInspectorOnlySkip(false, "authored-node", true, false, true), false);
-  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, false, false), false);
+test("an ordinary repair round carries nothing, because it re-runs everything", () => {
+  // The guard that matters most. A repair restarts the graph at Session and queues every node
+  // again, so a node with no attempt YET is genuinely not started - borrowing round 1's pass
+  // for it would report a review as done while it is still being re-run.
+  const first = submission("full-1", 1);
+  const repair = submission("full-2", 2);
+  const run = detail([first, repair], [passed("a", first.id, "persona-node")], PIPELINE);
+  assert.equal(inheritedPasses(run, repair).size, 0);
 });
 
-test("Inspector-only skips inherit only earned outcomes from the preceding full round", () => {
+test("a continuation segment carries the parent's passes, by the recorded parent link", () => {
+  const parent = submission("seg-0", 1);
+  const child = submission("seg-1", 1, { segment: 1, parentSubmissionId: parent.id });
+  // A sibling round that is NOT this segment's parent, to prove the walk follows the durable
+  // link rather than "whatever submission came before".
+  const unrelated = submission("other", 1, { createdAt: 0, updatedAt: 0 });
+  const run = detail(
+    [unrelated, parent, child],
+    [
+      passed("p", parent.id, "persona-node"),
+      passedCheck("c", parent.id, "check-node"),
+      passed("u", unrelated.id, "action-node"),
+      // The action that authorized the segment ran in the child; it owns its own outcome.
+      passed("a", child.id, "action-node"),
+    ],
+    PIPELINE,
+  );
+  const inherited = inheritedPasses(run, child);
+  assert.deepEqual([...inherited.keys()].sort(), ["check-node", "persona-node"]);
+  assert.equal(inherited.get("persona-node")!.submission.id, parent.id);
+  assert.equal(inherited.get("persona-node")!.roundLabel, "Round 1 · evidence 1");
+  // A node that ran HERE keeps its own result, whatever an ancestor said.
+  assert.equal(inherited.has("action-node"), false);
+});
+
+test("a carried pass is the nearest recorded outcome, never an older one reaching past it", () => {
+  // The failure this prevents: a node that passed in round 1, failed in round 2, and did not
+  // run in a round-2 segment must not resurrect round 1's pass. The nearest outcome is the
+  // current one, so the walk stops at it even though it is not a pass.
+  const first = submission("seg-0", 1);
+  const second = submission("seg-1", 1, { segment: 1, parentSubmissionId: first.id });
+  const third = submission("seg-2", 1, { segment: 2, parentSubmissionId: second.id });
+  const run = detail(
+    [first, second, third],
+    [
+      passed("p1", first.id, "persona-node"),
+      attempt("p2", second.id, "persona-node", { verdict: { verdict: "fail" } as never }),
+      passedCheck("c1", first.id, "check-node"),
+    ],
+    PIPELINE,
+  );
+  const inherited = inheritedPasses(run, third);
+  assert.equal(inherited.has("persona-node"), false);
+  // The check never ran in segment 2, so its round-1 pass is still the nearest outcome.
+  assert.equal(inherited.get("check-node")!.submission.id, first.id);
+});
+
+test("an Inspector-only round carries only earned outcomes from the preceding full round", () => {
   const first = submission("full-1", 1);
   const previous = submission("full-2", 2);
   const inspector = submission("inspector", 3, { mode: "inspector_only" });
-  const passedPersona = attempt("persona", previous.id, "persona-node", {
-    verdict: { verdict: "pass" } as never,
-  });
   const skippedCheck = attempt("check", previous.id, "check-node", {
     verdict: { verdict: "pass" } as never,
     output: {
@@ -319,16 +409,115 @@ test("Inspector-only skips inherit only earned outcomes from the preceding full 
       note: "No command is configured.",
     },
   });
-  const stale = attempt("stale", first.id, "stale-node", {
-    verdict: { verdict: "pass" } as never,
-  });
-  const prior = previousFullWorkflowAttempts(
-    detail([first, previous, inspector], [stale, passedPersona, skippedCheck]),
-    inspector,
+  const run = detail(
+    [first, previous, inspector],
+    [passed("stale", first.id, "action-node"), passed("p", previous.id, "persona-node"), skippedCheck],
+    PIPELINE,
   );
-  assert.deepEqual([...prior.keys()].sort(), ["check-node", "persona-node"]);
-  assert.equal(priorAttemptPassed("persona", prior.get("persona-node")), true);
-  assert.equal(priorAttemptPassed("check", prior.get("check-node")), false);
+  const inherited = inheritedPasses(run, inspector);
+  // A check that never spawned did not earn a pass, so it is not one this round can carry.
+  assert.deepEqual([...inherited.keys()], ["persona-node"]);
+  assert.equal(inherited.get("persona-node")!.roundLabel, "Round 2");
+});
+
+test("a completed session action is never carried, because it passed nothing", () => {
+  // An action reports a LIFECYCLE, never an outcome - nothing about one may read Passed - so
+  // a "✓ Passed in Round 1" line is the one thing it must never be given. It is also the wrong
+  // claim about the wrong node: the continuation segment exists BECAUSE the action completed,
+  // so the reader's question there is what the action DID, which its own chip already answers.
+  const parent = submission("seg-0", 1);
+  const child = submission("seg-1", 1, { segment: 1, parentSubmissionId: parent.id });
+  const complete = attempt("act", parent.id, "action-node", {
+    state: "completed" as never,
+    output: { outcome: "complete" } as never,
+  });
+  // The fixture is a REAL completed action, proven here rather than assumed: an output the
+  // completion schema rejects would make the assertion below pass while proving nothing, which
+  // is exactly how this case first went green against an exclusion that was not being tested.
+  assert.equal(priorAttemptPassed("session_action", complete), true);
+  const run = detail(
+    [parent, child],
+    [complete, passed("p", parent.id, "persona-node")],
+    PIPELINE,
+  );
+  const inherited = inheritedPasses(run, child);
+  assert.deepEqual([...inherited.keys()], ["persona-node"]);
+  // The attempt is still REACHABLE for a row that wants the nearest recorded outcome; it is
+  // only the carried-pass treatment the action is kept out of.
+  assert.ok(inheritedAttempts(run, child).has("action-node"));
+});
+
+test("display inheritance stays wider than carrying, so a skipped check keeps its reason", () => {
+  // The regression this split exists for. An unconfigured command records `skipped`, never
+  // `passed`, so it is correctly not carried - but reading a row's OUTCOME from the pass map
+  // left the amber check with no recorded outcome at all, and the sentence saying why it is
+  // amber went with it.
+  const previous = submission("full-1", 1);
+  const inspector = submission("inspector", 2, { mode: "inspector_only" });
+  const skippedCheck = attempt("check", previous.id, "check-node", {
+    verdict: { verdict: "pass" } as never,
+    output: {
+      status: "skipped",
+      slot: "test",
+      command: null,
+      exitCode: null,
+      output: "",
+      truncatedBytes: 0,
+      note: "No command is configured.",
+    },
+  });
+  const run = detail([previous, inspector], [skippedCheck], PIPELINE);
+  assert.equal(inheritedPasses(run, inspector).size, 0);
+  const outcomes = inheritedAttempts(run, inspector);
+  assert.deepEqual([...outcomes.keys()], ["check-node"]);
+  assert.equal(checkOutcomeOf(outcomes.get("check-node")!.attempt)?.status, "skipped");
+});
+
+test("a member with no authored node, or no version at all, carries nothing", () => {
+  const parent = submission("seg-0", 1);
+  const child = submission("seg-1", 1, { segment: 1, parentSubmissionId: parent.id });
+  const attempts = [passed("s", parent.id, "stale-node")];
+  // A stale id that resolves to no graph node must keep its ordinary status rather than
+  // borrowing a carried one: the bypass policy proves nothing about a malformed member.
+  assert.equal(inheritedPasses(detail([parent, child], attempts, PIPELINE), child).size, 0);
+  assert.equal(inheritedPasses(detail([parent, child], attempts), child).size, 0);
+  assert.equal(inheritedPasses(detail([parent, child], attempts, PIPELINE), null).size, 0);
+});
+
+test("a corrupt parent chain degrades instead of hanging the reader", () => {
+  const a = submission("a", 1, { segment: 1, parentSubmissionId: "b" });
+  const b = submission("b", 1, { segment: 2, parentSubmissionId: "a" });
+  assert.equal(inheritedPasses(detail([a, b], [], PIPELINE), a).size, 0);
+  // A parent id naming a submission this run does not hold stops the walk rather than throwing.
+  const orphan = submission("orphan", 1, { segment: 1, parentSubmissionId: "gone" });
+  assert.equal(inheritedPasses(detail([orphan], [], PIPELINE), orphan).size, 0);
+});
+
+test("the carried source a one-slot surface names is the newest one", () => {
+  const early = submission("early", 1);
+  const late = submission("late", 2, { segment: 1 });
+  const pass = (source: WorkflowSubmission) =>
+    ({ attempt: passed("x", source.id, "n"), submission: source, roundLabel: source.id });
+  assert.equal(newestInheritedSource([]), null);
+  assert.equal(newestInheritedSource([pass(early), pass(late)])!.submission.id, "late");
+  assert.equal(newestInheritedSource([pass(late), pass(early)])!.submission.id, "late");
+});
+
+test("a carried stage cites the round by the scrubber's own label", () => {
+  // One dialect: a stage citing "Round 1 · evidence 1" and a scrubber tab reading something
+  // else for the same submission would make the link between them look broken.
+  const first = submission("s1", 1);
+  const second = submission("s2", 1, { segment: 1, parentSubmissionId: first.id });
+  const lone = submission("s3", 2);
+  const run = detail([first, second, lone], []);
+  assert.equal(submissionRoundLabel(run, first), "Round 1 · evidence 1");
+  assert.equal(submissionRoundLabel(run, second), "Round 1 · evidence 2");
+  // A round with one segment draws no distinction, so it is stamped with none.
+  assert.equal(submissionRoundLabel(run, lone), "Round 2");
+  assert.equal(
+    submissionRoundLabel(run, lone),
+    runRounds(run).find((round) => round.submissionId === lone.id)!.label,
+  );
 });
 
 test("the Disabled chip follows the engine's claim-time boundary, never a reached outcome", () => {

@@ -45,7 +45,7 @@ const {
   bindingValidationError,
   chordFromEvent,
   chordHasCommandModifier,
-  chordIsNonTyping,
+  chordUsesFunctionKey,
   findConflicts,
   formatChord,
   isReservedChord,
@@ -186,15 +186,17 @@ test("chordHasCommandModifier flags only cmd/ctrl, so a text-field bypass is saf
   assert.equal(chordHasCommandModifier("+"), false);
 });
 
-test("chordIsNonTyping lets named keys through a text field without claiming characters", () => {
-  assert.equal(chordIsNonTyping("shift+F10"), true);
-  assert.equal(chordIsNonTyping("ContextMenu"), true);
-  assert.equal(chordIsNonTyping("shift+Tab"), true);
-  assert.equal(chordIsNonTyping("Backspace"), true);
-  assert.equal(chordIsNonTyping("shift+o"), false);
-  assert.equal(chordIsNonTyping("+"), false);
-  assert.equal(chordIsNonTyping("Dead"), false);
-  assert.equal(chordIsNonTyping("Process"), false);
+test("only function-key bindings bypass native behavior in a text field", () => {
+  assert.equal(chordUsesFunctionKey("shift+F10"), true);
+  assert.equal(chordUsesFunctionKey("cmd+F24"), true);
+  assert.equal(chordUsesFunctionKey("ContextMenu"), false);
+  assert.equal(chordUsesFunctionKey("shift+Tab"), false);
+  assert.equal(chordUsesFunctionKey("Backspace"), false);
+  assert.equal(chordUsesFunctionKey("Delete"), false);
+  assert.equal(chordUsesFunctionKey("Home"), false);
+  assert.equal(chordUsesFunctionKey("End"), false);
+  assert.equal(chordUsesFunctionKey("cmd+k"), false);
+  assert.equal(chordUsesFunctionKey("shift+o"), false);
 });
 
 test("bare Tab is reserved while modified Tab chords remain bindable", () => {

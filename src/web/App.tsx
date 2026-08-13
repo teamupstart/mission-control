@@ -66,7 +66,7 @@ import {
   useKeybindings,
   chordFromEvent,
   chordHasCommandModifier,
-  chordIsNonTyping,
+  chordUsesFunctionKey,
   chordYieldsToSelection,
   formatChord,
 } from "./lib/keybindings.ts";
@@ -1492,16 +1492,15 @@ export function App(): React.JSX.Element {
       }
 
       // The customizable Shift+F10 action and the keyboard's dedicated Menu key open the
-      // same global host, from every page and from inside text fields. A rebound printable
-      // key still respects the typing guard; the default function key cannot type a character
-      // and therefore has no claim to yield to the composer.
+      // same global host, from every page and from inside text fields. A rebound editing,
+      // navigation or printable key still respects the typing guard; function keys have no
+      // native text-field behavior and may keep the default's access from the composer.
       if (
         (e.key === "ContextMenu" || chord === bindings.contextMenu)
         && (
           !typing
           || e.key === "ContextMenu"
-          || chordHasCommandModifier(bindings.contextMenu)
-          || chordIsNonTyping(bindings.contextMenu)
+          || chordUsesFunctionKey(bindings.contextMenu)
         )
       ) {
         const focusTarget = target ?? (document.activeElement instanceof Element

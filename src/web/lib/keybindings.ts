@@ -431,17 +431,10 @@ export function chordHasCommandModifier(chord: string): boolean {
   return mods.includes("cmd") || mods.includes("ctrl");
 }
 
-/**
- * True when a chord's key cannot insert a character into a focused text field.
- *
- * This is deliberately separate from `chordHasCommandModifier`: Command/Control chords are
- * unambiguous despite carrying a printable key, while function keys and named navigation keys
- * are unambiguous because they do not type at all. Dead/IME composition keys are the exception
- * to the named-key shape and stay with the field.
- */
-export function chordIsNonTyping(chord: string): boolean {
+/** True when a chord uses a standard function key, which has no text-editing behavior. */
+export function chordUsesFunctionKey(chord: string): boolean {
   const { key } = parseChord(chord);
-  return key.length !== 1 && key !== "Dead" && key !== "Process" && key !== "Compose";
+  return /^F(?:[1-9]|1\d|2[0-4])$/.test(key);
 }
 
 /**

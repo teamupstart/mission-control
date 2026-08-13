@@ -165,4 +165,33 @@ test("context actions work by pointer and keyboard without leaking keys to the g
   await dashboard.keyboard.press("Escape");
   await expect(menu).toBeHidden();
   await expect(composer).toBeFocused();
+
+  // A customizable named key with native field behavior remains native while typing. The same
+  // binding can still open the global menu outside text fields.
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ keybindings: { contextMenu: "Backspace" } }),
+  });
+  const body = (await response.json()) as {
+    config?: { keybindings?: { contextMenu?: string } };
+  };
+  expect(body.config?.keybindings?.contextMenu).toBe("Backspace");
+  await dashboard.reload();
+
+  const reboundCard = dashboard.locator("article.card").first();
+  await expect(reboundCard).toBeVisible();
+  const expand = reboundCard.getByRole("button", { name: "Expand conversation" });
+  if (await expand.isVisible()) await expand.click();
+  const reboundComposer = reboundCard.getByPlaceholder(/^Reply to this session/);
+  await reboundComposer.fill("native edit");
+  await reboundComposer.focus();
+  await dashboard.keyboard.press("Backspace");
+  await expect(reboundComposer).toHaveValue("native edi");
+  const reboundMenu = dashboard.getByRole("menu", { name: "Actions for this item" });
+  await expect(reboundMenu).toBeHidden();
+
+  await reboundCard.getByRole("link", { name: "CI page" }).first().focus();
+  await dashboard.keyboard.press("Backspace");
+  await expect(reboundMenu).toBeVisible();
 });

@@ -225,7 +225,7 @@ test("the Workflows panel reports the grant count and links back to Trust", asyn
   ).toBeVisible();
 });
 
-test("armed check execution flags the granted cell, and Turn checks off clears it", async ({
+test("armed Command execution flags the granted cell, and Turn Commands off clears it", async ({
   dashboard,
   daemon,
 }) => {
@@ -240,7 +240,7 @@ test("armed check execution flags the granted cell, and Turn checks off clears i
 
   // Granted but disarmed: no command can run, so the matrix stays quiet. Amber on an inert
   // grant is exactly how a table teaches an operator to stop reading its warnings.
-  await expect(dashboard.getByText(/Check commands are on/)).toBeHidden();
+  await expect(dashboard.getByText(/Workflow Commands are on/)).toBeHidden();
 
   // Arm checks from the Workflows panel, through its confirm dialog - the same path an
   // operator takes, so the consent copy is on screen when the grant becomes live.
@@ -251,14 +251,18 @@ test("armed check execution flags the granted cell, and Turn checks off clears i
   // rather than only worked around, because a box that armed itself before the dialog was
   // read would be the actual regression here.
   await openSettings(dashboard, "workflows", /Review workflows run Personas/);
-  const checks = dashboard.getByRole("checkbox", { name: "Enable workflow check commands" });
-  await checks.click();
+  // The switch is the console's `ConsoleSwitch` now, like Live delivery beside it: the
+  // checkbox is `appearance: none` under a track span, so the label is what an operator hits
+  // and the checkbox is what the assertions read.
+  const checks = dashboard.getByRole("checkbox", { name: "Allow workflow Commands" });
+  const checksSwitch = dashboard.locator('.sc-card[data-anchor="workflows/checks"] label.sc-switch');
+  await checksSwitch.click();
   await expect(checks).not.toBeChecked();
   // The consent sentence that names what is actually being authorized - not "runs a command"
   // but "runs THIS BRANCH's code". Matched on the modal's own wording, which is deliberately
   // not the wording of the standing warning the panel shows once the switch is on.
   await expect(dashboard.getByText(/executes branch-authored code/)).toBeVisible();
-  await dashboard.getByRole("button", { name: "Enable check commands" }).click();
+  await dashboard.getByRole("button", { name: "Allow Commands" }).click();
   await expect(checks).toBeChecked();
   await expect
     .poll(async () => (await storedConfig(daemon.baseURL)).checksEnabled)
@@ -270,7 +274,7 @@ test("armed check execution flags the granted cell, and Turn checks off clears i
   // the paragraph's own opening text rather than on "branch-authored code", which is wrapped
   // in a `<strong>` and would resolve the locator to that span - and a span that cannot
   // contain the repo path would fail the naming assertion for the wrong reason.
-  const note = dashboard.getByText(/Check commands are on/);
+  const note = dashboard.getByText(/Workflow Commands are on/);
   await expect(note).toBeVisible();
   await expect(note).toContainText("branch-authored code");
   await expect(note).toContainText("It is not a sandbox");
@@ -280,20 +284,20 @@ test("armed check execution flags the granted cell, and Turn checks off clears i
   await shoot(dashboard, "checks-armed-footnote");
 
   // The offered fix works from here, without a trip back to the other panel.
-  await dashboard.getByRole("button", { name: "Turn checks off" }).click();
+  await dashboard.getByRole("button", { name: "Turn Commands off" }).click();
   await expect
     .poll(async () => (await storedConfig(daemon.baseURL)).checksEnabled, {
-      message: "Turn checks off should disarm the switch on the Workflows config",
+      message: "Turn Commands off should disarm the switch on the Workflows config",
     })
     .toBe(false);
-  await expect(dashboard.getByText(/Check commands are on/)).toBeHidden();
+  await expect(dashboard.getByText(/Workflow Commands are on/)).toBeHidden();
 
   // Disarming the switch is not revoking the grant: the repo may still take Live deliveries,
   // which is the distinction the single column has to keep legible.
   expect((await storedConfig(daemon.baseURL)).repoAllowlist).toEqual([daemon.repo]);
 });
 
-test("the armed-checks warning survives the config poll failing", async ({
+test("the armed-Commands warning survives the config poll failing", async ({
   dashboard,
   daemon,
 }) => {
@@ -317,14 +321,14 @@ test("the armed-checks warning survives the config poll failing", async ({
     .toEqual([daemon.repo]);
 
   await openSettings(dashboard, "workflows", /Review workflows run Personas/);
-  await dashboard.getByRole("checkbox", { name: "Enable workflow check commands" }).click();
-  await dashboard.getByRole("button", { name: "Enable check commands" }).click();
+  await dashboard.locator('.sc-card[data-anchor="workflows/checks"] label.sc-switch').click();
+  await dashboard.getByRole("button", { name: "Allow Commands" }).click();
   await expect
     .poll(async () => (await storedConfig(daemon.baseURL)).checksEnabled)
     .toBe(true);
 
   await openSettings(dashboard, "trust", /Every grant that lets Mission Control act outside/);
-  await expect(dashboard.getByText(/Check commands are on/)).toBeVisible();
+  await expect(dashboard.getByText(/Workflow Commands are on/)).toBeVisible();
   // The rail dot agrees before the daemon goes away, so the assertion after it is a change
   // rather than a state that was never there.
   const dot = dashboard.getByRole("img", { name: /Trust needs a look/ });
@@ -338,8 +342,8 @@ test("the armed-checks warning survives the config poll failing", async ({
   await expect
     .poll(
       async () =>
-        dashboard.getByText(/were .*on.* at the last reading|Check commands are on/).count(),
-      { timeout: 15_000, message: "some armed-checks warning must survive the failed poll" },
+        dashboard.getByText(/were .*on.* at the last reading|Workflow Commands are on/).count(),
+      { timeout: 15_000, message: "some armed-Commands warning must survive the failed poll" },
     )
     .toBeGreaterThan(0);
 

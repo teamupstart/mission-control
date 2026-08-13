@@ -153,7 +153,7 @@ dependencies. The stamp lives inside `node_modules/` so `rm -rf node_modules` in
 too, and is touched only after a successful install, so a failed one is retried rather than
 recorded as done.
 
-A never-installed tree is routine rather than exotic: a [Workflow check](workflows.md#check-nodes) runs
+A never-installed tree is routine rather than exotic: a [workflow Command](workflows.md#command-nodes) runs
 its command in a freshly leased [pool worktree](worktrees-and-checks.md#check-leases), and `node_modules/` is
 gitignored, so every check starts from a tree with no dependencies at all. Without this it
 fails with `TS2688: Cannot find type definition file for 'node'`, which reads like a type

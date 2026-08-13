@@ -5,9 +5,11 @@ import {
   personasForDisplay,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_LIMITS,
+  workflowCommandStatusSentence,
   type PersonaView,
   type SessionAction,
   type WorkflowCheckSlot,
+  type WorkflowCommandView,
   type WorkflowDefinition,
   type WorkflowDraftNode,
   type WorkflowEdge,
@@ -49,6 +51,7 @@ import {
   workflowPublishBlocked,
 } from "./useWorkflowDraft.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
+import { missionRouteHash } from "./useWorkflowRoute.ts";
 import {
   readLastWorkflowId,
   readRequestedWorkflowVersion,
@@ -203,6 +206,7 @@ export function WorkflowLibrary({
   summaries,
   personas,
   sessionActions = [],
+  workflowCommands = [],
   hasSnapshot,
   initialWorkflowId = null,
   startNew = false,
@@ -219,6 +223,15 @@ export function WorkflowLibrary({
    * before offering anything.
    */
   sessionActions?: SessionAction[];
+  /**
+   * The Global Command catalog, read to say whether the slot the palette is offering has
+   * anything configured behind it.
+   *
+   * Read-only here, and never a gate: a portable workflow is MEANT to name a slot a given
+   * machine may not configure - it passes with a note there. The palette states that instead
+   * of refusing to add the node, and links to the Library card that would change it.
+   */
+  workflowCommands?: WorkflowCommandView[];
   hasSnapshot: boolean;
   /**
    * The workflow the ROUTE asked for, read once as this surface mounts.
@@ -821,14 +834,36 @@ export function WorkflowLibrary({
             <Tooltip label="Add a join that waits for every incoming branch to pass - or drag it onto the canvas">
               <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "all_pass" }))} onClick={() => addNode({ kind: "all_pass" })}>＋ All-pass Join</button>
             </Tooltip>
-            <Tooltip label="Which deterministic gate a new check node runs">
-              <select aria-label="Slot for new check node" disabled={transitioning} value={paletteSlot} onChange={(event) => setPaletteSlot(event.target.value as WorkflowCheckSlot)}>
+            <Tooltip label="Which deterministic gate a new Command node runs">
+              <select aria-label="Slot for new Command node" disabled={transitioning} value={paletteSlot} onChange={(event) => setPaletteSlot(event.target.value as WorkflowCheckSlot)}>
                 {WORKFLOW_CHECK_SLOTS.map((slot) => <option key={slot} value={slot}>{slot}</option>)}
               </select>
             </Tooltip>
-            <Tooltip label="Add a gate on the command this repository configures for that slot - or drag it onto the canvas">
-              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "check", slot: paletteSlot }))} onClick={() => addNode({ kind: "check", slot: paletteSlot })}>＋ Check</button>
+            <Tooltip label="Add a gate on whatever this machine configures for that Command - or drag it onto the canvas">
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "check", slot: paletteSlot }))} onClick={() => addNode({ kind: "check", slot: paletteSlot })}>＋ Command</button>
             </Tooltip>
+            {/* What that slot is actually configured to run, said where the node is added.
+                The workflow stays portable - it stores the slot and nothing else - so this is
+                a fact about THIS machine, and the link is how an operator changes it without
+                hunting for where commands live. */}
+            <p className="workflow-palette-note">
+              {workflowCommandStatusSentence(
+                workflowCommands.find((view) => view.slot === paletteSlot),
+                hasSnapshot,
+              )}{" "}
+              <Tooltip label={`Set what the ${paletteSlot} Command runs on this machine`}>
+                <a
+                  className="workflow-palette-link"
+                  href={missionRouteHash({
+                    page: "library",
+                    shelf: "commands",
+                    assetId: paletteSlot,
+                  })}
+                >
+                  Configure {paletteSlot} in Library →
+                </a>
+              </Tooltip>
+            </p>
             {/* The whole entry is absent when nothing is addable, rather than a disabled
                 button beside an empty select. There are two reasons an operator can be in
                 that state - no action authored, or none this daemon can run - and neither is
@@ -907,7 +942,7 @@ export function WorkflowLibrary({
                 </Tooltip>
                 {mode === "graph" && (
                   <>
-                    <Tooltip label={duplicableIds.length > 0 ? "Duplicate selected Persona, All-pass Join, Check, or End nodes" : "Select a Persona, All-pass Join, Check, or End node first"}>
+                    <Tooltip label={duplicableIds.length > 0 ? "Duplicate selected Persona, All-pass Join, Command, or End nodes" : "Select a Persona, All-pass Join, Command, or End node first"}>
                       <button className="btn btn-ghost" disabled={duplicableIds.length === 0} onClick={duplicateNodes}>
                         Duplicate nodes
                       </button>

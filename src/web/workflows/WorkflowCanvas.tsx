@@ -155,7 +155,7 @@ const NODE_KIND_WORDS: Record<WorkflowDraftNode["kind"], string> = {
   session: "Session",
   persona: "Reviewer",
   all_pass: "All-pass join",
-  check: "Check",
+  check: "Command",
   session_action: "Session action",
   end: "End",
 };

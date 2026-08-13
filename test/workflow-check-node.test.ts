@@ -94,7 +94,7 @@ test("an unconfigured slot is skipped and PASSES - the contract a shipped workfl
   // The note has to say WHICH slot and that nothing ran, or "skipped" reads as a bug.
   assert.match(
     result.kind === "outcome" ? result.outcome.note : "",
-    /No test command is configured for this repository/,
+    /No test Command is configured for this machine or repository/,
   );
 });
 

@@ -451,6 +451,26 @@ export async function fetchRepos(): Promise<string[]> {
 }
 
 /**
+ * The repositories Trust has granted the Workflows cell, for a picker that wants to offer
+ * them first. Never throws - [] on failure, which degrades a picker rather than a page.
+ *
+ * A read of POLICY, not of the Command catalog: the catalog rides the SSE snapshot and is
+ * never fetched a second time. This is the one fact the Library's Command editor needs that
+ * lives in the workflow config blob, and it is read once because a consent grant moves about
+ * as often as the app itself.
+ */
+export async function fetchWorkflowRepoAllowlist(): Promise<string[]> {
+  try {
+    const res = await fetch("/api/workflows/config");
+    if (!res.ok) return [];
+    const data = (await res.json()) as { repoAllowlist?: unknown };
+    return Array.isArray(data.repoAllowlist) ? (data.repoAllowlist as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * The refusal body is KEPT, not reduced to its message. A route that answers a conflict
  * with structure - what a destructive action would cost, which the caller then renders -
  * would otherwise have that structure thrown away here, and every such route would have

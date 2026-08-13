@@ -201,7 +201,7 @@ test("a reviewer with no attempt this round has not started, which is not 'nothi
 test("a check uses deterministic status vocabulary", () => {
   assert.deepEqual(checkStatus(undefined), { tone: "waiting", label: "Not started" });
   assert.deepEqual(checkStatus("running"), { tone: "running", label: "Running" });
-  assert.deepEqual(checkStatus("error"), { tone: "failed", label: "Check failed to run" });
+  assert.deepEqual(checkStatus("error"), { tone: "failed", label: "Command failed to run" });
   assert.deepEqual(checkStatus("pass"), { tone: "passed", label: "Passed" });
   assert.deepEqual(checkStatus("fail"), { tone: "failed", label: "Failed" });
 });
@@ -217,14 +217,14 @@ test("a check that never ran says so, and is never laundered into Passed", () =>
   assert.deepEqual(checkStatus("pass", "unavailable"), {
     tone: "waiting",
     label: "Not run",
-    tooltip: "This check could not run. Open the run details for its recorded reason.",
+    tooltip: "This Command could not run. Open the run details for its recorded reason.",
     skipKind: "unavailable_check",
     degraded: true,
   });
   assert.deepEqual(checkStatus("pass", "skipped"), {
     tone: "waiting",
     label: "Skipped",
-    tooltip: "Skipped because no command is configured for this check.",
+    tooltip: "Skipped because this machine configures nothing for this Command.",
     skipKind: "unconfigured_check",
     degraded: true,
   });
@@ -258,20 +258,20 @@ test("a stage says how much of its gate was real", () => {
   assert.deepEqual(stageStatus([skipped, skipped]), {
     tone: "waiting",
     label: "Skipped",
-    tooltip: "Skipped because no command is configured for the checks in this stage.",
+    tooltip: "Skipped because this machine configures nothing for the Commands in this stage.",
     skipKind: "unconfigured_check",
     degraded: true,
   });
   assert.deepEqual(stageStatus([notRun, skipped]), {
     tone: "waiting",
     label: "None ran",
-    tooltip: "One or more checks in this stage did not run. Hover each check for its reason.",
+    tooltip: "One or more Commands in this stage did not run. Hover each one for its reason.",
     degraded: true,
   });
   assert.deepEqual(stageStatus([notRun]), {
     tone: "waiting",
     label: "Did not run",
-    tooltip: "One or more checks in this stage did not run. Hover each check for its reason.",
+    tooltip: "One or more Commands in this stage did not run. Hover each one for its reason.",
     degraded: true,
   });
   assert.equal(stageStatus([ran, notRun]).label, "Passed, 1 not run");
@@ -377,7 +377,7 @@ test("a disabled member reads red on its own chip and as not-run in the stage fo
   assert.deepEqual(stageStatus([ran, disabled]), {
     tone: "waiting",
     label: "Passed, 1 not run",
-    tooltip: "One or more checks in this stage did not run. Hover each check for its reason.",
+    tooltip: "One or more Commands in this stage did not run. Hover each one for its reason.",
     degraded: true,
   });
   // A wholly disabled stage is finished, not waiting on anything.

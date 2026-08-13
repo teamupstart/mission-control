@@ -41,15 +41,15 @@ test("a skipped check never reads as passed", () => {
     sessionBound: true,
   }));
   const row = html.match(
-    /<li class="wf-ladder-member[^"]*"[^>]*>[\s\S]*?Check · typecheck[\s\S]*?<\/li>/,
+    /<li class="wf-ladder-member[^"]*"[^>]*>[\s\S]*?Command · typecheck[\s\S]*?<\/li>/,
   )?.[0] ?? "";
   assert.match(row, /Skipped/);
   assert.match(row, /workflow-waiting/);
   assert.doesNotMatch(row, />Passed</);
   assert.ok(html.includes(checkStatusView("skipped").sentence));
-  assert.ok(hasTooltip(html, "Skipped because no command is configured for this check."));
+  assert.ok(hasTooltip(html, "Skipped because this machine configures nothing for this Command."));
   assert.ok(hasTooltip(
     html,
-    "One or more checks in this stage did not run. Hover each check for its reason.",
+    "One or more Commands in this stage did not run. Hover each one for its reason.",
   ));
 });

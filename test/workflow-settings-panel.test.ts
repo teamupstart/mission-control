@@ -27,13 +27,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   WorkflowSettingsPanel,
-  checkRepoOptions,
   readRetention,
   retentionShortens,
   workflowStripLinks,
@@ -275,13 +272,15 @@ test("no sentence on the panel claims the granted repositories are on this page"
 });
 
 // The guard above is only worth having if the states it scans really do carry the sentences.
-// Pinned separately so a fixture that quietly stops rendering the conditional warnings fails
-// here - loudly - instead of turning the scan into a no-op that always passes.
-test("the copy scan actually reaches both conditional warnings", () => {
+// Pinned separately so a fixture that quietly stops rendering them fails here - loudly -
+// instead of turning the scan into a no-op that always passes.
+test("the copy scan actually reaches both safety sentences", () => {
   const live = render({ config: { ...ANSWERED.config, liveEnabled: true }, status: STATUS });
   assert.match(live, /Live bindings write into a real terminal pane/);
-  const checks = render({ config: { ...ANSWERED.config, checksEnabled: true }, status: STATUS });
-  assert.match(checks, /A check runs a command in the repository under review/);
+  // Commands' sentence is unconditional now - it describes the control rather than shouting
+  // once it is armed - so this reads it in the state that used to be the only one carrying it.
+  const commands = render({ config: { ...ANSWERED.config, checksEnabled: true }, status: STATUS });
+  assert.match(commands, /A Command runs in a commit-pinned checkout of the branch under review/);
 });
 
 test("an empty allowlist reads as a real nowhere, not as an unanswered daemon", () => {
@@ -638,146 +637,99 @@ test("a poll that has been overtaken is dropped, however late it lands", () => {
   assert.equal(pollIsLatest(3, 3), false);
 });
 
-// ---- Check commands ----
+// ---- Workflow Commands: policy here, catalog in Library ----
 //
-// What is at stake: the argv split. There is no shell anywhere in this path, so the rule
-// that turns a typed line into an argv is ours alone - and an operator can only trust it if
-// the panel shows the result back. `npm test -- --grep "a b"` is five arguments or six
-// depending on a rule nobody can read off the box they typed into.
-//
-// The consent copy is the other half. This switch authorizes running code the reviewed
-// BRANCH supplies, with the daemon's filesystem authority, and the panel must say so in
-// those terms rather than calling it a sandbox it is not.
+// What is at stake: this panel used to hold the argv table too, and the table moved to
+// Library › Commands where a command is authored once and reused. What must remain here is
+// the machine-wide authorization - the one switch in this app that lets branch-authored code
+// run with the daemon's filesystem authority - plus a route to where the commands went, so
+// an operator searching for the old table is not answered with silence.
 
-test("the check switch and command table render, with their anchors", () => {
+test("the authorization switch and the route to Library both render, with their anchors", () => {
   const html = render(ANSWERED);
-  for (const anchor of ["workflows/checks", "workflows/check-commands"]) {
+  for (const anchor of ["workflows/checks", "workflows/command-catalog"]) {
     assert.ok(html.includes(`data-anchor="${anchor}"`), `panel is missing ${anchor}`);
   }
   // Pre-poll too, on the panel's existing rule: the controls are present behind the
   // "unknown" banner, so a search result can still jump to them.
   const empty = render();
-  for (const anchor of ["workflows/checks", "workflows/check-commands"]) {
+  for (const anchor of ["workflows/checks", "workflows/command-catalog"]) {
     assert.ok(empty.includes(`data-anchor="${anchor}"`), `pre-poll panel is missing ${anchor}`);
   }
 });
 
-test("the checks warning names branch-authored code and refuses to claim a sandbox", () => {
-  const html = render({
+test("the switch is named for what it authorizes, in the product's word for it", () => {
+  const html = render(ANSWERED);
+  assert.match(html, /Allow workflow Commands/);
+  // The old spelling is gone from the visible panel, so an operator reading it and an
+  // operator reading a workflow node see one noun.
+  assert.doesNotMatch(html, /Enable workflow check commands/);
+});
+
+test("the safety sentence names branch-authored code, on and off, and never twice", () => {
+  const on = render({
     config: { ...DEFAULT_WORKFLOW_CONFIG, checksEnabled: true, repoAllowlist: ["/repo"] },
     status: STATUS,
   });
-  assert.match(html, /branch being reviewed/);
-  assert.match(html, /filesystem authority/);
-  assert.match(html, /not a sandbox/i);
-  // Off, the warning is absent: an operator who has not granted this must not be shown a
-  // paragraph about what it does as though they had.
-  assert.doesNotMatch(render(ANSWERED), /not a sandbox/i);
+  assert.match(on, /branch under review/);
+  assert.match(on, /filesystem authority/);
+  assert.match(on, /not a sandbox/i);
+  // Stated ONCE. The panel used to carry a permanent red banner repeating the enable dialog
+  // to an operator who had already accepted it; the sentence now sits with the switch and
+  // says the same thing whether it is on or off.
+  assert.equal(on.match(/not a sandbox/gi)?.length, 1);
+  const off = render(ANSWERED);
+  assert.match(off, /not a sandbox/i, "the sentence describes the control, not an alarm");
+  assert.doesNotMatch(off, /class="settings-warn wf-settings-checks-warn"/);
 });
 
-test("a configured command is listed by root, slot and the argv that will run", () => {
+test("the posture line says which of the two states this machine is in", () => {
+  assert.match(
+    render({
+      config: { ...DEFAULT_WORKFLOW_CONFIG, checksEnabled: true },
+      status: STATUS,
+    }),
+    /Allowed - a Command runs branch-authored code/,
+  );
+  assert.match(render(ANSWERED), /Paused - every Command passes with a note/);
+  assert.match(render(), /Unknown - the daemon has not answered/);
+});
+
+test("command authoring is gone from Settings, and the route to Library replaces it", () => {
   const html = render({
     config: {
       ...DEFAULT_WORKFLOW_CONFIG,
       checksEnabled: true,
       repoAllowlist: ["/src/mission-control"],
       checkCommands: [
-        { repoRoot: "/src/mission-control", slot: "test", command: ["npm", "test", "--filter=a b"] },
+        { repoRoot: "/src/mission-control", slot: "test", command: ["npm", "test"] },
       ],
     },
     status: STATUS,
   });
-  assert.match(html, /class="wf-settings-check-root"><span[^>]*>mission-control<\/span>/);
-  assert.match(html, /class="tt-desc">\/src\/mission-control<\/span>/);
-  assert.ok(html.includes("test"));
-  // Printed back the way the parser reads it, so what is listed re-parses to what runs.
-  assert.ok(
-    html.includes("npm test &quot;--filter=a b&quot;"),
-    "a listed argv must be printed so it re-parses to the same arguments",
-  );
+  // Not merely hidden: every control that authored a command is absent, so there is exactly
+  // one surface writing this catalog.
+  for (const gone of [
+    "wf-settings-check-list",
+    "wf-settings-check-add",
+    "wf-settings-check-preview",
+    "workflow-check-path",
+    "workflow-check-command",
+    "Add command",
+  ]) {
+    assert.ok(!html.includes(gone), `Settings still carries the command editor's ${gone}`);
+  }
+  // Including the stored command itself, which this panel no longer displays - reading it
+  // here would be a second, staler view of the catalog.
+  assert.doesNotMatch(html, /npm test/);
+  // And the way out is a real link to the real hash, present before the daemon answers too.
+  assert.match(html, /href="#\/library\/commands"/);
+  assert.match(render(), /href="#\/library\/commands"/);
+  assert.match(html, /Open Commands in Library →/);
 });
 
-test("with no commands the panel says every Check will skip, rather than showing nothing", () => {
+test("the Trust summary still names both capabilities the one grant covers", () => {
   const html = render(ANSWERED);
-  assert.match(html, /No commands yet - every Check node will skip and pass\./);
-});
-
-// The repository box is the shared `RepoCombobox`, and these three claims are the ones that
-// are silent when they break. It has to BE the shared picker - a bare box here was the one
-// surface in the app that asked "which repository?" without offering an answer. It must stay
-// EMPTY on arrival, because "Add command" sits beside it and a path nobody typed is a
-// configuration entry nobody chose. And the sr-only label has to keep reaching the input,
-// which now needs an explicit `id`: the widget wraps the input in a div, so a `htmlFor` label
-// outside it cannot find its control by containment.
-test("the check row's repository box is the shared picker, empty, and still labelled", () => {
-  const html = render(ANSWERED);
-  assert.match(html, /<label class="sr-only" for="workflow-check-path">/);
-  assert.match(html, /<div class="combobox">/, "the repo box is the shared RepoCombobox");
-  // Asserted against the input tag itself rather than a slice of the row: the id is unique,
-  // and the row's own markup now nests a div, so a lazy `</div>` scan stops inside it.
-  const input = /<input [^>]*id="workflow-check-path"[^>]*>/.exec(html);
-  assert.ok(input, "the sr-only label needs an input carrying the id it names");
-  assert.match(input[0], /role="combobox"/, "that input is the picker's, not a bare box");
-  // The placeholder keeps saying a subdirectory is allowed - the picker offers repository
-  // roots, and the override that makes a monorepo work is a path below one of them.
-  assert.match(input[0], /placeholder="\/path\/to\/repository \(or a subdirectory\)"/);
-  assert.match(input[0], /value=""/, "nothing is pre-filled");
-  // Pre-poll it is disabled, exactly as the box it replaced was: this panel's rule is that
-  // a control is dead until the daemon has said what is stored. The widget takes that as a
-  // prop, so a dropped `disabled` reads as an editable field over an unknown config.
-  const pre = /<input [^>]*id="workflow-check-path"[^>]*>/.exec(render());
-  assert.ok(pre, "the picker is drawn before the daemon answers, for the anchors' sake");
-  assert.match(pre[0], /disabled/, "an unanswered daemon leaves the picker inert");
-});
-
-// Scope, pinned: the check row's picker is a DIFFERENT flow from the grant that moved to
-// Trust. A check command is a per-repository mapping, not a permission - it decides what a
-// slot runs, never where a workflow may act - so it stays on this panel with its own box.
-test("the check row keeps its picker on this panel, separate from the grant", () => {
-  const html = render(ANSWERED);
-  const card = /<div class="wf-settings-checks-table"[^>]*>(.*?)<p class="settings-hint wf-settings-check-preview">/s
-    .exec(html);
-  assert.ok(card, "the check commands table should render");
-  assert.match(card[1]!, /id="workflow-check-path"/);
-  assert.match(card[1]!, /combobox/, "the check path is picked, not typed from memory");
-});
-
-// The one thing about this picker that no render can see, and the thing it is useless
-// without. The dropdown is sized from its input, and repo paths differ at the END - so
-// sharing a line with the slot select, the command box and a button left the box near its
-// 180px floor and ellipsized all 202 options at the same character. Measured in a real
-// browser at 1460px: 202 of 202 truncated on a shared line, 1 of 202 on its own. Nothing
-// else here would fail if a CSS tidy-up folded it back onto one line.
-test("the check row's repository box is given a line of its own", () => {
-  const css = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
-  const rule = /\.wf-settings-check-add > \.combobox \{([^}]*)\}/.exec(css);
-  assert.ok(rule, "the check row must size the combobox wrapper, not the input inside it");
-  assert.match(rule[1]!, /flex:\s*1 1 100%/, "a shared line re-truncates every repo path");
-  // And the row's generic 440px cap must not reach the input inside that wrapper, or the
-  // box is half-width inside a full-width wrapper and the menu hangs off the wrong rect.
-  assert.match(css, /\.wf-settings-check-add > \.combobox > \.field-input \{[^}]*max-width:\s*none/);
-});
-
-test("the picker offers allowlisted repositories first, then the workspace scan", () => {
-  // `/outside` is allowlisted from outside the workspace roots, so the scan never names it.
-  // Dropping it would leave the one repository a check can actually run in unofferable.
-  assert.deepEqual(
-    checkRepoOptions(["/ws/a", "/ws/b"], ["/outside", "/ws/b"]),
-    ["/outside", "/ws/b", "/ws/a"],
-  );
-  // Listed once. A repository in both lists appears in its allowlisted position, and a
-  // duplicate would be two rows in the dropdown that select the same path.
-  assert.deepEqual(checkRepoOptions(["/ws/a"], ["/ws/a"]), ["/ws/a"]);
-  // Either side alone still answers, which is what the daemon being unreachable looks like.
-  assert.deepEqual(checkRepoOptions([], ["/ws/a"]), ["/ws/a"]);
-  assert.deepEqual(checkRepoOptions(["/ws/a"], []), ["/ws/a"]);
-});
-
-test("the argv preview shows the split, and refuses an unfinished line", () => {
-  // Static render, so the preview is at its empty-state. What is pinned here is that the
-  // preview EXISTS and prompts for a command; the split itself is exercised directly
-  // against `parseCheckCommand` in workflow-check-node.test.ts.
-  const html = render(ANSWERED);
-  assert.match(html, /Type a command to see exactly how it will be split\./);
-  assert.ok(html.includes('class="settings-hint wf-settings-check-preview"'));
+  assert.match(html, /granted the Workflows cell in Trust/);
+  assert.match(html, /The same grant is what lets a Command node run a command\./);
 });

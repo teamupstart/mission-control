@@ -56,8 +56,8 @@ const COLUMNS = [
     // this tooltip is the only place the second one is visible from the matrix. Each still
     // needs its own switch on the Workflows panel, which is why this reads "may".
     title:
-      "Workflows may act in this repo: Live repairs typed into its sessions, and Check "
-      + "commands run against branch code with the daemon's filesystem authority. Each is "
+      "Workflows may act in this repo: Live repairs typed into its sessions, and workflow "
+      + "Commands run against branch code with the daemon's filesystem authority. Each is "
       + "still armed separately in Workflows settings.",
   },
   {
@@ -440,13 +440,13 @@ export function TrustPanel({
 
       {checkGrants.length > 0 && (
         <p className="settings-warn trust-arm-note">
-          ‡ Check commands are on, so a workflow may run <strong>branch-authored code</strong>{" "}
+          ‡ Workflow Commands are on, so a workflow may run <strong>branch-authored code</strong>{" "}
           in <WarningRepositoryList repos={checkRepos} /> with this daemon's filesystem
           authority. It is not a
           sandbox.{" "}
-          <Tooltip label="Switch off workflow check commands everywhere">
+          <Tooltip label="Switch off workflow Commands everywhere">
             <button type="button" className="settings-link" onClick={disarmChecks}>
-              Turn checks off
+              Turn Commands off
             </button>
           </Tooltip>
           , or revoke a repo's Workflows cell above - which also stops Live delivery there.
@@ -461,7 +461,7 @@ export function TrustPanel({
           because it genuinely does not know which; what it will not do is go quiet. */}
       {checks.armed && !checks.confirmed && (
         <p className="settings-warn trust-arm-note trust-arm-unconfirmed">
-          ‡ Check commands were <strong>on</strong> at the last reading, so a workflow may be
+          ‡ Workflow Commands were <strong>on</strong> at the last reading, so a workflow may be
           able to run <strong>branch-authored code</strong> with this daemon's filesystem
           authority. Which repositories cannot be listed while Workflows is unreachable, and
           nothing here has been disarmed - only rendered unverifiable.

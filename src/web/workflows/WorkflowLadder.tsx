@@ -364,7 +364,7 @@ export function WorkflowLadder({
             const name = node
               ? nodeLabel(graph, node, personaNames, actionNames)
               : member.kind === "check"
-                ? `Check · ${member.slot}`
+                ? `Command · ${member.slot}`
                 : member.kind === "session_action" ? "Missing session action" : "Missing persona";
             const verdict = attempt ? verdictOf(attempt) : null;
             const meta = attempt ? verdictMeta(attempt, calls) : null;

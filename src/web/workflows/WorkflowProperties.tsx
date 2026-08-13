@@ -17,6 +17,7 @@ import {
   sessionActionCompletionLabel,
 } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
+import { missionRouteHash } from "./useWorkflowRoute.ts";
 
 /**
  * What the rail says about the action a node names: the skill it needs and the proof it
@@ -340,7 +341,7 @@ export function WorkflowProperties({
           )}
           {selectedNode.kind === "check" && (
             <>
-              <label>Slot
+              <label>Command
                 <Tooltip label="Which deterministic gate this node runs">
                   <select disabled={readOnly} value={selectedNode.slot} onChange={(event) => replaceNode({ ...selectedNode, slot: event.target.value as WorkflowCheckSlot })}>
                     {WORKFLOW_CHECK_SLOTS.map((slot) => <option key={slot} value={slot}>{slot}</option>)}
@@ -349,11 +350,17 @@ export function WorkflowProperties({
               </label>
               {/* The node names the slot; the machine names the command. Said here because
                   this is the panel where an operator would otherwise go looking for a field
-                  to type `npm test` into. */}
+                  to type `npm test` into - and the link is where that field actually is. */}
               <p>
-                This node names the <code>{selectedNode.slot}</code> slot; what runs is whatever
-                Settings › Workflows configures for that slot in this repository. An unconfigured
-                or unauthorized slot, or one this build cannot run, passes with a note saying which.
+                This node names the <code>{selectedNode.slot}</code> Command, never an argv, so
+                this workflow travels between repositories. What runs is what{" "}
+                <Tooltip label={`Set what the ${selectedNode.slot} Command runs on this machine`}>
+                  <a href={missionRouteHash({ page: "library", shelf: "commands", assetId: selectedNode.slot })}>
+                    Library › Commands
+                  </a>
+                </Tooltip>{" "}
+                configures for that slot here. An unconfigured or unauthorized Command, or one
+                this build cannot run, passes with a note saying which.
               </p>
             </>
           )}

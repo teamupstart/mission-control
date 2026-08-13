@@ -220,13 +220,13 @@ test("a check renders as its slot with a Check mark, counted apart from reviewer
   assert.match(html, /typecheck/);
   assert.match(html, />test</);
   // Counted by kind: "2 reviewers" was the old sentence and is wrong about two checks.
-  assert.match(html, /2 checks · all must pass/);
+  assert.match(html, /2 commands · all must pass/);
   assert.doesNotMatch(html, /2 reviewers/);
   // The command is deliberately NOT part of the workflow, so the row says what an
   // unconfigured slot does rather than implying one is pinned here.
   assert.match(html, /passes when no command is configured/);
   // A single-check stage takes the slot as its derived stage name.
-  assert.match(html, /Check · /);
+  assert.match(html, /Command · /);
 });
 
 test("checks are offered even with no Personas authored, since slots are not operator data", () => {
@@ -240,8 +240,8 @@ test("checks are offered even with no Personas authored, since slots are not ope
     onAnnounce: () => {},
   }));
   assert.doesNotMatch(html, /<select disabled/);
-  assert.match(html, /Checks/);
-  assert.match(html, /No Personas authored yet, so only checks are available/);
+  assert.match(html, /Commands/);
+  assert.match(html, /No Personas authored yet, so only Commands are available/);
   for (const slot of ["typecheck", "test", "lint", "build"]) {
     assert.match(html, new RegExp(`check:${slot}`));
   }

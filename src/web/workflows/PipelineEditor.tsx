@@ -441,7 +441,7 @@ export function PipelineEditor({
     member.kind === "check" ? checkLabel(member.slot) : nameOf(member.personaId);
   /** What a member IS, for the sentences that need the noun rather than the name. */
   const nounOfMember = (member: StageMember): string =>
-    member.kind === "check" ? "check" : "reviewer";
+    member.kind === "check" ? "Command" : "reviewer";
   const actionById = new Map(sessionActions.map((action) => [action.id, action]));
   /**
    * What an action row says about itself: what it needs, and what proves it finished.
@@ -707,7 +707,7 @@ export function PipelineEditor({
           ))}
         </optgroup>
       )}
-      <optgroup label="Checks">
+      <optgroup label="Commands">
         {WORKFLOW_CHECK_SLOTS.map((slot) => (
           <option key={slot} value={memberOptionValue({ kind: "check", slot })}>
             {checkLabel(slot)}
@@ -750,7 +750,7 @@ export function PipelineEditor({
 
   /** Said once, wherever an empty Persona list needs explaining without blocking the control. */
   const personaHint = activePersonas.length === 0
-    ? " No Personas authored yet, so only checks are available."
+    ? " No Personas authored yet, so only Commands are available."
     : "";
   /**
    * Why the Session actions group is missing, when it is. Said in the tooltip rather than as
@@ -764,15 +764,15 @@ export function PipelineEditor({
       : " No session action here can run on this daemon yet, so none is offered.";
 
   const addPicker = (stageIndex: number, stageRef: string): React.JSX.Element => (
-    <Tooltip label={`Add a reviewer or check to ${stageRef}.${personaHint}`}>
+    <Tooltip label={`Add a reviewer or Command to ${stageRef}.${personaHint}`}>
       <label className="wf-pipeline-add">
-        <span className="sr-only">{`Add a reviewer or check to ${stageRef}`}</span>
+        <span className="sr-only">{`Add a reviewer or Command to ${stageRef}`}</span>
         <select
           disabled={readOnly}
           value=""
           onChange={(event) => add(stageIndex, event.target.value)}
         >
-          <option value="">＋ Add reviewer or check…</option>
+          <option value="">＋ Add reviewer or Command…</option>
           {memberOptions}
         </select>
       </label>
@@ -910,7 +910,7 @@ export function PipelineEditor({
           >
             <ul className="wf-pipeline-members">
               <li className="wf-pipeline-empty">
-                Session completes on submission until a reviewer, a check or a session action
+                Session completes on submission until a reviewer, a Command or a session action
                 stands between it and the End.
               </li>
             </ul>
@@ -1024,7 +1024,7 @@ export function PipelineEditor({
                       ? personaById.get(member.personaId)
                       : undefined;
                     const meta = member.kind === "check"
-                      ? "Deterministic gate · passes when no command is configured"
+                      ? "Deterministic gate · passes when no command is configured here"
                       : persona
                         ? `${persona.execution.runner.id} · ${persona.execution.model.id}${persona.archivedAt === null ? "" : " · archived"}`
                         : "This Persona no longer exists";
@@ -1129,7 +1129,7 @@ export function PipelineEditor({
       </PipelineFrame>
       <p className="wf-pipeline-keys">
         Arrow keys move between cards. Alt+Left / Alt+Right reorders any stage, Alt+Up /
-        Alt+Down reorders a reviewer or check inside one, Delete removes the focused card after
+        Alt+Down reorders a reviewer or Command inside one, Delete removes the focused card after
         a confirmation.
       </p>
     </div>

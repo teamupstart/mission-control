@@ -297,14 +297,14 @@ current value has actually been read, and the configs behind **Auto mode on disp
 opens over the fleet has not read them, so it takes you to the panel that has.
 
 The **risky set** - YOLO mode, the Inspector's enable and mode, Live workflow delivery and
-workflow check commands - never flips from a row under any circumstances: it always jumps,
+workflow Commands - never flips from a row under any circumstances: it always jumps,
 so the consent copy that explains what merges, gets published, or runs branch-authored code
 is on screen when it changes.
 
 ### Trust (who may act in which repository)
 
 Four subsystems act outside this app, and each keeps its own list of the repos it is allowed
-to act in: Foreman sends live, Workflows deliver repairs and run checks, the Inspector posts
+to act in: Foreman sends live, Workflows deliver repairs and run Commands, the Inspector posts
 reviews, and Shipping (YOLO) merges. **Settings → Trust** (`#/settings/trust`) is one table
 over all four - a row per repository, a column per grant - so the whole surface of "what may
 act where" is on one screen instead of scattered across four panels. Columns run local blast
@@ -317,7 +317,7 @@ radius first (Foreman, Workflows), then GitHub (Inspector, YOLO).
   editors used to be - a grant is not the same permission in each column, which is the whole
   reason they stay four lists.
 - **One column carries two capabilities**, and says so. Workflows stores a single allowlist
-  that gates both Live repair delivery and Check-node command execution, so the matrix draws
+  that gates both Live repair delivery and Command-node execution, so the matrix draws
   one cell and its tooltip names both. Two columns over one stored list would flip together
   and lie about being separate grants; splitting them for real would take two stored lists
   first. Each capability still has its own switch in **Settings → Workflows**, so the cell is
@@ -338,10 +338,10 @@ radius first (Foreman, Workflows), then GitHub (Inspector, YOLO).
   a footnote offers the two fixes in place: **grant the review**, or **revoke the merge**.
   Shipping's own dependency warnings link straight here. The rail's Trust dot carries it, so
   the trap is visible from any other category.
-- **So is the heaviest grant.** While workflow check commands are switched on, every granted
-  Workflows cell flies a **double dagger** and a footnote names those repositories: a Check
+- **So is the heaviest grant.** While workflow Commands are switched on, every granted
+  Workflows cell flies a **double dagger** and a footnote names those repositories: a Command
   node may run branch-authored code there with the daemon's filesystem authority, and it is
-  not a sandbox. **Turn checks off** is offered in place. This one is not a contradiction like
+  not a sandbox. **Turn Commands off** is offered in place. This one is not a contradiction like
   the merge trap - nothing is stuck - it is flagged because a cell reading "allowed" cannot
   show that on its own and the confirm dialog was agreed to once, months ago. The rail's Trust
   dot carries this one too.

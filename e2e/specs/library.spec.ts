@@ -95,7 +95,7 @@ test("the Library shelves answer a question each, and name nothing that is runni
   await seedAssets(daemon);
   await dashboard.goto(`${daemon.baseURL}/#/library`);
 
-  // The five questions ARE the headings. That inversion - question up, system noun demoted to
+  // The six questions ARE the headings. That inversion - question up, system noun demoted to
   // an eyebrow - is the whole feature: before this page, nothing in the product said what a
   // workflow or a Persona was for.
   for (const question of [
@@ -104,6 +104,7 @@ test("the Library shelves answer a question each, and name nothing that is runni
     "What can a run tell the session to do?",
     "Not sure of the best approach?",
     "Where does work come from?",
+    "What does each standard gate run?",
   ]) {
     await expect(dashboard.getByRole("heading", { name: question })).toBeVisible();
   }
@@ -123,8 +124,10 @@ test("the Library shelves answer a question each, and name nothing that is runni
     .toContainText("reviewers");
 
   // And the page states its own contract, which is what every later phase has to keep.
+  // "Nothing runs FROM HERE" since the Commands shelf arrived: a Command is an executable
+  // argv, and saving one still executes nothing - a workflow reaching its slot does, later.
   await expect(dashboard.getByRole("main"))
-    .toContainText("Nothing here runs - live state stays on the runs and ensembles pages");
+    .toContainText("Nothing runs from here - live state stays on the runs and ensembles pages");
 });
 
 test("each shelf's cross-link sits beside its question rather than in the page's corner", async ({

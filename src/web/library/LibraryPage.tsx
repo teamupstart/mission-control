@@ -5,6 +5,7 @@ import type {
   PersonaUpstreamState,
   PersonaView,
   SessionAction,
+  WorkflowCommandView,
   WorkflowRunSummary,
   WorkflowSummary,
 } from "@shared/workflow.ts";
@@ -13,6 +14,7 @@ import type { LibrarySurface } from "../workflows/useWorkflowRoute.ts";
 import {
   actionCards,
   actionWaitsCrossLink,
+  commandCards,
   ensembleStrategyCards,
   ensemblesCrossLink,
   libraryShelfCopy,
@@ -79,7 +81,16 @@ function Shelf({
 }: {
   id: Parameters<typeof libraryShelfCopy>[0];
   cards: LibraryCard[];
-  crossLink: ShelfCrossLink;
+  /**
+   * Where this shelf's assets are running, or null on a shelf where that question has no
+   * honest answer.
+   *
+   * Nullable for Commands and Commands alone. A Command is not an asset with runs of its
+   * own - it is what a workflow's node executes, and those runs are already counted by the
+   * Workflows shelf's link. Pointing all four cards at the same run list to satisfy a prop
+   * would be a number this shelf did not measure.
+   */
+  crossLink: ShelfCrossLink | null;
   crossLinkHint: string;
   onCrossLink: () => void;
   onOpenCard: (card: LibraryCard) => void;
@@ -94,14 +105,16 @@ function Shelf({
     <section className="lib-shelf" aria-labelledby={`lib-shelf-${id}`}>
       <div className="lib-shelf-top">
         <span className="lib-shelf-eyebrow">{copy.eyebrow}</span>
-        <Tooltip label={crossLinkHint}>
-          <button
-            className={`lib-shelf-live${crossLink.attention ? " is-attention" : ""}`}
-            onClick={onCrossLink}
-          >
-            {crossLink.label}
-          </button>
-        </Tooltip>
+        {crossLink && (
+          <Tooltip label={crossLinkHint}>
+            <button
+              className={`lib-shelf-live${crossLink.attention ? " is-attention" : ""}`}
+              onClick={onCrossLink}
+            >
+              {crossLink.label}
+            </button>
+          </Tooltip>
+        )}
       </div>
       {/* The QUESTION is the heading and the noun is the eyebrow above it. That inversion is
           the page: an operator who has never opened this product learns what a workflow is
@@ -137,6 +150,8 @@ export function LibraryPage({
   personas = [],
   personaUpstream,
   sessionActions = [],
+  workflowCommands = [],
+  hasSnapshot = false,
   workflowRuns = [],
   ensembleSummaries = [],
   ensembleAttentionCount = 0,
@@ -154,6 +169,20 @@ export function LibraryPage({
   /** What the last upstream check found for each imported Persona; badges the reviewer cards. */
   personaUpstream?: ReadonlyMap<string, PersonaUpstreamState>;
   sessionActions?: SessionAction[];
+  /**
+   * The Global Command catalog, straight off the SSE stream. Four entries, always - see
+   * `commandCards`, which projects the registry rather than this list.
+   */
+  workflowCommands?: WorkflowCommandView[];
+  /**
+   * Whether the SSE snapshot has landed.
+   *
+   * Defaults to FALSE, which is the safe direction rather than the convenient one: every fact
+   * derived from it is a claim about durable state, and a page that assumed it was loaded
+   * would publish those claims with no evidence. Only the Commands shelf reads it today - the
+   * other five draw cards from lists that are simply empty until they arrive.
+   */
+  hasSnapshot?: boolean;
   /** Read for the per-shelf cross-link counts only; no run is rendered on this page. */
   workflowRuns?: WorkflowRunSummary[];
   ensembleSummaries?: EnsembleSummary[];
@@ -175,6 +204,7 @@ export function LibraryPage({
   const actions = actionCards(sessionActions);
   const strategies = ensembleStrategyCards();
   const missions = missionCards(schedules);
+  const commands = commandCards(workflowCommands, hasSnapshot);
 
   return (
     <main className="lib-page">
@@ -183,9 +213,14 @@ export function LibraryPage({
           <p className="workflow-eyebrow">Authoring</p>
           <h2>Library</h2>
         </div>
+        {/* "Nothing RUNS FROM HERE", not "nothing here runs". The distinction is load-bearing
+            now that Commands are shelved beside the rest: a Command is an executable argv, and
+            saving one still executes nothing - a workflow reaching its slot does, later, in a
+            repository Trust has granted. The old phrasing would have read as a claim that the
+            box you just typed `npm test` into is inert, which is a different promise. */}
         <p className="lib-sub">
-          Everything you author once and reuse. Nothing here runs - live state stays on the
-          runs and ensembles pages.
+          Everything you author once and reuse. Nothing runs from here - live state stays on
+          the runs and ensembles pages.
         </p>
       </header>
 
@@ -276,6 +311,22 @@ export function LibraryPage({
         // The sources card is always present, so this only shows if the shelf model itself
         // returned nothing - which it cannot. Kept honest rather than removed.
         empty="No missions or sources yet."
+      />
+
+      <Shelf
+        id="commands"
+        cards={commands}
+        // No cross-link, and no ＋ New card. The four slots ship with the product, and their
+        // runs are the workflow runs the first shelf already links to.
+        crossLink={null}
+        crossLinkHint=""
+        onCrossLink={() => {}}
+        onOpenCard={(card) => onOpenAsset("commands", card.id)}
+        openHint={(card) => `Set what the ${card.name} Command runs on this machine`}
+        newCard={null}
+        // Unreachable: `commandCards` projects the four built-in slots, so the shelf is
+        // never empty. Kept honest rather than removed.
+        empty="This build offers no Command slots."
       />
     </main>
   );

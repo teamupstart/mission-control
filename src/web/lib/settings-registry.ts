@@ -186,7 +186,7 @@ export const SETTINGS_CATEGORIES = [
     // The same glyph the topbar's Workflows button carries, so the rail row and the page
     // it configures are recognisably the same subsystem.
     icon: "⌘",
-    blurb: "Live repair delivery, check commands, and how long run history is kept",
+    blurb: "Live repair delivery, workflow Commands, and how long run history is kept",
     group: "background",
     // `machine`, not `home`: Live delivery types a repair packet into a terminal pane, and
     // the config itself lives in the daemon's own state - nothing here edits a file in the

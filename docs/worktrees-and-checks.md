@@ -176,10 +176,11 @@ safe to hand back by hand: `treehouse return <path>`.
 
 ### Running a check command
 
-This is what a [Check node](workflows.md#check-nodes) does once you switch checks on and allowlist the
-repository, and what it does with your machine is worth stating plainly before you do.
+This is what a [Command node](workflows.md#command-nodes) does once you allow workflow Commands
+and grant the repository, and what it does with your machine is worth stating plainly before
+you do.
 
-**Check commands run on Linux and macOS.** On any other platform a check reports Not run and
+**Workflow Commands run on Linux and macOS.** On any other platform one reports Not run and
 passes. That is not an oversight: the daemon has to be able to prove afterwards that a
 command and everything it spawned is gone, before it hands the leased worktree back to the
 pool. It does that by recording *which exact process* the supervisor was and asking the
@@ -204,7 +205,7 @@ guarantee is now collision resistance rather than a literal comparison. That is 
 naming rather than glossing: it is not a proof, it is a very good bet, and the durable lease
 row and startup recovery are what make a wrong bet recoverable rather than silent.
 
-What a check command gets:
+What a Command gets:
 
 - **An argv, never a shell.** `&&`, `|`, `;` and `$(…)` reach the command as ordinary
   arguments, so there is no string for a repository's configured command to break out of.

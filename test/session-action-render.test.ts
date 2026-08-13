@@ -212,15 +212,15 @@ test("the replace picker offers only what this daemon can run, and retains what 
 
 test("the stage picker offers session actions as a third kind of stage", () => {
   const html = emptyPipelineMarkup([action, tidy], TURN_ONLY);
-  assert.match(html, /<optgroup label="Reviewers"|<optgroup label="Checks">/);
+  assert.match(html, /<optgroup label="Reviewers"|<optgroup label="Commands">/);
   const group = /<optgroup label="Session actions">([\s\S]*?)<\/optgroup>/.exec(html);
-  assert.ok(group, "the third group is offered beside Reviewers and Checks");
+  assert.ok(group, "the third group is offered beside Reviewers and Commands");
   // Only the runnable one. Offering the other would author a stage the server refuses to
   // publish, which is a control that lies about what it will do.
   assert.match(group[1]!, /Tidy the workspace/);
   assert.doesNotMatch(group[1]!, /Pull Request/);
   // And the empty pipeline no longer promises reviewers only.
-  assert.match(html, /a reviewer, a check or a session action/);
+  assert.match(html, /a reviewer, a Command or a session action/);
 });
 
 test("with nothing runnable the group is absent, and the tooltip says which reason", () => {

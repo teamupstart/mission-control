@@ -3,15 +3,26 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { MissionSchedule } from "../src/shared/schedules.ts";
-import type { PersonaView, SessionAction, WorkflowSummary } from "../src/shared/workflow.ts";
+import type {
+  PersonaView,
+  SessionAction,
+  WorkflowCommandView,
+  WorkflowSummary,
+} from "../src/shared/workflow.ts";
+import {
+  emptyWorkflowCommandView,
+  WORKFLOW_COMMAND_UNKNOWN,
+} from "../src/shared/workflow.ts";
 import { LibraryPage } from "../src/web/library/LibraryPage.tsx";
 import {
   actionCards,
+  commandCards,
   ensembleStrategyCards,
   missionsCrossLink,
   personaCards,
   workflowCards,
   workflowRunsCrossLink,
+  LIBRARY_SHELF_COPY,
 } from "../src/web/library/library-model.ts";
 
 // What is at stake: the Library exists because nothing in the product ever said what a
@@ -108,6 +119,9 @@ function page(overrides: Record<string, unknown> = {}): string {
     onOpenEnsembles: () => {},
     onOpenMissions: () => {},
     onOpenTaskSources: () => {},
+    // Loaded, unless a case says otherwise. Every durable claim on this page needs the
+    // snapshot to have landed, and the unloaded reading has its own case below.
+    hasSnapshot: true,
     ...overrides,
   }));
 }
@@ -120,6 +134,7 @@ test("every shelf is headed by the question it answers, with the noun as its eye
     "What can a run tell the session to do?",
     "Not sure of the best approach?",
     "Where does work come from?",
+    "What does each standard gate run?",
   ];
   for (const question of questions) {
     // In an `h3`, which is what makes it the shelf's accessible name through the
@@ -128,17 +143,24 @@ test("every shelf is headed by the question it answers, with the noun as its eye
   }
   // The nouns are present, and demoted. A shelf that headed itself "Personas" would be the
   // silence this page was built to end.
-  for (const noun of ["Workflows", "Personas", "Actions", "Ensembles", "Missions · Sources"]) {
+  for (const noun of [
+    "Workflows", "Personas", "Actions", "Ensembles", "Missions · Sources", "Commands",
+  ]) {
     assert.match(html, new RegExp(`class="lib-shelf-eyebrow">${noun}<`));
   }
-  // Five shelves, each a labelled region.
-  assert.equal(html.match(/aria-labelledby="lib-shelf-/g)?.length, 5);
+  // Six shelves, each a labelled region.
+  assert.equal(html.match(/aria-labelledby="lib-shelf-/g)?.length, 6);
 });
 
-test("the page says out loud that nothing on it runs", () => {
-  // The one sentence that keeps authoring and execution apart in an operator's head. If a later phase
-  // puts live state on a shelf, this is the claim it breaks.
-  assert.match(page(), /Nothing here runs - live state stays on the runs and ensembles pages/);
+test("the page says out loud that nothing runs from it", () => {
+  // The one sentence that keeps authoring and execution apart in an operator's head. If a
+  // later phase puts live state on a shelf, this is the claim it breaks.
+  //
+  // "Nothing RUNS FROM HERE" since Commands were shelved here: a Command is an executable
+  // argv, and the old phrasing would have read as a claim that the box an operator typed
+  // `npm test` into is inert. Saving one still executes nothing; a workflow reaching its
+  // slot, later, in a granted repository, is what runs it.
+  assert.match(page(), /Nothing runs from here - live state stays on the runs and ensembles pages/);
 });
 
 test("cards carry durable facts, and a draft says so", () => {
@@ -174,12 +196,12 @@ test("the Ensembles shelf offers launchers and no way to author one", () => {
     assert.match(html, new RegExp(strategy.name));
   }
   assert.match(html, /Launch one →/);
-  // Every other shelf has a "＋ New" card; this one must not, because there is nothing to
-  // save - a strategy ships with the build.
+  // Every authoring shelf has a "＋ New" card; this one must not, because there is nothing
+  // to save - a strategy ships with the build, exactly as a Command slot does.
   assert.equal(
     html.match(/class="lib-asset lib-asset-new"/g)?.length,
     4,
-    "one dashed card per authoring shelf, and none on Ensembles",
+    "one dashed card per authoring shelf, and none on Ensembles or Commands",
   );
   assert.doesNotMatch(html, /New ensemble/);
 });
@@ -246,4 +268,106 @@ test("a reviewer card is tagged when its imported source file has moved on", () 
     page({ personas: [imported], personaUpstream: new Map([["p-imported", "changed"]]) }),
     /upstream changed/,
   );
+});
+
+// ---- Commands ----
+//
+// What is at stake: this shelf is the one place an operator can answer "what does `test` run
+// on this machine, and where is that not true?" without choosing a repository first. Four
+// cards, always, in registry order - and the fact on each is durable configuration, never
+// anything a run is doing.
+
+test("Commands is the sixth shelf, with one card per built-in slot and no New card", () => {
+  const html = page();
+  // Appended, not filed beside Workflows: the shelf strings are hash segments, so the
+  // reading order is append-only.
+  assert.deepEqual(
+    LIBRARY_SHELF_COPY.map((shelf) => shelf.id),
+    ["workflows", "personas", "actions", "ensembles", "missions", "commands"],
+  );
+  const cards = commandCards([], true);
+  assert.deepEqual(cards.map((card) => card.id), ["test", "lint", "typecheck", "build"]);
+  // Every one is built-in and none of them is creatable, which is the difference between
+  // this shelf and the three above it.
+  assert.ok(cards.every((card) => card.tags.some((tag) => tag.label === "built-in")));
+  assert.doesNotMatch(html, /New Command/);
+  // And no cross-link: a Command has no runs of its own, and pointing all four at the
+  // workflow run list would be a number this shelf did not measure.
+  const shelf = /<section class="lib-shelf" aria-labelledby="lib-shelf-commands">(.*?)<\/section>/s
+    .exec(html);
+  assert.ok(shelf, "the Commands shelf should render");
+  assert.doesNotMatch(shelf[1]!, /lib-shelf-live/);
+});
+
+test("a Command card states durable configuration, and nothing about a run", () => {
+  const catalog = (over: Partial<WorkflowCommandView>): WorkflowCommandView => ({
+    ...emptyWorkflowCommandView("test"),
+    ...over,
+  });
+  // The four readings the shelf has to be able to tell apart.
+  assert.equal(commandCards([catalog({})], true)[0]?.fact, "Not configured");
+  assert.equal(
+    commandCards([catalog({ defaultCommand: ["npm", "test"] })], true)[0]?.fact,
+    "Global default",
+  );
+  assert.equal(
+    commandCards([catalog({ overrides: [{ repoRoot: "/a", command: ["a"] }] })], true)[0]?.fact,
+    "1 override · no global default",
+  );
+  assert.equal(
+    commandCards([catalog({
+      defaultCommand: ["npm", "test"],
+      overrides: [{ repoRoot: "/a", command: ["a"] }, { repoRoot: "/b", command: ["b"] }],
+    })], true)[0]?.fact,
+    "Global default · 2 overrides",
+  );
+  // A slot the catalog has not answered for is still a card, reading as unconfigured rather
+  // than vanishing - "unconfigured" and "not loaded" must not be the same missing tile.
+  assert.deepEqual(
+    commandCards([], true).map((card) => card.fact),
+    ["Not configured", "Not configured", "Not configured", "Not configured"],
+  );
+  // Rendered through the page, so the fact reaches the DOM rather than only the model.
+  assert.match(
+    page({ workflowCommands: [catalog({ defaultCommand: ["npm", "test"] })] }),
+    /class="lib-asset-fact">Global default</,
+  );
+});
+
+// The claim `Not configured` is about what this MACHINE has stored, so it needs the catalog
+// to have arrived. Drawn early it is worse than blank: an operator reading it on a slot that
+// does have a global default is being invited to type over configuration that merely has not
+// loaded. The editor's rail already drew this distinction; the shelf did not.
+test("an unloaded catalog is said out loud, not drawn as four unconfigured slots", () => {
+  const unloaded = commandCards([], false);
+  assert.deepEqual(
+    unloaded.map((card) => card.fact),
+    Array.from({ length: 4 }, () => WORKFLOW_COMMAND_UNKNOWN),
+  );
+  // The cards themselves stay: the four slots ship with the build, so their existence is
+  // knowable without the daemon even though what they run is not.
+  assert.deepEqual(unloaded.map((card) => card.id), ["test", "lint", "typecheck", "build"]);
+
+  // A view that HAS arrived is trusted whatever the flag says - the flag describes an
+  // absence, and a slot the stream already delivered is not absent.
+  const partial = commandCards(
+    [{ ...emptyWorkflowCommandView("lint"), defaultCommand: ["npm", "run", "lint"] }],
+    false,
+  );
+  assert.equal(partial.find((card) => card.id === "lint")?.fact, "Global default");
+  assert.equal(partial.find((card) => card.id === "test")?.fact, WORKFLOW_COMMAND_UNKNOWN);
+
+  // And through the page, which defaults to unloaded for the same reason the projection
+  // requires the flag: the optimistic default is exactly the bug.
+  const html = renderToStaticMarkup(createElement(LibraryPage, {
+    onOpenAsset: () => {},
+    onCreateAsset: () => {},
+    onLaunchEnsemble: () => {},
+    onOpenRuns: () => {},
+    onOpenEnsembles: () => {},
+    onOpenMissions: () => {},
+    onOpenTaskSources: () => {},
+  }));
+  assert.match(html, new RegExp(WORKFLOW_COMMAND_UNKNOWN));
+  assert.doesNotMatch(html, /Not configured/);
 });

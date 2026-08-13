@@ -135,7 +135,7 @@ export function createCheckScheduler(
 
 /** The sentence a build with no execution runtime gives, in one place so tests can name it. */
 export const CHECK_RUNTIME_UNAVAILABLE_NOTE =
-  "This build cannot run check commands yet, so the gate was recorded and passed.";
+  "This build cannot run workflow Commands yet, so the gate was recorded and passed.";
 const encoder = new TextEncoder();
 
 function outcome(
@@ -263,7 +263,8 @@ export async function runCheck(
     return outcome(
       slot,
       "skipped",
-      `No ${slot} command is configured for this repository, so this gate was skipped.`,
+      `No ${slot} Command is configured for this machine or repository, so this gate was `
+      + "skipped.",
     );
   }
   const command = resolved.command;

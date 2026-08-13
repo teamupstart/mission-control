@@ -474,7 +474,7 @@ test("a check row and its stage use deterministic status vocabulary", () => {
   assert.doesNotMatch(running, /Reviewing/);
 
   const errored = pipeline("error");
-  assert.match(errored, /Check failed to run/);
+  assert.match(errored, /Command failed to run/);
   assert.doesNotMatch(errored, /Provider error/);
 });
 
@@ -1531,7 +1531,7 @@ test("a check attempt renders its slot, exit code and bounded output, not a Pers
     truncatedBytes: 1_200,
     note: "`npm run typecheck` exited 2.",
   }));
-  assert.match(html, /Check · typecheck/);
+  assert.match(html, /Command · typecheck/);
   assert.match(html, /exit 2/);
   assert.match(html, /error TS2345/);
   assert.match(html, /npm run typecheck/);
@@ -1557,7 +1557,7 @@ test("the three passing check statuses each say something different about why", 
     note: "No test command is configured for this repository, so this gate was skipped.",
   }));
   assert.match(skipped, /Skipped/);
-  assert.match(skipped, /No command is configured for this slot here/);
+  assert.match(skipped, /No Command is configured for this slot on this machine/);
   assert.match(skipped, /no command configured/);
 
   const unavailable = render(detailWithCheck({

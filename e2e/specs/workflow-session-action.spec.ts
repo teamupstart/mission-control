@@ -311,7 +311,7 @@ test("an authored action becomes a pipeline stage, publishes, and freezes its in
 
   // The empty pipeline offers all three kinds of stage, from the one control that creates one.
   const pipeline = dashboard.locator(".wf-pipeline-strip");
-  await expect(pipeline).toContainText("a reviewer, a check or a session action");
+  await expect(pipeline).toContainText("a reviewer, a Command or a session action");
   const picker = pipeline.getByLabel("Add the first stage");
   // Three groups, and the third is the one the session action phase added. Asserted as a group
   // rather than as a bare option so a Persona that happened to share the name could not satisfy
@@ -378,7 +378,7 @@ test("an action stage reorders, is replaced, and is removed through the builder"
   await pipeline.getByLabel("Add the first stage").selectOption({ label: "Tidy the workspace" });
   await pipeline.getByLabel("Insert a stage after Stage 1").click();
   await pipeline.getByLabel("Insert a stage after Stage 1")
-    .selectOption({ label: "Check · typecheck" });
+    .selectOption({ label: "Command · typecheck" });
   await expect(pipeline.locator("li.wf-pipeline-reviewer")).toHaveCount(2);
 
   // REPLACE, not add: the stage already exists, so this changes which action it sends.
@@ -422,7 +422,7 @@ test("the Graph palette creates an action node with one complete port, and can d
   await expect(palette.getByRole("button")).toHaveText([
     "＋ Persona",
     "＋ All-pass Join",
-    "＋ Check",
+    "＋ Command",
     "＋ Session action",
     "＋ End",
   ]);
@@ -474,7 +474,7 @@ test("the shipped Pull Request built-in is addable from the pipeline and the pal
   await expect(dashboard.locator("section.workflow-palette").getByRole("button")).toHaveText([
     "＋ Persona",
     "＋ All-pass Join",
-    "＋ Check",
+    "＋ Command",
     "＋ Session action",
     "＋ End",
   ]);

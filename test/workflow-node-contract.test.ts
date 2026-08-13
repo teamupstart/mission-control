@@ -54,21 +54,30 @@ test("the palette has no checkpoint or Inspector graph node", () => {
   assert.match(propertiesSource, /<option value="inspector">Inspector approval<\/option>/);
 });
 
-test("a Check node carries a slot and never a command", () => {
+test("a Command node carries a slot and never a command", () => {
   // The whole point of the slot indirection, pinned where an operator would look for the
-  // field to type an argv into: the properties panel offers a slot picker, and it says
+  // field to type an argv into: the properties panel offers a slot picker, and it LINKS to
   // where the command lives instead of offering a box for one.
   //
   // A command field HERE would put an argv on the draft graph, which is exactly the
   // executable-content problem the slot exists to avoid: a published version is exportable,
   // and a built-in workflow hard-coding `npm test` is wrong on every other repository.
+  //
+  // The wire kind is still `check` and always will be - published graphs, run attempts and
+  // bookmarks all name it - so the source match below is deliberately on the durable
+  // spelling while the copy beside it says Command.
   assert.match(propertiesSource, /selectedNode\.kind === "check"/);
   assert.match(propertiesSource, /slot: event\.target\.value as WorkflowCheckSlot/);
-  assert.match(propertiesSource, /Settings › Workflows/);
+  assert.match(propertiesSource, /Library › Commands/);
+  assert.match(
+    propertiesSource,
+    /shelf: "commands", assetId: selectedNode\.slot/,
+    "the panel must link to the slot's own Library card, not to the shelf index",
+  );
   assert.doesNotMatch(
     propertiesSource,
     /replaceNode\(\{ \.\.\.selectedNode, command/,
-    "a Check node's command must never be editable on the graph",
+    "a Command node's command must never be editable on the graph",
   );
 });
 

@@ -241,7 +241,7 @@ function CheckCard({
         <span className={`workflow-chip workflow-${outcome.status === "failed" ? "failed" : "passed"}`}>
           {view.label}
         </span>
-        <strong>Check · {outcome.slot}</strong>
+        <strong>Command · {outcome.slot}</strong>
       </header>
       <p className="wf-run-summary">{outcome.note}</p>
       <p className="wf-run-check-sentence">{view.sentence}</p>

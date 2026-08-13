@@ -3,17 +3,21 @@
 Mission Control keeps its three primary pages in one segmented top bar control:
 **▦ Fleet / ⌗ Library / ▷ Runs**. Fleet shows the sessions doing the work, **Library** holds
 everything you author once and reuse, and **Runs** monitors live and finished workflow runs.
-Nothing on the Library runs - each shelf carries a single cross-link to where its assets are
-executing, and no live state beyond it. That link sits beside the shelf's question as a
+Nothing runs *from* the Library - each shelf carries a single cross-link to where its assets
+are executing, and no live state beyond it. That link sits beside the shelf's question as a
 counted pill wearing a status dot: blue while work is merely open, amber when the count is
 one you have to answer. The original pull request includes runtime captures of both the wide
 and narrow layouts.
+
+"Nothing runs from here" rather than "nothing here runs", because the Commands shelf holds
+executable argvs. Saving one executes nothing; a workflow reaching that slot, later, in a
+repository granted the Workflows cell in Trust, is what runs it.
 
 Switching primary pages changes only the dashboard body. The fleet header, live SSE
 connection, and Cards, Console, or Board selection stay mounted, so returning to **Fleet**
 does not reconnect or discard the fleet view.
 
-`#/library` opens five shelves, each headed by the question it answers rather than by its own
+`#/library` opens six shelves, each headed by the question it answers rather than by its own
 noun:
 
 | Shelf | Question | What is on it |
@@ -23,21 +27,51 @@ noun:
 | Actions | What can a run tell the session to do? | [Session action](workflows.md#session-actions) cards - required skill and what proves completion |
 | Ensembles | Not sure of the best approach? | Strategy launchers (Best of N, Panel vote, Consensus) that open Dispatch already in Ensemble mode on that strategy |
 | Missions · Sources | Where does work come from? | Recurring missions and a link to task sources in Settings |
+| Commands | What does each standard gate run? | The four portable workflow slots - `test`, `lint`, `typecheck`, `build` - each with what it runs on this machine |
 
-The three authoring surfaces mount one level deeper, unchanged, at bookmarkable hashes:
+The four authoring surfaces mount one level deeper at bookmarkable hashes:
 
 | Hash | Surface |
 | --- | --- |
-| `#/library` | The five shelves |
+| `#/library` | The six shelves |
 | `#/library/workflows[/:id]` | The workflow builder, on that workflow |
 | `#/library/personas[/:id]` | The Persona library and editor |
 | `#/library/actions[/:id]` | The session action library and editor |
-| `#/library/<shelf>/new` | The same surface, opened on a blank draft |
+| `#/library/commands[/:slot]` | The Command editor, on that slot |
+| `#/library/<shelf>/new` | The same surface, opened on a blank draft - not Commands, which has nothing to draft |
 
 The asset id follows what the editor actually has open: selecting a second Persona rewrites
 the hash without adding a history entry, so the address bar is always a shareable link to what
 you are looking at and **Back** still means the page you came from. `new` is reserved and
 never an asset id.
+
+Commands is the one surface whose ids are a closed set. `#/library/commands/test` opens the
+`test` slot; anything else in that position - a slot this build does not have, an undecodable
+segment, or `new` typed out of habit from the other shelves - opens the surface on its default
+rather than on a blank pane.
+
+### Commands
+
+A workflow's Command node names a portable slot and never an argv, so the same workflow runs
+against any repository. This shelf is where *this machine* says what each slot runs:
+
+- one optional **global default** per slot, which is repository-neutral and runs at the root
+  of whatever checkout the run leased;
+- zero or more **overrides**, keyed by repository or by a subdirectory inside one. The longest
+  matching path wins, and a nested override also decides which directory the command runs in.
+
+A slot with neither passes with a note rather than failing, which is what lets a shipped
+workflow name `typecheck` on a machine that has never configured one.
+
+Saving replaces a slot's default and its complete override list in one compare-and-swap, so
+the two halves can never be stored apart, and a second window's save is refused rather than
+silently overwriting your unsaved typing. Commands are stored as argv and executed without a
+shell: there are no pipes, no redirection, no environment interpolation and no shell-mode
+toggle, and the editor shows the exact split before you save.
+
+Whether a Command may run at all is policy, and it stays in
+[Settings › Workflows](skills-and-settings.md#settings): **Allow workflow Commands** is the
+machine-wide switch, and the repository has to be granted the Workflows cell in Trust.
 
 Execution is not a Library shelf. Workflow Runs is a top-level page in the segmented control
 and [the Line](ui.md#the-line-the-pipeline-strip-above-the-fleet) links directly into it; Ensemble

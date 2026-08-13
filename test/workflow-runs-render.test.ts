@@ -26,7 +26,7 @@ import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
 import { PersonaDirectiveEditor } from "../src/web/workflows/PersonaDirectiveEditor.tsx";
 import { WorkflowRunView, WorkflowRunsEmpty } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
-  inspectorOnlySkipStatus,
+  carriedStatus,
   workflowRunLoadError,
 } from "../src/web/workflows/run-model.ts";
 import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
@@ -1167,8 +1167,13 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assert.match(headerOf(html), /<a class="btn btn-ghost" href="https:\/\/github.com\/owner\/repo\/pull\/91"/);
   assert.match(html, /Open PR/);
   assert.match(html, /This Inspector repair round ran no Personas/);
-  assert.match(html, /wf-pipeline-status workflow-passed wf-status-explained/);
-  assert.ok(tooltipLabels(html).includes(inspectorOnlySkipStatus().tooltip!));
+  // A stage this round did not run reads NEUTRAL, never green: the chip speaks for the round
+  // on screen, where nothing executed. The pass it is carrying is claimed by the provenance
+  // line instead, which names the round that earned it and links straight to the proof.
+  assert.match(html, /wf-pipeline-status workflow-stopped wf-status-explained/);
+  assert.match(html, /Not re-run/);
+  assert.ok(tooltipLabels(html).includes(carriedStatus("Round 2").tooltip!));
+  assert.match(html, /Passed in Round 2\. Show that round\./);
   assertNoGraphIds(html);
 });
 

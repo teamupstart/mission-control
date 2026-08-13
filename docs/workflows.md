@@ -660,9 +660,12 @@ here and links to the Runs page, where its read-only graph remains available.
 
 The Board overview also keeps a compact **active-rung preview** inside each bound session tile.
 It names the consequential stage and its members, and keeps the first objection, Inspector wait,
-or uncertain-delivery warning in view. **Show full workflow** expands that tile in place into the
-same actionable ladder; **Collapse workflow** returns to the preview. Press <kbd>e</kbd> on the
-selected tile to toggle those same controls without opening the session detail. These controls do
+or uncertain-delivery warning in view. A stage carried forward from an earlier round never takes
+that slot - it is finished work, so the preview keeps naming whatever is actually running - and the
+tile instead carries one line counting them, **✓ 2 stages carried from Round 1 · evidence 1**.
+**Show full workflow** expands that tile in place into the same actionable ladder;
+**Collapse workflow** returns to the preview. Press <kbd>e</kbd> on the selected tile to toggle
+those same controls without opening the session detail. These controls do
 not open the session or leave the Board. **Open run** inside the expanded ladder remains the explicit route
 to the complete evidence and timeline. The preview fetches run detail when its tile mounts and
 refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload itself is unchanged.
@@ -670,9 +673,19 @@ refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload its
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show
 queued, reviewing, passed, or changes requested; Checks show their corresponding command
-state. Inspector-only repair rounds show their previously passed stages as green **Skipped**;
-the tooltip explains that only Inspector is being rerun. A check skipped because its command
-is not configured stays amber, with its reason available on the check and stage status.
+state. A stage this round did not run because an earlier one already passed it reads a neutral
+grey **Not re-run**, and carries a **✓ Passed in Round 1 · evidence 1** line naming the round
+that earned the pass; pressing that line scrubs straight to it. The chip is deliberately not
+green - it speaks for the round on screen, where nothing executed - and the tick on the
+provenance line is the only green a carried stage wears, because it is a claim about a
+different round. Both shapes that leave a stage without an attempt of its own read this one way:
+a **continuation segment**, which resumes after a session action and re-runs only the stages
+below it, and an **Inspector-only repair round**, which bypasses Persona review entirely.
+A **session action** never carries, because it judges nothing and so has no pass to stand on:
+a completed one still reads **Complete** in the very segment its completion created.
+A check skipped because its command is not configured stays amber, with its reason available
+on the check and stage status - a skipped command is not a passed one, so it keeps its own
+explanation rather than being folded into a carried pass.
 A stage of two or more members shows each one and passes only when all do. A version
 drawn freehand in the Graph view is not a pipeline, so its run falls back to that graph,
 read-only, carrying the same statuses. No surface prints a node id. The same fixed

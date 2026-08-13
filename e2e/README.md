@@ -912,6 +912,34 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### A stage carried forward, and the round it passed in
+
+`e2e/.artifacts/workflow-carried-stage/` carries three frames from
+`specs/workflow-carried-stage.spec.ts`, and they exist because the defect and the fix are both
+a matter of what a stage SAYS about itself.
+
+`01-carried-stage-run-view.png` is the continuation segment with the repair: the stage reads a
+neutral `Not re-run` and carries `✓ Passed in Round 1 · evidence 1` beneath its members. Before
+it, that same chip read amber `Waiting` over `Not started` rows - a stage announcing itself as
+about to run, in the round that will never run it. `02-source-round-proof.png` is where one
+press on that line lands, which is the whole complaint being answered: the earlier round, the
+same stage, reading `All passed`. `03-board-card-carried.png` is the Board tile, whose one rung
+slot went to the finished stage before the sort learned about carried ones.
+
+That the chip is grey rather than green is checkable in the DOM as a class; that the two rounds
+read as one continuous story is legible only here.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-carried-stage.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### A copy that confirms, and one that admits it failed
 
 `e2e/.artifacts/copy-confirms-and-reports/` carries three frames from

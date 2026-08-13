@@ -94,7 +94,7 @@ async function seedRun(page: Page, daemon: DaemonHandle): Promise<string> {
   return submitted.run.id;
 }
 
-test("skipped checks stay amber while prior passes turn green in an Inspector repair", async ({
+test("skipped checks stay amber while a carried pass reads neutral in an Inspector repair", async ({
   dashboard,
   daemon,
 }) => {
@@ -154,8 +154,9 @@ test("skipped checks stay amber while prior passes turn green in an Inspector re
   const repairedCheckStatus = repairedCheck.locator(".wf-pipeline-status");
   const personaStatus = persona.locator(".wf-pipeline-status");
 
-  // The unconfigured check inherits its prior outcome and stays amber, while the Persona's
-  // real prior pass earns the green Inspector-repair skip.
+  // The unconfigured check still inherits its prior OUTCOME and stays amber. That inheritance
+  // is deliberately wider than the carried-pass one: `skipped` is not `passed`, so a round that
+  // only carried passes would drop the one sentence saying why this row is amber at all.
   await expect(repairedCheckStatus).toHaveClass(/workflow-waiting/);
   await expect(repairedCheck).toContainText("Skipped");
   await repairedCheckStatus.hover();
@@ -163,10 +164,18 @@ test("skipped checks stay amber while prior passes turn green in an Inspector re
     "Skipped because this machine configures nothing for this Command.",
   );
 
-  await expect(personaStatus).toHaveClass(/workflow-passed/);
-  await expect(persona).toContainText("Skipped");
+  // The Persona's real prior pass is CARRIED, and carried is neutral rather than green: the
+  // chip speaks for the round on screen, where the Inspector repair ran nothing. The pass it
+  // is standing on is claimed by the provenance line instead, which names the round that
+  // earned it - so this row and the amber Check above it now differ in tone, label and
+  // sentence, which is the whole point of the two statuses being distinct.
+  await expect(personaStatus).toHaveClass(/workflow-stopped/);
+  await expect(persona).toContainText("Not re-run");
   await personaStatus.hover();
   await expect(dashboard.locator(".tooltip")).toHaveText(
-    "Skipped because this stage passed in the prior full workflow round. This Inspector repair round only rechecks Inspector.",
+    "Not re-run in this round. It passed in Round 1, and that pass still stands.",
   );
+  await expect(
+    pipeline.getByRole("button", { name: "Passed in Round 1. Show that round." }),
+  ).toBeVisible();
 });

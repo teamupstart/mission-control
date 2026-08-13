@@ -10,6 +10,7 @@ import { validReportHtml } from "./helpers/scout-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ScoutArchiveGate } from "../src/server/tasks.ts";
+import type { ScoutSubject } from "../src/server/scouts/task-gateway.ts";
 
 /**
  * Where the archive meets the task lifecycle.
@@ -90,7 +91,7 @@ interface Harness {
   library: string;
 }
 
-function harness(): Harness {
+function harness(options: { afterSubmissionAttribution?: (subject: ScoutSubject) => Promise<void> } = {}): Harness {
   const registry = new Registry();
   const library = mkdirp(join(home, `library-${++seq}`));
   const scouts = new ScoutArchiveManager({
@@ -99,6 +100,7 @@ function harness(): Harness {
     intervalMs: null,
     watch: false,
     log: () => {},
+    ...options,
   });
   registry.onSessionExit((session) => scouts.reserveOnExit(session));
   const tasks = new TaskManager(registry, undefined, undefined, undefined, scouts);
@@ -804,6 +806,54 @@ test("an exit after a successful submission does not archive a second time", asy
   const session = bindSession(h, task, cwd);
   h.registry.emit("session_exit", session);
   assert.equal(h.scouts.captureJobsForTask(task.id).length, 1, "the ordinary end of a scout");
+});
+
+test("exit recovery waits for a submission that already proved its session", async () => {
+  let attributed!: () => void;
+  let release!: () => void;
+  const attributionReached = new Promise<void>((resolve) => {
+    attributed = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = harness({
+    afterSubmissionAttribution: async () => {
+      attributed();
+      await paused;
+    },
+  });
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  const session = bindSession(h, task, cwd);
+
+  const submitted = h.scouts.submit({
+    authority: { taskId: task.id, cwd },
+    submission: {
+      reportPath: "docs/reports/resume/report.html",
+      summary: "the completed answer",
+      tags: [],
+      supporting: [],
+    },
+  });
+  await attributionReached;
+  h.registry.emit("session_exit", session);
+
+  const reserved = h.scouts.captureJobsForTask(task.id)[0]!;
+  assert.equal(reserved.status, "reserved", "exit reserves synchronously but does not publish");
+  assert.equal(reserved.submission, null, "the request is still paused before its durable record");
+
+  release();
+  const result = await submitted;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(await h.scouts.settleBeforeCleanup(task.id), { ok: true });
+  const published = h.scouts.captureJobsForTask(task.id)[0]!;
+  assert.equal(published.status, "published");
+  assert.equal(published.captureStatus, "complete");
+  assert.equal(published.submission?.summary, "the completed answer");
 });
 
 test("a rescheduled scout exit reserves its current episode despite an older archive", async () => {

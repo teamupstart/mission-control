@@ -110,6 +110,8 @@ export interface ScoutArchiveManagerOptions {
   watch?: boolean;
   /** Injected so a test can prove that a failed publication leaves the archive readable. */
   rename?: (from: string, to: string) => Promise<void>;
+  /** Injected so a test can pause an accepted submission before its durable record. */
+  afterSubmissionAttribution?: (subject: ScoutSubject) => Promise<void>;
   /**
    * Injected so a test can assert WHICH path reaches a launcher without spawning one.
    *
@@ -130,6 +132,9 @@ export class ScoutArchiveManager {
   private readonly tasks: ScoutTaskGateway | null;
   private readonly reconciler: ScoutReconciler;
   private readonly renameDir: (from: string, to: string) => Promise<void>;
+  private readonly afterSubmissionAttribution:
+    | ((subject: ScoutSubject) => Promise<void>)
+    | undefined;
   private readonly handToTarget: (target: OpenTargetId, path: string) => Promise<OpenFileOutcome>;
   private readonly log: (message: string, detail: Record<string, unknown>) => void;
   /**
@@ -142,6 +147,11 @@ export class ScoutArchiveManager {
    * cost of serializing is a wait rather than a wrong answer.
    */
   private readonly captureRuns = new Map<string, Promise<ScoutCaptureOutcome>>();
+  /** Active submissions per work episode, so exit recovery cannot publish ahead of one. */
+  private readonly submissionClaims = new Map<
+    string,
+    { pending: number; settled: Promise<void>; resolve: () => void }
+  >();
   private acceptingJobs = true;
 
   constructor(options: ScoutArchiveManagerOptions = {}) {
@@ -151,6 +161,7 @@ export class ScoutArchiveManager {
     this.captureStore = options.captureStore ?? new ScoutCaptureStore();
     this.tasks = options.tasks ?? null;
     this.renameDir = options.rename ?? ((from, to) => rename(from, to));
+    this.afterSubmissionAttribution = options.afterSubmissionAttribution;
     this.handToTarget = options.openTarget ?? openFile;
     this.log =
       options.log ??
@@ -211,30 +222,36 @@ export class ScoutArchiveManager {
     }
     const lookup = this.tasks.subjectForSubmission(input.authority);
     if (!lookup.ok) return { ok: false, status: lookup.status, problems: [lookup.detail] };
-    if (!this.acceptingJobs) {
-      return { ok: false, status: 503, problems: ["Mission Control is shutting down; try again after it restarts"] };
-    }
+    const releaseClaim = this.claimSubmission(lookup.subject);
+    try {
+      if (!this.acceptingJobs) {
+        return { ok: false, status: 503, problems: ["Mission Control is shutting down; try again after it restarts"] };
+      }
+      await this.afterSubmissionAttribution?.(lookup.subject);
 
-    const job = this.reserve(lookup.subject);
-    const recorded = this.captureStore.recordSubmission(job.operationKey, input.submission);
-    if (!recorded) {
-      // This episode's archive is already published, and a published archive is immutable.
-      // Answering "recorded" would be a lie the scout only discovers when its corrected page
-      // is not the one in the bundle - so the replay is returned when it holds the answer, and
-      // the refusal is explicit when it does not.
-      const replay = await this.runCapture(job.operationKey);
-      if (replay.ok && replay.captureStatus === "complete") return this.result(replay);
-      return {
-        ok: false,
-        status: 409,
-        problems: [
-          "an archive for this scout's current work episode was already published without a " +
-            "report, and a published archive cannot be rewritten. Tell your operator; the page " +
-            "you wrote is still in the checkout.",
-        ],
-      };
+      const job = this.reserve(lookup.subject);
+      const recorded = this.captureStore.recordSubmission(job.operationKey, input.submission);
+      if (!recorded) {
+        // This episode's archive is already published, and a published archive is immutable.
+        // Answering "recorded" would be a lie the scout only discovers when its corrected page
+        // is not the one in the bundle - so the replay is returned when it holds the answer, and
+        // the refusal is explicit when it does not.
+        const replay = await this.runCapture(job.operationKey);
+        if (replay.ok && replay.captureStatus === "complete") return this.result(replay);
+        return {
+          ok: false,
+          status: 409,
+          problems: [
+            "an archive for this scout's current work episode was already published without a " +
+              "report, and a published archive cannot be rewritten. Tell your operator; the page " +
+              "you wrote is still in the checkout.",
+          ],
+        };
+      }
+      return this.result(await this.runCapture(recorded.operationKey));
+    } finally {
+      releaseClaim();
     }
-    return this.result(await this.runCapture(recorded.operationKey));
   }
 
   /**
@@ -320,6 +337,7 @@ export class ScoutArchiveManager {
     if (!this.tasks?.isScout(taskId)) return { ok: true };
     const subject = this.tasks.subjectForTask(taskId);
     if (!subject) return { ok: true };
+    await this.submissionClaims.get(this.submissionKey(subject))?.settled;
     const current = this.captureStore
       .forTask(taskId)
       .filter((job) => job.episodeId === subject.episodeId);
@@ -368,7 +386,12 @@ export class ScoutArchiveManager {
         .filter((job) => job.episodeId === subject.episodeId);
       if (jobs.some((job) => job.status === "published")) return;
       const job = this.reserve(subject);
-      void this.runCapture(job.operationKey);
+      const activeSubmission = this.submissionClaims.get(this.submissionKey(subject))?.settled;
+      if (activeSubmission) {
+        void activeSubmission.then(() => this.runCapture(job.operationKey));
+      } else {
+        void this.runCapture(job.operationKey);
+      }
     } catch (error) {
       // A listener that threw would abandon the rest of `beginEviction`, taking task settling
       // and review orphaning with it. The job is durable or it is not; either way the failure
@@ -421,6 +444,40 @@ export class ScoutArchiveManager {
       origin: subject.origin,
       repos: subject.repos,
     });
+  }
+
+  private submissionKey(subject: Pick<ScoutSubject, "taskId" | "episodeId">): string {
+    return JSON.stringify([subject.taskId, subject.episodeId]);
+  }
+
+  /**
+   * Claim one attributed submission until its durable record and capture have settled.
+   *
+   * The exit listener stays synchronous through reservation, but defers publication through
+   * this promise. A request that already proved which live scout it belongs to therefore gets
+   * to record its submitted report before recovery can burn the episode's immutable archive.
+   */
+  private claimSubmission(subject: ScoutSubject): () => void {
+    const key = this.submissionKey(subject);
+    let claim = this.submissionClaims.get(key);
+    if (!claim) {
+      let resolve!: () => void;
+      const settled = new Promise<void>((done) => {
+        resolve = done;
+      });
+      claim = { pending: 0, settled, resolve };
+      this.submissionClaims.set(key, claim);
+    }
+    claim.pending += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      claim!.pending -= 1;
+      if (claim!.pending > 0) return;
+      if (this.submissionClaims.get(key) === claim) this.submissionClaims.delete(key);
+      claim!.resolve();
+    };
   }
 
   private runCapture(operationKey: string): Promise<ScoutCaptureOutcome> {

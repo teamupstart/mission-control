@@ -161,7 +161,9 @@ If a scout's session goes away before it submitted, Mission Control reserves a c
 moment of eviction - while the task, its work episode and its checkouts can still be derived -
 and then, in the background:
 
-1. a report the scout actually submitted always wins;
+1. a report the scout actually submitted always wins. Once a submission has been attributed
+   to the live scout episode, exit recovery waits for it to be recorded and captured before it
+   can publish that episode's archive;
 2. otherwise it looks for exactly **one** `docs/reports/*/report.html` in the checkouts the
    task still holds, and captures that one with its representable companions;
 3. zero candidates, or more than one, publishes an honest `partial` archive naming what is

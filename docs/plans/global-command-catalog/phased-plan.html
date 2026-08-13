@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Global Command catalog: phased implementation</title>
+  <style>
+    :root { color-scheme: dark; --bg:#10151b; --panel:#171f27; --panel2:#1d2731; --line:#2e3b48; --ink:#f3f0e8; --muted:#a6b0ba; --blue:#80baff; --cyan:#70d4c8; --amber:#e8bd70; --green:#8fd1a6; --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; --sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:radial-gradient(circle at 15% 0,rgba(78,129,174,.18),transparent 32rem),var(--bg); font-family:var(--sans); line-height:1.55; }
+    a { color:var(--blue); }
+    code { color:#b6daff; font-family:var(--mono); }
+    .page { width:min(1120px,calc(100% - 32px)); margin:auto; padding:48px 0 90px; }
+    header { padding:36px; border:1px solid var(--line); border-radius:20px; background:linear-gradient(145deg,#1a242e,#141b22); box-shadow:0 25px 65px rgba(0,0,0,.28); }
+    .kicker { margin:0 0 10px; color:var(--cyan); font:700 11px/1 var(--mono); letter-spacing:.13em; text-transform:uppercase; }
+    h1 { margin:0; max-width:850px; font-size:clamp(38px,6vw,68px); line-height:1; letter-spacing:-.045em; }
+    .lead { max-width:760px; margin:20px 0 0; color:#c6ced6; font-size:18px; }
+    .links { display:flex; flex-wrap:wrap; gap:8px; margin-top:22px; }
+    .links a { padding:7px 10px; border:1px solid var(--line); border-radius:999px; color:var(--muted); text-decoration:none; font:650 11px/1 var(--mono); }
+    section { margin-top:58px; scroll-margin-top:22px; }
+    h2 { margin:0 0 12px; font-size:clamp(28px,4vw,40px); letter-spacing:-.03em; }
+    h3 { margin:0 0 8px; font-size:19px; }
+    p { margin:0 0 13px; }
+    .intro { max-width:820px; color:var(--muted); font-size:16px; }
+    .decisions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:22px; }
+    .decision { padding:18px; border:1px solid var(--line); border-radius:13px; background:var(--panel); }
+    .decision span { display:block; margin-bottom:7px; color:var(--amber); font:700 10px/1 var(--mono); letter-spacing:.09em; text-transform:uppercase; }
+    .decision strong { display:block; }
+    .decision p { margin:6px 0 0; color:var(--muted); font-size:13px; }
+    .findings { display:grid; gap:8px; margin-top:20px; }
+    .finding { display:grid; grid-template-columns:28px 1fr; gap:12px; padding:14px 16px; border:1px solid var(--line); border-radius:11px; background:rgba(23,31,39,.82); }
+    .finding b { color:var(--cyan); font-family:var(--mono); }
+    .phase-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; margin-top:24px; }
+    .phase { position:relative; padding:24px; border:1px solid var(--line); border-radius:17px; background:linear-gradient(160deg,var(--panel2),var(--panel)); overflow:hidden; }
+    .phase::before { content:""; position:absolute; inset:0 auto 0 0; width:3px; background:var(--blue); }
+    .phase:nth-child(2)::before { background:var(--cyan); }
+    .phase-no { color:var(--blue); font:800 11px/1 var(--mono); letter-spacing:.1em; text-transform:uppercase; }
+    .phase h3 { margin-top:9px; font-size:24px; }
+    .phase p { color:var(--muted); }
+    .phase ul { margin:13px 0 20px; padding-left:20px; }
+    li+li { margin-top:6px; }
+    .phase a { font:700 12px/1 var(--mono); }
+    .graph { margin-top:24px; padding:18px; border:1px solid var(--line); border-radius:15px; background:#121920; overflow-x:auto; }
+    .graph svg { display:block; min-width:760px; width:100%; height:auto; }
+    table { width:100%; margin-top:20px; border-collapse:collapse; border:1px solid var(--line); background:var(--panel); }
+    th,td { padding:13px 14px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font:700 10px/1.3 var(--mono); letter-spacing:.08em; text-transform:uppercase; }
+    .contracts { display:grid; gap:10px; margin-top:22px; }
+    .contract { display:grid; grid-template-columns:52px 1fr; gap:14px; padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+    .contract b { display:grid; place-items:center; align-self:start; width:42px; height:30px; border-radius:7px; color:#111820; background:var(--amber); font:800 11px/1 var(--mono); }
+    .contract p { margin:0; color:#d5dae0; }
+    .audit { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:20px; }
+    .audit article { padding:18px; border:1px solid #33483c; border-radius:12px; background:rgba(26,52,37,.28); }
+    .audit span { color:var(--green); font:700 10px/1 var(--mono); text-transform:uppercase; letter-spacing:.08em; }
+    .audit p { margin:8px 0 0; color:#bfd0c4; font-size:13px; }
+    .verify { padding:22px; border-left:3px solid var(--amber); border-radius:0 13px 13px 0; background:rgba(91,65,25,.2); }
+    .foot { margin-top:65px; padding-top:18px; border-top:1px solid var(--line); color:#778490; font:11px/1.5 var(--mono); }
+    @media (max-width:760px) { .decisions,.phase-grid,.audit { grid-template-columns:1fr; } header { padding:25px; } }
+    @media (prefers-color-scheme:light) {
+      :root { color-scheme:light; --bg:#f5f2ea; --panel:#fffdf8; --panel2:#f0eee7; --line:#cbd2d7; --ink:#17232d; --muted:#56636f; --blue:#175f9c; --cyan:#16756d; --amber:#9b6516; --green:#367b4e; }
+      body { background:radial-gradient(circle at 15% 0,rgba(78,129,174,.14),transparent 32rem),var(--bg); }
+      header { background:linear-gradient(145deg,#fffdf8,#edf1ef); box-shadow:0 22px 60px rgba(50,61,70,.12); }
+      .lead { color:#3f4d58; }
+      .phase { background:linear-gradient(160deg,var(--panel2),var(--panel)); }
+      .graph { background:#fffdf8; }
+      .verify { background:rgba(183,126,43,.12); }
+    }
+    @media print { :root{color-scheme:light;--bg:white;--panel:#f6f8fa;--panel2:#f6f8fa;--line:#cbd3da;--ink:#15212a;--muted:#4e5a65;} body{background:white}.page{width:100%;padding:0}header{box-shadow:none}.phase{break-inside:avoid} }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <p class="kicker">Phased implementation · Approved</p>
+      <h1>Global Command catalog</h1>
+      <p class="lead">Two serial merge units turn the selected Global Slot Catalog into one daemon-owned source, then move its complete authoring experience into Library.</p>
+      <nav class="links" aria-label="Document links">
+        <a href="plan.html">Product plan</a><a href="#phases">Phases</a><a href="#contracts">Contracts</a><a href="#audit">Audit</a><a href="phase-1-command-catalog-runtime.md">Phase 1 brief</a><a href="phase-2-library-commands.md">Phase 2 brief</a>
+      </nav>
+    </header>
+
+    <section id="decisions">
+      <p class="kicker">Resolved decisions</p>
+      <h2>No product choices left to invent</h2>
+      <div class="decisions">
+        <article class="decision"><span>Product</span><strong>Global Slot Catalog</strong><p>Four portable slots gain optional machine-wide defaults and path exceptions.</p></article>
+        <article class="decision"><span>Noun</span><strong>Command</strong><p>Visible surfaces change; persisted <code>kind: "check"</code> remains compatible.</p></article>
+        <article class="decision"><span>Home</span><strong>Library</strong><p>A sixth question-led shelf replaces repository-first command authoring in Settings.</p></article>
+        <article class="decision"><span>Safety</span><strong>Simplify copy, keep enforcement</strong><p>Authorization, Trust, no-shell argv, pinned worktrees, scrubbing, and teardown remain.</p></article>
+        <article class="decision"><span>Style</span><strong>Existing repository patterns</strong><p>One manager, one live stream, one router, existing editor primitives and CSS sections.</p></article>
+        <article class="decision"><span>Agent</span><strong>Claude</strong><p>Mission Control's task creation route records scheduled tasks with the Claude agent.</p></article>
+      </div>
+    </section>
+
+    <section id="findings">
+      <p class="kicker">Investigated repository</p>
+      <h2>Findings that determine the cut</h2>
+      <div class="findings">
+        <div class="finding"><b>01</b><div><strong>Current ownership is one machine-wide config blob.</strong> Every command row still requires a repository, and longest-path matching already expresses the exception rule.</div></div>
+        <div class="finding"><b>02</b><div><strong>Slot and node identifiers are durable.</strong> The four slot strings and <code>kind: "check"</code> must remain append-only even while product language changes.</div></div>
+        <div class="finding"><b>03</b><div><strong>Resolution and execution are separate.</strong> The new default belongs before unconfigured skip; it does not change policy, verdicts, spawning, or recovery.</div></div>
+        <div class="finding"><b>04</b><div><strong>Library collections are live state.</strong> Cards consume App-owned snapshot/SSE collections, so Commands must join that path rather than fetch or poll alone.</div></div>
+        <div class="finding"><b>05</b><div><strong>The old editor cannot break between merges.</strong> Phase 1 needs a compatibility projection until Phase 2's replacement is complete.</div></div>
+        <div class="finding"><b>06</b><div><strong>Browser-visible changes require Playwright.</strong> Phase 2 owns the built-dashboard spec, route coverage, visual inspection, and documentation sweep.</div></div>
+      </div>
+    </section>
+
+    <section id="phases">
+      <p class="kicker">Implementation sequence</p>
+      <h2>Two mergeable units</h2>
+      <p class="intro">The chain is serial because both tasks cross workflow config, Registry state, Library routing, and Settings. Phase 1 remains fully operable with today's UI; Phase 2 removes the bridge after its replacement is tested.</p>
+      <div class="phase-grid">
+        <article class="phase">
+          <span class="phase-no">Phase 1 · no prerequisites</span>
+          <h3>Catalog and runtime</h3>
+          <p>Make the new Command catalog authoritative without intentional UI redesign.</p>
+          <ul><li>normalized SQLite schema and idempotent legacy migration</li><li>store, manager, CAS update routes, Registry snapshot and upsert</li><li>MissionState and exhaustive event reduction</li><li>override → global default → skip resolution</li><li>workflow-config compatibility projection and write adapter</li><li>focused migration, route, state, and runtime tests</li></ul>
+          <a href="phase-1-command-catalog-runtime.md">Open authoritative phase brief →</a>
+        </article>
+        <article class="phase">
+          <span class="phase-no">Phase 2 · depends on 1</span>
+          <h3>Library and vocabulary</h3>
+          <p>Make Library the only normal Command authoring home and finish the visible product model.</p>
+          <ul><li>sixth shelf, four fixed cards, and durable slot routes</li><li>default plus override editor using existing primitives</li><li>dirty draft, SSE adoption, CAS conflict, and accessibility</li><li>workflow palette status and Command terminology</li><li>Settings table removal and consolidated authorization copy</li><li>docs, render tests, Playwright, and visual verification</li></ul>
+          <a href="phase-2-library-commands.md">Open authoritative phase brief →</a>
+        </article>
+      </div>
+      <div class="graph">
+        <svg viewBox="0 0 980 230" role="img" aria-labelledby="dep-title dep-desc">
+          <title id="dep-title">Two-phase dependency graph</title><desc id="dep-desc">Phase 2 depends directly on Phase 1. Both scheduled tasks also depend on the current planning session.</desc>
+          <defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7d91a3"/></marker></defs>
+          <rect x="55" y="55" width="335" height="118" rx="16" fill="#1b2630" stroke="#4d7192" stroke-width="2"/>
+          <rect x="590" y="55" width="335" height="118" rx="16" fill="#1b292d" stroke="#4b837c" stroke-width="2"/>
+          <path d="M390 114H580" stroke="#7d91a3" stroke-width="3" fill="none" marker-end="url(#arr)"/>
+          <text x="222" y="92" text-anchor="middle" fill="#80baff" font-family="ui-monospace,monospace" font-size="12" font-weight="700">PHASE 1</text>
+          <text x="222" y="121" text-anchor="middle" fill="#f3f0e8" font-family="ui-sans-serif,system-ui" font-size="20" font-weight="700">Catalog + runtime</text>
+          <text x="222" y="146" text-anchor="middle" fill="#96a4b1" font-family="ui-sans-serif,system-ui" font-size="12">one authority · compatibility bridge</text>
+          <text x="757" y="92" text-anchor="middle" fill="#70d4c8" font-family="ui-monospace,monospace" font-size="12" font-weight="700">PHASE 2</text>
+          <text x="757" y="121" text-anchor="middle" fill="#f3f0e8" font-family="ui-sans-serif,system-ui" font-size="20" font-weight="700">Library + vocabulary</text>
+          <text x="757" y="146" text-anchor="middle" fill="#96a4b1" font-family="ui-sans-serif,system-ui" font-size="12">replacement UI · bridge retired</text>
+          <text x="490" y="96" text-anchor="middle" fill="#a6b0ba" font-family="ui-monospace,monospace" font-size="10">depends on</text>
+        </svg>
+      </div>
+    </section>
+
+    <section id="contracts">
+      <p class="kicker">Cross-phase contracts</p>
+      <h2>Boundaries the second task must consume, not reopen</h2>
+      <div class="contracts">
+        <article class="contract"><b>C1</b><p><strong>Fixed identity.</strong> Slot values and order, graph <code>kind: "check"</code>, outcome statuses, and stored attempts remain unchanged.</p></article>
+        <article class="contract"><b>C2</b><p><strong>One authority.</strong> The catalog is the only persisted command source; legacy config is projection and adapter only.</p></article>
+        <article class="contract"><b>C3</b><p><strong>Resolution.</strong> Longest path override wins, then global default, then unconfigured skip. Nested winners own the working subpath.</p></article>
+        <article class="contract"><b>C4</b><p><strong>Policy separation.</strong> <code>checksEnabled</code> and Workflows Trust stay outside catalog rows and are checked after resolution.</p></article>
+        <article class="contract"><b>C5</b><p><strong>Live state.</strong> Four bounded views ride snapshot plus full-slot upsert. Registry and MissionState remain the only collections.</p></article>
+        <article class="contract"><b>C6</b><p><strong>Atomic edits.</strong> One CAS update replaces a slot's nullable default and complete override list.</p></article>
+        <article class="contract"><b>C7</b><p><strong>Migration.</strong> Legacy rows become overrides only. No default is inferred, policy is unchanged, and edited catalogs are never overwritten.</p></article>
+        <article class="contract"><b>C8</b><p><strong>Visible model.</strong> Commands is a fixed sixth shelf with no New or Archive affordance and durable slot routes.</p></article>
+        <article class="contract"><b>C9</b><p><strong>Terminology.</strong> Product surfaces use Command for the executable node; ordinary English “check” actions remain untouched.</p></article>
+        <article class="contract"><b>C10</b><p><strong>Authorization copy.</strong> Settings keeps one control and Trust summary, while the catalog table and repeated warning move out.</p></article>
+      </div>
+    </section>
+
+    <section id="compatibility">
+      <p class="kicker">Intermediate states</p>
+      <h2>Every merge remains operable</h2>
+      <table>
+        <thead><tr><th>After</th><th>Authoring</th><th>Runtime</th><th>Compatibility</th></tr></thead>
+        <tbody>
+          <tr><td>Phase 1</td><td>Existing Settings editor remains functional through the adapter.</td><td>Catalog resolver supports migrated overrides and API-authored defaults.</td><td>Old graphs, attempts, config blobs, and route callers remain readable.</td></tr>
+          <tr><td>Phase 2</td><td>Library Commands is the normal and only catalog editor.</td><td>No Phase 1 behavior changes.</td><td>Visible terminology changes while serialized workflow bytes stay stable.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="audit">
+      <p class="kicker">Compatibility audit</p>
+      <h2>Phase documents checked against each other</h2>
+      <div class="audit">
+        <article><span>Phase 1</span><p>Owns all data, migration, routes, live state, adapter, and resolution. It does not need later UI to remain useful.</p></article>
+        <article><span>Phase 2</span><p>Consumes only shared views, routes, and MissionState. It does not reach into the store or reopen runtime selection.</p></article>
+        <article><span>Final pass</span><p>Every approved decision has one owner, dependencies point forward, and no cleanup phase is needed for correctness.</p></article>
+      </div>
+    </section>
+
+    <section id="verification">
+      <p class="kicker">Acceptance</p>
+      <h2>One end-to-end proof</h2>
+      <div class="verify">Configure a repository-neutral <code>test</code> default in Library, add a more specific repository or package override, author a <strong>Command · test</strong> workflow node, and observe runtime resolution without command authoring returning to Settings. Every phase runs typecheck, lint, unit tests, build, and smoke; Phase 2 also runs the full built-dashboard Playwright suite and visual verification.</div>
+      <p class="foot">Authoritative Markdown: <a href="phased-plan.md">phased-plan.md</a> · Source plan: <a href="plan.md">plan.md</a></p>
+    </section>
+  </main>
+</body>
+</html>

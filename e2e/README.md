@@ -104,7 +104,8 @@ assertion can: whether a person can tell a review that is WAITING for them from 
 - `blocked-amber-pipeline.png` - a review whose infrastructure budget is spent. Amber, naming how
   many infrastructure errors it took, with the evaluator's own count untouched at `attempt 1 of 2`.
   The run is non-terminal and both candidate snapshots are still on disk.
-- `failed-red-pipeline.png` - a review whose MODEL answered badly twice. Red, no detail, run over.
+- `failed-red-pipeline.png` - the same review on a run the operator then CANCELLED, which is the
+  only thing that ends a parked one. Red, no detail, no door, run over.
 - `*-page.png` - each of those in situ, because a step that reads correctly cropped can still be
   lost on the real page.
 

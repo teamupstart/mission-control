@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import type { ResetResult, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { muxHandle } from "../src/shared/pane.ts";
@@ -15,6 +16,7 @@ process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
+const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 
 /** Every git fixture this file built, removed together - they are whole checkouts. */
 const roots: string[] = [];
@@ -1000,7 +1002,7 @@ test("a scout is refused before the reset when the built bundle lacks its submis
       args: ["server.mjs"],
       env: {},
     }),
-    verifyMissionMcpTools: async () => ({
+    verifyMissionMcpToolsForRunningSession: async () => ({
       ok: false as const,
       reason:
         "Mission Control's MCP server at /dist/mcp/server.mjs does not publish " +
@@ -1016,6 +1018,56 @@ test("a scout is refused before the reset when the built bundle lacks its submis
   assert.match(res.error ?? "", /scout/);
   assert.match(res.error ?? "", /submit_scout_artifacts/, "name the tool that is missing");
   assert.match(res.error ?? "", /npm run build/, "name the fix");
+  assert.equal(reset, false, "nothing may be done to an agent that cannot finish the task");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+  assert.equal(
+    gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"),
+    "feature/mine",
+    "the checkout is untouched - the refusal happens before the reset",
+  );
+});
+
+test("a scout is refused before the reset when the agent predates the current bundle", async () => {
+  // The bug a disk-only content check hides. This agent is ALREADY RUNNING: its MCP server is a
+  // child it spawned at launch, holding whatever `dist/mcp/server.mjs` contained then. Rebuild
+  // the bundle afterwards - which is exactly what an operator does on being told to - and a
+  // probe of the file on disk answers perfectly for a process this agent is not using. The
+  // assignment would proceed, reset the agent's checkout, and hand it a task it still cannot
+  // submit, which is the failure the whole guard exists to prevent.
+  //
+  // Driven through the REAL check with a real bundle rather than an injected verdict: the claim
+  // under test is the ordering of two timestamps, and stubbing it would assert nothing.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-scout-rebuilt-", {
+    startedAt: Date.now() - 3_600_000,
+  });
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "scout" }));
+  let reset = false;
+
+  // A complete, healthy bundle - written NOW, so it postdates the agent by an hour. Nothing is
+  // wrong with this file; it is simply not the one that agent loaded.
+  const prior = process.env.MISSION_MCP_SERVER;
+  process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "rebuilt-bundle.mjs"), [
+    ...MISSION_MCP_TOOLS,
+  ]);
+  let res;
+  try {
+    res = await tasks.assign("t1", sessionId, {
+      paneReady,
+      confirmReset: true,
+      reset: async () => {
+        reset = true;
+        return cleanReset();
+      },
+    });
+  } finally {
+    if (prior === undefined) delete process.env.MISSION_MCP_SERVER;
+    else process.env.MISSION_MCP_SERVER = prior;
+  }
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /rebuilt after this agent started/);
+  assert.match(res.error ?? "", /Restart the session/, "the fix is a restart, not another build");
   assert.equal(reset, false, "nothing may be done to an agent that cannot finish the task");
   assert.equal(r.getTask("t1")?.status, "backlog");
   assert.equal(
@@ -1043,7 +1095,7 @@ test("a scout is refused before reset when its scoped submission credential cann
     // MCP checks. The content guard beside them would refuse to handshake with it - rightly -
     // so it is answered here. `mission-mcp.test.ts` runs the real handshake, and
     // `dispatcher-runtime.test.ts` drives a real stale bundle through a real launch.
-    verifyMissionMcpTools: async () => ({ ok: true as const }),
+    verifyMissionMcpToolsForRunningSession: async () => ({ ok: true as const }),
     provisionScoutCredential: () => {
       throw new Error("credential state is read-only");
     },
@@ -1076,7 +1128,7 @@ test("an assigned scout is typed the report contract, and an assigned ship task 
         env: {},
       }),
       // As above: a fake bundle, so the content guard is answered rather than pointed at it.
-      verifyMissionMcpTools: async () => ({ ok: true as const }),
+      verifyMissionMcpToolsForRunningSession: async () => ({ ok: true as const }),
       provisionScoutCredential: (taskId, cwd) => {
         credentialScope = { taskId, cwd };
         return "test-credential";

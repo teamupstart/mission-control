@@ -47,7 +47,10 @@ import {
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { taskMergeQuorum, type QuorumVerdict } from "@shared/task-repos.ts";
-import { missionMcpDescriptor, verifyMissionMcpTools } from "./mission-mcp.ts";
+import {
+  missionMcpDescriptor,
+  verifyMissionMcpToolsForRunningSession,
+} from "./mission-mcp.ts";
 import { withScoutReportContract } from "./scouts/prompt.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
@@ -297,13 +300,15 @@ export interface AssignOptions {
    */
   missionMcpDescriptor?: typeof missionMcpDescriptor;
   /**
-   * Whether that bundle actually publishes the scout submission tool.
+   * Whether the bundle THIS SESSION is running publishes the scout submission tool.
    *
    * The companion to the seam above, and the reason it is a second one: "the bundle is on
    * disk" and "the bundle serves `submit_scout_artifacts`" were the same question right up
-   * until a stale `dist/` made them different ones.
+   * until a stale `dist/` made them different ones. Session-scoped rather than the plain
+   * disk check a dispatch uses, because an assignment targets an agent that is already
+   * running against a bundle it loaded earlier.
    */
-  verifyMissionMcpTools?: typeof verifyMissionMcpTools;
+  verifyMissionMcpToolsForRunningSession?: typeof verifyMissionMcpToolsForRunningSession;
   /** Publish the checkout-scoped bearer before a scout's prompt is delivered. */
   provisionScoutCredential?: typeof provisionScoutSubmissionCredential;
 }
@@ -1945,13 +1950,17 @@ export class TaskManager {
     // That reads to this probe exactly like a working install, and the scout it admits is one
     // whose checkout we are about to reset for a task it can provably never finish - which is
     // the precise outcome the guard above exists to prevent. Same question, asked of the bytes.
+    //
+    // Asked THROUGH the session, not of the file alone. This agent is already running and its
+    // MCP server is a child it spawned at launch, so the file on disk only speaks for it while
+    // the two are the same build - see `verifyMissionMcpToolsForRunningSession`. Interrogating
+    // the current file after a rebuild would report on a process this agent is not using.
     if (t.kind === "scout") {
-      // Asked of the descriptor resolved just above rather than of a second resolution of
-      // it, so this reports on the very bundle the check above admitted.
-      const published = await (opts.verifyMissionMcpTools ?? verifyMissionMcpTools)(
-        [SUBMIT_SCOUT_ARTIFACTS_TOOL],
-        mcpDescriptor,
-      );
+      // Handed the descriptor resolved just above rather than a second resolution of it, so
+      // this reports on the very bundle the check above admitted.
+      const published = await (
+        opts.verifyMissionMcpToolsForRunningSession ?? verifyMissionMcpToolsForRunningSession
+      )([SUBMIT_SCOUT_ARTIFACTS_TOOL], s.startedAt, mcpDescriptor);
       if (!published.ok) {
         return {
           ok: false,

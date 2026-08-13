@@ -259,6 +259,15 @@ function bundleIdentity(path: string): string {
   }
 }
 
+/** When the bundle was last written, or null when it cannot be read. */
+function bundleWrittenAt(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -497,6 +506,50 @@ export async function verifyMissionMcpTools(
       `The built bundle is stale - it is only rebuilt by \`npm run build\`, which a git pull does ` +
       `not do. Run: npm run build`,
   };
+}
+
+/**
+ * The same question asked of an agent that is ALREADY RUNNING, which is a different question.
+ *
+ * `verifyMissionMcpTools` interrogates the bundle on disk, and for a launch that is the right
+ * reading - the agent is about to spawn and its MCP client will load exactly that file. For an
+ * assignment it is NOT: the target session started earlier and its MCP server is a child it
+ * spawned back then, holding whatever the file contained at that moment. Rebuild the bundle
+ * afterwards and the file on disk answers beautifully while the running child still cannot call
+ * the tool - so a probe of the file would wave through an assignment that resets the agent's
+ * checkout for a task it still cannot submit. That is the exact failure this whole change
+ * exists to prevent, reintroduced one path over.
+ *
+ * We cannot interrogate that child; nothing here can. What we CAN establish is whether the file
+ * we are allowed to interrogate is the same file it loaded, and mtime against the session's
+ * start settles it: a bundle written before the agent started is the bundle the agent is
+ * running, so the handshake speaks for the child. A bundle written after it is a different
+ * build, and the honest answer is that this session has to be restarted to pick it up.
+ *
+ * An unknown `startedAt` cannot order the two. That falls back to the disk check rather than
+ * refusing: a backend that could not report a process start is not evidence of a stale bundle,
+ * and grounding every assignment on one would trade a rare, narrow hole for a broken workflow.
+ * It is the status quo that shipped before this guard existed, and strictly better than it.
+ */
+export async function verifyMissionMcpToolsForRunningSession(
+  required: readonly MissionMcpTool[],
+  /** Process start for a terminal session, registration time for an SDK one. */
+  startedAt: number | null,
+  launched?: MissionMcpDescriptor | null,
+): Promise<MissionMcpToolCheck> {
+  if (required.length === 0) return { ok: true };
+  const descriptor = launched ?? (await missionMcpDescriptor());
+  const written = descriptor ? bundleWrittenAt(descriptor.args[0] ?? "") : null;
+  if (descriptor && written !== null && startedAt !== null && written > startedAt) {
+    return {
+      ok: false,
+      reason:
+        `Mission Control's MCP server at ${descriptor.args[0]} was rebuilt after this agent ` +
+        `started, so the agent is still running the previous build and this cannot establish ` +
+        `which tools it actually has. Restart the session so it picks up the current bundle`,
+    };
+  }
+  return await verifyMissionMcpTools(required, descriptor);
 }
 
 /**

@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -40,6 +40,7 @@ const {
   missionMcpPaths,
   missionMcpToolName,
   verifyMissionMcpTools,
+  verifyMissionMcpToolsForRunningSession,
 } = await import("../src/server/mission-mcp.ts");
 const { mcpServerPath } = await import("../src/server/config.ts");
 const { askChannelArgs, ASK_TOOL } = await import("../src/server/ask-channel.ts");
@@ -245,6 +246,62 @@ test("a bundle that cannot complete a handshake is refused, not assumed good", a
     assert.equal(check.ok, false);
     assert.match(check.reason!, /could not be interrogated/);
     assert.match(check.reason!, /npm run build/);
+  });
+});
+
+test("a bundle rebuilt after an agent started cannot vouch for that agent's toolbox", async () => {
+  // A launch and an assignment ask different questions of the same file, and conflating them
+  // reintroduces the bug one path over. A dispatch is about to SPAWN an agent, so the bundle on
+  // disk is exactly what its MCP client will load. An assignment targets an agent that is
+  // already running, whose MCP server is a child it spawned at launch and which holds whatever
+  // the file contained THEN. Rebuild in between and the file answers perfectly while the child
+  // still cannot call the tool - so a disk probe would wave through an assignment that resets
+  // the agent's checkout for a task it still cannot submit.
+  const bundle = fixtureServer("running-session", MISSION_MCP_TOOLS);
+  const writtenAt = statSync(bundle).mtimeMs;
+  await withBundle(bundle, async () => {
+    // Started BEFORE this bundle was written: its child is a different build, and no handshake
+    // with the current file can say what that child publishes.
+    const rebuilt = await verifyMissionMcpToolsForRunningSession(
+      ["submit_scout_artifacts"],
+      writtenAt - 1000,
+    );
+    assert.equal(rebuilt.ok, false, "the file on disk is not the file that agent is running");
+    assert.match(rebuilt.reason!, /rebuilt after this agent started/);
+    assert.match(rebuilt.reason!, /Restart the session/, "name the remedy, which is not a rebuild");
+
+    // Started AFTER it: the file IS what that child loaded, so the handshake speaks for it.
+    assert.deepEqual(
+      await verifyMissionMcpToolsForRunningSession(["submit_scout_artifacts"], writtenAt + 1000),
+      { ok: true },
+      "a guard that refused this would ground assignment on a healthy machine",
+    );
+
+    // An unknown start cannot order the two. Falls back to the disk check rather than refusing:
+    // a backend that could not report a process start is not evidence of a stale bundle.
+    assert.deepEqual(
+      await verifyMissionMcpToolsForRunningSession(["submit_scout_artifacts"], null),
+      { ok: true },
+    );
+  });
+});
+
+test("a session-scoped check still refuses a bundle that never had the tool", async () => {
+  // The ordering rule widens what is refused; it must not narrow it. An agent that started
+  // after a bundle was built is running that bundle - and if that bundle never published the
+  // tool, the assignment is exactly as doomed as before.
+  const bundle = fixtureServer(
+    "running-session-stale",
+    MISSION_MCP_TOOLS.filter((t) => t !== "submit_scout_artifacts"),
+  );
+  const writtenAt = statSync(bundle).mtimeMs;
+  await withBundle(bundle, async () => {
+    const check = await verifyMissionMcpToolsForRunningSession(
+      ["submit_scout_artifacts"],
+      writtenAt + 1000,
+    );
+    assert.equal(check.ok, false);
+    assert.match(check.reason!, /does not publish submit_scout_artifacts/);
   });
 });
 

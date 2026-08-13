@@ -140,6 +140,16 @@ Either one failing refuses the launch or the assignment, naming the tool and `np
 The alternative is the failure this replaces: a scout that writes a finished report and then
 has nowhere to hand it over, with no error, no warning, and a task that never reaches **done**.
 
+**An assignment asks a third question, because it targets an agent that is already running.**
+That agent's MCP server is a child it spawned at launch, holding whatever the bundle contained
+at that moment - so rebuilding the bundle afterwards does not change what the agent can call.
+The file on disk therefore only speaks for that agent while the two are the same build, which
+is settled by comparing the bundle's write time against the session's start. A session that
+started **before** the current bundle was built is refused with the remedy that actually works:
+restart it, so it picks the new bundle up. Rebuilding again would not help, and admitting it
+would reset the agent's checkout for a task it still could not submit. When a session's start
+time is unknown the two cannot be ordered, and the disk check stands on its own.
+
 ### What gets captured
 
 | Submitted | Captured as |

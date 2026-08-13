@@ -127,6 +127,22 @@ export const WORKFLOW_LIMITS = {
   checkCommandLength: 4_000,
 } as const;
 
+/**
+ * Worst-case bytes one character of a bounded string can become, once JSON-encoded as UTF-8.
+ *
+ * Every character ceiling in `WORKFLOW_LIMITS` is exactly that - a count of UTF-16 code units,
+ * which is what `z.string().max()` measures. It is NOT a byte count, so any byte budget derived
+ * from one has to carry the expansion or it refuses payloads the schema accepts: a 4,096-
+ * character repository path of CJK or emoji is four times that many bytes on the wire, and a
+ * request rejected before validation is a 413 an operator cannot read a reason out of.
+ *
+ * SIX rather than four, and the extra two are not padding. Four is the widest UTF-8 encoding, but
+ * JSON escapes a control character to `\u00XX`, which is six ASCII bytes for one code unit - and
+ * `parseCheckCommand` accepts a tab inside a quoted argument, so a control character in a stored
+ * argv is a shape this product supports rather than a hypothetical.
+ */
+export const JSON_UTF8_MAX_BYTES_PER_CHAR = 6;
+
 export const WORKFLOW_EXECUTION_LIMITS = {
   contextJsonBytes: 2_000_000,
   verdictJsonBytes: 12_000,

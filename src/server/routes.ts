@@ -268,7 +268,12 @@ import type {
   WorkflowRuntimeMutation,
   WorkflowValidationMutation,
 } from "./workflows/manager.ts";
-import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES, legacyCheckCommands } from "@shared/workflow.ts";
+import {
+  JSON_UTF8_MAX_BYTES_PER_CHAR,
+  WORKFLOW_LIMITS,
+  WORKFLOW_RUN_STATUSES,
+  legacyCheckCommands,
+} from "@shared/workflow.ts";
 import type { WorkflowConfig } from "@shared/workflow.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
@@ -312,13 +317,26 @@ const SESSION_ACTION_BODY_MAX_BYTES = WORKFLOW_LIMITS.sessionActionPromptBytes *
 /**
  * One slot's whole state: a default argv plus up to `commandOverrides` paths and argvs.
  *
- * Derived from those bounds rather than chosen - the override ceiling times a 4 KB path and
- * a 4 KB command, with headroom for JSON - so raising a limit cannot silently leave this
- * behind and turn a legal write into a 413.
+ * Derived from those bounds rather than chosen, so raising a limit cannot silently leave this
+ * behind and turn a legal write into a 413. The `+ 1` is the slot's own default command, which
+ * is bounded exactly like an override's argv and is not one of them.
+ *
+ * The multiplication by `JSON_UTF8_MAX_BYTES_PER_CHAR` is the load-bearing part, and leaving it
+ * out is a bug this constant already had: the schema counts CHARACTERS and `bodyLimit` counts
+ * BYTES, so a catalog of non-ASCII paths satisfies every Zod ceiling and is still refused before
+ * validation ever runs. A 413 is also the worst place to be wrong, because it carries no field
+ * and no reason - the operator sees a save that failed and no way to learn which value did it.
+ *
+ * The per-entry constant covers JSON's own punctuation - the key names, quotes, commas and
+ * brackets around each override and each argument - and is deliberately generous, because the
+ * schema is the real bound here. This is a cheap pre-parse guard against an absurd body, not a
+ * second opinion about what a valid catalog looks like.
  */
 const WORKFLOW_COMMAND_BODY_MAX_BYTES =
   (WORKFLOW_LIMITS.commandOverrides + 1)
-    * (WORKFLOW_LIMITS.checkRepoRoot + WORKFLOW_LIMITS.checkCommandLength + 512);
+    * ((WORKFLOW_LIMITS.checkRepoRoot + WORKFLOW_LIMITS.checkCommandLength)
+        * JSON_UTF8_MAX_BYTES_PER_CHAR
+      + 512);
 /**
  * The ceiling for a body that carries one integer, wherever it appears.
  *

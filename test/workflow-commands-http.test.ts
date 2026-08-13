@@ -188,6 +188,60 @@ test("every invalid write is a visible refusal rather than a silently repaired o
   assert.equal(view.defaultCommand, null);
 });
 
+test("a catalog at its ceiling in non-ASCII characters is accepted, not refused unread", async () => {
+  // The schema counts CHARACTERS - that is what `z.string().max()` measures - and the route's
+  // body limit counts BYTES. A budget that conflated the two would refuse this payload with a
+  // 413 before validation ever ran, which is the worst possible place to be wrong: the refusal
+  // carries no field and no reason, so an operator sees a save that failed and has no way to
+  // learn which of their values did it.
+  //
+  // Deliberately built at the REAL ceiling rather than near it: every path is the full
+  // `checkRepoRoot`, every argv the full `checkCommandLength`, and the override list is the full
+  // `commandOverrides`. A smaller payload would pass under a byte-vs-character bug too.
+  const { request } = fixture();
+  const wide = (count: number) => "中".repeat(count);
+  // Four arguments rather than one: the per-argument ceiling and the joined ceiling are
+  // separate bounds, and only an argv that respects both is the maximum this schema accepts.
+  const widestArgv = () => Array.from({ length: 4 }, () => wide(WORKFLOW_LIMITS.checkCommandArg - 1));
+  const overrides = Array.from({ length: WORKFLOW_LIMITS.commandOverrides }, (_, index) => ({
+    // Unique per entry, because the schema refuses a repeated path - and the whole list has to
+    // be legal for the size claim to mean anything.
+    repoRoot: `${wide(WORKFLOW_LIMITS.checkRepoRoot - 8)}/${String(index).padStart(6, "0")}`,
+    command: widestArgv(),
+  }));
+  const payload = {
+    expectedRevision: 1,
+    defaultCommand: widestArgv(),
+    overrides,
+  };
+  // The claim, stated as an arithmetic fact before the assertion rests on it: this body is
+  // multiple bytes per character, so a character-shaped ceiling is nowhere near it.
+  const bytes = Buffer.byteLength(body(payload));
+  assert.ok(
+    bytes > (WORKFLOW_LIMITS.commandOverrides + 1)
+      * (WORKFLOW_LIMITS.checkRepoRoot + WORKFLOW_LIMITS.checkCommandLength + 512),
+    `the fixture must defeat a character-counted budget outright; it is ${bytes} bytes`,
+  );
+
+  const saved = await request("/api/workflow-commands/test", {
+    method: "PUT",
+    body: body(payload),
+  });
+  assert.equal(saved.status, 200, "a schema-valid catalog must not be refused before validation");
+  const view = await saved.json() as { overrides: unknown[] };
+  assert.equal(view.overrides.length, WORKFLOW_LIMITS.commandOverrides);
+
+  // And it reads back whole. The store's own JSON byte ceiling counts bytes against a
+  // character-bounded argv too, so the same confusion there would report the operator's
+  // just-accepted command as an unreadable row and silently skip the gate.
+  const reread = await (await request("/api/workflow-commands/test")).json() as {
+    defaultCommand: string[];
+    overrides: Array<{ command: string[] }>;
+  };
+  assert.deepEqual(reread.defaultCommand, payload.defaultCommand);
+  assert.deepEqual(reread.overrides[0]?.command, overrides[0]!.command);
+});
+
 test("the legacy config route reads overrides out of the catalog and writes back into it", async () => {
   const { request, commands, registry } = fixture();
   setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });

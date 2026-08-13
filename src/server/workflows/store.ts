@@ -34,6 +34,7 @@ import {
   WorkflowTriggerSourceSchema,
 } from "@shared/protocol.ts";
 import {
+  JSON_UTF8_MAX_BYTES_PER_CHAR,
   WORKFLOW_BINDING_STATES,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_DELIVERY_KINDS,
@@ -498,12 +499,23 @@ export function parseSessionActionRow(value: unknown): SessionAction {
 const CommandArgvJsonSchema = WorkflowCommandArgvSchema;
 
 /**
- * A ceiling on the JSON blob, derived from the argv bounds rather than chosen: 32 arguments
- * of 1,000 characters, doubled for quoting and separators. Its job is to stop one malformed
- * row from making every later read expensive, not to be the real bound - the schema above is.
+ * A ceiling on the stored JSON blob, derived from the argv bounds rather than chosen.
+ *
+ * `checkCommandLength` rather than `checkCommandArgs * checkCommandArg`, because the joined
+ * bound is the binding one: whatever the per-argument ceiling allows, the schema refuses an argv
+ * whose arguments and separators exceed 4,000 characters together.
+ *
+ * Multiplied by `JSON_UTF8_MAX_BYTES_PER_CHAR` for the reason the route's body limit is: that
+ * ceiling counts CHARACTERS and this one counts BYTES, and a bound that conflated them would
+ * fail a row holding an argv the write path had just accepted - the read would report the
+ * operator's own configured command as unreadable, and the gate would silently skip.
+ *
+ * Its job is to stop one malformed row from making every later read expensive, not to be the
+ * real bound - the schema above is.
  */
 const COMMAND_ARGV_JSON_BYTES =
-  WORKFLOW_LIMITS.checkCommandArgs * WORKFLOW_LIMITS.checkCommandArg * 2;
+  WORKFLOW_LIMITS.checkCommandLength * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + WORKFLOW_LIMITS.checkCommandArgs * 8;
 
 const WorkflowCommandRowSchema = z.object({
   slot: z.enum(WORKFLOW_CHECK_SLOTS),

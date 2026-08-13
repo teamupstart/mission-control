@@ -58,6 +58,11 @@ test("a selected text field offers edit actions and keeps both paste operations"
 
   assert.deepEqual(labels(actions), ["Cut", "Copy", "Paste", "Paste as quote"]);
   assert.deepEqual(actions.map((action) => action.payload), ["two", "two", "", ""]);
+  assert.deepEqual(
+    actions.map((action) => action.managesFocus ?? false),
+    [true, false, true, true],
+    "only actions that restore or move the field focus should suppress host restoration",
+  );
   assert.notEqual(actions[2]?.kind, actions[3]?.kind, "paste variants were deduped by payload alone");
 });
 
@@ -104,6 +109,28 @@ test("URL text detection requires the caret offset to land inside the URL", () =
   assert.equal(urlAtPoint(document, { x: 1, y: 1 }), null);
   offset = text.indexOf("example.com") + 2;
   assert.equal(urlAtPoint(document, { x: 1, y: 1 }), "https://example.com/checks");
+});
+
+test("URL text detection excludes sentence punctuation but keeps balanced URL punctuation", () => {
+  const cases = [
+    ["See https://example.com/docs, then continue", "https://example.com/docs"],
+    ["See https://example.com/docs. Then continue", "https://example.com/docs"],
+    ["(https://example.com/docs)", "https://example.com/docs"],
+    ["See https://example.com/docs_(draft).", "https://example.com/docs_(draft)"],
+    ["See https://example.com/a,b today", "https://example.com/a,b"],
+    ["See https://example.com/search?q=yes now", "https://example.com/search?q=yes"],
+  ] as const;
+
+  for (const [text, expected] of cases) {
+    const node = { nodeType: 3, textContent: text } as Node;
+    const document = {
+      caretPositionFromPoint: () => ({
+        offsetNode: node,
+        offset: text.indexOf("example.com") + 2,
+      }),
+    } as unknown as Document;
+    assert.equal(urlAtPoint(document, { x: 1, y: 1 }), expected, text);
+  }
 });
 
 function action(id: string, kind = "copy", payload = id): ContextAction {

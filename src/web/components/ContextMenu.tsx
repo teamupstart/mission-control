@@ -221,7 +221,7 @@ export function ContextMenuHost({
     } catch {
       announce(action.kind === "open" ? "Could not open link" : "The action did not complete", "error");
     } finally {
-      if (!action.id.startsWith("field.")) current.returnFocus?.focus({ preventScroll: true });
+      if (!action.managesFocus) current.returnFocus?.focus({ preventScroll: true });
     }
   }, [announce, menu]);
 

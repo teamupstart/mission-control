@@ -16,6 +16,8 @@ export interface ContextAction {
   kind: string;
   payload: string;
   tier?: ContextTier;
+  /** The action deliberately restores or moves focus itself. */
+  managesFocus?: boolean;
   run: () => void | Promise<void>;
 }
 
@@ -62,8 +64,28 @@ interface LinkSnapshot {
   text: string;
 }
 
-const URL_RE = /\bhttps?:\/\/[^\s<>"')\]]+/g;
+const URL_RE = /\bhttps?:\/\/[^\s<>"]+/g;
 const MAX_ACTIONS = 6;
+
+function urlCandidate(raw: string): string | null {
+  let candidate = raw.replace(/[.,;:!?\u2019']+$/u, "");
+  const pairs = { ")": "(", "]": "[", "}": "{" } as const;
+  while (candidate) {
+    const closer = candidate.at(-1) as keyof typeof pairs;
+    const opener = pairs[closer];
+    if (!opener) break;
+    const openings = [...candidate].filter((character) => character === opener).length;
+    const closings = [...candidate].filter((character) => character === closer).length;
+    if (closings <= openings) break;
+    candidate = candidate.slice(0, -1);
+  }
+  try {
+    const parsed = new URL(candidate);
+    return /^https?:$/.test(parsed.protocol) && parsed.hostname ? candidate : null;
+  } catch {
+    return null;
+  }
+}
 
 function textFieldAt(el: Element): TextFieldSnapshot | null {
   const field = el.closest<HTMLInputElement | HTMLTextAreaElement>("textarea, input");
@@ -103,8 +125,10 @@ export function urlAtPoint(document: Document, point: ContextPoint): string | nu
   let match: RegExpExecArray | null;
   while ((match = URL_RE.exec(text))) {
     const start = match.index;
-    const end = start + match[0].length;
-    if (offset >= start && offset <= end) return match[0];
+    const candidate = urlCandidate(match[0]);
+    if (!candidate) continue;
+    const end = start + candidate.length;
+    if (offset >= start && offset <= end) return candidate;
   }
   return null;
 }
@@ -180,6 +204,7 @@ function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): Contex
         hint: "selection",
         kind: "cut",
         payload: snapshot.selected,
+        managesFocus: true,
         run: async () => {
           if (await ctx.copy(snapshot.selected)) replaceFieldRange(snapshot, "");
           else setFieldSelection(snapshot);
@@ -196,6 +221,7 @@ function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): Contex
     hint: asQuote ? "> text" : "⌘V",
     kind: asQuote ? "paste-quote" : "paste",
     payload: "",
+    managesFocus: true,
     run: async () => {
       try {
         const text = await ctx.readClipboard();

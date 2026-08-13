@@ -4,7 +4,8 @@ import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
 
-const TURN = "Context menu selection target and [CI page](https://example.com/menu-target)";
+const TRAILING_URL = "https://example.com/docs";
+const TURN = `Context menu selection target and [CI page](https://example.com/menu-target). Raw \`${TRAILING_URL},\` follows.`;
 const SELECTED = "selection target";
 const PASTED = "pasted from the context menu";
 
@@ -98,6 +99,13 @@ test("context actions work by pointer and keyboard without leaking keys to the g
     "https://example.com/menu-target",
   );
 
+  // A URL-shaped text run stops before prose punctuation, even though the punctuation is in
+  // the same text node. Both clipboard and open actions therefore receive the usable URL.
+  const rawUrlPoint = await pointForText(turn, TRAILING_URL, false);
+  await dashboard.mouse.click(rawUrlPoint.x, rawUrlPoint.y, { button: "right" });
+  await dashboard.getByRole("menuitem", { name: "Copy URL" }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(TRAILING_URL);
+
   // The desktop preload bridge wins when it exists, and opening never navigates this page.
   const dashboardUrl = dashboard.url();
   await dashboard.evaluate(() => {
@@ -131,6 +139,15 @@ test("context actions work by pointer and keyboard without leaking keys to the g
   await expect(menu.getByRole("menuitem", { name: /^Paste$/ })).toBeVisible();
   await menu.getByRole("menuitem", { name: /^Paste$/ }).click();
   await expect(composer).toHaveValue(`Before ${PASTED}`);
+
+  // Copy itself does not manage field focus, so the host restores the invoking textarea and
+  // typing can continue after the menu action completes.
+  await composer.selectText();
+  await dashboard.keyboard.press("Shift+F10");
+  await dashboard.getByRole("menuitem", { name: /^Copy$/ }).click();
+  await expect(composer).toBeFocused();
+  await dashboard.keyboard.type("!");
+  await expect(composer).toHaveValue("!");
 
   // The fixed Menu key is a structural alias, not a second row in Keyboard settings.
   await composer.evaluate((field) => {

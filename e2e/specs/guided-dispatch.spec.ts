@@ -578,6 +578,11 @@ test("a backlog task opened for edit never enters the pass", async ({ dashboard,
   const first = await openDispatch(dashboard);
   await first.getByRole("switch", { name: "Guided" }).click();
   await expect(rail(first)).toBeVisible();
+  // Leave real progress behind in the persistent new-dispatch draft. Merely opening the
+  // pass leaves its owner at null and cannot catch an edit accidentally reading saved state.
+  await dashboard.keyboard.press("t");
+  await expect(kindSelect(first)).toHaveValue("scout");
+  await expect(picker(first, "Which harness runs it?")).toBeVisible();
   await first.getByRole("button", { name: "Close", exact: true }).click();
   await expect(first).toBeHidden();
 

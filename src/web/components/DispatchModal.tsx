@@ -857,8 +857,10 @@ function DispatchModal({
    * first question at render time, without mistaking a deliberately ended pass for a fresh
    * one. The owner lives above this per-opening modal, beside the draft, so dismiss/reopen
    * resumes the first unanswered question instead of asking completed questions again.
+   * That persisted progress is read only where a pass applies. Edit and Ensemble forms must
+   * hold the no-pass value even while the separate new-dispatch draft has saved progress.
    */
-  const pass = guidedPass ?? (guidedApplies ? startGuidedPass() : NO_GUIDED_PASS);
+  const pass = guidedApplies ? (guidedPass ?? startGuidedPass()) : NO_GUIDED_PASS;
   const setPass = (next: GuidedPass | null): void => onGuidedPassChange?.(next);
   /**
    * `null` means "wherever the draft already points", resolved at render.

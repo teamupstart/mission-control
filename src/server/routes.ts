@@ -1181,16 +1181,22 @@ export function buildApp(
         return c.json({ error: "The dispatch default must be an active published workflow" }, 409);
       }
     }
-    // Commands FIRST, then policy, and the order is the failure contract. The catalog write
-    // is one transaction across all four slots; if it throws, no policy has been persisted
-    // and the refusal is honest. Persisting policy first would let a failed command write
-    // return an error over a config that had already half-changed.
+    // ONE transaction over both halves, because the old route's contract is that its body is
+    // one object. `checkCommands` belongs to the Command catalog now and everything else to
+    // the config blob, and committing the catalog while the policy write failed would answer
+    // with a refusal over a change that had already happened - the operator reloads and finds
+    // half of it applied, the half that decides which commands run.
     const commands = workflowCommandManager();
-    if (parsed.data.checkCommands.length > 0 && !commands) {
-      return c.json({ error: "Command catalog unavailable" }, 503);
+    if (!commands) {
+      // Only a build with no catalog reaches this, and it cannot honour the command half of
+      // the request. Refusing outright beats persisting policy and silently dropping the rest.
+      if (parsed.data.checkCommands.length > 0) {
+        return c.json({ error: "Command catalog unavailable" }, 503);
+      }
+      setWorkflowPolicy(parsed.data);
+      return c.json(legacyWorkflowConfig());
     }
-    commands?.applyLegacyOverrides(parsed.data.checkCommands);
-    setWorkflowPolicy(parsed.data);
+    commands.saveLegacyConfig(parsed.data.checkCommands, () => setWorkflowPolicy(parsed.data));
     return c.json(legacyWorkflowConfig());
   });
 

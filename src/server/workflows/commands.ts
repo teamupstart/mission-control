@@ -56,16 +56,33 @@ export class WorkflowCommandManager {
   }
 
   /**
-   * The compatibility adapter for `PUT /api/workflows/config`'s legacy `checkCommands` field.
+   * The compatibility adapter for `PUT /api/workflows/config`: the WHOLE legacy save.
    *
-   * One transaction across all four slots, then one emit per slot that actually moved. This
-   * is the seam that keeps today's Settings form working while the catalog owns the data:
-   * the old form still sends a whole flat list, and it still lands in exactly one place.
+   * Takes the policy write as a callback rather than doing the two halves in sequence, because
+   * the old route's contract is that its body is one object. `checkCommands` now belongs to
+   * this catalog and everything else to the `workflows` config blob - two owners, one database
+   * file - and committing the catalog while the policy write failed would report a refusal
+   * over a change that had already happened. The operator is told the save failed, reloads,
+   * and sees half of it applied; the half they can see is the half that runs commands.
+   *
+   * So both go inside ONE transaction, and `persistPolicy` throwing rolls the commands back
+   * with it. The callback is the honest shape for that: the store cannot know what a policy is,
+   * and the route cannot own a transaction boundary without reaching past both managers.
+   *
+   * Events are emitted only after the commit returns, and only for slots that actually moved,
+   * so a rolled-back save publishes nothing and a save that merely toggled a switch is silent.
    */
-  applyLegacyOverrides(legacy: readonly LegacyCheckCommand[], now = Date.now()): void {
-    for (const view of this.store.replaceLegacyCommandOverrides(legacy, now)) {
-      this.registry.upsertWorkflowCommand(view);
-    }
+  saveLegacyConfig(
+    legacy: readonly LegacyCheckCommand[],
+    persistPolicy: () => void,
+    now = Date.now(),
+  ): void {
+    const changed = this.store.transact(() => {
+      const views = this.store.replaceLegacyCommandOverridesInTransaction(legacy, now);
+      persistPolicy();
+      return views;
+    });
+    for (const view of changed) this.registry.upsertWorkflowCommand(view);
   }
 
   private publish(result: WorkflowCommandStoreWrite): WorkflowCommandMutation {

@@ -349,6 +349,64 @@ test("a refused legacy write leaves neither policy nor catalog changed", async (
   assert.equal(config.liveEnabled, true, "policy must not move when the command half is refused");
 });
 
+test("a legacy save that cannot persist policy rolls its commands back too", () => {
+  // The old route's body is ONE object, and it now spans two owners over one database file:
+  // the Command catalog and the `workflows` config blob. Committing the catalog while the
+  // policy write failed would answer with a refusal over a change that had already happened -
+  // and the operator, told the save failed, would reload to find half of it applied. The half
+  // they can see is the half that decides which commands run.
+  //
+  // Driven at the manager rather than through HTTP because the failure being pinned is a
+  // SQLite write error on the second half, which no request body can provoke. What matters is
+  // that the rollback is the transaction's, not a compensating write the route remembers to make.
+  const { commands, registry } = fixture();
+  assert.equal(
+    commands.replace("lint", {
+      expectedRevision: 1,
+      defaultCommand: null,
+      overrides: [{ repoRoot: "/repo", command: ["npm", "run", "lint"] }],
+    }).ok,
+    true,
+  );
+  const before = commands.get("lint")!;
+
+  const emitted: string[] = [];
+  registry.subscribe((event) => {
+    if (event.type === "workflow_command_upsert") emitted.push(event.command.slot);
+  });
+
+  assert.throws(
+    () =>
+      commands.saveLegacyConfig(
+        [{ slot: "lint", repoRoot: "/other", command: ["eslint", "."] }],
+        () => {
+          throw new Error("the policy write failed");
+        },
+      ),
+    /the policy write failed/,
+  );
+
+  const after = commands.get("lint")!;
+  assert.deepEqual(after.overrides, before.overrides, "the command half must be rolled back");
+  assert.equal(after.revision, before.revision, "including the revision the rows were bumped to");
+  assert.deepEqual(emitted, [], "and a rolled-back save publishes nothing to any window");
+
+  // The same call succeeds once the policy write does, which is what proves the failure above
+  // was the rollback and not the adapter simply never having written anything.
+  let persisted = false;
+  commands.saveLegacyConfig(
+    [{ slot: "lint", repoRoot: "/other", command: ["eslint", "."] }],
+    () => {
+      persisted = true;
+    },
+  );
+  assert.equal(persisted, true);
+  assert.deepEqual(commands.get("lint")?.overrides, [
+    { repoRoot: "/other", command: ["eslint", "."] },
+  ]);
+  assert.deepEqual(emitted, ["lint"]);
+});
+
 test("the catalog routes answer 503 rather than constructing a second owner", async () => {
   const app = buildApp(new Registry(), null as never, null as never, null as never);
   const request = (path: string) => app.request(path, { headers: { host: "127.0.0.1:7317" } });

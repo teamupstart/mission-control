@@ -2358,41 +2358,63 @@ export class WorkflowStore {
     legacy: readonly { slot: WorkflowCheckSlot; repoRoot: string; command: string[] }[],
     now = Date.now(),
   ): WorkflowCommandView[] {
-    return transaction(this.db, () => {
-      this.seedWorkflowCommandsInTransaction(now);
-      const changed: WorkflowCommandView[] = [];
-      for (const slot of WORKFLOW_CHECK_SLOTS) {
-        const desired = legacy
-          .filter((entry) => entry.slot === slot)
-          .map((entry) => ({ repoRoot: entry.repoRoot, command: entry.command }));
-        const rows = this.workflowCommandOverrideRows(slot);
-        if (sameOverrides(this.workflowCommandOverridesFor(slot), desired)) continue;
-        const created = new Map(rows.map((row) => [row.repo_root, row.created_at]));
-        this.db.prepare(`DELETE FROM workflow_command_overrides WHERE slot = ?`).run(slot);
-        const insert = this.db.prepare(
-          `INSERT OR IGNORE INTO workflow_command_overrides
-             (slot, repo_root, command_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?)`,
-        );
-        for (const entry of desired) {
-          insert.run(
-            slot,
-            entry.repoRoot,
-            JSON.stringify(entry.command),
-            created.get(entry.repoRoot) ?? now,
-            now,
-          );
-        }
-        this.db
-          .prepare(
-            `UPDATE workflow_commands SET revision = revision + 1, updated_at = ? WHERE slot = ?`,
-          )
-          .run(now, slot);
-        changed.push(this.workflowCommandInTransaction(slot));
-      }
-      return changed;
-    });
+    return transaction(this.db, () => this.replaceLegacyCommandOverridesInTransaction(legacy, now));
   }
+
+  /**
+   * Run `fn` inside one transaction, for a caller that has to commit MORE than this store owns.
+   *
+   * The legacy workflow-config save is the reason it exists: it moves the command catalog and
+   * the policy blob together, they are two owners over one database file, and committing the
+   * first while the second fails would report a refusal over a change that had already
+   * happened. Anything called inside must use the `…InTransaction` readers and writers -
+   * `transaction` is not re-entrant, and a nested `BEGIN` is an error, not a savepoint.
+   *
+   * Everything `fn` writes must go through THIS handle. Two connections to one file are two
+   * transactions, and the second one's write would sit outside the rollback this promises.
+   */
+  transact<T>(fn: () => T): T {
+    return transaction(this.db, fn);
+  }
+
+  /** `replaceLegacyCommandOverrides`, for a caller that already opened the transaction. */
+  replaceLegacyCommandOverridesInTransaction(
+    legacy: readonly { slot: WorkflowCheckSlot; repoRoot: string; command: string[] }[],
+    now = Date.now(),
+  ): WorkflowCommandView[] {
+    this.seedWorkflowCommandsInTransaction(now);
+    const changed: WorkflowCommandView[] = [];
+    for (const slot of WORKFLOW_CHECK_SLOTS) {
+      const desired = legacy
+        .filter((entry) => entry.slot === slot)
+        .map((entry) => ({ repoRoot: entry.repoRoot, command: entry.command }));
+      const rows = this.workflowCommandOverrideRows(slot);
+      if (sameOverrides(this.workflowCommandOverridesFor(slot), desired)) continue;
+      const created = new Map(rows.map((row) => [row.repo_root, row.created_at]));
+      this.db.prepare(`DELETE FROM workflow_command_overrides WHERE slot = ?`).run(slot);
+      const insert = this.db.prepare(
+        `INSERT OR IGNORE INTO workflow_command_overrides
+           (slot, repo_root, command_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const entry of desired) {
+        insert.run(
+          slot,
+          entry.repoRoot,
+          JSON.stringify(entry.command),
+          created.get(entry.repoRoot) ?? now,
+          now,
+        );
+      }
+      this.db
+        .prepare(
+          `UPDATE workflow_commands SET revision = revision + 1, updated_at = ? WHERE slot = ?`,
+        )
+        .run(now, slot);
+      changed.push(this.workflowCommandInTransaction(slot));
+    }
+    return changed;
+}
 
   private workflowCommandInTransaction(slot: WorkflowCheckSlot): WorkflowCommandView {
     const row = this.db.prepare(`SELECT * FROM workflow_commands WHERE slot = ?`).get(slot);

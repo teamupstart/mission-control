@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>The plan task kind phased plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:#f2f4f7;--paper:#fff;--paper2:#f7f8fa;--ink:#1c232d;--muted:#626d7c;
+      --dim:#7b8593;--line:#dce1e7;--line2:#e9edf1;--blue:#2c73c8;--green:#16815d;
+      --amber:#a66508;--red:#bd3933;--purple:#7252b9;--code:#eef2f6;
+      --shadow:0 18px 54px rgba(28,35,45,.10);
+      --sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    }
+    @media (prefers-color-scheme:dark) {
+      :root {
+        --bg:#0a0c0f;--paper:#14181e;--paper2:#0f1318;--ink:#e7ebf1;--muted:#939eae;
+        --dim:#7c8798;--line:#29313b;--line2:#202730;--blue:#4a9eff;--green:#35c08a;
+        --amber:#f6a733;--red:#f85149;--purple:#a371f7;--code:#1a2028;
+        --shadow:0 20px 58px rgba(0,0,0,.38);
+      }
+    }
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}
+    body{margin:0;min-width:0;background:radial-gradient(900px 520px at 88% -12%,color-mix(in srgb,var(--blue) 11%,transparent),transparent 62%),var(--bg);color:var(--ink);font:15px/1.68 var(--sans)}
+    a{color:var(--blue);text-underline-offset:3px}a:hover{color:color-mix(in srgb,var(--blue) 75%,var(--ink))}
+    .mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 90%,transparent);backdrop-filter:blur(16px)}
+    .mast-inner{max-width:1380px;margin:auto;padding:42px clamp(20px,5vw,66px) 35px}
+    .kicker{margin:0 0 8px;color:var(--blue);font:800 11px/1.2 var(--mono);letter-spacing:.15em;text-transform:uppercase}
+    .mast h1{max-width:850px;margin:0;font-size:clamp(35px,5.5vw,64px);line-height:1.06;letter-spacing:-.045em}
+    .mast-copy{max-width:850px;margin:16px 0 0;color:var(--muted);font-size:17px}
+    .evidence-tabs{display:flex;flex-wrap:wrap;gap:0;margin-top:24px}
+    .evidence-tabs span{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid var(--line);background:var(--paper2);color:var(--muted);font:700 11px/1 var(--mono)}
+    .evidence-tabs span:first-child{border-radius:9px 0 0 9px}.evidence-tabs span:last-child{border-radius:0 9px 9px 0}.evidence-tabs span+span{border-left:0}
+    .evidence-tabs i{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 14%,transparent)}
+    .path{margin-top:16px;color:var(--dim);font:12px/1.5 var(--mono)}
+    .layout{display:grid;grid-template-columns:220px minmax(0,930px);gap:34px;max-width:1240px;margin:0 auto;padding:30px 18px 92px}
+    nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}
+    nav b{display:block;margin:0 0 9px;color:var(--dim);font:800 10px/1.2 var(--mono);letter-spacing:.12em;text-transform:uppercase}
+    nav a{display:block;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}
+    article{min-width:0;padding:10px clamp(18px,4vw,54px) 60px;border:1px solid var(--line);border-radius:17px;background:var(--paper);box-shadow:var(--shadow)}
+    article>h1:first-child{display:none}h2{margin:48px 0 13px;padding-top:7px;border-top:1px solid var(--line);font-size:25px;line-height:1.25;letter-spacing:-.025em}h2:first-of-type{margin-top:22px;border-top:0}
+    h3{margin:30px 0 9px;font-size:18px;line-height:1.35;letter-spacing:-.012em}h4{margin:22px 0 7px}
+    p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:5px 0}strong{color:var(--ink)}
+    code{padding:2px 5px;border:1px solid var(--line2);border-radius:5px;background:var(--code);color:var(--blue);font:12.5px/1.45 var(--mono);overflow-wrap:anywhere}
+    pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}
+    table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font-size:11px}
+    blockquote{margin:18px 0;padding:10px 16px;border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 6%,var(--paper));color:var(--muted)}
+    .flow{max-width:100%;margin:22px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}
+    .flow figcaption{margin-bottom:13px;font-weight:760}.flow svg{display:block;width:100%;height:auto;min-width:760px}.flow p{margin:12px 3px 1px;color:var(--muted);font-size:12px}
+    .flow .edges path{fill:none;stroke:var(--dim);stroke-width:1.7;marker-end:url(#flow-arrow)}
+    .flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .node.manager rect{fill:color-mix(in srgb,var(--blue) 10%,var(--paper));stroke:var(--blue)}
+    .flow .node.bundle rect,.flow .node.done rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .node.verify rect{stroke:var(--amber)}
+    .flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:480}.flow text.label{fill:var(--dim);font:500 9px var(--mono)}
+    .flow text.band{fill:var(--dim);font:800 10px var(--mono);letter-spacing:.14em;text-anchor:start}
+    footer{display:flex;justify-content:space-between;gap:20px;max-width:1240px;margin:0 auto 36px;padding:0 18px;color:var(--dim);font:11px/1.5 var(--mono)}
+    @media(max-width:880px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:20px}}
+    @media(max-width:560px){.mast-inner{padding-top:30px}.evidence-tabs span{flex:1;justify-content:center}.layout{padding-inline:8px}article{border-radius:13px}.path{overflow-wrap:anywhere}th,td{min-width:130px}th:first-child,td:first-child{min-width:44px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+    @media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav{display:none}article{border:0}.flow svg{min-width:0}footer{display:none}}
+  </style>
+</head>
+<body>
+  <header class="mast">
+    <div class="mast-inner">
+      <p class="kicker">Mission Control · merge-aware implementation plan</p>
+      <h1>Ship the plan kind in four merges</h1>
+      <p class="mast-copy">Make the archive library kind-agnostic and add the plan kind on independent tracks, then give the kind its delivery contract, then make its artifacts durable.</p>
+      <div class="evidence-tabs" aria-label="Implementation phases"><span><i></i>Archives</span><span><i></i>The kind</span><span><i></i>Contract</span><span><i></i>Capture</span></div>
+      <p class="path">Phase 1 ∥ Phase 2 → Phase 3 → Phase 4</p>
+    </div>
+  </header>
+  <div class="layout">
+    <nav aria-label="Plan sections"><b>On this page</b><a href="#incorporated-human-decisions">Decisions</a><a href="#repository-findings-that-changed-the-route">Repository findings</a><a href="#phase-map">Phase map</a><a href="#dependency-and-delivery-flow">Dependency flow</a><a href="#cross-phase-contracts">Contracts</a><a href="#merge-order-and-compatibility-strategy">Merge strategy</a><a href="#final-verification-strategy">Verification</a><a href="#complete-cross-phase-audit">Audit</a></nav>
+    <article><h1 id="the-plan-task-kind-phased-implementation">The plan task kind: phased implementation</h1>
+<p>Source plan: <a href="./plan.md"><code>plan.md</code></a>, rendered at <a href="./plan.html"><code>plan.html</code></a>.</p>
+<p>This index turns the approved plan into four merge units. The phase files beside it are the
+implementation guides. The source plan remains the authority for the intended outcome and the
+approved product choices.</p>
+<h2 id="incorporated-human-decisions">Incorporated human decisions</h2>
+<table><thead><tr><th>Decision</th><th>Approved selection</th><th>Consequence</th><th>Owned by</th></tr></thead><tbody><tr><td>Artifact durability</td><td>Durable archive, like scout</td><td>Plan artifacts are captured into the archive library and survive worktree reclaim</td><td>Phase 4</td></tr><tr><td>After work</td><td>Preselect None, reversibly</td><td><code>plan</code> joins <code>scout</code> in the dispatch form&#x27;s stash-and-restore rule</td><td>Phase 2</td></tr><tr><td>Skill dependence</td><td>Point at the skills</td><td>The contract invokes <code>html-plans</code> rather than restating it, and dispatch refuses when it is off</td><td>Phase 3</td></tr><tr><td>Completion</td><td>Normal boundary, like ship</td><td>No archive gate on <code>done</code>; durability is achieved at teardown instead</td><td>Phase 4</td></tr><tr><td>External links</td><td>Allow clickable external links</td><td>The archive validator permits <code>http(s)</code> in navigational slots only</td><td>Phase 1</td></tr><tr><td>Archive container</td><td>Generalize and rename to archives</td><td>New format string, root and tables, with the legacy ones still read</td><td>Phase 1</td></tr><tr><td>Foreman wrap-up</td><td>Offer ordinary wrap-up</td><td>The plan kind is exempted from the review-artifact classifier</td><td>Phase 3</td></tr></tbody></table>
+<h2 id="repository-findings-that-changed-the-route">Repository findings that changed the route</h2>
+<p>Verified against the planning checkout. Implementers must re-check the current tree before
+editing.</p>
+<ul>
+<li><strong>The two planning skills already do the second half of the request.</strong>
+<code>skills/html-plans/SKILL.md:44-85</code> mandates that every root plan review end with a
+<code>request_plan_decisions</code> call whose last decision offers <strong>Create phased implementation plan</strong>
+or <strong>Stop after this plan</strong>, and invokes <code>phased-plan</code> on the first. Nothing needs building for
+the follow-up prompt; the kind&#x27;s job is to guarantee an agent reaches it. This removed an entire
+phase from the original shape of this work.</li>
+<li><strong>The archive format is append-only by explicit declaration.</strong> <code>src/shared/scouts.ts:3-23</code>
+states that renaming a persisted value &quot;orphans evidence that no migration can reach, because
+the evidence is not in this database&quot;. The approved rename is therefore additive: a new format
+string and root are introduced, and <code>mission-control/scout-archive</code> keeps its exact meaning
+forever and stops being written.</li>
+<li><strong>There are four scout tables, and one is not disposable.</strong> <code>scout_archives</code>,
+<code>scout_artifacts</code> and <code>scout_search_segments</code> are a cache the reconciler rebuilds from disk
+(<code>src/server/scouts/reconciler.ts:20-24</code>), but <code>scout_capture_jobs</code> (<code>src/server/db.ts:1661</code>)
+is the idempotency and resume ledger whose <code>repos_json</code> stops being derivable once a session is
+gone. Phase 1 drops and rebuilds the first three and migrates the fourth. There are <strong>zero</strong>
+scout entries in <code>migrate()</code> today, so Phase 1 writes the first one.</li>
+<li><strong>The reading UI does not exist yet</strong>, which is what makes the rename affordable now.
+<code>docs/scout-archives.md</code> still defers the Scouts page. There is no route, no palette entry and
+no topbar segment bound to the name.</li>
+<li><strong>The review-artifact classifier catches a plan task twice.</strong>
+<code>src/server/foreman/wrapup-eligibility.ts</code> matches <code>plans?</code> in both its objective vocabulary
+(<code>:62-63</code>) and its path regex (<code>:69-71</code>), and a <code>docs/plans/**</code>-only diff matches every path.
+Delivering the approved &quot;ordinary wrap-up&quot; decision required exempting the kind from both
+halves, not one.</li>
+<li><strong>Skill invocation is per-harness and has two different resolvers.</strong>
+<code>skillCommand</code> (<code>src/shared/harness-capabilities.ts:923</code>) renders <code>/html-plans</code> on Claude,
+<code>$html-plans - run this skill now.</code> on Codex and <code>/skill:html-plans</code> on Pi, so a hardcoded slash
+command is inert on two of three harnesses and the bug is invisible on the default one.
+Separately, <code>skillInvocationForAgent</code> is correct at launch and <code>requiredSkillCommand</code> - which
+adds a reload-watermark rung - is correct for a live session. The two delivery seams need
+different ones.</li>
+<li><strong>A plan&#x27;s directory cannot be found by convention.</strong> A scout&#x27;s report is at one known path; a
+plan&#x27;s is at <code>docs/plans/&lt;name&gt;/</code> with an agent-chosen name, in a repository that routinely
+holds many unrelated plan directories. Phase 4 uses the task&#x27;s own diff, which the Foreman
+worker already computes, because it is server-derived and names exactly what the task touched.</li>
+<li><strong>The repository was written in anticipation of a third kind.</strong> <code>TASK_KIND_INFO</code> and
+<code>GUIDED_KIND_KEYS</code> are both <code>Record&lt;TaskKind, …&gt;</code> with comments saying a third kind must not
+compile until it has said how it is offered, and <code>tasks.kind</code> is unconstrained <code>TEXT</code> needing no
+migration. Against that, five surfaces degrade silently rather than failing to compile, and
+Phase 2 owns all of them.</li>
+</ul>
+<h2 id="phase-map">Phase map</h2>
+<table><thead><tr><th>Phase</th><th>Name</th><th>Direct prerequisites</th><th>Delivers</th></tr></thead><tbody><tr><td>1</td><td><a href="./phase-1-kind-agnostic-archives.md">Kind-agnostic archives</a></td><td>none</td><td>A kind-discriminated archive format, root, tables and validator, with scout behaviour unchanged</td></tr><tr><td>2</td><td><a href="./phase-2-the-plan-task-kind.md">The plan task kind</a></td><td>none</td><td><code>plan</code> as a selectable, durable, drawn and described Kind</td></tr><tr><td>3</td><td><a href="./phase-3-plan-delivery-contract.md">Plan delivery contract</a></td><td>Phase 2</td><td>The contract appendix, launch requirements, skill-gated dispatch, and ordinary wrap-up</td></tr><tr><td>4</td><td><a href="./phase-4-plan-capture.md">Plan capture</a></td><td>Phase 1, Phase 3</td><td>Plan artifacts archived before worktree reclaim</td></tr></tbody></table>
+<h2 id="dependency-and-delivery-flow">Dependency and delivery flow</h2>
+
+<figure class="flow" aria-labelledby="phased-flow-title">
+  <figcaption id="phased-flow-title">Merge-aware implementation and value flow</figcaption>
+  <svg viewBox="0 0 1200 400" role="img" aria-label="The planning pull request releases Phase 1, the kind-agnostic archive library, and Phase 2, the plan task kind, which have no dependency on one another and may run concurrently. Phase 2 releases Phase 3, the plan delivery contract. Phase 1 and Phase 3 together release Phase 4, plan capture into the archive. Each phase leaves an independently operable result.">
+    <defs>
+      <marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z"/></marker>
+    </defs>
+    <g class="edges">
+      <path d="M204 140V86H300"/><path d="M204 160V214H300"/>
+      <path d="M540 214H620"/>
+      <path d="M860 214V160H940"/>
+      <path d="M540 86H700V140H940"/>
+      <path d="M420 264V320"/><path d="M780 264V320"/><path d="M1078 266V320"/>
+    </g>
+    <g class="node" transform="translate(24 120)"><rect width="180" height="60" rx="14"/><text x="90" y="27">Planning PR</text><text class="sub" x="90" y="46">publishes phase paths</text></g>
+    <g class="node manager" transform="translate(300 56)"><rect width="240" height="60" rx="14"/><text x="120" y="27">Phase 1</text><text class="sub" x="120" y="46">kind-agnostic archives</text></g>
+    <g class="node manager" transform="translate(300 184)"><rect width="240" height="60" rx="14"/><text x="120" y="27">Phase 2</text><text class="sub" x="120" y="46">the plan kind</text></g>
+    <g class="node verify" transform="translate(620 184)"><rect width="240" height="60" rx="14"/><text x="120" y="27">Phase 3</text><text class="sub" x="120" y="46">plan delivery contract</text></g>
+    <g class="node bundle" transform="translate(940 130)"><rect width="236" height="60" rx="14"/><text x="118" y="27">Phase 4</text><text class="sub" x="118" y="46">plan capture</text></g>
+    <g class="node" transform="translate(300 320)"><rect width="240" height="56" rx="14"/><text x="120" y="25">Scouts unchanged</text><text class="sub" x="120" y="44">renamed library, same behaviour</text></g>
+    <g class="node" transform="translate(620 320)"><rect width="320" height="56" rx="14"/><text x="160" y="25">A plan task plans and phases</text><text class="sub" x="160" y="44">artifacts live in its pull request</text></g>
+    <g class="node done" transform="translate(958 320)"><rect width="218" height="56" rx="14"/><text x="109" y="25">Plans outlive checkouts</text><text class="sub" x="109" y="44">archived at teardown</text></g>
+    <text class="label" x="222" y="80">concurrent</text><text class="label" x="222" y="208">concurrent</text><text class="label" x="566" y="206">needs the kind</text><text class="label" x="880" y="150">needs both</text>
+  </svg>
+  <p>Phase 1 and Phase 2 share no decisions and may merge in either order. Phase 3 needs only the kind; Phase 4 is the single point that needs both lines. Every merge leaves a usable, testable repository.</p>
+</figure>
+<p><strong>Concurrency groups.</strong> Phase 1 and Phase 2 share no decision and may run and merge in either
+order. Phase 3 may start as soon as Phase 2 merges, while Phase 1 is still in flight. Phase 4 is
+the only point where the two lines meet.</p>
+<p>The one file two concurrent phases both touch is <code>src/server/db.ts</code>: Phase 1 adds table DDL and
+the first scout-family migration, Phase 2 changes the task row read at <code>:3232</code>. Different regions,
+no shared decision - a textual conflict is possible and a semantic one is not. Whichever merges
+second should expect it.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<p>From Phase 1:</p>
+<ul>
+<li><strong>C-A1</strong> A manifest declares its <code>kind</code> from an append-only vocabulary that already contains
+<code>plan</code>; a legacy manifest reads as <code>scout</code>.</li>
+<li><strong>C-A2</strong> One format is written under one root; the read path unions both.</li>
+<li><strong>C-A3</strong> Index tables carry <code>kind</code> and the list query can filter on it.</li>
+<li><strong>C-A4</strong> Bundle mechanics are kind-agnostic; a kind contributes which paths become the primary
+artifact and what the segments are cut from.</li>
+<li><strong>C-A5</strong> The validator permits navigational <code>http(s)</code> and refuses it in every fetching slot.</li>
+</ul>
+<p>From Phase 2:</p>
+<ul>
+<li><strong>C-K1</strong> <code>TASK_KINDS</code> contains <code>plan</code>; <code>ship</code> stays index 0 and the universal default.</li>
+<li><strong>C-K2</strong> <code>TASK_KIND_INFO</code> is the only home for per-kind human copy; no hand-written option lists
+remain.</li>
+<li><strong>C-K3</strong> &quot;This kind has no reviewable diff&quot; is a predicate over kinds.</li>
+<li><strong>C-K4</strong> The task read path validates the persisted kind and falls back to <code>ship</code>.</li>
+</ul>
+<p>From Phase 3:</p>
+<ul>
+<li><strong>C-P1</strong> One kind-dispatched contract composer is called at both delivery seams.</li>
+<li><strong>C-P2</strong> One kind-dispatched MCP requirement function derives launch capabilities from the kind.</li>
+<li><strong>C-P3</strong> A plan task is guaranteed to have been dispatched with the planning skills invocable.</li>
+</ul>
+<p>From Phase 4:</p>
+<ul>
+<li><strong>C-C1</strong> Both kinds are discoverable through one list query with a <code>kind</code> filter.</li>
+<li><strong>C-C2</strong> A plan bundle&#x27;s companions keep their relative paths, so the page&#x27;s links still resolve.</li>
+<li><strong>C-C3</strong> Plan segments are derived from the document, not from agent-supplied metadata.</li>
+</ul>
+<h2 id="merge-order-and-compatibility-strategy">Merge order and compatibility strategy</h2>
+<ul>
+<li>Every phase leaves the repository operable. Phase 1 changes no behaviour a person can see.
+Phase 2 adds a kind that behaves like <code>ship</code> at delivery. Phase 3 makes the feature real with
+artifacts living in the pull request. Phase 4 makes them durable.</li>
+<li>Nothing published to disk is ever rewritten. The legacy format and root stay readable
+permanently and stop being written.</li>
+<li>The one-way compatibility cost is stated rather than mitigated: an archive written after Phase 1
+is not discovered by a build that predates it. It remains readable in a file manager, and it is
+the same property the schedule store already has.</li>
+<li>The index rebuild after Phase 1 is a background pass bounded by the existing candidate cap and
+reconcile cadence. The capture-job ledger is migrated rather than rebuilt because it cannot be.</li>
+<li>Phase 3 introduces a new dispatch failure mode by design. Its message must name the toggle and
+where to find it.</li>
+</ul>
+<h2 id="final-verification-strategy">Final verification strategy</h2>
+<ul>
+<li><strong>Phase 1&#x27;s proof is that the existing scout suite passes with only mechanical edits.</strong> A test
+needing a semantic change means the phase changed scout behaviour, which is its one prohibition.</li>
+<li>Golden bundle vectors cover both the legacy read path and the new write path.</li>
+<li>The validator relaxation is pinned by a passing navigational case and an explicitly failing case
+for <strong>each</strong> fetching slot, which is what stops it spreading past navigation.</li>
+<li><code>test/task-kinds.test.ts</code> extends to three kinds and <code>KNOWN_HAND_WRITTEN</code> empties. Its
+pair-detector must be generalized or it silently stops detecting.</li>
+<li>The wrap-up exemption is proved by the negative case: a <strong>ship</strong> task with a
+<code>docs/plans/**</code>-only diff and a plan-shaped objective is still blocked.</li>
+<li>Phase 4&#x27;s central claim is proved by the negative case too: an unrelated plan directory in the
+same checkout is never archived.</li>
+<li>Playwright specs cover Phase 2 (the picker, the after-work rule and its reversal, the chip) and
+Phase 3 (the delivered contract and the refusal). Both run against the faked agent binaries and
+spend no model tokens. Phases 1 and 4 add no UI surface and state that explicitly.</li>
+<li>Per phase: <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, plus <code>npm run build &amp;&amp; npm run smoke</code> where runtime surfaces changed and <code>npm run test:e2e</code> where UI surfaces changed.</li>
+</ul>
+<h2 id="complete-cross-phase-audit">Complete cross-phase audit</h2>
+<p>Performed over the full set after the last phase file was written.</p>
+<ul>
+<li><strong>Every approved decision is owned by exactly one phase.</strong> The decisions table above names the
+owner for each of the seven. No decision is split across phases and none is unowned.</li>
+<li><strong>Every consumer follows its prerequisite.</strong> Phase 3 consumes only Phase 2&#x27;s contracts; Phase 4
+consumes Phase 1&#x27;s and Phase 3&#x27;s. No phase consumes a contract from a phase that does not
+precede it in the graph.</li>
+<li><strong>The concurrent pair can merge in either order.</strong> Phase 1 and Phase 2 were checked file by file
+against each other&#x27;s step lists. The single overlap is <code>src/server/db.ts</code> in disjoint regions,
+recorded in both files&#x27; audit records.</li>
+<li><strong>Two reconciliations were applied while writing, and both are recorded in the affected files.</strong>
+Phase 1 dropped the submission-credential rename after Phase 4&#x27;s route showed a plan never uses
+the agent-facing submission path. Phase 4 rejected an agent-declared artifact path after finding
+it both spoofable and in conflict with Phase 3&#x27;s approved &quot;point at the skills&quot; scope, and
+confirmed - rather than assumed - that Phase 3&#x27;s appendix needed no amendment as a result.</li>
+<li><strong>One negative audit result is recorded deliberately.</strong> Phase 4 needed nothing added to Phase 1&#x27;s
+C-A4, because that contract already describes the seam Phase 4 fills. It is written down because
+an audit that only records changes cannot be distinguished from an audit that was not performed.</li>
+<li><strong>The final state matches the source plan without undocumented cleanup.</strong> Every non-goal in the
+source plan is still a non-goal at the end of Phase 4: no Archives reading UI, no new planning
+skill, no change to what <code>phased-plan</code> schedules, no migration of existing bundles, and no kind
+parameter on the MCP <code>create_task</code> tool.</li>
+<li><strong>One gap is carried forward on purpose.</strong> Phase 4&#x27;s truncated-diff fallback may skip archiving
+a very large plan task. That is the correct trade against archiving an unrelated plan, and it
+belongs in that phase&#x27;s pull request description rather than being discovered later.</li>
+</ul></article>
+  </div>
+  <footer><span>Source of truth: phased-plan.md</span><span>Offline render · no external requests</span></footer>
+</body>
+</html>

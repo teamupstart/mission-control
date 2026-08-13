@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_COMMAND_PURPOSE,
@@ -231,8 +231,57 @@ export function CommandLibrary({
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
-  // What is open, reported however it came to be open. See `PersonaLibrary`.
-  useEffect(() => onSelectionChange?.(selectedSlot), [onSelectionChange, selectedSlot]);
+  /**
+   * A slot the ROUTE moved to while this surface stayed mounted.
+   *
+   * Selecting from the rail rewrites the hash through `replaceState` and builds no history
+   * entry, so that is not what this is for. It is for the three moves a bookmarkable page
+   * actually receives: a pasted link into the tab already here, a followed link, and Back or
+   * Forward across two `#/library/commands/<slot>` entries. All three are same-document, so
+   * React keeps this component and the `useState` initializer does not run again - and
+   * without this the address bar would name `lint` while the editor went on showing `test`,
+   * which is the deep link failing at the one job it has.
+   *
+   * Honoured on the EDGE of the routed value, the way `PersonaLibrary` honours `startNew`,
+   * and that is load-bearing rather than stylistic: comparing `routedSlot` against
+   * `selectedSlot` instead would fire the instant the operator picked a row in the rail -
+   * `selectedSlot` moves first and the route follows a render later - and snap the selection
+   * straight back to where it came from.
+   *
+   * No discard guard here, deliberately. A hash change that leaves a dirty draft is already
+   * held by the router's own gate, which puts the address bar back and asks; this runs only
+   * once that gate has let the route through. Asking again would be a second dialog about a
+   * discard the operator has just answered for - the same reason `replaceLibrarySelection`
+   * bypasses the gate in the other direction.
+   */
+  const routedSlot = isSlot(initialSlot) ? initialSlot : null;
+  const routedRef = useRef(routedSlot);
+  useEffect(() => {
+    if (routedSlot === routedRef.current) return;
+    routedRef.current = routedSlot;
+    if (!routedSlot || routedSlot === selectedSlot) return;
+    setSelectedSlot(routedSlot);
+    adopt(bySlot.get(routedSlot) ?? null);
+    setOverridePath("");
+    setOverrideCommand("");
+  }, [adopt, bySlot, routedSlot, selectedSlot]);
+
+  /**
+   * What is open, reported however it came to be open. See `PersonaLibrary`.
+   *
+   * `routedSlot` is a dependency as well as `selectedSlot`, and it is there for the case the
+   * selection alone cannot see: a hash arriving with no usable slot on it - `#/library/commands`
+   * itself, or `/deploy`, which the router drops to the same thing. The editor rightly keeps
+   * what it had open, so `selectedSlot` does not move and an effect keyed on it alone would
+   * never fire, leaving the address bar naming the shelf while the screen shows `lint`. Re-
+   * reporting stamps what is actually open back onto the hash. It cannot loop: `replace`
+   * returns early once the hash already says that.
+   */
+  useEffect(
+    () => onSelectionChange?.(selectedSlot),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- routedSlot is a trigger, not a read
+    [onSelectionChange, routedSlot, selectedSlot],
+  );
 
   /**
    * A newer revision of the OPEN slot, adopted when nothing is at stake and surfaced when

@@ -252,6 +252,74 @@ test("an override, a nested override, and a removal all survive a reload", async
   await expect(card(dashboard, "test")).toContainText("Global default · 1 override");
 });
 
+test("a hash naming another slot moves the editor, whether typed, followed or stepped to", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The surface stays MOUNTED across these moves, which is the whole difficulty. Clicking a
+   * rail row rewrites the hash through `replaceState` and builds no history entry, so the only
+   * ways to reach a second `#/library/commands/<slot>` are the ones a person actually uses on
+   * a bookmarkable page: pasting a link, following one, and stepping through history. In every
+   * one of them React keeps the component and its state initializer does not run again - so an
+   * editor that only reads the route at mount would go on showing `test` under an address bar
+   * reading `lint`, and the link somebody pasted would open the wrong Command.
+   */
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/test`);
+  await expect(dashboard.getByRole("heading", { name: "test", exact: true })).toBeVisible();
+
+  // A pasted link, into the tab that is already here: same document, so nothing remounts.
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/lint`);
+  await expect(dashboard.getByRole("heading", { name: "lint", exact: true })).toBeVisible();
+  await expect(dashboard.locator(".wf-command-list-item.active")).toContainText("lint");
+
+  // Back and Forward across those two entries, which is the same move in both directions.
+  await dashboard.goBack();
+  await expect(dashboard.getByRole("heading", { name: "test", exact: true })).toBeVisible();
+  await expect(dashboard.locator(".wf-command-list-item.active")).toContainText("test");
+  await dashboard.goForward();
+  await expect(dashboard.getByRole("heading", { name: "lint", exact: true })).toBeVisible();
+
+  // A slot that does not exist is not a fifth Command. The route drops the segment, the
+  // editor keeps whatever it had open rather than blanking, and the surface re-stamps the
+  // address bar with what is actually on screen - so the pasted link resolves to a real
+  // Command instead of leaving the two disagreeing.
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/deploy`);
+  await expect(dashboard.getByRole("heading", { name: "lint", exact: true })).toBeVisible();
+  await expect.poll(async () => dashboard.evaluate(() => location.hash))
+    .toBe("#/library/commands/lint");
+});
+
+test("a dirty draft holds a hash move to another slot, and the answer is honoured once", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The router's gate already asks about a hash change that leaves a dirty draft, so the
+  // editor must NOT ask a second time about a discard the operator has just answered for -
+  // and it must actually move once they have.
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/test`);
+  await dashboard.getByLabel("Default command").fill("npm test");
+
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/lint`);
+  const gate = dashboard.getByRole("dialog", { name: "Leave with unsaved changes" });
+  await expect(gate).toBeVisible();
+
+  // Staying keeps both the slot and the typing.
+  await gate.getByRole("button", { name: "Cancel" }).click();
+  await expect(dashboard.getByRole("heading", { name: "test", exact: true })).toBeVisible();
+  await expect(dashboard.getByLabel("Default command")).toHaveValue("npm test");
+  await expect.poll(async () => dashboard.evaluate(() => location.hash))
+    .toBe("#/library/commands/test");
+
+  // Leaving anyway moves, discards, and raises no second dialog.
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/lint`);
+  await expect(gate).toBeVisible();
+  await gate.getByRole("button", { name: "Discard and leave" }).click();
+  await expect(dashboard.getByRole("heading", { name: "lint", exact: true })).toBeVisible();
+  await expect(dashboard.getByLabel("Default command")).toHaveValue("");
+  await expect(dashboard.getByRole("dialog")).toHaveCount(0);
+});
+
 test("a revision that lands while you are typing is surfaced, never silently applied", async ({
   dashboard,
   daemon,

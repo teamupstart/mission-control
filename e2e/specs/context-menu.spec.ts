@@ -154,6 +154,23 @@ test("context actions work by pointer and keyboard without leaking keys to the g
   )).toBe("https://example.com/menu-target");
   expect(dashboard.url()).toBe(dashboardUrl);
 
+  // A desktop bridge refusal reaches the visible error path instead of becoming an unhandled
+  // rejection or implying that the link opened.
+  await dashboard.evaluate(() => {
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        openExternal: async () => { throw new Error("no registered handler"); },
+      },
+    });
+  });
+  await link.click({ button: "right" });
+  await dashboard.getByRole("menuitem", { name: "Open link" }).click();
+  await expect(
+    dashboard.getByRole("status").filter({ hasText: "Could not open link" }),
+  ).toBeVisible();
+
   // Firefox's Shift+right-click convention remains the escape hatch to the native menu.
   await link.click({ button: "right", modifiers: ["Shift"] });
   await expect(menu).toBeHidden();
@@ -168,6 +185,22 @@ test("context actions work by pointer and keyboard without leaking keys to the g
   await expect(menu.getByRole("menuitem", { name: /^Paste$/ })).toBeVisible();
   await menu.getByRole("menuitem", { name: /^Paste$/ }).click();
   await expect(composer).toHaveValue(`Before ${PASTED}`);
+
+  // Cut exercises the other DOM-mutation path with a partial selection, so this cannot pass
+  // through a field clear that happens to produce the same visible result.
+  await composer.fill("ship the fix");
+  await composer.evaluate((field: HTMLTextAreaElement) => {
+    field.focus();
+    field.setSelectionRange(9, 12);
+  });
+  await dashboard.keyboard.press("Shift+F10");
+  await menu.getByRole("menuitem", { name: /^Cut$/ }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("fix");
+  await expect(composer).toHaveValue("ship the ");
+  expect(await composer.evaluate((field: HTMLTextAreaElement) => [
+    field.selectionStart,
+    field.selectionEnd,
+  ])).toEqual([9, 9]);
 
   // A clipboard read that settles after the field changes cannot apply stale offsets.
   await composer.fill("captured draft");

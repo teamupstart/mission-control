@@ -22,8 +22,8 @@ export type ActionId =
   | "roundup"
   | "dispatch"
   | "filter"
-  | "contextMenu"
   | "settingsSearch"
+  | "contextMenu"
   | "workflows"
   | "runs"
   | "expand"
@@ -107,13 +107,6 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "global",
   },
   {
-    id: "contextMenu",
-    label: "Open context menu",
-    description: "Show the actions for the focused text, link or field.",
-    defaultBinding: "shift+F10",
-    group: "global",
-  },
-  {
     // The ⌘K palette. `defaultBinding` is "cmd+k", not "meta+k": this codebase's chord
     // grammar spells the Command/Meta modifier `cmd` (see `chordFromEvent`, which emits it
     // from `e.metaKey`), so "meta+k" would never match a keypress. Global, because it opens
@@ -127,6 +120,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Search everything",
     description: "Open the palette over workflows, runs, ensembles, missions and settings.",
     defaultBinding: "cmd+k",
+    group: "global",
+  },
+  {
+    id: "contextMenu",
+    label: "Open context menu",
+    description: "Show the actions for the focused item or text field.",
+    defaultBinding: "shift+F10",
     group: "global",
   },
   {
@@ -313,13 +313,11 @@ const ACTION_BY_ID = new Map<ActionId, ActionDef>(ACTIONS.map((a) => [a.id, a]))
 const RESERVED_KEYS = new Set([
   "Escape",
   "Enter",
+  "ContextMenu",
   "ArrowUp",
   "ArrowDown",
   "ArrowLeft",
   "ArrowRight",
-  // The dedicated Menu key always opens the context menu. It is structural, like Escape,
-  // rather than a second customizable action that would duplicate the settings row.
-  "ContextMenu",
 ]);
 
 const MOD_TOKENS = ["cmd", "ctrl", "alt", "shift"] as const;
@@ -433,9 +431,10 @@ export function chordHasCommandModifier(chord: string): boolean {
   return mods.includes("cmd") || mods.includes("ctrl");
 }
 
-/** A chord that cannot type a character, so a focused text field has no claim on it. */
-export function chordIsNonTyping(chord: string): boolean {
-  return parseChord(chord).key.length !== 1;
+/** True when a chord uses a standard function key, which has no text-editing behavior. */
+export function chordUsesFunctionKey(chord: string): boolean {
+  const { key } = parseChord(chord);
+  return /^F(?:[1-9]|1\d|2[0-4])$/.test(key);
 }
 
 /**

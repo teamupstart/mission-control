@@ -1453,6 +1453,10 @@ body {
 .is-desktop .workflow-library-sidebar,
 .is-desktop .workflow-builder-right,
 .is-desktop .wf-pipeline-item-menu-pop,
+/* The global context menu is cursor-anchored, so it can be summoned inside the titlebar
+   itself. Its confirmation is fixed too and stays explicit even though it is not clickable. */
+.is-desktop .ctx-menu-pop,
+.is-desktop .ctx-menu-flash,
 /* The "Open in" popover is only ever anchored under a files toolbar, which sounds like it
    could never reach the bar - but `.file-window` above is a window the human DRAGS, and it
    can be parked with its toolbar at y=0. */
@@ -1465,110 +1469,9 @@ body {
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
-.is-desktop .bl-planner-pop,
-/* A cursor menu and its confirmation can land over the titlebar at any viewport coordinate. */
-.is-desktop .context-menu,
-.is-desktop .context-menu-flash {
+.is-desktop .bl-planner-pop {
   -webkit-app-region: no-drag;
 }
-
-/* One body-level context menu serves the browser and desktop builds. Its narrow hint rail is
-   the payload check: it tells the reader whether Copy means a selection or link text, and
-   keeps editing accelerators visible without making each row taller. */
-.context-menu {
-  position: fixed;
-  z-index: 80;
-  display: flex;
-  flex-direction: column;
-  min-width: 196px;
-  max-width: 268px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--panel);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.48);
-  animation: context-menu-in 100ms ease-out;
-}
-.context-menu-group {
-  margin-top: 3px;
-  padding-top: 3px;
-  border-top: 1px solid var(--border-soft);
-}
-.context-menu-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 28px;
-  padding: 5px 9px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg);
-  font: 12px/1.35 var(--sans);
-  text-align: left;
-  cursor: pointer;
-}
-.context-menu-row:hover,
-.context-menu-row:focus-visible {
-  outline: none;
-  background: var(--panel-2);
-}
-.context-menu-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.context-menu-hint {
-  flex: none;
-  margin-left: auto;
-  color: var(--dim);
-  font: 10.5px/1 var(--mono);
-}
-@keyframes context-menu-in {
-  from { opacity: 0; transform: translateY(-2px); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .context-menu { animation: none; }
-}
-
-/* The host owns confirmation because an activated row closes its menu immediately. */
-.context-menu-flash {
-  position: fixed;
-  z-index: 90;
-  left: 50%;
-  bottom: 26px;
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-  max-width: min(640px, 90vw);
-  padding: 9px 14px;
-  border: 1px solid color-mix(in oklab, var(--idle) 34%, var(--border));
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--idle) 12%, var(--panel));
-  box-shadow: var(--shadow);
-  color: var(--fg);
-  font-size: 12px;
-  pointer-events: none;
-  transform: translateX(-50%);
-}
-.context-menu-flash strong {
-  color: var(--idle);
-  font-weight: 640;
-}
-.context-menu-flash span {
-  overflow: hidden;
-  color: var(--muted);
-  font: 11px/1.3 var(--mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.context-menu-flash.is-error {
-  border-color: color-mix(in oklab, var(--danger) 42%, var(--border));
-  background: color-mix(in oklab, var(--danger) 11%, var(--panel));
-}
-.context-menu-flash.is-error strong { color: var(--danger); }
 
 .brand {
   display: flex;
@@ -3395,6 +3298,90 @@ body {
 .open-in-note { margin: 0; padding: 6px 8px; color: var(--dim); font: 10.5px/1.4 var(--sans); }
 .open-in-text .open-in-note { padding: 0; }
 .open-in-note.is-error { color: var(--danger); }
+
+/* ---- global context menu ----
+
+   One compact body-level panel in both browser and desktop builds. Its width is also the
+   placement constant in ContextMenu.tsx: the label gets the room, while payload/shortcut
+   hints stay mono and right-aligned like the rest of Mission Control's operator furniture. */
+.ctx-menu-pop {
+  position: fixed;
+  z-index: 100;
+  width: 196px;
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid color-mix(in oklab, var(--working) 24%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--panel) 94%, black);
+  box-shadow: 0 16px 38px rgb(0 0 0 / .52), 0 0 0 1px rgb(255 255 255 / .025) inset;
+}
+.ctx-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fg);
+  background: transparent;
+  font: 12px/1.35 var(--sans);
+  text-align: left;
+  cursor: default;
+}
+.ctx-menu-row.has-divider {
+  min-height: 34px;
+  margin-top: 3px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.ctx-menu-row:hover,
+.ctx-menu-row:focus-visible {
+  color: white;
+  background: color-mix(in oklab, var(--working) 17%, var(--panel-2));
+  outline: none;
+}
+.ctx-menu-row:focus-visible {
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 64%, transparent) inset;
+}
+.ctx-menu-hint {
+  max-width: 82px;
+  overflow: hidden;
+  color: var(--dim);
+  font: 10.5px/1.2 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-menu-row:hover .ctx-menu-hint,
+.ctx-menu-row:focus-visible .ctx-menu-hint { color: var(--muted); }
+.ctx-menu-flash.action-flash {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 100;
+  width: auto;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+  text-align: center;
+  transform: translateX(-50%);
+}
+.ctx-menu-flash.action-flash.is-ok {
+  border-color: color-mix(in oklab, var(--idle) 36%, var(--border));
+  color: var(--idle);
+}
+.ctx-menu-flash.action-flash.is-error {
+  border-color: color-mix(in oklab, var(--danger) 36%, var(--border));
+  color: var(--danger);
+}
 .file-content { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .file-content > .file-empty,
 .file-content > .file-error { margin: auto; padding: 24px; }
@@ -17801,6 +17788,13 @@ span.line-run-prov {
    the sentence instead of reading it. */
 .line-run-ops {
   min-width: 170px;
+  justify-content: flex-end;
+}
+/* Every ordinary ensemble row now carries its dossier/decision move plus Cancel. Reserve the
+   width of the longer pair so a finalizing row, where cancel is deliberately absent, does not
+   pull the state column sideways. */
+.line-ens-ops {
+  min-width: 218px;
   justify-content: flex-end;
 }
 .line-run-ops .btn,

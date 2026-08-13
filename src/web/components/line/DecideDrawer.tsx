@@ -1,7 +1,13 @@
+import { useState } from "react";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { ensembleIsTerminal } from "@shared/ensemble.ts";
 import { fmtElapsed } from "../../ensembles/format.ts";
 import { ensembleStatusLabel, ensembleStatusTone } from "../../ensembles/format.ts";
+import { ensembleAction } from "../../lib/api.ts";
+import {
+  WorkflowConfirmModal,
+  type WorkflowConfirmRequest,
+} from "../../workflows/WorkflowConfirmModal.tsx";
 import { EnsembleProgressDots } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
@@ -20,7 +26,9 @@ import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
  * at stake, how many candidates are in, how long it has been running, and whether the answer
  * is now owed - and every one of them comes from the SSE summary the Ensembles list already
  * renders. `Decide` and `Open full dossier` both land on `#/ensembles/:id`, which is where the
- * strategy renderers and the one-shot decision live and where they stay.
+ * strategy renderers and the one-shot decision live and where they stay. Cancellation is the
+ * exception: the summary proves whether the generic cancel route will accept it, and stopping a
+ * run should not require opening a dossier first.
  */
 
 /** Awaiting an answer first, then anything else flagged, then newest. */
@@ -54,12 +62,23 @@ function EnsembleRow({
   run,
   now,
   onOpen,
+  onCancel,
+  cancelPending,
+  cancelDisabled,
 }: {
   run: EnsembleSummary;
   now: number;
   onOpen: () => void;
+  onCancel: () => void;
+  cancelPending: boolean;
+  cancelDisabled: boolean;
 }): React.JSX.Element {
   const deciding = run.status === "awaiting_decision";
+  const cancellable = run.status === null
+    ? run.unreadable !== null
+    : !ensembleIsTerminal(run.status)
+      && run.status !== "cancelling"
+      && run.status !== "finalizing";
   return (
     <li className={`line-ens-row${run.attention ? " is-waiting" : ""}`}>
       <span className="line-ens-who">
@@ -76,10 +95,10 @@ function EnsembleRow({
       </span>
       <span className="line-ens-state">{nextMove(run)}</span>
       <span className="line-ens-ops">
-        {/* One button, two words, and which word it wears is the whole escalation: a run
-            awaiting an answer says Decide, everything else says the reading verb. Both open
-            the same page - a second control that opened the same place would imply two
-            destinations. */}
+        {/* The first button's verb is the whole escalation: a run awaiting an answer says
+            Decide, everything else says the reading verb. Cancellation follows as a quiet
+            destructive secondary action because it changes the run rather than opening the
+            same destination under a second label. */}
         <Tooltip
           label={deciding
             ? `Open ${run.title} and record the decision - candidates, scores, and dissent`
@@ -93,6 +112,19 @@ function EnsembleRow({
             {deciding ? "Decide" : "Open full dossier"}
           </button>
         </Tooltip>
+        {cancellable && (
+          <Tooltip label={`Cancel ${run.title}; active members stop, submitted snapshots stay`}>
+            <button
+              type="button"
+              className="btn btn-danger-ghost"
+              aria-label={`Cancel ${run.title}`}
+              disabled={cancelDisabled}
+              onClick={onCancel}
+            >
+              {cancelPending ? "Cancelling…" : "Cancel run…"}
+            </button>
+          </Tooltip>
+        )}
       </span>
     </li>
   );
@@ -117,41 +149,74 @@ export function DecideDrawer({
 }): React.JSX.Element {
   const live = triageOrder(summaries);
   const deciding = live.filter((run) => run.status === "awaiting_decision").length;
+  const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
+  const [cancelPendingId, setCancelPendingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const askToCancel = (run: EnsembleSummary): void => {
+    setError(null);
+    setConfirm({
+      title: "Cancel this ensemble run",
+      body: `Cancel ${run.title}? Every launching or active member is stopped. Submitted snapshots`
+        + " and this run's history stay available.",
+      confirmLabel: "Cancel run",
+      confirmHint: "Stops every launching or active member and keeps submitted snapshots",
+      closeHint: "Close without changing the ensemble run (Escape)",
+      cancelHint: "Leave the ensemble run as it is",
+      danger: true,
+      onConfirm: () => {
+        setCancelPendingId(run.id);
+        void ensembleAction(run.id, { kind: "cancel", reason: null }).then((result) => {
+          setCancelPendingId((pending) => pending === run.id ? null : pending);
+          if (!result.ok) setError(result.error);
+        });
+      },
+    });
+  };
 
   return (
-    <LineDrawer
-      stage="decide"
-      count={`${live.length} ensemble${live.length === 1 ? "" : "s"} live`}
-      attention={deciding > 0
-        ? `${deciding} waiting on you`
-        : attentionCount > 0
-          ? `${attentionCount} need${attentionCount === 1 ? "s" : ""} a look`
-          : ""}
-      onClose={onClose}
-      actions={(
-        <Tooltip label="Open the ensembles page - every run, its evidence, and its decisions">
-          <button type="button" className="btn btn-ghost" onClick={onOpenAllEnsembles}>
-            All ensembles <span aria-hidden>→</span>
-          </button>
-        </Tooltip>
+    <>
+      <LineDrawer
+        stage="decide"
+        count={`${live.length} ensemble${live.length === 1 ? "" : "s"} live`}
+        attention={deciding > 0
+          ? `${deciding} waiting on you`
+          : attentionCount > 0
+            ? `${attentionCount} need${attentionCount === 1 ? "s" : ""} a look`
+            : ""}
+        onClose={onClose}
+        notice={error ? <p className="line-drawer-alert" role="alert">{error}</p> : null}
+        actions={(
+          <Tooltip label="Open the ensembles page - every run, its evidence, and its decisions">
+            <button type="button" className="btn btn-ghost" onClick={onOpenAllEnsembles}>
+              All ensembles <span aria-hidden>→</span>
+            </button>
+          </Tooltip>
+        )}
+      >
+        {live.length === 0 ? (
+          <LineDrawerEmpty>
+            No ensembles are running. Start one from Dispatch, in Ensemble mode.
+          </LineDrawerEmpty>
+        ) : (
+          <ul className="line-drawer-rows">
+            {live.map((run) => (
+              <EnsembleRow
+                key={run.id}
+                run={run}
+                now={now}
+                onOpen={() => onOpenEnsemble(run.id)}
+                onCancel={() => askToCancel(run)}
+                cancelPending={cancelPendingId === run.id}
+                cancelDisabled={cancelPendingId !== null}
+              />
+            ))}
+          </ul>
+        )}
+      </LineDrawer>
+      {confirm && (
+        <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />
       )}
-    >
-      {live.length === 0 ? (
-        <LineDrawerEmpty>
-          No ensembles are running. Start one from Dispatch, in Ensemble mode.
-        </LineDrawerEmpty>
-      ) : (
-        <ul className="line-drawer-rows">
-          {live.map((run) => (
-            <EnsembleRow
-              key={run.id}
-              run={run}
-              now={now}
-              onOpen={() => onOpenEnsemble(run.id)}
-            />
-          ))}
-        </ul>
-      )}
-    </LineDrawer>
+    </>
   );
 }

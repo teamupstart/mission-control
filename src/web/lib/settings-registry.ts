@@ -117,6 +117,24 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["shortcut", "chord", "hotkey", "binding", "keys"],
   },
   {
+    id: "dispatch",
+    label: "Dispatch",
+    // The chord that opens the dispatch form, and the keycap the topbar's Dispatch button
+    // already draws beside that word - so the rail row reads as "+Dispatch" exactly like the
+    // button it is about, for the reason Workflows below carries its own topbar glyph.
+    icon: "+",
+    blurb: "How the dispatch form asks for a task",
+    // `screen` / `browser`, beside Display and Keyboard, because this is a preference about
+    // how THIS dashboard composes a dispatch - not about what the dispatched agent gets.
+    // Harnesses is the category for the latter, and it is `machine`: everything in it is
+    // daemon-backed and reaches sessions launched from anywhere. Filing a `UiConfig` boolean
+    // there would put a browser-local control under a "Changes what the daemon does locally"
+    // badge, which is the one thing the scope badges are not allowed to do.
+    group: "screen",
+    scope: "browser",
+    keywords: ["guided", "wizard", "steps", "walkthrough", "questions", "keyboard", "form"],
+  },
+  {
     id: "harnesses",
     label: "Harnesses",
     icon: "⚙",

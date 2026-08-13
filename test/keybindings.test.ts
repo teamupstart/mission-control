@@ -45,7 +45,7 @@ const {
   bindingValidationError,
   chordFromEvent,
   chordHasCommandModifier,
-  chordIsNonTyping,
+  chordUsesFunctionKey,
   findConflicts,
   formatChord,
   isReservedChord,
@@ -151,11 +151,12 @@ test("formatChord leaves an unmodified letter lower-case", () => {
 
 test("formatChord leaves uncased and named keys alone", () => {
   assert.equal(formatChord("shift+Tab"), "⇧⇥");
+  assert.equal(formatChord("shift+F10"), "⇧F10");
+  assert.equal(formatChord("ContextMenu"), "☰");
   assert.equal(formatChord("cmd++"), "⌘+");
   assert.equal(formatChord("+"), "+");
   assert.equal(formatChord("/"), "/");
   assert.equal(formatChord("Escape"), "Esc");
-  assert.equal(formatChord("ContextMenu"), "☰");
   assert.equal(formatChord(""), "");
 });
 
@@ -185,19 +186,30 @@ test("chordHasCommandModifier flags only cmd/ctrl, so a text-field bypass is saf
   assert.equal(chordHasCommandModifier("+"), false);
 });
 
-test("chordIsNonTyping distinguishes named keys from characters in an editor", () => {
-  assert.equal(chordIsNonTyping("shift+F10"), true);
-  assert.equal(chordIsNonTyping("ContextMenu"), true);
-  assert.equal(chordIsNonTyping("Backspace"), true);
-  assert.equal(chordIsNonTyping("shift+o"), false);
-  assert.equal(chordIsNonTyping("alt+e"), false);
-  assert.equal(chordIsNonTyping("+"), false);
+test("only function-key bindings bypass native behavior in a text field", () => {
+  assert.equal(chordUsesFunctionKey("shift+F10"), true);
+  assert.equal(chordUsesFunctionKey("cmd+F24"), true);
+  assert.equal(chordUsesFunctionKey("ContextMenu"), false);
+  assert.equal(chordUsesFunctionKey("shift+Tab"), false);
+  assert.equal(chordUsesFunctionKey("Backspace"), false);
+  assert.equal(chordUsesFunctionKey("Delete"), false);
+  assert.equal(chordUsesFunctionKey("Home"), false);
+  assert.equal(chordUsesFunctionKey("End"), false);
+  assert.equal(chordUsesFunctionKey("cmd+k"), false);
+  assert.equal(chordUsesFunctionKey("shift+o"), false);
 });
 
 test("bare Tab is reserved while modified Tab chords remain bindable", () => {
   assert.equal(isReservedChord("Tab"), true);
   assert.equal(isReservedChord("shift+Tab"), false);
   assert.equal(isReservedChord("ctrl+Tab"), false);
+});
+
+test("the dedicated ContextMenu key is structural while Shift+F10 remains bindable", () => {
+  assert.equal(isReservedChord("ContextMenu"), true);
+  assert.equal(isReservedChord("shift+F10"), false);
+  assert.equal(chordFromEvent(key("ContextMenu")), "ContextMenu");
+  assert.equal(chordFromEvent(key("F10", { shift: true })), "shift+F10");
 });
 
 test("file actions own Shift+F and Shift+O and every default round-trips from a keypress", () => {
@@ -214,7 +226,6 @@ test("file actions own Shift+F and Shift+O and every default round-trips from a 
     chordFromEvent(key("r", { ctrl: true })),
     chordFromEvent(key("+", { shift: true })),
     chordFromEvent(key("/")),
-    chordFromEvent(key("F10", { shift: true })),
     chordFromEvent(key("w")),
     chordFromEvent(key("e")),
     chordFromEvent(key("g")),
@@ -240,8 +251,17 @@ test("file actions own Shift+F and Shift+O and every default round-trips from a 
     chordFromEvent(key("k")),
     chordFromEvent(key("k", { meta: true })),
     chordFromEvent(key("f", { meta: true })),
+    chordFromEvent(key("F10", { shift: true })),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
+});
+
+test("context menu is one global action with Shift+F10 as its customizable chord", () => {
+  const menu = ACTIONS.find((action) => action.id === "contextMenu");
+  assert.ok(menu, "contextMenu missing from the customizable registry");
+  assert.equal(menu.defaultBinding, "shift+F10");
+  assert.equal(menu.group, "global");
+  assert.equal(formatChord(menu.defaultBinding), "⇧F10");
 });
 
 test("Fleet, Library and Runs are separate global actions with direct bindings", () => {
@@ -259,16 +279,6 @@ test("Fleet, Library and Runs are separate global actions with direct bindings",
   assert.equal(chordFromEvent(key("r")), "r");
   assert.equal(sitrep?.defaultBinding, "shift+p");
   assert.equal(formatChord(sitrep?.defaultBinding ?? ""), "⇧P");
-});
-
-test("context menu is one global action while the dedicated Menu key stays structural", () => {
-  const contextMenu = ACTIONS.find((action) => action.id === "contextMenu");
-  assert.ok(contextMenu);
-  assert.equal(contextMenu.defaultBinding, "shift+F10");
-  assert.equal(contextMenu.group, "global");
-  assert.equal(chordFromEvent(key("F10", { shift: true })), "shift+F10");
-  assert.equal(formatChord(contextMenu.defaultBinding), "⇧F10");
-  assert.equal(isReservedChord("ContextMenu"), true);
 });
 
 // ---- the direct page decision the App keydown handler runs ----

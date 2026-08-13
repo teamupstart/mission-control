@@ -495,7 +495,7 @@ fleet when something finally navigates.
 
 ### The Line's drawers
 
-`e2e/.artifacts/line-drawers/` carries sixteen frames and the
+`e2e/.artifacts/line-drawers/` carries seventeen frames and the
 run's own stdout, written by `specs/line-drawers.spec.ts` under the same `MC_E2E_EVIDENCE`
 flag. The frames answer what only a picture can: `review-open.png` is a live run's ladder with
 the session card **below it at full size**, `board-pushed-down.png` and `board-returned.png`
@@ -511,6 +511,11 @@ that alignment in pixels, and the picture is what makes it legible.
 `review-grouped.png`, `review-pair-not-a-pile.png` and `review-group-expanded.png` are the
 fold: two runs stopped for one reason stay two rows, three become one bar, and the caret
 produces all three back.
+
+`decide-cancel.png` is a live ensemble in the Decide drawer with its dossier action still
+leading and **Cancel run…** beside it. The same browser case opens the confirmation, backs out
+once, then confirms and proves the action reaches the daemon, tears down the fake member Tasks,
+and removes the terminal run from the drawer over SSE without a reload.
 
 `shipped-adopted.png` and `shipped-open.png` are the fourth drawer, which used to be a
 navigation. The first is the real path - a dispatched session, the `gh pr create` hook, and
@@ -533,7 +538,7 @@ asserts that geometry in pixels; this is what makes it legible. The second is th
 the autopilot armed, reading `Autopilot on · 0/3 agents · nothing launches until Foreman is
 live` beside the switch that wrote it.
 
-Regenerate all seventeen with:
+Regenerate all eighteen with:
 
 ```sh
 set -o pipefail   # or the pipe below reports tee's success, not Playwright's
@@ -544,9 +549,9 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/line-drawers/transcript.txt
 ```
 
-`--workers=1` keeps the twenty-one tests' output from interleaving, and the `tee` is the only
-thing that produces `transcript.txt` - without it you regenerate sixteen files out of
-seventeen.
+`--workers=1` keeps the twenty-two tests' output from interleaving, and the `tee` is the only
+thing that produces `transcript.txt` - without it you regenerate seventeen files out of
+eighteen.
 
 ### The topbar's one row
 

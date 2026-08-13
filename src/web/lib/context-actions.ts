@@ -1,11 +1,4 @@
-/**
- * Context-menu targets and actions.
- *
- * Targets are ordered registries rather than component-owned handlers. For each tier the
- * first matcher wins, then the item and container actions are concatenated and deduplicated.
- * That keeps "what did the reader point at?" in one place while later phases add transcript
- * and session containers without changing the resolver.
- */
+import { WORKSPACE_PATH_CLASS } from "./rehypeWorkspacePaths.ts";
 
 export type ContextTier = "item" | "container";
 
@@ -14,331 +7,84 @@ export interface ContextPoint {
   y: number;
 }
 
-export interface ContextInfo {
-  /** Raw browser selection. Whitespace-only selections are normalized to an empty string. */
-  selectionText: string;
-  /** URL under the pointer when rich text has not rendered an anchor. */
-  pointUrl: string | null;
-}
-
-export interface ContextActionEnvironment {
-  /** Write through the shared clipboard helper and publish the supplied success label. */
-  copy: (text: string, successLabel?: string) => Promise<boolean>;
-  readClipboard: () => Promise<string>;
-  openExternal: (url: string) => Promise<void>;
-  status: (message: string, detail?: string, error?: boolean) => void;
-}
-
 export interface ContextAction {
+  /** Stable inside one target. The resolver may return the same id from two tiers. */
   id: string;
   label: string;
   hint?: string;
-  /** Hover/focus explanation used by the dashboard's shared tooltip contract. */
-  description?: string;
-  /** Dedupe identity. Clipboard writes intentionally share `copy`, regardless of label. */
+  /** Two actions dedupe only when both this discriminant and `payload` agree. */
   kind: string;
-  /** What the action acts on. Empty is legitimate for distinct paste actions. */
   payload: string;
-  run: (environment: ContextActionEnvironment) => void | Promise<void>;
+  tier?: ContextTier;
+  /** The action deliberately restores or moves focus itself. */
+  managesFocus?: boolean;
+  run: () => void | Promise<void>;
 }
 
-export interface ResolvedContextAction extends ContextAction {
-  tier: ContextTier;
+export interface ContextTargetMatch {
+  element: Element;
+  value?: unknown;
 }
 
+/**
+ * One entry in the global target registry.
+ *
+ * Registry order is significant inside a tier: only the first matching item target and the
+ * first matching container target contribute actions. New surfaces extend this registry rather
+ * than installing their own `contextmenu` listeners.
+ */
 export interface ContextTarget {
   id: string;
   tier: ContextTier;
-  /** Return the claimed element, or null when this target does not match. */
-  match: (element: Element, context: ContextInfo) => Element | null;
-  actions: (target: Element, context: ContextInfo) => ContextAction[];
+  match: (el: Element, ctx: ContextInfo) => ContextTargetMatch | null;
+  actions: (match: ContextTargetMatch, ctx: ContextInfo) => ContextAction[];
 }
 
-function clipboardAction(
-  id: string,
-  label: string,
-  payload: string,
-  hint?: string,
-): ContextAction {
-  return {
-    id,
-    label,
-    ...(hint ? { hint } : {}),
-    description: hint === "selection"
-      ? "Copy the selected text to the clipboard"
-      : hint === "link text"
-        ? "Copy the link text to the clipboard"
-        : label === "Copy URL"
-          ? "Copy this URL to the clipboard"
-          : "Copy text to the clipboard",
-    kind: "copy",
-    payload,
-    run: async (environment) => { await environment.copy(payload, "Copied"); },
-  };
+export interface ContextInfo {
+  /** The live selection scoped by the host to this invocation target, or an empty string. */
+  selection: string;
+  /** Present for pointer invocation. Keyboard invocation has no caret point to inspect. */
+  point?: ContextPoint;
+  /** Copy through the app-wide feedback controller. False means the write was refused. */
+  copy: (text: string) => Promise<boolean>;
+  readClipboard: () => Promise<string>;
+  openExternal: (href: string) => Promise<void>;
+  announce: (message: string, tone?: "ok" | "error") => void;
 }
 
-function normalizedSelection(selection: string): string {
-  return selection.trim() === "" ? "" : selection;
-}
-
-const TEXT_INPUT_TYPES = new Set(["", "text", "search", "url", "tel", "email", "password"]);
-
-function textFieldFrom(element: Element): HTMLInputElement | HTMLTextAreaElement | null {
-  const candidate = element.closest("textarea, input");
-  if (!candidate) return null;
-  if (candidate.tagName.toLowerCase() === "textarea") {
-    return candidate as HTMLTextAreaElement;
-  }
-  const input = candidate as HTMLInputElement;
-  return TEXT_INPUT_TYPES.has(input.getAttribute("type")?.toLowerCase() ?? "text") ? input : null;
-}
-
-function dispatchFieldInput(
-  field: HTMLInputElement | HTMLTextAreaElement,
-  inputType: "deleteByCut" | "insertFromPaste",
-  data: string | null,
-): void {
-  const view = field.ownerDocument.defaultView;
-  const InputEventCtor = view?.InputEvent;
-  const event = InputEventCtor
-    ? new InputEventCtor("input", { bubbles: true, composed: true, inputType, data })
-    : new Event("input", { bubbles: true, composed: true });
-  field.dispatchEvent(event);
-}
-
-function replaceFieldRange(
-  field: HTMLInputElement | HTMLTextAreaElement,
-  start: number,
-  end: number,
-  replacement: string,
-  inputType: "deleteByCut" | "insertFromPaste",
-): void {
-  field.focus({ preventScroll: true });
-  field.setRangeText(replacement, start, end, "end");
-  dispatchFieldInput(field, inputType, replacement === "" ? null : replacement);
-}
-
-function quoteClipboardText(text: string): string {
-  return `${text.split(/\r?\n/).map((line) => `> ${line}`.trimEnd()).join("\n")}\n\n`;
-}
-
-interface FieldMutationSnapshot {
+interface TextFieldSnapshot {
+  field: HTMLInputElement | HTMLTextAreaElement;
   value: string;
   start: number;
   end: number;
+  selected: string;
 }
 
-function fieldMutationIsCurrent(
-  field: HTMLInputElement | HTMLTextAreaElement,
-  snapshot: FieldMutationSnapshot,
-): boolean {
-  return field.isConnected &&
-    !field.readOnly &&
-    !field.disabled &&
-    field.value === snapshot.value &&
-    field.selectionStart === snapshot.start &&
-    field.selectionEnd === snapshot.end;
+interface LinkSnapshot {
+  href: string;
+  text: string;
 }
 
-function reportStaleFieldMutation(
-  environment: ContextActionEnvironment,
-  operation: "cut" | "paste",
-): void {
-  environment.status(
-    `Field changed before ${operation}`,
-    operation === "cut" ? "Nothing was removed." : "Nothing was pasted.",
-    true,
+const URL_RE = /\bhttps?:\/\/[^\s<>"]+/g;
+const URL_TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", "\u2019", "'"]);
+const URL_DELIMITER_PAIRS = [["(", ")"], ["[", "]"], ["{", "}"]] as const;
+const MAX_ACTIONS = 6;
+
+function urlCandidate(raw: string): string | null {
+  const delimiters = URL_DELIMITER_PAIRS.map(
+    ([opening, closing]) => ({ opening, closing, openingCount: 0, closingCount: 0 }),
   );
-}
-
-function fieldActions(target: Element): ContextAction[] {
-  const field = target as HTMLInputElement | HTMLTextAreaElement;
-  const start = field.selectionStart ?? 0;
-  const end = field.selectionEnd ?? start;
-  const snapshot = { value: field.value, start, end } satisfies FieldMutationSnapshot;
-  const picked = end > start ? snapshot.value.slice(start, end) : "";
-  const mutable = !field.readOnly && !field.disabled;
-  const actions: ContextAction[] = [];
-
-  if (picked !== "") {
-    if (mutable) {
-      actions.push({
-        id: "field-cut",
-        label: "Cut",
-        hint: "selection",
-        description: "Cut the selected text to the clipboard",
-        kind: "cut",
-        payload: picked,
-        run: async (environment) => {
-          if (await environment.copy(picked, "Cut")) {
-            if (!fieldMutationIsCurrent(field, snapshot)) {
-              reportStaleFieldMutation(environment, "cut");
-              return;
-            }
-            replaceFieldRange(field, start, end, "", "deleteByCut");
-          }
-        },
-      });
-    }
-    actions.push(clipboardAction("field-copy", "Copy", picked, "selection"));
-  }
-
-  if (mutable) {
-    const paste = (asQuote: boolean): ContextAction => ({
-      id: asQuote ? "field-paste-quote" : "field-paste",
-      label: asQuote ? "Paste as quote" : "Paste",
-      hint: "⌘V",
-      description: asQuote
-        ? "Paste clipboard text as a Markdown quote"
-        : "Paste clipboard text",
-      kind: asQuote ? "paste-quote" : "paste",
-      payload: "",
-      run: async (environment) => {
-        try {
-          const text = await environment.readClipboard();
-          if (!fieldMutationIsCurrent(field, snapshot)) {
-            reportStaleFieldMutation(environment, "paste");
-            return;
-          }
-          if (text === "") {
-            field.focus({ preventScroll: true });
-            environment.status("Clipboard is empty");
-            return;
-          }
-          replaceFieldRange(
-            field,
-            start,
-            end,
-            asQuote ? quoteClipboardText(text) : text,
-            "insertFromPaste",
-          );
-          environment.status(asQuote ? "Pasted as quote" : "Pasted");
-        } catch {
-          field.focus({ preventScroll: true });
-          environment.status(
-            "Paste needs clipboard permission",
-            "Press ⌘V instead. It always works.",
-            true,
-          );
-        }
-      },
-    });
-
-    actions.push(paste(false), paste(true));
-  }
-  return actions;
-}
-
-function externalLinkActions(target: Element, context: ContextInfo): ContextAction[] {
-  const anchor = target.matches("a[href]") ? target : null;
-  const href = anchor?.getAttribute("href") ?? context.pointUrl ?? "";
-  if (!/^https?:\/\//i.test(href)) return [];
-
-  const selection = normalizedSelection(context.selectionText);
-  const linkText = anchor?.textContent?.trim() ?? href;
-  const actions: ContextAction[] = [];
-  if (selection !== "" || linkText !== href) {
-    actions.push(
-      clipboardAction(
-        "link-copy",
-        "Copy",
-        selection || linkText,
-        selection ? "selection" : "link text",
-      ),
-    );
-  }
-  actions.push(clipboardAction("link-copy-url", "Copy URL", href));
-  actions.push({
-    id: "link-open",
-    label: "Open link",
-    description: "Open this link outside Mission Control",
-    kind: "open-link",
-    payload: href,
-    run: (environment) => environment.openExternal(href),
-  });
-  return actions;
-}
-
-export const CONTEXT_TARGETS: readonly ContextTarget[] = [
-  {
-    id: "text-field",
-    tier: "item",
-    match: (element) => textFieldFrom(element),
-    actions: (target) => fieldActions(target),
-  },
-  {
-    id: "external-link",
-    tier: "item",
-    match: (element, context) => {
-      const anchor = element.closest("a[href]");
-      if (anchor && /^https?:\/\//i.test(anchor.getAttribute("href") ?? "")) return anchor;
-      return context.pointUrl ? element : null;
-    },
-    actions: externalLinkActions,
-  },
-  {
-    id: "selection",
-    tier: "item",
-    match: (element, context) => normalizedSelection(context.selectionText) ? element : null,
-    actions: (_target, context) => [
-      clipboardAction("selection-copy", "Copy", context.selectionText, "selection"),
-    ],
-  },
-];
-
-/**
- * Resolve at most one item and one container target, then collapse exact duplicate effects.
- *
- * Dedupe is deliberately kind AND payload. `Copy` and `Copy URL` both write the same bare URL
- * and collapse; `Paste` and `Paste as quote` both carry an empty payload but remain distinct.
- */
-export function resolveContextActions(
-  element: Element,
-  context: ContextInfo,
-  registry: readonly ContextTarget[] = CONTEXT_TARGETS,
-): ResolvedContextAction[] {
-  const candidates: ResolvedContextAction[] = [];
-  for (const tier of ["item", "container"] as const) {
-    for (const target of registry) {
-      if (target.tier !== tier) continue;
-      const claimed = target.match(element, context);
-      if (!claimed) continue;
-      candidates.push(...target.actions(claimed, context).map((action) => ({ ...action, tier })));
-      break;
-    }
-  }
-
-  const seen = new Set<string>();
-  return candidates.filter((action) => {
-    const key = `${action.kind}:${action.payload}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-const URL_RE = /\bhttps?:\/\/[^\s<>"']+/g;
-const RAW_URL_TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?"]);
-const RAW_URL_DELIMITERS = [["(", ")"], ["[", "]"], ["{", "}"]] as const;
-
-function rawUrlCandidate(text: string): string {
-  const delimiters = RAW_URL_DELIMITERS.map(([opening, closing]) => ({
-    opening,
-    closing,
-    openingCount: 0,
-    closingCount: 0,
-  }));
-  for (const character of text) {
+  for (const character of raw) {
     for (const delimiter of delimiters) {
       if (character === delimiter.opening) delimiter.openingCount += 1;
       if (character === delimiter.closing) delimiter.closingCount += 1;
     }
   }
 
-  let end = text.length;
+  let end = raw.length;
   while (end > 0) {
-    const character = text.charAt(end - 1);
-    if (RAW_URL_TRAILING_PUNCTUATION.has(character)) {
+    const character = raw.charAt(end - 1);
+    if (URL_TRAILING_PUNCTUATION.has(character)) {
       end -= 1;
       continue;
     }
@@ -350,34 +96,296 @@ function rawUrlCandidate(text: string): string {
     }
     break;
   }
-  return text.slice(0, end);
+
+  const candidate = raw.slice(0, end);
+  try {
+    const parsed = new URL(candidate);
+    return /^https?:$/.test(parsed.protocol) && parsed.hostname ? candidate : null;
+  } catch {
+    return null;
+  }
 }
 
-/** Find the URL whose text range contains the caret at a viewport point. */
+function textFieldAt(el: Element): TextFieldSnapshot | null {
+  const field = el.closest<HTMLInputElement | HTMLTextAreaElement>("textarea, input");
+  if (!field) return null;
+  // Checkbox, radio, button and other non-text inputs expose null selection offsets. They are
+  // controls, but not text fields, and offering Paste against them would be a lie.
+  if (typeof field.selectionStart !== "number" || typeof field.selectionEnd !== "number") {
+    return null;
+  }
+  const start = Math.min(field.selectionStart, field.selectionEnd);
+  const end = Math.max(field.selectionStart, field.selectionEnd);
+  return { field, value: field.value, start, end, selected: field.value.slice(start, end) };
+}
+
+type LegacyCaretDocument = Document & {
+  caretRangeFromPoint?: (x: number, y: number) => Range | null;
+};
+
+/** A URL-shaped run in the text node under a pointer, and only when the caret is inside it. */
 export function urlAtPoint(document: Document, point: ContextPoint): string | null {
   let node: Node | null = null;
   let offset = 0;
-  if (typeof document.caretPositionFromPoint === "function") {
-    const caret = document.caretPositionFromPoint(point.x, point.y);
-    node = caret?.offsetNode ?? null;
-    offset = caret?.offset ?? 0;
-  } else if (typeof document.caretRangeFromPoint === "function") {
-    const range = document.caretRangeFromPoint(point.x, point.y);
-    node = range?.startContainer ?? null;
-    offset = range?.startOffset ?? 0;
+  const position = document.caretPositionFromPoint?.(point.x, point.y);
+  if (position) {
+    node = position.offsetNode;
+    offset = position.offset;
+  } else {
+    const range = (document as LegacyCaretDocument).caretRangeFromPoint?.(point.x, point.y);
+    if (range) {
+      node = range.startContainer;
+      offset = range.startOffset;
+    }
   }
   if (!node || node.nodeType !== 3) return null;
-
   const text = node.textContent ?? "";
   URL_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = URL_RE.exec(text))) {
-    const candidate = rawUrlCandidate(match[0]);
-    if (
-      candidate !== "" &&
-      offset >= match.index &&
-      offset <= match.index + candidate.length
-    ) return candidate;
+    const start = match.index;
+    const candidate = urlCandidate(match[0]);
+    if (!candidate) continue;
+    const end = start + candidate.length;
+    if (offset >= start && offset < end) return candidate;
   }
   return null;
+}
+
+function linkAt(el: Element, ctx: ContextInfo): LinkSnapshot | null {
+  const anchor = el.closest<HTMLAnchorElement>("a[href]");
+  if (anchor && !anchor.classList.contains(WORKSPACE_PATH_CLASS)) {
+    const href = anchor.getAttribute("href")?.trim() ?? "";
+    if (/^https?:\/\//i.test(href)) {
+      return { href, text: (anchor.textContent ?? "").trim() };
+    }
+  }
+  const document = el.ownerDocument;
+  const href = document && ctx.point ? urlAtPoint(document, ctx.point) : null;
+  return href ? { href, text: href } : null;
+}
+
+function quoteBlock(text: string): string {
+  return `${text.split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
+}
+
+function fieldMutationIsCurrent(snapshot: TextFieldSnapshot): boolean {
+  const field = snapshot.field;
+  return field.isConnected
+    && !field.disabled
+    && !field.readOnly
+    && field.value === snapshot.value
+    && field.selectionStart === snapshot.start
+    && field.selectionEnd === snapshot.end;
+}
+
+function reportStaleFieldMutation(
+  snapshot: TextFieldSnapshot,
+  ctx: ContextInfo,
+  operation: "cut" | "paste",
+): void {
+  if (snapshot.field.isConnected) {
+    ctx.announce(
+      operation === "cut"
+        ? "Field changed before cut. Nothing was removed."
+        : "Field changed before paste. Nothing was pasted.",
+      "error",
+    );
+  }
+}
+
+function setFieldSelection(snapshot: TextFieldSnapshot): void {
+  snapshot.field.focus({ preventScroll: true });
+  snapshot.field.setSelectionRange(snapshot.start, snapshot.end);
+}
+
+/**
+ * Replace the captured field range in a way React's controlled inputs observe.
+ *
+ * Calling the prototype setter leaves React's value tracker holding the old value, so the
+ * bubbling input event is a real change rather than an event React discards as already seen.
+ */
+function replaceFieldRange(snapshot: TextFieldSnapshot, replacement: string): void {
+  const field = snapshot.field;
+  const next = field.value.slice(0, snapshot.start) + replacement + field.value.slice(snapshot.end);
+  const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value");
+  if (descriptor?.set) descriptor.set.call(field, next);
+  else field.value = next;
+  const caret = snapshot.start + replacement.length;
+  field.focus({ preventScroll: true });
+  field.setSelectionRange(caret, caret);
+  const InputEventCtor = field.ownerDocument?.defaultView?.InputEvent;
+  const event = InputEventCtor
+    ? new InputEventCtor("input", {
+      bubbles: true,
+      composed: true,
+      data: replacement,
+      inputType: replacement ? "insertText" : "deleteByCut",
+    })
+    : new Event("input", { bubbles: true, composed: true });
+  field.dispatchEvent(event);
+}
+
+function copyAction(
+  id: string,
+  label: string,
+  payload: string,
+  ctx: ContextInfo,
+  hint?: string,
+): ContextAction {
+  return {
+    id,
+    label,
+    ...(hint ? { hint } : {}),
+    kind: "copy",
+    payload,
+    run: async () => { await ctx.copy(payload); },
+  };
+}
+
+function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): ContextAction[] {
+  const actions: ContextAction[] = [];
+  if (snapshot.selected.trim()) {
+    if (!snapshot.field.disabled && !snapshot.field.readOnly) {
+      actions.push({
+        id: "field.cut",
+        label: "Cut",
+        hint: "selection",
+        kind: "cut",
+        payload: snapshot.selected,
+        managesFocus: true,
+        run: async () => {
+          const copied = await ctx.copy(snapshot.selected);
+          if (!fieldMutationIsCurrent(snapshot)) {
+            reportStaleFieldMutation(snapshot, ctx, "cut");
+            return;
+          }
+          if (copied) replaceFieldRange(snapshot, "");
+          else setFieldSelection(snapshot);
+        },
+      });
+    }
+    actions.push(copyAction("field.copy", "Copy", snapshot.selected, ctx, "selection"));
+  }
+  if (snapshot.field.disabled || snapshot.field.readOnly) return actions;
+
+  const paste = (asQuote: boolean): ContextAction => ({
+    id: asQuote ? "field.paste-quote" : "field.paste",
+    label: asQuote ? "Paste as quote" : "Paste",
+    hint: asQuote ? "> text" : "⌘V",
+    kind: asQuote ? "paste-quote" : "paste",
+    payload: "",
+    managesFocus: true,
+    run: async () => {
+      try {
+        const text = await ctx.readClipboard();
+        if (!fieldMutationIsCurrent(snapshot)) {
+          reportStaleFieldMutation(snapshot, ctx, "paste");
+          return;
+        }
+        if (!text) {
+          setFieldSelection(snapshot);
+          ctx.announce("Clipboard is empty");
+          return;
+        }
+        replaceFieldRange(snapshot, asQuote ? quoteBlock(text) : text);
+        ctx.announce(asQuote ? "Pasted as quote" : "Pasted", "ok");
+      } catch {
+        if (!fieldMutationIsCurrent(snapshot)) {
+          reportStaleFieldMutation(snapshot, ctx, "paste");
+          return;
+        }
+        setFieldSelection(snapshot);
+        ctx.announce("Paste needs clipboard permission. Press ⌘V instead.", "error");
+      }
+    },
+  });
+  actions.push(paste(false), paste(true));
+  return actions;
+}
+
+function linkActions(link: LinkSnapshot, ctx: ContextInfo): ContextAction[] {
+  // The host has already scoped a pointer selection to its click or a keyboard selection to
+  // the focused target, so any selection that reaches this item is safe to prefer over text.
+  const copyPayload = ctx.selection || link.text;
+  const actions: ContextAction[] = [];
+  // The precise Copy URL label wins when a bare autolink would otherwise produce two
+  // byte-identical writes. A worded link still offers both real choices.
+  if (copyPayload.trim() && copyPayload !== link.href) {
+    actions.push(copyAction(
+      "link.copy",
+      "Copy",
+      copyPayload,
+      ctx,
+      ctx.selection ? "selection" : "link text",
+    ));
+  }
+  actions.push(copyAction("link.copy-url", "Copy URL", link.href, ctx));
+  actions.push({
+    id: "link.open",
+    label: "Open link",
+    hint: "↗",
+    kind: "open",
+    payload: link.href,
+    run: async () => { await ctx.openExternal(link.href); },
+  });
+  return actions;
+}
+
+export const CONTEXT_TARGETS: readonly ContextTarget[] = [
+  {
+    id: "text-field",
+    tier: "item",
+    match: (el) => {
+      const value = textFieldAt(el);
+      return value ? { element: value.field, value } : null;
+    },
+    actions: (match, ctx) => textFieldActions(match.value as TextFieldSnapshot, ctx),
+  },
+  {
+    id: "external-link",
+    tier: "item",
+    match: (el, ctx) => {
+      const value = linkAt(el, ctx);
+      return value ? { element: el, value } : null;
+    },
+    actions: (match, ctx) => linkActions(match.value as LinkSnapshot, ctx),
+  },
+  {
+    id: "selection",
+    tier: "container",
+    match: (el, ctx) => ctx.selection.trim() ? { element: el } : null,
+    actions: (_match, ctx) => [
+      copyAction("selection.copy", "Copy", ctx.selection, ctx, "selection"),
+    ],
+  },
+];
+
+/**
+ * Resolve at most one target per tier, item before container, then collapse byte-identical
+ * operations. The cap is applied last so registry order remains the menu's priority order.
+ */
+export function resolveContextActions(
+  el: Element,
+  ctx: ContextInfo,
+  registry: readonly ContextTarget[] = CONTEXT_TARGETS,
+): ContextAction[] {
+  const candidates: ContextAction[] = [];
+  for (const tier of ["item", "container"] as const) {
+    for (const target of registry) {
+      if (target.tier !== tier) continue;
+      const match = target.match(el, ctx);
+      if (!match) continue;
+      candidates.push(...target.actions(match, ctx).map((action) => ({ ...action, tier })));
+      break;
+    }
+  }
+
+  const seen = new Set<string>();
+  return candidates.filter((action) => {
+    const key = `${action.kind}\u0000${action.payload}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, MAX_ACTIONS);
 }

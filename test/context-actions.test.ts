@@ -117,7 +117,8 @@ test("a live selection is a container target and whitespace alone is not", () =>
 });
 
 test("URL text detection requires the caret offset to land inside the URL", () => {
-  const text = "CI is green: https://example.com/checks today";
+  const url = "https://example.com/checks";
+  const text = `CI is green: ${url}, today`;
   const node = { nodeType: 3, textContent: text } as Node;
   let offset = 1;
   const document = {
@@ -126,7 +127,9 @@ test("URL text detection requires the caret offset to land inside the URL", () =
 
   assert.equal(urlAtPoint(document, { x: 1, y: 1 }), null);
   offset = text.indexOf("example.com") + 2;
-  assert.equal(urlAtPoint(document, { x: 1, y: 1 }), "https://example.com/checks");
+  assert.equal(urlAtPoint(document, { x: 1, y: 1 }), url);
+  offset = text.indexOf(url) + url.length;
+  assert.equal(urlAtPoint(document, { x: 1, y: 1 }), null, "the comma boundary is outside the URL");
 });
 
 test("URL text detection excludes sentence punctuation but keeps balanced URL punctuation", () => {

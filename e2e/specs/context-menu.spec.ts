@@ -25,6 +25,7 @@ async function pointForText(
   locator: Locator,
   needle: string,
   select: boolean,
+  characterOffset?: number,
 ): Promise<{ x: number; y: number }> {
   return locator.evaluate((root, input) => {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -33,21 +34,28 @@ async function pointForText(
       const text = node.textContent ?? "";
       const at = text.indexOf(input.needle);
       if (at >= 0) {
-        const range = document.createRange();
-        range.setStart(node, at);
-        range.setEnd(node, at + input.needle.length);
+        const selectionRange = document.createRange();
+        selectionRange.setStart(node, at);
+        selectionRange.setEnd(node, at + input.needle.length);
         if (input.select) {
           const selection = window.getSelection();
           selection?.removeAllRanges();
-          selection?.addRange(range);
+          selection?.addRange(selectionRange);
         }
-        const rect = range.getBoundingClientRect();
+        const pointRange = input.characterOffset === undefined
+          ? selectionRange
+          : document.createRange();
+        if (input.characterOffset !== undefined) {
+          pointRange.setStart(node, at + input.characterOffset);
+          pointRange.setEnd(node, at + input.characterOffset + 1);
+        }
+        const rect = pointRange.getBoundingClientRect();
         return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
       }
       node = walker.nextNode();
     }
     throw new Error(`Could not find text: ${input.needle}`);
-  }, { needle, select });
+  }, { needle, select, characterOffset });
 }
 
 test("context actions work by pointer and keyboard without leaking keys to the grid", async ({
@@ -113,6 +121,11 @@ test("context actions work by pointer and keyboard without leaking keys to the g
   await dashboard.mouse.click(rawUrlPoint.x, rawUrlPoint.y, { button: "right" });
   await dashboard.getByRole("menuitem", { name: "Copy URL" }).click();
   expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(TRAILING_URL);
+
+  // The first caret position after the URL belongs to its trailing comma, not to the URL.
+  const commaPoint = await pointForText(turn, `${TRAILING_URL},`, false, TRAILING_URL.length);
+  await dashboard.mouse.click(commaPoint.x, commaPoint.y, { button: "right" });
+  await expect(menu).toBeHidden();
 
   // The desktop preload bridge wins when it exists, and opening never navigates this page.
   const dashboardUrl = dashboard.url();

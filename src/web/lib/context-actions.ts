@@ -128,7 +128,7 @@ export function urlAtPoint(document: Document, point: ContextPoint): string | nu
     const candidate = urlCandidate(match[0]);
     if (!candidate) continue;
     const end = start + candidate.length;
-    if (offset >= start && offset <= end) return candidate;
+    if (offset >= start && offset < end) return candidate;
   }
   return null;
 }

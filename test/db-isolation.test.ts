@@ -318,6 +318,42 @@ test("deleting NODE_TEST_CONTEXT does not disarm the guard", () => {
   );
 });
 
+test("moving HOME and TMPDIR after the preload cannot launder the operator's state dir", () => {
+  // The subtlest bypass in this file, because it defeats the guard without touching any of
+  // the signals: the marker is present, the path resolves, nothing dangles. It attacks where
+  // the two lists come FROM. `os.tmpdir()` and `os.homedir()` re-read the environment on
+  // every call, so a test that runs before the first `openDb()` can point `TMPDIR` at the
+  // directory above the operator's state dir - putting it inside the allowlist - and `HOME`
+  // somewhere else - taking it out of the denylist. Both lists then agree it is disposable.
+  //
+  // Measured against the previous build, with the preload loaded and the marker in place:
+  // this printed "OPENED THE OPERATOR DB" and left a harness.db in the operator's dir. What
+  // stops it is that the preload captures both roots before any test module runs, so this
+  // rewriting arrives too late to be believed.
+  const jail = join(home, "roots-jail");
+  const decoy = join(home, "roots-decoy");
+  const operator = join(jail, ".mission-control");
+  mkdirSync(jail, { recursive: true });
+  mkdirSync(decoy, { recursive: true });
+
+  const res = runChild(
+    `process.env.HOME = ${JSON.stringify(decoy)};
+     process.env.TMPDIR = ${JSON.stringify(jail)};
+     process.env.MISSION_HOME = ${JSON.stringify(operator)};
+     ${OPEN_AND_REPORT}`,
+    { HOME: jail },
+    { bootstrap: true },
+  );
+
+  assert.notEqual(res.status, 0, "the operator's state dir was laundered into the allowlist");
+  assert.match(res.stderr, /real\s+state dir/i);
+  assert.equal(
+    existsSync(join(operator, "harness.db")),
+    false,
+    "the operator's database was created after the roots were moved",
+  );
+});
+
 test("an override outside the temp dir is refused even though it is explicit", () => {
   // A throwaway `$TMPDIR` is what makes this honest: the refused path is a perfectly
   // ordinary directory, not an operator-looking one, and it fails purely because it is

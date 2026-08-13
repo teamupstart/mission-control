@@ -57,6 +57,41 @@ import { normalizeLabels } from "@shared/task.ts";
 let db: DatabaseSync;
 
 /**
+ * What `test/setup-state.mjs` recorded about this machine BEFORE any test module ran.
+ *
+ * `os.tmpdir()` and `os.homedir()` both re-read the environment on every call, so deriving
+ * the allowlist and the denylist from them at first `openDb()` asks the question far too
+ * late: a test can move `TMPDIR` above the operator's real state dir and `HOME` somewhere
+ * else, and that directory is then missing from the denylist and inside the allowlist at the
+ * same moment. Measured before this was captured, with the marker present and every other
+ * check passing: the open succeeded and left a `harness.db` in the operator's dir.
+ *
+ * Frozen at the preload, so these describe the machine as it was at process start. Shape is
+ * checked rather than trusted - it is a global, and a wrong shape must degrade to the
+ * fallback below rather than throw somewhere unhelpful.
+ */
+const capturedTestState = (globalThis as Record<string, unknown>)["__missionControlTestState"] as
+  | { home?: unknown; tempRoots?: unknown }
+  | undefined;
+
+const CAPTURED_HOME = typeof capturedTestState?.home === "string" ? capturedTestState.home : undefined;
+
+const CAPTURED_TEMP_ROOTS = Array.isArray(capturedTestState?.tempRoots)
+  ? capturedTestState.tempRoots.filter((root): root is string => typeof root === "string")
+  : undefined;
+
+/**
+ * The fallback for a worker that never loaded the preload: the same two values, read at
+ * MODULE LOAD rather than at first `openDb()`.
+ *
+ * It cannot be as good - nothing of ours runs before the first line of a test file when the
+ * preload is absent - but it narrows the window from "any time before the first open" to
+ * "before this module is imported", and it costs a pair of string reads.
+ */
+const HOME_AT_IMPORT = homedir();
+const TMPDIR_AT_IMPORT = tmpdir();
+
+/**
  * Where a test's state dir is allowed to live, in every spelling the platform hands out.
  *
  * macOS resolves `$TMPDIR` through a symlink - `/var/folders/…` and `/private/var/folders/…`
@@ -71,7 +106,8 @@ let db: DatabaseSync;
 let temporaryRoots: readonly string[] | undefined;
 function testStateRoots(): readonly string[] {
   if (temporaryRoots) return temporaryRoots;
-  const configured = resolve(tmpdir());
+  if (CAPTURED_TEMP_ROOTS?.length) return (temporaryRoots = CAPTURED_TEMP_ROOTS);
+  const configured = resolve(TMPDIR_AT_IMPORT);
   const roots = new Set([configured]);
   try {
     roots.add(resolve(realpathSync(configured)));
@@ -148,7 +184,7 @@ function operatorStateRoots(): readonly string[] {
   if (operatorStateDirs) return operatorStateDirs;
   const roots = new Set<string>();
   for (const name of STATE_DIRS) {
-    const dir = join(homedir(), name);
+    const dir = join(CAPTURED_HOME ?? HOME_AT_IMPORT, name);
     roots.add(resolve(dir));
     // An operator dir that is itself an unresolvable link contributes only its lexical form;
     // the candidate below is still refused, because a candidate that cannot resolve never
@@ -336,7 +372,11 @@ function assertTestStateIsolation(): void {
       throw refusal(`${subject} is the machine's real state dir, whichever alias named it`);
     }
     if (!testStateRoots().some((root) => isInside(candidate, root))) {
-      throw refusal(`${subject} is outside ${tmpdir()}, so it is not a disposable test state dir`);
+      // Names the root actually being enforced, which is the captured one when there is a
+      // preload - saying `tmpdir()` here would print whatever the test last set it to.
+      throw refusal(
+        `${subject} is outside ${testStateRoots().join(" and ")}, so it is not a disposable test state dir`,
+      );
     }
   }
 

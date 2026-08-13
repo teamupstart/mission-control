@@ -21,9 +21,9 @@
 // module whose behavior we are trying to arrange. It writes environment, nothing else, and
 // never opens SQLite.
 
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 // `node --test` sets this in each test process it spawns, which is the scope wanted: the
 // runner's PARENT process gets `--import` too (it propagates through `execArgv`) and has no
@@ -48,8 +48,30 @@ if (process.env.NODE_TEST_CONTEXT) {
   // module both could import is application configuration this file must not evaluate.
   // `deleting NODE_TEST_CONTEXT does not disarm the guard` in db-isolation fails if the two
   // spellings ever drift, which is what keeps them honest.
+  // The ROOTS travel with the marker, captured here and frozen, because `db.ts` deriving them
+  // later from `os.tmpdir()` and `os.homedir()` is not the same question. Both of those read
+  // the environment on every call, so a test that runs before the first `openDb()` can move
+  // `TMPDIR` to sit above the operator's real state dir and `HOME` somewhere else entirely -
+  // and the operator's directory is then absent from the denylist AND inside the allowlist.
+  // Measured before this: that sequence printed "OPENED THE OPERATOR DB" and left a
+  // `harness.db` behind, with this marker present and every other check passing.
+  //
+  // Captured at preload, these describe the machine as it was before any test module ran,
+  // which is the only moment the answer is trustworthy.
+  const temp = resolve(tmpdir());
+  const tempRoots = new Set([temp]);
+  try {
+    tempRoots.add(resolve(realpathSync(temp)));
+  } catch {
+    // An unreadable temp dir just means the symlinked spelling is the only one we know.
+  }
+
   Object.defineProperty(globalThis, "__missionControlTestState", {
-    value: root,
+    value: Object.freeze({
+      root,
+      home: homedir(),
+      tempRoots: Object.freeze([...tempRoots]),
+    }),
     writable: false,
     configurable: false,
     enumerable: false,

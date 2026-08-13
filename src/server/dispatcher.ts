@@ -42,6 +42,7 @@ import {
   type MissionMcpRequirement,
 } from "./mission-mcp.ts";
 import { withScoutReportContract } from "./scouts/prompt.ts";
+import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { withRepoMemoryPointer } from "./memory.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
@@ -147,6 +148,8 @@ export class Dispatcher {
       supervisor?: SdkSupervisor;
       /** How the launch reaches our own MCP server. Injected for the same reason. */
       missionMcpDescriptor?: typeof missionMcpDescriptor;
+      /** Publish the checkout-scoped scout bearer before its agent starts. */
+      provisionScoutCredential?: typeof provisionScoutSubmissionCredential;
       resolveRuntime?: typeof resolveDispatchRuntime;
     } = {},
   ) {}
@@ -263,6 +266,9 @@ export class Dispatcher {
       // dispatch it. A ship task is unaffected: `scoutMissionMcpRequirement` returns the
       // caller's requirement untouched, including `null`.
       const missionMcp = scoutMissionMcpRequirement(task, options.missionMcp ?? null);
+      if (task.kind === "scout") {
+        (this.deps.provisionScoutCredential ?? provisionScoutSubmissionCredential)(taskId, wt.path);
+      }
       // The directories this session needs write access to beyond its cwd, and the argv
       // that grants them. Empty on every single-repo dispatch, which renders no flags at
       // all - so those command lines stay byte-identical.

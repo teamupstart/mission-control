@@ -49,6 +49,7 @@ import {
 import { taskMergeQuorum, type QuorumVerdict } from "@shared/task-repos.ts";
 import { missionMcpDescriptor } from "./mission-mcp.ts";
 import { withScoutReportContract } from "./scouts/prompt.ts";
+import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -294,6 +295,8 @@ export interface AssignOptions {
    * an assignment: the target session's own launch allowlist was fixed before we arrived.
    */
   missionMcpDescriptor?: typeof missionMcpDescriptor;
+  /** Publish the checkout-scoped bearer before a scout's prompt is delivered. */
+  provisionScoutCredential?: typeof provisionScoutSubmissionCredential;
 }
 
 export interface CloseMergedSessionDeps {
@@ -1923,6 +1926,24 @@ export class TaskManager {
           "the agent could not submit the report the task needs to finish",
         scope: "task",
       };
+    }
+    if (t.kind === "scout") {
+      if (!s.cwd) {
+        return {
+          ok: false,
+          error: "this agent has no checkout to authorize for scout submission",
+          scope: "session",
+        };
+      }
+      try {
+        (opts.provisionScoutCredential ?? provisionScoutSubmissionCredential)(t.id, s.cwd);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `could not authorize this scout's submission channel - ${error instanceof Error ? error.message : String(error)}`,
+          scope: "task",
+        };
+      }
     }
 
     // A reused agent starts the new task from origin's default branch with a cleared

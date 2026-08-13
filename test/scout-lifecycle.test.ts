@@ -119,9 +119,8 @@ function mkScout(over: Partial<Task> = {}): Task {
 /**
  * A live session standing in the task's checkout.
  *
- * Registered ONCE per checkout, because `findSessionByEnv`'s cwd fallback requires exactly one
- * session there - two would be genuinely ambiguous, and answering anyway is the attribution
- * mistake the whole submission design exists to avoid.
+ * Registered once per checkout, because the signed authority is accepted only while its task is
+ * bound to one live session in that exact checkout.
  */
 const sessions = new Map<string, Session>();
 function bindSession(h: Harness, task: Task, cwd: string): Session {
@@ -154,13 +153,11 @@ async function submit(
   cwd: string,
   body: { reportPath: string; summary?: string; supporting?: Array<{ repoSlot: string; path: string }> },
 ) {
-  // The session has to be discoverable by `findSessionByEnv`, which is what makes attribution
-  // server-side: the submission names nothing about itself.
+  // The route verifies a signed checkout credential before it reaches this manager; the
+  // gateway then confirms that authority still names this task's live session and checkout.
   bindSession(h, task, cwd);
   return h.scouts.submit({
-    env: {},
-    sessionId: null,
-    cwd,
+    authority: { taskId: task.id, cwd },
     submission: {
       reportPath: body.reportPath,
       summary: body.summary ?? "Resume rebuilt the session without replaying the grant.",
@@ -451,9 +448,7 @@ test("a rescheduled scout cannot complete from its superseded episode's archive"
   const sessionId = `episode-session-${++seq}`;
   const oldEpisode = beginEpisode(h, task, cwd, repoRoot, sessionId, `episode-old-${seq}`);
   const oldSubmission = await h.scouts.submit({
-    env: {},
-    sessionId,
-    cwd,
+    authority: { taskId: task.id, cwd },
     submission: {
       reportPath: "docs/reports/resume/report.html",
       summary: "the first attempt's answer",
@@ -480,9 +475,7 @@ test("a rescheduled scout cannot complete from its superseded episode's archive"
   assert.equal(h.registry.getTask(task.id)?.status, "running");
 
   const newSubmission = await h.scouts.submit({
-    env: {},
-    sessionId,
-    cwd,
+    authority: { taskId: task.id, cwd },
     submission: {
       reportPath: "docs/reports/resume/report.html",
       summary: "the current attempt's answer",
@@ -611,9 +604,7 @@ test("cleanup reserves the current episode when only a superseded episode was pu
   const oldEpisode = beginEpisode(h, task, cwd, repoRoot, sessionId, `cleanup-old-${seq}`);
   assert.equal(
     (await h.scouts.submit({
-      env: {},
-      sessionId,
-      cwd,
+      authority: { taskId: task.id, cwd },
       submission: {
         reportPath: "docs/reports/resume/report.html",
         summary: "the superseded answer",
@@ -786,9 +777,7 @@ test("a rescheduled scout exit reserves its current episode despite an older arc
   const oldEpisode = beginEpisode(h, task, cwd, repoRoot, sessionId, `exit-old-${seq}`);
   assert.equal(
     (await h.scouts.submit({
-      env: {},
-      sessionId,
-      cwd,
+      authority: { taskId: task.id, cwd },
       submission: {
         reportPath: "docs/reports/resume/report.html",
         summary: "the superseded answer",
@@ -847,12 +836,41 @@ test("a submission from a session running no scout is refused", async () => {
   assert.match(result.problems.join(" "), /not a scout/);
 });
 
+test("a signed task authority is refused when its checkout does not match the live session", async () => {
+  const h = harness();
+  const first = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const second = makeWorktree();
+  const task = mkScout({
+    worktreePath: first.worktreePath,
+    repoRoot: first.repoRoot,
+    provider: "git",
+    branch: null,
+  });
+  h.registry.upsertTask(task);
+  bindSession(h, task, first.worktreePath);
+
+  const result = await h.scouts.submit({
+    authority: { taskId: task.id, cwd: second.worktreePath },
+    submission: {
+      reportPath: "docs/reports/resume/report.html",
+      summary: "s",
+      tags: [],
+      supporting: [],
+    },
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal("status" in result ? result.status : null, 404);
+  assert.match(result.problems.join(" "), /does not match this task's live session and checkout/);
+  assert.equal(h.scouts.captureJobsForTask(task.id).length, 0);
+});
+
 test("a submission with no live session is refused rather than attributed by guess", async () => {
   const h = harness();
+  const task = mkScout({ sessionId: null });
+  h.registry.upsertTask(task);
   const result = await h.scouts.submit({
-    env: {},
-    sessionId: null,
-    cwd: "/nowhere",
+    authority: { taskId: task.id, cwd: "/nowhere" },
     submission: { reportPath: "docs/reports/x/report.html", summary: "s", tags: [], supporting: [] },
   });
   assert.equal(result.ok, false);

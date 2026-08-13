@@ -27,7 +27,8 @@ import { loadScoutProducer, type ScoutProducerIdentity } from "./producer.ts";
 import { ScoutReconciler, type ScoutReconcilePass } from "./reconciler.ts";
 import { ScoutStore, type ScoutArchiveRow } from "./store.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./submission-tool.ts";
-import type { ScoutSessionEvidence, ScoutSubject, ScoutTaskGateway } from "./task-gateway.ts";
+import type { ScoutSubmissionAuthority } from "./submission-auth.ts";
+import type { ScoutSubject, ScoutTaskGateway } from "./task-gateway.ts";
 
 /**
  * The daemon's one owner of the scout library.
@@ -193,26 +194,22 @@ export class ScoutArchiveManager {
   /**
    * The `submit_scout_artifacts` path: attribute, reserve, capture, publish.
    *
-   * The caller supplies no identity at all. Which task, which episode, which checkouts, which
-   * producer namespace, which archive id, and which destination directory are ALL derived
-   * here from the authenticated session - so a submission cannot archive on another scout's
-   * behalf, cannot choose where bytes land, and cannot claim an archive that already exists.
+   * The caller supplies no identity in its body. The route verifies a signed task/checkout
+   * credential, and the gateway confirms its live session binding before this derives the
+   * episode, checkouts, producer namespace, archive id, and destination. A submission cannot
+   * archive on another scout's behalf, choose where bytes land, or claim an existing archive.
    *
    * Idempotent by the operation key: an MCP retry, a lost HTTP response, and a duplicate call
    * converge on one job and therefore one archive, and a replay re-verifies the published
    * bundle rather than writing a second one.
    */
   async submit(
-    input: ScoutSessionEvidence & { submission: ScoutSubmissionInput },
+    input: { authority: ScoutSubmissionAuthority; submission: ScoutSubmissionInput },
   ): Promise<ScoutCaptureResult | { ok: false; status: number; problems: string[] }> {
     if (!this.tasks) {
       return { ok: false, status: 503, problems: ["this build cannot accept scout submissions"] };
     }
-    const lookup = this.tasks.subjectForSession({
-      env: input.env,
-      sessionId: input.sessionId,
-      cwd: input.cwd,
-    });
+    const lookup = this.tasks.subjectForSubmission(input.authority);
     if (!lookup.ok) return { ok: false, status: lookup.status, problems: [lookup.detail] };
     if (!this.acceptingJobs) {
       return { ok: false, status: 503, problems: ["Mission Control is shutting down; try again after it restarts"] };

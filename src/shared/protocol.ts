@@ -4505,12 +4505,12 @@ const ScoutSupportingLocatorSchema = z.object({
 /**
  * The MCP `submit_scout_artifacts` request.
  *
- * The shape is the whole security argument, so read what is ABSENT: no task id, session id,
- * work episode, producer id, archive id, destination, absolute source, digest, or completion
- * status. A scout says what it wrote and what is worth keeping; the daemon derives which task
- * that was, which episode, which checkouts, and where the bundle goes, from the authenticated
- * session - exactly as `SubmitEnsembleResultSchema` does, and for the same reason. A field on
- * this wire could only ever be a field used to archive on somebody else's behalf.
+ * The shape is the whole security argument, so read what is ABSENT: no environment, task id,
+ * session id, cwd, work episode, producer id, archive id, destination, absolute source, digest,
+ * or completion status. A scout says what it wrote and what is worth keeping; the daemon
+ * derives which task that was, which episode, which checkouts, and where the bundle goes from
+ * the signed checkout credential on the HTTP request. A field in this body could only ever be
+ * a field used to archive on somebody else's behalf.
  *
  * `reportPath` is checked against the convention HERE, at the schema edge, so a path that is
  * not `docs/reports/<slug>/report.html` is refused with the required shape before any
@@ -4521,9 +4521,6 @@ const ScoutSupportingLocatorSchema = z.object({
  * deliberately and change together; `test/mission-mcp.test.ts` catches a rename.
  */
 export const SubmitScoutArtifactsSchema = z.object({
-  env: EnvSchema,
-  sessionId: z.string().nullable().optional().default(null),
-  cwd: z.string().nullable().optional().default(null),
   reportPath: z
     .string()
     .trim()

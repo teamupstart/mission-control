@@ -26,6 +26,13 @@ const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ScoutStore, clearScoutTables } = await import("../src/server/scouts/store.ts");
 const { ScoutArchiveManager } = await import("../src/server/scouts/manager.ts");
+const { ensureToken } = await import("../src/server/auth.ts");
+const { provisionScoutSubmissionCredential } = await import(
+  "../src/server/scouts/submission-auth.ts"
+);
+const { SCOUT_SUBMISSION_CREDENTIAL_HEADER } = await import(
+  "../src/shared/harness-runtime.mjs"
+);
 import type { ScoutTaskGateway } from "../src/server/scouts/task-gateway.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
@@ -487,12 +494,19 @@ const SUBMIT = "/mcp/scouts/submit";
 
 function submitBody(over: Record<string, unknown> = {}): string {
   return JSON.stringify({
-    env: {},
-    cwd: "/tmp/checkout",
     reportPath: "docs/reports/resume/report.html",
     summary: "Resume rebuilt the session without replaying the grant.",
     ...over,
   });
+}
+
+function submissionHeaders(taskId = "trusted-task", cwd = "/tmp/checkout"): Record<string, string> {
+  const token = provisionScoutSubmissionCredential(taskId, cwd);
+  return {
+    ...JSON_HEADERS,
+    "x-harness-token": ensureToken(),
+    [SCOUT_SUBMISSION_CREDENTIAL_HEADER]: token,
+  };
 }
 
 test("the submission route is behind the harness token, like every other MCP endpoint", async () => {
@@ -506,9 +520,40 @@ test("the submission route is behind the harness token, like every other MCP end
   assert.deepEqual(await res.json(), { error: "unauthorized" });
 });
 
+test("the shared harness token cannot select another scout session", async () => {
+  let attributed = false;
+  const { app } = harness({
+    tasks: {
+      subjectForSubmission: () => {
+        attributed = true;
+        return {
+          ok: false as const,
+          reason: "no_session" as const,
+          status: 404 as const,
+          detail: "should not be reached",
+        };
+      },
+      subjectForTask: () => null,
+      subjectForExitingSession: () => null,
+      isScout: () => false,
+      awaitsAgent: () => false,
+    },
+  });
+  const res = await app.request(SUBMIT, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },
+    body: submitBody({
+      env: { tmuxPane: "%victim" },
+      sessionId: "victim-session",
+      cwd: "/tmp/victim-checkout",
+    }),
+  });
+  assert.equal(res.status, 403);
+  assert.equal(attributed, false, "caller-selected identity never reaches the task gateway");
+});
+
 test("a report path that is not the convention is refused with the required shape", async () => {
   const { app } = harness();
-  const { ensureToken } = await import("../src/server/auth.ts");
   const res = await app.request(SUBMIT, {
     method: "POST",
     headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },
@@ -520,7 +565,6 @@ test("a report path that is not the convention is refused with the required shap
 
 test("a submission may not name a repository slot that is not generated", async () => {
   const { app } = harness();
-  const { ensureToken } = await import("../src/server/auth.ts");
   const res = await app.request(SUBMIT, {
     method: "POST",
     headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },
@@ -531,38 +575,46 @@ test("a submission may not name a repository slot that is not generated", async 
 });
 
 test("a submission cannot name its own task, destination, or archive", async () => {
-  // A gateway that answers honestly for every session it is asked about: there is none.
+  let authority: { taskId: string; cwd: string } | null = null;
   const { app } = harness({
     tasks: {
-      subjectForSession: () => ({
-        ok: false as const,
-        reason: "no_session" as const,
-        status: 404 as const,
-        detail: "no live session matched this request",
-      }),
+      subjectForSubmission: (input) => {
+        authority = input;
+        return {
+          ok: false as const,
+          reason: "no_task" as const,
+          status: 404 as const,
+          detail: "the credential's task no longer exists",
+        };
+      },
       subjectForTask: () => null,
       subjectForExitingSession: () => null,
       isScout: () => false,
       awaitsAgent: () => false,
     },
   });
-  const { ensureToken } = await import("../src/server/auth.ts");
   // Zod ignores unknown keys rather than refusing them, which is what keeps the wire
   // forward-compatible - so the assertion is that they reach NOTHING. The route resolves
-  // attribution from the authenticated session, finds none, and answers 404: the extra fields
-  // did not select a task, a producer, or a directory.
+  // attribution from the signed credential, finds no live subject, and answers 404: the extra
+  // fields did not select a task, a producer, or a directory.
   const res = await app.request(SUBMIT, {
     method: "POST",
-    headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },
+    headers: {
+      ...submissionHeaders(),
+      "x-harness-token": ensureToken(),
+    },
     body: submitBody({
       taskId: "some-other-task",
+      sessionId: "some-other-session",
+      cwd: "/some/other/checkout",
       archiveId: "11111111-2222-4333-8444-555555555555",
       producerId: "11111111-2222-4333-8444-555555555555",
       destination: "/etc",
     }),
   });
   assert.equal(res.status, 404);
-  assert.match(await res.text(), /no live session matched this request/);
+  assert.match(await res.text(), /credential's task no longer exists/);
+  assert.deepEqual(authority, { taskId: "trusted-task", cwd: "/tmp/checkout" });
 });
 
 test("the submission route answers 503 when this build has no scout library", async () => {
@@ -573,7 +625,6 @@ test("the submission route answers 503 when this build has no scout library", as
     {} as TaskManager,
     {} as QueueManager,
   );
-  const { ensureToken } = await import("../src/server/auth.ts");
   const res = await app.request(SUBMIT, {
     method: "POST",
     headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },

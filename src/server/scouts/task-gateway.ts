@@ -4,6 +4,7 @@ import type { Session, Task } from "@shared/types.ts";
 import type { ScoutCaptureOrigin } from "./capture-store.ts";
 import { isScoutTask } from "./prompt.ts";
 import { scoutRepoSlots, type ScoutRepoSlot } from "./repos.ts";
+import type { ScoutSubmissionAuthority } from "./submission-auth.ts";
 
 /**
  * What the capture path is allowed to know about a task, and who answers.
@@ -49,27 +50,15 @@ export type ScoutSubjectLookup =
   | { ok: true; subject: ScoutSubject }
   | ({ ok: false } & ScoutSubjectRefusal);
 
-/**
- * The pane/id/cwd triple every Mission MCP call carries, as this gateway takes it.
- *
- * Named rather than inlined so the manager and the route can talk about it without either of
- * them importing the Registry - which is the entire point of the port.
- */
-export interface ScoutSessionEvidence {
-  env: Parameters<Registry["findSessionByEnv"]>[0];
-  sessionId: string | null;
-  cwd: string | null;
-}
-
 export interface ScoutTaskGateway {
-  /** The scout the calling session is running, or a refusal a caller can turn into HTTP. */
-  subjectForSession(input: ScoutSessionEvidence): ScoutSubjectLookup;
+  /** The scout named by a verified checkout credential, after its live binding is confirmed. */
+  subjectForSubmission(authority: ScoutSubmissionAuthority): ScoutSubjectLookup;
   /** The scout subject for a task id, or null when it is gone or was never a scout. */
   subjectForTask(taskId: string): ScoutSubject | null;
   /**
    * The scout an evicting session was running, or null.
    *
-   * Separate from `subjectForSession` because the question is different: this one is asked
+   * Separate from `subjectForSubmission` because the question is different: this one is asked
    * with the session in hand, from inside `beginEviction`, and it must NOT refuse a session
    * that is already `exited` - being exited is precisely the condition it exists to catch.
    */
@@ -96,22 +85,14 @@ export interface ScoutTaskGateway {
 export class RegistryScoutTaskGateway implements ScoutTaskGateway {
   constructor(private readonly registry: Registry) {}
 
-  subjectForSession(input: ScoutSessionEvidence): ScoutSubjectLookup {
-    const session = this.registry.findSessionByEnv(
-      input.env,
-      input.sessionId ?? undefined,
-      input.cwd ?? undefined,
-    );
-    if (!session || session.state === "exited") {
-      return { ok: false, reason: "no_session", status: 404, detail: "no live session matched this request" };
-    }
-    const task = this.registry.taskForSession(session.id, session.cwd);
+  subjectForSubmission(authority: ScoutSubmissionAuthority): ScoutSubjectLookup {
+    const task = this.registry.getTask(authority.taskId);
     if (!task) {
       return {
         ok: false,
         reason: "no_task",
         status: 404,
-        detail: "this session is not running a Mission Control task",
+        detail: "the credential's task no longer exists",
       };
     }
     if (!isScoutTask(task)) {
@@ -128,6 +109,21 @@ export class RegistryScoutTaskGateway implements ScoutTaskGateway {
         reason: "not_running",
         status: 409,
         detail: `this scout is ${task.status}, so its report can no longer be archived against it`,
+      };
+    }
+    const session = task.sessionId ? this.registry.getSession(task.sessionId) : undefined;
+    const active = session ? this.registry.taskForSession(session.id, session.cwd) : undefined;
+    if (
+      !session ||
+      session.state === "exited" ||
+      session.cwd !== authority.cwd ||
+      active?.id !== task.id
+    ) {
+      return {
+        ok: false,
+        reason: "no_session",
+        status: 404,
+        detail: "the credential does not match this task's live session and checkout",
       };
     }
     return { ok: true, subject: this.subject(task, session) };

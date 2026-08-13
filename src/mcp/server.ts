@@ -4,7 +4,13 @@ import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
-import { BASE_URL, captureTerminalEnv, readToken } from "@shared/harness-runtime.mjs";
+import {
+  BASE_URL,
+  SCOUT_SUBMISSION_CREDENTIAL_HEADER,
+  captureTerminalEnv,
+  readScoutSubmissionCredential,
+  readToken,
+} from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
 
 // This runs as a stdio MCP server, launched by Claude Code per session. Because
@@ -15,10 +21,23 @@ import { titleLine } from "@shared/title.ts";
 const ENV = captureTerminalEnv();
 const SESSION_ID = process.env.CLAUDE_SESSION_ID ?? null;
 
-async function http(path: string, method: string, body?: unknown): Promise<Response> {
+async function http(
+  path: string,
+  method: string,
+  body?: unknown,
+  scoutCredential = false,
+): Promise<Response> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-harness-token": readToken(),
+  };
+  if (scoutCredential) {
+    const credential = readScoutSubmissionCredential(process.cwd());
+    if (credential) headers[SCOUT_SUBMISSION_CREDENTIAL_HEADER] = credential;
+  }
   return fetch(BASE_URL + path, {
     method,
-    headers: { "content-type": "application/json", "x-harness-token": readToken() },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
 }
@@ -403,11 +422,12 @@ server.registerTool(
 );
 
 // Submit this scout's finished report and the evidence worth keeping. The scout NEVER names
-// itself or its destination: the daemon derives the task, the work episode, the checkouts and
-// the archive's identity from this session's pane/id/cwd, so the arguments carry only what the
-// scout wrote - no task, session, episode, producer, archive, digest or absolute path. The zod
-// here is a hand-written mirror of `SubmitScoutArtifactsSchema` in `@shared/protocol.ts`; the
-// two are duplicated deliberately, and change together.
+// itself or its destination: the daemon verifies the signed checkout credential this bridge
+// reads at call time, then derives the task, work episode, checkouts and archive identity. The
+// arguments carry only what the scout wrote - no task, session, episode, producer, archive,
+// digest or absolute path. The zod here is a hand-written mirror of
+// `SubmitScoutArtifactsSchema` in `@shared/protocol.ts`; the two are duplicated deliberately,
+// and change together.
 server.registerTool(
   "submit_scout_artifacts",
   {
@@ -456,14 +476,11 @@ server.registerTool(
   async ({ reportPath, summary, tags, supporting }) => {
     try {
       const res = await http("/mcp/scouts/submit", "POST", {
-        env: ENV,
-        sessionId: SESSION_ID,
-        cwd: process.cwd(),
         reportPath,
         summary,
         tags: tags ?? [],
         supporting: supporting ?? [],
-      });
+      }, true);
       if (!res.ok) {
         const detail = await res.text();
         return textResult(

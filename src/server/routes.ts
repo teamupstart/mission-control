@@ -130,6 +130,8 @@ import {
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { scoutErrorStatus, type ScoutArchiveManager } from "./scouts/manager.ts";
+import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
+import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { SCOUT_SEARCH_LIMITS } from "@shared/scouts.ts";
 import { recordInjection } from "./injections.ts";
 import { runRetro } from "./retro.ts";
@@ -2202,10 +2204,14 @@ export function buildApp(
     if (!library) return c.json({ error: "scout library unavailable" }, 503);
     const parsed = await parseBody(c, SubmitScoutArtifactsSchema);
     if (!parsed.ok) return parsed.res;
+    const authority = verifyScoutSubmissionCredential(
+      c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER),
+    );
+    if (!authority) {
+      return c.json({ error: "this scout submission has no valid session credential" }, 403);
+    }
     const result = await library.submit({
-      env: parsed.data.env,
-      sessionId: parsed.data.sessionId,
-      cwd: parsed.data.cwd,
+      authority,
       submission: {
         reportPath: parsed.data.reportPath,
         summary: parsed.data.summary,

@@ -245,8 +245,11 @@ DELETE /api/scouts/:archiveKey
 POST   /mcp/scouts/submit
 ```
 
-`/mcp/scouts/submit` is the agent-facing one, behind the harness token rather than the
-loopback-only dashboard boundary, and its body is the whole attribution story:
+`/mcp/scouts/submit` is the agent-facing one. It requires both the shared harness token and a
+daemon-signed credential scoped to the current task checkout. Mission Control provisions that
+credential before a dispatched or assigned scout receives its prompt; the MCP bridge reads it
+from local state at call time, so a long-lived assigned session receives the credential for its
+current task. The request body carries no attribution fields:
 
 ```json
 { "reportPath": "docs/reports/resume/report.html",
@@ -255,11 +258,13 @@ loopback-only dashboard boundary, and its body is the whole attribution story:
   "supporting": [{ "repoSlot": "repo-01", "path": "evidence/resume-debug.log" }] }
 ```
 
-There is no task id, session id, work episode, producer id, archive id, destination, absolute
-path, digest, or completion status a caller can send. All of it is derived from the
-authenticated session, so a submission can neither archive on another scout's behalf nor choose
-where the bytes land. Calling it twice returns the same archive rather than publishing a second
-one, and it never writes task status - a scout that has submitted is a scout that *can* finish.
+There is no environment, task id, session id, cwd, work episode, producer id, archive id,
+destination, absolute path, digest, or completion status a caller can send. The signed credential
+selects one task and checkout, and the daemon confirms that task is still bound to a live session
+in that checkout before deriving the work episode and archive destination. Holding the shared
+harness token alone cannot submit for another scout. Calling the tool twice returns the same
+archive rather than publishing a second one, and it never writes task status: a scout that has
+submitted is a scout that *can* finish.
 
 `archiveKey` is `<producer-id>~<archive-id>`. Both routes and the index address an archive by
 that key and an artifact by a generated id - **never by a path.** A request cannot name a

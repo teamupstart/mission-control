@@ -15,6 +15,7 @@ import {
 } from "../src/server/scouts/prompt.ts";
 import { scoutRepoSlots } from "../src/server/scouts/repos.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../src/server/scouts/submission-tool.ts";
+import { SubmitScoutArtifactsSchema } from "../src/shared/protocol.ts";
 import type { Task } from "../src/shared/types.ts";
 
 /**
@@ -227,6 +228,23 @@ test("the bundled MCP server registers the tool under the exact name the prompt 
   assert.match(protocol, /SubmitScoutArtifactsSchema/, "the daemon validates the body it receives");
   const routes = src("src/server/routes.ts");
   assert.match(routes, /\/mcp\/scouts\/submit/, "and the route the bundled server posts to exists");
+});
+
+test("the scout submission body cannot select a session or checkout", () => {
+  const parsed = SubmitScoutArtifactsSchema.parse({
+    env: { tmuxPane: "%victim" },
+    sessionId: "victim-session",
+    cwd: "/victim/checkout",
+    taskId: "victim-task",
+    reportPath: "docs/reports/resume/report.html",
+    summary: "found it",
+  });
+  assert.deepEqual(parsed, {
+    reportPath: "docs/reports/resume/report.html",
+    summary: "found it",
+    tags: [],
+    supporting: [],
+  });
 });
 
 test("both delivery seams compose the contract, not just the dispatcher", () => {

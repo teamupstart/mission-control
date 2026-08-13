@@ -976,11 +976,41 @@ test("a scout is refused before the reset when the MCP bundle cannot be launched
   );
 });
 
+test("a scout is refused before reset when its scoped submission credential cannot be provisioned", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-scout-no-credential-");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "scout" }));
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "node",
+      args: ["server.mjs"],
+      env: {},
+    }),
+    provisionScoutCredential: () => {
+      throw new Error("credential state is read-only");
+    },
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /could not authorize this scout's submission channel/);
+  assert.equal(reset, false);
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
 test("an assigned scout is typed the report contract, and an assigned ship task is not", async () => {
   for (const kind of ["scout", "ship"] as const) {
     const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-${kind}-contract-`);
     r.upsertTask(mkTask({ repoRoot: clone, kind, intent: "look into the resume path" }));
     let typed: string | null = null;
+    let credentialScope: { taskId: string; cwd: string } | null = null;
 
     const res = await tasks.assign("t1", sessionId, {
       paneReady,
@@ -991,6 +1021,10 @@ test("an assigned scout is typed the report contract, and an assigned ship task 
         args: ["server.mjs"],
         env: {},
       }),
+      provisionScoutCredential: (taskId, cwd) => {
+        credentialScope = { taskId, cwd };
+        return "test-credential";
+      },
       reset: cleanReset,
       inject: async (_session, prompt) => {
         typed = prompt;
@@ -1003,10 +1037,12 @@ test("an assigned scout is typed the report contract, and an assigned ship task 
     // The operator's own words arrive intact either way. Only the contract differs.
     assert.match(typed!, /look into the resume path/);
     if (kind === "scout") {
+      assert.deepEqual(credentialScope, { taskId: "t1", cwd: clone });
       assert.match(typed!, /docs\/reports\/<slug>\/report\.html/);
       assert.match(typed!, /submit_scout_artifacts/);
       assert.match(typed!, /repoSlot: "repo-01"/, "the slot is issued for the session's own checkout");
     } else {
+      assert.equal(credentialScope, null);
       assert.equal(typed, "look into the resume path", "a ship task's intent is byte-identical");
     }
   }

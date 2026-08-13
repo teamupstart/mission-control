@@ -625,9 +625,21 @@ test("stage retry uses only the latest supported non-member attempt", () => {
   );
   assert.doesNotMatch(memberHtml, /Retry stage/);
 
+  // A supported non-member stage offers the door. Finalize rather than review, because a review's
+  // door is gated on its infrastructure budget being spent - a single model-charged failure is not
+  // a state the engine rests in (with retries left it opens the next attempt in the same walk, and
+  // with the budget spent it fails the run, where `terminal` hides this anyway). Which statuses a
+  // REVIEW offers it for has its own test below.
+  const failedFinalize: EnsembleStageAttempt = {
+    ...failedReview,
+    id: "sa-finalize",
+    stageId: "finalize",
+    driverKind: "finalize",
+    driverKey: "select_one_finalize@1",
+  };
   const failedHtml = renderToStaticMarkup(
     createElement(EnsembleActions, {
-      detail: { ...detail, stageAttempts: [failedReview] },
+      detail: { ...detail, stageAttempts: [failedFinalize] },
       pending: null,
       error: null,
       onAction: () => {},
@@ -641,15 +653,20 @@ test("a blocked review offers the retry, and an interrupted one leaves it to the
   // The two statuses either side of the operator door, on the reader that decides whether it is
   // drawn at all. A review whose INFRASTRUCTURE budget is spent parks on a non-terminal run, and
   // this button is the only way a person can start it again - so it has to be here.
-  const blocked: EnsembleStageAttempt = {
+  // Three rows, because that is what parked actually looks like: the engine only writes a null
+  // `retryAt` on the attempt that SPENDS the budget, so a lone infrastructure row carrying one is
+  // a state it never produces, and a fixture that invents it tests nothing the daemon can reach.
+  const infra = (n: number, retryAt: number | null): EnsembleStageAttempt => ({
     ...stage,
+    id: `${stage.id}-${n}`,
+    attempt: n,
     status: "failed",
-    output: { charge: "infrastructure", kind: "infrastructure", retryAt: null },
+    output: { charge: "infrastructure", kind: "infrastructure", retryAt },
     error: "infrastructure: spawn ENOENT",
-  };
+  });
   const blockedHtml = renderToStaticMarkup(
     createElement(EnsembleActions, {
-      detail: { ...detail, stageAttempts: [blocked] },
+      detail: { ...detail, stageAttempts: [infra(1, 2_000), infra(2, 5_000), infra(3, null)] },
       pending: null,
       error: null,
       onAction: () => {},
@@ -681,14 +698,6 @@ test("a blocked review offers the retry, and an interrupted one leaves it to the
   // blocked stage, so an operator-granted retry that a restart interrupted leaves a run nothing
   // will move on its own - and hiding the button on the "engine re-drives it" assumption is what
   // left that run with no path forward at all. The door has to be here.
-  const infra = (n: number, retryAt: number | null): EnsembleStageAttempt => ({
-    ...stage,
-    id: `${stage.id}-${n}`,
-    attempt: n,
-    status: "failed",
-    output: { charge: "infrastructure", kind: "infrastructure", retryAt },
-    error: "infrastructure: spawn ENOENT",
-  });
   const parkedThenInterrupted = renderToStaticMarkup(
     createElement(EnsembleActions, {
       detail: {
@@ -707,6 +716,37 @@ test("a blocked review offers the retry, and an interrupted one leaves it to the
     }),
   );
   assert.match(parkedThenInterrupted, /Retry stage/);
+
+  // And NOT while a backoff is still owed. The newest row is `failed`, but the engine has a timer
+  // armed and the pipeline is drawing this same stage as *retrying after an infrastructure error*
+  // - so a button here is a second, contradicting claim about what is happening, and pressing it
+  // skips the wait that exists to stop one provider blip becoming three.
+  const midBackoff = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, stageAttempts: [infra(1, 2_000), infra(2, 5_000)] },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.doesNotMatch(midBackoff, /Retry stage/);
+
+  // A finalize stage keeps the plain rule: nothing re-drives it on its own, so a failed row is
+  // exactly the state that needs this door.
+  const finalize = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: {
+        ...detail,
+        stageAttempts: [{ ...stage, driverKind: "finalize", status: "failed", error: "cleanup failed" }],
+      },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.match(finalize, /Retry stage/);
 });
 
 test("unreadable runs can still be cancelled and healthy handoffs cannot be skipped", () => {

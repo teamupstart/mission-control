@@ -52,17 +52,22 @@ export function EnsembleActions({
   }
   const failedStage = [...latestStageAttempts.values()]
     .filter((attempt) => {
-      if (attempt.driverKind !== "review" && attempt.driverKind !== "finalize") return false;
-      if (attempt.status === "failed") return true;
-      // A parked review whose newest row is an INTERRUPTION still needs its door. The button
-      // hides for an interrupted row everywhere else because the engine re-drives one on its
-      // own - but it does not re-drive a blocked stage, so an operator-granted retry that a
-      // restart then interrupted would leave the run parked with nothing on screen to press.
-      return (
-        attempt.driverKind === "review" &&
-        attempt.status === "interrupted" &&
-        ensembleReviewIsInfrastructureBlocked(detail.stageAttempts, attempt.stageId)
-      );
+      // A finalize stage that failed is always the operator's to restart: nothing re-drives it
+      // on its own, so a failed row IS the state that needs this door.
+      if (attempt.driverKind === "finalize") return attempt.status === "failed";
+      if (attempt.driverKind !== "review") return false;
+      if (attempt.status !== "failed" && attempt.status !== "interrupted") return false;
+      // A review offers its door exactly when the DAEMON has stopped, which is when its
+      // infrastructure budget is spent - and that one question answers for both statuses.
+      //
+      // Neither of them means "stopped" on its own. Mid-backoff the newest row is `failed` and a
+      // timer is already armed to try again; an interruption is re-driven the same way. Offering
+      // the button in either case invites a person to press something that is already happening,
+      // and the pipeline is drawing that same stage as *retrying* while it does - one screen
+      // making two claims. It also had a consequence: an operator-granted attempt skips the
+      // pending backoff, so a press during the 1s or 4s wait fired the next call immediately and
+      // undid the spacing that stops one provider blip becoming three.
+      return ensembleReviewIsInfrastructureBlocked(detail.stageAttempts, attempt.stageId);
     })
     .sort((a, b) => b.updatedAt - a.updatedAt)[0];
 

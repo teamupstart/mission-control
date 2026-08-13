@@ -2,10 +2,16 @@ import { useState } from "react";
 import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
 import { formatResponse } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
+import { ForemanPickMark } from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** Per-decision answer state: chosen option ids plus any free-text "Other". */
 type Answers = Record<string, { selected: string[]; other: string }>;
+
+/** Stable inside one review form, shared with its Foreman recommendation matcher. */
+export function decisionChoiceKey(decisionId: string, optionId: string): string {
+  return `${decisionId}:${optionId}`;
+}
 
 /**
  * The form's state as the wire shape, in the order the questions were asked.
@@ -68,6 +74,7 @@ export function DecisionForm({
    * because the decision id itself must stay untouched - it is echoed in the response payload.
    */
   namePrefix = "d",
+  foremanRecommended,
 }: {
   decisions: PlanDecision[];
   busy: boolean;
@@ -81,6 +88,14 @@ export function DecisionForm({
   lead?: string;
   hideQuestions?: boolean;
   namePrefix?: string;
+  /**
+   * Exact decision-option keys Foreman's prose names.
+   *
+   * The mark is deliberately NOT gated on the sidecar being open: the pick is legible at a
+   * glance, and the sidecar is opened only for the reasoning behind it. Empty unless a live
+   * Foreman note names this exact form, so an unmatched recommendation marks nothing.
+   */
+  foremanRecommended?: ReadonlySet<string>;
 }): React.JSX.Element {
   const [answers, setAnswers] = useState<Answers>({});
 
@@ -124,8 +139,13 @@ export function DecisionForm({
           aria-label={hideQuestions ? d.question : undefined}
         >
           {!hideQuestions && <legend className="decision-q">{d.question}</legend>}
-          {d.options.map((o) => (
-            <label key={o.id} className="decision-option">
+          {d.options.map((o) => {
+            const foremanPick = foremanRecommended?.has(decisionChoiceKey(d.id, o.id));
+            return (
+            <label
+              key={o.id}
+              className={`decision-option${foremanPick ? " decision-foreman-pick" : ""}`}
+            >
               <Tooltip label={o.detail ?? o.label}>
                 <input
                   type={d.multiSelect ? "checkbox" : "radio"}
@@ -142,8 +162,10 @@ export function DecisionForm({
                 </span>
                 {o.detail && <span className="decision-option-detail">{o.detail}</span>}
               </span>
+              {foremanPick && <ForemanPickMark />}
             </label>
-          ))}
+            );
+          })}
           {d.allowOther && (
             <input
               className="decision-other"

@@ -166,7 +166,7 @@ function InboxItem({
             </Tooltip>
           </div>
           {item.reviews.map((review) => (
-            <ReviewCard key={review.id} review={review} />
+            <ReviewCard key={review.id} review={review} note={item.session.note} />
           ))}
         </section>
       );

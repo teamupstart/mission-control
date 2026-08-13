@@ -344,9 +344,9 @@ function MemberCard({
           <h6>Candidate {member.ordinal} asks</h6>
           <div className="ensemble-lane-protocols">
             {live?.reviews.map((review) => (
-              <ReviewCard key={review.id} review={review} />
+              <ReviewCard key={review.id} review={review} note={session.note} />
             ))}
-            {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} />}
+            {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
           </div>
         </div>
       )}

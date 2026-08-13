@@ -638,8 +638,14 @@ export function CommandLibrary({
               matching path wins.
             </p>
             {draft.overrides.length === 0 ? (
+              // Which of the two empty states this is. "Every repository uses the default
+              // above" is only true when there IS one - on a fresh slot it describes
+              // configuration that does not exist, to the operator most likely to believe it.
               <p className="wf-command-empty">
-                No exceptions - every repository uses the default above.
+                {draft.defaultText.trim() === ""
+                  ? "No exceptions, and no default - every repository skips this Command and "
+                    + "passes with a note."
+                  : "No exceptions - every repository uses the default above."}
               </p>
             ) : (
               <ul className="wf-command-override-list">

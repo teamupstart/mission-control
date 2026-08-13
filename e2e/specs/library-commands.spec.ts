@@ -218,10 +218,18 @@ test("an override, a nested override, and a removal all survive a reload", async
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/library/commands/test`);
   await expect(dashboard.getByRole("heading", { name: "test", exact: true })).toBeVisible();
-  await expect(dashboard.getByRole("main"))
-    .toContainText("No exceptions - every repository uses the default above");
+  // A fresh slot has no default, so there is no "default above" for a repository to use and
+  // every one of them skips. The empty state has to say which of those two states it is in -
+  // the first thing a new operator reads here must not describe configuration that is absent.
+  const empty = dashboard.locator(".wf-command-empty");
+  await expect(empty).toContainText("no default");
+  await expect(empty).toContainText("skips");
+  await expect(empty).not.toContainText("uses the default above");
 
   await dashboard.getByLabel("Default command").fill("npm test");
+  // With one typed, the same row describes what the exceptions would be exceptions TO.
+  await expect(empty).toContainText("every repository uses the default above");
+  await expect(empty).not.toContainText("no default");
 
   // A repository-wide exception, then a nested one. The directory has to exist on disk: the
   // editor resolves the typed path to its repository first, which is exactly what makes

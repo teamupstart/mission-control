@@ -1736,17 +1736,21 @@ export function workflowCommandStatusSentence(
     return `${WORKFLOW_COMMAND_UNKNOWN}, so what this Command runs here is not known yet.`;
   }
   const overrides = view?.overrides.length ?? 0;
+  // OVERRIDES, never repositories. An override is keyed by path, so a monorepo puts two of
+  // them under one checkout - and "configured in 2 repositories" would overstate how much of
+  // the fleet this Command reaches, which is the number an operator reads to decide whether a
+  // workflow travels. Counting distinct roots instead is not available here: the catalog
+  // stores paths, and finding the repository boundary above one needs the daemon.
+  const counted = `${overrides} ${overrides === 1 ? "override" : "overrides"}`;
   if (view?.defaultCommand && view.defaultCommand.length > 0) {
     const where = overrides === 0
       ? "A global default is configured, so every repository resolves to it."
-      : `A global default is configured, with ${overrides} repository `
-        + `${overrides === 1 ? "exception" : "exceptions"}.`;
+      : `A global default is configured, with ${counted}.`;
     return `${where} ${COMMAND_AUTHORIZATION_NOTE}`;
   }
   if (overrides > 0) {
-    return `Configured in ${overrides} ${overrides === 1 ? "repository" : "repositories"} only `
-      + `- everywhere else this Command skips and passes with a note. `
-      + COMMAND_AUTHORIZATION_NOTE;
+    return `Configured by ${counted} only - everywhere else this Command skips and passes `
+      + `with a note. ${COMMAND_AUTHORIZATION_NOTE}`;
   }
   return "Nothing is configured, so this Command skips and passes with a note.";
 }

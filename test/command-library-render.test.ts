@@ -91,12 +91,26 @@ test("both fields are offered, with the default named as repository-neutral", ()
   // The blank-is-fine sentence, said where the empty box is - an unconfigured slot passes
   // with a note rather than failing, and that has to read as a choice, not a gap.
   assert.match(html, /passes with a note instead of running/);
-  assert.match(html, /No exceptions - every repository uses the default above/);
+  // The fixture has no default, so the empty row must say so rather than pointing at one.
+  assert.match(html, /No exceptions, and no default - every repository skips this Command/);
+  assert.doesNotMatch(html, /uses the default above/);
   // The sr-only labels reach their inputs by id: both boxes sit outside a wrapping label.
   assert.match(html, /<label class="sr-only" for="workflow-command-default">/);
   assert.match(html, /id="workflow-command-default"/);
   assert.match(html, /<label class="sr-only" for="workflow-command-override-path">/);
   assert.match(html, /<div class="combobox">/, "the repo box is the shared RepoCombobox");
+});
+
+test("the empty overrides row names which empty state it is in", () => {
+  // Two states share one row, and only one of them has a default to point at. On a fresh
+  // slot - the first thing a new operator sees - the other reading invents configuration.
+  const withDefault = markup([view({ defaultCommand: ["npm", "test"] })]);
+  assert.match(withDefault, /No exceptions - every repository uses the default above/);
+  assert.doesNotMatch(withDefault, /no default/);
+
+  const bare = markup([view()]);
+  assert.match(bare, /No exceptions, and no default - every repository skips this Command/);
+  assert.doesNotMatch(bare, /uses the default above/);
 });
 
 test("a stored slot renders its default and every override, argv included", () => {
@@ -356,6 +370,40 @@ test("a refusal's conflict outlives a stream that has not caught up to it", () =
   assert.deepEqual(
     commandSync({ selected: at(11), baseline: at(1), conflict: at(9), dirty: true }),
     { kind: "conflict", view: at(11) },
+  );
+});
+
+// An override is keyed by PATH, not by repository: a monorepo puts two of them under one
+// checkout. Counting paths and calling them repositories overstates how much of the fleet is
+// configured, which is the number an operator reads to decide whether a workflow travels.
+test("overrides are counted as overrides, never as repositories", () => {
+  const monorepo = [
+    { repoRoot: "/src/app/packages/web", command: ["pnpm", "-C", "packages/web", "test"] },
+    { repoRoot: "/src/app/packages/api", command: ["pnpm", "-C", "packages/api", "test"] },
+  ];
+  const overridesOnly = workflowCommandStatusSentence(
+    { defaultCommand: null, overrides: monorepo },
+    true,
+  );
+  assert.doesNotMatch(overridesOnly, /2 repositories/);
+  assert.match(overridesOnly, /2 overrides/);
+
+  const withDefault = workflowCommandStatusSentence(
+    { defaultCommand: ["npm", "test"], overrides: monorepo },
+    true,
+  );
+  assert.doesNotMatch(withDefault, /2 repository exceptions/);
+  assert.match(withDefault, /2 overrides/);
+
+  // Singular still reads correctly, and the card fact was already right - both now use the
+  // same noun, so the shelf and the palette cannot disagree about what the number counts.
+  assert.match(
+    workflowCommandStatusSentence({ defaultCommand: null, overrides: [monorepo[0]!] }, true),
+    /1 override\b/,
+  );
+  assert.equal(
+    workflowCommandFact({ defaultCommand: null, overrides: monorepo }, true),
+    "2 overrides · no global default",
   );
 });
 

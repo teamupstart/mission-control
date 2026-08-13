@@ -239,6 +239,26 @@ export function shortenCwd(cwd: string | null): string {
 }
 
 /**
+ * The complete name behind a session title that was shortened from its generated task title.
+ *
+ * A task's `fullTitle` must not replace a name the operator chose later, so the detail only
+ * wins when the current session name still matches the task title (or the shortened stem the
+ * task title starts with). Shared by Cards and Board so every title tooltip reveals the same
+ * text while the visible heading remains bounded.
+ */
+export function sessionTitleDetail(session: Pick<Session, "name" | "task">): string {
+  const taskTitle = session.task?.title;
+  const fullTaskTitle = session.task?.fullTitle;
+  const shortenedStem = session.name.endsWith("…") ? session.name.slice(0, -1) : null;
+  return shortenedStem &&
+      fullTaskTitle &&
+      fullTaskTitle.length > session.name.length &&
+      (taskTitle === session.name || taskTitle?.startsWith(shortenedStem))
+    ? fullTaskTitle
+    : session.name;
+}
+
+/**
  * The working directory as a shell prompt writes it: `~/leaf`, or bare `~` when the
  * session has no checkout at all.
  *

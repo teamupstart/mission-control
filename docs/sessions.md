@@ -1333,9 +1333,9 @@ would be reported as such rather than silently skipped.)
 > an MCP tool change still needs a manual rebuild. `dist/` is gitignored, so a `git pull` that
 > brings you a new tool never brings you a bundle that serves it.
 >
-> **You are told, rather than left to notice.** Three things watch for it now, because the
-> failure it produces is silent - a scout told to call `submit_scout_artifacts` cannot finish
-> its task without it, and an absent tool ends the work with no error anywhere:
+> **The drift is reported rather than left to be noticed.** Three things watch for it, because
+> the failure it produces is silent - a scout told to call `submit_scout_artifacts` cannot
+> finish its task without it, and an absent tool ends the work with no error anywhere:
 >
 > - The daemon completes a real MCP handshake against the bundle at startup and logs
 >   `Mission Control's MCP server at … does not publish …` when it is behind the source.

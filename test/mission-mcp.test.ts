@@ -305,6 +305,35 @@ test("a session-scoped check still refuses a bundle that never had the tool", as
   });
 });
 
+test("what the bundle prints on stderr never reaches the refusal it produces", async () => {
+  // `reason` is not a log line. A dispatch persists it as the task's `error` - into SQLite and
+  // onto the task card - and the startup check prints it to the daemon log. The bundle we probe
+  // inherits this daemon's environment and reads a harness token and a scout credential of its
+  // own, so a server that logged one on its way down would have it copied into durable,
+  // user-visible state by the very probe that exists to make dispatch safer.
+  //
+  // A bundle that dies loudly, printing something that must not be echoed.
+  const leaky = join(home, "leaky.mjs");
+  const secret = "sk-live-DO-NOT-ECHO-4a9f2c";
+  writeFileSync(
+    leaky,
+    `process.stderr.write("FATAL: auth failed for token ${secret}\\n");\nprocess.exit(3);\n`,
+  );
+  await withBundle(leaky, async () => {
+    const check = await verifyMissionMcpTools(["submit_scout_artifacts"]);
+    assert.equal(check.ok, false, "a bundle that dies on load is still a refusal");
+    assert.ok(
+      !check.reason!.includes(secret),
+      `the refusal repeated the child's stderr: ${check.reason}`,
+    );
+    assert.ok(!check.reason!.includes("FATAL"), "no part of the child's output is echoed");
+    // The FACT of stderr survives, because it is what separates a bundle that died silently
+    // from one that explained itself - and it points at reproducing the spawn by hand.
+    assert.match(check.reason!, /bytes to stderr/);
+    assert.match(check.reason!, /npm run build/, "the fix is still named");
+  });
+});
+
 test("a dispatch declaring no Mission tools never spawns the bundle at all", async () => {
   // The status quo this must not touch. A ship task's launch declares nothing, so there is
   // nothing to verify - and a guard that handshook anyway would put a subprocess, and a new

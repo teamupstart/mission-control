@@ -273,6 +273,30 @@ function errText(err: unknown): string {
 }
 
 /**
+ * That the child said something on stderr, and NEVER a word of what it said.
+ *
+ * `reason` does not stay in this process. A dispatch persists it as the task's `error` - into
+ * SQLite, onto the task card, into whatever a human copies out of it - and the startup check
+ * prints it to the daemon log. The bundle we probe inherits this daemon's whole environment
+ * and reads a harness token and a scout submission credential of its own, so a server that
+ * logged any of that on its way down would have had it copied straight through into durable,
+ * user-visible state by a probe that exists to make dispatch SAFER.
+ *
+ * Child output is untrusted for this purpose, and no redaction pass is trustworthy enough to
+ * make it safe - a denylist cannot know the shape of every secret a future dependency might
+ * print. So the content is dropped at the boundary rather than filtered after it.
+ *
+ * The byte count survives because it is the one thing a reader actually needs from stderr
+ * here: it separates "the bundle died silently" from "the bundle explained itself and we are
+ * not repeating it", which points at reproducing the spawn by hand. Every one of these
+ * failures has the same fix anyway, and `reason` already names it.
+ */
+function saidOnStderr(stderr: string): string {
+  const bytes = Buffer.byteLength(stderr, "utf8");
+  return bytes > 0 ? ` (it wrote ${bytes} bytes to stderr, not repeated here)` : "";
+}
+
+/**
  * Speak MCP to the bundle and return the tool names it publishes.
  *
  * Hand-rolled rather than driven through `@modelcontextprotocol/sdk`'s client: the whole point
@@ -379,7 +403,7 @@ async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedToo
         ok: false,
         reason:
           `it did not answer initialize + tools/list within ${HANDSHAKE_TIMEOUT_MS}ms` +
-          (stderr.trim() ? ` (stderr: ${stderr.trim().slice(0, 300)})` : ""),
+          saidOnStderr(stderr),
       });
     }, HANDSHAKE_TIMEOUT_MS);
     // Never hold the daemon's event loop open on a probe.
@@ -400,7 +424,7 @@ async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedToo
         ok: false,
         reason:
           `it exited (code ${code}, signal ${signal}) during the handshake` +
-          (stderr.trim() ? ` - ${stderr.trim().slice(0, 300)}` : ""),
+          saidOnStderr(stderr),
       });
     });
     child.stderr?.on("data", (d) => (stderr += String(d)));

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
-import { SCOUT_REPORT_PATH_SHAPE } from "../src/shared/scouts.ts";
+import { SCOUT_PRIMARY_REPORT_PATH, SCOUT_REPORT_PATH_SHAPE } from "../src/shared/scouts.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import { validReportHtml } from "./helpers/scout-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
@@ -509,6 +509,111 @@ test("a capture failure refuses the cleanup and keeps the resources tracked", as
   assert.equal(h.registry.getTask(task.id)?.worktreePath, cwd);
 });
 
+test("cleanup reserves the current episode when only a superseded episode was published", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  const sessionId = `cleanup-episode-session-${++seq}`;
+  const oldEpisode = beginEpisode(h, task, cwd, repoRoot, sessionId, `cleanup-old-${seq}`);
+  assert.equal(
+    (await h.scouts.submit({
+      env: {},
+      sessionId,
+      cwd,
+      submission: {
+        reportPath: "docs/reports/resume/report.html",
+        summary: "the superseded answer",
+        tags: [],
+        supporting: [],
+      },
+    })).ok,
+    true,
+  );
+
+  const current = h.registry.getTask(task.id)!;
+  h.registry.upsertTask({ ...current, status: "backlog", sessionId: null });
+  const newEpisode = beginEpisode(
+    h,
+    h.registry.getTask(task.id)!,
+    cwd,
+    repoRoot,
+    sessionId,
+    `cleanup-new-${seq}`,
+  );
+  assert.notEqual(newEpisode, oldEpisode);
+
+  assert.deepEqual(await h.scouts.settleBeforeCleanup(task.id), { ok: true });
+  const jobs = h.scouts.captureJobsForTask(task.id);
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs.find((job) => job.episodeId === newEpisode)?.status, "published");
+});
+
+test("cleanup rebuilds a deleted current archive before releasing the checkout", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  assert.equal(
+    (await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" })).ok,
+    true,
+  );
+  const job = h.scouts.captureJobsForTask(task.id)[0]!;
+  const attempts = job.attempts;
+  rmSync(join(h.library, job.producerId, job.archiveId), { recursive: true, force: true });
+  const current = h.registry.getTask(task.id)!;
+  h.registry.upsertTask({ ...current, status: "failed" });
+
+  const reclaimed = await h.tasks.reclaim(task.id);
+  assert.equal(reclaimed.ok, true, reclaimed.error);
+  const rebuilt = h.scouts.captureJobsForTask(task.id)[0]!;
+  assert.ok(rebuilt.attempts > attempts, "the published ledger row was re-verified");
+  await h.scouts.reconcileNow();
+  assert.equal(
+    h.scouts.list({
+      q: null,
+      producer: null,
+      repo: null,
+      agent: null,
+      status: null,
+      from: null,
+      to: null,
+      cursor: null,
+      limit: 10,
+    }).archives[0]?.status,
+    "ready",
+  );
+});
+
+test("cleanup refuses a corrupt current archive and keeps the source checkout", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  assert.equal(
+    (await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" })).ok,
+    true,
+  );
+  const job = h.scouts.captureJobsForTask(task.id)[0]!;
+  writeFileSync(
+    join(h.library, job.producerId, job.archiveId, SCOUT_PRIMARY_REPORT_PATH),
+    "tampered after publication",
+  );
+  const current = h.registry.getTask(task.id)!;
+  h.registry.upsertTask({ ...current, status: "failed" });
+
+  const reclaimed = await h.tasks.reclaim(task.id);
+  assert.equal(reclaimed.ok, false);
+  assert.match(reclaimed.error ?? "", /archive already exists/);
+  assert.equal(h.registry.getTask(task.id)?.worktreePath, cwd);
+});
+
 test("removing a task never removes its archive", async () => {
   const h = harness();
   const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
@@ -577,6 +682,53 @@ test("an exit after a successful submission does not archive a second time", asy
   const session = bindSession(h, task, cwd);
   h.registry.emit("session_exit", session);
   assert.equal(h.scouts.captureJobsForTask(task.id).length, 1, "the ordinary end of a scout");
+});
+
+test("a rescheduled scout exit reserves its current episode despite an older archive", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  const sessionId = `exit-episode-session-${++seq}`;
+  const oldEpisode = beginEpisode(h, task, cwd, repoRoot, sessionId, `exit-old-${seq}`);
+  assert.equal(
+    (await h.scouts.submit({
+      env: {},
+      sessionId,
+      cwd,
+      submission: {
+        reportPath: "docs/reports/resume/report.html",
+        summary: "the superseded answer",
+        tags: [],
+        supporting: [],
+      },
+    })).ok,
+    true,
+  );
+
+  const current = h.registry.getTask(task.id)!;
+  h.registry.upsertTask({ ...current, status: "backlog", sessionId: null });
+  const newEpisode = beginEpisode(
+    h,
+    h.registry.getTask(task.id)!,
+    cwd,
+    repoRoot,
+    sessionId,
+    `exit-new-${seq}`,
+  );
+  assert.notEqual(newEpisode, oldEpisode);
+
+  h.registry.emit("session_exit", h.registry.getSession(sessionId)!);
+  const jobs = h.scouts.captureJobsForTask(task.id);
+  assert.equal(jobs.length, 2, "the current episode was reserved synchronously");
+  assert.ok(jobs.some((job) => job.episodeId === newEpisode));
+  assert.deepEqual(await h.scouts.settleBeforeCleanup(task.id), { ok: true });
+  assert.equal(
+    h.scouts.captureJobsForTask(task.id).find((job) => job.episodeId === newEpisode)?.status,
+    "published",
+  );
 });
 
 test("a session exit reserves nothing for a ship task", () => {

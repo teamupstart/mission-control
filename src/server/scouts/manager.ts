@@ -341,20 +341,22 @@ export class ScoutArchiveManager {
    */
   async settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
     if (!this.tasks?.isScout(taskId)) return { ok: true };
-    const jobs = this.captureStore.forTask(taskId);
-    const unfinished = jobs.filter((job) => job.status !== "published");
+    const subject = this.tasks.subjectForTask(taskId);
+    if (!subject) return { ok: true };
+    const current = this.captureStore
+      .forTask(taskId)
+      .filter((job) => job.episodeId === subject.episodeId);
 
-    // Nothing reserved yet, and sources still on disk: this is the operator cancelling or
-    // reclaiming a scout whose agent never got as far as submitting. Reserve now, while the
-    // checkout is still here, so whatever it did write is preserved.
-    if (unfinished.length === 0) {
-      if (jobs.length > 0) return { ok: true };
-      const subject = this.tasks.subjectForTask(taskId);
-      if (!subject || !subject.repos.some((repo) => repo.root !== null)) return { ok: true };
-      unfinished.push(this.reserve(subject));
+    // A prior episode's immutable archive answers that attempt only. If the current episode
+    // has no job, reserve it now while its sources still exist. Published current jobs stay
+    // in the list: a ledger row is not evidence that the bundle still exists and verifies,
+    // so cleanup must replay verification before it destroys the last usable checkout.
+    if (current.length === 0) {
+      if (!subject.repos.some((repo) => repo.root !== null)) return { ok: true };
+      current.push(this.reserve(subject));
     }
 
-    for (const job of unfinished) {
+    for (const job of current) {
       const outcome = await this.runCapture(job.operationKey);
       if (!outcome.ok) {
         return {
@@ -381,8 +383,12 @@ export class ScoutArchiveManager {
     try {
       const subject = this.tasks.subjectForExitingSession(session);
       if (!subject) return;
-      // Already archived: this is an ordinary scout finishing and its session going away.
-      const jobs = this.captureStore.forTask(subject.taskId);
+      // Already archived for THIS attempt: this is an ordinary scout finishing and its
+      // session going away. A superseded episode's archive must not suppress reservation of
+      // the checkout that is about to disappear.
+      const jobs = this.captureStore
+        .forTask(subject.taskId)
+        .filter((job) => job.episodeId === subject.episodeId);
       if (jobs.some((job) => job.status === "published")) return;
       const job = this.reserve(subject);
       void this.runCapture(job.operationKey);

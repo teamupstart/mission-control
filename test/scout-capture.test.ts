@@ -202,6 +202,26 @@ test("an explicitly named ignored file is refused by name rather than archived",
   assert.match(outcome.problems.join(" "), /secrets\/token\.txt is ignored by git/);
 });
 
+test("an ignored non-hidden report companion is refused by name rather than archived", async () => {
+  const root = makeCheckout({
+    "docs/reports/resume/report.html": validReportHtml(),
+    "docs/reports/resume/credentials.local": "must stay in the checkout",
+  });
+  const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
+  const outcome = await captureScoutArchive(job, deps);
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(
+    outcome.problems.join(" "),
+    /docs\/reports\/resume\/credentials\.local is ignored by git and was not archived/,
+  );
+  const read = await verifyScoutBundle(library, {
+    producerId: PRODUCER,
+    archiveId: job.archiveId,
+  });
+  assert.equal(read.kind, "absent");
+});
+
 test("every offending path is named at once, so one correction fixes them all", async () => {
   const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml() });
   const { job } = makeJob({

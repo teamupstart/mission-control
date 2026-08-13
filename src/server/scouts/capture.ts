@@ -214,6 +214,7 @@ async function planSubmitted(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promi
     });
     const companions = await planReportDirectory(primary, reportDir, report.path);
     if (!companions.ok) return companions;
+    problems.push(...companions.ignoredProblems);
     files.push(...companions.files);
     missing.push(...companions.missing);
   }
@@ -370,10 +371,19 @@ async function planReportDirectory(
   root: ResolvedRoot,
   reportDir: string,
   reportRealPath: string,
-): Promise<{ ok: true; files: PlannedFile[]; missing: ScoutManifestMissing[] } | { ok: false; problems: string[] }> {
+): Promise<
+  | {
+      ok: true;
+      files: PlannedFile[];
+      missing: ScoutManifestMissing[];
+      ignoredProblems: string[];
+    }
+  | { ok: false; problems: string[] }
+> {
   const base = path.join(root.realRoot!, reportDir);
   const files: PlannedFile[] = [];
   const missing: ScoutManifestMissing[] = [];
+  const ignoredProblems: string[] = [];
   const problems: string[] = [];
 
   const walk = async (dir: string, relative: string): Promise<void> => {
@@ -411,11 +421,21 @@ async function planReportDirectory(
       }
       // The report itself arrives through the primary entry, with its own role and id.
       if (absolute === reportRealPath) continue;
+      const originalPath = `${reportDir}/${rel}`;
+      if (await isIgnored(root.realRoot!, originalPath)) {
+        ignoredProblems.push(`${originalPath} is ignored by git and was not archived`);
+        missing.push({
+          kind: "report_companion",
+          expectedSource: originalPath,
+          reason: "the file is ignored by git and was not archived",
+        });
+        continue;
+      }
       const archivePath = `${SCOUT_REPORT_DIR}/${rel}`;
       if (!validateScoutArchivePath(archivePath)) {
         missing.push({
           kind: "report_companion",
-          expectedSource: `${reportDir}/${rel}`,
+          expectedSource: originalPath,
           reason: "the file's name cannot be represented inside an archive",
         });
         continue;
@@ -425,7 +445,7 @@ async function planReportDirectory(
         archivePath,
         role: "report_companion",
         repoSlot: root.slot,
-        originalPath: `${reportDir}/${rel}`,
+        originalPath,
         bytes: info.size,
       });
     }
@@ -435,7 +455,7 @@ async function planReportDirectory(
   if (problems.length > 0) return { ok: false, problems };
   // Bounded before anything is copied, so a runaway directory costs one walk rather than
   // 128 MiB of writes that then have to be thrown away.
-  return { ok: true, files, missing: missing.slice(0, 64) };
+  return { ok: true, files, missing: missing.slice(0, 64), ignoredProblems };
 }
 
 /** The additional files a scout explicitly named, each through the same defences. */

@@ -52,6 +52,39 @@ function fail(msg) {
   process.exitCode = 1;
 }
 
+/** How long a bundle gets to honour SIGTERM before it is killed outright. */
+const KILL_GRACE_MS = 2_000;
+
+/**
+ * End a spawned bundle for good, however badly it is behaving.
+ *
+ * `SIGTERM` is a request, and the bundles this script exists to catch are the ones least
+ * likely to honour it. A smoke that sends one and moves on leaves the child alive with its
+ * stdio pipes attached to us - and because those handles keep the event loop open, `npm run
+ * smoke` then never exits. That is worse than the failure it was looking for: a hung build is
+ * not a red build, it is a CI job that burns its whole timeout and reports nothing useful.
+ *
+ * Same shape as `reap()` in `src/server/mission-mcp.ts`, and for the same reason - detach the
+ * stdio first so nothing keeps us open or keeps filling buffers, then escalate to `SIGKILL`
+ * after a grace period. The timer and the child are unref'd so a slow death cannot hold the
+ * process open either.
+ */
+function reap(child) {
+  for (const stream of [child.stdout, child.stderr, child.stdin]) {
+    stream?.removeAllListeners("data");
+    // `destroy()` and a racing EPIPE both emit `error`, and an `error` with no listener throws.
+    stream?.on("error", () => {});
+    stream?.destroy();
+  }
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  const grace = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, KILL_GRACE_MS);
+  grace.unref?.();
+  child.unref();
+}
+
 /**
  * Boot the daemon bundle against a throwaway state dir and wait for `/api/health`.
  *
@@ -103,7 +136,7 @@ async function smokeDaemon() {
       await new Promise((r) => setTimeout(r, POLL_MS));
     }
   } finally {
-    if (!exited) child.kill("SIGTERM");
+    reap(child);
     await rm(home, { recursive: true, force: true });
   }
 }
@@ -143,10 +176,9 @@ async function smokeMcp() {
   const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
   const result = await new Promise((resolve) => {
     let pending = "";
-    let exited = false;
     const done = (value) => {
       clearTimeout(timer);
-      if (!exited) child.kill("SIGTERM");
+      reap(child);
       resolve(value);
     };
     const timer = setTimeout(
@@ -159,7 +191,6 @@ async function smokeMcp() {
     // handshake, not as a crashed smoke run.
     child.stdin.on("error", (err) => done({ error: `its stdin closed (${err.message})` }));
     child.on("exit", (code, signal) => {
-      exited = true;
       done({ error: `it exited (code ${code}, signal ${signal}) during the handshake` });
     });
     child.stdout.on("data", (d) => {

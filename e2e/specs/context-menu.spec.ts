@@ -105,12 +105,16 @@ test("context actions work by pointer and keyboard without leaking grid shortcut
   const link = sent.locator(`a[href="${URL}"]`);
   await expect(link).toHaveText("the context docs");
   await link.focus();
+  await selectPhrase(body, SELECTED);
+  await expect(link).toBeFocused();
   await dashboard.keyboard.press("Shift+F10");
   menu = dashboard.getByRole("menu", { name: "Actions" });
   await menu.getByRole("menuitem", { name: "Copy", exact: true }).click();
   expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("the context docs");
+  const collapse = card.getByRole("button", { name: "Collapse conversation" });
+  await collapse.focus();
   await selectPhrase(body, SELECTED);
-  await card.getByRole("button", { name: "Collapse conversation" }).focus();
+  await expect(collapse).toBeFocused();
   await dashboard.keyboard.press("Shift+F10");
   await expect(dashboard.getByRole("menu", { name: "Actions" })).toHaveCount(0);
 

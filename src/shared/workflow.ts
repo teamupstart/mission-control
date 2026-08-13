@@ -1660,6 +1660,23 @@ export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
 export const WORKFLOW_COMMAND_UNKNOWN = "Waiting for the daemon";
 
 /**
+ * The one thing a configured Command is NOT: guaranteed to run.
+ *
+ * Resolution and execution are different questions with different owners. This catalog decides
+ * which argv a slot resolves to; whether it is ever executed is decided by the machine-wide
+ * switch, the repository's Workflows grant in Trust, and whether this build can run one at
+ * all - and a gate that quietly passes is exactly the thing an operator must not believe is
+ * active. Stated wherever configuration is described, so no surface has to remember to.
+ *
+ * Phrased as what running ALSO needs rather than as a list of everything that can stop it.
+ * That is honest about necessity without claiming sufficiency - the platform floor is a third
+ * gate and is deliberately not enumerated here - and it fits the workflow palette's rail,
+ * which is 200px wide and where a four-line disclaimer would simply not be read.
+ */
+export const COMMAND_AUTHORIZATION_NOTE =
+  "Running one also needs Commands allowed and the repository granted in Trust.";
+
+/**
  * The DURABLE configuration state of one Command slot, as the line a card or a list row
  * shows: `Global default · 2 overrides`, `Global default`, `1 override · no global default`,
  * or `Not configured`.
@@ -1703,6 +1720,13 @@ export function workflowCommandFact(
  * does not merely describe configuration, it promises what a run will do. "Nothing is
  * configured, so this Command skips" read off a catalog that has not arrived tells an operator
  * their working gate is inert.
+ *
+ * What it will NOT say is that a configured Command runs. Configuration decides which argv
+ * RESOLVES here; whether that argv is ever executed is a separate question owned by the
+ * machine-wide switch, the repository's Workflows grant in Trust, and the platform floor -
+ * none of which this catalog knows anything about. Only the negative direction is certain in
+ * both, which is why the unconfigured arm states its skip flatly and the configured arms
+ * carry `COMMAND_AUTHORIZATION_NOTE` instead of a promise.
  */
 export function workflowCommandStatusSentence(
   view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
@@ -1713,14 +1737,16 @@ export function workflowCommandStatusSentence(
   }
   const overrides = view?.overrides.length ?? 0;
   if (view?.defaultCommand && view.defaultCommand.length > 0) {
-    return overrides === 0
-      ? "A global default is configured, so this runs wherever the workflow reaches it."
+    const where = overrides === 0
+      ? "A global default is configured, so every repository resolves to it."
       : `A global default is configured, with ${overrides} repository `
         + `${overrides === 1 ? "exception" : "exceptions"}.`;
+    return `${where} ${COMMAND_AUTHORIZATION_NOTE}`;
   }
   if (overrides > 0) {
-    return `Configured in ${overrides} ${overrides === 1 ? "repository" : "repositories"} only. `
-      + "Everywhere else this Command skips and passes with a note.";
+    return `Configured in ${overrides} ${overrides === 1 ? "repository" : "repositories"} only `
+      + `- everywhere else this Command skips and passes with a note. `
+      + COMMAND_AUTHORIZATION_NOTE;
   }
   return "Nothing is configured, so this Command skips and passes with a note.";
 }

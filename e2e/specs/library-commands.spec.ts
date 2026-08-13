@@ -408,6 +408,68 @@ test("a revision that lands while you are typing is surfaced, never silently app
   await expect(dashboard.getByLabel("Default command")).toHaveValue("eslint --max-warnings=0 .");
 });
 
+test("a refused save keeps its conflict until the stream actually catches up", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * A 409 is the SERVER saying a newer revision exists. The SSE view is a second, slower
+   * answer to that same question, and the two must not be confused: until the stream delivers
+   * the revision the refusal named, "the stream still agrees with my baseline" says nothing
+   * about whether the conflict is over.
+   *
+   * Staged with a synthetic refusal naming a revision the daemon will never emit, which is
+   * what a delayed or disconnected stream looks like from here - and then the operator does
+   * the ordinary thing after a rejection: undoes their edit to reconsider. That flips the
+   * draft clean, and it is the moment a conflict tied to the wrong comparison disappears -
+   * leaving no way to load the newer revision and every retry refused again.
+   */
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/build`);
+  await expect(dashboard.getByRole("heading", { name: "build", exact: true })).toBeVisible();
+
+  await dashboard.route("**/api/workflow-commands/build", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "This Command changed in another window",
+        code: "workflow_command_revision_conflict",
+        current: {
+          slot: "build",
+          defaultCommand: ["make", "release"],
+          overrides: [],
+          revision: 9,
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      }),
+    });
+  });
+
+  const field = dashboard.getByLabel("Default command");
+  await field.fill("npm run build");
+  await dashboard.getByRole("button", { name: "Save Command" }).click();
+
+  const conflict = dashboard.locator(".wf-command-conflict");
+  await expect(conflict).toBeVisible();
+  await expect(conflict).toContainText("r9");
+
+  // The move that used to lose it: undo the edit. The draft matches the stored slot again,
+  // and the stream still holds the revision this editor started from - neither of which
+  // retires a refusal the server issued.
+  await field.fill("");
+  await expect(field).toHaveValue("");
+  await expect(conflict).toBeVisible();
+  await expect(conflict.getByRole("button", { name: "Load newer" })).toBeVisible();
+
+  // And it is still actionable: adopting the refusal's own view is what breaks the retry
+  // loop, because the next save carries the revision the daemon actually holds.
+  await conflict.getByRole("button", { name: "Load newer" }).click();
+  await expect(field).toHaveValue("make release");
+  await expect(conflict).toHaveCount(0);
+});
+
 test("the workflow palette says what the slot runs here, and links to it", async ({
   dashboard,
   daemon,
@@ -437,12 +499,19 @@ test("the workflow palette says what the slot runs here, and links to it", async
   await expect(slot).toBeVisible();
   await slot.selectOption("typecheck");
   await expect(palette).toContainText("A global default is configured");
+  // What a configured slot says, and the qualifier that keeps it honest: resolution is what
+  // this catalog decides, and running is gated elsewhere.
+  await expect(palette).toContainText("Running one also needs Commands allowed");
+  await shoot(dashboard, "palette-configured");
   // An unconfigured slot is not a validation error - a portable workflow is meant to name one -
   // so the palette states the skip instead of refusing.
   await slot.selectOption("build");
   await expect(palette).toContainText("skips and passes with a note");
   await expect(palette.getByRole("link", { name: /Configure build in Library/ }))
     .toHaveAttribute("href", "#/library/commands/build");
+  // The unconfigured arm carries no qualifier: nothing about authorization changes "there is
+  // no command", so the skip is stated flatly.
+  await expect(palette).not.toContainText("Running one also needs");
 
   await shoot(dashboard, "palette");
 

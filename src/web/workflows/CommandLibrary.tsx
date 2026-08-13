@@ -131,6 +131,62 @@ export function commandUpdateBody(
 }
 
 /**
+ * What the editor should do when the streamed view, its baseline and a held conflict are
+ * compared - the whole synchronization decision, as one pure function.
+ *
+ * Extracted because the interesting cases cannot be reached by rendering: they are races
+ * between a compare-and-swap refusal and an SSE delivery, and every one of them is a way to
+ * lose an operator's typing or strand them in a retry loop.
+ *
+ * The rule is that **the stream is only ever adopted when it is NEWER than what this editor
+ * already holds, and a conflict is only retired when the stream has caught up to the
+ * revision that conflict names.** Those are two different questions, and conflating them is
+ * what a comparison against the baseline alone does: a 409 is the server saying a newer
+ * revision exists, and the stream still sitting at the baseline says nothing about whether
+ * that is still true. It is not merely stale - it is an answer to a different question.
+ */
+export interface CommandSyncState {
+  /** The slot as the live catalog has it, or null before the snapshot. */
+  selected: WorkflowCommandView | null;
+  /** The revision the open draft was taken from. */
+  baseline: WorkflowCommandView | null;
+  /** A newer committed view already being held, from a refusal or an earlier delivery. */
+  conflict: WorkflowCommandView | null;
+  dirty: boolean;
+}
+
+export type CommandSync =
+  /** Leave everything alone. */
+  | { kind: "idle" }
+  /** Follow the stream: replace the baseline and the draft with this view. */
+  | { kind: "adopt"; view: WorkflowCommandView }
+  /** Hold this newer view for the operator to decide about. */
+  | { kind: "conflict"; view: WorkflowCommandView }
+  /** The conflict is over - the stream reached the revision it named. */
+  | { kind: "resolved" };
+
+export function commandSync({ selected, baseline, conflict, dirty }: CommandSyncState): CommandSync {
+  if (!selected) return { kind: "idle" };
+  // `<=`, not `===`, and the difference is a bug of its own: after Load newer the baseline is
+  // the REFUSAL's view, which the stream has not delivered yet, so it sits BEHIND. Treating
+  // only equality as "nothing to do" would adopt that older streamed view a render later and
+  // silently undo the adoption the operator just asked for.
+  if (baseline && selected.revision <= baseline.revision) {
+    return conflict && selected.revision >= conflict.revision
+      ? { kind: "resolved" }
+      : { kind: "idle" };
+  }
+  if (!dirty) return { kind: "adopt", view: selected };
+  // Whichever committed view is newer. A refusal can name a revision two saves ahead of the
+  // one the stream has managed to deliver, and offering the older of the two as "the newer
+  // revision" would hand the operator a Load newer that still cannot be saved over.
+  return {
+    kind: "conflict",
+    view: conflict && conflict.revision > selected.revision ? conflict : selected,
+  };
+}
+
+/**
  * The paths the override picker offers: the allowlisted repositories first, then the rest of
  * the workspace scan, de-duplicated and each listed once.
  *
@@ -294,18 +350,20 @@ export function CommandLibrary({
    * another window show up here. A dirty one is the operator's typing, and overwriting it
    * with somebody else's save would be this feature losing work silently; the conflict
    * banner is offered instead, and it is their decision.
+   *
+   * The decision itself is `commandSync`, which is where the reasoning and the tests live.
+   * `conflict` is a dependency because it is now read rather than only written: this cannot
+   * loop, because every branch settles on a value the next pass returns `idle` for.
+   *
+   * `dirty` is derived from `draft` and `baseline`, both of which are dependencies through
+   * it; listing it directly is what makes "became clean, then a revision arrives" adopt.
    */
   useEffect(() => {
-    if (!selected) return;
-    if (baseline && selected.revision === baseline.revision) {
-      setConflict((current) => (current ? null : current));
-      return;
-    }
-    if (!dirty) adopt(selected);
-    else setConflict(selected);
-    // `dirty` is derived from `draft` and `baseline`, both of which are dependencies through
-    // it; listing it directly is what makes "became clean, then a revision arrives" adopt.
-  }, [adopt, baseline, dirty, selected]);
+    const next = commandSync({ selected, baseline, conflict, dirty });
+    if (next.kind === "adopt") adopt(next.view);
+    else if (next.kind === "conflict") setConflict(next.view);
+    else if (next.kind === "resolved") setConflict(null);
+  }, [adopt, baseline, conflict, dirty, selected]);
 
   // Index the workspace's repositories so an override's path can be picked rather than typed
   // from memory, and lead with the ones Trust has granted the Workflows cell - the only

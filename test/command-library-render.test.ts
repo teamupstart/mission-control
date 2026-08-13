@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   CommandLibrary,
+  commandSync,
   commandDraftFrom,
   commandDraftDirty,
   commandRepoOptions,
@@ -16,6 +17,7 @@ import {
   workflowCommandStatusSentence,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_COMMAND_UNKNOWN,
+  COMMAND_AUTHORIZATION_NOTE,
 } from "../src/shared/workflow.ts";
 import type { WorkflowCommandView } from "../src/shared/workflow.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
@@ -246,11 +248,114 @@ test("one catalog fact and one status sentence serve every surface", () => {
   assert.match(workflowCommandStatusSentence(null, true), /skips and passes with a note/);
   assert.match(
     workflowCommandStatusSentence({ defaultCommand: null, overrides: [{ repoRoot: "/a", command: ["a"] }] }, true),
-    /Everywhere else this Command skips and passes/,
+    /everywhere else this Command skips and passes/,
   );
   assert.match(
     workflowCommandStatusSentence({ defaultCommand: ["a"], overrides: [] }, true),
-    /runs wherever the workflow reaches it/,
+    /every repository resolves to it/,
+  );
+});
+
+// The one thing a configured Command is NOT: guaranteed to run. Configuration decides which
+// argv RESOLVES here; execution is owned by the machine-wide switch, the repository's Trust
+// grant and the platform floor. Saying "so this runs wherever the workflow reaches it" told an
+// operator a gate was active when a paused switch or a missing grant makes it pass silently -
+// which the plan rules out in as many words.
+test("no configured Command is described as guaranteed to run", () => {
+  const configured = [
+    { defaultCommand: ["npm", "test"], overrides: [] },
+    { defaultCommand: ["npm", "test"], overrides: [{ repoRoot: "/a", command: ["a"] }] },
+    { defaultCommand: null, overrides: [{ repoRoot: "/a", command: ["a"] }] },
+  ];
+  for (const view of configured) {
+    const sentence = workflowCommandStatusSentence(view, true);
+    assert.ok(
+      sentence.includes(COMMAND_AUTHORIZATION_NOTE),
+      `a configured Command must name the gates it still passes through: ${sentence}`,
+    );
+    assert.doesNotMatch(sentence, /\bruns wherever\b/);
+    assert.doesNotMatch(sentence, /\bwill run\b/);
+  }
+  // The negative direction IS certain in both, so the unconfigured arm states it flatly and
+  // does not carry the qualifier - nothing about authorization changes "there is no command".
+  const nothing = workflowCommandStatusSentence({ defaultCommand: null, overrides: [] }, true);
+  assert.match(nothing, /Nothing is configured, so this Command skips and passes with a note\./);
+  assert.ok(!nothing.includes(COMMAND_AUTHORIZATION_NOTE));
+});
+
+// The synchronization decision, which is where every race between a compare-and-swap refusal
+// and an SSE delivery is settled. Each case below is a way to lose an operator's typing or
+// strand them in a retry loop, and none of them can be reached by rendering.
+test("the stream is adopted only when it is newer than what the editor holds", () => {
+  const at = (revision: number): WorkflowCommandView => view({ revision });
+  const clean = { conflict: null, dirty: false };
+
+  // Nothing to sync before the snapshot.
+  assert.deepEqual(
+    commandSync({ selected: null, baseline: null, ...clean }),
+    { kind: "idle" },
+  );
+  // The first delivery, and every later one, on a clean draft.
+  assert.deepEqual(
+    commandSync({ selected: at(1), baseline: null, ...clean }),
+    { kind: "adopt", view: at(1) },
+  );
+  assert.deepEqual(
+    commandSync({ selected: at(3), baseline: at(2), ...clean }),
+    { kind: "adopt", view: at(3) },
+  );
+  // The same revision is not news.
+  assert.deepEqual(
+    commandSync({ selected: at(2), baseline: at(2), ...clean }),
+    { kind: "idle" },
+  );
+  // A stream sitting BEHIND the editor is never adopted. This is the state Load newer leaves:
+  // the baseline is the refusal's view, which the stream has not delivered. Adopting it would
+  // silently undo the adoption the operator just asked for.
+  assert.deepEqual(
+    commandSync({ selected: at(1), baseline: at(9), ...clean }),
+    { kind: "idle" },
+  );
+  // A dirty draft is never overwritten - the newer view is held for the operator instead.
+  assert.deepEqual(
+    commandSync({ selected: at(3), baseline: at(2), conflict: null, dirty: true }),
+    { kind: "conflict", view: at(3) },
+  );
+});
+
+test("a refusal's conflict outlives a stream that has not caught up to it", () => {
+  const at = (revision: number): WorkflowCommandView => view({ revision });
+
+  // The 409 case: the server named r9, the stream still holds the r1 this draft was taken
+  // from. That agreement says nothing about the refusal, so the conflict stands - including
+  // once the operator undoes their edit and the draft goes clean, which is the move that used
+  // to retire it and leave every retry refused with no way to load the newer revision.
+  for (const dirty of [true, false]) {
+    assert.deepEqual(
+      commandSync({ selected: at(1), baseline: at(1), conflict: at(9), dirty }),
+      { kind: "idle" },
+      `a conflict at r9 must survive a stream at r1 (dirty=${dirty})`,
+    );
+  }
+  // It is retired when the stream reaches the revision it named, and not before.
+  assert.deepEqual(
+    commandSync({ selected: at(9), baseline: at(9), conflict: at(9), dirty: false }),
+    { kind: "resolved" },
+  );
+  assert.deepEqual(
+    commandSync({ selected: at(10), baseline: at(10), conflict: at(9), dirty: false }),
+    { kind: "resolved" },
+  );
+  // And a delivery that is newer than both keeps the conflict pointed at the newest committed
+  // view: a refusal can name a revision two saves ahead of what the stream has managed to
+  // deliver, and offering the older of the two would hand back a Load newer that still 409s.
+  assert.deepEqual(
+    commandSync({ selected: at(4), baseline: at(1), conflict: at(9), dirty: true }),
+    { kind: "conflict", view: at(9) },
+  );
+  assert.deepEqual(
+    commandSync({ selected: at(11), baseline: at(1), conflict: at(9), dirty: true }),
+    { kind: "conflict", view: at(11) },
   );
 });
 
@@ -278,7 +383,7 @@ test("neither helper claims durable state without the catalog to back it", () =>
   assert.equal(workflowCommandFact(configured, false), "Global default");
   assert.match(
     workflowCommandStatusSentence(configured, false),
-    /runs wherever the workflow reaches it/,
+    /every repository resolves to it/,
   );
 
   // And with the catalog in hand, an absent view is the honest "nobody configured this".

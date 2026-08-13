@@ -20,9 +20,12 @@ to the backlog and workflow that will carry it through review.
 
 <kbd>+</kbd> starts the guided pass by default. It asks for the repository, kind, harness and
 what runs after the work, then hands over the same dispatch form with those answers set and
-the caret in the task box. The choices print their one-key answers, while <kbd>⇥</kbd> leaves
-the pass at any point and keeps what it has. **Guided** in the modal header and **Settings →
-Dispatch** control the preference, which ⌘K also finds by name. See
+the caret in the task box. The choices print their one-key answers. <kbd>⇥</kbd> or the first
+<kbd>Esc</kbd> leaves the pass at any point and keeps what it has; a second <kbd>Esc</kbd>
+closes Dispatch. Closing and reopening keep the current question and every answer, while
+**Clear**, **Dispatch now**, and **Add to backlog** reset the pass for the next task.
+**Guided** in the modal header and **Settings → Dispatch** control the preference, which ⌘K
+also finds by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
 
 A task can attach more than one repository. Dispatch it and you get **one** agent session

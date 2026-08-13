@@ -5985,6 +5985,13 @@ mark.find-hit.is-current {
 .pty-copy.markdown > :last-child {
   margin-bottom: 0;
 }
+/* Workspace paths stay quiet inside chat bubbles, where the bubble already separates
+   authored prose from surrounding chrome. Terminal stdout has no bubble, so inheriting
+   its text colour makes a clickable path indistinguishable from the rest of the stream.
+   Use the same blue as every other Markdown link while keeping the dotted file underline. */
+.pty-copy.markdown a.workspace-path {
+  color: var(--working);
+}
 
 /* The folded run: one line closed, the literal commands open. */
 .pty-toolrun {

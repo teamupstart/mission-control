@@ -24,9 +24,9 @@ import { expect, test } from "../fixtures/test.ts";
  * either of them separately, and this is the only layer that can ask.
  *
  * The shipped-default regression submits one dispatch to prove <kbd>Control+Enter</kbd> still
- * reaches the ordinary form after <kbd>Tab</kbd>; every agent binary and the task titler are
- * redirected at the fixture fakes, so it spends no model tokens. Every other test opens,
- * drives and closes the modal without submitting.
+ * reaches the ordinary form after <kbd>Tab</kbd>. Together, it and the reset regression submit
+ * one backlog task and two dispatches. Every agent binary and the task titler are redirected
+ * at the fixture fakes, so none of them spends model tokens.
  *
  * The shared `dashboard` fixture pins the preference OFF explicitly, independent of the
  * shipped default. Tests that want the pass turn it on themselves; the one test of the
@@ -247,8 +247,7 @@ test("a default dispatch is + ↵ p c ↵, and the caret ends in the task box", 
   const first = await openDispatch(dashboard);
   await first.getByRole("switch", { name: "Guided" }).click();
   await expect(repoField(first)).toHaveValue(daemon.repo);
-  await dashboard.keyboard.press("Escape");
-  await dashboard.keyboard.press("Escape");
+  await first.getByRole("button", { name: "Close", exact: true }).click();
   await expect(first).toBeHidden();
 
   await dashboard.keyboard.press("+");
@@ -586,6 +585,28 @@ test("Tab leaves the pass with every answer intact and the caret in the task box
   await expect(taskBox(dialog)).toHaveValue("tidy the pass");
 });
 
+test("Escape leaves the pass before a second Escape closes Dispatch", async ({ dashboard }) => {
+  const dialog = await openGuidedAtKind(dashboard);
+  const close = dialog.getByRole("button", { name: "Close", exact: true });
+  await dashboard.keyboard.press("t");
+  await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
+  await expect(rail(dialog)).toContainText("esc use the form");
+  await expect(close).toHaveAccessibleDescription("Close without dispatching");
+
+  // Guided is the layer on top of Dispatch. The first press peels off only that layer and
+  // preserves the answer already written through the form's Kind control.
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog.getByRole("listbox")).toHaveCount(0);
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+  await expect(taskBox(dialog)).toBeFocused();
+  await expect(close).toHaveAccessibleDescription("Close without dispatching (Escape)");
+
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});
+
 test("scout preselects None through the pass, and ship hands the stash back", async ({
   dashboard,
 }) => {
@@ -706,6 +727,83 @@ test("Clear after the pass has handed over asks the questions again", async ({ d
   await expect(taskBox(dialog)).not.toBeFocused();
 });
 
+test("closing and reopening resumes the saved guided workflow", async ({ dashboard }) => {
+  const dialog = await openGuidedAtKind(dashboard);
+  await dashboard.keyboard.press("t");
+  await dashboard.keyboard.press("x");
+
+  // Three decisions are saved in the draft and in the pass. Dismissing the surface is neither
+  // Clear nor a submit, so reopening must continue at the one decision still unanswered.
+  await expect(picker(dialog, "What runs after the work?")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(rail(dialog).getByRole("button", { name: "Kind: scout" })).toBeVisible();
+  await expect(rail(dialog).getByRole("button", { name: "Harness: Codex" })).toBeVisible();
+  await expect(picker(dialog, "What runs after the work?")).toBeVisible();
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+  await expect(agentSelect(dialog)).toHaveValue("codex");
+
+  // A completed pass is state too. Reopening after typing the brief stays at the handed-over
+  // form rather than replaying questions whose answers are already visible in its controls.
+  await dashboard.keyboard.press("n");
+  await taskBox(dialog).fill("audit the retry policy");
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog.getByRole("listbox")).toHaveCount(0);
+  await expect(taskBox(dialog)).toHaveValue("audit the retry policy");
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+  await expect(agentSelect(dialog)).toHaveValue("codex");
+  await expect(afterWorkSelect(dialog)).toHaveValue("__none");
+});
+
+test("backlog and dispatch submissions reset the guided workflow", async ({
+  dashboard,
+  daemon,
+}) => {
+  const dialog = await openGuidedAtKind(dashboard);
+  const repo = dialog.getByPlaceholder("search repos or type a path…");
+
+  await dashboard.keyboard.press("t");
+  await dashboard.keyboard.press("x");
+  await dashboard.keyboard.press("n");
+  await repo.fill(daemon.repo);
+  await taskBox(dialog).fill("shelve the guided draft");
+  await dialog.getByRole("button", { name: "Add to backlog" }).click();
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toHaveValue(daemon.repo);
+  await expect(taskBox(dialog)).toHaveValue("");
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
+
+  await dashboard.keyboard.press("Enter");
+  await dashboard.keyboard.press("p");
+  await dashboard.keyboard.press("c");
+  await dashboard.keyboard.press("n");
+  await repo.fill(daemon.repo);
+  await taskBox(dialog).fill("dispatch the guided draft");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toHaveValue(daemon.repo);
+  await expect(taskBox(dialog)).toHaveValue("");
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
+});
+
 test("confirming the harness you are already on keeps the model and effort overrides", async ({
   dashboard,
 }) => {
@@ -777,11 +875,9 @@ test("the chord opens straight into the pass once the preference is on", async (
   // and then proved to have outlived the modal that set it.
   const first = await openDispatch(dashboard);
   await first.getByRole("switch", { name: "Guided" }).click();
-  // Two presses, because the first one lands on the Repo question and Escape is progressive
-  // there: it closes the combobox's list and ends the pass, and the second closes the modal.
-  // That ladder is the subject of its own test below; here it is only how this one gets out.
-  await dashboard.keyboard.press("Escape");
-  await dashboard.keyboard.press("Escape");
+  // Close without ending the pass: dismiss/reopen persistence is what lets the chord resume
+  // at Repo, while Escape would deliberately save an ended pass for the ordinary form.
+  await first.getByRole("button", { name: "Close", exact: true }).click();
   await expect(first).toBeHidden();
 
   // Specs open this modal by clicking Dispatch; the chord is the reason the pass exists, so
@@ -842,13 +938,13 @@ test("Ensemble mode never runs the pass", async ({ dashboard }) => {
 });
 
 test("a backlog task opened for edit never enters the pass", async ({ dashboard, daemon }) => {
-  const first = await openDispatch(dashboard);
-  await first.getByRole("switch", { name: "Guided" }).click();
-  await expect(rail(first)).toBeVisible();
-  // Twice: the pass opens on the Repo question, where the first press closes the combobox's
-  // list and ends the pass and the second closes the modal.
-  await dashboard.keyboard.press("Escape");
-  await dashboard.keyboard.press("Escape");
+  const first = await openGuidedAtKind(dashboard);
+  // Leave real progress behind in the persistent new-dispatch draft. Merely opening the
+  // pass leaves its owner at null and cannot catch an edit accidentally reading saved state.
+  await dashboard.keyboard.press("t");
+  await expect(kindSelect(first)).toHaveValue("scout");
+  await expect(picker(first, "Which harness runs it?")).toBeVisible();
+  await first.getByRole("button", { name: "Close", exact: true }).click();
   await expect(first).toBeHidden();
 
   const title = "Audit The Retry Policy";

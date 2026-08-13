@@ -49,9 +49,10 @@ three closed lists. <kbd>⌫</kbd> deletes from the Repo filter; in later steps 
 question and un-answers it. <kbd>⇥</kbd> leaves the pass from any step, keeps every answer so
 far, and focuses the task box. <kbd>⌘↵</kbd> dispatches from the form as before.
 
-<kbd>Esc</kbd> closes the dispatch from the three closed-list steps. Repo is progressive
-because its existing combobox owns Escape: the first press closes that list and ends the
-guided pass, leaving the typed repository in the ordinary form; a second closes the modal.
+<kbd>Esc</kbd> is progressive from every question: the first press ends the guided pass and
+leaves the answers in the ordinary form; a second closes Dispatch. During Repo, the existing
+combobox consumes that first press to dismiss its list and the pass ends with it. The three
+closed-list questions route the same first press through the dialog.
 
 Guided dispatch is **on by default**. An installation that never chose a value picks it up on
 upgrade, while an explicit off choice stays off. The switch in the modal's header is the one
@@ -71,6 +72,11 @@ click an answered rung to go back to it, or ignore the list entirely and use the
 control - the question it is about stays live, and using it answers it and moves the pass on
 just as the keyboard would. **Clear** puts the form back where it opened, which for a guided
 dispatch means back at the first question.
+
+Closing the modal is not an undo. Reopening resumes at the current question with the
+answered rungs and form values intact; if the pass already handed over, it reopens on that
+completed form without asking the questions again. **Clear** starts the pass over, and a
+successful **Dispatch now** or **Add to backlog** starts the next task with a fresh pass.
 
 **It is a different way to fill the form, never a second opinion about what a dispatch
 means.** Every answer is written through the same control the form offers, so the rules below

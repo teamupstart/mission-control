@@ -146,10 +146,10 @@ export function GuidedRail({
           );
         })}
       </ol>
-      {/* The escape, printed rather than remembered. It is the reason a pass costs nothing
-          to be wrong about: one key and you are in the form you would have had anyway. */}
+      {/* The exits, printed rather than remembered. They are why a pass costs nothing to be
+          wrong about: one key and you are in the form you would have had anyway. */}
       <span className="dispatch-guided-out">
-        <kbd>⇥</kbd> use the form
+        <kbd>⇥</kbd> / <kbd>esc</kbd> use the form
       </span>
       {/* How far through, as a hairline rather than a row of its own - it leaves with the
           strip, so the finished modal is the ordinary one. */}

@@ -194,9 +194,26 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
 
   // Still the same conversation underneath: the reply goes out through the same box and
   // comes back into the same log.
-  await reply.fill("second instruction");
+  await reply.fill("Review README.md");
   await reply.press("Enter");
-  await expect(reopened.getByText("Mock reply to: second instruction")).toBeVisible();
+  await expect(reopened.getByText("Mock reply to: Review README.md")).toBeVisible();
+
+  // Paths in terminal stdout are links, but this class deliberately inherits prose colour
+  // in chat bubbles. The terminal rendering gives it the app's established link blue so a
+  // reader can identify the click target without hovering every path in the stream.
+  const workspaceLink = terminal.getByRole("link", { name: "README.md" });
+  await expect(workspaceLink).toBeVisible();
+  const palette = await workspaceLink.evaluate((link) => {
+    const tokenProbe = document.createElement("span");
+    tokenProbe.style.color = "var(--working)";
+    document.body.append(tokenProbe);
+    const working = getComputedStyle(tokenProbe).color;
+    tokenProbe.remove();
+    return { link: getComputedStyle(link).color, working };
+  });
+  expect(palette.link).toBe(palette.working);
+  await workspaceLink.scrollIntoViewIfNeeded();
+  await shoot(dashboard, terminal, "02-terminal-link-blue");
 });
 
 test("a Codex run of commands folds into one record too", async ({ dashboard, daemon }) => {

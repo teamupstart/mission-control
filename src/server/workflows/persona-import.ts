@@ -282,6 +282,12 @@ export async function readSourceRepo(filePath: string): Promise<string | null> {
 export async function readImportedSource(
   requestedPath: string,
   now: number,
+  /**
+   * Which plugin catalog this document was enumerated FROM, when it was enumerated rather than
+   * named. Null for every operator-driven import, which is what keeps this module generic: the
+   * caller that knows a catalog's name passes it in, and nothing here can tell one from another.
+   */
+  catalog: { sourceKey: string; catalogLabel: string } | null = null,
 ): Promise<{ source: PersonaSource; provenance: PersonaProvenance }> {
   const source = await readPersonaSource(requestedPath);
   // From the RESOLVED path: what owns this document is a property of where its bytes live, and a
@@ -296,6 +302,8 @@ export async function readImportedSource(
       sourcePath: source.sourcePath,
       sourceRepo,
       pluginVersion,
+      sourceKey: catalog?.sourceKey ?? null,
+      catalogLabel: catalog?.catalogLabel ?? null,
       contentSha256: source.contentSha256,
       importedAt: now,
     },

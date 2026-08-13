@@ -2178,12 +2178,25 @@ export class TaskManager {
     };
   }
 
-  private async stopEmbeddedAgentBeforeReclaim(t: Task): Promise<void> {
-    if (!t.sessionId || !t.worktreePath) return;
-    const session = this.registry.getSession(t.sessionId);
-    if (session?.runtime !== "sdk") return;
-    if (!this.supervisor) throw new Error("this build has no session supervisor");
-    if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
+  /** Stop only an agent this task launched, leaving assigned operator sessions alone. */
+  private async quiesceLaunchedAgentBeforeCapture(t: Task): Promise<void> {
+    const session = t.sessionId ? this.registry.getSession(t.sessionId) : undefined;
+    if (t.worktreePath && session?.runtime === "sdk") {
+      if (!this.supervisor) throw new Error("this build has no session supervisor");
+      if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
+    }
+    if (!t.homeName) return;
+    if (session) {
+      const stopped = await this.closeMergedSessionDeps.kill(session);
+      if (!stopped.ok) throw new Error(stopped.error ?? "could not stop the task agent");
+      return;
+    }
+    const alive = await homeAlive(t.homeName);
+    if (alive === false) return;
+    const stopped = await killHome(t.homeName);
+    if (!stopped.asked || !stopped.ok) {
+      throw new Error(stopped.error ?? `no terminal backend could stop ${t.homeName}`);
+    }
   }
 
   /**
@@ -2235,22 +2248,7 @@ export class TaskManager {
     // tree. Assigned tasks own no worktree and no home, so this deliberately preserves the
     // existing rule that Cancel never kills the operator's own agent.
     try {
-      await this.stopEmbeddedAgentBeforeReclaim(t);
-      if (t.homeName) {
-        const session = t.sessionId ? this.registry.getSession(t.sessionId) : undefined;
-        if (session) {
-          const stopped = await this.closeMergedSessionDeps.kill(session);
-          if (!stopped.ok) throw new Error(stopped.error ?? "could not stop the task agent");
-        } else {
-          const alive = await homeAlive(t.homeName);
-          if (alive !== false) {
-            const stopped = await killHome(t.homeName);
-            if (!stopped.asked || !stopped.ok) {
-              throw new Error(stopped.error ?? `no terminal backend could stop ${t.homeName}`);
-            }
-          }
-        }
-      }
+      await this.quiesceLaunchedAgentBeforeCapture(t);
     } catch (error) {
       return {
         ok: false,
@@ -2617,6 +2615,14 @@ export class TaskManager {
     }
     this.reschedulingTasks.add(id);
     try {
+      try {
+        await this.quiesceLaunchedAgentBeforeCapture(this.registry.getTask(id) ?? t);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `could not stop task agent: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
       // Re-filing a scout tears its worktree down and gives the next attempt a fresh one, so
       // whatever the first attempt found is archived here or lost. The new attempt gets its
       // own work episode and therefore its own archive, which is why this cannot simply be
@@ -2627,7 +2633,6 @@ export class TaskManager {
       if (t.worktreePath || t.homeName) {
         try {
           const current = this.registry.getTask(id) ?? t;
-          await this.stopEmbeddedAgentBeforeReclaim(current);
           await teardownWorktree(current);
         } catch (error) {
           const partial = this.registry.getTask(id) ?? t;
@@ -2680,6 +2685,14 @@ export class TaskManager {
   async reclaim(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    try {
+      await this.quiesceLaunchedAgentBeforeCapture(t);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `could not stop task agent: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
     // A normally completed scout already has its verified bundle, so this is a cheap replay.
     // A scout that was never archived - one whose agent went away, or that failed - gets its
     // last chance here, because after this line its report is gone.
@@ -2688,7 +2701,6 @@ export class TaskManager {
     this.autoCompleted.delete(id);
     try {
       const current = this.registry.getTask(id) ?? t;
-      await this.stopEmbeddedAgentBeforeReclaim(current);
       await teardownWorktree(current);
     } catch (error) {
       // A partial reclaim still releases what came back. The refusal stands - the operator
@@ -2723,6 +2735,14 @@ export class TaskManager {
     if (t.status === "running" || t.status === "dispatching") {
       return { ok: false, error: "cancel the task before removing it" };
     }
+    try {
+      await this.quiesceLaunchedAgentBeforeCapture(t);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `could not stop task agent: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
     // Removing the task must not remove its evidence: an archive is deliberately independent
     // of the task that produced it, so the bundle is published first and then outlives the row
     // entirely. This is also the only place a `remove` could silently discard a report.
@@ -2733,7 +2753,6 @@ export class TaskManager {
     // reclaim it so removing the record never leaks a worktree/lease.
     if (t.worktreePath || t.homeName) {
       try {
-        await this.stopEmbeddedAgentBeforeReclaim(t);
         await teardownWorktree(t);
       } catch (error) {
         // The row survives a failed remove, so the same partial-release rule applies to it.

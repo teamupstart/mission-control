@@ -568,6 +568,46 @@ test("cancelling a launched scout stops it before recovery scans the checkout", 
   assert.equal(job.captureStatus, "complete", "capture ran after the stop wrote its final bytes");
 });
 
+test("terminal scout cleanup stops the agent before recovery scans the checkout", async () => {
+  for (const action of ["reclaim", "reschedule", "remove"] as const) {
+    const h = harness();
+    const { repoRoot, worktreePath: cwd } = makeWorktree();
+    const task = mkScout({
+      worktreePath: cwd,
+      repoRoot,
+      provider: "git",
+      branch: null,
+      status: "failed",
+      homeName: `${action}-launched-scout-${++seq}`,
+    });
+    h.registry.upsertTask(task);
+    bindSession(h, task, cwd);
+    let stopped = false;
+    const controlled = new TaskManager(
+      h.registry,
+      {
+        resetWouldDestroyWork: async () => null,
+        kill: async () => {
+          stopped = true;
+          mkdirp(join(cwd, "docs/reports/resume"));
+          writeFileSync(join(cwd, "docs/reports/resume/report.html"), validReportHtml());
+          return { ok: true };
+        },
+      },
+      undefined,
+      undefined,
+      h.scouts,
+    );
+
+    const result = await controlled[action](task.id);
+    assert.equal(result.ok, true, `${action}: ${result.error ?? "cleanup failed"}`);
+    assert.equal(stopped, true, `${action} must quiesce the launched agent`);
+    const job = h.scouts.captureJobsForTask(task.id)[0]!;
+    assert.equal(job.status, "published");
+    assert.equal(job.captureStatus, "complete", `${action} captured bytes written at the stop boundary`);
+  }
+});
+
 test("a capture failure refuses the cleanup and keeps the resources tracked", async () => {
   const h = harness();
   const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });

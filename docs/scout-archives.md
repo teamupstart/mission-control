@@ -175,6 +175,9 @@ it does not satisfy a normal completion.
 
 Reclaim, Remove, Cancel, Reschedule, and the startup pass that reclaims a worktree whose agent
 did not survive a restart all publish the scout's archive **before** they destroy its checkout.
+When a launched agent is still alive, cleanup stops it before capture so the archive sees the
+final bytes at the stop boundary; an agent the operator started and later assigned is never
+stopped on the task's behalf.
 If that fails, the cleanup is refused: the worktree stays, the task stays reclaimable, and you
 can retry. Losing an answer to a transient disk error is not a trade Mission Control makes on
 your behalf.

@@ -277,3 +277,21 @@ test("raw URL detection leaves sentence punctuation outside the candidate", () =
     assert.equal(urlAtPoint(documentAt(text.indexOf("example.com")), { x: 4, y: 8 }), url);
   }
 });
+
+test("raw URL detection keeps balanced closing delimiters and trims unmatched ones", () => {
+  const cases = [
+    ["https://en.wikipedia.org/wiki/Foo_(bar).", "https://en.wikipedia.org/wiki/Foo_(bar)"],
+    ["https://example.com/search/[draft],", "https://example.com/search/[draft]"],
+    ["https://example.com/object/{id}!", "https://example.com/object/{id}"],
+    ["https://example.com/wiki/Foo_(bar)).", "https://example.com/wiki/Foo_(bar)"],
+    ["https://example.com/run/42.]", "https://example.com/run/42"],
+  ] as const;
+  for (const [raw, expected] of cases) {
+    const text = `Inspect ${raw}`;
+    const textNode = { nodeType: 3, textContent: text } as unknown as Node;
+    const documentAt = (offset: number): Document => ({
+      caretPositionFromPoint: () => ({ offsetNode: textNode, offset }),
+    }) as unknown as Document;
+    assert.equal(urlAtPoint(documentAt(text.indexOf("https://") + 10), { x: 4, y: 8 }), expected);
+  }
+});

@@ -317,11 +317,40 @@ export function resolveContextActions(
   });
 }
 
-const URL_RE = /\bhttps?:\/\/[^\s<>"')\]]+/g;
-const RAW_URL_TRAILING_PUNCTUATION = /[.,;:!?}]+$/;
+const URL_RE = /\bhttps?:\/\/[^\s<>"']+/g;
+const RAW_URL_TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?"]);
+const RAW_URL_DELIMITERS = [["(", ")"], ["[", "]"], ["{", "}"]] as const;
 
 function rawUrlCandidate(text: string): string {
-  return text.replace(RAW_URL_TRAILING_PUNCTUATION, "");
+  const delimiters = RAW_URL_DELIMITERS.map(([opening, closing]) => ({
+    opening,
+    closing,
+    openingCount: 0,
+    closingCount: 0,
+  }));
+  for (const character of text) {
+    for (const delimiter of delimiters) {
+      if (character === delimiter.opening) delimiter.openingCount += 1;
+      if (character === delimiter.closing) delimiter.closingCount += 1;
+    }
+  }
+
+  let end = text.length;
+  while (end > 0) {
+    const character = text.charAt(end - 1);
+    if (RAW_URL_TRAILING_PUNCTUATION.has(character)) {
+      end -= 1;
+      continue;
+    }
+    const delimiter = delimiters.find((item) => item.closing === character);
+    if (delimiter && delimiter.closingCount > delimiter.openingCount) {
+      delimiter.closingCount -= 1;
+      end -= 1;
+      continue;
+    }
+    break;
+  }
+  return text.slice(0, end);
 }
 
 /** Find the URL whose text range contains the caret at a viewport point. */

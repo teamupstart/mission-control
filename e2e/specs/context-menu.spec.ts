@@ -134,8 +134,9 @@ test("context actions work by pointer and keyboard without leaking grid shortcut
   await menu.getByRole("menuitem", { name: "Copy URL" }).click();
   expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(URL);
 
-  // Raw text URL detection stops before terminal sentence punctuation.
+  // Raw text URL detection keeps a balanced closing delimiter while stopping before prose.
   const rawUrl = dashboard.getByLabel("Raw URL context specimen");
+  const balancedUrl = `${URL}_(keyboard)`;
   await dashboard.evaluate((url) => {
     const specimen = document.createElement("span");
     specimen.setAttribute("aria-label", "Raw URL context specimen");
@@ -144,13 +145,13 @@ test("context actions work by pointer and keyboard without leaking grid shortcut
     specimen.style.left = "12px";
     specimen.style.bottom = "12px";
     document.body.append(specimen);
-  }, URL);
-  const rawPoint = await pointInPhrase(rawUrl, URL);
+  }, balancedUrl);
+  const rawPoint = await pointInPhrase(rawUrl, balancedUrl);
   await dashboard.mouse.click(rawPoint.x, rawPoint.y, { button: "right" });
   menu = dashboard.getByRole("menu", { name: "Actions" });
   await expect(menu.getByRole("menuitem")).toHaveText(["Copy URL", "Open link"]);
   await menu.getByRole("menuitem", { name: "Copy URL" }).click();
-  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(URL);
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(balancedUrl);
   await rawUrl.evaluate((element) => element.remove());
 
   // The Electron bridge is the explicit Open-link path. A browser-side stand-in records the

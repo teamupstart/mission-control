@@ -6,7 +6,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 /**
- * The guided dispatch pass: three keyboard questions inside the dispatch modal, then the
+ * The guided dispatch pass: four keyboard questions inside the dispatch modal, then the
  * ordinary form with those answers already set.
  *
  * Driven through the browser because every claim here is about a keystroke reaching a
@@ -18,19 +18,45 @@ import { expect, test } from "../fixtures/test.ts";
  * shape, route tests have no keyboard, and the Electron tests measure geometry. Only this
  * layer joins a key to a control.
  *
- * NO TEST IN THIS FILE SUBMITS A DISPATCH. The modal is opened, driven and closed, so no
- * agent binary is launched and nothing here spends model tokens.
+ * The Repo question raises the stakes again, because it does not draw its own list: it drives
+ * the `RepoCombobox` the form already carries, whose Escape, whose portalled listbox and whose
+ * ↵ were all spoken for before the pass existed. Whether those two agree is not a fact about
+ * either of them separately, and this is the only layer that can ask.
  *
- * The preference is turned ON in-test, deliberately: it ships off in this phase, and the
- * shared `dashboard` fixture pins it off explicitly so that no OTHER spec depends on the
- * shipped default. These tests are the ones that want the opposite value, so they say so.
+ * The shipped-default regression submits one dispatch to prove <kbd>Control+Enter</kbd> still
+ * reaches the ordinary form after <kbd>Tab</kbd>. Together, it and the reset regression submit
+ * one backlog task and two dispatches. Every agent binary and the task titler are redirected
+ * at the fixture fakes, so none of them spends model tokens.
+ *
+ * The shared `dashboard` fixture pins the preference OFF explicitly, independent of the
+ * shipped default. Tests that want the pass turn it on themselves; the one test of the
+ * shipped default uses the raw `page` fixture so that pin cannot make it pass.
  */
 
-/** The dispatch modal, with the guided pass running. */
+/** The dispatch modal, with the guided pass running and parked on its first question, Repo. */
 async function openGuided(page: Page): Promise<Locator> {
   const dialog = await openDispatch(page);
   await dialog.getByRole("switch", { name: "Guided" }).click();
   await expect(dialog.getByRole("navigation", { name: "Guided dispatch" })).toBeVisible();
+  // The pass places this caret itself - the mount autofocus stands down while a pass runs -
+  // and every Repo-step assertion below depends on it, so it is waited on here rather than
+  // assumed by a `press` that would otherwise type into whatever the click left focused.
+  await expect(repoField(dialog)).toBeFocused();
+  return dialog;
+}
+
+/**
+ * The same, one question further on: Repo taken, Kind asked.
+ *
+ * <kbd>↵</kbd> with nothing typed takes the row the combobox has highlighted, which is what
+ * the seeded case does in one key. Which repo that is does not matter to the callers of this
+ * helper - they are about the three closed-set questions behind it - so it is deliberately not
+ * asserted here; the specs that are about the Repo step seed it and say which.
+ */
+async function openGuidedAtKind(page: Page): Promise<Locator> {
+  const dialog = await openGuided(page);
+  await page.keyboard.press("Enter");
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
   return dialog;
 }
 
@@ -65,6 +91,25 @@ const picker = (dialog: Locator, question: string): Locator =>
   dialog.getByRole("listbox", { name: question });
 const option = (dialog: Locator, question: string, name: RegExp): Locator =>
   picker(dialog, question).getByRole("option", { name });
+
+/**
+ * The Repo question, which has no listbox of its own to be named by.
+ *
+ * It rides in the repo field's own hint slot: `RepoCombobox` portals its list over everything
+ * below the input, and a row inserted above the input would move every field under it mid-pass.
+ * So the question is text on a line that was already there, and text is how it is found.
+ */
+const repoAsk = (dialog: Locator): Locator => dialog.getByText("Which repo is this for?");
+/** The primary repo field. Never `{ name: … }`: its accessible name carries the question. */
+const repoField = (dialog: Locator): Locator =>
+  dialog.getByPlaceholder("search repos or type a path…");
+/**
+ * The combobox's own dropdown, portalled to the body and so NOT inside the dialog.
+ *
+ * Reached from the page rather than the dialog for that reason, and unambiguous while a Repo
+ * question is up: the pass draws no list of its own in this step, which is the point of it.
+ */
+const repoList = (page: Page): Locator => page.getByRole("listbox");
 
 const kindSelect = (dialog: Locator): Locator =>
   dialog.getByRole("combobox", { name: "Kind", exact: true });
@@ -111,6 +156,24 @@ function selectedLabel(select: Locator): Promise<string> {
   );
 }
 
+/**
+ * Point the next dispatch at a repo, the way a dispatch that already happened would.
+ *
+ * Through `localStorage` and a reload rather than by dispatching one, because a dispatch
+ * launches an agent and this file launches none. The seed is read once, when the layer builds
+ * its draft on load, so setting the key without the reload would change nothing - and the
+ * `dashboard` fixture clears this storage on purpose, so a spec that wants a seeded field is
+ * required to say so.
+ */
+async function seedLastDispatchRepo(page: Page, repo: string): Promise<void> {
+  await page.evaluate(
+    (root) => window.localStorage.setItem("mission-control.dispatch.repo", root),
+    repo,
+  );
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
+}
+
 const EVIDENCE = artifactsDir("guided-dispatch");
 
 /**
@@ -135,8 +198,285 @@ async function shoot(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/guided-dispatch/${name}.png`);
 }
 
-test("each mnemonic lands its value in the form's own control", async ({ dashboard }) => {
+test("a fresh profile gets the guided pass, and Tab hands back the working form", async ({
+  page,
+  daemon,
+}) => {
+  // Raw `page`, not `dashboard`: the shared dashboard fixture pins Guided off to protect the
+  // roughly fifty specs that use the dispatch form as setup. This test is the one place that
+  // must inherit the product default, or changing that default would test nothing.
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await page.evaluate(() => window.localStorage.clear());
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
+
+  await page.keyboard.press("+");
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("switch", { name: "Guided" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toBeFocused();
+  await shoot(page, "06-default-on");
+
+  await page.keyboard.press("Tab");
+
+  // The bounded cost of changing an existing shortcut: one key reaches the same controls,
+  // defaults and caret the ordinary form has always opened with.
+  await expect(rail(dialog)).toBeHidden();
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(taskBox(dialog)).toBeFocused();
+  await expect(repoField(dialog)).toHaveValue("");
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
+  await expect(afterWorkSelect(dialog)).toHaveValue("__default");
+  await expect(dialog.getByRole("heading", { name: "Dispatch an agent" })).toBeVisible();
+  await expect(dialog.getByRole("radiogroup", { name: "Launch mode" })).toBeVisible();
+  await expect(dialog.getByRole("switch", { name: "Guided" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Close" })).toBeVisible();
+  const modalTop = await dialog.evaluate((element) => element.getBoundingClientRect().top);
+  expect(
+    modalTop,
+    "Tab scrolled the ordinary form's header above the viewport",
+  ).toBeGreaterThanOrEqual(0);
+
+  // It is the working form, not a lookalike. Fill only what dispatch requires, opt out of
+  // the fixture repo's unavailable Workflow default, and submit through the existing chord.
+  await repoField(dialog).fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await taskBox(dialog).fill("verify the shipped guided dispatch default");
+  await afterWorkSelect(dialog).selectOption("__none");
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  await page.keyboard.press("Control+Enter");
+
+  await expect(dialog).toBeHidden();
+  await expect(page.locator("article.card")).toHaveCount(1);
+});
+
+// ---- the Repo question -----------------------------------------------------------------
+
+test("a default dispatch is + ↵ p c ↵, and the caret ends in the task box", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The claim the whole feature is for, asserted as the five keys an operator actually
+  // presses. Seeded first, because "↵ alone takes it" is only true of a form that opens on
+  // the repo the last dispatch went to - which is the ordinary case and the one the
+  // fixture's cleared storage removes.
+  await seedLastDispatchRepo(dashboard, daemon.repo);
+  const first = await openDispatch(dashboard);
+  await first.getByRole("switch", { name: "Guided" }).click();
+  await expect(repoField(first)).toHaveValue(daemon.repo);
+  await first.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(first).toBeHidden();
+
+  await dashboard.keyboard.press("+");
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(repoAsk(dialog)).toBeVisible();
+  await shoot(dashboard, "01-repo");
+  await dashboard.keyboard.press("Enter");
+  await dashboard.keyboard.press("p");
+  await dashboard.keyboard.press("c");
+  await dashboard.keyboard.press("Enter");
+
+  // Four questions, four keys, and the form left holding the answers - three of which are
+  // confirmations, because a default dispatch is what this measures.
+  await expect(rail(dialog)).toBeHidden();
+  await expect(repoField(dialog)).toHaveValue(daemon.repo);
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
+  await expect(afterWorkSelect(dialog)).toHaveValue("__default");
+  await expect(taskBox(dialog)).toBeFocused();
+  // Empty, which is what makes the three confirmations above real: had the pass not taken
+  // those keys, `p` and `c` would be sitting in this box.
+  await expect(taskBox(dialog)).toHaveValue("");
+
+  // And you are typing the task, in the same breath.
+  await dashboard.keyboard.type("audit the retry policy");
+  await expect(taskBox(dialog)).toHaveValue("audit the retry policy");
+});
+
+test("typing filters by name, and ↵ takes the repo it reaches", async ({ dashboard, daemon }) => {
   const dialog = await openGuided(dashboard);
+
+  // Both repos, because the field opens empty and an empty query is not a filter.
+  await expect(repoList(dashboard).getByRole("option")).toHaveCount(2);
+
+  // `second` is in neither repo's shared prefix but is in one repo's NAME. Under the match
+  // this step replaced - substring over the whole path - a workspace's repos all share their
+  // first 28 characters, so the letters an operator reaches for first returned everything.
+  await dashboard.keyboard.type("second");
+  await expect(repoList(dashboard).getByRole("option")).toHaveCount(1);
+  await expect(repoList(dashboard).getByRole("option")).toHaveText(daemon.secondRepo);
+
+  await dashboard.keyboard.press("Enter");
+
+  // The answer lands in the form's OWN field - there is no second copy of it - and the pass
+  // moves on to Kind with the rung naming the leaf.
+  await expect(repoField(dialog)).toHaveValue(daemon.secondRepo);
+  await expect(rail(dialog).getByRole("button", { name: "Repo: second-repo" })).toBeVisible();
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+});
+
+test("clicking a repo in the list answers the question too", async ({ dashboard, daemon }) => {
+  const dialog = await openGuided(dashboard);
+
+  // The mouse path, and the rule it keeps is phase 2's: a question answered through its own
+  // control moves the pass on. Left to `onChange` alone this wrote the repo and left the pass
+  // parked on a question it had just answered.
+  await repoList(dashboard).getByRole("option", { name: daemon.secondRepo }).click();
+
+  await expect(repoField(dialog)).toHaveValue(daemon.secondRepo);
+  await expect(rail(dialog).getByRole("button", { name: "Repo: second-repo" })).toBeVisible();
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+});
+
+test("the multi-repo control recedes while the Repo question is up", async ({ dashboard }) => {
+  const dialog = await openGuided(dashboard);
+
+  // The repo FIELD is the one lit thing on the form, and `+ Add another repo` sits inside it -
+  // but attaching a second repo is a form control, not an answer to "which repo is this for?".
+  // Left live it reads as part of the question, and clicking it puts the caret in a second
+  // combobox this pass cannot see, where ↵ answers nothing.
+  const attach = dialog.getByRole("button", { name: "Add another repo" });
+  await expect(attach).toBeVisible();
+  expect(
+    await attach.evaluate((el) => getComputedStyle(el).pointerEvents),
+    "the attach control should not take the pointer mid-question",
+  ).toBe("none");
+
+  // And it comes back the moment the pass hands over - it was never disabled, only out of the
+  // way of a question that is not about it.
+  await dashboard.keyboard.press("Tab");
+  await expect(rail(dialog)).toBeHidden();
+  await expect(attach).toBeEnabled();
+  expect(await attach.evaluate((el) => getComputedStyle(el).pointerEvents)).not.toBe("none");
+});
+
+test("a digit typed in the Repo step filters rather than selecting", async ({ dashboard }) => {
+  const dialog = await openGuided(dashboard);
+
+  // The step's stated exception. In the three closed-set questions a digit takes the option
+  // at that position; here every character is a character, because repository names contain
+  // digits and a digit that picked would make a repo called `service2` unfilterable.
+  await dashboard.keyboard.type("2");
+
+  await expect(repoField(dialog)).toHaveValue("2");
+  await expect(repoAsk(dialog)).toBeVisible();
+  // Nothing was taken, by this question or the one after it.
+  await expect(rail(dialog).getByRole("button", { name: /^Repo:/ })).toHaveCount(0);
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+});
+
+test("Escape leaves the pass for the ordinary form, and a second closes the modal", async ({
+  dashboard,
+}) => {
+  const dialog = await openGuided(dashboard);
+  await dashboard.keyboard.type("second");
+  await expect(repoList(dashboard)).toBeVisible();
+
+  await dashboard.keyboard.press("Escape");
+
+  // Progressive, and not by choice: `RepoCombobox` closes its own portalled list on Escape and
+  // stops the event, deliberately, so an open list cannot let one press close the whole dialog.
+  // So the first press closes the list and ends the pass together - a pass left running over a
+  // question whose list has gone is a dimmed form waiting on keys that no longer arrive.
+  await expect(repoList(dashboard)).toBeHidden();
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog).toBeVisible();
+  // The ordinary form, with the field exactly as typed. Not reverted, and not completed: this
+  // is an escape hatch, not an answer.
+  await expect(repoField(dialog)).toHaveValue("second");
+  await expect(taskBox(dialog)).toBeFocused();
+
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});
+
+test("Escape still leaves the pass after the Repo field has blurred", async ({ dashboard }) => {
+  const dialog = await openGuided(dashboard);
+  await dashboard.keyboard.type("second");
+  await expect(repoList(dashboard)).toBeVisible();
+
+  // A live modal control can take focus without answering Repo. Blur closes the combobox's
+  // portalled list, so the list has no Escape left to swallow and report to the pass.
+  await dialog.getByRole("button", { name: "Cancel" }).focus();
+  await expect(repoField(dialog)).not.toBeFocused();
+  await expect(repoList(dashboard)).toBeHidden();
+  await expect(repoAsk(dialog)).toBeVisible();
+
+  await dashboard.keyboard.press("Escape");
+
+  // The first rung belongs to the still-active Repo question even without an open list.
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog).toBeVisible();
+  await expect(repoField(dialog)).toHaveValue("second");
+  await expect(taskBox(dialog)).toBeFocused();
+
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});
+
+test("Backspace from Kind returns to Repo with the answer intact", async ({
+  dashboard,
+  daemon,
+}) => {
+  const dialog = await openGuided(dashboard);
+  await dashboard.keyboard.type("second");
+  await dashboard.keyboard.press("Enter");
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+
+  await dashboard.keyboard.press("Backspace");
+
+  // The rung stops claiming an answer, because the question is about to be asked again - but
+  // the draft keeps the path, and the caret goes back to the field holding it, so ↵ takes the
+  // same repo a second time.
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(rail(dialog).getByRole("button", { name: /^Repo:/ })).toHaveCount(0);
+  await expect(repoField(dialog)).toHaveValue(daemon.secondRepo);
+  await expect(repoField(dialog)).toBeFocused();
+
+  await dashboard.keyboard.press("Enter");
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await expect(repoField(dialog)).toHaveValue(daemon.secondRepo);
+});
+
+test("the form does not move while the four questions are asked", async ({ dashboard }) => {
+  // The interaction's standing promise, and the reason the questions float over the fields
+  // instead of sitting between them: the form an operator finishes in has been standing in its
+  // final position the whole time. Repo is where that promise was easiest to break, because
+  // its question has no floating list to live in - it rides in the field's own hint slot, one
+  // line that already existed, precisely so that asking it inserts no row.
+  //
+  // Measured rather than eyeballed. A keycap two pixels taller than the line it sits on moves
+  // every field below it, and no assertion on markup can see that.
+  const dialog = await openGuided(dashboard);
+  const tops = async (): Promise<{ repo: number; task: number }> => {
+    const repo = await repoField(dialog).boundingBox();
+    const task = await taskBox(dialog).boundingBox();
+    return { repo: repo?.y ?? -1, task: task?.y ?? -1 };
+  };
+
+  const atRepo = await tops();
+  await dashboard.keyboard.press("Enter");
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  expect(await tops(), "asking Kind moved the form").toEqual(atRepo);
+
+  await dashboard.keyboard.press("p");
+  await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
+  expect(await tops(), "asking Harness moved the form").toEqual(atRepo);
+
+  await dashboard.keyboard.press("c");
+  await expect(picker(dialog, "What runs after the work?")).toBeVisible();
+  expect(await tops(), "asking After work moved the form").toEqual(atRepo);
+});
+
+// ---- the three closed-set questions -----------------------------------------------------
+
+test("each mnemonic lands its value in the form's own control", async ({ dashboard }) => {
+  const dialog = await openGuidedAtKind(dashboard);
 
   // Preconditions, asserted rather than assumed: every value below differs from the one a
   // fresh draft opens with, so none of these assertions could pass without the keystroke.
@@ -145,12 +485,12 @@ test("each mnemonic lands its value in the form's own control", async ({ dashboa
   await expect(afterWorkSelect(dialog)).toHaveValue("__default");
 
   await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
-  await shoot(dashboard, "01-kind");
+  await shoot(dashboard, "02-kind");
   await dashboard.keyboard.press("t");
   await expect(kindSelect(dialog)).toHaveValue("scout");
 
   await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
-  await shoot(dashboard, "02-harness");
+  await shoot(dashboard, "03-harness");
   await dashboard.keyboard.press("x");
   await expect(agentSelect(dialog)).toHaveValue("codex");
 
@@ -158,7 +498,7 @@ test("each mnemonic lands its value in the form's own control", async ({ dashboa
   // where the list already sat.
   await expect(picker(dialog, "What runs after the work?")).toBeVisible();
   await expect(afterWorkSelect(dialog)).toHaveValue("__none");
-  await shoot(dashboard, "03-after-work");
+  await shoot(dashboard, "04-after-work");
   await dashboard.keyboard.press("d");
   await expect(afterWorkSelect(dialog)).toHaveValue("__default");
 
@@ -167,7 +507,7 @@ test("each mnemonic lands its value in the form's own control", async ({ dashboa
   await expect(rail(dialog)).toBeHidden();
   await expect(dialog.getByRole("listbox")).toHaveCount(0);
   await expect(taskBox(dialog)).toBeFocused();
-  await shoot(dashboard, "04-handed-over");
+  await shoot(dashboard, "05-handed-over");
 });
 
 test("an image dropped on the window attaches before the questions are answered", async ({
@@ -179,7 +519,7 @@ test("an image dropped on the window attaches before the questions are answered"
   // The first question is still owning the dialog, which makes the Task box inert. Dropping
   // on body rather than `.drop-zone` is the regression: before the window handoff there was
   // no handler on this event path, so the browser never even attempted an upload.
-  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await expect(repoAsk(dialog)).toBeVisible();
   const uploaded = dashboard.waitForResponse(
     (response) =>
       response.request().method() === "POST" && response.url().endsWith("/api/uploads"),
@@ -188,11 +528,12 @@ test("an image dropped on the window attaches before the questions are answered"
   expect((await uploaded).status()).toBe(200);
 
   // It is the Task attachment, not an answer or a second guided-only holding area. The pass
-  // stays on Kind, and the same chip survives the ordinary Tab handoff into the Task box.
+  // stays on Repo, and the same chip survives the ordinary Tab handoff into the Task box.
   await expect(dialog.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
-  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toBeFocused();
   // The success frame shows the human-visible claim the selectors cannot: a Task attachment
-  // chip and the unanswered Kind picker are on screen together after a window-level drop.
+  // chip and the unanswered Repo question are on screen together after a window-level drop.
   await shoot(dashboard, "05-window-drop-attached");
   await dashboard.keyboard.press("Tab");
   await expect(rail(dialog)).toBeHidden();
@@ -201,7 +542,7 @@ test("an image dropped on the window attaches before the questions are answered"
 });
 
 test("arrows and Enter reach the same place as the mnemonics", async ({ dashboard }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
 
   // Kind opens on `ship`, the value the draft carries; one step down is `scout`.
   await dashboard.keyboard.press("ArrowDown");
@@ -217,7 +558,7 @@ test("arrows and Enter reach the same place as the mnemonics", async ({ dashboar
 });
 
 test("a position digit takes the option at that position", async ({ dashboard }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
 
   // Out of range first, while the list is short enough to be certain it is: nothing is taken
   // and the question stays put. That is the `if (!guidedList[index]) return false` guard,
@@ -250,7 +591,7 @@ test("a position digit takes the option at that position", async ({ dashboard })
 });
 
 test("Backspace steps back and the rung returns to unanswered", async ({ dashboard }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
 
   await dashboard.keyboard.press("t");
   // The rung names the step as well as the value: "scout" on its own says nothing about
@@ -273,7 +614,7 @@ test("Backspace steps back and the rung returns to unanswered", async ({ dashboa
 test("Tab leaves the pass with every answer intact and the caret in the task box", async ({
   dashboard,
 }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
 
   await dashboard.keyboard.press("t");
   await dashboard.keyboard.press("x");
@@ -297,10 +638,32 @@ test("Tab leaves the pass with every answer intact and the caret in the task box
   await expect(taskBox(dialog)).toHaveValue("tidy the pass");
 });
 
+test("Escape leaves the pass before a second Escape closes Dispatch", async ({ dashboard }) => {
+  const dialog = await openGuidedAtKind(dashboard);
+  const close = dialog.getByRole("button", { name: "Close", exact: true });
+  await dashboard.keyboard.press("t");
+  await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
+  await expect(rail(dialog)).toContainText("esc use the form");
+  await expect(close).toHaveAccessibleDescription("Close without dispatching");
+
+  // Guided is the layer on top of Dispatch. The first press peels off only that layer and
+  // preserves the answer already written through the form's Kind control.
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog.getByRole("listbox")).toHaveCount(0);
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+  await expect(taskBox(dialog)).toBeFocused();
+  await expect(close).toHaveAccessibleDescription("Close without dispatching (Escape)");
+
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});
+
 test("scout preselects None through the pass, and ship hands the stash back", async ({
   dashboard,
 }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
 
   await dashboard.keyboard.press("t");
   await dashboard.keyboard.press("c");
@@ -331,7 +694,7 @@ test("scout preselects None through the pass, and ship hands the stash back", as
 test("using the question's own control answers it and moves the pass on", async ({
   dashboard,
 }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
 
   // The list hangs BELOW its control rather than over it, so the `<select>` a question is
   // about stays visible and clickable - and a mouse user reaching for the control they can
@@ -361,7 +724,7 @@ test("using the question's own control answers it and moves the pass on", async 
 test("Clear during a pass restarts it rather than stranding the keyboard", async ({
   dashboard,
 }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
   await dashboard.keyboard.press("t");
   await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
 
@@ -370,21 +733,29 @@ test("Clear during a pass restarts it rather than stranding the keyboard", async
   await expect(clear).toBeEnabled();
   await clear.click();
 
-  // Back to the first question over a form that holds none of the old answers. The bug this
+  // Back to the FIRST question over a form that holds none of the old answers. The bug this
   // pins put the caret in the task box with the strip still up - and the pass stands down for
   // a text field, so every remaining key typed instead of answering.
-  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  //
+  // With Repo at the front the same bug has a second shape, which is why the caret is asserted
+  // rather than only the question: Clear is clicked, so focus is on the Clear button, and the
+  // restart has to move it. An effect keyed on which step is active would not have - the pass
+  // is on Repo before the click and on Repo after it.
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toBeFocused();
   await expect(rail(dialog).getByRole("button", { name: "Kind: scout" })).toHaveCount(0);
   await expect(kindSelect(dialog)).toHaveValue("ship");
   await expect(taskBox(dialog)).not.toBeFocused();
 
-  // And the keyboard still drives it.
+  // And the keyboard still drives it, from the question it restarted on.
+  await dashboard.keyboard.press("Enter");
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
   await dashboard.keyboard.press("t");
   await expect(kindSelect(dialog)).toHaveValue("scout");
 });
 
 test("Clear after the pass has handed over asks the questions again", async ({ dashboard }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
   await dashboard.keyboard.press("t");
   await dashboard.keyboard.press("x");
   await dashboard.keyboard.press("d");
@@ -400,12 +771,90 @@ test("Clear after the pass has handed over asks the questions again", async ({ d
   // on screen. Guided is still on, so this form still opens guided - and gating this on
   // "is a question showing" instead blanked the draft and left the operator in the plain
   // form, which is the one thing Clear is not for.
-  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toBeFocused();
   await expect(rail(dialog).getByRole("button", { name: /^Kind:/ })).toHaveCount(0);
   await expect(taskBox(dialog)).toHaveValue("");
   await expect(kindSelect(dialog)).toHaveValue("ship");
   await expect(agentSelect(dialog)).toHaveValue("claude");
   await expect(taskBox(dialog)).not.toBeFocused();
+});
+
+test("closing and reopening resumes the saved guided workflow", async ({ dashboard }) => {
+  const dialog = await openGuidedAtKind(dashboard);
+  await dashboard.keyboard.press("t");
+  await dashboard.keyboard.press("x");
+
+  // Three decisions are saved in the draft and in the pass. Dismissing the surface is neither
+  // Clear nor a submit, so reopening must continue at the one decision still unanswered.
+  await expect(picker(dialog, "What runs after the work?")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(rail(dialog).getByRole("button", { name: "Kind: scout" })).toBeVisible();
+  await expect(rail(dialog).getByRole("button", { name: "Harness: Codex" })).toBeVisible();
+  await expect(picker(dialog, "What runs after the work?")).toBeVisible();
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+  await expect(agentSelect(dialog)).toHaveValue("codex");
+
+  // A completed pass is state too. Reopening after typing the brief stays at the handed-over
+  // form rather than replaying questions whose answers are already visible in its controls.
+  await dashboard.keyboard.press("n");
+  await taskBox(dialog).fill("audit the retry policy");
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog.getByRole("listbox")).toHaveCount(0);
+  await expect(taskBox(dialog)).toHaveValue("audit the retry policy");
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+  await expect(agentSelect(dialog)).toHaveValue("codex");
+  await expect(afterWorkSelect(dialog)).toHaveValue("__none");
+});
+
+test("backlog and dispatch submissions reset the guided workflow", async ({
+  dashboard,
+  daemon,
+}) => {
+  const dialog = await openGuidedAtKind(dashboard);
+  const repo = dialog.getByPlaceholder("search repos or type a path…");
+
+  await dashboard.keyboard.press("t");
+  await dashboard.keyboard.press("x");
+  await dashboard.keyboard.press("n");
+  await repo.fill(daemon.repo);
+  await taskBox(dialog).fill("shelve the guided draft");
+  await dialog.getByRole("button", { name: "Add to backlog" }).click();
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toHaveValue(daemon.repo);
+  await expect(taskBox(dialog)).toHaveValue("");
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
+
+  await dashboard.keyboard.press("Enter");
+  await dashboard.keyboard.press("p");
+  await dashboard.keyboard.press("c");
+  await dashboard.keyboard.press("n");
+  await repo.fill(daemon.repo);
+  await taskBox(dialog).fill("dispatch the guided draft");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toHaveValue(daemon.repo);
+  await expect(taskBox(dialog)).toHaveValue("");
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
 });
 
 test("confirming the harness you are already on keeps the model and effort overrides", async ({
@@ -425,6 +874,10 @@ test("confirming the harness you are already on keeps the model and effort overr
   expect(pinnedEffort, "the Effort select should offer a real override").not.toBe("");
 
   await dialog.getByRole("switch", { name: "Guided" }).click();
+  // Past Repo first: the overrides this test is about sit two questions further on, and ↵
+  // takes the repo the field is already pointing at.
+  await expect(repoAsk(dialog)).toBeVisible();
+  await dashboard.keyboard.press("Enter");
   await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
   await dashboard.keyboard.press("t");
 
@@ -450,7 +903,7 @@ test("confirming the harness you are already on keeps the model and effort overr
 });
 
 test("an answered rung jumps back to its question", async ({ dashboard }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
 
   await dashboard.keyboard.press("t");
   await dashboard.keyboard.press("x");
@@ -458,11 +911,14 @@ test("an answered rung jumps back to its question", async ({ dashboard }) => {
 
   await rail(dialog).getByRole("button", { name: "Kind: scout" }).click();
 
-  // Back at the first question, with the two rungs behind it un-answered: they are about to
-  // be asked again, and a tick over a live question is the strip saying something untrue.
+  // Back at that question, with the two rungs behind it un-answered: they are about to be
+  // asked again, and a tick over a live question is the strip saying something untrue.
   await expect(dialog.getByRole("listbox", { name: "What kind of run is this?" })).toBeVisible();
   await expect(rail(dialog).getByRole("button", { name: "Kind: scout" })).toBeHidden();
   await expect(rail(dialog).getByRole("button", { name: /^Harness/ })).toBeHidden();
+  // The rung BEFORE it keeps its tick, though: jumping back un-answers the question you land
+  // on and everything after, never what you already walked past to get there.
+  await expect(rail(dialog).getByRole("button", { name: /^Repo:/ })).toBeVisible();
 });
 
 test("the chord opens straight into the pass once the preference is on", async ({
@@ -472,7 +928,9 @@ test("the chord opens straight into the pass once the preference is on", async (
   // and then proved to have outlived the modal that set it.
   const first = await openDispatch(dashboard);
   await first.getByRole("switch", { name: "Guided" }).click();
-  await dashboard.keyboard.press("Escape");
+  // Close without ending the pass: dismiss/reopen persistence is what lets the chord resume
+  // at Repo, while Escape would deliberately save an ended pass for the ordinary form.
+  await first.getByRole("button", { name: "Close", exact: true }).click();
   await expect(first).toBeHidden();
 
   // Specs open this modal by clicking Dispatch; the chord is the reason the pass exists, so
@@ -484,15 +942,17 @@ test("the chord opens straight into the pass once the preference is on", async (
     "aria-checked",
     "true",
   );
-  await expect(dialog.getByRole("listbox", { name: "What kind of run is this?" })).toBeVisible();
-  // The caret is deliberately NOT in the task box while the questions are up: `Overlay`'s
-  // handler is a window listener, so a focused textarea would take the mnemonic as a letter
-  // and advance the pass at the same time.
+  await expect(repoAsk(dialog)).toBeVisible();
+  // The caret is in the repo field rather than the task box, which is both halves of the same
+  // rule: `Overlay`'s handler is a window listener, so a focused textarea would take a
+  // mnemonic as a letter and advance the pass at the same time - and the question being asked
+  // here is answered BY a text field, so that field is where the keys have to arrive.
+  await expect(repoField(dialog)).toBeFocused();
   await expect(taskBox(dialog)).not.toBeFocused();
 });
 
 test("turning Guided off mid-pass hands back today's form", async ({ dashboard }) => {
-  const dialog = await openGuided(dashboard);
+  const dialog = await openGuidedAtKind(dashboard);
   await dashboard.keyboard.press("t");
 
   await dialog.getByRole("switch", { name: "Guided" }).click();
@@ -531,10 +991,13 @@ test("Ensemble mode never runs the pass", async ({ dashboard }) => {
 });
 
 test("a backlog task opened for edit never enters the pass", async ({ dashboard, daemon }) => {
-  const first = await openDispatch(dashboard);
-  await first.getByRole("switch", { name: "Guided" }).click();
-  await expect(rail(first)).toBeVisible();
-  await dashboard.keyboard.press("Escape");
+  const first = await openGuidedAtKind(dashboard);
+  // Leave real progress behind in the persistent new-dispatch draft. Merely opening the
+  // pass leaves its owner at null and cannot catch an edit accidentally reading saved state.
+  await dashboard.keyboard.press("t");
+  await expect(kindSelect(first)).toHaveValue("scout");
+  await expect(picker(first, "Which harness runs it?")).toBeVisible();
+  await first.getByRole("button", { name: "Close", exact: true }).click();
   await expect(first).toBeHidden();
 
   const title = "Audit The Retry Policy";

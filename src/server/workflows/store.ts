@@ -17,6 +17,7 @@ import {
   SessionActionSnapshotSchema,
   PublishedWorkflowGraphSchema,
   WorkflowBindingDefaultsSchema,
+  WorkflowCommandArgvSchema,
   WorkflowCompletionPolicySchema,
   WorkflowDraftGraphSchema,
   WorkflowExternalSourceKindSchema,
@@ -33,7 +34,9 @@ import {
   WorkflowTriggerSourceSchema,
 } from "@shared/protocol.ts";
 import {
+  JSON_UTF8_MAX_BYTES_PER_CHAR,
   WORKFLOW_BINDING_STATES,
+  WORKFLOW_CHECK_SLOTS,
   WORKFLOW_DELIVERY_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_DELIVERY_STATES,
@@ -45,6 +48,7 @@ import {
   WORKFLOW_TRIGGER_MODES,
   LEGACY_WORKFLOW_RESUMPTION_POLICY,
   SESSION_ACTION_COMPLETION_KINDS,
+  emptyWorkflowCommandView,
   personaSnapshotOf,
   personasForDisplay,
   sessionActionSnapshotOf,
@@ -95,6 +99,9 @@ import type {
   SessionActionCompletionCapability,
   SessionActionCompletionKind,
   SessionActionSnapshot,
+  WorkflowCheckSlot,
+  WorkflowCommandOverride,
+  WorkflowCommandView,
 } from "@shared/workflow.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { SessionIntentGuard } from "@shared/types.ts";
@@ -236,6 +243,8 @@ function externalSourceFromRow(row: Record<string, unknown>): WorkflowExternalSo
 export const WORKFLOW_TABLES = [
   "personas",
   "session_actions",
+  "workflow_commands",
+  "workflow_command_overrides",
   "workflow_definitions",
   "workflow_versions",
   "workflow_bindings",
@@ -477,6 +486,137 @@ export function parseSessionActionRow(value: unknown): SessionAction {
     updatedAt: row.updated_at,
     // A row is operator data by construction: built-ins are never written to this table.
     builtin: false,
+  };
+}
+
+/**
+ * The stored argv, held to the SAME bounds the write path enforces.
+ *
+ * Re-validated on read rather than trusted, because these bytes are executed: an argv that
+ * reached the column by any route other than the update schema - a downgrade, a hand-edited
+ * row - must fail its row rather than reach a spawn.
+ */
+const CommandArgvJsonSchema = WorkflowCommandArgvSchema;
+
+/**
+ * A ceiling on the stored JSON blob, derived from the argv bounds rather than chosen.
+ *
+ * `checkCommandLength` rather than `checkCommandArgs * checkCommandArg`, because the joined
+ * bound is the binding one: whatever the per-argument ceiling allows, the schema refuses an argv
+ * whose arguments and separators exceed 4,000 characters together.
+ *
+ * Multiplied by `JSON_UTF8_MAX_BYTES_PER_CHAR` for the reason the route's body limit is: that
+ * ceiling counts CHARACTERS and this one counts BYTES, and a bound that conflated them would
+ * fail a row holding an argv the write path had just accepted - the read would report the
+ * operator's own configured command as unreadable, and the gate would silently skip.
+ *
+ * Its job is to stop one malformed row from making every later read expensive, not to be the
+ * real bound - the schema above is.
+ */
+const COMMAND_ARGV_JSON_BYTES =
+  WORKFLOW_LIMITS.checkCommandLength * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + WORKFLOW_LIMITS.checkCommandArgs * 8;
+
+const WorkflowCommandRowSchema = z.object({
+  slot: z.enum(WORKFLOW_CHECK_SLOTS),
+  default_command_json: nullableText,
+  revision: positive,
+  created_at: integer,
+  updated_at: integer,
+});
+
+const WorkflowCommandOverrideRowSchema = z.object({
+  slot: z.enum(WORKFLOW_CHECK_SLOTS),
+  repo_root: nonempty.max(WORKFLOW_LIMITS.checkRepoRoot),
+  command_json: nonempty,
+  created_at: integer,
+  updated_at: integer,
+});
+type WorkflowCommandOverrideRow = z.infer<typeof WorkflowCommandOverrideRowSchema>;
+
+/**
+ * An argv column, or null when this build cannot read what is in it.
+ *
+ * Degrades the FIELD rather than the row, and that asymmetry is load-bearing. The slot row
+ * also carries the `revision` every write compares against, so failing it whole would report
+ * revision 1 for a row sitting at revision 5 - and the slot would become permanently
+ * unwritable, every compare-and-swap refused as stale against a number no caller could ever
+ * learn. An unreadable command instead reads as "not configured", which SKIPS, and the next
+ * save repairs it. That is the recovery the per-slot degrade exists to enable.
+ */
+function readCommandArgv(
+  table: (typeof WORKFLOW_TABLES)[number],
+  id: string,
+  column: string,
+  raw: string | null,
+): string[] | null {
+  if (raw === null) return null;
+  try {
+    return parseJson(table, id, column, raw, CommandArgvJsonSchema, COMMAND_ARGV_JSON_BYTES);
+  } catch (error) {
+    diagnose(error);
+    return null;
+  }
+}
+
+/** An override, or null when its argv is unreadable - in which case it is not projected. */
+function parseWorkflowCommandOverrideRow(
+  row: WorkflowCommandOverrideRow,
+): WorkflowCommandOverride | null {
+  const command = readCommandArgv(
+    "workflow_command_overrides",
+    `${row.slot}:${row.repo_root}`,
+    "command_json",
+    row.command_json,
+  );
+  return command ? { repoRoot: row.repo_root, command } : null;
+}
+
+/**
+ * Whether two override sets are the same configuration.
+ *
+ * Compared as a SET keyed by path rather than pairwise down two arrays, deliberately. The
+ * stored side comes back in SQLite's own `ORDER BY repo_root` collation and the requested side
+ * arrives in whatever order a caller sent; an index-wise comparison would report two identical
+ * configurations as different wherever those two orders disagree, and the only consequence
+ * visible to an operator would be a revision bump and a redraw nothing asked for.
+ */
+function sameOverrides(
+  a: readonly WorkflowCommandOverride[],
+  b: readonly WorkflowCommandOverride[],
+): boolean {
+  const byPath = new Map(a.map((entry) => [entry.repoRoot, entry.command]));
+  // A list carrying the same path twice describes no set at all, so it can never be "the
+  // configuration already stored" - the stored side is unique by its composite primary key.
+  // Answering "unchanged" for one would silently keep a row it does not contain.
+  if (byPath.size !== a.length) return false;
+  if (new Set(b.map((entry) => entry.repoRoot)).size !== b.length) return false;
+  if (a.length !== b.length) return false;
+  return b.every((entry) => {
+    const command = byPath.get(entry.repoRoot);
+    return command !== undefined
+      && command.length === entry.command.length
+      && command.every((arg, index) => arg === entry.command[index]);
+  });
+}
+
+function parseWorkflowCommandRow(
+  value: unknown,
+  overrides: WorkflowCommandOverride[],
+): WorkflowCommandView {
+  const row = parseShape("workflow_commands", WorkflowCommandRowSchema, value);
+  return {
+    slot: row.slot,
+    defaultCommand: readCommandArgv(
+      "workflow_commands",
+      row.slot,
+      "default_command_json",
+      row.default_command_json,
+    ),
+    overrides,
+    revision: row.revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -1241,6 +1381,23 @@ export type SessionActionPatch =
   };
 
 /**
+ * The Command catalog's refusals.
+ *
+ * A shorter vocabulary than the two catalogs beside it, and every omission is a rule this
+ * catalog does not have: slots are built in, so there is no `builtin` refusal to make (every
+ * row is), no `archived`, and no `name_conflict` - a slot's identity is its append-only id.
+ * `not_found` therefore means only "that is not one of the four", which is a caller mistake
+ * rather than a race.
+ */
+export type WorkflowCommandStoreWrite =
+  | { ok: true; view: WorkflowCommandView }
+  | {
+      ok: false;
+      reason: "not_found" | "revision_conflict" | "duplicate_override";
+      current: WorkflowCommandView | null;
+    };
+
+/**
  * Deliberately the same refusal vocabulary as `PersonaStoreWrite`, not a wider one. The two
  * catalogs answer to the same CAS, name-reservation and built-in rules, and a route that had
  * to translate two error sets would be the place they quietly diverged.
@@ -2001,6 +2158,313 @@ export class WorkflowStore {
       throw new Error(`Session action ${id} disappeared during a workflow transaction`);
     }
     return action;
+  }
+
+  // ---- Global Command catalog ----
+  //
+  // The four portable slots are BUILT IN, so this catalog behaves unlike the two beside it:
+  // nothing creates or archives a row, every slot is always projected whether or not it has
+  // been stored, and the unit of both identity and update is the slot rather than a surrogate
+  // id. What it keeps from Personas and SessionActions is the part that matters - one
+  // compare-and-swap write inside one transaction, and a store that refuses rather than
+  // repairs.
+
+  /**
+   * Every built-in slot, in registry order, whether or not it has ever been written.
+   *
+   * A slot that vanished until somebody configured it would make "no command here" and "the
+   * catalog has not loaded" the same observation for every reader, and the Library card whose
+   * whole job is to say "Not configured" could not be drawn from it.
+   *
+   * A malformed row degrades to that slot's empty projection rather than throwing, matching
+   * `listSessionActions`: one hand-edited row must not take the catalog down.
+   */
+  workflowCommandCatalog(): WorkflowCommandView[] {
+    const rows = new Map<string, unknown>();
+    for (const row of this.db.prepare(`SELECT * FROM workflow_commands`).all() as unknown[]) {
+      const slot = (row as { slot?: unknown }).slot;
+      if (typeof slot === "string") rows.set(slot, row);
+    }
+    const overrides = this.workflowCommandOverridesBySlot();
+    return WORKFLOW_CHECK_SLOTS.map((slot) => {
+      const row = rows.get(slot);
+      if (!row) return emptyWorkflowCommandView(slot);
+      try {
+        return parseWorkflowCommandRow(row, overrides.get(slot) ?? []);
+      } catch (error) {
+        diagnose(error);
+        return emptyWorkflowCommandView(slot);
+      }
+    });
+  }
+
+  /** One slot's complete state, or null when the id is not a built-in slot. */
+  getWorkflowCommand(slot: string): WorkflowCommandView | null {
+    if (!(WORKFLOW_CHECK_SLOTS as readonly string[]).includes(slot)) return null;
+    return this.workflowCommandCatalog().find((view) => view.slot === slot) ?? null;
+  }
+
+  /**
+   * Create the four slot rows this build ships, leaving any that already exist untouched.
+   *
+   * `INSERT OR IGNORE`, so a restart neither resets a configured slot nor bumps its revision.
+   * Returns whether the catalog was EMPTY beforehand, which is the one-shot gate the legacy
+   * import hangs off: a new table is the only honest evidence that nothing has been written
+   * here yet, and there is no `addColumn` return value to gate on the way `home_name` does.
+   */
+  seedWorkflowCommands(now = Date.now()): boolean {
+    return transaction(this.db, () => this.seedWorkflowCommandsInTransaction(now));
+  }
+
+  private seedWorkflowCommandsInTransaction(now: number): boolean {
+    const existing = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM workflow_commands`)
+      .get() as { n: number };
+    const wasEmpty = Number(existing.n) === 0;
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, revision, created_at, updated_at)
+       VALUES (?, NULL, 1, ?, ?)`,
+    );
+    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, now, now);
+    return wasEmpty;
+  }
+
+  /**
+   * Replace ONE slot's complete state - nullable default plus every override - under an
+   * expected revision, in one transaction.
+   *
+   * Whole-slot replacement rather than a patch, because the two halves are one decision: a
+   * surface that could commit a new default without the override list it was editing beside
+   * it would let an operator save half of what they see. The delete-then-insert is what makes
+   * a removal expressible at all; there is no separate "remove override" write to forget.
+   */
+  replaceWorkflowCommandCas(
+    slot: string,
+    expectedRevision: number,
+    next: { defaultCommand: string[] | null; overrides: readonly WorkflowCommandOverride[] },
+    now = Date.now(),
+  ): WorkflowCommandStoreWrite {
+    if (!(WORKFLOW_CHECK_SLOTS as readonly string[]).includes(slot)) {
+      return { ok: false, reason: "not_found", current: null };
+    }
+    const key = slot as WorkflowCheckSlot;
+    // Refused here as well as at the route, because the store is the boundary a future
+    // caller reaches without passing the schema. The composite PRIMARY KEY would refuse the
+    // second row anyway, but as a constraint violation rather than a readable answer.
+    if (new Set(next.overrides.map((entry) => entry.repoRoot)).size !== next.overrides.length) {
+      return { ok: false, reason: "duplicate_override", current: this.getWorkflowCommand(key) };
+    }
+    return transaction(this.db, () => {
+      // Seeding inside the write covers the one start where a slot row does not exist yet:
+      // an update arriving before `seedWorkflowCommands` has run must not read as "no such
+      // slot", which is a refusal an operator can do nothing about.
+      this.seedWorkflowCommandsInTransaction(now);
+      const current = this.workflowCommandInTransaction(key);
+      if (current.revision !== expectedRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      const updated = this.db
+        .prepare(
+          `UPDATE workflow_commands
+              SET default_command_json = ?, revision = revision + 1, updated_at = ?
+            WHERE slot = ? AND revision = ?`,
+        )
+        .run(
+          next.defaultCommand && next.defaultCommand.length > 0
+            ? JSON.stringify(next.defaultCommand)
+            : null,
+          now,
+          key,
+          expectedRevision,
+        );
+      if (Number(updated.changes) !== 1) {
+        return { ok: false, reason: "revision_conflict", current: this.workflowCommandInTransaction(key) };
+      }
+      // Timestamps of surviving overrides are preserved across the replace, so an untouched
+      // exception does not report itself as newly written every time a neighbour changes.
+      const previous = new Map(
+        (this.workflowCommandOverrideRows(key)).map((row) => [row.repo_root, row.created_at]),
+      );
+      this.db.prepare(`DELETE FROM workflow_command_overrides WHERE slot = ?`).run(key);
+      const insert = this.db.prepare(
+        `INSERT INTO workflow_command_overrides (slot, repo_root, command_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const entry of next.overrides) {
+        insert.run(
+          key,
+          entry.repoRoot,
+          JSON.stringify(entry.command),
+          previous.get(entry.repoRoot) ?? now,
+          now,
+        );
+      }
+      return { ok: true, view: this.workflowCommandInTransaction(key) };
+    });
+  }
+
+  /**
+   * Import legacy `checkCommands` rows as overrides, once, and only into an empty catalog.
+   *
+   * Returns false without writing when the catalog already holds slot rows. That is the whole
+   * idempotence story: the table's own emptiness is the marker, so a second start imports
+   * nothing and an operator who has since deleted every override never has them resurrected
+   * from a stale blob - the resurrection hazard `migrateTaskHomeName` records in `db.ts`.
+   *
+   * No default is inferred. Every legacy row named a repository, and that a repository runs
+   * `npm test` is not evidence the same argv is correct anywhere else.
+   */
+  importLegacyCommandOverrides(
+    legacy: readonly { slot: WorkflowCheckSlot; repoRoot: string; command: string[] }[],
+    now = Date.now(),
+  ): boolean {
+    return transaction(this.db, () => {
+      if (!this.seedWorkflowCommandsInTransaction(now)) return false;
+      const insert = this.db.prepare(
+        `INSERT OR IGNORE INTO workflow_command_overrides
+           (slot, repo_root, command_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      // OR IGNORE keeps the FIRST of a duplicated `(slot, repoRoot)` pair, matching what
+      // resolution did with the flat list it is replacing. The write schema always refused
+      // such a pair, so only a hand-edited blob can produce one.
+      for (const entry of legacy) {
+        insert.run(entry.slot, entry.repoRoot, JSON.stringify(entry.command), now, now);
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Apply a COMPLETE legacy `checkCommands` list across all four slots, in one transaction.
+   *
+   * The adapter behind `PUT /api/workflows/config`. Whole-list replacement, because that is
+   * exactly what the old field was: the form sends the entire array and a row it omits is a
+   * row it removed. Every slot is therefore considered, including the ones with no rows in
+   * the request - that is how the last override of a slot gets deleted.
+   *
+   * Carries NO expected revision, and that is the honest translation rather than an omission.
+   * The legacy config PUT never had one; it has always been last-write-wins over the whole
+   * blob, and inventing a conflict the old form cannot resolve would turn a working save into
+   * a refusal an operator cannot act on. Catalog-native writes keep their CAS.
+   *
+   * Each slot's `defaultCommand` is PRESERVED. A legacy caller knows nothing about global
+   * defaults, so a save from the old form must not be able to clear one.
+   *
+   * Returns only the slots that actually changed, so a Settings save that merely toggled a
+   * switch does not bump four revisions and emit four events.
+   */
+  replaceLegacyCommandOverrides(
+    legacy: readonly { slot: WorkflowCheckSlot; repoRoot: string; command: string[] }[],
+    now = Date.now(),
+  ): WorkflowCommandView[] {
+    return transaction(this.db, () => this.replaceLegacyCommandOverridesInTransaction(legacy, now));
+  }
+
+  /**
+   * Run `fn` inside one transaction, for a caller that has to commit MORE than this store owns.
+   *
+   * The legacy workflow-config save is the reason it exists: it moves the command catalog and
+   * the policy blob together, they are two owners over one database file, and committing the
+   * first while the second fails would report a refusal over a change that had already
+   * happened. Anything called inside must use the `…InTransaction` readers and writers -
+   * `transaction` is not re-entrant, and a nested `BEGIN` is an error, not a savepoint.
+   *
+   * Everything `fn` writes must go through THIS handle. Two connections to one file are two
+   * transactions, and the second one's write would sit outside the rollback this promises.
+   */
+  transact<T>(fn: () => T): T {
+    return transaction(this.db, fn);
+  }
+
+  /** `replaceLegacyCommandOverrides`, for a caller that already opened the transaction. */
+  replaceLegacyCommandOverridesInTransaction(
+    legacy: readonly { slot: WorkflowCheckSlot; repoRoot: string; command: string[] }[],
+    now = Date.now(),
+  ): WorkflowCommandView[] {
+    this.seedWorkflowCommandsInTransaction(now);
+    const changed: WorkflowCommandView[] = [];
+    for (const slot of WORKFLOW_CHECK_SLOTS) {
+      const desired = legacy
+        .filter((entry) => entry.slot === slot)
+        .map((entry) => ({ repoRoot: entry.repoRoot, command: entry.command }));
+      const rows = this.workflowCommandOverrideRows(slot);
+      if (sameOverrides(this.workflowCommandOverridesFor(slot), desired)) continue;
+      const created = new Map(rows.map((row) => [row.repo_root, row.created_at]));
+      this.db.prepare(`DELETE FROM workflow_command_overrides WHERE slot = ?`).run(slot);
+      const insert = this.db.prepare(
+        `INSERT OR IGNORE INTO workflow_command_overrides
+           (slot, repo_root, command_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const entry of desired) {
+        insert.run(
+          slot,
+          entry.repoRoot,
+          JSON.stringify(entry.command),
+          created.get(entry.repoRoot) ?? now,
+          now,
+        );
+      }
+      this.db
+        .prepare(
+          `UPDATE workflow_commands SET revision = revision + 1, updated_at = ? WHERE slot = ?`,
+        )
+        .run(now, slot);
+      changed.push(this.workflowCommandInTransaction(slot));
+    }
+    return changed;
+}
+
+  private workflowCommandInTransaction(slot: WorkflowCheckSlot): WorkflowCommandView {
+    const row = this.db.prepare(`SELECT * FROM workflow_commands WHERE slot = ?`).get(slot);
+    if (!row) return emptyWorkflowCommandView(slot);
+    return parseWorkflowCommandRow(row, this.workflowCommandOverridesFor(slot));
+  }
+
+  private workflowCommandOverrideRows(slot: WorkflowCheckSlot): WorkflowCommandOverrideRow[] {
+    const out: WorkflowCommandOverrideRow[] = [];
+    for (const raw of this.db
+      .prepare(`SELECT * FROM workflow_command_overrides WHERE slot = ? ORDER BY repo_root ASC`)
+      .all(slot) as unknown[]) {
+      try {
+        out.push(parseShape("workflow_command_overrides", WorkflowCommandOverrideRowSchema, raw));
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    return out;
+  }
+
+  private workflowCommandOverridesFor(slot: WorkflowCheckSlot): WorkflowCommandOverride[] {
+    return this.workflowCommandOverrideRows(slot)
+      .map(parseWorkflowCommandOverrideRow)
+      .filter((entry): entry is WorkflowCommandOverride => entry !== null);
+  }
+
+  /** One pass over the override table, so projecting four slots is not four queries. */
+  private workflowCommandOverridesBySlot(): Map<string, WorkflowCommandOverride[]> {
+    const out = new Map<string, WorkflowCommandOverride[]>();
+    const rows = this.db
+      .prepare(`SELECT * FROM workflow_command_overrides ORDER BY slot ASC, repo_root ASC`)
+      .all() as unknown[];
+    for (const raw of rows) {
+      try {
+        const row = parseShape(
+          "workflow_command_overrides",
+          WorkflowCommandOverrideRowSchema,
+          raw,
+        );
+        const override = parseWorkflowCommandOverrideRow(row);
+        if (!override) continue;
+        const bucket = out.get(row.slot) ?? [];
+        bucket.push(override);
+        out.set(row.slot, bucket);
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    return out;
   }
 
   /**

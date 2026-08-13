@@ -27,6 +27,14 @@ The threshold is the size of the answer, not the size of the question. If it fit
 sentence, say the sentence. If it cites more than a couple of files, carries a table, a
 count, a measurement, or a comparison, it is a report.
 
+**That one-sentence exception never applies to a Mission Control scout task.** A scout's
+report is archived: the page and the evidence beside it outlive the session, the checkout and
+the task card, and the conversation is not kept at all - so a one-sentence answer given in
+chat is an answer nobody can find tomorrow. A scout writes the page whatever the answer's
+size, submits it with `submit_scout_artifacts`, and cannot be marked done until Mission
+Control has captured and verified it. The task's own prompt says so; this skill is how to
+write a good one, not whether to.
+
 Not for: a plan for work you are about to do - that is `html-plans`, which has its own
 decisions contract. Not for a code review. If the investigation ends in a proposal, write
 the report for the findings and the plan for the proposal.
@@ -102,6 +110,18 @@ so the link does nothing at all. Keep the line in the text the reader sees:
 ```html
 <a href="../../../src/server/registry.ts"><code>src/server/registry.ts:42</code></a>
 ```
+
+**On a scout task, drop the href too.** An archived report is read after its checkout is
+gone, so a link out of the report directory points at nothing - and Mission Control refuses a
+relative link that leaves that directory, so a report carrying one is not captured at all.
+Cite the file as visible text with no link:
+
+```html
+<code>src/server/registry.ts:42</code>
+```
+
+The exception is a file you deliberately copied into the report's own directory. That one is
+captured with the report and stays linkable.
 
 Fragment links (`#findings`) work natively, so a long report should have a contents list.
 

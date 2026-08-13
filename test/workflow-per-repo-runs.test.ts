@@ -29,7 +29,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const { openDb, adoptInspectorPr } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
-const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { WorkflowStore, clearWorkflowTables, workflowJson } =
   await import("../src/server/workflows/store.ts");
@@ -851,7 +851,7 @@ test("a run never vetoes a SIBLING repository's pull request", async () => {
 
 /** Both repositories reviewing at once, each run holding a Live repair packet of its own. */
 async function twoLiveRuns() {
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [PRIMARY_ROOT] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [PRIMARY_ROOT] });
   const f = seed({ deliveryMode: "live" });
   f.registry.recordWorktreeHeads(new Map([
     [f.primaryCwd, MOVED],
@@ -986,7 +986,7 @@ test("the queue re-derives itself from persisted state after a restart", async (
 });
 
 test("a single-repo conversation's delivery is never queued behind anything", async () => {
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [PRIMARY_ROOT] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [PRIMARY_ROOT] });
   const f = seed({ extras: [], deliveryMode: "live" });
   f.registry.recordWorktreeHeads(new Map([[f.primaryCwd, MOVED]]));
   f.manager.enqueueSubmit(f.anchor.id, { requestId: "r1" });

@@ -176,6 +176,7 @@ export function Overlay({
   role,
   ariaLabel,
   closable = true,
+  onEscape,
   onKeyDown,
   children,
 }: {
@@ -202,6 +203,12 @@ export function Overlay({
    * every render.
    */
   onKeyDown?: (e: KeyboardEvent) => void;
+  /**
+   * Gives the topmost overlay one chance to peel an internal layer before Escape closes
+   * the overlay itself. Return true to claim that press. This remains behind `closable`,
+   * so a sealed overlay cannot change layers while its work is in flight.
+   */
+  onEscape?: (e: KeyboardEvent) => boolean;
   children: React.ReactNode;
 }): React.JSX.Element {
   const register = useContext(OverlayRegisterContext);
@@ -231,14 +238,15 @@ export function Overlay({
     if (!isTop) return;
     function onKey(e: KeyboardEvent): void {
       if (e.key === "Escape") {
-        if (closable) onClose();
+        if (!closable) return;
+        if (onEscape?.(e) !== true) onClose();
         return;
       }
       onKeyDown?.(e);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isTop, closable, onClose, onKeyDown]);
+  }, [isTop, closable, onClose, onEscape, onKeyDown]);
 
   return (
     <div className="modal-backdrop" onClick={() => closable && onClose()}>

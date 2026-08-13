@@ -135,7 +135,7 @@ import {
   type WorkflowStoreWrite,
 } from "./store.ts";
 import { workflowJson } from "./store.ts";
-import { getWorkflowConfig } from "./config.ts";
+import { getWorkflowPolicy } from "./config.ts";
 import {
   renderInspectorFeedback,
   renderPrHandoff,
@@ -688,7 +688,7 @@ export class WorkflowManager {
       (version) => version.id === detail.workflow.currentVersionId,
     );
     if (current?.bindingDefaults.deliveryMode === "live" && repoRoot) {
-      const config = getWorkflowConfig();
+      const config = getWorkflowPolicy();
       if (
         !config.liveEnabled
         || !repoAllowlisted(repoRoot, repoRoot, config.repoAllowlist)
@@ -1410,9 +1410,9 @@ export class WorkflowManager {
     if (!version) {
       return { ok: false, reason: "not_found", message: "The built-in No-Mistakes Review workflow is unavailable" };
     }
-    const workflowConfig = getWorkflowConfig();
-    const deliveryMode = workflowConfig.liveEnabled
-      && repoAllowlisted(session.cwd, session.repoRoot, workflowConfig.repoAllowlist)
+    const workflowPolicy = getWorkflowPolicy();
+    const deliveryMode = workflowPolicy.liveEnabled
+      && repoAllowlisted(session.cwd, session.repoRoot, workflowPolicy.repoAllowlist)
       ? "live"
       : "preview";
     const created = this.createBinding({
@@ -3714,7 +3714,7 @@ export class WorkflowManager {
     deliveryMode: WorkflowBinding["deliveryMode"],
   ): WorkflowRuntimeMutation<never> | null {
     if (deliveryMode === "live") {
-      const config = getWorkflowConfig();
+      const config = getWorkflowPolicy();
       if (!config.liveEnabled || !repoAllowlisted(session.cwd, session.repoRoot, config.repoAllowlist)) {
         return {
           ok: false,
@@ -4815,7 +4815,7 @@ export class WorkflowManager {
     }
     if (expectedPane !== undefined && paneToken(session) !== expectedPane) return "pane_recreated";
     if (this.registry.sessionResetInProgress(session.id)) return "reset_in_progress";
-    const config = getWorkflowConfig();
+    const config = getWorkflowPolicy();
     if (!config.liveEnabled || !repoAllowlisted(session.cwd, session.repoRoot, config.repoAllowlist)) {
       return "live_not_authorized";
     }
@@ -5568,7 +5568,7 @@ export class WorkflowManager {
     try {
       const result = (this.options.runRetention ?? runWorkflowRetention)(
         this.store,
-        getWorkflowConfig().retention,
+        getWorkflowPolicy().retention,
       );
       this.lastRetentionAt = Date.now();
       this.lastRetentionError = result.failedRunCount > 0

@@ -37,9 +37,9 @@ const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
-const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 
-setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 
 /** Far past every `lastActivity` this file writes, so `settledIdle` is satisfied. */
 const SETTLED = () => Date.now() + 600_000;

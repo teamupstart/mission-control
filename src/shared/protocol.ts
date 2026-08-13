@@ -9,10 +9,14 @@ import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import {
   SCOUT_INDEX_STATUSES,
+  SCOUT_REPORT_PATH_SHAPE,
   SCOUT_SEARCH_LIMITS,
+  SCOUT_SUBMISSION_LIMITS,
   SCOUT_TEXT_LIMITS,
   decodeScoutCursor,
   isScoutId,
+  isScoutRepoSlot,
+  scoutReportSlug,
 } from "./scouts.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "./types.ts";
@@ -21,7 +25,7 @@ import { supportsEffort } from "./harness-capabilities.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
-  DEFAULT_WORKFLOW_CONFIG,
+  DEFAULT_WORKFLOW_POLICY,
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   EVIDENCE_REF_KINDS,
   INSPECTOR_FINDINGS_POLICIES,
@@ -1751,7 +1755,7 @@ export const UI_CONFIG_DEFAULTS = {
   alerts: { notifications: false, sound: true },
   richText: true,
   keybindingHints: true,
-  guidedDispatch: false,
+  guidedDispatch: true,
   trustStaged: [],
 } as const;
 
@@ -1795,10 +1799,10 @@ export const UiConfigSchema = z.object({
    * Whether pressing the dispatch shortcut runs the guided pass - the keyboard walk over
    * repo, kind, harness and after-work - before handing over the ordinary dispatch form.
    *
-   * Off in this build because nothing reads it yet; see
-   * `docs/plans/dispatch-wizard/phased-plan.md`. The shipped default is the ONE line that
-   * decides which dispatch every operator gets on upgrade, so it moves on its own, in its
-   * own change, once the e2e suite has stopped depending on it.
+   * On by default: <kbd>Tab</kbd> hands the operator back to the ordinary form in one key,
+   * while an explicit off preference remains off. This is the ONE line that decides which
+   * dispatch an unconfigured profile gets, so the e2e dashboard fixture pins its own choice
+   * instead of inheriting this product default.
    */
   guidedDispatch: z.boolean().default(UI_CONFIG_DEFAULTS.guidedDispatch),
   /**
@@ -3221,57 +3225,111 @@ export const WorkflowInspectorGateStateSchema = z.object({
 });
 
 /**
- * One repository's command for one slot.
+ * One executable argv, in the one place every command surface bounds it.
  *
- * `command` is bounded three ways because it is a durable blob an operator types: element
- * count, per-element length, and joined length. An unbounded argv is a blob nobody bounded,
- * and the joined bound is the one that matters - 32 arguments of 1,000 characters each is
- * an argv no `execve` will take anyway.
+ * Bounded three ways because it is a durable blob an operator types: element count,
+ * per-element length, and joined length. An unbounded argv is a blob nobody bounded, and the
+ * joined bound is the one that matters - 32 arguments of 1,000 characters each is an argv no
+ * `execve` will take anyway.
+ *
+ * Stated ONCE and reused by the legacy config shape and the Command catalog alike, so the
+ * two write paths that now reach the same storage cannot disagree about what fits.
  */
+export const WorkflowCommandArgvSchema = z
+  .array(z.string().min(1).max(WORKFLOW_LIMITS.checkCommandArg))
+  .min(1)
+  .max(WORKFLOW_LIMITS.checkCommandArgs)
+  .refine(
+    (argv) => argv.join(" ").length <= WORKFLOW_LIMITS.checkCommandLength,
+    { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
+  );
+
+/** One repository's command for one slot, in the legacy flat shape. */
 export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
-  command: z
-    .array(z.string().min(1).max(WORKFLOW_LIMITS.checkCommandArg))
-    .min(1)
-    .max(WORKFLOW_LIMITS.checkCommandArgs)
-    .refine(
-      (argv) => argv.join(" ").length <= WORKFLOW_LIMITS.checkCommandLength,
-      { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
-    ),
+  command: WorkflowCommandArgvSchema,
+});
+
+/** One repository or subdirectory exception, inside the slot that owns it. */
+export const WorkflowCommandOverrideSchema = z.object({
+  repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
+  command: WorkflowCommandArgvSchema,
 });
 
 /**
- * The STRICT schema, and the one the PUT route parses.
+ * One atomic replacement of a Command slot's COMPLETE state.
+ *
+ * Both fields are required rather than defaulted, and that is the safety property: a caller
+ * who omits `overrides` would otherwise silently clear every exception an operator wrote,
+ * and a caller who omits `defaultCommand` would silently clear the machine-wide command. A
+ * partial write of a slot is not expressible, so the two halves can never be committed apart.
+ *
+ * `expectedRevision` is compare-and-swap, exactly as the Persona and SessionAction catalogs
+ * do it: two open windows editing one slot must not silently overwrite one another.
+ */
+export const UpdateWorkflowCommandSchema = z.object({
+  expectedRevision: z.number().int().min(1),
+  defaultCommand: WorkflowCommandArgvSchema.nullable(),
+  overrides: z
+    .array(WorkflowCommandOverrideSchema)
+    .max(WORKFLOW_LIMITS.commandOverrides)
+    // `repoRoot` is the KEY resolution picks by, so two overrides sharing one are two
+    // commands an operator can see and only one that can ever run - which of them depends on
+    // array order, a thing no surface displays. REFUSED rather than deduplicated: a write
+    // that quietly dropped one of two is a caller who sent two and is never told which
+    // survived. The store's composite key refuses it a second time.
+    .refine(
+      (overrides) => new Set(overrides.map((entry) => entry.repoRoot)).size === overrides.length,
+      { message: "Each repository may configure a Command only once" },
+    ),
+});
+export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
+
+/**
+ * The STRICT policy schema: everything about workflows that is still stored in `app_config`.
  *
  * No `.catch()` anywhere in it, deliberately: this is a write path, and `.catch()` on a
  * write turns an invalid value from the panel into a silent no-op - the field reverts on
  * the next poll and nothing says why - where a 400 is a refusal an operator can read. Read
- * tolerance is `StoredWorkflowConfigSchema` below, which is a different question asked of
+ * tolerance is `StoredWorkflowPolicySchema` below, which is a different question asked of
  * the same shape.
  */
-export const WorkflowConfigSchema = z.object({
-  liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_CONFIG.liveEnabled),
+export const WorkflowPolicySchema = z.object({
+  liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
   defaultWorkflowId: z.string().min(1).max(500).nullable()
-    .default(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId),
+    .default(DEFAULT_WORKFLOW_POLICY.defaultWorkflowId),
   retention: z.object({
     rawEvidenceDays: z.number().int().min(1).max(365)
-      .default(DEFAULT_WORKFLOW_CONFIG.retention.rawEvidenceDays),
+      .default(DEFAULT_WORKFLOW_POLICY.retention.rawEvidenceDays),
     completedRunDays: z.number().int().min(30).max(3_650)
-      .default(DEFAULT_WORKFLOW_CONFIG.retention.completedRunDays),
+      .default(DEFAULT_WORKFLOW_POLICY.retention.completedRunDays),
     maxCompletedRuns: z.number().int().min(100).max(10_000)
-      .default(DEFAULT_WORKFLOW_CONFIG.retention.maxCompletedRuns),
-  }).default(DEFAULT_WORKFLOW_CONFIG.retention),
-  checksEnabled: z.boolean().default(DEFAULT_WORKFLOW_CONFIG.checksEnabled),
+      .default(DEFAULT_WORKFLOW_POLICY.retention.maxCompletedRuns),
+  }).default(DEFAULT_WORKFLOW_POLICY.retention),
+  checksEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.checksEnabled),
+});
+export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
+
+/**
+ * Policy PLUS the legacy flat command list: the complete body `PUT /api/workflows/config`
+ * still accepts.
+ *
+ * `checkCommands` is validated here exactly as strictly as it always was, then handed to the
+ * Command catalog rather than persisted beside the policy. Keeping the field on the write
+ * schema is what lets the existing Settings form keep saving through one request while the
+ * durable owner changes underneath it.
+ */
+export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
   checkCommands: z
     .array(WorkflowCheckCommandSchema)
     .max(WORKFLOW_LIMITS.checkCommands)
-    // `(repoRoot, slot)` is the KEY `checkCommandFor` resolves by, so two entries sharing
-    // one are two commands an operator can see and only one that can ever run - which of
-    // them depends on array order, a thing no surface displays. The panel already replaces
-    // rather than appends on a repeat; this is the same rule for a direct API write, which
-    // otherwise stores a config the panel could not have produced.
+    // `(repoRoot, slot)` is the KEY resolution picks by, so two entries sharing one are two
+    // commands an operator can see and only one that can ever run - which of them depends on
+    // array order, a thing no surface displays. The panel already replaces rather than
+    // appends on a repeat; this is the same rule for a direct API write, which otherwise
+    // stores a config the panel could not have produced.
     //
     // REFUSED, not silently deduplicated, for the reason this schema carries no `.catch()`:
     // a write that quietly dropped one of two commands is a caller who sent two and is
@@ -3284,15 +3342,14 @@ export const WorkflowConfigSchema = z.object({
     )
     .default([]),
 });
-export type WorkflowConfigInput = z.input<typeof WorkflowConfigSchema>;
 
 /**
- * The same shape read back off `app_config`, where a value this build cannot parse must not
+ * The policy read back off `app_config`, where a value this build cannot parse must not
  * throw.
  *
  * `.default()` already covers an UPGRADE - a blob written before a field existed simply
  * lacks it - so this outer `.catch()` is only for a blob that is present and unreadable: a
- * downgrade from a newer build, or a hand-edited row. `getWorkflowConfig` is on the path of
+ * downgrade from a newer build, or a hand-edited row. `getWorkflowPolicy` is on the path of
  * every workflow read, every binding gate and the retention sweep, so a throw there takes
  * all of them down over a preference.
  *
@@ -3306,8 +3363,12 @@ export type WorkflowConfigInput = z.input<typeof WorkflowConfigSchema>;
  * fallback would be the dangerous one - it could keep a parsed allowlist beside a defaulted
  * consent flag and grant exactly what neither half was written to allow. An operator whose
  * config cannot be read sees the panel showing defaults, which is a state they can fix.
+ *
+ * Commands are deliberately NOT in this fallback any more. An unreadable policy blob no
+ * longer takes an operator's configured commands with it: those live in their own table with
+ * their own revisions, and a preference this build cannot parse says nothing about them.
  */
-export const StoredWorkflowConfigSchema = WorkflowConfigSchema.catch(DEFAULT_WORKFLOW_CONFIG);
+export const StoredWorkflowPolicySchema = WorkflowPolicySchema.catch(DEFAULT_WORKFLOW_POLICY);
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
 export const WorkflowCheckOutcomeSchema = z.object({
@@ -4484,3 +4545,55 @@ export const OpenScoutArtifactSchema = z.object({
   target: z.enum(OPEN_TARGET_IDS),
 });
 export type OpenScoutArtifactBody = z.infer<typeof OpenScoutArtifactSchema>;
+
+/**
+ * One additional supporting file a scout asks to keep, located by a SERVER-ISSUED slot.
+ *
+ * The slot is validated as a generated `repo-NN` here rather than merely bounded, which is
+ * what stops it from being a path fragment: it becomes a directory component under
+ * `artifacts/` in the published bundle, and every other component below it comes from the
+ * checkout-relative path after its own containment check.
+ */
+const ScoutSupportingLocatorSchema = z.object({
+  repoSlot: z.string().refine(isScoutRepoSlot, "not a repository slot issued for this task"),
+  path: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars),
+});
+
+/**
+ * The MCP `submit_scout_artifacts` request.
+ *
+ * The shape is the whole security argument, so read what is ABSENT: no environment, task id,
+ * session id, cwd, work episode, producer id, archive id, destination, absolute source, digest,
+ * or completion status. A scout says what it wrote and what is worth keeping; the daemon
+ * derives which task that was, which episode, which checkouts, and where the bundle goes from
+ * the signed checkout credential on the HTTP request. A field in this body could only ever be
+ * a field used to archive on somebody else's behalf.
+ *
+ * `reportPath` is checked against the convention HERE, at the schema edge, so a path that is
+ * not `docs/reports/<slug>/report.html` is refused with the required shape before any
+ * filesystem work happens. That is a shape check and nothing more: containment, symlinks,
+ * regular-file-ness, and ignore rules are the daemon's, against a realpath'd root it chose.
+ *
+ * The zod in `src/mcp/server.ts` is a hand-written mirror of this. They are duplicated
+ * deliberately and change together; `test/mission-mcp.test.ts` catches a rename.
+ */
+export const SubmitScoutArtifactsSchema = z.object({
+  reportPath: z
+    .string()
+    .trim()
+    .min(1)
+    .max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
+    .refine((value) => scoutReportSlug(value) !== null, `the report must be at ${SCOUT_REPORT_PATH_SHAPE}`),
+  summary: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.summary),
+  tags: z
+    .array(z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.tag))
+    .max(SCOUT_SUBMISSION_LIMITS.tags)
+    .optional()
+    .default([]),
+  supporting: z
+    .array(ScoutSupportingLocatorSchema)
+    .max(SCOUT_SUBMISSION_LIMITS.supportingFiles)
+    .optional()
+    .default([]),
+});
+export type SubmitScoutArtifactsInput = z.infer<typeof SubmitScoutArtifactsSchema>;

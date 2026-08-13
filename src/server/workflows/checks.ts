@@ -3,12 +3,13 @@ import { resolveRepoPath } from "../repos.ts";
 import {
   WORKFLOW_EXECUTION_LIMITS,
   checkBlockedReason,
-  checkCommandFor,
   checkCommandSubpath,
   formatCheckCommand,
+  resolveWorkflowCommand,
   type WorkflowCheckOutcome,
   type WorkflowCheckSlot,
-  type WorkflowConfig,
+  type WorkflowCommandView,
+  type WorkflowPolicy,
 } from "@shared/workflow.ts";
 
 // What a Check node decides, and everything about that decision that does NOT need a
@@ -218,45 +219,56 @@ function trimTrailingSlash(p: string): string {
  * Decide one Check node.
  *
  * `cwd` and `repoRoot` are both taken because a binding records both and they answer
- * different halves of the same question - see `checkCommandFor`.
+ * different halves of the same question - see `resolveWorkflowCommand`.
  */
 export async function runCheck(
   input: {
     slot: WorkflowCheckSlot;
-    config: WorkflowConfig;
+    /**
+     * This slot's entry in the Global Command catalog, or null when the caller has none.
+     *
+     * Handed IN rather than looked up. Resolution is a pure function of the catalog entry
+     * and the session's location, and a runtime that queried SQLite for it would be a second
+     * reader of a catalog the daemon already owns - and one no test could drive.
+     */
+    command: WorkflowCommandView | null;
+    /**
+     * Authorisation, separately. It is asked AFTER resolution and it is not a property of
+     * the command: the same argv is authorised in one repository and not in another.
+     */
+    policy: Pick<WorkflowPolicy, "checksEnabled" | "repoAllowlist">;
     cwd: string | null;
     repoRoot: string | null;
     headSha: string | null;
   },
   deps: CheckRunDeps = {},
 ): Promise<CheckResult> {
-  const { slot, config } = input;
+  const { slot, policy } = input;
 
   // Unconfigured is asked FIRST, before consent. A repository nobody wrote a command for is
   // not a repository the operator failed to authorize, and telling them to switch checks on
   // would send them to a setting that would change nothing.
   // Derived BEFORE resolution, because a nested entry can only be chosen by comparing the
-  // session's position inside its own checkout - see `checkCommandFor`'s third route. Null
-  // (no cwd, no repository, or git could not say) declines nested matching and lands on the
-  // repository-wide entry, which is the safe direction.
+  // session's position inside its own checkout - see `resolveWorkflowCommand`'s third
+  // applicability route. Null (no cwd, no repository, or git could not say) declines nested
+  // matching and lands on the repository-wide entry, which is the safe direction.
   const checkoutSubpath = input.cwd && input.repoRoot
     ? await (deps.checkoutSubpath ?? defaultCheckoutSubpath)(input.cwd, input.repoRoot)
     : null;
-  const entry = checkCommandFor(
-    config,
+  const resolved = resolveWorkflowCommand(
+    input.command,
     { cwd: input.cwd, repoRoot: input.repoRoot, checkoutSubpath },
-    slot,
   );
-  if (!entry) {
+  if (!resolved) {
     return outcome(
       slot,
       "skipped",
       `No ${slot} command is configured for this repository, so this gate was skipped.`,
     );
   }
-  const command = entry.command;
+  const command = resolved.command;
 
-  const blocked = checkBlockedReason(config, input.cwd, input.repoRoot);
+  const blocked = checkBlockedReason(policy, input.cwd, input.repoRoot);
   if (blocked) return outcome(slot, "unavailable", blocked, { command });
 
   // A configured command with no repository to run it in cannot be located, and guessing one
@@ -279,9 +291,10 @@ export async function runCheck(
     slot,
     command,
     repoRoot: input.repoRoot,
-    // Derived from the entry that WON, not from the binding, so a nested monorepo command
-    // runs where it was configured rather than at the top of the repository.
-    workingSubpath: checkCommandSubpath(input.repoRoot, entry.repoRoot),
+    // Carried by the entry that WON, not derived from the binding, so a nested monorepo
+    // override runs where it was configured rather than at the top of the repository - and a
+    // global default, which names no repository, runs at the checkout root.
+    workingSubpath: resolved.workingSubpath,
     headSha: input.headSha,
   });
   if (result.kind === "infrastructure") return { kind: "infrastructure", reason: result.reason };

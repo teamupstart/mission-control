@@ -571,8 +571,10 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>12 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>14 tables</span></summary>
               <div class="table-list">
+                <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot (test, lint, typecheck, build) holding its optional repository-neutral default argv, revision, and timestamps. Seeded on first open, so all four rows exist before anything is configured.</p></div>
+                <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
                 <div class="table-row"><code>workflow_definitions</code><p>Mutable workflow identity, draft graph, policies, draft revision, archive state, and pointer to the current published version.</p></div>
                 <div class="table-row"><code>workflow_versions</code><p>Immutable published graph and policy snapshots, numbered within a workflow.</p></div>
                 <div class="table-row"><code>workflow_bindings</code><p>A published version attached to a stable session note key, with frozen compatibility facts, trigger and delivery modes, and repair budget.</p></div>
@@ -635,8 +637,9 @@ LIMIT 20;
                 <div class="table-row"><code>scout_archives</code><p>One row per discovered bundle under the scout library: composite archive key, producer and archive identity, format version, ready/partial/unreadable status, frozen manifest display fields, digests, relative bundle path, manifest fingerprint, counts, bytes, safe error, and reconciliation epoch.</p></div>
                 <div class="table-row"><code>scout_artifacts</code><p>One archived file per row, addressed by generated artifact id rather than by path: role, repository slot, original and archive paths, media type, bytes, and digest.</p></div>
                 <div class="table-row"><code>scout_search_segments</code><p>Bounded, case-folded text a literal search scans, including visible report text extracted once at index time. Deliberately not an FTS5 table, because FTS5 is a compile-time option.</p></div>
+                <div class="table-row"><code>scout_capture_jobs</code><p>Local coordination for archives still being written, one row per task work episode: the reserved producer and archive identity, the submitted report path, summary, tags and supporting locators, the server-derived checkout roots a resumed capture reads from, and the published bundle path once it exists. Never evidence - a finished archive needs none of it.</p></div>
               </div>
-              <p class="section-note">This family is the one exception to "durable, not live" in the other direction: these rows are a cache of directories on disk. They carry no foreign key to a task or a session, hold no evidence bytes, and are rebuilt from the library by a background reconciler if the database is deleted.</p>
+              <p class="section-note">The first three are the one exception to "durable, not live" in the other direction: they are a cache of directories on disk, carry no foreign key to a task or a session, hold no evidence bytes, and are rebuilt from the library by a background reconciler if the database is deleted. <code>scout_capture_jobs</code> is the opposite kind of row again - purely local bookkeeping about work in flight, referring to task and session ids as values with no foreign key or cascade, because a published archive has to outlive both.</p>
             </details>
           </div>
         </section>

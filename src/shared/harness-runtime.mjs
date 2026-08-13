@@ -12,10 +12,10 @@
 // from ever matching), which is exactly why these must live in one place. A .d.mts
 // alongside gives the TS side types.
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * Read a config env var by its `MISSION_` name, falling back to the names this app
@@ -173,6 +173,29 @@ export function ensureToken() {
   const minted = randomBytes(24).toString("hex");
   writeFileSync(path, minted + "\n", { mode: 0o600 });
   return minted;
+}
+
+/** The scoped bearer the Mission MCP bridge adds only to scout submission requests. */
+export const SCOUT_SUBMISSION_CREDENTIAL_HEADER = "x-mission-scout-credential";
+
+/**
+ * Where the daemon leaves the opaque credential for the one checkout an MCP process is in.
+ *
+ * The digest is a filename, never authentication. It keeps an absolute checkout path out of
+ * the state-directory layout; the signed credential inside is what the daemon authenticates.
+ */
+export function scoutSubmissionCredentialPath(cwd) {
+  const key = createHash("sha256").update(resolve(cwd)).digest("hex");
+  return join(stateDir(), "scout-submission-credentials", key);
+}
+
+/** Read this checkout's daemon-issued credential, or "" when none was provisioned. */
+export function readScoutSubmissionCredential(cwd) {
+  try {
+    return readFileSync(scoutSubmissionCredentialPath(cwd), "utf8").trim();
+  } catch {
+    return "";
+  }
 }
 
 /**

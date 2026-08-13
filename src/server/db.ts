@@ -477,6 +477,44 @@ export function openDb(): DatabaseSync {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_session_actions_normalized_name
       ON session_actions(normalized_name);
 
+    -- The Global Command catalog: what each portable workflow slot runs on this machine.
+    --
+    -- One row per built-in slot, seeded on first open, holding the repository-NEUTRAL default
+    -- argv. Normalized out of the workflows app_config blob it used to share, because a
+    -- command is no longer a preference: it has its own revision, its own compare-and-swap
+    -- write path, and its own live projection, none of which a JSON blob under one key can
+    -- give four independently edited slots.
+    --
+    -- The slot column carries NO CHECK constraint on purpose. The slot list is append-only,
+    -- and a CHECK would make shipping a fifth slot an ALTER-and-rebuild of a table holding
+    -- operator data rather than one line in a TypeScript array.
+    --
+    -- default_command_json is nullable and stores an argv array; NULL is "no machine-wide
+    -- command", which is a different fact from an empty argv and is the fresh-install state.
+    CREATE TABLE IF NOT EXISTS workflow_commands (
+      slot                 TEXT PRIMARY KEY,
+      default_command_json TEXT,
+      revision             INTEGER NOT NULL DEFAULT 1,
+      created_at           INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL
+    );
+
+    -- One repository or subdirectory exception to a slot's default command.
+    --
+    -- Separate rows rather than a JSON array on the slot, because these elements have
+    -- identity: (slot, repo_root) is the key resolution picks by and the key a duplicate
+    -- write has to be refused on, and a composite PRIMARY KEY is the only place that
+    -- refusal cannot be forgotten. repo_root is a repository root OR a path beneath one -
+    -- the monorepo override - and the longest match wins at resolution time.
+    CREATE TABLE IF NOT EXISTS workflow_command_overrides (
+      slot         TEXT NOT NULL,
+      repo_root    TEXT NOT NULL,
+      command_json TEXT NOT NULL,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (slot, repo_root)
+    );
+
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,
     -- executions, delivery identity and later audit data all share one migration boundary.
     CREATE TABLE IF NOT EXISTS workflow_definitions (
@@ -1619,6 +1657,56 @@ export function openDb(): DatabaseSync {
       PRIMARY KEY (key, ordinal)
     );
     CREATE INDEX IF NOT EXISTS idx_scout_segments_key ON scout_search_segments(key);
+
+    -- Capture COORDINATION for scouts this daemon is archiving, and nothing a reader of a
+    -- finished bundle ever needs. The three tables above are a projection of the library; this
+    -- one is the opposite - purely local bookkeeping about work in flight, keyed by an
+    -- operation key that is stable for one task work episode.
+    --
+    -- That key is what makes submission idempotent across a lost HTTP response, an MCP retry,
+    -- and a daemon restart: the first call reserves the row and generates the archive identity,
+    -- and every later call for the same episode finds it and returns the same answer instead of
+    -- publishing a second archive of the same evidence.
+    --
+    -- task_id and session_id are VALUES here, deliberately with no foreign key and no cascade.
+    -- A published archive must survive its task being deleted, so a constraint pointing at the
+    -- tasks table would make the durable thing depend on the disposable one - and a row that
+    -- outlives its task is exactly what lets a replay answer "already archived, here it is".
+    --
+    -- The source locators (repos_json) are SERVER-DERIVED checkout roots recorded while the
+    -- session still exists, because the whole point of reserving on exit is that they are about
+    -- to stop being derivable. Nothing an agent typed reaches this table.
+    CREATE TABLE IF NOT EXISTS scout_capture_jobs (
+      operation_key   TEXT NOT NULL PRIMARY KEY,
+      task_id         TEXT NOT NULL,
+      session_id      TEXT,
+      episode_id      TEXT,
+      -- reserved | submitted | published | failed. Append-only: a status this build does not
+      -- know is treated as unfinished rather than as done, which is the safe direction.
+      status          TEXT NOT NULL,
+      producer_id     TEXT,
+      archive_id      TEXT,
+      -- What the scout submitted, when it has. Null on a job reserved by an unexpected exit.
+      report_path     TEXT,
+      summary         TEXT,
+      tags_json       TEXT,
+      supporting_json TEXT,
+      -- Display and provenance the manifest needs, frozen at reservation time.
+      title           TEXT,
+      question        TEXT,
+      origin_json     TEXT,
+      repos_json      TEXT,
+      -- Where the published bundle landed under the library root, once it did.
+      relative_path   TEXT,
+      capture_status  TEXT,
+      error           TEXT,
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at INTEGER,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scout_capture_jobs_task ON scout_capture_jobs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_scout_capture_jobs_status ON scout_capture_jobs(status);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);

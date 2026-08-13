@@ -63,6 +63,7 @@ import type {
   PersonaView,
   SessionAction,
   WorkflowBindingSummary,
+  WorkflowCommandView,
   WorkflowRunSummary,
   WorkflowSummary,
 } from "@shared/workflow.ts";
@@ -509,6 +510,15 @@ export class Registry extends EventEmitter {
    * switch has to be a decision rather than an accident.
    */
   private sessionActions = new Map<string, SessionAction>();
+  /**
+   * The Global Command catalog, one entry per built-in slot and never more.
+   *
+   * Bounded by construction rather than by policy: the map's key space is the append-only
+   * slot list, so this collection cannot grow with operator data the way a Persona catalog
+   * can. Its bytes scale only with the overrides an operator wrote, each of them a path and
+   * a short argv.
+   */
+  private workflowCommands = new Map<string, WorkflowCommandView>();
   /** Bounded catalog projections only; full drafts and guidance stay on HTTP. */
   private workflowSummaries = new Map<string, WorkflowSummary>();
   /** Compact execution projections only. Graphs, evidence, and timelines stay on HTTP. */
@@ -725,6 +735,7 @@ export class Registry extends EventEmitter {
     tasks: Task[];
     personas: PersonaView[];
     sessionActions: SessionAction[];
+    workflowCommands: WorkflowCommandView[];
     workflowSummaries: WorkflowSummary[];
     workflowRunSummaries: WorkflowRunSummary[];
     workflowBindingSummaries: WorkflowBindingSummary[];
@@ -741,6 +752,7 @@ export class Registry extends EventEmitter {
       tasks: [...this.tasks.values()],
       personas: [...this.personas.values()],
       sessionActions: [...this.sessionActions.values()],
+      workflowCommands: [...this.workflowCommands.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
       workflowRunSummaries: [...this.workflowRuns.values()],
       workflowBindingSummaries: [...this.workflowBindings.values()],
@@ -1101,6 +1113,24 @@ export class Registry extends EventEmitter {
 
   removePersona(id: string): void {
     if (this.personas.delete(id)) this.emitEvent({ type: "persona_remove", id });
+  }
+
+  // ---- Global Command catalog ----
+
+  /** Boot-time catalog install. It precedes serving SSE, so no incremental emit is needed. */
+  initializeWorkflowCommands(views: WorkflowCommandView[]): void {
+    this.workflowCommands = new Map(views.map((view) => [view.slot, view]));
+  }
+
+  /**
+   * The ONLY incremental Command event, and it carries a whole slot.
+   *
+   * There is no remove twin: a built-in slot is never deleted, only emptied, and an emptied
+   * slot is still four cards' worth of live state ("Not configured") rather than an absence.
+   */
+  upsertWorkflowCommand(view: WorkflowCommandView): void {
+    this.workflowCommands.set(view.slot, view);
+    this.emitEvent({ type: "workflow_command_upsert", command: view });
   }
 
   // ---- workflow SessionAction catalog ----

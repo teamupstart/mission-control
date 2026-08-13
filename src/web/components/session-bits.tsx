@@ -13,7 +13,14 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import { costTone } from "@shared/cost.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
-import { compactTokens, contextTone, fmtUsd, repoLeaf, stateDisplay } from "../lib/format.ts";
+import {
+  compactTokens,
+  contextTone,
+  fmtUsd,
+  repoLeaf,
+  sessionTitleDetail,
+  stateDisplay,
+} from "../lib/format.ts";
 import { useInterrupting } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
@@ -1356,16 +1363,7 @@ export function SessionTitle({
   onRenameClose?: () => void;
 }): React.JSX.Element {
   const displayedName = session.name || "(unnamed)";
-  const taskTitle = session.task?.title;
-  const fullTaskTitle = session.task?.fullTitle;
-  const shortenedStem = session.name.endsWith("…") ? session.name.slice(0, -1) : null;
-  const tooltipName =
-    shortenedStem &&
-    fullTaskTitle &&
-    fullTaskTitle.length > session.name.length &&
-    (taskTitle === session.name || taskTitle?.startsWith(shortenedStem))
-      ? fullTaskTitle
-      : displayedName;
+  const tooltipName = session.name ? sessionTitleDetail(session) : displayedName;
 
   if (renaming) return <RenameEditor session={session} onClose={() => onRenameClose?.()} />;
   if (canRename) {

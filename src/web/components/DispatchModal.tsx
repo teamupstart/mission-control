@@ -42,6 +42,7 @@ import {
   type DispatchDraft,
 } from "../lib/task-draft.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
+import { repoLeaf } from "../lib/format.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import {
@@ -380,6 +381,15 @@ export function DispatchLayer({
   onEnsembleLaunched?: (runId: string) => void;
 }): React.JSX.Element | null {
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  /**
+   * The guided pass belongs to the new-dispatch draft, so it has the same lifetime.
+   *
+   * `null` means this draft has not started a pass yet. When Guided is on, the modal derives
+   * the first question from that value; the first answer replaces it with the real progress.
+   * Keeping it here means dismissing the modal loses neither answered rungs nor a completed
+   * handoff. Clear and a successful submit rotate both the draft and this state together.
+   */
+  const [guidedPass, setGuidedPass] = useState<GuidedPass | null>(null);
   // The Single vs Ensemble launch mode and the Ensemble draft live BESIDE the compose draft,
   // so switching mode or closing the modal loses neither. Edit mode is always Single: an
   // existing backlog Task cannot be turned into an Ensemble.
@@ -479,6 +489,7 @@ export function DispatchLayer({
       // Fresh, not blank: the repo just dispatched into is the one the next task is
       // most likely to want, and it was remembered before this fired.
       setDraft(freshDispatchDraft());
+      setGuidedPass(null);
       onClose();
     },
     [onClose],
@@ -546,6 +557,7 @@ export function DispatchLayer({
   /** Clear, for a fresh dispatch: blank but for the seeded repo, as it opened. */
   const onNewRevert = useCallback(() => {
     setDraft(freshDispatchDraft());
+    setGuidedPass(null);
   }, []);
 
   /**
@@ -555,6 +567,7 @@ export function DispatchLayer({
   const onEnsembleClear = useCallback(() => {
     revokeAttachments(draftRef.current.attachments);
     setDraft(freshDispatchDraft());
+    setGuidedPass(null);
     setEnsembleDraft(freshEnsembleDraft());
   }, []);
 
@@ -577,6 +590,7 @@ export function DispatchLayer({
       } else {
         revokeAttachments(draftRef.current.attachments);
         setDraft(freshDispatchDraft());
+        setGuidedPass(null);
         setEnsembleDraft(freshEnsembleDraft());
       }
       onEnsembleLaunched?.(runId);
@@ -620,6 +634,8 @@ export function DispatchLayer({
       onRevert={onNewRevert}
       onClose={onClose}
       onSubmitted={onSubmitted}
+      guidedPass={guidedPass}
+      onGuidedPassChange={setGuidedPass}
       launchMode={launchMode}
       onLaunchModeChange={chooseLaunchMode}
       ensembleDraft={ensembleDraft}
@@ -659,6 +675,8 @@ function DispatchModal({
   onRevert,
   onClose,
   onSubmitted,
+  guidedPass = null,
+  onGuidedPassChange,
   onDeleted,
   onOpenSchedule,
   launchMode = "single",
@@ -682,6 +700,9 @@ function DispatchModal({
   onRevert: () => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft) => void;
+  /** Progress for the new-dispatch draft, owned by `DispatchLayer` so close/reopen keeps it. */
+  guidedPass?: GuidedPass | null;
+  onGuidedPassChange?: (pass: GuidedPass | null) => void;
   /**
    * The edited task was deleted, so the working copy over it has nothing left to describe.
    * Edit-only - a new dispatch has no row to delete - and the layer's implementation drops
@@ -781,6 +802,10 @@ function DispatchModal({
   const busy = pending !== null;
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
+  // The primary repo field's input. Held because the Repo question is the one whose control is
+  // a text field: the pass has to put the caret in it when the question opens, and has to be
+  // able to tell a key pressed IN it from one pressed anywhere else in the dialog.
+  const repoInputRef = useRef<HTMLInputElement>(null);
   // The overlay owns the dispatch chord, but its listener is intentionally stable (see
   // `Overlay`). Point it at the current submit closure so a field edit does not leave the
   // shortcut submitting the previous render's draft.
@@ -832,17 +857,15 @@ function DispatchModal({
    */
   const guidedOfferable = guidedAppliesWith(true);
   /**
-   * Where the guided pass stands, and which option in the current question is lit.
-   *
-   * HERE rather than on `DispatchLayer`, unlike `launchMode` and the draft: the layer
-   * renders nothing while the dialog is closed, so this component's state resets on every
-   * open - which is exactly the wanted behaviour. A pass is per-opening. The draft is not,
-   * so a reopened pass seeds each question from what the draft already carries rather than
-   * from a hardcoded first entry (see `guidedSeed`).
+   * Where the guided pass stands. `null` is an untouched draft: Guided turns it into the
+   * first question at render time, without mistaking a deliberately ended pass for a fresh
+   * one. The owner lives above this per-opening modal, beside the draft, so dismiss/reopen
+   * resumes the first unanswered question instead of asking completed questions again.
+   * That persisted progress is read only where a pass applies. Edit and Ensemble forms must
+   * hold the no-pass value even while the separate new-dispatch draft has saved progress.
    */
-  const [pass, setPass] = useState<GuidedPass>(() =>
-    guidedApplies ? startGuidedPass() : NO_GUIDED_PASS,
-  );
+  const pass = guidedApplies ? (guidedPass ?? startGuidedPass()) : NO_GUIDED_PASS;
+  const setPass = (next: GuidedPass | null): void => onGuidedPassChange?.(next);
   const guidedRunning = isGuidedPassRunning(pass);
   const drop = useImageDrop({
     attachments: draft.attachments,
@@ -1155,6 +1178,10 @@ function DispatchModal({
 
   /** The options for each question, in the order the rail and the digits count them. */
   const guidedOptions: Record<GuidedStepId, readonly GuidedOption[]> = {
+    // None, and that is the Repo step's whole shape: `RepoCombobox` draws the list, filters it
+    // and arrows through it, so a second list here would be a copy of a control the operator is
+    // already looking at. See `answeredBy` on the step.
+    repo: [],
     kind: TASK_KINDS.map((k) => ({
       value: k,
       label: TASK_KIND_INFO[k].label,
@@ -1179,6 +1206,10 @@ function DispatchModal({
 
   /** Which option a question opens on: the one the draft already points at. */
   function guidedSeed(id: GuidedStepId): number {
+    // A field step draws no list, so it has no row to seed. Its equivalent is the draft's own
+    // `repoRoot` sitting in the field when the question opens, which is what makes ↵ with
+    // nothing typed a real answer rather than a skip.
+    if (id === "repo") return 0;
     const value =
       id === "kind" ? draft.kind : id === "harness" ? draft.agent : afterWorkValue;
     const at = guidedOptions[id].findIndex((option) => option.value === value);
@@ -1190,6 +1221,10 @@ function DispatchModal({
 
   /** What the answered rungs read, taken from the draft rather than from what was clicked. */
   const guidedAnswers: Partial<Record<GuidedStepId, GuidedAnswer>> = {
+    // The leaf, never the path: four rungs share one 640px row, and the part of a repo path
+    // that tells two repos apart is the last segment. The full path is still on screen in the
+    // field the rung sends you back to.
+    repo: { text: repoLeaf(draft.repoRoot) },
     kind: { text: TASK_KIND_INFO[draft.kind].label },
     harness: {
       text: AGENT_IDENTITY[draft.agent].label,
@@ -1233,10 +1268,30 @@ function DispatchModal({
     return at < 0 ? false : guidedTake(at);
   }
 
-  function guidedLeave(): void {
+  /**
+   * The Repo question has been answered - by ↵ on the field, or by taking a row from its list.
+   *
+   * It writes nothing, and that is the same division every other step keeps: `RepoCombobox`'s
+   * own `onChange` has already put the path in the draft through the very `update(...)` the
+   * ordinary form uses, exactly as an option's `commit` is the field's own handler. This moves
+   * the pass, and only that.
+   *
+   * `pass` is read from THIS render rather than through the functional form of `setPass`, like
+   * every other move here, and the Repo step is the one where it matters: two routes can fire
+   * for one ↵. Advancing twice from a stale-but-equal pass lands on the same question, where
+   * advancing twice from the live one would skip past Kind without asking it.
+   */
+  function answerGuidedRepo(): boolean {
+    if (guidedStep?.id !== "repo") return false;
+    setPass(answerGuidedStep(pass));
+    setHighlight(null);
+    return true;
+  }
+
+  const guidedLeave = useCallback((): void => {
     setPass(endGuidedPass(pass));
     setHighlight(null);
-  }
+  }, [onGuidedPassChange, pass]);
 
   /**
    * The pass's keys, offered the event before the dialog's own ⌘↵ and reporting whether it
@@ -1247,8 +1302,10 @@ function DispatchModal({
    * `App.tsx` stands down whenever any overlay is open. That is why no capture-phase listener
    * is needed - `LaunchMenu`'s pattern, which does need one, is competing with a live handler.
    *
-   * Escape is not here. `Overlay` answers it before this ever runs, and it still closes the
-   * dispatch outright, which is the ladder every other dialog in the app has.
+   * Escape is not here. For the closed-set questions, `Overlay` ends the pass before it can
+   * close Dispatch; a second press closes the modal. The Repo question's combobox consumes
+   * the first press to dismiss its own list, so that step reports it through
+   * `guidedRepoEscaped` and ends the pass there instead.
    *
    * Modifier chords fall through untouched, so ⌘↵ still dispatches and ⌘V still pastes; and
    * so does anything typed while a text field genuinely holds the caret, which the pass takes
@@ -1256,6 +1313,7 @@ function DispatchModal({
    */
   function handleGuidedKey(event: KeyboardEvent): boolean {
     if (!guidedStep || event.metaKey || event.ctrlKey || event.altKey) return false;
+    if (guidedStep.answeredBy === "field") return handleGuidedFieldKey(event);
     const target = event.target as HTMLElement | null;
     if (
       target?.tagName === "INPUT" ||
@@ -1300,6 +1358,90 @@ function DispatchModal({
     const hit = guidedList.findIndex((option) => option.hotkey === event.key.toLowerCase());
     return hit < 0 ? false : take(hit);
   }
+
+  /**
+   * A step whose control is the form's own field - Repo, and only Repo.
+   *
+   * Two keys, because `RepoCombobox` owns the rest and owning them is the reason the plan
+   * points this step at it: every character filters (DIGITS INCLUDED - repository names contain
+   * them), <kbd>↑</kbd><kbd>↓</kbd> walk its list, and <kbd>⌫</kbd> deletes a character rather
+   * than stepping back, which is the same no-op the machine would give at a first question.
+   *
+   * Gated on the caret being IN that field, so a key pressed anywhere else in the dialog - the
+   * Guided switch, the launch-mode radios - is left to the control that has focus.
+   */
+  function handleGuidedFieldKey(event: KeyboardEvent): boolean {
+    if (event.target !== repoInputRef.current) return false;
+    switch (event.key) {
+      case "Enter":
+        // The combobox takes ↵ for a highlighted row and marks it handled, and `onPick` has
+        // already moved the pass by the time this runs. What is left for this branch is the
+        // case it does NOT take: a field whose text is already a repo, where the list is not
+        // even drawn - which is the seeded ↵-alone path this step exists for.
+        if (event.defaultPrevented) return true;
+        event.preventDefault();
+        return answerGuidedRepo();
+      case "Tab":
+        event.preventDefault();
+        guidedLeave();
+        return true;
+      default:
+        // Escape is deliberately not here, and could not be: `RepoCombobox` stops that press
+        // to close its own list, so `Overlay`'s window listener never sees it. It arrives
+        // through `onEscape` on the field instead - see `guidedRepoEscaped`.
+        return false;
+    }
+  }
+
+  /**
+   * The repo field's list was dismissed with Escape, which ends the pass.
+   *
+   * Escape in this question is progressive rather than a cancel, and that is forced rather
+   * than chosen: `RepoCombobox` closes its portalled list on Escape and stops the event,
+   * deliberately, so that an open list over half a form cannot let one press close the whole
+   * dialog. The plan points this step at that control rather than at a picker of its own, so
+   * the press is the list's; what the pass does is leave WITH it. A pass still running over a
+   * question whose list has gone would be a dimmed form waiting on keys that no longer arrive.
+   *
+   * The operator gets the ladder the form already has, one rung longer: the first press
+   * closes the list and ends the pass, leaving the ordinary form with the field exactly as
+   * typed, and the second closes the modal, as Escape does in every other dialog.
+   *
+   * Reading the press earlier - on the way down to the field - was tried and is wrong in a way
+   * worth recording: ending the pass mid-dispatch moves the caret to the task box, the blur
+   * closes the list before the widget's own handler runs, and the press it would have stopped
+   * carries on to `Overlay` and closes the dialog. One Escape, both rungs.
+   */
+  function guidedRepoEscaped(): void {
+    if (guidedStep?.id === "repo") guidedLeave();
+  }
+
+  /**
+   * Repo Escape still has its first rung after the combobox has lost focus.
+   *
+   * The input owns Escape while its dropdown is open and reports the swallowed press through
+   * `guidedRepoEscaped` above. Blur closes that dropdown without a key, though, and focus can
+   * move to a live header or footer control while the Repo question remains active. In that
+   * state `Overlay` would see the next Escape first and close the whole modal.
+   *
+   * Listen in capture only for the case the combobox cannot own: an Escape whose target is
+   * not the repo input while Repo is active. `stopImmediatePropagation` is intentional because
+   * Overlay's dismiss listener is another window listener; stopping ordinary propagation at
+   * the same node would not stop that sibling listener. An Escape in the input falls through
+   * untouched, preserving the combobox's close-and-report path instead of recreating the
+   * one-press-two-rungs bug described above.
+   */
+  useEffect(() => {
+    if (pass.active !== "repo") return;
+    function onBlurredRepoEscape(event: KeyboardEvent): void {
+      if (event.key !== "Escape" || event.target === repoInputRef.current) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      guidedLeave();
+    }
+    window.addEventListener("keydown", onBlurredRepoEscape, true);
+    return () => window.removeEventListener("keydown", onBlurredRepoEscape, true);
+  }, [guidedLeave, pass.active]);
   guidedKeyRef.current = handleGuidedKey;
 
   /**
@@ -1310,7 +1452,7 @@ function DispatchModal({
    */
   useEffect(() => {
     if (ensembleMode) {
-      setPass(endGuidedPass);
+      setPass(endGuidedPass(pass));
       setHighlight(null);
     }
   }, [ensembleMode]);
@@ -1327,6 +1469,27 @@ function DispatchModal({
   useEffect(() => {
     if (!guidedRunning) intentRef.current?.focus();
   }, [guidedRunning]);
+
+  /**
+   * The Repo question puts the caret in the repo field, which is where the mount autofocus
+   * above used to go and is why it had to become conditional in the first place.
+   *
+   * The other three questions focus their own floating list (`GuidedPicker`), so this is the
+   * one step whose focus the pass has to place itself - and placing it is what makes the
+   * question answerable at all: `RepoCombobox` opens its list on focus, filters on what is
+   * typed into it, and takes ↵ on the row it has highlighted.
+   *
+   * Keyed on the pass OBJECT rather than on the active step's id, and that is the difference
+   * between working and looking like it works: Clear restarts a pass that may already be on
+   * Repo, so an id-keyed effect would not re-run and the caret would stay on the Clear button
+   * the operator just clicked - where every key that followed would be swallowed rather than
+   * answering. `startGuidedPass()` is a new object every time, so this re-runs.
+   */
+  useEffect(() => {
+    // `preventScroll` for the reason the picker gives: the dialog is fully on screen already,
+    // and the browser's scroll-into-view would nudge something that is not moving.
+    if (pass.active === "repo") repoInputRef.current?.focus({ preventScroll: true });
+  }, [pass]);
 
   /**
    * Everything the pass is not asking about recedes, and stops taking the pointer inside the
@@ -1524,8 +1687,8 @@ function DispatchModal({
     // button, and the focus call below would put the caret in the task box with the strip
     // still up - where `handleGuidedKey` stands down for a text field, so every remaining key
     // would type instead of answering.
+    setPass(guidedApplies ? startGuidedPass() : null);
     if (guidedApplies) {
-      setPass(startGuidedPass());
       setHighlight(null);
       return;
     }
@@ -1656,6 +1819,13 @@ function DispatchModal({
   }
 
   submitRef.current = submit;
+  const onOverlayEscape = useCallback((event: KeyboardEvent): boolean => {
+    if (!guidedRunning) return false;
+    event.preventDefault();
+    guidedLeave();
+    return true;
+  }, [guidedLeave, guidedRunning]);
+
   const onOverlayKeyDown = useCallback((event: KeyboardEvent): void => {
     // The guided pass gets first refusal, and refuses every modifier chord - so ⌘↵ below
     // still dispatches from inside a pass, which is the one shortcut that has to keep
@@ -1679,19 +1849,39 @@ function DispatchModal({
   // repo and title side by side above the shared composer. One JSX definition each, so the
   // two arrangements cannot drift apart in behavior.
   const repoField = (
-    <label className={`field${guidedDim}`}>
+    <label className={`field${guidedDimUnless("repo")}`}>
       <span className="field-label">
         Repo{" "}
-        <span className="field-hint">
-          {reposLoading
-            ? "indexing workspace…"
-            : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
-        </span>
+        {/* The question rides in the field's own hint slot, which is the one place on this
+            field a question can go. Below the input is where `RepoCombobox` portals its list,
+            so a question drawn there would be covered by the answers to it; above the input
+            would insert a row and move every field under it, and a pass that reflows the form
+            it is about to hand over is the one thing this interaction promises not to do.
+            Same slot, same line, a different sentence while the question stands. */}
+        {guidedStep?.id === "repo" ? (
+          <span className="dispatch-guided-ask">
+            {guidedStep.question} <kbd>↑↓</kbd> <kbd>↵</kbd> <kbd>⇥</kbd>
+          </span>
+        ) : (
+          <span className="field-hint">
+            {reposLoading
+              ? "indexing workspace…"
+              : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
+          </span>
+        )}
       </span>
       <RepoCombobox
         repos={repos}
         value={draft.repoRoot}
+        inputRef={repoInputRef}
         onChange={(v) => update({ repoRoot: v })}
+        // Taking a row from the list ANSWERS the Repo question, by the rule the other three
+        // steps already keep: a question answered through its own control moves the pass on,
+        // rather than leaving it parked over a form that has already moved. Inert unless that
+        // question is the live one.
+        onPick={() => answerGuidedRepo()}
+        // And dismissing the list ENDS the pass, on the press the dialog never sees.
+        onEscape={() => guidedRepoEscaped()}
       />
       {/* Attached secondary repos. The primary above stays exactly what it was - its own
           combobox, its own value - rather than becoming the first of a list of chips: it
@@ -1701,7 +1891,14 @@ function DispatchModal({
           reach. The chips are strictly additive, and absent entirely for a harness that
           cannot be granted write access beyond its cwd. */}
       {repoChipsShown && (
-        <div className="repo-chips">
+        // Dimmed and inert while the Repo QUESTION is up, even though the field around them is
+        // the one thing on the form that is lit. The question is which repo this task is for,
+        // and multi-repo is a form control the pass has no opinion about: left live under a lit
+        // field it reads as part of the question, and clicking it puts the caret in a second
+        // combobox the pass cannot see, where ↵ answers nothing and the operator is stuck in a
+        // question they cannot finish. They come back the moment the pass hands over. The other
+        // three steps need no rule here - the whole field is dim for them.
+        <div className={`repo-chips${guidedStep?.id === "repo" ? " dispatch-guided-dim" : ""}`}>
           {draft.extraRepoRoots.map((root, index) => (
             <span key={`${root}-${index}`} className="repo-chip">
               {/* The full path through the app's own tooltip, never a native `title` -
@@ -1882,6 +2079,7 @@ function DispatchModal({
       }`}
       role="dialog"
       ariaLabel={editing ? "Edit a backlog task" : "Dispatch an agent"}
+      onEscape={onOverlayEscape}
       onKeyDown={onOverlayKeyDown}
       // Sealed while a submit is in flight, all four dismiss routes at once. A modal
       // dismissed mid-save unmounts the only thing that can report the answer, so a
@@ -1940,7 +2138,15 @@ function DispatchModal({
             }}
           />
         )}
-        <Tooltip label={busy ? "Waiting for the dispatch to land" : "Close without dispatching (Escape)"}>
+        <Tooltip
+          label={
+            busy
+              ? "Waiting for the dispatch to land"
+              : guidedRunning
+                ? "Close without dispatching"
+                : "Close without dispatching (Escape)"
+          }
+        >
           <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
             ✕
           </button>

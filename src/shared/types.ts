@@ -26,6 +26,7 @@ import type {
   SessionActionId,
   WorkflowBindingId,
   WorkflowBindingSummary,
+  WorkflowCommandView,
   WorkflowId,
   WorkflowRunId,
   WorkflowRunSummary,
@@ -2338,6 +2339,12 @@ export type ServerEvent =
        * `personas` carries guidance; see `Registry.sessionActions` for why that is bounded.
        */
       sessionActions: SessionAction[];
+      /**
+       * The Global Command catalog: exactly one entry per built-in workflow slot, in
+       * `WORKFLOW_CHECK_SLOTS` order, whether or not it has been configured. Bounded by the
+       * append-only slot list rather than by operator data, so it rides the snapshot whole.
+       */
+      workflowCommands: WorkflowCommandView[];
       workflowSummaries: WorkflowSummary[];
       workflowRunSummaries: WorkflowRunSummary[];
       workflowBindingSummaries: WorkflowBindingSummary[];
@@ -2395,6 +2402,11 @@ export type ServerEvent =
   /** Archive emits UPSERT, not remove: the entity stays addressable by every draft naming it. */
   | { type: "session_action_upsert"; action: SessionAction }
   | { type: "session_action_remove"; id: SessionActionId }
+  /**
+   * A Command slot changed. No remove twin: a built-in slot is emptied, never deleted, and
+   * an emptied slot is still a card the operator has to be able to see.
+   */
+  | { type: "workflow_command_upsert"; command: WorkflowCommandView }
   | { type: "workflow_upsert"; workflow: WorkflowSummary }
   | { type: "workflow_remove"; id: WorkflowId }
   | { type: "workflow_run_upsert"; run: WorkflowRunSummary }

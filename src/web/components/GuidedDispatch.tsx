@@ -121,7 +121,13 @@ export function GuidedRail({
                           aria-hidden
                         />
                       )}
-                      {answer.text}
+                      {/* The text in an element of its own so it can ellipsize. Its parent is
+                          a flex box (it has to be, for the dot), and `text-overflow` does
+                          nothing to a flex container's own children - the string would be cut
+                          mid-letter with no ellipsis and no cap. This is the only text on the
+                          strip the OPERATOR chose, and so the only one that can be any length:
+                          a repo's name, a workflow's. See the width cap beside it in the CSS. */}
+                      <span className="dispatch-guided-answer">{answer.text}</span>
                     </span>
                   </button>
                 </Tooltip>
@@ -140,10 +146,10 @@ export function GuidedRail({
           );
         })}
       </ol>
-      {/* The escape, printed rather than remembered. It is the reason a pass costs nothing
-          to be wrong about: one key and you are in the form you would have had anyway. */}
+      {/* The exits, printed rather than remembered. They are why a pass costs nothing to be
+          wrong about: one key and you are in the form you would have had anyway. */}
       <span className="dispatch-guided-out">
-        <kbd>⇥</kbd> use the form
+        <kbd>⇥</kbd> / <kbd>esc</kbd> use the form
       </span>
       {/* How far through, as a hairline rather than a row of its own - it leaves with the
           strip, so the finished modal is the ordinary one. */}

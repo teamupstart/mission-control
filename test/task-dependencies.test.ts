@@ -2814,7 +2814,7 @@ test("a scout dependency waits for its merged PR, while dependency cycles are re
     backlog: true,
     dependencies: [{ type: "task", taskId: "scout-pre" }],
   });
-  tasks.complete("scout-pre", "documented the answer");
+  await tasks.complete("scout-pre", "documented the answer");
   assert.equal(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt, null);
   assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
 

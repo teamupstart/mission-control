@@ -43,6 +43,7 @@ import { startAwayWatcher } from "./away/watcher.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
 import { ScoutArchiveManager } from "./scouts/manager.ts";
+import { RegistryScoutTaskGateway } from "./scouts/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
 import { warnIfSessionAttributionDisabled } from "./cost.ts";
 import { reconcileSkills } from "./skills/config.ts";
@@ -54,6 +55,7 @@ import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
 import { SessionActionManager } from "./workflows/session-actions.ts";
+import { WorkflowCommandManager } from "./workflows/commands.ts";
 import { WorkflowManager } from "./workflows/manager.ts";
 import { EnsembleManager } from "./ensembles/manager.ts";
 import { TaskManagerGateway } from "./ensembles/member-launch.ts";
@@ -94,12 +96,41 @@ const reviews = new ReviewManager(registry);
 // ordering against `startPoller` is the contract - see the comment there.
 const sdkSessions = new SdkSupervisor(registry);
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
-const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns);
+// The portable scout library and its disposable index. CONSTRUCTED here, above `TaskManager`,
+// and that ordering is load-bearing rather than tidy: the TaskManager constructor's startup
+// reconciliation reclaims the worktree of every task whose agent did not survive the restart,
+// and a scout's report is an untracked file in exactly that tree. Building the archive owner
+// afterwards would mean the first thing a restart does is destroy the evidence the archive
+// exists to keep.
+//
+// Deliberately not STARTED here: discovery is scheduled below, after this process has won the
+// port and is answering requests. An installation whose database was deleted, or whose library
+// was restored from a backup, reindexes everything on its first pass, and a daemon that held
+// its own startup for that would 503 for as long as hashing somebody's whole scout history
+// takes.
+//
+// The watcher is a latency hint; the recurring scan is the authority. Both live inside the
+// manager, and the Registry is how a finished batch reaches open dashboards - one invalidation
+// per batch, no history in the snapshot, no browser polling.
+const scouts = new ScoutArchiveManager({
+  onChanged: () => registry.emitScoutArchiveChanged(),
+  watch: true,
+  tasks: new RegistryScoutTaskGateway(registry),
+});
+// The last-chance reservation. `onSessionExit` fires inside `beginEviction`, while the session
+// row, its task binding and its worktree paths can all still be derived - which is precisely
+// what a capture needs and precisely what `session_remove` no longer has.
+registry.onSessionExit((session) => scouts.reserveOnExit(session));
+const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns, scouts);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
 // read through one connection and one transaction boundary.
 const sessionActions = new SessionActionManager(registry, personas.store);
+// Shares the same store handle for the same reason, and is constructed BEFORE the workflow
+// manager: its constructor runs the one-time legacy command import, and the engine below
+// resolves every Check through the catalog that import populates.
+const workflowCommands = new WorkflowCommandManager(registry, personas.store);
 // One ceiling on tool-less review work for the whole daemon, constructed here and injected,
 // never reached for as a module global. Workflow Persona attempts and context compaction
 // share it today. The Foreman is a separate process and unrelated background jobs keep
@@ -338,21 +369,6 @@ const keepAwake = new KeepAwakeManager({
 });
 registry.setKeepAwakeStatus(keepAwake.status());
 
-// The portable scout library and its disposable index. CONSTRUCTED here so the routes never
-// see a daemon without it, but deliberately not STARTED here: discovery is scheduled below,
-// after this process has won the port and is answering requests. An installation whose
-// database was deleted, or whose library was restored from a backup, reindexes everything on
-// its first pass, and a daemon that held its own startup for that would 503 for as long as
-// hashing somebody's whole scout history takes.
-//
-// The watcher is a latency hint; the recurring scan is the authority. Both live inside the
-// manager, and the Registry is how a finished batch reaches open dashboards - one
-// invalidation per batch, no history in the snapshot, no browser polling.
-const scouts = new ScoutArchiveManager({
-  onChanged: () => registry.emitScoutArchiveChanged(),
-  watch: true,
-});
-
 const app = buildApp(
   registry,
   reviews,
@@ -371,6 +387,7 @@ const app = buildApp(
   undefined,
   keepAwake,
   scouts,
+  workflowCommands,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -402,6 +419,13 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
   scouts.start();
+  // And the captures this daemon already owed when it stopped. Separate from discovery
+  // because they are different jobs: discovery indexes bundles that exist, this one finishes
+  // writing bundles that do not yet. It runs after the port for the same reason, and it skips
+  // any scout still waiting on a live agent - that one settles through the ordinary paths.
+  void scouts.recoverJobs().catch((error: unknown) => {
+    console.warn("[mission-control] could not resume scout captures:", error);
+  });
   const where = hasDist
     ? `http://${HOST}:${info.port}`
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;

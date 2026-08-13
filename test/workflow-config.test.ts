@@ -6,19 +6,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { repoAllowlisted } from "../src/shared/allowlist.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
-import { DEFAULT_WORKFLOW_CONFIG } from "../src/shared/workflow.ts";
+import { DEFAULT_WORKFLOW_CONFIG, DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
+import { WorkflowConfigSchema } from "../src/shared/protocol.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-config-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { getWorkflowConfig, setWorkflowConfig } = await import("../src/server/workflows/config.ts");
-const { setAppConfig } = await import("../src/server/db.ts");
+const { getWorkflowPolicy, legacyCheckCommandsToImport, setWorkflowPolicy } =
+  await import("../src/server/workflows/config.ts");
+const { getAppConfig, setAppConfig } = await import("../src/server/db.ts");
 const { resolveRepoRoot } = await import("../src/server/repos.ts");
 
 test("workflow live consent defaults ON with an empty allowlist, which authorises nothing", () => {
   assert.equal(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID);
-  assert.deepEqual(getWorkflowConfig(), DEFAULT_WORKFLOW_CONFIG);
+  assert.deepEqual(getWorkflowPolicy(), DEFAULT_WORKFLOW_POLICY);
 
   // The pair that makes the flipped default safe, asserted together rather than separately:
   // delivery is authorised machine-wide AND there is no repository it is authorised in. A
@@ -28,15 +30,15 @@ test("workflow live consent defaults ON with an empty allowlist, which authorise
   assert.equal(repoAllowlisted("/repo", "/repo", DEFAULT_WORKFLOW_CONFIG.repoAllowlist), false);
 
   assert.deepEqual(
-    setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] }),
-    { ...DEFAULT_WORKFLOW_CONFIG, repoAllowlist: ["/repo"] },
+    setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] }),
+    { ...DEFAULT_WORKFLOW_POLICY, repoAllowlist: ["/repo"] },
   );
   assert.deepEqual(
-    setWorkflowConfig({ liveEnabled: false, repoAllowlist: [] }),
-    { ...DEFAULT_WORKFLOW_CONFIG, liveEnabled: false },
+    setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [] }),
+    { ...DEFAULT_WORKFLOW_POLICY, liveEnabled: false },
   );
-  assert.throws(() => setWorkflowConfig({ liveEnabled: true, repoAllowlist: [""] }));
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [] });
+  assert.throws(() => setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [""] }));
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
 });
 
 test("an operator who explicitly turned live delivery off keeps it off across the flip", () => {
@@ -45,23 +47,23 @@ test("an operator who explicitly turned live delivery off keeps it off across th
   // answered question and must survive, or the flip silently re-authorises terminal writes for
   // the one operator who said no.
   setAppConfig("workflows", { liveEnabled: false, repoAllowlist: ["/repo"] });
-  assert.equal(getWorkflowConfig().liveEnabled, false);
+  assert.equal(getWorkflowPolicy().liveEnabled, false);
 
   // And the never-opened case, which is the flip's whole point: no key at all reads as ON.
   setAppConfig("workflows", { repoAllowlist: ["/repo"] });
-  assert.equal(getWorkflowConfig().liveEnabled, true);
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [] });
+  assert.equal(getWorkflowPolicy().liveEnabled, true);
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
 });
 
 test("the dispatch Workflow default is durable and explicit none clears it", () => {
-  const selected = setWorkflowConfig({
+  const selected = setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
     defaultWorkflowId: "workflow-review",
   });
   assert.equal(selected.defaultWorkflowId, "workflow-review");
-  assert.equal(getWorkflowConfig().defaultWorkflowId, "workflow-review");
-  const cleared = setWorkflowConfig({
+  assert.equal(getWorkflowPolicy().defaultWorkflowId, "workflow-review");
+  const cleared = setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
     defaultWorkflowId: null,
@@ -73,7 +75,7 @@ test("task creation owns Workflow inheritance and preserves explicit opt-outs", 
   const { Registry } = await import("../src/server/registry.ts");
   const { TaskManager } = await import("../src/server/tasks.ts");
   const tasks = new TaskManager(new Registry());
-  setWorkflowConfig({
+  setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
     defaultWorkflowId: "workflow-review",
@@ -98,7 +100,7 @@ test("task creation owns Workflow inheritance and preserves explicit opt-outs", 
     },
   };
   assert.equal(tasks.create(input, scheduledOptions).workflowId, "workflow-review");
-  setWorkflowConfig({
+  setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
     defaultWorkflowId: null,
@@ -173,50 +175,57 @@ test("canonical repo roots allow linked worktree identity but reject path-prefix
 });
 
 test("removing consent leaves no live authorization", () => {
-  const config = setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const config = setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   assert.equal(config.liveEnabled && repoAllowlisted("/repo/pkg", "/repo", config.repoAllowlist), true);
-  const removed = setWorkflowConfig({ liveEnabled: true, repoAllowlist: [] });
+  const removed = setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
   assert.equal(removed.liveEnabled && repoAllowlisted("/repo/pkg", "/repo", removed.repoAllowlist), false);
 });
 
-// ---- Check commands and their consent ----
+// ---- Command consent, and the catalog that no longer lives beside it ----
 //
 // The read and the write ask DIFFERENT questions of the same shape, and this is where that
-// split is held to account. `getWorkflowConfig` is on the path of every binding gate, every
+// split is held to account. `getWorkflowPolicy` is on the path of every binding gate, every
 // delivery decision, every check and the retention sweep, so a stored blob a newer build
 // wrote must degrade rather than take all of them down. The PUT route is the opposite: a
 // value that silently degraded there would revert in the panel with nothing saying why.
 
-test("check consent defaults off with no commands, and survives a round trip", () => {
-  assert.equal(getWorkflowConfig().checksEnabled, false);
-  assert.deepEqual(getWorkflowConfig().checkCommands, []);
+test("check consent defaults off, and the policy blob no longer carries commands", () => {
+  assert.equal(getWorkflowPolicy().checksEnabled, false);
+  assert.equal("checkCommands" in getWorkflowPolicy(), false);
 
-  const saved = setWorkflowConfig({
+  const saved = setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: ["/repo"],
     checksEnabled: true,
+    // Sent by an old caller and DROPPED rather than stored: the catalog is the only durable
+    // command authority, and a second copy under this key is exactly the drift the split
+    // exists to prevent. The route-level adapter is what routes it into the catalog.
     checkCommands: [{ repoRoot: "/repo", slot: "test", command: ["npm", "test"] }],
-  });
+  } as never);
   assert.equal(saved.checksEnabled, true);
-  assert.deepEqual(saved.checkCommands, [{ repoRoot: "/repo", slot: "test", command: ["npm", "test"] }]);
-  assert.deepEqual(getWorkflowConfig(), saved);
+  assert.equal("checkCommands" in saved, false);
+  assert.deepEqual(getWorkflowPolicy(), saved);
+  assert.equal(
+    "checkCommands" in (getAppConfig<Record<string, unknown>>("workflows") ?? {}),
+    false,
+    "nothing may write a command list back into app_config after the cutover",
+  );
 
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [] });
-  assert.deepEqual(getWorkflowConfig(), DEFAULT_WORKFLOW_CONFIG);
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
+  assert.deepEqual(getWorkflowPolicy(), DEFAULT_WORKFLOW_POLICY);
 });
 
-test("a config written before checks existed still reads, with both fields defaulted off", () => {
+test("a config written before checks existed still reads, with consent defaulted off", () => {
   // The upgrade path: `.default()` covers a blob that simply lacks the fields, and it must
   // land on the SAFE side rather than inheriting anything from the fields around it.
   setAppConfig("workflows", { liveEnabled: true, repoAllowlist: ["/repo"] });
-  const read = getWorkflowConfig();
+  const read = getWorkflowPolicy();
   assert.equal(read.liveEnabled, true);
   assert.equal(read.checksEnabled, false);
-  assert.deepEqual(read.checkCommands, []);
-  setWorkflowConfig({ liveEnabled: false, repoAllowlist: [] });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [] });
 });
 
-test("an unreadable stored config falls back to defaults rather than throwing", () => {
+test("an unreadable stored policy falls back to defaults rather than throwing", () => {
   // A downgrade, or a hand-edited row. Every field is exercised, not only the new ones:
   // before the tolerant read the whole subsystem threw on any of these.
   for (const blob of [
@@ -224,9 +233,6 @@ test("an unreadable stored config falls back to defaults rather than throwing", 
     { liveEnabled: false, repoAllowlist: [""] },
     { liveEnabled: false, repoAllowlist: [], retention: { rawEvidenceDays: -1 } },
     { liveEnabled: false, repoAllowlist: [], checksEnabled: "sure" },
-    { liveEnabled: false, repoAllowlist: [], checkCommands: [{ repoRoot: "/r", slot: "nope", command: ["x"] }] },
-    { liveEnabled: false, repoAllowlist: [], checkCommands: [{ repoRoot: "/r", slot: "test", command: [] }] },
-    { liveEnabled: false, repoAllowlist: [], checkCommands: [{ repoRoot: "/r", slot: "test", command: [""] }] },
     "not even an object",
     [1, 2, 3],
   ]) {
@@ -235,39 +241,77 @@ test("an unreadable stored config falls back to defaults rather than throwing", 
     // coming back empty, not the consent boolean coming back off - `liveEnabled` now defaults
     // on, and an argument resting on the boolean would already be wrong. A field-by-field
     // salvage is the dangerous one: it could keep a parsed allowlist beside a defaulted flag.
-    const degraded = getWorkflowConfig();
-    assert.deepEqual(degraded, DEFAULT_WORKFLOW_CONFIG, `${JSON.stringify(blob)} should degrade`);
+    const degraded = getWorkflowPolicy();
+    assert.deepEqual(degraded, DEFAULT_WORKFLOW_POLICY, `${JSON.stringify(blob)} should degrade`);
     assert.equal(
       repoAllowlisted("/repo", "/repo", degraded.repoAllowlist),
       false,
       `${JSON.stringify(blob)} must authorise no repository after degrading`,
     );
   }
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
+});
+
+test("an unreadable POLICY no longer takes an operator's commands down with it", () => {
+  // The consequence of the split, stated as its own case. A preference this build cannot
+  // parse says nothing about the commands: those are rows with their own revisions, and the
+  // old whole-blob fallback used to silently empty them alongside the allowlist.
+  setAppConfig("workflows", { liveEnabled: "yes", checkCommands: "not a list" });
+  assert.deepEqual(getWorkflowPolicy(), DEFAULT_WORKFLOW_POLICY);
+  // And the migration parser refuses the same blob's command field without throwing.
+  assert.deepEqual(legacyCheckCommandsToImport(), []);
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
 });
 
 test("the WRITE path still refuses what the read path tolerates", () => {
   // `.catch()` on a write turns a bad value from the panel into a silent no-op: the field
   // reverts on the next poll and nothing says why. A throw here is a 400 an operator reads.
-  assert.throws(() => setWorkflowConfig({
+  assert.throws(() => setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [""] }));
+  assert.throws(() => setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
-    checkCommands: [{ repoRoot: "/r", slot: "test", command: [] }],
+    retention: { rawEvidenceDays: 0 },
   }));
-  assert.throws(() => setWorkflowConfig({
-    liveEnabled: false,
-    repoAllowlist: [],
-    checkCommands: [{ repoRoot: "", slot: "test", command: ["npm"] }],
-  }));
-  assert.throws(() => setWorkflowConfig({
-    liveEnabled: false,
-    repoAllowlist: [],
+
+  // And the legacy command bounds are unchanged, still refused by the schema the config PUT
+  // parses - they simply refuse a REQUEST now rather than a stored blob.
+  for (const checkCommands of [
+    [{ repoRoot: "/r", slot: "test", command: [] }],
+    [{ repoRoot: "", slot: "test", command: ["npm"] }],
     // An argv nobody bounded is a durable blob nobody bounded.
-    checkCommands: [{ repoRoot: "/r", slot: "test", command: Array.from({ length: 40 }, () => "x") }],
-  }));
-  assert.throws(() => setWorkflowConfig({
-    liveEnabled: false,
-    repoAllowlist: [],
-    checkCommands: [{ repoRoot: "/r", slot: "test", command: ["npm", "x".repeat(5_000)] }],
-  }));
+    [{ repoRoot: "/r", slot: "test", command: Array.from({ length: 40 }, () => "x") }],
+    [{ repoRoot: "/r", slot: "test", command: ["npm", "x".repeat(5_000)] }],
+    [{ repoRoot: "/r", slot: "nope", command: ["x"] }],
+  ]) {
+    assert.equal(
+      WorkflowConfigSchema.safeParse({ liveEnabled: false, repoAllowlist: [], checkCommands })
+        .success,
+      false,
+      `${JSON.stringify(checkCommands)} must still be refused`,
+    );
+  }
+});
+
+test("the migration parser keeps every valid legacy row and drops only the invalid ones", () => {
+  // Deliberately NOT the tolerant whole-blob read. That answers "is this readable?" and would
+  // report an otherwise fine config with one bad row as having no commands at all, silently
+  // dropping every good row beside it.
+  setAppConfig("workflows", {
+    liveEnabled: true,
+    repoAllowlist: ["/repo"],
+    checkCommands: [
+      { repoRoot: "/repo", slot: "test", command: ["npm", "test"] },
+      { repoRoot: "/repo", slot: "nope", command: ["x"] },
+      { repoRoot: "/repo", slot: "lint", command: [] },
+      { repoRoot: "/repo/pkg", slot: "test", command: ["pnpm", "test"] },
+    ],
+  });
+  assert.deepEqual(legacyCheckCommandsToImport(), [
+    { slot: "test", repoRoot: "/repo", command: ["npm", "test"] },
+    { slot: "test", repoRoot: "/repo/pkg", command: ["pnpm", "test"] },
+  ]);
+  // Neither a non-object blob nor a missing field is an error; both import nothing.
+  assert.deepEqual(legacyCheckCommandsToImport("not an object"), []);
+  assert.deepEqual(legacyCheckCommandsToImport({ liveEnabled: true }), []);
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
 });

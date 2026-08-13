@@ -101,9 +101,7 @@ test("the Settings panel and the dispatch modal are one preference, in both dire
   await toFleet(dashboard);
   const guidedDialog = await openDispatch(dashboard);
   await expect(rail(guidedDialog)).toBeVisible();
-  await expect(
-    guidedDialog.getByRole("listbox", { name: "What kind of run is this?" }),
-  ).toBeVisible();
+  await expect(guidedDialog.getByText("Which repo is this for?")).toBeVisible();
   await expect(guidedDialog.getByRole("switch", { name: "Guided" })).toHaveAttribute(
     "aria-checked",
     "true",

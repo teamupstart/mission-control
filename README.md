@@ -21,8 +21,9 @@ to the backlog and workflow that will carry it through review.
 Turn on **Guided** in the dispatch modal's header and <kbd>+</kbd> asks the three decisions
 that actually change - kind, harness, what runs after the work - as single keystrokes, then
 hands over that same form with the answers set and the caret in the task box. <kbd>⇥</kbd>
-leaves the pass at any point and keeps what it has. It ships off; the switch turns it on, and
-so does **Settings → Dispatch**, which is where ⌘K finds it by name. See
+leaves the pass at any point and keeps what it has. While the questions are up, dropping an
+image anywhere on the window attaches it to that same task. It ships off; the switch turns it
+on, and so does **Settings → Dispatch**, which is where ⌘K finds it by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
 
 A task can attach more than one repository. Dispatch it and you get **one** agent session

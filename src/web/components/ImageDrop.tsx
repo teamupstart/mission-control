@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Attachment } from "@shared/attachments.ts";
 import { uploadImage } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -80,10 +80,13 @@ export function useImageDrop({
   attachments,
   onChange,
   disabled = false,
+  windowTarget = false,
 }: {
   attachments: PendingAttachment[];
   onChange: (next: PendingAttachment[]) => void;
   disabled?: boolean;
+  /** Let a transient mode accept the same drop anywhere in the browser window. */
+  windowTarget?: boolean;
 }): ImageDrop {
   const [dropping, setDropping] = useState(false);
   // Dragging over a child fires dragleave on the parent, so a boolean would flicker
@@ -137,9 +140,84 @@ export function useImageDrop({
     [onChange],
   );
 
+  /**
+   * The common sliver of React's synthetic drag event and the browser's native one.
+   * Native `dataTransfer` is nullable, so the shared handlers keep that honest even
+   * though React guarantees it on the compose box callbacks.
+   */
+  type ImageDragEvent = {
+    dataTransfer: DataTransfer | null;
+    preventDefault: () => void;
+  };
+
   /** True when the drag carries files at all - a dragged link or selection doesn't. */
-  const carriesFiles = (e: React.DragEvent): boolean =>
-    Array.from(e.dataTransfer.types).includes("Files");
+  const carriesFiles = (e: ImageDragEvent): boolean =>
+    e.dataTransfer !== null && Array.from(e.dataTransfer.types).includes("Files");
+
+  const onDragEnter = useCallback(
+    (e: ImageDragEvent) => {
+      if (disabled || !carriesFiles(e)) return;
+      e.preventDefault();
+      depth.current++;
+      setDropping(true);
+    },
+    [disabled],
+  );
+  const onDragOver = useCallback(
+    (e: ImageDragEvent) => {
+      if (disabled || !carriesFiles(e) || e.dataTransfer === null) return;
+      // Without this the browser navigates to the dropped file and the page is gone.
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    },
+    [disabled],
+  );
+  const onDragLeave = useCallback(
+    (e: ImageDragEvent) => {
+      if (disabled || !carriesFiles(e)) return;
+      e.preventDefault();
+      depth.current = Math.max(0, depth.current - 1);
+      if (depth.current === 0) setDropping(false);
+    },
+    [disabled],
+  );
+  const onDrop = useCallback(
+    (e: ImageDragEvent) => {
+      if (disabled || !carriesFiles(e) || e.dataTransfer === null) return;
+      e.preventDefault();
+      // A drop ends the drag outright; a leave for each enter never arrives.
+      depth.current = 0;
+      setDropping(false);
+      addFiles(Array.from(e.dataTransfer.files));
+    },
+    [addFiles, disabled],
+  );
+
+  /**
+   * Guided dispatch temporarily makes the Task box inert so its mnemonic keys cannot type.
+   * While that phase owns the dialog, route the exact same handlers from the window instead.
+   * The opt-in listener disappears at handoff, leaving every ordinary compose surface scoped
+   * to its own box as before.
+   */
+  useEffect(() => {
+    if (!windowTarget) return;
+    const enter = (e: DragEvent): void => onDragEnter(e);
+    const over = (e: DragEvent): void => onDragOver(e);
+    const leave = (e: DragEvent): void => onDragLeave(e);
+    const dropped = (e: DragEvent): void => onDrop(e);
+    window.addEventListener("dragenter", enter);
+    window.addEventListener("dragover", over);
+    window.addEventListener("dragleave", leave);
+    window.addEventListener("drop", dropped);
+    return () => {
+      window.removeEventListener("dragenter", enter);
+      window.removeEventListener("dragover", over);
+      window.removeEventListener("dragleave", leave);
+      window.removeEventListener("drop", dropped);
+      depth.current = 0;
+      setDropping(false);
+    };
+  }, [onDragEnter, onDragLeave, onDragOver, onDrop, windowTarget]);
 
   return {
     dropping,
@@ -147,32 +225,10 @@ export function useImageDrop({
     addFiles,
     remove,
     dropProps: {
-      onDragEnter: (e) => {
-        if (disabled || !carriesFiles(e)) return;
-        e.preventDefault();
-        depth.current++;
-        setDropping(true);
-      },
-      onDragOver: (e) => {
-        if (disabled || !carriesFiles(e)) return;
-        // Without this the browser navigates to the dropped file and the page is gone.
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      },
-      onDragLeave: (e) => {
-        if (disabled || !carriesFiles(e)) return;
-        e.preventDefault();
-        depth.current = Math.max(0, depth.current - 1);
-        if (depth.current === 0) setDropping(false);
-      },
-      onDrop: (e) => {
-        if (disabled || !carriesFiles(e)) return;
-        e.preventDefault();
-        // A drop ends the drag outright; a leave for each enter never arrives.
-        depth.current = 0;
-        setDropping(false);
-        addFiles(Array.from(e.dataTransfer.files));
-      },
+      onDragEnter,
+      onDragOver,
+      onDragLeave,
+      onDrop,
     },
     // A screenshot on the clipboard is the same gesture by another route (⌃⇧⌘4),
     // and arrives as a file on the paste event. Pasted TEXT must fall through

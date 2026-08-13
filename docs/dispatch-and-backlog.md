@@ -67,7 +67,9 @@ finish in is the ordinary one.
 click an answered rung to go back to it, or ignore the list entirely and use the field's own
 control - the question it is about stays live, and using it answers it and moves the pass on
 just as the keyboard would. **Clear** puts the form back where it opened, which for a guided
-dispatch means back at the first question.
+dispatch means back at the first question. The Task box is inert while those questions own
+the dialog, but image drops are not: drop an image anywhere on the window and it attaches to
+that same Task draft without advancing the pass.
 
 **It is a different way to fill the form, never a second opinion about what a dispatch
 means.** Every answer is written through the same control the form offers, so the rules below

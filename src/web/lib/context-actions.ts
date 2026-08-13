@@ -127,62 +127,67 @@ function fieldActions(target: Element): ContextAction[] {
   const start = field.selectionStart ?? 0;
   const end = field.selectionEnd ?? start;
   const picked = end > start ? field.value.slice(start, end) : "";
+  const mutable = !field.readOnly && !field.disabled;
   const actions: ContextAction[] = [];
 
   if (picked !== "") {
-    actions.push({
-      id: "field-cut",
-      label: "Cut",
-      hint: "selection",
-      description: "Cut the selected text to the clipboard",
-      kind: "cut",
-      payload: picked,
-      run: async (environment) => {
-        if (await environment.copy(picked, "Cut")) {
-          replaceFieldRange(field, start, end, "", "deleteByCut");
-        }
-      },
-    });
+    if (mutable) {
+      actions.push({
+        id: "field-cut",
+        label: "Cut",
+        hint: "selection",
+        description: "Cut the selected text to the clipboard",
+        kind: "cut",
+        payload: picked,
+        run: async (environment) => {
+          if (await environment.copy(picked, "Cut")) {
+            replaceFieldRange(field, start, end, "", "deleteByCut");
+          }
+        },
+      });
+    }
     actions.push(clipboardAction("field-copy", "Copy", picked, "selection"));
   }
 
-  const paste = (asQuote: boolean): ContextAction => ({
-    id: asQuote ? "field-paste-quote" : "field-paste",
-    label: asQuote ? "Paste as quote" : "Paste",
-    hint: "⌘V",
-    description: asQuote
-      ? "Paste clipboard text as a Markdown quote"
-      : "Paste clipboard text",
-    kind: asQuote ? "paste-quote" : "paste",
-    payload: "",
-    run: async (environment) => {
-      try {
-        const text = await environment.readClipboard();
-        if (text === "") {
+  if (mutable) {
+    const paste = (asQuote: boolean): ContextAction => ({
+      id: asQuote ? "field-paste-quote" : "field-paste",
+      label: asQuote ? "Paste as quote" : "Paste",
+      hint: "⌘V",
+      description: asQuote
+        ? "Paste clipboard text as a Markdown quote"
+        : "Paste clipboard text",
+      kind: asQuote ? "paste-quote" : "paste",
+      payload: "",
+      run: async (environment) => {
+        try {
+          const text = await environment.readClipboard();
+          if (text === "") {
+            field.focus({ preventScroll: true });
+            environment.status("Clipboard is empty");
+            return;
+          }
+          replaceFieldRange(
+            field,
+            start,
+            end,
+            asQuote ? quoteClipboardText(text) : text,
+            "insertFromPaste",
+          );
+          environment.status(asQuote ? "Pasted as quote" : "Pasted", text);
+        } catch {
           field.focus({ preventScroll: true });
-          environment.status("Clipboard is empty");
-          return;
+          environment.status(
+            "Paste needs clipboard permission",
+            "Press ⌘V instead. It always works.",
+            true,
+          );
         }
-        replaceFieldRange(
-          field,
-          start,
-          end,
-          asQuote ? quoteClipboardText(text) : text,
-          "insertFromPaste",
-        );
-        environment.status(asQuote ? "Pasted as quote" : "Pasted", text);
-      } catch {
-        field.focus({ preventScroll: true });
-        environment.status(
-          "Paste needs clipboard permission",
-          "Press ⌘V instead. It always works.",
-          true,
-        );
-      }
-    },
-  });
+      },
+    });
 
-  actions.push(paste(false), paste(true));
+    actions.push(paste(false), paste(true));
+  }
   return actions;
 }
 

@@ -56,10 +56,19 @@ function selectionContainsPoint(selection: Selection, point: ContextPoint): bool
   return false;
 }
 
-function liveSelection(): string {
+function liveSelection(target: Element | null = null): string {
   const selection = window.getSelection();
   const text = selection?.toString() ?? "";
-  return text.trim() === "" ? "" : text;
+  if (!selection || text.trim() === "") return "";
+  if (!target) return text;
+  for (let index = 0; index < selection.rangeCount; index++) {
+    try {
+      if (selection.getRangeAt(index).intersectsNode(target)) return text;
+    } catch {
+      // A detached target cannot own the selection that remains in the live document.
+    }
+  }
+  return "";
 }
 
 function keyboardAnchor(target: Element): ContextPoint {
@@ -104,9 +113,14 @@ export const ContextMenuHost = forwardRef<ContextMenuHostHandle>(function Contex
 
   useEffect(() => () => clearNoticeTimer(), [clearNoticeTimer]);
 
-  const open = useCallback((target: Element, anchor: ContextPoint, pointUrl: string | null) => {
+  const open = useCallback((
+    target: Element,
+    anchor: ContextPoint,
+    pointUrl: string | null,
+    selectionText = liveSelection(),
+  ) => {
     const actions = resolveContextActions(target, {
-      selectionText: liveSelection(),
+      selectionText,
       pointUrl,
     });
     if (actions.length === 0) return false;
@@ -122,7 +136,7 @@ export const ContextMenuHost = forwardRef<ContextMenuHostHandle>(function Contex
 
   const openFromKeyboard = useCallback((target: Element | null): boolean => {
     if (!target) return false;
-    return open(target, keyboardAnchor(target), null);
+    return open(target, keyboardAnchor(target), null, liveSelection(target));
   }, [open]);
 
   useImperativeHandle(forwardedRef, () => ({ openFromKeyboard }), [openFromKeyboard]);

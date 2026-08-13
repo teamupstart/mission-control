@@ -15,7 +15,13 @@ interface FakeElementOptions {
   tagName?: string;
   text?: string;
   href?: string;
-  field?: { value: string; start: number | null; end: number | null };
+  field?: {
+    value: string;
+    start: number | null;
+    end: number | null;
+    readOnly?: boolean;
+    disabled?: boolean;
+  };
   closest?: Record<string, Element | null>;
 }
 
@@ -26,6 +32,8 @@ function fakeElement(options: FakeElementOptions = {}): Element {
     value: options.field?.value ?? "",
     selectionStart: options.field?.start ?? null,
     selectionEnd: options.field?.end ?? null,
+    readOnly: options.field?.readOnly ?? false,
+    disabled: options.field?.disabled ?? false,
     closest(selector: string): Element | null {
       if (options.closest && selector in options.closest) return options.closest[selector] ?? null;
       if (selector === "a[href]" && options.href) return self as unknown as Element;
@@ -92,6 +100,19 @@ test("text fields win the ordered item tier even when another matcher could clai
     "Paste as quote",
   ]);
   assert.equal(laterMatcherRan, false);
+});
+
+test("readonly and disabled fields expose copying but no mutating actions", () => {
+  const locked = (state: "readOnly" | "disabled", start: number, end: number): Element =>
+    fakeElement({
+      tagName: "INPUT",
+      field: { value: "locked words", start, end, [state]: true },
+    });
+
+  assert.deepEqual(labels(locked("readOnly", 0, 6)), ["Copy"]);
+  assert.deepEqual(labels(locked("disabled", 0, 6)), ["Copy"]);
+  assert.deepEqual(labels(locked("readOnly", 2, 2)), []);
+  assert.deepEqual(labels(locked("disabled", 2, 2)), []);
 });
 
 function action(id: string, label: string, payload: string, kind = "copy"): ContextAction {

@@ -80,9 +80,23 @@ test("context actions work by pointer and keyboard without leaking grid shortcut
   await dashboard.mouse.click(point.x, point.y, { button: "right" });
   let menu = dashboard.getByRole("menu", { name: "Actions" });
   await expect(menu).toBeVisible();
-  await menu.getByRole("menuitem", { name: "Copy" }).click();
+  await menu.getByRole("menuitem", { name: "Copy", exact: true }).click();
   await expect(dashboard.getByRole("status").filter({ hasText: "Copied" })).toBeVisible();
   expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(SELECTED);
+
+  // Keyboard invocation scopes document selections to the focused target. A selection left
+  // elsewhere cannot replace this link's text payload or manufacture actions for a button.
+  const link = sent.locator(`a[href="${URL}"]`);
+  await expect(link).toHaveText("the context docs");
+  await link.focus();
+  await dashboard.keyboard.press("Shift+F10");
+  menu = dashboard.getByRole("menu", { name: "Actions" });
+  await menu.getByRole("menuitem", { name: "Copy", exact: true }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("the context docs");
+  await selectPhrase(body, SELECTED);
+  await card.getByRole("button", { name: "Collapse conversation" }).focus();
+  await dashboard.keyboard.press("Shift+F10");
+  await expect(dashboard.getByRole("menu", { name: "Actions" })).toHaveCount(0);
 
   // The same live selection is no longer relevant when the pointer moves elsewhere. The host
   // collapses it before resolving, so it cannot offer Copy for words the reader did not point at.
@@ -92,8 +106,6 @@ test("context actions work by pointer and keyboard without leaking grid shortcut
   expect(await dashboard.evaluate(() => window.getSelection()?.toString())).toBe("");
 
   // A worded external link keeps its text and destination as separate choices.
-  const link = sent.locator(`a[href="${URL}"]`);
-  await expect(link).toHaveText("the context docs");
   await link.click({ button: "right" });
   menu = dashboard.getByRole("menu", { name: "Actions" });
   await expect(menu.getByRole("menuitem")).toHaveText(["Copylink text", "Copy URL", "Open link"]);
@@ -154,7 +166,29 @@ test("context actions work by pointer and keyboard without leaking grid shortcut
   await expect(composer).toHaveValue("pasted this draft");
   await expect(dashboard.getByRole("status").filter({ hasText: "Pasted" })).toBeVisible();
 
+  // A readonly field can still copy its selection, but never offers an action that mutates it.
+  const locked = dashboard.getByLabel("Readonly context menu specimen");
+  await dashboard.evaluate(() => {
+    const field = document.createElement("input");
+    field.setAttribute("aria-label", "Readonly context menu specimen");
+    field.value = "locked words";
+    field.readOnly = true;
+    field.style.position = "fixed";
+    field.style.left = "12px";
+    field.style.bottom = "12px";
+    document.body.append(field);
+    field.focus();
+    field.setSelectionRange(0, 6);
+  });
+  await dashboard.keyboard.press("Shift+F10");
+  menu = dashboard.getByRole("menu", { name: "Actions" });
+  await expect(menu.getByRole("menuitem")).toHaveText(["Copyselection"]);
+  await dashboard.keyboard.press("Escape");
+  await expect(locked).toHaveValue("locked words");
+  await locked.evaluate((field) => field.remove());
+
   // The dedicated Menu key takes the same structural path, and Escape restores the composer.
+  await composer.focus();
   await composer.evaluate((field) => {
     field.dispatchEvent(new KeyboardEvent("keydown", {
       key: "ContextMenu",

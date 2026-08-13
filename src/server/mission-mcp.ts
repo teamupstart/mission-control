@@ -235,6 +235,15 @@ const MAX_TOOL_PAGES = 20;
 const MAX_STDOUT_FRAME_BYTES = 1_048_576;
 
 /**
+ * How long a probed bundle gets to honour `SIGTERM` before it is killed outright.
+ *
+ * `SIGTERM` is a request, and a bundle broken enough to need this guard is exactly the kind
+ * that ignores one. Long enough for a healthy server to close its stdio and exit; short enough
+ * that a wedged one cannot outlive the dispatch that probed it.
+ */
+const KILL_GRACE_MS = 2_000;
+
+/**
  * The protocol version this probe speaks.
  *
  * A server supporting a different revision answers with ITS version rather than an error (the
@@ -346,12 +355,49 @@ async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedToo
     let pages = 0;
     let listId = 2;
 
+    /**
+     * Stop listening to the child, then make sure it is actually gone.
+     *
+     * `SIGTERM` is a REQUEST, and the bundles this probe exists to catch are exactly the ones
+     * least likely to honour it - a server wedged in a loop, or one that traps the signal, sails
+     * straight past it. Sending it and resolving would leave a process alive with our stdio
+     * listeners still attached, burning CPU and holding this closure open, and every rebuilt
+     * bundle identity we probed afterwards would add another one. A guard against a broken
+     * bundle must not be a way for a broken bundle to accumulate daemons' worth of children.
+     *
+     * Detach BEFORE signalling: once the answer is decided nothing the child says can change
+     * it, and a survivor must not go on filling buffers we already stopped reading. An error
+     * sink stays attached through the destroy, because `destroy()` and a racing EPIPE both emit
+     * `error`, and an `error` with no listener is an uncaught exception - the daemon-killing
+     * shape this file already had to close once.
+     *
+     * Then SIGTERM, and SIGKILL after a grace period if it is still there. The grace timer is
+     * `unref`'d so a slow death can never hold the daemon's event loop open, and the child is
+     * `unref`'d for the same reason.
+     */
+    const reap = (): void => {
+      for (const stream of [child.stdout, child.stderr, child.stdin]) {
+        stream?.removeAllListeners("data");
+        stream?.on("error", () => {});
+        stream?.destroy();
+      }
+      pending = "";
+      // Already exited: `kill` would be a no-op, and there is nothing to escalate against.
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill("SIGTERM");
+      const grace = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }, KILL_GRACE_MS);
+      grace.unref?.();
+      child.unref();
+    };
+
     const finish = (answer: PublishedTools): void => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       // The probe owns this process and nothing else may inherit it.
-      child.kill("SIGTERM");
+      reap();
       resolve(answer);
     };
 

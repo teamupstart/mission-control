@@ -363,6 +363,51 @@ test("a bundle that floods stdout with no newline is refused, not buffered", asy
   });
 });
 
+test("a bundle that ignores SIGTERM is killed, not left running", async () => {
+  // `SIGTERM` is a request, and the bundles this probe exists to catch are the ones least
+  // likely to honour it. Sending one and resolving would leave a process alive with our stdio
+  // listeners attached, burning CPU and holding the probe's closure open - and because the
+  // answer is cached per bundle identity, every rebuild probed afterwards would add another.
+  // A guard against a broken bundle must not be a way to accumulate orphans.
+  const stubborn = join(home, "stubborn.mjs");
+  const pidFile = `${stubborn}.pid`;
+  writeFileSync(
+    stubborn,
+    `import { writeFileSync } from "node:fs";\n` +
+      `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
+      // Refuses to die politely.
+      `process.on("SIGTERM", () => {});\n` +
+      // Survives its stdout being torn away, so EPIPE cannot be what ends it. Without this the
+      // fixture dies of a broken pipe the moment the probe detaches, and the case would pass
+      // whether or not the SIGKILL escalation exists - proving nothing.
+      `process.stdout.on("error", () => {});\n` +
+      // One oversized frame with no newline, then silence: enough to trip the probe's cap so it
+      // gives up in milliseconds rather than at the 15s timeout, and nothing after it.
+      `process.stdout.write("x".repeat(2 * 1024 * 1024));\n` +
+      `setInterval(() => {}, 1000);\n`,
+  );
+
+  await withBundle(stubborn, async () => {
+    assert.equal((await verifyMissionMcpTools(["submit_scout_artifacts"])).ok, false);
+  });
+
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  assert.ok(Number.isInteger(pid) && pid > 0, "the fixture never recorded its pid");
+  const alive = (): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // SIGTERM is ignored, so only the SIGKILL escalation can end this. Polled well past the
+  // grace period rather than slept through it, so the case stays fast when it passes.
+  const deadline = Date.now() + 15_000;
+  while (alive() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(alive(), false, `the probe left pid ${pid} running after it gave up on the bundle`);
+});
+
 test("a dispatch declaring no Mission tools never spawns the bundle at all", async () => {
   // The status quo this must not touch. A ship task's launch declares nothing, so there is
   // nothing to verify - and a guard that handshook anyway would put a subprocess, and a new

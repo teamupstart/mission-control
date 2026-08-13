@@ -59,6 +59,21 @@ export function driftTag(state: PersonaUpstreamState | undefined): string | null
   return state === undefined ? null : personaUpstreamLabel(state);
 }
 
+/**
+ * The catalog a Persona was supplied by, or null when it was not supplied by one.
+ *
+ * A function beside `driftTag` rather than an inline conditional, for the same reason: it is a
+ * rule about what a row wears, so it is testable without rendering a sidebar. Built-ins are
+ * excluded explicitly even though they carry no provenance today - the tag answers "which
+ * catalog supplied this", and `Built-in` already answers it for them.
+ */
+export function catalogTag(
+  persona: Pick<PersonaView, "builtin" | "provenance">,
+): string | null {
+  if (persona.builtin) return null;
+  return persona.provenance?.catalogLabel ?? null;
+}
+
 export function filterPersonas(
   personas: readonly PersonaView[],
   state: "active" | "archived",
@@ -412,6 +427,15 @@ export function PersonaLibrary({
                   <span className="persona-list-name">
                     <span>{persona.name}</span>
                     {persona.builtin && <em className="persona-list-tag">Built-in</em>}
+                    {/* The catalog that supplied this reviewer, in the same muted tag as
+                        `Built-in` and for the same reason: both answer "where did this come from
+                        and may I edit it", and neither is a thing to act on. The label is
+                        rendered verbatim from provenance - this component knows that catalogs
+                        have names, never which. A supplied Persona IS editable, unlike a
+                        built-in, so the tag stays informational and gates nothing. */}
+                    {catalogTag(persona) && (
+                      <em className="persona-list-tag">{catalogTag(persona)}</em>
+                    )}
                     {/* Provenance beside provenance: `Built-in` says this came with the app, this
                         says the file it came from has moved on. Toned rather than muted, because
                         unlike `Built-in` it is something to act on. */}

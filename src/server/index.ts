@@ -426,6 +426,35 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   void scouts.recoverJobs().catch((error: unknown) => {
     console.warn("[mission-control] could not resume scout captures:", error);
   });
+  // Adopt any Personas the operator's installed plugin catalogs offer. After the port for
+  // `scouts.start()`'s reason - it reads directories the daemon does not own, so it must not be
+  // able to delay a boot - and fire-and-forget for a sharper one: a catalog that cannot be read
+  // costs an operator some reviewers they can still import by hand, while a boot that failed
+  // over it would cost them Mission Control.
+  //
+  // Reported rather than silent. Eleven reviewers appearing in a library unannounced is a
+  // surprise, and so is one of them missing because a name was already taken.
+  void personas.syncFromPluginCatalogs()
+    .then((result) => {
+      if (result.imported.length > 0) {
+        console.log(
+          `[mission-control] imported ${result.imported.length} Persona(s) from installed plugin catalogs: ${result.imported.map((one) => one.name).join(", ")}`,
+        );
+      }
+      for (const skipped of result.skipped) {
+        console.warn(
+          `[mission-control] did not import ${skipped.sourceKey}: ${skipped.reason}`,
+        );
+      }
+      for (const source of result.truncated) {
+        console.warn(
+          `[mission-control] ${source} offers more Persona documents than one sync will read; the rest were not imported`,
+        );
+      }
+    })
+    .catch((error: unknown) => {
+      console.warn("[mission-control] could not read installed plugin catalogs:", error);
+    });
   const where = hasDist
     ? `http://${HOST}:${info.port}`
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;

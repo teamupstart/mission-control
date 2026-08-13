@@ -81,6 +81,17 @@ test("a field without a selection still offers both paste actions", () => {
   assert.deepEqual(labels(resolveContextActions(el, info())), ["Paste", "Paste as quote"]);
 });
 
+test("inputs without editable selection ranges expose no field actions", () => {
+  const email = {
+    value: "operator@example.com",
+    selectionStart: null,
+    selectionEnd: null,
+  } as unknown as HTMLInputElement;
+  const el = fakeElement({ "textarea, input": email });
+
+  assert.deepEqual(resolveContextActions(el, info()), []);
+});
+
 test("readonly and disabled fields expose copying but no mutating actions", () => {
   for (const state of ["readOnly", "disabled"] as const) {
     const field = fakeField("locked value", 0, 6);

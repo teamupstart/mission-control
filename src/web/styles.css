@@ -5709,8 +5709,7 @@ mark.find-hit.is-current {
 /* ---- conversation: the Native PTY rendering ----
    The second reading of a conversation (docs/plans/conversation-native-pty/plan.md): the
    same rows, drawn as one terminal stream. Everything here is scoped under the frame or
-   the `pty-` prefix, so the chat log's rules are untouched and the default rendering
-   cannot regress from this block. */
+   the `pty-` prefix, so the chat log's rules remain untouched. */
 .pty-frame {
   /* Takes the height `.find-split` takes in the chat rendering, and passes it on: the
      `min-height: 0` chain from `.transcript` down to `.transcript-log` runs THROUGH this

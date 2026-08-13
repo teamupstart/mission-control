@@ -468,9 +468,9 @@ application, and says so rather than guessing). The row names what it found, so 
 
 ## Conversation rendering
 
-The Conversation is drawn as a **chat log** by default and can be drawn as a **terminal
-stream** instead - prompt lines in, stdout out, tool runs folded into one record, inside a
-frame with a live status line. **Settings → Display → Conversation** sets the default for
+The Conversation is drawn as a **terminal stream** by default - prompt lines in, stdout out,
+tool runs folded into one record, inside a frame with a live status line. It can instead be
+drawn as a **chat log**. **Settings → Display → Conversation** sets the default for
 every session, per machine; the **Terminal view** button flips that one session for as long
 as the tab is open - in the strip above the conversation on a card, and in the detail's tab
 strip in Console and Board. Both renderings are the same panel over the

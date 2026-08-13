@@ -866,9 +866,9 @@ re-reads whatever was dropped.
 
 ### Reading a conversation as a terminal
 
-A conversation can be drawn two ways. **Chat** is the shipped log - a byline per speaker,
-prose in bubbles, tool calls as grey chips. **Terminal** draws the same conversation as one
-stream, the way the session actually ran:
+A conversation can be drawn two ways. **Terminal**, the default, draws the conversation as
+one stream, the way the session actually ran. **Chat** draws a byline per speaker, prose in
+bubbles, and tool calls as grey chips. In Terminal:
 
 - what you sent is a prompt line, `you@mission ~/repo ❯ ...`, naming whoever typed it - a
   turn Foreman sent reads `foreman@mission`, never as though you asked for it;
@@ -909,8 +909,8 @@ conversation can be flipped on its own with the **Terminal view** button - above
 a card, in the detail's tab strip in Console and Board, where it appears only while the
 Conversation tab is the one you are reading. It
 wins over that default for that session until you close the tab - so one agent can be
-watched as a terminal while the rest stay on the chat log. Nothing about the per-session
-choice is stored; a reload starts over from the default.
+read as a chat log while the rest stay in the terminal stream. Nothing about the
+per-session choice is stored; a reload starts over from the default.
 
 ### The step the current turn is on
 

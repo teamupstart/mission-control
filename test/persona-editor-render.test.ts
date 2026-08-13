@@ -288,6 +288,8 @@ const IMPORTED: PersonaView = {
     sourcePath: "/plugins/agent-team/references/roles/reviewer.md",
     sourceRepo: "/plugins",
     pluginVersion: "0.2.0",
+    sourceKey: null,
+    catalogLabel: null,
     contentSha256: "c".repeat(64),
     importedAt: Date.UTC(2026, 7, 5, 12, 0, 0),
   },

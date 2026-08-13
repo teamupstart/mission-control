@@ -11,8 +11,8 @@ import {
   WORKFLOW_PERSONA_MODEL_ENV,
   WORKFLOW_PERSONA_MODEL_SPEC,
   normalizePersonaName,
-  personaDescriptionFromMarkdown,
-  personaNameFromMarkdown,
+  personaDescriptionFromDocument,
+  personaNameFromDocument,
   personaUpstreamState,
 } from "@shared/workflow.ts";
 import type {
@@ -24,9 +24,24 @@ import type {
 } from "@shared/workflow.ts";
 import type { Registry } from "../registry.ts";
 import { llmRunnerChoice } from "../llm/config.ts";
+import { enumeratePluginPersonaDocuments } from "../plugins/persona-sources.ts";
 import { WorkflowStore } from "./store.ts";
 import type { PersonaStoreWrite } from "./store.ts";
 import { readImportedSource, readPersonaSourceHash } from "./persona-import.ts";
+
+/**
+ * What one boot-time catalog reconciliation did, for the log line that reports it.
+ *
+ * Both halves are worth reporting for the same reason: eleven reviewers appearing in a library
+ * unannounced is a surprise, and so is one of them NOT appearing. `skipped` is how an operator
+ * whose own `Reviewer` won a name conflict finds out why the catalog looks incomplete.
+ */
+export interface PluginPersonaSyncResult {
+  imported: Array<{ id: string; name: string }>;
+  skipped: Array<{ sourceKey: string; reason: string }>;
+  /** Source directories whose document count hit the enumerator's ceiling. */
+  truncated: string[];
+}
 
 export type PersonaMutation =
   | { ok: true; persona: PersonaView }
@@ -170,9 +185,13 @@ export class PersonaManager {
    * refusal and must not be flattened into one: "no file there" and "a Persona already owns
    * this name" send an operator to two different places.
    */
-  async importFromFile(sourcePath: string, now = Date.now()): Promise<PersonaMutation> {
-    const { source, provenance } = await readImportedSource(sourcePath, now);
-    const name = personaNameFromMarkdown(
+  async importFromFile(
+    sourcePath: string,
+    now = Date.now(),
+    catalog: { sourceKey: string; catalogLabel: string } | null = null,
+  ): Promise<PersonaMutation> {
+    const { source, provenance } = await readImportedSource(sourcePath, now, catalog);
+    const name = personaNameFromDocument(
       source.guidanceMarkdown,
       // The filename without its extension, exactly as the browser import falls back, so a
       // document with no heading is named after the file an operator can see.
@@ -184,7 +203,7 @@ export class PersonaManager {
         id: randomUUID(),
         name,
         normalizedName: normalizePersonaName(name),
-        description: personaDescriptionFromMarkdown(source.guidanceMarkdown),
+        description: personaDescriptionFromDocument(source.guidanceMarkdown),
         guidanceMarkdown: source.guidanceMarkdown,
         runner: null,
         model: null,
@@ -193,6 +212,64 @@ export class PersonaManager {
         provenance,
       }),
     );
+  }
+
+  /**
+   * Adopt every Persona document the installed plugin catalogs offer, once, at boot.
+   *
+   * Reconciliation rather than import: it runs on every start, and the only thing it may do to a
+   * document it has seen before is nothing. `personaSourceKeys` is what "seen before" means, and
+   * it counts archived rows, so the three interesting cases all fall out of one lookup:
+   *
+   * - Never seen: import it, with the catalog's identity in provenance.
+   * - Present: skip. If the upstream file has changed, that is the drift badge's job to say and
+   *   the operator's call to adopt - a boot that silently rewrote a reviewer's authority would be
+   *   the exact surprise the provenance feature was built to prevent.
+   * - Archived: skip, permanently. The operator said no.
+   *
+   * Every failure is per-document and reported rather than thrown. A name an operator already
+   * uses, a document that has stopped being readable, a directory that moved: each costs one
+   * Persona and none may take the daemon's boot - or the other ten documents - down with it. The
+   * name conflict in particular is expected in normal use, because these roles have plain titles
+   * like `Reviewer` that an operator may well have authored first, and THEIR row wins.
+   */
+  async syncFromPluginCatalogs(
+    now = Date.now(),
+    enumerate = enumeratePluginPersonaDocuments,
+  ): Promise<PluginPersonaSyncResult> {
+    const { documents, truncated } = await enumerate();
+    const known = this.store.personaSourceKeys();
+    const result: PluginPersonaSyncResult = { imported: [], skipped: [], truncated };
+    for (const document of documents) {
+      if (known.has(document.sourceKey)) continue;
+      let outcome: PersonaMutation;
+      try {
+        outcome = await this.importFromFile(document.sourcePath, now, {
+          sourceKey: document.sourceKey,
+          catalogLabel: document.catalogLabel,
+        });
+      } catch (cause) {
+        result.skipped.push({
+          sourceKey: document.sourceKey,
+          reason: cause instanceof Error ? cause.message : String(cause),
+        });
+        continue;
+      }
+      if (outcome.ok) {
+        result.imported.push({ id: outcome.persona.id, name: outcome.persona.name });
+        // Guard against a catalog that offers two documents deriving the same name: the second
+        // would otherwise conflict with the first and be reported as an operator's collision.
+        known.add(document.sourceKey);
+        continue;
+      }
+      result.skipped.push({
+        sourceKey: document.sourceKey,
+        reason: outcome.reason === "name_conflict"
+          ? `a Persona named ${outcome.current?.name ?? "the same thing"} already exists`
+          : outcome.reason,
+      });
+    }
+    return result;
   }
 
   /**

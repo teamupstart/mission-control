@@ -380,6 +380,15 @@ export function DispatchLayer({
   onEnsembleLaunched?: (runId: string) => void;
 }): React.JSX.Element | null {
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  /**
+   * The guided pass belongs to the new-dispatch draft, so it has the same lifetime.
+   *
+   * `null` means this draft has not started a pass yet. When Guided is on, the modal derives
+   * the first question from that value; the first answer replaces it with the real progress.
+   * Keeping it here means dismissing the modal loses neither answered rungs nor a completed
+   * handoff. Clear and a successful submit rotate both the draft and this state together.
+   */
+  const [guidedPass, setGuidedPass] = useState<GuidedPass | null>(null);
   // The Single vs Ensemble launch mode and the Ensemble draft live BESIDE the compose draft,
   // so switching mode or closing the modal loses neither. Edit mode is always Single: an
   // existing backlog Task cannot be turned into an Ensemble.
@@ -479,6 +488,7 @@ export function DispatchLayer({
       // Fresh, not blank: the repo just dispatched into is the one the next task is
       // most likely to want, and it was remembered before this fired.
       setDraft(freshDispatchDraft());
+      setGuidedPass(null);
       onClose();
     },
     [onClose],
@@ -546,6 +556,7 @@ export function DispatchLayer({
   /** Clear, for a fresh dispatch: blank but for the seeded repo, as it opened. */
   const onNewRevert = useCallback(() => {
     setDraft(freshDispatchDraft());
+    setGuidedPass(null);
   }, []);
 
   /**
@@ -555,6 +566,7 @@ export function DispatchLayer({
   const onEnsembleClear = useCallback(() => {
     revokeAttachments(draftRef.current.attachments);
     setDraft(freshDispatchDraft());
+    setGuidedPass(null);
     setEnsembleDraft(freshEnsembleDraft());
   }, []);
 
@@ -577,6 +589,7 @@ export function DispatchLayer({
       } else {
         revokeAttachments(draftRef.current.attachments);
         setDraft(freshDispatchDraft());
+        setGuidedPass(null);
         setEnsembleDraft(freshEnsembleDraft());
       }
       onEnsembleLaunched?.(runId);
@@ -620,6 +633,8 @@ export function DispatchLayer({
       onRevert={onNewRevert}
       onClose={onClose}
       onSubmitted={onSubmitted}
+      guidedPass={guidedPass}
+      onGuidedPassChange={setGuidedPass}
       launchMode={launchMode}
       onLaunchModeChange={chooseLaunchMode}
       ensembleDraft={ensembleDraft}
@@ -659,6 +674,8 @@ function DispatchModal({
   onRevert,
   onClose,
   onSubmitted,
+  guidedPass = null,
+  onGuidedPassChange,
   onDeleted,
   onOpenSchedule,
   launchMode = "single",
@@ -682,6 +699,9 @@ function DispatchModal({
   onRevert: () => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft) => void;
+  /** Progress for the new-dispatch draft, owned by `DispatchLayer` so close/reopen keeps it. */
+  guidedPass?: GuidedPass | null;
+  onGuidedPassChange?: (pass: GuidedPass | null) => void;
   /**
    * The edited task was deleted, so the working copy over it has nothing left to describe.
    * Edit-only - a new dispatch has no row to delete - and the layer's implementation drops
@@ -833,17 +853,13 @@ function DispatchModal({
    */
   const guidedOfferable = guidedAppliesWith(true);
   /**
-   * Where the guided pass stands, and which option in the current question is lit.
-   *
-   * HERE rather than on `DispatchLayer`, unlike `launchMode` and the draft: the layer
-   * renders nothing while the dialog is closed, so this component's state resets on every
-   * open - which is exactly the wanted behaviour. A pass is per-opening. The draft is not,
-   * so a reopened pass seeds each question from what the draft already carries rather than
-   * from a hardcoded first entry (see `guidedSeed`).
+   * Where the guided pass stands. `null` is an untouched draft: Guided turns it into the
+   * first question at render time, without mistaking a deliberately ended pass for a fresh
+   * one. The owner lives above this per-opening modal, beside the draft, so dismiss/reopen
+   * resumes the first unanswered question instead of asking completed questions again.
    */
-  const [pass, setPass] = useState<GuidedPass>(() =>
-    guidedApplies ? startGuidedPass() : NO_GUIDED_PASS,
-  );
+  const pass = guidedPass ?? (guidedApplies ? startGuidedPass() : NO_GUIDED_PASS);
+  const setPass = (next: GuidedPass | null): void => onGuidedPassChange?.(next);
   /**
    * `null` means "wherever the draft already points", resolved at render.
    *
@@ -1304,7 +1320,7 @@ function DispatchModal({
    */
   useEffect(() => {
     if (ensembleMode) {
-      setPass(endGuidedPass);
+      setPass(endGuidedPass(pass));
       setHighlight(null);
     }
   }, [ensembleMode]);
@@ -1518,8 +1534,8 @@ function DispatchModal({
     // button, and the focus call below would put the caret in the task box with the strip
     // still up - where `handleGuidedKey` stands down for a text field, so every remaining key
     // would type instead of answering.
+    setPass(guidedApplies ? startGuidedPass() : null);
     if (guidedApplies) {
-      setPass(startGuidedPass());
       setHighlight(null);
       return;
     }

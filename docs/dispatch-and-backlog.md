@@ -69,6 +69,11 @@ control - the question it is about stays live, and using it answers it and moves
 just as the keyboard would. **Clear** puts the form back where it opened, which for a guided
 dispatch means back at the first question.
 
+Closing the modal is not an undo. Reopening resumes at the current question with the
+answered rungs and form values intact; if the pass already handed over, it reopens on that
+completed form without asking the questions again. **Clear** starts the pass over, and a
+successful **Dispatch now** or **Add to backlog** starts the next task with a fresh pass.
+
 **It is a different way to fill the form, never a second opinion about what a dispatch
 means.** Every answer is written through the same control the form offers, so the rules below
 still apply exactly as they are written - including the kind-to-after-work rule, which is why

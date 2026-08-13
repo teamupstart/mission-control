@@ -18,8 +18,8 @@ import { expect, test } from "../fixtures/test.ts";
  * shape, route tests have no keyboard, and the Electron tests measure geometry. Only this
  * layer joins a key to a control.
  *
- * NO TEST IN THIS FILE SUBMITS A DISPATCH. The modal is opened, driven and closed, so no
- * agent binary is launched and nothing here spends model tokens.
+ * The reset regression submits one backlog task and one dispatch. The browser fixture routes
+ * every agent binary to the fake, so the launched session spends no model tokens.
  *
  * The preference is turned ON in-test, deliberately: it ships off in this phase, and the
  * shared `dashboard` fixture pins it off explicitly so that no OTHER spec depends on the
@@ -354,6 +354,80 @@ test("Clear after the pass has handed over asks the questions again", async ({ d
   await expect(kindSelect(dialog)).toHaveValue("ship");
   await expect(agentSelect(dialog)).toHaveValue("claude");
   await expect(taskBox(dialog)).not.toBeFocused();
+});
+
+test("closing and reopening resumes the saved guided workflow", async ({ dashboard }) => {
+  const dialog = await openGuided(dashboard);
+  await dashboard.keyboard.press("t");
+  await dashboard.keyboard.press("x");
+
+  // Two decisions are saved in the draft and in the pass. Dismissing the surface is neither
+  // Clear nor a submit, so reopening must continue at the one decision still unanswered.
+  await expect(picker(dialog, "What runs after the work?")).toBeVisible();
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(rail(dialog).getByRole("button", { name: "Kind: scout" })).toBeVisible();
+  await expect(rail(dialog).getByRole("button", { name: "Harness: Codex" })).toBeVisible();
+  await expect(picker(dialog, "What runs after the work?")).toBeVisible();
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+  await expect(agentSelect(dialog)).toHaveValue("codex");
+
+  // A completed pass is state too. Reopening after typing the brief stays at the handed-over
+  // form rather than replaying questions whose answers are already visible in its controls.
+  await dashboard.keyboard.press("n");
+  await taskBox(dialog).fill("audit the retry policy");
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog.getByRole("listbox")).toHaveCount(0);
+  await expect(taskBox(dialog)).toHaveValue("audit the retry policy");
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+  await expect(agentSelect(dialog)).toHaveValue("codex");
+  await expect(afterWorkSelect(dialog)).toHaveValue("__none");
+});
+
+test("backlog and dispatch submissions reset the guided workflow", async ({
+  dashboard,
+  daemon,
+}) => {
+  const dialog = await openGuided(dashboard);
+  const repo = dialog.getByPlaceholder("search repos or type a path…");
+
+  await dashboard.keyboard.press("t");
+  await dashboard.keyboard.press("x");
+  await dashboard.keyboard.press("n");
+  await repo.fill(daemon.repo);
+  await taskBox(dialog).fill("shelve the guided draft");
+  await dialog.getByRole("button", { name: "Add to backlog" }).click();
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await expect(taskBox(dialog)).toHaveValue("");
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
+
+  await dashboard.keyboard.press("p");
+  await dashboard.keyboard.press("c");
+  await dashboard.keyboard.press("n");
+  await repo.fill(daemon.repo);
+  await taskBox(dialog).fill("dispatch the guided draft");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(picker(dialog, "What kind of run is this?")).toBeVisible();
+  await expect(taskBox(dialog)).toHaveValue("");
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
 });
 
 test("confirming the harness you are already on keeps the model and effort overrides", async ({

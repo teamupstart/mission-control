@@ -32,7 +32,7 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
-  assert.equal(config.guidedDispatch, false);
+  assert.equal(config.guidedDispatch, true);
 });
 
 test("a written cache round-trips", () => {
@@ -43,7 +43,7 @@ test("a written cache round-trips", () => {
     alerts: { notifications: true, sound: false },
     richText: false,
     keybindingHints: false,
-    guidedDispatch: true,
+    guidedDispatch: false,
     trustStaged: ["/work/staged"],
   });
   const config = readCache();
@@ -53,7 +53,7 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
   assert.equal(config.keybindingHints, false);
-  assert.equal(config.guidedDispatch, true);
+  assert.equal(config.guidedDispatch, false);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
 });
 
@@ -63,8 +63,8 @@ test("a preference this cache forgets to copy would reset on every cold paint", 
   // daemon, and the setting silently snaps back to the default on every fresh load - only
   // on a cold cache, so never where you are looking. Named for `guidedDispatch` because it
   // is the newest field, and it is really a test of the copy.
-  store.set("mission-control.ui", JSON.stringify({ guidedDispatch: true }));
-  assert.equal(readCache().guidedDispatch, true, "the cached preference was dropped");
+  store.set("mission-control.ui", JSON.stringify({ guidedDispatch: false }));
+  assert.equal(readCache().guidedDispatch, false, "the cached preference was dropped");
 });
 
 test("a rendering this build does not ship reads as the shipped one", () => {

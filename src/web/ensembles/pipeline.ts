@@ -1,5 +1,7 @@
 import {
   ensembleIsTerminal,
+  ensembleReviewIsInfrastructureBlocked,
+  MAX_REVIEW_INFRA_ATTEMPTS,
   ensembleStageDriverWord,
   readReviewAttemptReceipt,
   type CompiledEnsemblePlan,
@@ -68,22 +70,33 @@ function latestAttempts(
 /**
  * Where a settled review attempt leaves the stage, when the engine is not done with it.
  *
- * Read from the row rather than from a clock: an `interrupted` attempt always retries, and an
- * infrastructure failure carries the wall clock it is waiting for - which the engine sets to null
- * at exactly the point it stops retrying and starts waiting for a person. So `retrying` and
- * `blocked` are both quoting the receipt, not predicting from elapsed time, and the difference
- * between them is the difference between "wait" and "you are needed".
+ * Read from the rows rather than from a clock: an infrastructure failure carries the wall clock
+ * it is waiting for - which the engine sets to null at exactly the point it stops retrying and
+ * starts waiting for a person. So `retrying` and `blocked` are both quoting durable state, not
+ * predicting from elapsed time, and the difference is the difference between "wait" and "you are
+ * needed".
+ *
+ * The blocked question is asked of the WHOLE history and asked first, in the same order the
+ * engine asks it. Asking only the newest row got this wrong in the one state that matters: press
+ * Retry stage on a parked review and let a restart interrupt the attempt it granted, and the
+ * newest row is `interrupted` while the stage is still parked. Read from that row alone this
+ * drew as a live attempt - no amber, no detail, and no Retry stage button, because the button
+ * hides for an interrupted row on the assumption the engine always re-drives it. The engine does
+ * not re-drive a blocked stage, so the run sat parked with nothing on screen to press.
  */
 function reviewPause(
   run: EnsemblePipelineInput["run"],
   stage: EnsembleStageSpec,
+  stageAttempts: readonly EnsembleStageAttempt[],
   latest: EnsembleStageAttempt | undefined,
 ): "retrying" | "blocked" | null {
   if (!latest || stage.driverKind !== "review") return null;
   if (run.status === null || ensembleIsTerminal(run.status)) return null;
   if (run.activeStageId !== stage.id) return null;
+  // An attempt still in flight is neither of these, whatever the history behind it.
+  if (latest.status !== "failed" && latest.status !== "interrupted") return null;
+  if (ensembleReviewIsInfrastructureBlocked(stageAttempts, stage.id)) return "blocked";
   if (latest.status === "interrupted") return "retrying";
-  if (latest.status !== "failed") return null;
   const receipt = readReviewAttemptReceipt(latest.output);
   if (receipt.charge !== "infrastructure") return null;
   return receipt.retryAt === null ? "blocked" : "retrying";
@@ -92,6 +105,7 @@ function reviewPause(
 function stepState(
   run: EnsemblePipelineInput["run"],
   stage: EnsembleStageSpec,
+  stageAttempts: readonly EnsembleStageAttempt[],
   latest: EnsembleStageAttempt | undefined,
   activeOrdinal: number | null,
 ): EnsemblePipelineStepState {
@@ -101,7 +115,7 @@ function stepState(
   // not over. Only an attempt nothing will follow is a failure: an interruption cost the budget
   // nothing, and an infrastructure error owed a backoff rather than a verdict, so drawing either
   // as a dead stage would report a run that is still going as one that ended.
-  const pause = reviewPause(run, stage, latest);
+  const pause = reviewPause(run, stage, stageAttempts, latest);
   if (pause === "retrying") return "active";
   if (pause === "blocked") return "blocked";
   if (latest?.status === "failed" || latest?.status === "cancelled") return "failed";
@@ -146,6 +160,13 @@ function reviewAttemptDetail(
   const shown = Math.min(Math.max(consumed + (live ? 1 : 0), 1), stage.maxAttempts);
   const label = `attempt ${shown} of ${stage.maxAttempts}`;
   if (live) return label;
+  // Parked is parked however the newest row settled. A retry the operator asked for and a restart
+  // then interrupted leaves an `interrupted` row on a stage the daemon is still parking, and the
+  // line a person reads has to keep saying so - it is the only thing on screen that explains why
+  // nothing is moving.
+  if (infrastructure >= MAX_REVIEW_INFRA_ATTEMPTS) {
+    return `${label} · paused after ${infrastructure} infrastructure errors`;
+  }
   const receipt = readReviewAttemptReceipt(latest.output);
   if (latest.status === "failed" && receipt.charge === "infrastructure") {
     // The stage said which of the two it is; say it in the operator's words rather than leaving
@@ -269,7 +290,7 @@ export function projectEnsemblePipeline(input: EnsemblePipelineInput): EnsembleP
 
   const steps = stages.map((stage): EnsemblePipelineStep => {
     const latest = attempts.get(stage.id);
-    const state = stepState(input.run, stage, latest, activeOrdinal);
+    const state = stepState(input.run, stage, input.stageAttempts, latest, activeOrdinal);
     return {
       id: stage.id,
       label: ensembleStageDriverWord(stage.driverKind),

@@ -226,6 +226,49 @@ test("a review with no retry left to come is blocked, which is not failed", () =
   assert.equal(terminal.steps.find((s) => s.id === review.id)?.state, "failed");
 });
 
+test("a parked review stays parked when the retry it granted is interrupted", () => {
+  // The engine keeps a stage `blocked` from the whole history - once the infrastructure budget is
+  // spent it will not re-drive the stage at all. Reading that from the NEWEST row alone said the
+  // opposite: press Retry stage, let a restart interrupt the attempt it granted, and the newest
+  // row is `interrupted`, which the projection took as "a retry is coming" and drew as a live
+  // attempt. Nothing was coming. The run sat parked with no amber, no reason, and - because the
+  // Retry button also hides for an interrupted row - nothing on screen to press.
+  const plan = compile(bestOfNStrategy);
+  const review = plan.stages.find((stage) => stage.driverKind === "review")!;
+  const view = projectEnsemblePipeline({
+    run: { status: "evaluating", activeStageId: review.id, plan },
+    summary: summary(plan, { readyArtifacts: plan.roles.length }),
+    stageAttempts: [
+      attempt(review.id, "failed", 1, receipt("infrastructure", 2000)),
+      attempt(review.id, "failed", 2, receipt("infrastructure", 5000)),
+      attempt(review.id, "failed", 3, receipt("infrastructure", null)),
+      // The operator pressed the door, and a daemon restart interrupted what it granted.
+      attempt(review.id, "interrupted", 4),
+    ],
+    memberCount: plan.roles.length,
+  });
+  const step = view.steps.find((s) => s.id === review.id)!;
+  assert.equal(step.state, "blocked", "an interruption does not un-park a stage the engine parks");
+  assert.equal(
+    step.detail,
+    "attempt 1 of 2 · paused after 3 infrastructure errors",
+    "and the line that explains why nothing is moving has to survive it",
+  );
+
+  // The same rows with the infrastructure budget NOT spent are the case the newest row does
+  // decide: the engine re-drives an interruption, so the stage really is between attempts.
+  const retrying = projectEnsemblePipeline({
+    run: { status: "evaluating", activeStageId: review.id, plan },
+    summary: summary(plan, { readyArtifacts: plan.roles.length }),
+    stageAttempts: [
+      attempt(review.id, "failed", 1, receipt("infrastructure", 2000)),
+      attempt(review.id, "interrupted", 2),
+    ],
+    memberCount: plan.roles.length,
+  });
+  assert.equal(retrying.steps.find((s) => s.id === review.id)?.state, "active");
+});
+
 test("terminal runs keep the full walked pipeline visible", () => {
   const plan = compile(consensusStrategy);
   const view = projectEnsemblePipeline({

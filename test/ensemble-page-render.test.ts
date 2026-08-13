@@ -667,6 +667,37 @@ test("a blocked review offers the retry, and an interrupted one leaves it to the
     }),
   );
   assert.doesNotMatch(interruptedHtml, /Retry stage/);
+
+  // Unless the stage is PARKED underneath that interruption. The engine does not re-drive a
+  // blocked stage, so an operator-granted retry that a restart interrupted leaves a run nothing
+  // will move on its own - and hiding the button on the "engine re-drives it" assumption is what
+  // left that run with no path forward at all. The door has to be here.
+  const infra = (n: number, retryAt: number | null): EnsembleStageAttempt => ({
+    ...stage,
+    id: `${stage.id}-${n}`,
+    attempt: n,
+    status: "failed",
+    output: { charge: "infrastructure", kind: "infrastructure", retryAt },
+    error: "infrastructure: spawn ENOENT",
+  });
+  const parkedThenInterrupted = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: {
+        ...detail,
+        stageAttempts: [
+          infra(1, 2_000),
+          infra(2, 5_000),
+          infra(3, null),
+          { ...interrupted, id: `${stage.id}-4`, attempt: 4 },
+        ],
+      },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.match(parkedThenInterrupted, /Retry stage/);
 });
 
 test("unreadable runs can still be cancelled and healthy handoffs cannot be skipped", () => {

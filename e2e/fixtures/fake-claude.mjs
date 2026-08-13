@@ -73,6 +73,43 @@ const HELD_REVIEW_MS = 120_000;
  */
 const FAILED_REVIEW = "E2E_FAIL_ENSEMBLE_REVIEW";
 /**
+ * An ensemble comparison whose provider is down until the review has PARKED, and hangs after.
+ *
+ * The one shape that reaches "the operator pressed Retry stage and a restart interrupted what it
+ * granted". Getting there needs both provider behaviours in one run: enough failures to spend the
+ * infrastructure budget, and then a call that stays in flight long enough for a spec to kill the
+ * daemon while it is running.
+ *
+ * Each review call is its own process, so the count cannot live in memory. It lives in a file
+ * keyed by the nonce the spec puts in the marker, which is also what keeps parallel workers from
+ * sharing a counter. Written under the daemon's own MISSION_HOME when there is one, so a spec's
+ * state dies with the home it belongs to.
+ */
+const FAIL_THEN_HOLD_REVIEW = "E2E_FAIL_THEN_HOLD_ENSEMBLE_REVIEW";
+
+/** How many calls the marker's nonce has already taken, incremented and returned. */
+function failThenHoldCount(prompt) {
+  const nonce = new RegExp(`${FAIL_THEN_HOLD_REVIEW}:([A-Za-z0-9-]+)`).exec(prompt)?.[1];
+  if (!nonce) return null;
+  const root = process.env.MISSION_HOME ?? process.env.HARNESS_HOME ?? homedir();
+  const file = join(root, `.e2e-fail-then-hold-${createHash("sha256").update(nonce).digest("hex").slice(0, 16)}`);
+  let seen = 0;
+  try {
+    seen = Number.parseInt(readFileSync(file, "utf8"), 10) || 0;
+  } catch {
+    seen = 0;
+  }
+  const next = seen + 1;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, String(next));
+  } catch {
+    // A counter we cannot persist degrades to "always fail", which is the safe half: the spec
+    // then times out waiting for a held call rather than passing on a state it never reached.
+  }
+  return next;
+}
+/**
  * The prompt that makes this CLI ask its human something, the way the real one does.
  *
  * The only frame here that travels UP the control protocol. Every other `control_request`
@@ -265,6 +302,12 @@ function runHeadlessSdk() {
       return;
     }
     if (prompt.includes(FAILED_REVIEW)) process.exit(1);
+    if (prompt.includes(FAIL_THEN_HOLD_REVIEW)) {
+      // Down for the whole infrastructure budget, then in flight and staying there.
+      if ((failThenHoldCount(prompt) ?? 1) <= 3) process.exit(1);
+      setTimeout(() => process.exit(1), HELD_REVIEW_MS);
+      return;
+    }
     const answer = headlessAnswer(prompt);
     let structuredOutput;
     if (schema !== undefined) {

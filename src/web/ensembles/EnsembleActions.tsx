@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
-import { ensembleIsTerminal } from "@shared/ensemble.ts";
+import { ensembleIsTerminal, ensembleReviewIsInfrastructureBlocked } from "@shared/ensemble.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleRunDetailResponse } from "./types.ts";
 
@@ -51,11 +51,19 @@ export function EnsembleActions({
     }
   }
   const failedStage = [...latestStageAttempts.values()]
-    .filter(
-      (attempt) =>
-        attempt.status === "failed" &&
-        (attempt.driverKind === "review" || attempt.driverKind === "finalize"),
-    )
+    .filter((attempt) => {
+      if (attempt.driverKind !== "review" && attempt.driverKind !== "finalize") return false;
+      if (attempt.status === "failed") return true;
+      // A parked review whose newest row is an INTERRUPTION still needs its door. The button
+      // hides for an interrupted row everywhere else because the engine re-drives one on its
+      // own - but it does not re-drive a blocked stage, so an operator-granted retry that a
+      // restart then interrupted would leave the run parked with nothing on screen to press.
+      return (
+        attempt.driverKind === "review" &&
+        attempt.status === "interrupted" &&
+        ensembleReviewIsInfrastructureBlocked(detail.stageAttempts, attempt.stageId)
+      );
+    })
     .sort((a, b) => b.updatedAt - a.updatedAt)[0];
 
   const [confirmCancel, setConfirmCancel] = useState(false);

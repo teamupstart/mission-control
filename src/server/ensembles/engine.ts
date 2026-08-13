@@ -3,6 +3,7 @@ import {
   ENSEMBLE_DRIVER_KEYS,
   ENSEMBLE_HARD_LIMITS,
   ENSEMBLE_LIMITS,
+  MAX_REVIEW_INFRA_ATTEMPTS,
   ensembleJsonEqual,
   ensembleIsRunnable,
   ensembleIsTerminal,
@@ -371,20 +372,11 @@ const DRIVER_KEYS_BY_KIND = {
 } as const satisfies Record<EnsembleStageDriverKind, readonly (typeof ENSEMBLE_DRIVER_KEYS)[number][]>;
 
 /**
- * How many times ONE review stage may fail on INFRASTRUCTURE before it parks for an operator.
- *
- * Its own budget, beside the evaluator's `maxAttempts`, because the two answer different
- * questions. `maxAttempts` asks how many bad answers to tolerate from a model; this asks how
- * long to keep trying to reach one at all. Charging a provider blip to the first is what let two
- * failures milliseconds apart destroy a run that had already paid for every candidate agent.
- *
- * Three, and the exponential backoff below, mirror the Workflow engine's `MAX_INFRA_ATTEMPTS`
- * and `RETRY_BASE_MS` deliberately: an ensemble review and a Workflow Persona call fail the same
- * ways, so a second idiom here would be a second thing to reason about at 3am and not a better
- * answer. Exhaustion follows that precedent too - it BLOCKS rather than terminating, because the
- * expensive, irreplaceable part of an ensemble run is the candidate work already on disk.
+ * Re-exported so this module's readers find it where they expect it. It is DEFINED in shared,
+ * because the dashboard has to reach the same parked-or-not verdict the daemon does; see
+ * `MAX_REVIEW_INFRA_ATTEMPTS` there for why the budget exists and why exhaustion parks.
  */
-export const MAX_REVIEW_INFRA_ATTEMPTS = 3;
+export { MAX_REVIEW_INFRA_ATTEMPTS };
 
 /** First infrastructure backoff; each further attempt waits 4x the last (1s, 4s). */
 const REVIEW_RETRY_BASE_MS = 1_000;
@@ -449,6 +441,41 @@ function reviewStageBudget(
   // by whatever opened a row after it - a restart's interruption included.
   const receipt = latest && latest.status === "failed" ? readReviewAttemptReceipt(latest.output) : null;
   return { consumed, infrastructure, interrupted, latestNumber, retryAt: receipt?.retryAt ?? null };
+}
+
+/**
+ * What a stage's spent budgets say should happen to it next, as ONE answer.
+ *
+ * Two callers need this and they need it to agree. `stageStatus` turns it into what the walk and
+ * the dashboard see; `startReviewStage` turns it into whether an attempt actually opens. When the
+ * order lived separately in both, they drifted twice - the second time into a stage that read
+ * `blocked` (so the UI offered Retry stage) while the start path answered a different question
+ * first and failed the run on the press. A door that ends a run holding intact candidate work is
+ * the exact failure this whole change exists to remove, so the order lives here once.
+ *
+ * The order is the order of what spending each budget MEANS:
+ *
+ * 1. `model_spent` - a model answered badly its whole budget. A real stage failure.
+ * 2. `blocked` - nothing ever reached a model. Park it; the candidates are intact and an operator
+ *    can still act. Answered before the backstop because a blocked stage opens no further row on
+ *    its own, so preferring it can never be the thing that lets a loop spin.
+ * 3. `thrashing` - the crash-loop backstop, over the rows nothing else bounds. Asked last because
+ *    it is a backstop and not a policy.
+ */
+type ReviewStageVerdict = "model_spent" | "blocked" | "thrashing" | "ready";
+
+function reviewStageVerdict(
+  budget: ReviewStageBudget,
+  maxAttempts: number,
+  isReview: boolean,
+): ReviewStageVerdict {
+  if (budget.consumed >= maxAttempts) return "model_spent";
+  // Only a review parks. The charge receipt is written by the review path alone, so this would be
+  // inert for the other kinds anyway - saying so keeps it that way rather than leaving a finalize
+  // stage one stray `output` key away from a state it has no door out of.
+  if (isReview && budget.infrastructure >= MAX_REVIEW_INFRA_ATTEMPTS) return "blocked";
+  if (budget.interrupted >= ENSEMBLE_HARD_LIMITS.maxStageAttempts) return "thrashing";
+  return "ready";
 }
 
 /** A run's status while it still accepts new observations and submissions. */
@@ -1256,6 +1283,20 @@ export class EnsembleEngine {
       for (const stageAttempt of interrupted) {
         this.event(runId, "review_interrupted", { stageId: stageAttempt.stageId }, `review_interrupted:${stageAttempt.id}:${now}`);
       }
+      if (interrupted.length > 0) {
+        // Revise the RUN row for the same reason the infrastructure failure path does: the
+        // dashboard refetches a run's detail only when its summary reports a newer `updatedAt`.
+        // Usually the retry that follows an interruption revises it a moment later - but not when
+        // the stage is PARKED, because then no retry follows at all, and an operator watching a
+        // parked review through a restart would have gone on seeing the attempt it interrupted,
+        // running, forever.
+        //
+        // A pure touch: the run's OWN status, back to itself, with no field forced. Recovery runs
+        // on runs in several statuses and this must revise the row without deciding anything -
+        // and it no-ops on a terminal one, which the precondition already refuses.
+        const current = this.store.getRun(runId)?.status;
+        if (current) this.setRunStatus(runId, current, {});
+      }
 
       this.event(runId, "run_recovered", {}, `run_recovered:${runId}:${now}`);
       await this.advanceLocked(runId);
@@ -1508,30 +1549,17 @@ export class EnsembleEngine {
     // true for the stage attempt and not only for the evaluation underneath it.
     if (attempt.status === "failed" || attempt.status === "interrupted") {
       const budget = reviewStageBudget(state.stageAttempts, stage.id);
-      // Each budget is asked about in the order of what spending it MEANS, and the ceiling is
-      // asked last, because it is a backstop and not a policy.
-      //
-      // Asking the ceiling first made it outrank both. `maxAttempts` defaults to 2 and
-      // `MAX_REVIEW_INFRA_ATTEMPTS` is 3, which sums to exactly the ceiling of 5, so a stage had
-      // no row headroom for interruptions at all: two restarts and then three provider blips is
-      // five rows, and the run died on the ceiling at the very moment the infrastructure budget
-      // said "park this for a person". Four restarts and a single blip did the same with neither
-      // budget spent. Both are the failure this change exists to remove, arriving through the
-      // bound instead of through `maxAttempts`.
-      if (budget.consumed >= stage.maxAttempts) return "failed";
-      // Only a review parks. The charge receipt is written by the review path alone, so this
-      // would be inert for the other kinds anyway - saying so here keeps it that way rather than
-      // leaving a finalize stage one stray `output` key away from a state it has no door out of.
-      //
-      // Safe to answer before the ceiling: a blocked stage opens no further row on its own, so
-      // preferring it can never be the thing that lets a loop spin.
-      if (stage.driverKind === "review" && budget.infrastructure >= MAX_REVIEW_INFRA_ATTEMPTS) {
-        return "blocked";
+      // One ordering, shared with `startReviewStage` so the two cannot disagree about whether a
+      // stage is parked or over. See `reviewStageVerdict`.
+      switch (reviewStageVerdict(budget, stage.maxAttempts, stage.driverKind === "review")) {
+        case "model_spent":
+        case "thrashing":
+          return "failed";
+        case "blocked":
+          return "blocked";
+        case "ready":
+          return "not_started";
       }
-      // The crash-loop backstop, counted over the rows nothing else bounds. See
-      // `ReviewStageBudget.interrupted`.
-      if (budget.interrupted >= ENSEMBLE_HARD_LIMITS.maxStageAttempts) return "failed";
-      return "not_started";
     }
     return "running";
   }
@@ -1705,20 +1733,28 @@ export class EnsembleEngine {
     const now = this.now();
     const budget = reviewStageBudget(state.stageAttempts, stage.id);
     const attemptNumber = budget.latestNumber + 1;
-    if (budget.interrupted >= ENSEMBLE_HARD_LIMITS.maxStageAttempts) {
-      void this.failRun(
-        state.run.id,
-        `review stage ${stage.id} was interrupted ${budget.interrupted} times without settling`,
-      );
-      return;
-    }
-    if (budget.consumed >= stage.maxAttempts) {
+    const verdict = reviewStageVerdict(budget, stage.maxAttempts, true);
+    // A spent MODEL budget is the one verdict a press cannot argue with: a model did answer, it
+    // answered badly every time it was asked, and that is the stage failing on its merits.
+    if (verdict === "model_spent") {
       void this.failRun(state.run.id, `review stage ${stage.id} exhausted its ${stage.maxAttempts} attempts`);
       return;
     }
     if (!opts.operatorGranted) {
       // Blocked: the walk parks the run here rather than starting an attempt nobody asked for.
-      if (budget.infrastructure >= MAX_REVIEW_INFRA_ATTEMPTS) return;
+      if (verdict === "blocked") return;
+      // The crash-loop backstop, and it belongs to the UNATTENDED path alone. Its whole
+      // justification is that nobody is watching a daemon that keeps dying in the same place, so
+      // it has no business refusing a person who pressed a button - and refusing them was a door
+      // that ended the run instead of opening, on a stage the dashboard was still drawing as
+      // parked and retryable. A press is bounded by the operator making it.
+      if (verdict === "thrashing") {
+        void this.failRun(
+          state.run.id,
+          `review stage ${stage.id} was interrupted ${budget.interrupted} times without settling`,
+        );
+        return;
+      }
       if (budget.retryAt !== null && budget.retryAt > now) {
         // Owed a backoff. Firing the next attempt in the same tick as the failure is what turned
         // one provider blip into two - the retry has to be given time to become a different call.

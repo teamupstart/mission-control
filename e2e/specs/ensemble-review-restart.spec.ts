@@ -30,6 +30,11 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 /** The markers `fake-claude.mjs` steers an ensemble comparison with. */
 const HOLD_REVIEW = "E2E_HOLD_ENSEMBLE_REVIEW";
 const FAIL_REVIEW = "E2E_FAIL_ENSEMBLE_REVIEW";
+/**
+ * Down until the review parks, then in flight and staying there. The nonce keys the fake's
+ * call counter, so two workers running this file never share one.
+ */
+const FAIL_THEN_HOLD_REVIEW = "E2E_FAIL_THEN_HOLD_ENSEMBLE_REVIEW";
 
 const EVIDENCE = artifactsDir("ensemble-review-pause");
 
@@ -268,4 +273,77 @@ test("a dead provider parks the review for the operator instead of ending the ru
 
   // The red half of the evidence pair.
   await shootPipeline(dashboard, "failed-red");
+});
+
+test("a restart during an operator's retry leaves the parked review still asking for them", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The two halves of this change meeting each other. A parked review is one the daemon will NOT
+  // re-drive - the walk stops at it - so the only thing that moves it is a person pressing Retry
+  // stage. If a restart interrupts the attempt that press granted, the newest attempt row is
+  // `interrupted`, and every screen that reads a review's state from that row alone concludes a
+  // retry is coming. Nothing is coming. Before the fix this drew as a live attempt with no amber,
+  // no reason, and no button - a run parked forever with nothing on it to press.
+  //
+  // Only this layer can prove it: it needs a real park, a real operator press, a real daemon
+  // death while the granted attempt is in flight, and a real recovery, and then it has to ask
+  // what a person can actually see and reach.
+  const runId = await launchTwoCandidates(
+    daemon,
+    "e2e-ensemble-parked-restart",
+    `${FAIL_THEN_HOLD_REVIEW}:${Date.now().toString(36)}`,
+  );
+
+  // 1. Park it: the provider is down for the whole infrastructure budget.
+  await expect
+    .poll(async () => reviewAttempts(await detail(daemon, runId)).map((a) => a.status), {
+      message: "the provider should spend the infrastructure budget",
+      timeout: 60_000,
+    })
+    .toEqual(["failed", "failed", "failed"]);
+
+  await dashboard.goto(`${daemon.baseURL}/#/ensembles/${runId}`);
+  const review = dashboard
+    .getByRole("region", { name: "Run pipeline" })
+    .getByRole("listitem")
+    .filter({ hasText: "Review" });
+  await expect(review).toHaveClass(/is-blocked/);
+
+  // 2. The operator presses the door, and this time the call stays in flight.
+  await dashboard.getByRole("button", { name: "Retry stage" }).click();
+  await expect
+    .poll(async () => reviewAttempts(await detail(daemon, runId)).length, {
+      message: "the press should grant a fourth attempt",
+      timeout: 60_000,
+    })
+    .toBe(4);
+  await expect
+    .poll(async () => reviewAttempts(await detail(daemon, runId)).at(-1)?.status, {
+      message: "and that attempt should be genuinely running when the daemon dies",
+      timeout: 60_000,
+    })
+    .toBe("running");
+
+  // 3. The daemon dies under it, and a successor comes up on the same home.
+  await daemon.crash();
+  await daemon.restart();
+  await expect
+    .poll(async () => reviewAttempts(await detail(daemon, runId)).map((a) => a.status), {
+      message: "recovery settles the granted attempt as interrupted and does NOT re-drive a parked stage",
+      timeout: 60_000,
+    })
+    .toEqual(["failed", "failed", "failed", "interrupted"]);
+  expect((await detail(daemon, runId)).run.status).toBe("evaluating");
+
+  // 4. What a person sees has to still be the truth: parked, amber, saying why, with the one
+  //    control that moves it. An `interrupted` newest row must not make any of that disappear.
+  await dashboard.goto(`${daemon.baseURL}/#/ensembles/${runId}`);
+  const parked = dashboard
+    .getByRole("region", { name: "Run pipeline" })
+    .getByRole("listitem")
+    .filter({ hasText: "Review" });
+  await expect(parked).toHaveClass(/is-blocked/);
+  await expect(parked).toContainText("paused after 3 infrastructure errors");
+  await expect(dashboard.getByRole("button", { name: "Retry stage" })).toBeVisible();
 });

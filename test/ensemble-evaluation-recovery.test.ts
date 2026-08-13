@@ -19,7 +19,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
-const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
+const { EnsembleEngine, MAX_REVIEW_INFRA_ATTEMPTS } = await import("../src/server/ensembles/engine.ts");
 const { bestOfNStrategy } = await import("../src/server/ensembles/strategies/best-of-n.ts");
 const { ENSEMBLE_HARD_LIMITS, ensemblePayload } = await import("../src/shared/ensemble.ts");
 const { FakeGateway, ARTIFACT_ADAPTERS, fakeSha, runInsert } = await import("./ensemble-fixture.ts");
@@ -337,6 +337,59 @@ test("restarts before a provider outage still park the run rather than ending it
     "parked for an operator, not ended: the infrastructure budget is what ran out, and the candidates are intact",
   );
   assert.ok(store.listArtifacts(run.id).every((a) => a.status === "ready"));
+});
+
+test("the retry door on a parked review still opens after the crash-loop ceiling is reached", async () => {
+  // The two ceilings used to disagree. `stageStatus` answers `blocked` before it ever reaches the
+  // crash-loop backstop - correctly, since a parked stage opens no row on its own - so a parked
+  // review whose operator-granted retries kept being interrupted by restarts went on reading
+  // `blocked`, with the Retry stage button on screen, while `interrupted` climbed past the
+  // ceiling. `startReviewStage` asked the backstop FIRST and unconditionally, so the next press
+  // ended the run instead of starting the attempt the button promises. An operator would have
+  // watched the door they were told grants one more attempt discard intact candidate work.
+  const store = new EnsembleStore(db);
+  const gateway = new FakeGateway();
+  const run = makeRun(store, bestOfNPlan(2));
+  const hang = () => new Promise<string>(() => {});
+  await submitMembers(makeEngine(store, gateway, hang), gateway, store, run.id);
+  await waitFor(() => reviewAttempts(store, run.id).length === 1);
+
+  // Park it: the provider is unreachable and its budget of 3 runs out.
+  const dead = makeEngine(store, gateway, () => Promise.reject(new Error("provider unreachable")), fastClock());
+  await dead.recover(run.id);
+  await waitFor(
+    () =>
+      reviewAttempts(store, run.id).filter((a) => a.status === "failed").length ===
+      MAX_REVIEW_INFRA_ATTEMPTS,
+  );
+  const stageId = reviewAttempts(store, run.id)[0]!.stageId;
+
+  // Now press the door, and have a restart interrupt each granted attempt, until interruptions
+  // reach the ceiling. The stage stays parked throughout, which is the point: it never spins a
+  // row on its own, so every one of these cost a deliberate human press.
+  const interruptions = () => reviewAttempts(store, run.id).filter((a) => a.status === "interrupted").length;
+  let presses = 0;
+  while (interruptions() < ENSEMBLE_HARD_LIMITS.maxStageAttempts) {
+    presses += 1;
+    assert.ok(presses <= 10, "the loop should reach the ceiling, not run away");
+    const engine = makeEngine(store, gateway, hang, fastClock());
+    assert.equal(await engine.retryStage(run.id, stageId), true, `press ${presses} should be accepted`);
+    await waitFor(() => reviewAttempts(store, run.id).some((a) => a.status === "running"));
+    await engine.recover(run.id);
+    await waitFor(() => reviewAttempts(store, run.id).every((a) => a.status !== "running"));
+  }
+  assert.equal(
+    store.getRun(run.id)!.status,
+    "evaluating",
+    "interruptions are at the ceiling, and the stage is still parked rather than failed",
+  );
+
+  // The door has to still open. A press is bounded by the person making it, so the backstop -
+  // which exists for the unattended case - must not be what answers them.
+  const working = makeEngine(store, gateway, (prompt) => Promise.resolve(validResponse(prompt)), fastClock());
+  assert.equal(await working.retryStage(run.id, stageId), true);
+  await waitFor(() => store.getRun(run.id)!.status === "awaiting_decision");
+  assert.ok(store.listArtifacts(run.id).every((a) => a.status === "ready"), "and nothing was discarded");
 });
 
 test("a run that has been interrupted four times can still be rescued by one working call", async () => {

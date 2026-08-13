@@ -166,6 +166,16 @@ test("context actions work by pointer and keyboard without leaking keys to the g
   await expect(menu).toBeHidden();
   await expect(composer).toBeFocused();
 
+  // Passive viewport dismissal returns keyboard control to the invoking field. Outside clicks
+  // keep their separate non-restoring path so the pointer's new target can receive focus.
+  for (const eventType of ["wheel", "touchmove", "resize"] as const) {
+    await dashboard.keyboard.press("Shift+F10");
+    await expect(menu).toBeVisible();
+    await dashboard.evaluate((type) => window.dispatchEvent(new Event(type)), eventType);
+    await expect(menu).toBeHidden();
+    await expect(composer).toBeFocused();
+  }
+
   // A customizable named key with native field behavior remains native while typing. The same
   // binding can still open the global menu outside text fields.
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {

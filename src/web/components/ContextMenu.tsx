@@ -268,7 +268,7 @@ export function ContextMenuHost({
     function onDown(event: MouseEvent): void {
       if (!menuRef.current?.contains(event.target as Node)) close();
     }
-    const dismiss = (): void => close();
+    const dismiss = (): void => close(true);
     document.addEventListener("mousedown", onDown, true);
     window.addEventListener("wheel", dismiss, true);
     window.addEventListener("touchmove", dismiss, true);

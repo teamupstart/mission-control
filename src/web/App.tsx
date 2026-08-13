@@ -66,6 +66,7 @@ import {
   useKeybindings,
   chordFromEvent,
   chordHasCommandModifier,
+  chordUsesFunctionKey,
   chordYieldsToSelection,
   formatChord,
 } from "./lib/keybindings.ts";
@@ -95,6 +96,7 @@ import {
   type WorkflowBindingTarget,
 } from "./workflows/WorkflowBindingDialog.tsx";
 import { Palette } from "./components/Palette.tsx";
+import { ContextMenuHost, type ContextMenuHandle } from "./components/ContextMenu.tsx";
 import type { PaletteStores, PaletteTarget } from "./lib/palette-index.ts";
 import { buildSettingsBindings } from "./lib/settings-search.ts";
 import { useRichText } from "./lib/rich-text.ts";
@@ -359,6 +361,7 @@ export function App(): React.JSX.Element {
   // of step with what is actually on screen - which is what used to happen when a new
   // overlay was added and one of the lists here was missed.
   const overlays = useOverlayHost();
+  const contextMenuRef = useRef<ContextMenuHandle>(null);
 
   // Read by the global key handler below instead of closing over `overlays` directly.
   // That handler is installed by a passive effect, so a closure over `overlays` keeps the
@@ -1488,6 +1491,25 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // The customizable Shift+F10 action and the keyboard's dedicated Menu key open the
+      // same global host, from every page and from inside text fields. A rebound editing,
+      // navigation or printable key still respects the typing guard; function keys have no
+      // native text-field behavior and may keep the default's access from the composer.
+      if (
+        (e.key === "ContextMenu" || chord === bindings.contextMenu)
+        && (
+          !typing
+          || e.key === "ContextMenu"
+          || chordUsesFunctionKey(bindings.contextMenu)
+        )
+      ) {
+        const focusTarget = target ?? (document.activeElement instanceof Element
+          ? document.activeElement
+          : null);
+        if (contextMenuRef.current?.openFromKeyboard(focusTarget)) e.preventDefault();
+        return;
+      }
+
       // Fleet, Library and Runs are direct destinations rather than toggles. Their chords
       // fire off every page and sit above the fleet-only guard for that reason. The shared
       // pure helper keeps their typing/rename/overlay stand-downs testable without a DOM.
@@ -2112,6 +2134,7 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
         <header className="topbar" ref={topbarRef}>
           <div className="brand">

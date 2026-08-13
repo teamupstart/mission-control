@@ -602,6 +602,26 @@ that is on screen the whole time, and repeating it on hover is noise. Anything y
 on has one, and `tooltip-coverage.test.ts` fails the build if a new control arrives
 without one, or if a native `title` attribute creeps back in.
 
+## Context menus
+
+Right-click selected text, an external link, or an editable text field to open Mission
+Control's context menu. A selection offers **Copy**. A link offers its visible text and URL as
+separate copies when they differ, plus **Open link**. A text field offers **Cut** and **Copy**
+when text is selected, and always offers **Paste** and **Paste as quote**. Clipboard writes use
+the same fallback and confirmation as the app's visible Copy controls. If a browser refuses a
+clipboard read, the menu keeps the field focused and points to <kbd>⌘</kbd><kbd>V</kbd>.
+
+The same DOM menu is used in a browser tab and in the desktop app. In the desktop app,
+**Open link** goes through the preload bridge and opens in the system browser instead of
+navigating the Mission Control window. Hold <kbd>Shift</kbd> while right-clicking to ask the
+browser for its native developer menu instead.
+
+<kbd>⇧</kbd><kbd>F10</kbd> opens the menu beside the focused item, including from inside a text
+field. A keyboard with a dedicated Menu key opens it too. Arrow keys move between rows,
+<kbd>Enter</kbd> invokes one, and <kbd>Esc</kbd> closes the menu and restores focus. A pointer
+right-click outside the current document selection clears that selection before resolving the
+menu, so **Copy** never refers to text away from the pointer.
+
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - use the arrow keys to navigate Cards and Board, to walk
@@ -621,6 +641,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
+| <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
 | <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
@@ -645,7 +666,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>⌥</kbd><kbd>↑</kbd> <kbd>⌥</kbd><kbd>↓</kbd> | Move the focused reviewer within its stage | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 | <kbd>Delete</kbd> | Remove the focused reviewer or stage, after a confirmation naming what goes | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 
-Every shortcut except the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> is
+Every shortcut except the arrow keys, <kbd>Enter</kbd>, <kbd>Esc</kbd> and the dedicated Menu key is
 **customizable**. Open **Settings** - the ⚙ gear in the top bar, or (in the desktop app)
 **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
 (optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd> / <kbd>⇧</kbd>). On a letter,
@@ -655,8 +676,9 @@ plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into anot
 trying to reuse an assigned key is refused inline. You can reset any one shortcut (or all
 of them); if another custom binding has claimed that shortcut's default, resetting clears
 the override and leaves the shortcut unset until its default is free. The arrow keys,
-<kbd>Enter</kbd>, <kbd>Esc</kbd> and bare <kbd>Tab</kbd> drive layout navigation and Console
-reading, and can't be reassigned; <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
+<kbd>Enter</kbd>, <kbd>Esc</kbd>, the Menu key and bare <kbd>Tab</kbd> drive structural navigation
+and can't be reassigned; <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
+<kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
 editor's four rows above are in-surface keys rather than fleet chords - they only exist
 while a card in that strip has focus - so they are fixed for the same reason.
 

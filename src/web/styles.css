@@ -1453,6 +1453,10 @@ body {
 .is-desktop .workflow-library-sidebar,
 .is-desktop .workflow-builder-right,
 .is-desktop .wf-pipeline-item-menu-pop,
+/* The global context menu is cursor-anchored, so it can be summoned inside the titlebar
+   itself. Its confirmation is fixed too and stays explicit even though it is not clickable. */
+.is-desktop .ctx-menu-pop,
+.is-desktop .ctx-menu-flash,
 /* The "Open in" popover is only ever anchored under a files toolbar, which sounds like it
    could never reach the bar - but `.file-window` above is a window the human DRAGS, and it
    can be parked with its toolbar at y=0. */
@@ -3294,6 +3298,90 @@ body {
 .open-in-note { margin: 0; padding: 6px 8px; color: var(--dim); font: 10.5px/1.4 var(--sans); }
 .open-in-text .open-in-note { padding: 0; }
 .open-in-note.is-error { color: var(--danger); }
+
+/* ---- global context menu ----
+
+   One compact body-level panel in both browser and desktop builds. Its width is also the
+   placement constant in ContextMenu.tsx: the label gets the room, while payload/shortcut
+   hints stay mono and right-aligned like the rest of Mission Control's operator furniture. */
+.ctx-menu-pop {
+  position: fixed;
+  z-index: 100;
+  width: 196px;
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid color-mix(in oklab, var(--working) 24%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--panel) 94%, black);
+  box-shadow: 0 16px 38px rgb(0 0 0 / .52), 0 0 0 1px rgb(255 255 255 / .025) inset;
+}
+.ctx-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fg);
+  background: transparent;
+  font: 12px/1.35 var(--sans);
+  text-align: left;
+  cursor: default;
+}
+.ctx-menu-row.has-divider {
+  min-height: 34px;
+  margin-top: 3px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.ctx-menu-row:hover,
+.ctx-menu-row:focus-visible {
+  color: white;
+  background: color-mix(in oklab, var(--working) 17%, var(--panel-2));
+  outline: none;
+}
+.ctx-menu-row:focus-visible {
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 64%, transparent) inset;
+}
+.ctx-menu-hint {
+  max-width: 82px;
+  overflow: hidden;
+  color: var(--dim);
+  font: 10.5px/1.2 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-menu-row:hover .ctx-menu-hint,
+.ctx-menu-row:focus-visible .ctx-menu-hint { color: var(--muted); }
+.ctx-menu-flash.action-flash {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 100;
+  width: auto;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+  text-align: center;
+  transform: translateX(-50%);
+}
+.ctx-menu-flash.action-flash.is-ok {
+  border-color: color-mix(in oklab, var(--idle) 36%, var(--border));
+  color: var(--idle);
+}
+.ctx-menu-flash.action-flash.is-error {
+  border-color: color-mix(in oklab, var(--danger) 36%, var(--border));
+  color: var(--danger);
+}
 .file-content { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .file-content > .file-empty,
 .file-content > .file-error { margin: auto; padding: 24px; }

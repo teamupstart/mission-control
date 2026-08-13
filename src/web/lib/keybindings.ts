@@ -23,6 +23,7 @@ export type ActionId =
   | "dispatch"
   | "filter"
   | "settingsSearch"
+  | "contextMenu"
   | "workflows"
   | "runs"
   | "expand"
@@ -119,6 +120,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Search everything",
     description: "Open the palette over workflows, runs, ensembles, missions and settings.",
     defaultBinding: "cmd+k",
+    group: "global",
+  },
+  {
+    id: "contextMenu",
+    label: "Open context menu",
+    description: "Show the actions for the focused item or text field.",
+    defaultBinding: "shift+F10",
     group: "global",
   },
   {
@@ -305,6 +313,7 @@ const ACTION_BY_ID = new Map<ActionId, ActionDef>(ACTIONS.map((a) => [a.id, a]))
 const RESERVED_KEYS = new Set([
   "Escape",
   "Enter",
+  "ContextMenu",
   "ArrowUp",
   "ArrowDown",
   "ArrowLeft",
@@ -389,6 +398,7 @@ const KEY_LABEL: Record<string, string> = {
   " ": "Space",
   Backspace: "⌫",
   Delete: "⌦",
+  ContextMenu: "☰",
 };
 
 /** Human-readable form of a chord for keycaps and the editor (e.g. "⌘K", "⇧O", "⇥", "/"). */
@@ -419,6 +429,12 @@ export function isReservedChord(chord: string): boolean {
 export function chordHasCommandModifier(chord: string): boolean {
   const { mods } = parseChord(chord);
   return mods.includes("cmd") || mods.includes("ctrl");
+}
+
+/** True when a chord uses a standard function key, which has no text-editing behavior. */
+export function chordUsesFunctionKey(chord: string): boolean {
+  const { key } = parseChord(chord);
+  return /^F(?:[1-9]|1\d|2[0-4])$/.test(key);
 }
 
 /**

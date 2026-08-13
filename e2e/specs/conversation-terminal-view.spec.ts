@@ -212,6 +212,8 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
     return { link: getComputedStyle(link).color, working };
   });
   expect(palette.link).toBe(palette.working);
+  await workspaceLink.scrollIntoViewIfNeeded();
+  await shoot(dashboard, terminal, "02-terminal-link-blue");
 });
 
 test("a Codex run of commands folds into one record too", async ({ dashboard, daemon }) => {

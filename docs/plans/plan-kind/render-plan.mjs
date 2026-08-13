@@ -1,9 +1,19 @@
+// Usage:
+//   node render-plan.mjs [phased]           write the page
+//   node render-plan.mjs [phased] --check   fail if the committed page is not this output
+//
+// `--check` exists because the markdown and its rendering are two files that a later edit can
+// separate: change plan.md, forget to rerun this, and the committed HTML still claims to be its
+// rendering while no longer being one. The check makes that a command anyone can run rather than
+// something a reader has to notice. It is deliberately not wired into CI - no plan renderer in
+// this repository is, and one plan directory is the wrong place to set that precedent.
 import { readFileSync, writeFileSync } from "node:fs";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+const checkOnly = process.argv.includes("--check");
 const isPhased = process.argv[2] === "phased";
 const sourceName = isPhased ? "phased-plan.md" : "plan.md";
 const outputName = isPhased ? "phased-plan.html" : "plan.html";
@@ -265,4 +275,20 @@ const html = `<!doctype html>
 </body>
 </html>`;
 
-writeFileSync(outputPath, html);
+if (checkOnly) {
+  let committed = null;
+  try {
+    committed = readFileSync(outputPath, "utf8");
+  } catch {
+    throw new Error(`${outputName} does not exist - run \`node render-plan.mjs${isPhased ? " phased" : ""}\``);
+  }
+  if (committed !== html) {
+    throw new Error(
+      `${outputName} is stale: it is not the current rendering of ${sourceName}. `
+        + `Run \`node render-plan.mjs${isPhased ? " phased" : ""}\` and commit the result.`,
+    );
+  }
+  console.log(`${outputName} is up to date with ${sourceName}`);
+} else {
+  writeFileSync(outputPath, html);
+}

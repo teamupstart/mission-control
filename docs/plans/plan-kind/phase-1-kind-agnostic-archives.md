@@ -201,7 +201,11 @@ stops being produced.
 - A database carrying the old tables opens, migrates, and keeps its capture-job rows.
 - The validator permits a clickable external link and refuses every fetching slot, with a test per
   slot.
-- No file outside the archive subsystem, its tests, its routes and its docs is touched.
+- No file outside the archive subsystem, its tests, its routes and its docs is touched, with two
+  named exceptions that step 9 requires: `src/server/registry.ts` for the archive-changed event,
+  and `src/web/useEventStream.ts` for its consumer. The second is a controlled path that must
+  keep handling every `ServerEvent` exhaustively, so it is reviewed as such rather than as an
+  incidental rename.
 
 ## 9. Downstream handoff
 

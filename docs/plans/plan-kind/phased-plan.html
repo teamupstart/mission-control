@@ -48,12 +48,11 @@
     pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}
     table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font-size:11px}
     blockquote{margin:18px 0;padding:10px 16px;border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 6%,var(--paper));color:var(--muted)}
-    #approved-decisions{margin-top:56px;padding:22px 24px;border:1px solid color-mix(in srgb,var(--green) 48%,var(--line));border-radius:14px;background:color-mix(in srgb,var(--green) 6%,var(--paper));color:var(--ink)}
     .flow{max-width:100%;margin:22px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}
     .flow figcaption{margin-bottom:13px;font-weight:760}.flow svg{display:block;width:100%;height:auto;min-width:760px}.flow p{margin:12px 3px 1px;color:var(--muted);font-size:12px}
-    .flow .edges path{fill:none;stroke:var(--dim);stroke-width:1.7;marker-end:url(#flow-arrow)}.deletion .edges path{marker-end:url(#delete-arrow)}.publication .edges path{marker-end:url(#publish-arrow)}.reconciliation .edges path{marker-end:url(#reconcile-arrow)}.deletion .edges .failure,.publication .edges .failure{stroke:var(--red)}
+    .flow .edges path{fill:none;stroke:var(--dim);stroke-width:1.7;marker-end:url(#flow-arrow)}
     .flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .node.manager rect{fill:color-mix(in srgb,var(--blue) 10%,var(--paper));stroke:var(--blue)}
-    .flow .node.bundle rect,.flow .node.done rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .node.db rect{stroke:var(--purple)}.flow .node.verify rect{stroke:var(--amber)}.flow .node.retry rect{stroke:var(--red);stroke-dasharray:5 4}
+    .flow .node.bundle rect,.flow .node.done rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .node.verify rect{stroke:var(--amber)}
     .flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:480}.flow text.label{fill:var(--dim);font:500 9px var(--mono)}
     .flow text.band{fill:var(--dim);font:800 10px var(--mono);letter-spacing:.14em;text-anchor:start}
     footer{display:flex;justify-content:space-between;gap:20px;max-width:1240px;margin:0 auto 36px;padding:0 18px;color:var(--dim);font:11px/1.5 var(--mono)}
@@ -132,7 +131,7 @@ Phase 2 owns all of them.</li>
 <table><thead><tr><th>Phase</th><th>Name</th><th>Direct prerequisites</th><th>Delivers</th></tr></thead><tbody><tr><td>1</td><td><a href="./phase-1-kind-agnostic-archives.md">Kind-agnostic archives</a></td><td>none</td><td>A kind-discriminated archive format, root, tables and validator, with scout behaviour unchanged</td></tr><tr><td>2</td><td><a href="./phase-2-the-plan-task-kind.md">The plan task kind</a></td><td>none</td><td><code>plan</code> as a selectable, durable, drawn and described Kind</td></tr><tr><td>3</td><td><a href="./phase-3-plan-delivery-contract.md">Plan delivery contract</a></td><td>Phase 2</td><td>The contract appendix, launch requirements, skill-gated dispatch, and ordinary wrap-up</td></tr><tr><td>4</td><td><a href="./phase-4-plan-capture.md">Plan capture</a></td><td>Phase 1, Phase 3</td><td>Plan artifacts archived before worktree reclaim</td></tr></tbody></table>
 <h2 id="dependency-and-delivery-flow">Dependency and delivery flow</h2>
 
-<figure class="flow phases" aria-labelledby="phased-flow-title">
+<figure class="flow" aria-labelledby="phased-flow-title">
   <figcaption id="phased-flow-title">Merge-aware implementation and value flow</figcaption>
   <svg viewBox="0 0 1200 400" role="img" aria-label="The planning pull request releases Phase 1, the kind-agnostic archive library, and Phase 2, the plan task kind, which have no dependency on one another and may run concurrently. Phase 2 releases Phase 3, the plan delivery contract. Phase 1 and Phase 3 together release Phase 4, plan capture into the archive. Each phase leaves an independently operable result.">
     <defs>

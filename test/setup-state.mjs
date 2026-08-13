@@ -25,12 +25,35 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Set by `node --test` in each spawned test process and nowhere else, which is exactly the
-// scope wanted: the runner's parent process gets `--import` too (it propagates through
-// `execArgv`) and has no business creating a state dir, and a daemon that happens to load
-// this file outside the runner must keep the operator's real one.
+// `node --test` sets this in each test process it spawns, which is the scope wanted: the
+// runner's PARENT process gets `--import` too (it propagates through `execArgv`) and has no
+// business creating a state dir, and a daemon that happens to load this file outside the
+// runner must keep the operator's real one. Test files may also set it deliberately on a
+// child they spawn - `test/db-isolation.test.ts` does, to simulate a worker from the
+// outside - so "the runner set it" is the normal case rather than the only one.
 if (process.env.NODE_TEST_CONTEXT) {
   const root = mkdtempSync(join(tmpdir(), "mission-test-state-"));
+
+  // A marker `db.ts` can trust for the life of this process, because the environment cannot
+  // be trusted for it: `NODE_TEST_CONTEXT` is an ordinary env var, and a test that runs
+  // `delete process.env.NODE_TEST_CONTEXT` before importing the server graph turns the
+  // refusal off completely - it returns on its first line and the operator's database opens.
+  // `process.env` refuses a non-configurable descriptor ("only accepts a configurable,
+  // writable, and enumerable data descriptor"), so the variable itself cannot be pinned; a
+  // property here can be. Non-writable and non-configurable, so `delete` answers false and
+  // assignment does nothing.
+  //
+  // The NAME is a contract shared with `src/server/db.ts`, which cannot import this file.
+  // It is spelled out in both places rather than shared through a module, because the only
+  // module both could import is application configuration this file must not evaluate.
+  // `deleting NODE_TEST_CONTEXT does not disarm the guard` in db-isolation fails if the two
+  // spellings ever drift, which is what keeps them honest.
+  Object.defineProperty(globalThis, "__missionControlTestState", {
+    value: root,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
 
   // The LOWEST-priority alias, on purpose. `envVar("HOME")` reads MISSION_ then FLEET_ then
   // HARNESS_, so seeding MISSION_HOME here would outrank the 128 files that name

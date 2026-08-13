@@ -147,6 +147,31 @@ function isInside(child: string, parent: string): boolean {
 let isolatedOverride: string | undefined;
 
 /**
+ * Whether this process is a test worker - decided ONCE, at import, and not re-asked.
+ *
+ * `NODE_TEST_CONTEXT` alone cannot answer this. It is an ordinary environment variable, so a
+ * test file that runs `delete process.env.NODE_TEST_CONTEXT` before importing this module
+ * turns the whole refusal off: it returns on its first line, and the operator's database
+ * opens with every check skipped. That is a worse hole than the ones the checks catch,
+ * because it needs no unusual path at all.
+ *
+ * So the durable half is a marker `test/setup-state.mjs` defines non-writable and
+ * non-configurable on `globalThis` before any test module loads - `delete` answers false and
+ * assignment is ignored, and unlike the environment it cannot be spent. The env var stays as
+ * the second half, read here at import so that a worker which reaches this line under the
+ * runner is latched as one even if the variable is removed afterwards. A worker launched
+ * WITHOUT the preload and stripped of the variable before this import is the one case
+ * neither half sees, which is the concrete reason the documented commands all carry the
+ * preload rather than treating it as a convenience.
+ *
+ * Production reads a boolean and stops - cheaper than the environment lookup this replaced.
+ * The name is duplicated in `test/setup-state.mjs`, which cannot import from here; the
+ * db-isolation case named in that file's comment fails if the two ever drift.
+ */
+const UNDER_TEST_RUNNER =
+  Object.hasOwn(globalThis, "__missionControlTestState") || Boolean(process.env.NODE_TEST_CONTEXT);
+
+/**
  * Refuse to open anything but a disposable test state dir from inside the test runner.
  *
  * Twice now a test has destroyed live state: the state-dir rename once moved
@@ -181,11 +206,12 @@ let isolatedOverride: string | undefined;
  *      is the check that can say what is actually wrong.
  *   4. It lives in the platform temp dir, so what it opens is disposable by construction.
  *
- * Production pays for none of it: without `NODE_TEST_CONTEXT` this returns on its first
- * line, and the live daemon opens whatever `stateDir()` resolved, exactly as before.
+ * Production pays for none of it: outside a test worker (see `UNDER_TEST_RUNNER`) this
+ * returns on its first line, and the live daemon opens whatever `stateDir()` resolved,
+ * exactly as before.
  */
 function assertTestStateIsolation(): void {
-  if (!process.env.NODE_TEST_CONTEXT) return;
+  if (!UNDER_TEST_RUNNER) return;
   const override = envVar("HOME");
   // Same override as the last accepted call - nothing about the answer can have changed,
   // and this is the path every helper takes.

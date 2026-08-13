@@ -179,6 +179,41 @@ test("a temp-looking symlink into the operator's state dir is refused", () => {
   );
 });
 
+test("deleting NODE_TEST_CONTEXT does not disarm the guard", () => {
+  // The cheapest possible bypass, and the one that needs no unusual path at all: the refusal
+  // used to begin `if (!process.env.NODE_TEST_CONTEXT) return`, and that is an ordinary
+  // environment variable. A test file that removes it before importing the server graph does
+  // not defeat one check - it skips all of them, and `openDb` opens whatever the state home
+  // names, here the operator's own directory.
+  //
+  // What holds instead is the marker `setup-state.mjs` pins on `globalThis`, which cannot be
+  // deleted or reassigned. This case is also what keeps that marker's NAME in step across the
+  // two files that spell it out: misspell it in either one and this goes red.
+  const jail = join(home, "ctx-jail");
+  const operator = join(jail, ".mission-control");
+  mkdirSync(jail, { recursive: true });
+
+  const res = runChild(
+    `
+      delete process.env.NODE_TEST_CONTEXT;
+      process.env.MISSION_HOME = ${JSON.stringify(operator)};
+      const { openDb } = await import("./src/server/db.ts");
+      try { openDb(); console.log("opened"); } catch (err) { console.log("refused:" + err.message); }
+    `,
+    { HOME: jail },
+    { bootstrap: true },
+  );
+
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /refused:refusing to open .*real state dir/);
+  assert.doesNotMatch(res.stdout, /\nopened\n/, "the guard was switched off from inside a test");
+  assert.equal(
+    existsSync(join(operator, "harness.db")),
+    false,
+    "the operator's database was opened once the variable was gone",
+  );
+});
+
 test("an override outside the temp dir is refused even though it is explicit", () => {
   // A throwaway `$TMPDIR` is what makes this honest: the refused path is a perfectly
   // ordinary directory, not an operator-looking one, and it fails purely because it is

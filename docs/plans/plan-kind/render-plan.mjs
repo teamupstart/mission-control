@@ -150,6 +150,21 @@ const toc = isPhased
       ["Verification", "verification"],
     ];
 
+// The sidebar's ids must name headings the markdown actually has. Asserted rather than
+// trusted, for the same reason the Mermaid count above is: both files are edited by hand and
+// separately, so a renamed heading would otherwise ship a dead in-page link that renders
+// perfectly and only fails when somebody clicks it. Deriving the list instead would silently
+// change the sidebar whenever a heading was added, which is a different kind of wrong - the
+// curated order is the point, so the check is that the curation is still true.
+const renderedIds = new Set([...body.matchAll(/<h[1-3] id="([^"]+)"/g)].map((match) => match[1]));
+const deadLinks = toc.filter(([, id]) => !renderedIds.has(id));
+if (deadLinks.length > 0) {
+  throw new Error(
+    `${sourceName} has no heading for ${deadLinks.length} sidebar link(s): `
+      + deadLinks.map(([label, id]) => `"${label}" -> #${id}`).join(", "),
+  );
+}
+
 const page = isPhased
   ? {
       title: "The plan task kind phased plan",

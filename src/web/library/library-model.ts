@@ -53,12 +53,35 @@ export interface LibraryShelfCopy {
  */
 export const LIBRARY_SHELF_COPY: readonly LibraryShelfCopy[] = [
   {
+    id: "missions",
+    eyebrow: "Missions · Sources",
+    question: "Where does work come from?",
+    why: "Both stop at the backlog. A mission files a task on a cadence; a source pulls your "
+      + "real backlog in. Neither ever launches an agent.",
+    glyph: "◷",
+  },
+  {
     id: "workflows",
     eyebrow: "Workflows",
     question: "What counts as done?",
     why: "A workflow reviews one session's work and loops it back for repair until every "
       + "reviewer passes it - then it can tell the session what to do next.",
     glyph: "⌁",
+  },
+  {
+    id: "commands",
+    eyebrow: "Commands",
+    question: "What does each standard gate run?",
+    // Says the two halves an operator has to hold together: a workflow names a portable
+    // slot, and this is where the machine says what that slot actually runs. The last
+    // sentence is the one that keeps the shelf honest about authoring - saving a Command
+    // does not run it.
+    why: "A workflow names a slot, never a command, so it travels between repositories. "
+      + "Here each slot gets one machine-wide default plus any repository exceptions. "
+      + "Nothing runs until a workflow reaches the slot.",
+    // A shell prompt's caret: the one glyph in Library's mono vocabulary that already means
+    // "a command line", and no icon package for it.
+    glyph: "❯",
   },
   {
     id: "personas",
@@ -84,29 +107,6 @@ export const LIBRARY_SHELF_COPY: readonly LibraryShelfCopy[] = [
       + "candidates, keep the best. Watching and deciding happen on the runs and ensembles "
       + "pages.",
     glyph: "⧉",
-  },
-  {
-    id: "missions",
-    eyebrow: "Missions · Sources",
-    question: "Where does work come from?",
-    why: "Both stop at the backlog. A mission files a task on a cadence; a source pulls your "
-      + "real backlog in. Neither ever launches an agent.",
-    glyph: "◷",
-  },
-  {
-    id: "commands",
-    eyebrow: "Commands",
-    question: "What does each standard gate run?",
-    // Says the two halves an operator has to hold together: a workflow names a portable
-    // slot, and this is where the machine says what that slot actually runs. The last
-    // sentence is the one that keeps the shelf honest about authoring - saving a Command
-    // does not run it.
-    why: "A workflow names a slot, never a command, so it travels between repositories. "
-      + "Here each slot gets one machine-wide default plus any repository exceptions. "
-      + "Nothing runs until a workflow reaches the slot.",
-    // A shell prompt's caret: the one glyph in Library's mono vocabulary that already means
-    // "a command line", and no icon package for it.
-    glyph: "❯",
   },
 ];
 

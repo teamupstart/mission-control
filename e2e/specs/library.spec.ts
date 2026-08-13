@@ -98,15 +98,26 @@ test("the Library shelves answer a question each, and name nothing that is runni
   // The six questions ARE the headings. That inversion - question up, system noun demoted to
   // an eyebrow - is the whole feature: before this page, nothing in the product said what a
   // workflow or a Persona was for.
-  for (const question of [
+  const questions = [
+    "Where does work come from?",
     "What counts as done?",
+    "What does each standard gate run?",
     "Who does the reviewing?",
     "What can a run tell the session to do?",
     "Not sure of the best approach?",
-    "Where does work come from?",
-    "What does each standard gate run?",
-  ]) {
+  ];
+  for (const question of questions) {
     await expect(dashboard.getByRole("heading", { name: question })).toBeVisible();
+  }
+
+  // The Library starts at intake, then puts Commands with the Workflows that name their
+  // portable slots. These are vertical shelves, so their heading positions are the order an
+  // operator reads rather than just the order React happened to receive children.
+  const shelfPositions = await Promise.all(questions.map(async (question) => (
+    (await dashboard.getByRole("heading", { name: question, exact: true }).boundingBox())!.y
+  )));
+  for (let index = 1; index < shelfPositions.length; index += 1) {
+    expect(shelfPositions[index]!).toBeGreaterThan(shelfPositions[index - 1]!);
   }
 
   // The assets are on their shelves, each carrying a durable fact rather than a live one.

@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Approved plan for automatic Mission Control test database isolation">
+  <title>Automatic test database isolation</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --canvas: #e8ece9;
+      --paper: #fffefa;
+      --ink: #17272c;
+      --muted: #5f6b6d;
+      --line: #c5d0cc;
+      --navy: #133746;
+      --teal: #217464;
+      --teal-pale: #dcefe8;
+      --amber: #b96a2d;
+      --amber-pale: #f8e8d5;
+      --red: #a44741;
+      --red-pale: #f4dfdc;
+      --code-bg: #15282f;
+      --code-ink: #edf7f4;
+      --shadow: 0 20px 60px rgba(19, 45, 49, .13);
+      --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(19, 55, 70, .045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(19, 55, 70, .045) 1px, transparent 1px),
+        var(--canvas);
+      background-size: 26px 26px;
+      font: 16px/1.62 var(--body);
+    }
+    a { color: var(--teal); text-underline-offset: .2em; }
+    a:hover { color: var(--amber); }
+    a:focus-visible { outline: 3px solid #77b9a9; outline-offset: 4px; }
+    code, pre, .eyebrow, .tag, th { font-family: var(--mono); }
+    .shell {
+      width: min(1180px, calc(100% - 30px));
+      margin: 22px auto 70px;
+      background: var(--paper);
+      border-top: 6px solid var(--teal);
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(42px, 8vw, 88px) clamp(24px, 7vw, 82px) 58px;
+      color: #eef8f5;
+      background: var(--navy);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -90px;
+      bottom: -190px;
+      width: 480px;
+      height: 480px;
+      border: 70px solid rgba(112, 190, 167, .14);
+      border-radius: 50%;
+    }
+    .hero > * { position: relative; z-index: 1; }
+    .eyebrow {
+      margin: 0 0 18px;
+      color: #99d6c7;
+      font-size: .73rem;
+      font-weight: 750;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { font-family: var(--display); font-weight: 600; }
+    h1 {
+      max-width: 870px;
+      margin: 0;
+      font-size: clamp(3rem, 7.3vw, 6.4rem);
+      line-height: .9;
+      letter-spacing: -.045em;
+    }
+    .lede { max-width: 790px; margin: 30px 0 0; color: #d4e7e3; font-size: 1.1rem; }
+    .decision {
+      max-width: 900px;
+      margin-top: 34px;
+      padding: 20px 22px;
+      color: #15362e;
+      background: #dcefe7;
+      border-left: 6px solid #63ab96;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+    }
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      padding: 15px clamp(22px, 6vw, 70px);
+      background: #e2eeea;
+      border-bottom: 1px solid var(--line);
+    }
+    nav a { font: .77rem var(--mono); text-decoration: none; }
+    main { padding: 22px clamp(22px, 6vw, 70px) 78px; }
+    section { margin-top: 66px; scroll-margin-top: 20px; }
+    h2 {
+      margin: 0 0 18px;
+      color: var(--navy);
+      font-size: clamp(2rem, 4vw, 3.2rem);
+      line-height: 1.03;
+      letter-spacing: -.03em;
+    }
+    h3 { margin: 29px 0 8px; font-size: 1.4rem; }
+    p, li { max-width: 84ch; }
+    .note { color: var(--muted); font-size: 1.04rem; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin: 24px 0;
+    }
+    .card { padding: 19px 20px; background: #eff3ef; border-top: 4px solid var(--teal); }
+    .card.warn { background: var(--amber-pale); border-color: var(--amber); }
+    .card h3 { margin: 0 0 7px; font-size: 1.22rem; }
+    .tag {
+      display: inline-block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: .69rem;
+      font-weight: 700;
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+    .callout { margin: 25px 0; padding: 19px 21px; background: var(--teal-pale); border-left: 5px solid var(--teal); }
+    .callout.warn { background: var(--amber-pale); border-color: var(--amber); }
+    .callout.danger { background: var(--red-pale); border-color: var(--red); }
+    .callout p { margin: 5px 0 0; }
+    .table-wrap, .code-wrap, .flow { max-width: 100%; overflow-x: auto; margin: 24px 0; }
+    table { width: 100%; min-width: 720px; border-collapse: collapse; }
+    th, td { padding: 11px 13px; text-align: left; border-bottom: 1px solid var(--line); }
+    th { color: #eef8f5; background: var(--navy); font-size: .74rem; letter-spacing: .05em; text-transform: uppercase; }
+    tbody tr:nth-child(even) { background: #eff2ee; }
+    :not(pre) > code { padding: .12em .34em; color: #163a45; background: #e1ece9; border-radius: 3px; font-size: .9em; }
+    pre { margin: 0; padding: 18px 20px; color: var(--code-ink); background: var(--code-bg); font-size: .83rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .flow { padding: 18px; background: #e8f1ed; border: 1px solid var(--line); }
+    .flow svg { display: block; min-width: 830px; width: 100%; height: auto; }
+    .flow text { font-family: var(--mono); fill: var(--ink); }
+    .flow .box { fill: var(--paper); stroke: var(--teal); stroke-width: 2; }
+    .flow .prod { fill: var(--amber-pale); stroke: var(--amber); }
+    .flow .arrow { fill: none; stroke: var(--teal); stroke-width: 2.4; marker-end: url(#arrow); }
+    .flow .prod-arrow { stroke: var(--amber); marker-end: url(#arrow-amber); }
+    .checklist { columns: 2; column-gap: 34px; }
+    .checklist li { break-inside: avoid; margin-bottom: 9px; }
+    footer { padding: 24px clamp(22px, 6vw, 70px); color: var(--muted); background: #e2eeea; border-top: 1px solid var(--line); font-size: .84rem; }
+    @media (max-width: 760px) {
+      .cards { grid-template-columns: 1fr; }
+      .checklist { columns: 1; }
+      .shell { width: min(100% - 16px, 1180px); margin-top: 8px; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: #101719; --paper: #172225; --ink: #e7eeeb; --muted: #aebbb7;
+        --line: #3a4b49; --navy: #102f3b; --teal: #72baa7; --teal-pale: #1c3931;
+        --amber: #e5a064; --amber-pale: #392c21; --red: #db8179; --red-pale: #3a2525;
+        --code-bg: #0c1518; --code-ink: #edf6f3; --shadow: 0 20px 60px rgba(0, 0, 0, .4);
+      }
+      nav, footer, .flow { background: #172b2c; }
+      .card, tbody tr:nth-child(even) { background: #202b2c; }
+      :not(pre) > code { color: #deeff0; background: #273b3d; }
+      .decision { color: #e0f1eb; background: #1b3a32; }
+      .flow .box { fill: #1b292c; }
+      .flow .prod { fill: #392c21; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <p class="eyebrow">Approved engineering plan · 13 August 2026</p>
+      <h1>Automatic test database isolation</h1>
+      <p class="lede">Give every Node test worker disposable state before imports, preserve tests that own a seeded database, and make the SQLite boundary refuse unsafe paths.</p>
+      <div class="decision"><strong>Approved direction.</strong> One cohesive implementation unit. The runner bootstrap, database refusal, regression coverage, and documented commands land together.</div>
+    </header>
+
+    <nav aria-label="Plan sections">
+      <a href="#decisions">Decisions</a>
+      <a href="#problem">Problem</a>
+      <a href="#evidence">Evidence</a>
+      <a href="#behavior">Behavior</a>
+      <a href="#flow">Flow</a>
+      <a href="#verification">Verification</a>
+      <a href="#boundaries">Boundaries</a>
+      <a href="#success">Success</a>
+    </nav>
+
+    <main>
+      <section id="decisions">
+        <h2>Status and decision record</h2>
+        <p class="note">Approved for implementation and scheduling on 13 August 2026.</p>
+        <ul class="checklist">
+          <li>Isolate every Node test worker, including the ordinary and focused Electron suites.</li>
+          <li>Clear inherited <code>MISSION_HOME</code> and <code>FLEET_HOME</code>, then seed low-priority <code>HARNESS_HOME</code>.</li>
+          <li>Use one temporary state root per test file/worker, never one shared suite DB.</li>
+          <li>Strengthen <code>openDb()</code> as defense in depth, including cached connections.</li>
+          <li>Preserve existing file-local homes and seeded migration fixtures.</li>
+          <li>Keep expected suite overhead below one second on the measured 596-file suite.</li>
+        </ul>
+      </section>
+
+      <section id="problem">
+        <h2>The fixture reached live state</h2>
+        <p><code>test/workflow-inspector-bypass.test.ts</code> inserts workflow <code>Bypass</code> with sentinel IDs <code>w</code> and <code>v</code>. Those IDs, plus binding <code>b</code>, run <code>run</code>, and submission <code>full-1</code>, exist in the operator DB. This is direct proof of test pollution.</p>
+        <div class="cards">
+          <article class="card">
+            <span class="tag">Current file</span>
+            <h3>Correctly isolated today</h3>
+            <p>The file creates a temp directory, sets <code>MISSION_HOME</code> before dynamic server imports, and cleans up after its worker exits.</p>
+          </article>
+          <article class="card warn">
+            <span class="tag">Suite contract</span>
+            <h3>Still convention-dependent</h3>
+            <p>Each author must remember the preamble and import ordering. State resolution freezes at module load, so one omission or early value import can target operator state.</p>
+          </article>
+        </div>
+        <p>The existing <code>openDb()</code> refusal catches the common omission under Node's test runner, but it runs after the singleton early return and accepts a raw string-prefix relationship between the current override and frozen DB path.</p>
+      </section>
+
+      <section id="evidence">
+        <h2>Evidence and constraints</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Evidence</th><th>Result</th><th>Consequence</th></tr></thead>
+            <tbody>
+              <tr><td>Tracked test files</td><td>596</td><td>Fixed startup cost must stay tiny.</td></tr>
+              <tr><td>Files containing <code>openDb()</code></td><td>159</td><td>The bootstrap must not open SQLite elsewhere.</td></tr>
+              <tr><td>Files assigning a state alias</td><td>225</td><td>Existing fixture ownership remains authoritative.</td></tr>
+              <tr><td>Files assigning <code>HARNESS_HOME</code></td><td>128</td><td>A global <code>MISSION_HOME</code> would outrank them.</td></tr>
+              <tr><td>Files assigning <code>MISSION_HOME</code></td><td>102</td><td>A low-priority fallback is naturally superseded.</td></tr>
+              <tr><td>Files assigning <code>FLEET_HOME</code></td><td>0</td><td>Clear inherited values before seeding fallback.</td></tr>
+              <tr><td>Temp create/remove work</td><td>0.185 ms/file</td><td>About 110 ms direct filesystem cost suite-wide.</td></tr>
+              <tr><td>Paired worker launch delta</td><td>about 3 ms median</td><td>About 0.9 s projected wall cost at concurrency two.</td></tr>
+              <tr><td>Green full-suite samples</td><td>262.32 s; 281.36 s isolated; 371.73 s</td><td>The isolated result is inside baseline variance.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout danger">
+          <strong>Compatibility evidence.</strong>
+          <p>An experimental bootstrap that set <code>MISSION_HOME</code> caused <code>workflow-check-provider-column.test.ts</code> to bypass its hand-built DB selected through <code>HARNESS_HOME</code>. The corrected low-priority bootstrap passed that test and the complete suite.</p>
+        </div>
+      </section>
+
+      <section id="behavior">
+        <h2>Required behavior</h2>
+        <h3>Automatic worker bootstrap</h3>
+        <ol>
+          <li>Act only in a Node test worker.</li>
+          <li>Clear inherited higher-priority state aliases.</li>
+          <li>Set a fresh <code>HARNESS_HOME</code> fallback.</li>
+          <li>Use no TypeScript or server imports.</li>
+          <li>Clean only the explicit directory that worker created.</li>
+          <li>Never open SQLite.</li>
+        </ol>
+        <p>Both package test entry points and the documented focused command load the bootstrap before <code>tsx</code>.</p>
+
+        <h3>Database refusal</h3>
+        <p>Under Node's test runner, <code>openDb()</code> may open only the <code>harness.db</code> chosen by the current explicit state override, in a temporary test location. Validation runs before a new or cached connection is returned. Production continues opening operator state unchanged.</p>
+        <p>Steady-state checks remain normalized string/path comparisons. They do not add repeated <code>stat</code>, <code>realpath</code>, or traversal work.</p>
+
+        <h3>Compatibility</h3>
+        <ul>
+          <li>File-local <code>MISSION_HOME</code> and <code>HARNESS_HOME</code> assignments still select their fixture before imports.</li>
+          <li>Pre-migration databases continue upgrading in place.</li>
+          <li>A test with no local setup uses the worker fallback.</li>
+          <li>Missing, late, operator-looking, and non-temp overrides fail before a DB write.</li>
+          <li>Concurrent files never share state or sentinel IDs.</li>
+          <li>Guard-regression children remain jailed under a fake OS home.</li>
+        </ul>
+      </section>
+
+      <section id="flow">
+        <h2>Flow change</h2>
+        <p>Today, each test file must establish state before imports reach <code>config.ts</code>. After the change, the runner supplies a safe fallback first; a test may replace it; configuration freezes the selected path; and <code>openDb()</code> validates before using a connection. Production bypasses the test-only steps.</p>
+        <div class="flow">
+          <svg viewBox="0 0 1080 390" role="img" aria-labelledby="flow-title flow-desc">
+            <title id="flow-title">Test and production database path flows</title>
+            <desc id="flow-desc">Tests move from the Node runner through a temp state bootstrap, optional file fixture, config path resolution, database validation, and a temporary database. Production goes from daemon through config and openDb to operator state.</desc>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#217464"/></marker>
+              <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#b96a2d"/></marker>
+            </defs>
+            <text x="25" y="36" font-size="14" font-weight="700">TEST</text>
+            <rect class="box" x="25" y="60" width="165" height="72" rx="7"/><text x="107" y="92" text-anchor="middle" font-size="13">Node test runner</text><text x="107" y="113" text-anchor="middle" font-size="11">one process per file</text>
+            <path class="arrow" d="M190 96 L230 96"/>
+            <rect class="box" x="230" y="60" width="175" height="72" rx="7"/><text x="317" y="91" text-anchor="middle" font-size="13">state bootstrap</text><text x="317" y="113" text-anchor="middle" font-size="11">fresh HARNESS_HOME</text>
+            <path class="arrow" d="M405 96 L445 96"/>
+            <rect class="box" x="445" y="60" width="175" height="72" rx="7"/><text x="532" y="91" text-anchor="middle" font-size="13">file fixture</text><text x="532" y="113" text-anchor="middle" font-size="11">optional override</text>
+            <path class="arrow" d="M620 96 L660 96"/>
+            <rect class="box" x="660" y="60" width="175" height="72" rx="7"/><text x="747" y="91" text-anchor="middle" font-size="13">config.ts</text><text x="747" y="113" text-anchor="middle" font-size="11">freeze DB_PATH</text>
+            <path class="arrow" d="M835 96 L875 96"/>
+            <rect class="box" x="875" y="48" width="180" height="96" rx="7"/><text x="965" y="83" text-anchor="middle" font-size="13">openDb validates</text><text x="965" y="105" text-anchor="middle" font-size="11">then temp harness.db</text><text x="965" y="124" text-anchor="middle" font-size="11">or fail closed</text>
+
+            <text x="25" y="236" font-size="14" font-weight="700">PRODUCTION</text>
+            <rect class="box prod" x="150" y="260" width="195" height="72" rx="7"/><text x="247" y="292" text-anchor="middle" font-size="13">Mission Control daemon</text><text x="247" y="313" text-anchor="middle" font-size="11">no test bootstrap</text>
+            <path class="arrow prod-arrow" d="M345 296 L445 296"/>
+            <rect class="box prod" x="445" y="260" width="190" height="72" rx="7"/><text x="540" y="292" text-anchor="middle" font-size="13">config.ts</text><text x="540" y="313" text-anchor="middle" font-size="11">operator state</text>
+            <path class="arrow prod-arrow" d="M635 296 L735 296"/>
+            <rect class="box prod" x="735" y="260" width="195" height="72" rx="7"/><text x="832" y="292" text-anchor="middle" font-size="13">openDb</text><text x="832" y="313" text-anchor="middle" font-size="11">operator harness.db</text>
+          </svg>
+        </div>
+      </section>
+
+      <section id="verification">
+        <h2>Verification and documentation</h2>
+        <p>Add jailed child-process coverage for bootstrap ordering, alias precedence, unique worker homes, missing and late overrides, operator-looking paths, and singleton revalidation. Keep the provider-column migration test as the precedence canary.</p>
+        <div class="code-wrap"><pre><code>node --test --import ./test/setup-state.mjs --import tsx test/db-isolation.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/workflow-check-provider-column.test.ts
+npm run typecheck
+npm run lint
+npm test</code></pre></div>
+        <p>Update <code>AGENTS.md</code> and <code>docs/configuration.md</code> with the safe focused command. Explain that the legacy alias is deliberately used as a low-priority test fallback, not recommended for production.</p>
+        <div class="callout warn"><strong>Performance interpretation.</strong><p>Record full-suite wall time but compare more than one recent sample. Unchanged baselines varied by 41.7%, so one small delta is not attributable.</p></div>
+      </section>
+
+      <section id="boundaries">
+        <h2>Non-goals</h2>
+        <ul>
+          <li>Do not delete polluted <code>Bypass</code> rows; cleanup is destructive and separately authorized.</li>
+          <li>Do not rewrite the 225 file-local test homes.</li>
+          <li>Do not share a suite DB or serialize DB tests.</li>
+          <li>Do not change production state precedence or filenames.</li>
+          <li>Do not change UI, wire contracts, persisted schema, migrations, CI concurrency, Electron behavior, or E2E isolation.</li>
+        </ul>
+      </section>
+
+      <section id="success">
+        <h2>Success criteria</h2>
+        <ul class="checklist">
+          <li>Standard and focused commands cannot mutate operator DB state.</li>
+          <li>Migration fixtures open their hand-built databases.</li>
+          <li>A future DB test without a preamble gets isolated state automatically.</li>
+          <li>Malformed setup fails closed.</li>
+          <li>Typecheck, lint, and the full suite pass.</li>
+          <li>No meaningful bootstrap performance regression appears.</li>
+        </ul>
+      </section>
+    </main>
+    <footer>Markdown source of truth: <a href="plan.md"><code>docs/plans/test-db-isolation/plan.md</code></a></footer>
+  </div>
+</body>
+</html>

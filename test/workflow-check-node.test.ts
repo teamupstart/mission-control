@@ -1,18 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DEFAULT_WORKFLOW_CONFIG,
+  DEFAULT_WORKFLOW_POLICY,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_LIMITS,
   checkBlockedReason,
-  checkCommandFor,
   checkCommandRoot,
   checkCommandSubpath,
+  emptyWorkflowCommandView,
   formatCheckCommand,
   parseCheckCommand,
+  resolveWorkflowCommand,
   type WorkflowCheckSlot,
-  type WorkflowConfig,
+  type WorkflowCommandOverride,
+  type WorkflowCommandView,
+  type WorkflowPolicy,
 } from "../src/shared/workflow.ts";
 import {
   CHECK_RUNTIME_UNAVAILABLE_NOTE,
@@ -38,17 +41,20 @@ import { WorkflowCheckOutcomeSchema, WorkflowConfigSchema } from "../src/shared/
 // back. These pin the exact rules that panel is promising.
 
 const REPO = "/repos/thing";
-const configWith = (over: Partial<WorkflowConfig> = {}): WorkflowConfig => ({
-  ...DEFAULT_WORKFLOW_CONFIG,
+const policyWith = (over: Partial<WorkflowPolicy> = {}): WorkflowPolicy => ({
+  ...DEFAULT_WORKFLOW_POLICY,
   ...over,
 });
 
-/** Consent granted and one `test` command configured - the setup most cases start from. */
-const READY = configWith({
-  checksEnabled: true,
-  repoAllowlist: [REPO],
-  checkCommands: [{ repoRoot: REPO, slot: "test", command: ["npm", "test"] }],
-});
+/** One slot's catalog entry, in the grouped shape the daemon projects. */
+const commandView = (
+  over: Partial<Pick<WorkflowCommandView, "defaultCommand" | "overrides">> = {},
+  slot: WorkflowCheckSlot = "test",
+): WorkflowCommandView => ({ ...emptyWorkflowCommandView(slot), ...over });
+
+/** Consent granted, and one `test` override - the setup most cases start from. */
+const ALLOWED = policyWith({ checksEnabled: true, repoAllowlist: [REPO] });
+const TEST_COMMAND = commandView({ overrides: [{ repoRoot: REPO, command: ["npm", "test"] }] });
 
 function executorReturning(
   result: CheckExecutionResult,
@@ -63,16 +69,24 @@ function executorReturning(
   };
 }
 
-const at = (config: WorkflowConfig, slot: WorkflowCheckSlot = "test") => ({
+const at = (
+  policy: WorkflowPolicy,
+  command: WorkflowCommandView | null = TEST_COMMAND,
+  slot: WorkflowCheckSlot = "test",
+) => ({
   slot,
-  config,
+  policy,
+  command,
   cwd: `${REPO}-worktree`,
   repoRoot: REPO,
   headSha: "a".repeat(40),
 });
 
+/** The two halves of the ready setup, together, for the cases that just want a gate to run. */
+const READY = () => at(ALLOWED);
+
 test("an unconfigured slot is skipped and PASSES - the contract a shipped workflow rests on", async () => {
-  const result = await runCheck(at(configWith({ checksEnabled: true, repoAllowlist: [REPO] })));
+  const result = await runCheck(at(ALLOWED, commandView()));
   assert.equal(result.kind, "outcome");
   assert.equal(result.kind === "outcome" && result.outcome.status, "skipped");
   assert.equal(result.kind === "outcome" && result.outcome.command, null);
@@ -86,17 +100,14 @@ test("an unconfigured slot is skipped and PASSES - the contract a shipped workfl
 
 test("an unconfigured slot never reaches the executor at all", async () => {
   const stub = executorReturning({ kind: "exited", exitCode: 1, output: "boom", truncatedBytes: 0 });
-  const result = await runCheck(at(READY, "lint"), { execute: stub.execute });
+  const result = await runCheck(at(ALLOWED, commandView({}, "lint"), "lint"), { execute: stub.execute });
   assert.deepEqual(stub.seen, [], "nothing may be spawned for a slot nobody configured");
   assert.equal(result.kind === "outcome" && result.outcome.status, "skipped");
 });
 
 test("consent absent is unavailable, passes, and says which of the two gates refused", async () => {
   // Switch off, repository allowed: the operator has to go and flip a switch.
-  const offSwitch = await runCheck(at(configWith({
-    repoAllowlist: [REPO],
-    checkCommands: READY.checkCommands,
-  })));
+  const offSwitch = await runCheck(at(policyWith({ repoAllowlist: [REPO] })));
   assert.equal(offSwitch.kind === "outcome" && offSwitch.outcome.status, "unavailable");
   assert.match(
     offSwitch.kind === "outcome" ? offSwitch.outcome.note : "",
@@ -105,10 +116,7 @@ test("consent absent is unavailable, passes, and says which of the two gates ref
 
   // Switch on, repository NOT allowed: the operator has to add a repository. A boolean here
   // would send them to whichever of the two they guessed.
-  const offAllowlist = await runCheck(at(configWith({
-    checksEnabled: true,
-    checkCommands: READY.checkCommands,
-  })));
+  const offAllowlist = await runCheck(at(policyWith({ checksEnabled: true })));
   assert.equal(offAllowlist.kind === "outcome" && offAllowlist.outcome.status, "unavailable");
   assert.match(
     offAllowlist.kind === "outcome" ? offAllowlist.outcome.note : "",
@@ -118,14 +126,14 @@ test("consent absent is unavailable, passes, and says which of the two gates ref
 
 test("consent absent never reaches the executor", async () => {
   const stub = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
-  await runCheck(at(configWith({ repoAllowlist: [REPO], checkCommands: READY.checkCommands })), {
+  await runCheck(at(policyWith({ repoAllowlist: [REPO] })), {
     execute: stub.execute,
   });
   assert.deepEqual(stub.seen, [], "an unauthorized gate must not spawn anything");
 });
 
 test("a build with no execution runtime is unavailable and passes, rather than failing", async () => {
-  const result = await runCheck(at(READY));
+  const result = await runCheck(READY());
   assert.equal(result.kind === "outcome" && result.outcome.status, "unavailable");
   assert.equal(result.kind === "outcome" && result.outcome.note, CHECK_RUNTIME_UNAVAILABLE_NOTE);
   // The resolved command is still reported: an operator has to be able to see that their
@@ -134,14 +142,14 @@ test("a build with no execution runtime is unavailable and passes, rather than f
 });
 
 test("exit 0 passes and exit non-zero fails, with the command and code recorded", async () => {
-  const passed = await runCheck(at(READY), {
+  const passed = await runCheck(READY(), {
     execute: executorReturning({ kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 }).execute,
   });
   assert.equal(passed.kind === "outcome" && passed.outcome.status, "passed");
   assert.equal(passed.kind === "outcome" && passed.outcome.exitCode, 0);
   assert.match(passed.kind === "outcome" ? passed.outcome.note : "", /`npm test` passed\./);
 
-  const failed = await runCheck(at(READY), {
+  const failed = await runCheck(READY(), {
     execute: executorReturning({
       kind: "exited",
       exitCode: 2,
@@ -157,7 +165,7 @@ test("exit 0 passes and exit non-zero fails, with the command and code recorded"
 
 test("the executor receives the argv, the repository and the captured commit", async () => {
   const stub = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
-  await runCheck(at(READY), { execute: stub.execute });
+  await runCheck(READY(), { execute: stub.execute });
   assert.equal(stub.seen.length, 1);
   assert.deepEqual(stub.seen[0]!.command, ["npm", "test"]);
   assert.equal(stub.seen[0]!.slot, "test");
@@ -175,17 +183,15 @@ test("a nested command reaches the executor with the directory it was configured
   // top of the tree, which most build tools do not refuse: they succeed against the wrong
   // target and the gate reports that as this submission's answer.
   const stub = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
-  const config = configWith({
-    checksEnabled: true,
-    repoAllowlist: [REPO],
-    checkCommands: [
-      { repoRoot: REPO, slot: "test", command: ["npm", "test"] },
-      { repoRoot: `${REPO}/packages/web`, slot: "test", command: ["pnpm", "-C", ".", "test"] },
-    ],
-  });
   await runCheck({
     slot: "test",
-    config,
+    policy: ALLOWED,
+    command: commandView({
+      overrides: [
+        { repoRoot: REPO, command: ["npm", "test"] },
+        { repoRoot: `${REPO}/packages/web`, command: ["pnpm", "-C", ".", "test"] },
+      ],
+    }),
     // The session stands in the package, which is how the nested entry is selected at all.
     cwd: `${REPO}/packages/web`,
     repoRoot: REPO,
@@ -210,7 +216,7 @@ test("a command with nowhere to run it is unavailable rather than guessed at", a
   // A session that reported no repository. Falling back to the daemon's own cwd here would
   // run the gate against an unrelated checkout and report the answer as if it were this
   // submission's.
-  const result = await runCheck({ ...at(READY), cwd: null, repoRoot: null }, {
+  const result = await runCheck({ ...READY(), cwd: null, repoRoot: null }, {
     execute: executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 }).execute,
   });
   // With no repoRoot, nothing matches the configured entry, so the honest answer is that
@@ -219,7 +225,7 @@ test("a command with nowhere to run it is unavailable rather than guessed at", a
 });
 
 test("a missing executable is unavailable, which is a configuration problem and not a defect", async () => {
-  const result = await runCheck(at(READY), {
+  const result = await runCheck(READY(), {
     execute: executorReturning({
       kind: "unavailable",
       note: "The configured executable `npm` is not on PATH.",
@@ -234,7 +240,7 @@ test("a command that died without answering is infrastructure, NEVER a fail verd
   // none of them is a statement about the change under review. A fail here would return a
   // repair packet accusing an agent of breaking a build that never finished running.
   for (const reason of ["timed out after 600000ms", "killed by SIGKILL", "the pool lease could not be taken"]) {
-    const result = await runCheck(at(READY), {
+    const result = await runCheck(READY(), {
       execute: executorReturning({ kind: "infrastructure", reason }).execute,
     });
     assert.equal(result.kind, "infrastructure", `${reason} must not become an outcome`);
@@ -245,7 +251,7 @@ test("a command that died without answering is infrastructure, NEVER a fail verd
 test("output is kept tail-first, and the omitted count sums every truncation", async () => {
   const head = "é".repeat(WORKFLOW_EXECUTION_LIMITS.checkOutput / 2);
   const failure = "THE ACTUAL FAILURE";
-  const result = await runCheck(at(READY), {
+  const result = await runCheck(READY(), {
     execute: executorReturning({
       kind: "exited",
       exitCode: 1,
@@ -275,13 +281,8 @@ test("tailBounded keeps the end and reports exactly what it dropped", () => {
 
 test("a maximum-length argv still produces a schema-valid outcome note", async () => {
   const command = Array.from({ length: 4 }, () => "x".repeat(999));
-  const config = configWith({
-    checksEnabled: true,
-    repoAllowlist: [REPO],
-    checkCommands: [{ repoRoot: REPO, slot: "test", command }],
-  });
   assert.equal(command.join(" ").length, WORKFLOW_LIMITS.checkCommandLength - 1);
-  const result = await runCheck(at(config), {
+  const result = await runCheck(at(ALLOWED, commandView({ overrides: [{ repoRoot: REPO, command }] })), {
     execute: executorReturning({
       kind: "exited",
       exitCode: 1,
@@ -298,33 +299,91 @@ test("a maximum-length argv still produces a schema-valid outcome note", async (
 });
 
 test("command resolution matches a worktree of a configured repository, longest root first", () => {
-  const config = configWith({
-    checkCommands: [
-      { repoRoot: "/repos", slot: "test", command: ["broad"] },
-      { repoRoot: "/repos/thing", slot: "test", command: ["narrow"] },
-      { repoRoot: "/repos/thing", slot: "lint", command: ["lint-it"] },
+  const testSlot = commandView({
+    overrides: [
+      { repoRoot: "/repos", command: ["broad"] },
+      { repoRoot: "/repos/thing", command: ["narrow"] },
     ],
   });
-  const argv = (cwd: string | null, root: string | null, slot: WorkflowCheckSlot) =>
-    checkCommandFor(config, { cwd, repoRoot: root, checkoutSubpath: null }, slot)?.command ?? null;
+  const lintSlot = commandView({
+    overrides: [{ repoRoot: "/repos/thing", command: ["lint-it"] }],
+  }, "lint");
+  const argv = (cwd: string | null, root: string | null, view: WorkflowCommandView | null) =>
+    resolveWorkflowCommand(view, { cwd, repoRoot: root, checkoutSubpath: null })?.command ?? null;
   // The MOST SPECIFIC entry wins, so a monorepo subdirectory can override the tree-wide one.
-  assert.deepEqual(argv(null, "/repos/thing", "test"), ["narrow"]);
-  assert.deepEqual(argv(null, "/repos/other", "test"), ["broad"]);
-  assert.deepEqual(argv(null, "/repos/thing", "lint"), ["lint-it"]);
-  assert.equal(argv(null, "/repos/thing", "build"), null);
-  assert.equal(argv(null, "/elsewhere", "test"), null);
+  assert.deepEqual(argv(null, "/repos/thing", testSlot), ["narrow"]);
+  assert.deepEqual(argv(null, "/repos/other", testSlot), ["broad"]);
+  assert.deepEqual(argv(null, "/repos/thing", lintSlot), ["lint-it"]);
+  // An unconfigured slot, and a slot the daemon did not project at all.
+  assert.equal(argv(null, "/repos/thing", commandView({}, "build")), null);
+  assert.equal(argv(null, "/repos/thing", null), null);
+  assert.equal(argv(null, "/elsewhere", testSlot), null);
   // A session standing in a pooled worktree outside the repo is the NORMAL dispatch shape,
   // and its cwd is the only clue when repoRoot is absent. Matching on either is what stops
   // every dispatched session from silently skipping every gate.
-  assert.deepEqual(argv("/repos/thing/src", null, "test"), ["narrow"]);
+  assert.deepEqual(argv("/repos/thing/src", null, testSlot), ["narrow"]);
   // A boundary match, not a prefix: `/repos-backup` is a different repository.
-  assert.equal(argv(null, "/repos-backup", "test"), null);
-  // The MATCHED ROOT comes back too, because when a nested entry wins it is also the
+  assert.equal(argv(null, "/repos-backup", testSlot), null);
+  // The working subpath comes back too, because when a nested entry wins it is also the
   // directory that command has to run in. Returning only the argv is what let a package's
   // command be handed to the runtime with nothing but the parent repository.
   const at_ = (root: string) => ({ cwd: null, repoRoot: root, checkoutSubpath: null });
-  assert.equal(checkCommandFor(config, at_("/repos/thing"), "test")?.repoRoot, "/repos/thing");
-  assert.equal(checkCommandFor(config, at_("/repos/other"), "test")?.repoRoot, "/repos");
+  assert.equal(resolveWorkflowCommand(testSlot, at_("/repos/thing"))?.workingSubpath, "");
+  assert.equal(resolveWorkflowCommand(testSlot, at_("/repos/thing/pkg"))?.workingSubpath, "");
+  const nested = commandView({ overrides: [{ repoRoot: "/repos/thing/pkg", command: ["p"] }] });
+  assert.equal(resolveWorkflowCommand(nested, at_("/repos/thing"))?.workingSubpath, undefined);
+  assert.equal(
+    resolveWorkflowCommand(nested, at_("/repos/thing/pkg"))?.workingSubpath,
+    "",
+    "matched through its own root, the nested entry IS the checkout",
+  );
+});
+
+test("a global default answers only after every override has failed to match", () => {
+  // The whole point of the catalog: a machine-wide command that needs no repository, and an
+  // override that remains the exception. Precedence is asserted in one place because getting
+  // it backwards would silently run the wrong command everywhere the exception exists.
+  const view = commandView({
+    defaultCommand: ["npm", "test"],
+    overrides: [
+      { repoRoot: "/repos/thing", command: ["narrow"] },
+      { repoRoot: "/repos/thing/packages/web", command: ["package"] },
+    ],
+  });
+  const pick = (root: string | null, checkoutSubpath: string | null = null) =>
+    resolveWorkflowCommand(view, { cwd: null, repoRoot: root, checkoutSubpath });
+
+  // Nested override beats the repository override...
+  assert.deepEqual(pick("/repos/thing", "packages/web")?.command, ["package"]);
+  assert.equal(pick("/repos/thing", "packages/web")?.workingSubpath, "packages/web");
+  assert.equal(pick("/repos/thing", "packages/web")?.source, "override");
+  // ...the repository override beats the global default...
+  assert.deepEqual(pick("/repos/thing")?.command, ["narrow"]);
+  assert.equal(pick("/repos/thing")?.source, "override");
+  // ...and the default answers for every repository nobody wrote an exception for.
+  assert.deepEqual(pick("/somewhere/else")?.command, ["npm", "test"]);
+  assert.deepEqual(pick(null)?.command, ["npm", "test"]);
+  assert.equal(pick("/somewhere/else")?.source, "default");
+
+  // A default names NO repository, so it runs at the checkout root. Inheriting a losing
+  // override's subdirectory would run a machine-wide command somewhere it was never meant to.
+  assert.equal(pick("/somewhere/else")?.workingSubpath, "");
+
+  // And with no default, an unmatched repository still skips - the shipped-workflow contract.
+  assert.equal(
+    resolveWorkflowCommand(
+      commandView({ overrides: view.overrides }),
+      { cwd: null, repoRoot: "/somewhere/else", checkoutSubpath: null },
+    ),
+    null,
+  );
+});
+
+test("a resolved default is a copy, so a caller cannot edit the stored catalog", () => {
+  const view = commandView({ defaultCommand: ["npm", "test"] });
+  const resolved = resolveWorkflowCommand(view, { cwd: null, repoRoot: REPO, checkoutSubpath: null });
+  resolved!.command.push("--bail");
+  assert.deepEqual(view.defaultCommand, ["npm", "test"]);
 });
 
 test("a nested command is chosen by the session's EXACT position in its checkout", () => {
@@ -333,14 +392,14 @@ test("a nested command is chosen by the session's EXACT position in its checkout
   // entirely, while its repoRoot names the main checkout - so absolute containment selects
   // only the repository-wide entry. The nested entry is reached by comparing where the
   // session sits INSIDE its own checkout, component by component.
-  const config = configWith({
-    checkCommands: [
-      { repoRoot: "/repo", slot: "test", command: ["repo-wide"] },
-      { repoRoot: "/repo/packages/web", slot: "test", command: ["package"] },
+  const view = commandView({
+    overrides: [
+      { repoRoot: "/repo", command: ["repo-wide"] },
+      { repoRoot: "/repo/packages/web", command: ["package"] },
     ],
   });
   const pick = (checkoutSubpath: string | null, cwd = "/home/u/.treehouse/r/1/repo") =>
-    checkCommandFor(config, { cwd, repoRoot: "/repo", checkoutSubpath }, "test")?.command ?? null;
+    resolveWorkflowCommand(view, { cwd, repoRoot: "/repo", checkoutSubpath })?.command ?? null;
 
   // In the package, and deeper inside it.
   assert.deepEqual(pick("packages/web"), ["package"]);
@@ -363,7 +422,7 @@ test("a nested command is chosen by the session's EXACT position in its checkout
 
   // The plain-checkout case still resolves through ordinary containment, with no subpath.
   assert.deepEqual(
-    checkCommandFor(config, { cwd: "/repo/packages/web", repoRoot: "/repo", checkoutSubpath: null }, "test")?.command,
+    resolveWorkflowCommand(view, { cwd: "/repo/packages/web", repoRoot: "/repo", checkoutSubpath: null })?.command,
     ["package"],
   );
 });
@@ -405,22 +464,20 @@ test("a typed subdirectory survives being resolved to its repository", () => {
   assert.equal(checkCommandSubpath("/repo", stored), "packages/web");
 });
 
-test("the resolved argv is a copy, so a caller cannot edit the stored config", () => {
-  const config = configWith({
-    checkCommands: [{ repoRoot: REPO, slot: "test", command: ["npm", "test"] }],
-  });
-  const resolved = checkCommandFor(config, { cwd: null, repoRoot: REPO, checkoutSubpath: null }, "test");
+test("the resolved argv is a copy, so a caller cannot edit the stored catalog", () => {
+  const view = commandView({ overrides: [{ repoRoot: REPO, command: ["npm", "test"] }] });
+  const resolved = resolveWorkflowCommand(view, { cwd: null, repoRoot: REPO, checkoutSubpath: null });
   resolved!.command.push("--bail");
-  assert.deepEqual(config.checkCommands[0]!.command, ["npm", "test"]);
+  assert.deepEqual(view.overrides[0]!.command, ["npm", "test"]);
 });
 
 test("checkBlockedReason answers with a sentence, and null when both gates are open", () => {
-  assert.equal(checkBlockedReason(READY, null, REPO), null);
-  assert.equal(typeof checkBlockedReason(DEFAULT_WORKFLOW_CONFIG, null, REPO), "string");
+  assert.equal(checkBlockedReason(ALLOWED, null, REPO), null);
+  assert.equal(typeof checkBlockedReason(DEFAULT_WORKFLOW_POLICY, null, REPO), "string");
   // Never a boolean: the two refusals need different things done about them.
   assert.notEqual(
-    checkBlockedReason(configWith({ repoAllowlist: [REPO] }), null, REPO),
-    checkBlockedReason(configWith({ checksEnabled: true }), null, REPO),
+    checkBlockedReason(policyWith({ repoAllowlist: [REPO] }), null, REPO),
+    checkBlockedReason(policyWith({ checksEnabled: true }), null, REPO),
   );
 });
 
@@ -496,7 +553,7 @@ test("formatCheckCommand round-trips through the parser", () => {
 });
 
 test("a repository may configure a slot only once, refused at the write boundary", () => {
-  // `(repoRoot, slot)` is the key `checkCommandFor` resolves by, and it keeps the first of a
+  // `(repoRoot, slot)` is the key resolution picks by, and it keeps the first of a
   // tie - so two entries sharing one are two commands the operator can see and one that can
   // ever run, chosen by array order that no surface displays. Refused rather than silently
   // deduplicated, because a caller who sent two is otherwise never told which survived.

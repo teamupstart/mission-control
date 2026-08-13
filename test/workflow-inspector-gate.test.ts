@@ -35,7 +35,7 @@ const {
 } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
-const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const {
   WorkflowStore,
@@ -266,7 +266,7 @@ async function seed(over: SeedOptions = {}) {
   store.setRunState(ids.run, "running", "persona_review", null, now);
   const injected: string[] = [];
   if (over.deliveryMode === "live") {
-    setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+    setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   }
   const manager = new WorkflowManager(registry, store, {
     inject: async (_session, payload) => {
@@ -431,7 +431,7 @@ test("a persisted PR handoff rechecks the required skill before replay", async (
   assert.equal(handoff.value.state, "prepared");
   await parked.manager.stop();
 
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   const injected: string[] = [];
   const recovered = new WorkflowManager(parked.registry, parked.store, {
     inject: async (_session, payload) => {
@@ -451,7 +451,7 @@ test("a persisted PR handoff rechecks the required skill before replay", async (
     assert.equal(parked.store.getRun(parked.ids.run)?.status, "blocked");
   } finally {
     await recovered.stop();
-    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
   }
 });
 
@@ -486,7 +486,7 @@ test("the automatic missing-PR policy sends one shipping handoff after a passed 
     assert.match(automatic.injected[0]!, /commit all reviewed work, push it, and open the pull request/);
   } finally {
     await automatic.manager.stop();
-    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
   }
 });
 
@@ -565,7 +565,7 @@ test("durable PR adoption advances a clean handoff without another workflow roun
     );
   } finally {
     await seeded.manager.stop();
-    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
   }
 });
 
@@ -629,7 +629,7 @@ test("a PR handoff that changes the remote head still requires a workflow resubm
     assert.equal(seeded.store.listSubmissions(seeded.ids.run).length, 1);
   } finally {
     await seeded.manager.stop();
-    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
   }
 });
 
@@ -676,7 +676,7 @@ test("an unpinned durable handoff keeps vetoing Shipping across restart", async 
     }
   } finally {
     await seeded.manager.stop();
-    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
   }
 });
 
@@ -725,7 +725,7 @@ test("durable handoff provenance requires an exact known repository identity", a
       );
     } finally {
       await seeded.manager.stop();
-      setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+      setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
     }
   }
 });
@@ -763,7 +763,7 @@ test("a Preview binding RECORDS the automatic PR handoff it withheld", async () 
     assert.equal(deferred.store.getRun(deferred.ids.run)?.status, "waiting_for_pr");
   } finally {
     await deferred.manager.stop();
-    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
   }
 });
 
@@ -775,7 +775,7 @@ test("restart recovers an automatic PR handoff that was still parked at its gate
   });
   await parked.manager.stop();
   parked.store.updateBinding(parked.ids.binding, { deliveryMode: "live" }, parked.now + 1);
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   const injected: string[] = [];
   const recovered = new WorkflowManager(parked.registry, parked.store, {
     inject: async (_session, payload) => {
@@ -803,7 +803,7 @@ test("restart recovers an automatic PR handoff that was still parked at its gate
     );
   } finally {
     await recovered.stop();
-    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
   }
 });
 
@@ -1355,7 +1355,7 @@ test("finding state and its immutable repair packet survive insertion failure an
   );
 
   seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 3);
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   const injected: string[] = [];
   const recoveredManager = new WorkflowManager(seeded.registry, seeded.store, {
     inject: async (_session, payload) => {
@@ -1378,7 +1378,7 @@ test("finding state and its immutable repair packet survive insertion failure an
     "the immutable Inspector repair packet was not recovered exactly once",
   );
   await recoveredManager.stop();
-  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });
 
 test("restart recovery never sends a prepared packet from an older submission", async () => {
@@ -1439,7 +1439,7 @@ test("restart recovery never sends a prepared packet from an older submission", 
   assert.ok(newer);
 
   seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 3);
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   const injected: string[] = [];
   const recoveredManager = new WorkflowManager(seeded.registry, seeded.store, {
     inject: async (_session, payload) => {
@@ -1452,7 +1452,7 @@ test("restart recovery never sends a prepared packet from an older submission", 
   await recoveredManager.stop();
   assert.equal(seeded.store.getDelivery(prepared.delivery.id)?.state, "prepared");
   assert.deepEqual(injected, []);
-  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });
 
 test("restart recovery skips packets after the current submission advances past its findings", async () => {
@@ -1518,7 +1518,7 @@ test("restart recovery skips packets after the current submission advances past 
   }, seeded.now + 2);
 
   seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 3);
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   const injected: string[] = [];
   const recoveredManager = new WorkflowManager(seeded.registry, seeded.store, {
     inject: async (_session, payload) => {
@@ -1532,5 +1532,5 @@ test("restart recovery skips packets after the current submission advances past 
   assert.equal(seeded.store.getDelivery(prepared.delivery.id)?.state, "prepared");
   assert.equal(seeded.store.getDelivery(handoff.delivery.id)?.state, "prepared");
   assert.deepEqual(injected, []);
-  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });

@@ -24,7 +24,7 @@ const { fallbackWorkflowContext } = await import("../src/server/workflows/contex
 const { NO_MISTAKES_REVIEW_WORKFLOW_ID } = await import("../src/shared/builtin-workflow.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
-const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 
 function discovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {
@@ -222,7 +222,7 @@ test("task creation inherits the dispatch default while explicit None opts out",
   const repo = join(home, "dispatch-default-repo");
   execFileSync("git", ["init", "-q", repo]);
   setForemanConfig({ enabled: false });
-  setWorkflowConfig({
+  setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
     defaultWorkflowId: "w-dispatch-default",
@@ -278,7 +278,7 @@ test("task creation inherits the dispatch default while explicit None opts out",
   );
   assert.equal(registry.getTask(inheritedTask.id)?.status, "backlog");
 
-  setWorkflowConfig({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
   setForemanConfig({ enabled: false });
 });
 
@@ -467,7 +467,7 @@ test("the Ship it review route starts the built-in workflow and never replaces a
     ],
   };
   seedRuntimeVersion("manual-review-conflict", graph);
-  setWorkflowConfig({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
 
   const registry = new Registry();
   registry.applyDiscovery([

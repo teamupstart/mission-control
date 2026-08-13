@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublishedWorkflowGraph, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
+import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
 
 // A fresh state dir BEFORE anything that resolves it is imported - static imports hoist above
 // assignments, so every module below arrives through a dynamic import (see db-isolation.test.ts).
@@ -920,13 +921,16 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
   const store = seedCheckRun("gate-block", repoRoot, headSha);
   const engine = new WorkflowEngine(store, () => {}, {
     retryBaseMs: 1,
-    workflowConfig: () => ({
+    workflowPolicy: () => ({
       liveEnabled: false,
       repoAllowlist: [repoRoot],
       defaultWorkflowId: null,
       retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
       checksEnabled: true,
-      checkCommands: [{ repoRoot, slot: "test", command: PASSES }],
+    }),
+    workflowCommand: (slot) => ({
+      ...emptyWorkflowCommandView(slot),
+      overrides: slot === "test" ? [{ repoRoot, command: PASSES }] : [],
     }),
     checkDeps: (attempt) => ({ execute: runtime.executorFor(attempt) }),
     unresolvedCheckLease: (submissionId, nodeId) => leases.unresolvedLeaseForNode(submissionId, nodeId),

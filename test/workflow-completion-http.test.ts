@@ -27,7 +27,7 @@ const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
-const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();
@@ -463,7 +463,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   // repair sequence below - the auto-bind assertions above depend on it NOT being granted.
   // `liveEnabled` is left to its default so a revert of that default surfaces here as a failure
   // rather than being masked by an explicit `true`.
-  setWorkflowConfig({ repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ repoAllowlist: ["/repo"] });
 
   const repairContext = fallbackWorkflowContext({
     primaryGoal: { rawPrompt: "Original goal", refined: null, sourceNoteKey: "repair" },

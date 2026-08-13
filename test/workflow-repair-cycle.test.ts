@@ -43,7 +43,8 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
-const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+const { WorkflowStore: CommandStore } = await import("../src/server/workflows/store.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { getQueueRow } = await import("../src/server/db.ts");
 const { drainCompletionClaim, promptedCompletionClaim } =
@@ -78,10 +79,16 @@ mkdirSync(checkCwd, { recursive: true });
 // rather than passed: it now defaults ON, and letting the schema supply it means this fixture
 // breaks if that default is ever quietly reverted, instead of papering over the revert with an
 // explicit `true`.
-setWorkflowConfig({
+setWorkflowPolicy({
   repoAllowlist: ["/repo"],
   checksEnabled: true,
-  checkCommands: [{ repoRoot: "/repo", slot: "test", command: CHECK_COMMAND }],
+});
+// The command itself now lives in the Global Command catalog rather than beside the consent
+// switches, so the fixture writes it there. An OVERRIDE and not the global default, because
+// what this file drives is a repository-scoped gate.
+new CommandStore().replaceWorkflowCommandCas("test", 1, {
+  defaultCommand: null,
+  overrides: [{ repoRoot: "/repo", command: CHECK_COMMAND }],
 });
 setForemanConfig({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
 

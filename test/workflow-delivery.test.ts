@@ -222,11 +222,11 @@ test("terminal runs allow acknowledgement-only uncertain delivery resolution", a
 test("copy-mode refusal stays retryable, an ambiguous retry never repeats, and recovery is explicit", async () => {
   const { Registry } = await import("../src/server/registry.ts");
   const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
-  const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+  const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
   const store = seededStore("policy");
   const delivery = prepare(store, "policy");
   store.setDeliveryState(delivery.id, "refused", "ready_for_policy_test", 3);
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   const registry = new Registry();
   registry.applyDiscovery([{
     syntheticId: "session-policy",
@@ -347,7 +347,7 @@ test("copy-mode refusal stays retryable, an ambiguous retry never repeats, and r
 test("workflow Live delivery sends an SDK session through its driver", async () => {
   const { Registry } = await import("../src/server/registry.ts");
   const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
-  const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+  const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
   const { runtimePromptInjector } = await import("../src/server/sdk/deliver.ts");
   type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 
@@ -374,7 +374,7 @@ test("workflow Live delivery sends an SDK session through its driver", async () 
   }).delivery;
   store.setDeliveryState(delivery.id, "refused", "ready_for_sdk_retry", 4);
 
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   const registry = new Registry();
   registry.registerSdkSession({
     id: sessionId,
@@ -426,7 +426,7 @@ test("Live sends one exact packet, attributes it once, and re-arms only the drai
   const { QueueManager } = await import("../src/server/queue.ts");
   const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
   const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
-  const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+  const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
   const db = openDb();
   const snapshot = {
     sourcePersonaId: "live-persona",
@@ -475,7 +475,7 @@ test("Live sends one exact packet, attributes it once, and re-arms only the drai
        1, 0, NULL, 'complete', NULL, NULL, NULL, 0, 1, 2, 1, 2
      )`,
   ).run();
-  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   const registry = new Registry();
   registry.applyDiscovery([{
     syntheticId: "live-session",
@@ -605,7 +605,7 @@ test("Live sends one exact packet, attributes it once, and re-arms only the drai
   assert.equal(queue.wrapupAnswer, null);
   assert.equal(queue.items[0]?.state, "verified");
   await manager.stop();
-  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
   manager.start();
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(manager.store.getDelivery(delivery.id)?.state, "delivered");

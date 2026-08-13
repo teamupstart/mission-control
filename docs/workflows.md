@@ -444,7 +444,20 @@ override is a path below one.
 Each repository may configure a slot **once**; a second entry for the same pair is refused
 rather than silently ignored. A **subdirectory** entry beats the repository-wide one, which
 is how a monorepo gives one package its own command - and the command then runs *in that
-subdirectory*, not at the top of the tree. Worktrees of a configured repository count too,
+subdirectory*, not at the top of the tree.
+
+**A slot may also carry one repository-neutral default**, which is what runs wherever no
+repository entry matches. Defaults live in the same catalog as the entries above and are
+authored through `PUT /api/workflow-commands/<slot>`; the Settings table shown here edits the
+repository exceptions only, because its first column *is* a repository and there is no honest
+row in it for a command that names none. A default runs at the **checkout root** - it carries
+no opinion about which subdirectory to stand in, so a losing subdirectory entry never lends it
+one. Resolution is therefore three rungs, in this order: the longest matching subdirectory or
+repository entry, then the slot's default, then *skipped*. Everything after that - consent,
+Trust, the platform floor, the runtime - is unchanged, and a configured default still runs
+only in a repository that holds the Workflows grant.
+
+Worktrees of a configured repository count too,
 wherever they live on disk: a dispatched session usually stands in a pooled checkout under
 `~/.treehouse/`, and because a worktree mirrors its repository's layout, a session in that
 checkout's `packages/web` resolves the command configured for the repository's
@@ -452,8 +465,8 @@ checkout's `packages/web` resolves the command configured for the repository's
 `examples/packages/web` gets the repository-wide command, not the one configured for
 `packages/web`.
 
-**An unrun gate passes, with a note saying why.** A slot with no command configured for this
-repository is *skipped*; a repository that has not been authorized is *not run*; a platform that
+**An unrun gate passes, with a note saying why.** A slot with no entry for this repository and
+no default is *skipped*; a repository that has not been authorized is *not run*; a platform that
 cannot run checks, or an executable that is not there, is *not run* too. All of them pass,
 because a workflow that failed on every unconfigured machine would be broken by default, and
 each says which of them happened so it is never mistaken for a gate that ran. Only a command

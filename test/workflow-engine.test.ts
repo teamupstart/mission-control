@@ -11,8 +11,12 @@ import type {
 import type {
   PersonaExecutionView,
   PublishedWorkflowGraph,
+  WorkflowCheckSlot,
+  WorkflowCommandOverride,
+  WorkflowCommandView,
   WorkflowContextSnapshot,
 } from "../src/shared/workflow.ts";
+import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-engine-"));
 process.env.MISSION_HOME = home;
@@ -911,15 +915,34 @@ const passingExecution = (snapshot: { runner: LlmRunnerId | null; model: string 
   model: { id: snapshot.model ?? "fake-model", source: "config" },
 });
 
-const checkConfig = (over: Record<string, unknown> = {}) => ({
+/**
+ * Consent, without commands. The two are separately owned now: policy is a settings blob and
+ * the commands live in the Global Command catalog, so an engine fixture supplies both.
+ */
+const checkPolicy = (over: Record<string, unknown> = {}) => ({
   liveEnabled: false,
   repoAllowlist: ["/repo"],
   defaultWorkflowId: null,
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
-  checkCommands: [{ repoRoot: "/repo", slot: "test" as const, command: ["npm", "test"] }],
   ...over,
 });
+
+/** A catalog reader over the given per-slot overrides, in the shape the engine injects. */
+const checkCatalog = (
+  bySlot: Partial<Record<WorkflowCheckSlot, WorkflowCommandOverride[]>> = {
+    test: [{ repoRoot: "/repo", command: ["npm", "test"] }],
+  },
+  defaults: Partial<Record<WorkflowCheckSlot, string[]>> = {},
+) =>
+  (slot: WorkflowCheckSlot): WorkflowCommandView | null => ({
+    ...emptyWorkflowCommandView(slot),
+    defaultCommand: defaults[slot] ?? null,
+    overrides: bySlot[slot] ?? [],
+  });
+
+/** The catalog a machine that has configured nothing projects: four empty slots. */
+const emptyCatalog = () => checkCatalog({});
 
 test("a passing check advances the graph and reaches the End through the Join", async () => {
   const store = seedSubmission("check-pass", checkGraph);
@@ -928,7 +951,8 @@ test("a passing check advances the graph and reaches the End through the Join", 
     runnerFor: passingRunner,
     resolveExecution: passingExecution,
     retryBaseMs: 1,
-    workflowConfig: () => checkConfig(),
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: checkCatalog(),
     checkDeps: () => ({
       execute: async () => ({ kind: "exited", exitCode: 0, output: "42 passing\n", truncatedBytes: 0 }),
     }),
@@ -961,6 +985,36 @@ test("a passing check advances the graph and reaches the End through the Join", 
   assert.equal(store.getRun("run-check-pass")?.currentPhase, "complete");
 });
 
+test("a repository-neutral global default runs, at the checkout root", async () => {
+  // The catalog's whole point, driven through the engine rather than through resolution
+  // alone: this run's binding names `/repo`, the catalog holds NO override for it, and the
+  // gate still runs. Before the catalog, a repository nobody had configured skipped forever.
+  const store = seedSubmission("check-default", checkGraph);
+  const seen: Array<{ command: string[]; workingSubpath: string }> = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: checkCatalog({}, { test: ["npm", "test"] }),
+    checkDeps: () => ({
+      execute: async (request) => {
+        seen.push({ command: request.command, workingSubpath: request.workingSubpath });
+        return { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 };
+      },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-default");
+  await waitFor(() => store.getRun("run-check-default")?.status === "completed");
+  await engine.stop();
+
+  assert.deepEqual(seen, [{ command: ["npm", "test"], workingSubpath: "" }]);
+  const attempt = store.listAttempts("submission-check-default").find((item) => item.nodeId === "gate");
+  assert.equal((attempt?.output as Record<string, unknown>).status, "passed");
+});
+
 test("a failing check returns a repair packet to the Session, citing its own output", async () => {
   const store = seedSubmission("check-fail", checkGraph);
   const manager = new WorkflowManager(new Registry(), store, {
@@ -969,7 +1023,8 @@ test("a failing check returns a repair packet to the Session, citing its own out
       runnerFor: passingRunner,
       resolveExecution: passingExecution,
       retryBaseMs: 1,
-      workflowConfig: () => checkConfig(),
+      workflowPolicy: () => checkPolicy(),
+      workflowCommand: checkCatalog(),
       checkDeps: () => ({
         execute: async () => ({
           kind: "exited",
@@ -1052,7 +1107,8 @@ test("an unconfigured slot passes without the executor ever being asked", async 
     runnerFor: passingRunner,
     resolveExecution: passingExecution,
     retryBaseMs: 1,
-    workflowConfig: () => checkConfig({ checkCommands: [] }),
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: emptyCatalog(),
     checkDeps: () => ({
       execute: async () => {
         asked += 1;
@@ -1079,7 +1135,8 @@ test("a check that could not run is an infrastructure retry, never a fail verdic
     runnerFor: passingRunner,
     resolveExecution: passingExecution,
     retryBaseMs: 1,
-    workflowConfig: () => checkConfig(),
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: checkCatalog(),
     checkDeps: () => ({
       execute: async () => {
         calls += 1;
@@ -1119,7 +1176,8 @@ test("a check does not spend a review slot, and a review does not spend a check 
     retryBaseMs: 1,
     runnerFor: passingRunner,
     resolveExecution: passingExecution,
-    workflowConfig: () => checkConfig(),
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: checkCatalog(),
     schedule: async (fn) => {
       reviewBusy.active += 1;
       try {
@@ -1197,11 +1255,10 @@ test("the shipped v3 gate fails a broken build at stage 1 with zero Persona call
       runnerFor: forbiddenRunner,
       resolveExecution: passingExecution,
       retryBaseMs: 1,
-      workflowConfig: () => checkConfig({
-        checkCommands: [
-          { repoRoot: "/repo", slot: "typecheck" as const, command: ["npm", "run", "typecheck"] },
-          { repoRoot: "/repo", slot: "test" as const, command: ["npm", "test"] },
-        ],
+      workflowPolicy: () => checkPolicy(),
+      workflowCommand: checkCatalog({
+        typecheck: [{ repoRoot: "/repo", command: ["npm", "run", "typecheck"] }],
+        test: [{ repoRoot: "/repo", command: ["npm", "test"] }],
       }),
       checkDeps: () => ({
         execute: async (request) => {
@@ -1267,7 +1324,8 @@ test("the shipped v3 gate passes untouched on a machine that configured no comma
       resolveExecution: passingExecution,
       retryBaseMs: 1,
       // Checks enabled and the repository authorized, but NO command for either slot.
-      workflowConfig: () => checkConfig({ checkCommands: [] }),
+      workflowPolicy: () => checkPolicy(),
+      workflowCommand: emptyCatalog(),
       checkDeps: () => ({
         execute: async () => {
           throw new Error("an unconfigured slot must never reach the execution runtime");
@@ -1524,7 +1582,8 @@ test("a disabled check auto-passes without reaching the execution runtime", asyn
     runnerFor: passingRunner,
     resolveExecution: passingExecution,
     retryBaseMs: 1,
-    workflowConfig: () => checkConfig(),
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: checkCatalog(),
     checkDeps: () => ({
       execute: async () => {
         throw new Error("a disabled check must never reach the execution runtime");
@@ -1563,7 +1622,8 @@ test("stop() cancels a live check group instead of waiting out its command", {
     runnerFor: passingRunner,
     resolveExecution: passingExecution,
     retryBaseMs: 1,
-    workflowConfig: () => checkConfig(),
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: checkCatalog(),
     // The REAL supervisor, because the thing under test is whether `stop()` reaches the
     // process group it registered. A stubbed executor would register nothing and the test
     // would prove that stopping an engine with no check running is fast.

@@ -1243,10 +1243,10 @@ function DispatchModal({
     return at < 0 ? false : guidedTake(at);
   }
 
-  function guidedLeave(): void {
+  const guidedLeave = useCallback((): void => {
     setPass(endGuidedPass(pass));
     setHighlight(null);
-  }
+  }, [onGuidedPassChange, pass]);
 
   /**
    * The pass's keys, offered the event before the dialog's own ⌘↵ and reporting whether it
@@ -1257,8 +1257,9 @@ function DispatchModal({
    * `App.tsx` stands down whenever any overlay is open. That is why no capture-phase listener
    * is needed - `LaunchMenu`'s pattern, which does need one, is competing with a live handler.
    *
-   * Escape is not here. `Overlay` answers it before this ever runs, and it still closes the
-   * dispatch outright, which is the ladder every other dialog in the app has.
+   * Escape is not here. It has a two-level ladder at the Overlay boundary: leave a live pass,
+   * then close Dispatch on the next press. Keeping it there makes that first press distinct
+   * from the option-navigation keys handled here.
    *
    * Modifier chords fall through untouched, so ⌘↵ still dispatches and ⌘V still pastes; and
    * so does anything typed while a text field genuinely holds the caret, which the pass takes
@@ -1666,6 +1667,13 @@ function DispatchModal({
   }
 
   submitRef.current = submit;
+  const onOverlayEscape = useCallback((event: KeyboardEvent): boolean => {
+    if (!guidedRunning) return false;
+    event.preventDefault();
+    guidedLeave();
+    return true;
+  }, [guidedLeave, guidedRunning]);
+
   const onOverlayKeyDown = useCallback((event: KeyboardEvent): void => {
     // The guided pass gets first refusal, and refuses every modifier chord - so ⌘↵ below
     // still dispatches from inside a pass, which is the one shortcut that has to keep
@@ -1892,6 +1900,7 @@ function DispatchModal({
       }`}
       role="dialog"
       ariaLabel={editing ? "Edit a backlog task" : "Dispatch an agent"}
+      onEscape={onOverlayEscape}
       onKeyDown={onOverlayKeyDown}
       // Sealed while a submit is in flight, all four dismiss routes at once. A modal
       // dismissed mid-save unmounts the only thing that can report the answer, so a
@@ -1950,7 +1959,15 @@ function DispatchModal({
             }}
           />
         )}
-        <Tooltip label={busy ? "Waiting for the dispatch to land" : "Close without dispatching (Escape)"}>
+        <Tooltip
+          label={
+            busy
+              ? "Waiting for the dispatch to land"
+              : guidedRunning
+                ? "Close without dispatching"
+                : "Close without dispatching (Escape)"
+          }
+        >
           <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
             ✕
           </button>

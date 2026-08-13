@@ -54,7 +54,7 @@ neither can disagree with the other.
 | <kbd>↑</kbd><kbd>↓</kbd> <kbd>↵</kbd> | walk the list and take the highlighted one |
 | <kbd>⌫</kbd> | back one question, which un-answers it |
 | <kbd>⇥</kbd> | leave the pass and use the form, keeping every answer so far |
-| <kbd>esc</kbd> | closes the dispatch, exactly as it does from the form |
+| <kbd>esc</kbd> | leave the pass and use the form, keeping every answer so far; press it again to close Dispatch |
 | <kbd>⌘↵</kbd> | dispatches, exactly as it does from the form |
 
 Nothing moves while it runs. The modal keeps its width and every field keeps its position;

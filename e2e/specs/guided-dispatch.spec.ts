@@ -245,6 +245,28 @@ test("Tab leaves the pass with every answer intact and the caret in the task box
   await expect(taskBox(dialog)).toHaveValue("tidy the pass");
 });
 
+test("Escape leaves the pass before a second Escape closes Dispatch", async ({ dashboard }) => {
+  const dialog = await openGuided(dashboard);
+  const close = dialog.getByRole("button", { name: "Close", exact: true });
+  await dashboard.keyboard.press("t");
+  await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
+  await expect(rail(dialog)).toContainText("esc use the form");
+  await expect(close).toHaveAccessibleDescription("Close without dispatching");
+
+  // Guided is the layer on top of Dispatch. The first press peels off only that layer and
+  // preserves the answer already written through the form's Kind control.
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog.getByRole("listbox")).toHaveCount(0);
+  await expect(kindSelect(dialog)).toHaveValue("scout");
+  await expect(taskBox(dialog)).toBeFocused();
+  await expect(close).toHaveAccessibleDescription("Close without dispatching (Escape)");
+
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});
+
 test("scout preselects None through the pass, and ship hands the stash back", async ({
   dashboard,
 }) => {
@@ -364,7 +386,7 @@ test("closing and reopening resumes the saved guided workflow", async ({ dashboa
   // Two decisions are saved in the draft and in the pass. Dismissing the surface is neither
   // Clear nor a submit, so reopening must continue at the one decision still unanswered.
   await expect(picker(dialog, "What runs after the work?")).toBeVisible();
-  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(dialog).toBeHidden();
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -494,7 +516,7 @@ test("the chord opens straight into the pass once the preference is on", async (
   // and then proved to have outlived the modal that set it.
   const first = await openDispatch(dashboard);
   await first.getByRole("switch", { name: "Guided" }).click();
-  await dashboard.keyboard.press("Escape");
+  await first.getByRole("button", { name: "Close", exact: true }).click();
   await expect(first).toBeHidden();
 
   // Specs open this modal by clicking Dispatch; the chord is the reason the pass exists, so
@@ -556,7 +578,7 @@ test("a backlog task opened for edit never enters the pass", async ({ dashboard,
   const first = await openDispatch(dashboard);
   await first.getByRole("switch", { name: "Guided" }).click();
   await expect(rail(first)).toBeVisible();
-  await dashboard.keyboard.press("Escape");
+  await first.getByRole("button", { name: "Close", exact: true }).click();
   await expect(first).toBeHidden();
 
   const title = "Audit The Retry Policy";

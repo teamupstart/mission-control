@@ -6,6 +6,7 @@ import {
   CommandLibrary,
   commandSync,
   commandDraftFrom,
+  overridesEmptyMessage,
   commandDraftDirty,
   commandRepoOptions,
   commandRevisionLine,
@@ -92,7 +93,7 @@ test("both fields are offered, with the default named as repository-neutral", ()
   // with a note rather than failing, and that has to read as a choice, not a gap.
   assert.match(html, /passes with a note instead of running/);
   // The fixture has no default, so the empty row must say so rather than pointing at one.
-  assert.match(html, /No exceptions, and no default - every repository skips this Command/);
+  assert.match(html, /No exceptions, and no default - this Command resolves to nothing/);
   assert.doesNotMatch(html, /uses the default above/);
   // The sr-only labels reach their inputs by id: both boxes sit outside a wrapping label.
   assert.match(html, /<label class="sr-only" for="workflow-command-default">/);
@@ -105,12 +106,31 @@ test("the empty overrides row names which empty state it is in", () => {
   // Two states share one row, and only one of them has a default to point at. On a fresh
   // slot - the first thing a new operator sees - the other reading invents configuration.
   const withDefault = markup([view({ defaultCommand: ["npm", "test"] })]);
-  assert.match(withDefault, /No exceptions - every repository uses the default above/);
+  assert.match(withDefault, /No exceptions - every repository resolves to the default above/);
   assert.doesNotMatch(withDefault, /no default/);
 
   const bare = markup([view()]);
-  assert.match(bare, /No exceptions, and no default - every repository skips this Command/);
-  assert.doesNotMatch(bare, /uses the default above/);
+  assert.match(bare, /No exceptions, and no default - this Command resolves to nothing/);
+  assert.doesNotMatch(bare, /resolves to the default above/);
+});
+
+test("a half-typed default is not described as one a repository can use", () => {
+  // `npm "unclosed` is non-blank and is not a default: it cannot be parsed, so it cannot be
+  // saved, so there is nothing for any repository to fall back to. Keying the row on "is the
+  // box non-empty" described it as active - the operator most likely to read this row is the
+  // one mid-keystroke, and the argv preview directly above is already telling them it is
+  // broken.
+  const message = overridesEmptyMessage('npm "unclosed');
+  assert.doesNotMatch(message, /resolves to the default above/);
+  assert.doesNotMatch(message, /uses the default above/);
+  assert.match(message, /not a command yet/);
+
+  // The other two states are unchanged and still tell each other apart.
+  assert.match(overridesEmptyMessage(""), /no default/);
+  assert.match(overridesEmptyMessage("   "), /no default/);
+  assert.match(overridesEmptyMessage("npm test"), /every repository resolves to the default/);
+  // A line that only parses once it is finished flips as it becomes valid.
+  assert.match(overridesEmptyMessage('npm run test -- --grep "a b"'), /resolves to the default/);
 });
 
 test("a stored slot renders its default and every override, argv included", () => {

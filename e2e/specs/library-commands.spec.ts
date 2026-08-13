@@ -224,11 +224,18 @@ test("an override, a nested override, and a removal all survive a reload", async
   const empty = dashboard.locator(".wf-command-empty");
   await expect(empty).toContainText("no default");
   await expect(empty).toContainText("skips");
-  await expect(empty).not.toContainText("uses the default above");
+  await expect(empty).not.toContainText("resolves to the default above");
+
+  // A half-typed line is not a default either - it cannot be parsed, so it cannot be saved,
+  // so there is nothing to fall back to. This is the state an operator is in between two
+  // keystrokes, which is why it is asserted here rather than only in the pure test.
+  await dashboard.getByLabel("Default command").fill('npm "unclosed');
+  await expect(empty).toContainText("not a command yet");
+  await expect(empty).not.toContainText("resolves to the default above");
 
   await dashboard.getByLabel("Default command").fill("npm test");
-  // With one typed, the same row describes what the exceptions would be exceptions TO.
-  await expect(empty).toContainText("every repository uses the default above");
+  // Finished, and the same row now describes what the exceptions would be exceptions TO.
+  await expect(empty).toContainText("every repository resolves to the default above");
   await expect(empty).not.toContainText("no default");
 
   // A repository-wide exception, then a nested one. The directory has to exist on disk: the

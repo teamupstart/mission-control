@@ -207,6 +207,37 @@ export function commandRepoOptions(
   return [...new Set([...allowlist, ...workspaceRepos])];
 }
 
+/**
+ * What the Overrides section says when there are none - which of THREE states the draft is in.
+ *
+ * The row exists to tell an operator what "no exceptions" means for this slot, and that
+ * depends entirely on whether there is a default to fall back to. Three states, because
+ * "there is text in the box" is not the same question as "there is a default":
+ *
+ * - blank, so nothing resolves and the slot skips;
+ * - a line that PARSES, which is the only kind a repository can fall back to;
+ * - a line that does not parse yet, which cannot even be saved. The operator most likely to
+ *   be reading this row is the one mid-keystroke, and describing their half-typed line as
+ *   active is the row asserting a state that does not exist.
+ *
+ * Phrased with `resolve` rather than as what will run, matching
+ * `workflowCommandStatusSentence`: this section is about which argv a location picks, and
+ * whether that argv is then executed is a question owned by Trust and the machine switch.
+ *
+ * Pure and exported because a static render types nothing, so the middle state - the one that
+ * only exists between two keystrokes - is unreachable any other way.
+ */
+export function overridesEmptyMessage(defaultText: string): string {
+  if (defaultText.trim() === "") {
+    return "No exceptions, and no default - this Command resolves to nothing and skips.";
+  }
+  if (!parseCheckCommand(defaultText).ok) {
+    return "No exceptions, and the default above is not a command yet - nothing resolves "
+      + "until it is.";
+  }
+  return "No exceptions - every repository resolves to the default above.";
+}
+
 /** `Revision 3 · updated <date>`, or the honest answer for a slot nobody has saved yet. */
 export function commandRevisionLine(view: WorkflowCommandView | null): string {
   // The same sentence every other Command surface uses for an absent view, through the same
@@ -638,15 +669,7 @@ export function CommandLibrary({
               matching path wins.
             </p>
             {draft.overrides.length === 0 ? (
-              // Which of the two empty states this is. "Every repository uses the default
-              // above" is only true when there IS one - on a fresh slot it describes
-              // configuration that does not exist, to the operator most likely to believe it.
-              <p className="wf-command-empty">
-                {draft.defaultText.trim() === ""
-                  ? "No exceptions, and no default - every repository skips this Command and "
-                    + "passes with a note."
-                  : "No exceptions - every repository uses the default above."}
-              </p>
+              <p className="wf-command-empty">{overridesEmptyMessage(draft.defaultText)}</p>
             ) : (
               <ul className="wf-command-override-list">
                 {draft.overrides.map((entry) => (

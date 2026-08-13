@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>The plan task kind</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:#f2f4f7;--paper:#fff;--paper2:#f7f8fa;--ink:#1c232d;--muted:#626d7c;
+      --dim:#7b8593;--line:#dce1e7;--line2:#e9edf1;--blue:#2c73c8;--green:#16815d;
+      --amber:#a66508;--red:#bd3933;--purple:#7252b9;--code:#eef2f6;
+      --shadow:0 18px 54px rgba(28,35,45,.10);
+      --sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    }
+    @media (prefers-color-scheme:dark) {
+      :root {
+        --bg:#0a0c0f;--paper:#14181e;--paper2:#0f1318;--ink:#e7ebf1;--muted:#939eae;
+        --dim:#7c8798;--line:#29313b;--line2:#202730;--blue:#4a9eff;--green:#35c08a;
+        --amber:#f6a733;--red:#f85149;--purple:#a371f7;--code:#1a2028;
+        --shadow:0 20px 58px rgba(0,0,0,.38);
+      }
+    }
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}
+    body{margin:0;min-width:0;background:radial-gradient(900px 520px at 88% -12%,color-mix(in srgb,var(--blue) 11%,transparent),transparent 62%),var(--bg);color:var(--ink);font:15px/1.68 var(--sans)}
+    a{color:var(--blue);text-underline-offset:3px}a:hover{color:color-mix(in srgb,var(--blue) 75%,var(--ink))}
+    .mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 90%,transparent);backdrop-filter:blur(16px)}
+    .mast-inner{max-width:1380px;margin:auto;padding:42px clamp(20px,5vw,66px) 35px}
+    .kicker{margin:0 0 8px;color:var(--blue);font:800 11px/1.2 var(--mono);letter-spacing:.15em;text-transform:uppercase}
+    .mast h1{max-width:850px;margin:0;font-size:clamp(35px,5.5vw,64px);line-height:1.06;letter-spacing:-.045em}
+    .mast-copy{max-width:850px;margin:16px 0 0;color:var(--muted);font-size:17px}
+    .evidence-tabs{display:flex;flex-wrap:wrap;gap:0;margin-top:24px}
+    .evidence-tabs span{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid var(--line);background:var(--paper2);color:var(--muted);font:700 11px/1 var(--mono)}
+    .evidence-tabs span:first-child{border-radius:9px 0 0 9px}.evidence-tabs span:last-child{border-radius:0 9px 9px 0}.evidence-tabs span+span{border-left:0}
+    .evidence-tabs i{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 14%,transparent)}
+    .path{margin-top:16px;color:var(--dim);font:12px/1.5 var(--mono)}
+    .layout{display:grid;grid-template-columns:220px minmax(0,930px);gap:34px;max-width:1240px;margin:0 auto;padding:30px 18px 92px}
+    nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}
+    nav b{display:block;margin:0 0 9px;color:var(--dim);font:800 10px/1.2 var(--mono);letter-spacing:.12em;text-transform:uppercase}
+    nav a{display:block;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}
+    article{min-width:0;padding:10px clamp(18px,4vw,54px) 60px;border:1px solid var(--line);border-radius:17px;background:var(--paper);box-shadow:var(--shadow)}
+    article>h1:first-child{display:none}h2{margin:48px 0 13px;padding-top:7px;border-top:1px solid var(--line);font-size:25px;line-height:1.25;letter-spacing:-.025em}h2:first-of-type{margin-top:22px;border-top:0}
+    h3{margin:30px 0 9px;font-size:18px;line-height:1.35;letter-spacing:-.012em}h4{margin:22px 0 7px}
+    p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:5px 0}strong{color:var(--ink)}
+    code{padding:2px 5px;border:1px solid var(--line2);border-radius:5px;background:var(--code);color:var(--blue);font:12.5px/1.45 var(--mono);overflow-wrap:anywhere}
+    pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}
+    table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font-size:11px}
+    blockquote{margin:18px 0;padding:10px 16px;border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 6%,var(--paper));color:var(--muted)}
+    #approved-decisions{margin-top:56px;padding:22px 24px;border:1px solid color-mix(in srgb,var(--green) 48%,var(--line));border-radius:14px;background:color-mix(in srgb,var(--green) 6%,var(--paper));color:var(--ink)}
+    .flow{max-width:100%;margin:22px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}
+    .flow figcaption{margin-bottom:13px;font-weight:760}.flow svg{display:block;width:100%;height:auto;min-width:760px}.flow p{margin:12px 3px 1px;color:var(--muted);font-size:12px}
+    .flow .edges path{fill:none;stroke:var(--dim);stroke-width:1.7;marker-end:url(#flow-arrow)}.deletion .edges path{marker-end:url(#delete-arrow)}.publication .edges path{marker-end:url(#publish-arrow)}.reconciliation .edges path{marker-end:url(#reconcile-arrow)}.deletion .edges .failure,.publication .edges .failure{stroke:var(--red)}
+    .flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .node.manager rect{fill:color-mix(in srgb,var(--blue) 10%,var(--paper));stroke:var(--blue)}
+    .flow .node.bundle rect,.flow .node.done rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .node.db rect{stroke:var(--purple)}.flow .node.verify rect{stroke:var(--amber)}.flow .node.retry rect{stroke:var(--red);stroke-dasharray:5 4}
+    .flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:480}.flow text.label{fill:var(--dim);font:500 9px var(--mono)}
+    .flow text.band{fill:var(--dim);font:800 10px var(--mono);letter-spacing:.14em;text-anchor:start}
+    footer{display:flex;justify-content:space-between;gap:20px;max-width:1240px;margin:0 auto 36px;padding:0 18px;color:var(--dim);font:11px/1.5 var(--mono)}
+    @media(max-width:880px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:20px}}
+    @media(max-width:560px){.mast-inner{padding-top:30px}.evidence-tabs span{flex:1;justify-content:center}.layout{padding-inline:8px}article{border-radius:13px}.path{overflow-wrap:anywhere}th,td{min-width:130px}th:first-child,td:first-child{min-width:44px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+    @media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav{display:none}article{border:0}.flow svg{min-width:0}footer{display:none}}
+  </style>
+</head>
+<body>
+  <header class="mast">
+    <div class="mast-inner">
+      <p class="kicker">Mission Control · product and engineering plan</p>
+      <h1>The plan task kind</h1>
+      <p class="mast-copy">Dispatch an agent that plans rather than ships or investigates: it renders a reviewable HTML plan, refines it with you, and then asks whether to phase it into dependency-linked backlog tasks.</p>
+      <div class="evidence-tabs" aria-label="Archive contents"><span><i></i>plan.html</span><span><i></i>Decisions</span><span><i></i>Phased tasks</span></div>
+      <p class="path">Kind: ship · scout · plan</p>
+    </div>
+  </header>
+  <div class="layout">
+    <nav aria-label="Plan sections"><b>On this page</b><a href="#outcome">Outcome</a><a href="#what-the-repository-does-today">Current state</a><a href="#incorporated-human-decisions">Decisions</a><a href="#the-plan-kind">The plan kind</a><a href="#the-kind-agnostic-archive-library">Archive library</a><a href="#flow">Flow</a><a href="#non-goals">Non-goals</a><a href="#risks">Risks</a><a href="#verification">Verification</a></nav>
+    <article><h1 id="the-plan-task-kind">The <code>plan</code> task kind</h1>
+<h2 id="outcome">Outcome</h2>
+<p>Mission Control gains a third durable task <strong>Kind</strong>, <code>plan</code>, alongside <code>ship</code> and <code>scout</code>.
+Choosing it in the dispatch form launches an agent that is told, in its own delivered prompt, to
+produce a reviewed HTML plan rather than a change or an investigation report. The human reads
+the rendered plan in the dashboard, refines it with the agent, and is then asked - as selectable
+options, not as prose - whether to turn it into a phased implementation plan with one
+dependency-linked backlog task per phase.</p>
+<p>The plan the agent produces outlives the checkout it was written in. Plan artifacts are captured
+into the same durable, machine-local archive library that already preserves scout reports, so an
+approved plan survives worktree reclamation, daemon restarts, and database replacement.</p>
+<p>Three sentences describe what a person sees:</p>
+<ol>
+<li>Pick <strong>plan</strong> under <strong>Kind</strong>, describe what you want planned, dispatch.</li>
+<li>A <code>plan.html</code> arrives for review. You refine it in conversation until it is right.</li>
+<li>The agent asks, with buttons, whether to phase it. Choosing yes fills your backlog with
+dependency-linked implementation tasks that release when the plan&#x27;s pull request merges.</li>
+</ol>
+<h2 id="what-the-repository-does-today">What the repository does today</h2>
+<ul>
+<li><code>TASK_KINDS</code> in <code>src/shared/types.ts:1426</code> is the two-element tuple <code>[&quot;ship&quot;, &quot;scout&quot;]</code>. Both
+<code>TASK_KIND_INFO</code> (<code>src/shared/task.ts:41</code>) and <code>GUIDED_KIND_KEYS</code>
+(<code>src/web/lib/guided-dispatch-steps.ts:203</code>) are <code>Record&lt;TaskKind, …&gt;</code>, and both carry comments
+stating that a third kind must not compile until it has said how it is offered. The repository
+was written in anticipation of this change.</li>
+<li><code>tasks.kind</code> is <code>TEXT NOT NULL</code> (<code>src/server/db.ts:136</code>) with no <code>CHECK</code> constraint and no
+migration in its history. A third kind is a zero-migration change to that column.</li>
+<li>The <code>html-plans</code> skill (<code>skills/html-plans/SKILL.md</code>) <strong>already</strong> owns everything this feature
+asks an agent to do once it is planning: write <code>docs/plans/&lt;name&gt;/plan.md</code>, emit a
+self-contained <code>plan.html</code> beside it, open it for review, draw flow changes as inline SVG, and
+end every root plan review with a <code>request_plan_decisions</code> call whose last decision is the
+<code>implementation-follow-up</code> question offering <strong>Create phased implementation plan</strong> or <strong>Stop
+after this plan</strong>.</li>
+<li>The <code>phased-plan</code> skill (<code>skills/phased-plan/SKILL.md</code>) already owns the follow-up: investigate
+the plan against the repository, write merge-aware phase documents beside the source plan, and
+schedule one <code>create_task</code> per phase with <code>dependsOnCurrentSession: true</code> so the phase tasks
+stay backlogged until the planning pull request merges.</li>
+<li>Both skills are <strong>opt-in</strong> and both are <code>enforcement: triggered</code>. Neither is guaranteed to be
+installed in a dispatched session.</li>
+<li>The scout kind already establishes every seam this feature needs. Its contract is composed by
+the daemon at delivery (<code>src/server/scouts/prompt.ts</code>) and injected at two places: a fresh
+dispatch (<code>src/server/dispatcher.ts:262</code>) and a backlog task assigned to a live session
+(<code>src/server/tasks.ts:2074</code>). Its launch requirement is derived from the durable kind
+(<code>scoutMissionMcpRequirement</code>, <code>src/server/mission-mcp.ts:83</code>). Its artifacts are published
+into a durable bundle before the worktree is removed (<code>settleBeforeCleanup</code>).</li>
+<li>That archive library is <strong>scout-shaped throughout</strong>: <code>SCOUT_ARCHIVE_FORMAT</code> is the literal
+<code>&quot;mission-control/scout-archive&quot;</code> written into every manifest, the index lives in the
+<code>scout_archives</code> and <code>scout_search_segments</code> tables, and the bundles live under
+<code>~/.mission-control/scouts/</code>. Around 7,100 lines carry the name.</li>
+<li>The archive&#x27;s HTML validator (<code>src/server/scouts/html.ts</code>) refuses <strong>any</strong> URL scheme anywhere
+in a page, including a navigational <code>&lt;a href&gt;</code>. Real plan pages in this repository link out to
+external documentation: <code>docs/plans/recurring-missions/plan.html</code> carries five such links.</li>
+<li><strong>No Scouts page exists.</strong> <code>docs/scout-archives.md</code> states that the reading UI &quot;arrives in a
+later change&quot;; today the library is reachable only through the daemon&#x27;s HTTP API and the
+filesystem. The archive subsystem therefore has no user-facing surface bound to its name.</li>
+<li>Foreman&#x27;s <code>skipReviewArtifactWrapup</code> (<code>src/shared/protocol.ts:1102</code>) is on by default and
+retires &quot;mockups and other explicit review-only artifacts&quot; at completion instead of offering an
+automatic wrap-up. It classifies from the resolved objective and the completed diff&#x27;s paths.</li>
+</ul>
+<h2 id="incorporated-human-decisions">Incorporated human decisions</h2>
+<p>These were submitted before this plan was written and are requirements here, not open questions.</p>
+<table><thead><tr><th>Decision</th><th>Approved selection</th><th>Consequence</th></tr></thead><tbody><tr><td>Artifact durability</td><td>Durable archive, like scout</td><td>Plan artifacts are captured into the archive library and survive worktree reclaim; they are not left to the pull request alone</td></tr><tr><td>After work</td><td>Preselect None, reversibly</td><td>Choosing <code>plan</code> stashes and clears the after-work Workflow exactly as <code>scout</code> does, and switching back hands the stash back losslessly</td></tr><tr><td>Skill dependence</td><td>Point at the skills</td><td>The delivered contract invokes <code>html-plans</code> rather than restating it; a plan dispatch requires that skill to be enabled and refuses when it is not</td></tr><tr><td>Completion</td><td>Normal boundary, like ship</td><td>No scout-style completion gate. A plan task completes on Foreman&#x27;s ordinary boundary; durability is achieved at teardown instead</td></tr><tr><td>External links</td><td>Allow clickable external links</td><td>The archive HTML validator permits <code>http(s)</code> in navigational slots only, and continues to refuse every fetching slot. This applies to the shared format, so scout reports gain it too</td></tr><tr><td>Archive container</td><td>Generalize and rename to archives</td><td>A neutral, kind-discriminated archive format, root and table, with a read path that still discovers existing scout bundles</td></tr><tr><td>Foreman wrap-up</td><td>Offer ordinary wrap-up</td><td>A completed plan task gets the same Ship it / Straight to PR handling as a ship task, which requires exempting the kind from the review-artifact classifier</td></tr></tbody></table>
+<h2 id="the-plan-kind">The plan kind</h2>
+<h3 id="vocabulary-and-surfaces">Vocabulary and surfaces</h3>
+<p><code>TASK_KINDS</code> becomes <code>[&quot;ship&quot;, &quot;scout&quot;, &quot;plan&quot;]</code>. Array order is picker order, so <code>plan</code> is
+offered third. <code>ship</code> remains index 0 and remains the default every automated writer takes.</p>
+<p>Two <code>Record&lt;TaskKind, …&gt;</code> registries stop compiling until they are extended, which is the
+intended enforcement:</p>
+<ul>
+<li><code>TASK_KIND_INFO</code> gains a <code>plan</code> entry. Its <code>blurb</code> is the one line a person reads when choosing:
+it must say that a plan produces a reviewed page and can schedule the work, and that it has no
+diff to review.</li>
+<li><code>GUIDED_KIND_KEYS</code> gains <code>plan: &quot;l&quot;</code>. <code>p</code> belongs to <code>ship</code> and <code>t</code> to <code>scout</code> for the reason
+recorded at <code>guided-dispatch-steps.ts:193</code> - the two words share a first letter, so the
+mnemonics are the letters that distinguish them. <code>l</code> is the free distinguishing letter in
+<code>plan</code>; <code>p</code>, <code>a</code> and <code>n</code> are taken, ambiguous, or both.</li>
+</ul>
+<p>Several surfaces degrade silently rather than failing to compile, and each is in scope:</p>
+<ul>
+<li><code>src/shared/task.ts:183</code> (<code>taskPillParts</code>) draws a kind badge only for <code>scout</code>, on the stated
+ground that <code>ship</code> is what everything defaults to. <code>plan</code> is deliberately chosen and rare, so it
+is drawn on the same reasoning that draws <code>scout</code>.</li>
+<li><code>src/web/styles.css</code> has <code>.bl-kind-ship</code> and <code>.bl-kind-scout</code> colour rules and no fallback. A
+<code>.bl-kind-plan</code> rule is required or the backlog card&#x27;s kind chip inherits body text colour.</li>
+<li><code>src/server/foreman/backlog-prompt.ts:68</code> describes the kind to Foreman&#x27;s backlog-planner model
+with a binary ternary, so a third kind is described to the model as &quot;investigate and report&quot;.
+This becomes a lookup over the registry.</li>
+<li><code>src/web/components/schedules/ScheduleEditor.tsx:365</code> and
+<code>src/web/components/TaskSourcesPanel.tsx:600</code> hand-write their <code>&lt;option&gt;</code> elements. They are the
+two entries in <code>KNOWN_HAND_WRITTEN</code> (<code>test/task-kinds.test.ts:47</code>), a list explicitly allowed to
+shrink and never grow. Both are converted to render from <code>TASK_KIND_INFO</code>, which both fixes the
+omission and empties that list.</li>
+<li><code>src/server/db.ts:3232</code> reads the column back with an unvalidated <code>r.kind as TaskKind</code> cast,
+while the schedule store validates the same vocabulary with <code>readPersistedEnum</code>. The task read
+path adopts the same validation, so a row written by a newer build degrades predictably instead
+of flowing into typed code as a kind that does not exist.</li>
+<li><code>KIND_FIELD_TIP</code> (<code>DispatchModal.tsx:285</code>) and the guided hint (<code>:2452</code>) are two-kind prose.</li>
+</ul>
+<h3 id="what-a-plan-task-is-delivered">What a plan task is delivered</h3>
+<p>A plan task&#x27;s intent is composed the way a scout&#x27;s is: the operator&#x27;s own words first, then a
+contract appendix, at both delivery seams. Nothing clamps or rewrites the intent.</p>
+<p>The contract differs from scout&#x27;s in one deliberate way. Scout&#x27;s appendix <strong>restates</strong> its skill
+because a scout&#x27;s output is server-enforced and had to hold with skills switched off. The
+approved decision here is the opposite: the plan appendix <strong>invokes</strong> <code>html-plans</code> and lets that
+skill own the procedure. The appendix therefore says what a plan task is for, invokes the skill,
+names the artifact location, and states that the phased-plan follow-up is expected. It does not
+duplicate the skill&#x27;s rendering rules, its decision schema, or its diagram guidance.</p>
+<p>The invocation must be written through <code>skillCommand(agent, name)</code> rather than as a literal
+<code>/html-plans</code>, because the three harnesses spell it differently: Claude uses <code>/html-plans</code>, Codex
+uses <code>$html-plans - run this skill now.</code> (the trailing clause closes the mention popup so a single
+Enter submits), and Pi uses <code>/skill:html-plans</code>. A hardcoded slash command would be inert on two
+of the three harnesses.</p>
+<p>Because the contract points at a skill instead of restating it, the skill&#x27;s presence becomes a
+launch requirement rather than a nicety. A plan dispatch is refused when <code>html-plans</code> is disabled
+or missing, with a message naming the toggle - the same shape as the existing refusal when a
+scout is dispatched on a machine where the MCP bundle is not built
+(<code>src/server/tasks.ts:1921</code>). This is the one place the plan kind deliberately diverges from the
+scout precedent, and it follows directly from the approved decision to point at the skills rather
+than to restate them.</p>
+<p><code>phased-plan</code> is required on the same terms, because the follow-up decision the human is offered
+is not answerable without it. Refusing at dispatch is better than refusing after the human has
+already chosen to phase the work.</p>
+<h3 id="launch-requirements">Launch requirements</h3>
+<p><code>scoutMissionMcpRequirement</code> generalizes into a kind-dispatched function. A plan task must be
+able to call:</p>
+<ul>
+<li><code>request_plan_decisions</code>, which is how the plan is shown for review and how the phased-plan
+follow-up is asked. Without it the agent falls back to asking in prose, which is the exact
+failure the skill exists to prevent.</li>
+<li><code>create_task</code>, which is how <code>phased-plan</code> schedules the phase tasks.</li>
+</ul>
+<p>A ship task keeps getting its caller&#x27;s requirement back unchanged, <code>null</code> included, so existing
+dispatch argv stays byte-identical.</p>
+<h3 id="after-work-completion-and-wrap-up">After work, completion, and wrap-up</h3>
+<p>Choosing <code>plan</code> in the dispatch form moves the after-work Workflow to <strong>None</strong> and stashes the
+previous selection, reusing <code>afterWorkForKind</code>&#x27;s existing stash-and-restore. Switching back to
+<code>ship</code> hands the exact stash back. As with scout this is a default and not a lock: a Workflow
+picked by hand after choosing <code>plan</code> sticks, and is never reverted by a later kind switch.</p>
+<p>A plan task completes on Foreman&#x27;s ordinary boundary. There is no gate equivalent to
+<code>ScoutArchiveGate</code>. The refinement loop does not need one: <code>request_plan_decisions</code> blocks the
+agent until the human submits or dismisses, so the conversation is held open by the tool call
+rather than by a completion rule.</p>
+<p>A completed plan task is offered ordinary wrap-up - the same Ship it / Straight to PR handling a
+ship task gets. This is a requirement rather than a consequence, and it does not happen for free:
+a plan&#x27;s diff is confined to <code>docs/plans/**</code>, which is precisely the shape
+<code>skipReviewArtifactWrapup</code> exists to retire. Delivering the approved decision means the plan kind
+is exempt from that classifier. The reasoning is that a plan is not a review artifact in the sense
+that setting means - a mockup is a thing produced <em>for</em> a review and then discarded, while a plan
+is a durable document whose landing on the default branch is what releases the phase tasks that
+depend on it.</p>
+<p>The result is that a plan task ends with both an archive and an offered pull request. That is not
+redundancy. The archive is what preserves the plan when the human stops after it; the pull request
+is what publishes the paths when the human phases it, because <code>phased-plan</code> schedules tasks that
+carry paths rather than content and those paths must resolve on the default branch.</p>
+<h2 id="the-kind-agnostic-archive-library">The kind-agnostic archive library</h2>
+<h3 id="why-the-rename">Why the rename</h3>
+<p>Plan bundles have to live somewhere durable, and the repository already has exactly one durable
+bundle library. Building a second one for plans would be a parallel source of truth for
+&quot;immutable local artifact bundle, indexed for search, discovered from disk&quot; - the thing the
+project&#x27;s working rules forbid most explicitly.</p>
+<p>Reusing it under its current name would mean a <code>scouts/</code> directory and a <code>scout_archives</code> table
+holding plans, and a <code>mission-control/scout-archive</code> format string in a plan&#x27;s manifest. The
+approved decision is to make the container honest instead.</p>
+<p>The rename is affordable now for a reason that will not hold later: <strong>the reading UI has not been
+built</strong>. There is no Scouts page, no route, no command-palette entry, and no topbar segment bound
+to the name. The rename touches the daemon, the shared contract, the tables and the docs, and
+stops there. Every month that passes before this happens makes it more expensive.</p>
+<h3 id="format-storage-and-index">Format, storage, and index</h3>
+<ul>
+<li>The manifest gains a <code>kind</code> discriminator naming what the bundle preserves, and carries a new
+neutral format string. The bundle&#x27;s internal shape is otherwise unchanged: a manifest, a primary
+directory of the rendered artifact and its companions, and supporting artifacts under a
+generated per-repository slot.</li>
+<li>Bundles are written under a neutral archives root beside the existing scouts root, resolved the
+same way from the Mission Control state directory, so <code>MISSION_HOME</code> continues to move the whole
+library and an isolated or demo daemon keeps its archives beside its own database.</li>
+<li>The index moves to neutrally named tables. The index is a <strong>cache</strong> - the existing subsystem
+already rebuilds it from disk when the database is deleted - which is what makes this a
+low-risk schema change rather than a data migration. The bundles on disk are the record.</li>
+</ul>
+<h3 id="the-compatibility-window">The compatibility window</h3>
+<p>The read path discovers and indexes both formats: existing bundles under the scouts root carrying
+the old format string, and new bundles under the archives root carrying the new one. A legacy
+bundle with no <code>kind</code> field reads as a scout, which is what it is. The write path only ever emits
+the new format.</p>
+<p>Nothing rewrites or moves an existing bundle. The project&#x27;s rule against renaming persisted
+append-only identifiers is honoured by leaving the old identifier meaningful forever rather than
+by redefining it: <code>mission-control/scout-archive</code> keeps meaning exactly what it has always meant,
+and stops being produced.</p>
+<p>The consequence to state plainly is downgrade behaviour. An archive written by a build that has
+this change is not discovered by a build that does not. That is acceptable for a local cache of
+local files whose bundles remain readable in a file manager either way, and it is the same
+property the schedule store already has.</p>
+<h3 id="the-validator-relaxation">The validator relaxation</h3>
+<p><code>urlProblem</code> (<code>src/server/scouts/html.ts:354</code>) currently rejects every scheme in every slot. The
+approved change is to permit <code>http(s)</code> where the attribute is navigational - <code>href</code>, <code>action</code>,
+<code>formaction</code>, <code>ping</code> - and to keep refusing it everywhere a page fetches on open: <code>src</code>,
+<code>xlink:href</code>, CSS <code>url()</code>, <code>@import</code>, <code>image-set()</code>, and every other entry in <code>URL_ATTRIBUTES</code>.</p>
+<p>The existing rationale supports the distinction rather than contradicting it. The comment at
+<code>html.ts:345</code> defends the small allowed set as being about &quot;a request this machine would make on
+somebody else&#x27;s behalf when a human opens an archive they were sent&quot; - which is what an automatic
+fetch does and what a click does not. <code>data:</code> remains refused in navigational slots, since a
+<code>data:</code> link target is a navigation primitive and not a reference.</p>
+<p>This applies to the shared format, so archived scout reports gain the same ability. That is a
+deliberate widening, and the tests that pin the refusals must gain a case for each fetching slot
+so the relaxation cannot spread past navigation.</p>
+<h2 id="flow">Flow</h2>
+<p>Today a scout is the only kind whose delivery is shaped by the daemon, and the only kind with a
+durable output. After this change the daemon composes a contract for two kinds, and both kinds&#x27;
+outputs land in one library.</p>
+
+<figure class="flow" aria-labelledby="kind-flow-title">
+  <figcaption id="kind-flow-title">What each task kind is delivered, and where its output lands</figcaption>
+  <svg viewBox="0 0 1200 470" role="img" aria-label="Before, a dispatch forks on kind into ship, which receives the intent as written, and scout, which receives the intent plus a daemon-composed report contract and lands in the scout archive library. After, the same dispatch also forks into plan, which receives the intent plus a contract that invokes the html-plans skill, leading to a dashboard decision review and optionally to phased-plan scheduling backlog tasks. Scout and plan outputs both land in one kind-discriminated archive library.">
+    <defs>
+      <marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z"/></marker>
+    </defs>
+    <text class="band" x="24" y="26">BEFORE</text>
+    <g class="edges">
+      <path d="M174 74H214"/>
+      <path d="M364 62V44H404"/><path d="M364 86V112H404"/>
+      <path d="M604 112H664"/>
+    </g>
+    <g class="node" transform="translate(24 48)"><rect width="150" height="52" rx="12"/><text x="75" y="31">Dispatch</text></g>
+    <g class="node verify" transform="translate(214 48)"><rect width="150" height="52" rx="12"/><text x="75" y="31">kind</text></g>
+    <g class="node" transform="translate(404 18)"><rect width="200" height="52" rx="12"/><text x="100" y="24">ship</text><text class="sub" x="100" y="42">intent as written</text></g>
+    <g class="node" transform="translate(404 86)"><rect width="200" height="52" rx="12"/><text x="100" y="24">scout</text><text class="sub" x="100" y="42">intent + report contract</text></g>
+    <g class="node bundle" transform="translate(664 86)"><rect width="210" height="52" rx="12"/><text x="105" y="24">scout archive library</text><text class="sub" x="105" y="42">mission-control/scout-archive</text></g>
+    <text class="band" x="24" y="206">AFTER</text>
+    <g class="edges">
+      <path d="M174 254H214"/>
+      <path d="M364 242V224H404"/><path d="M364 262V292H404"/><path d="M364 272V372H404"/>
+      <path d="M604 292H664"/>
+      <path d="M604 372H664"/><path d="M874 372H904"/>
+      <path d="M769 346V318H904"/>
+    </g>
+    <g class="node" transform="translate(24 228)"><rect width="150" height="52" rx="12"/><text x="75" y="31">Dispatch</text></g>
+    <g class="node verify" transform="translate(214 228)"><rect width="150" height="52" rx="12"/><text x="75" y="31">kind</text></g>
+    <g class="node" transform="translate(404 198)"><rect width="200" height="52" rx="12"/><text x="100" y="24">ship</text><text class="sub" x="100" y="42">intent as written</text></g>
+    <g class="node" transform="translate(404 266)"><rect width="200" height="52" rx="12"/><text x="100" y="24">scout</text><text class="sub" x="100" y="42">intent + report contract</text></g>
+    <g class="node manager" transform="translate(404 346)"><rect width="200" height="52" rx="12"/><text x="100" y="24">plan</text><text class="sub" x="100" y="42">intent + invokes html-plans</text></g>
+    <g class="node manager" transform="translate(664 346)"><rect width="210" height="52" rx="12"/><text x="105" y="24">review + decide</text><text class="sub" x="105" y="42">request_plan_decisions</text></g>
+    <g class="node done" transform="translate(904 346)"><rect width="272" height="52" rx="12"/><text x="136" y="24">phased-plan schedules tasks</text><text class="sub" x="136" y="42">one backlog task per phase</text></g>
+    <g class="node bundle" transform="translate(904 266)"><rect width="272" height="52" rx="12"/><text x="136" y="24">archive library</text><text class="sub" x="136" y="42">kind-discriminated, renamed</text></g>
+    <text class="label" x="640" y="286">scout</text><text class="label" x="800" y="310">plan</text>
+  </svg>
+  <p>The plan branch is the only new fork. Its contract invokes a skill rather than restating one, and its output shares the library the scout kind already established, which is what the rename makes honest.</p>
+</figure>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li><strong>No Archives reading UI.</strong> This plan does not build the page that reads the library. That
+remains the later change <code>docs/scout-archives.md</code> already anticipates, and it now inherits a
+neutrally named library to read rather than a scout-named one.</li>
+<li><strong>No new planning skill.</strong> <code>html-plans</code> and <code>phased-plan</code> are the procedure and stay the
+procedure. This plan adds the kind that guarantees an agent reaches them; it does not fork them.</li>
+<li><strong>No change to what <code>phased-plan</code> schedules.</strong> It continues to create ship tasks with
+<code>dependsOnCurrentSession: true</code>. A phase task is not a plan task, and nothing here makes plans
+recursively phase themselves.</li>
+<li><strong>No migration of existing scout bundles.</strong> They stay where they are, in the format they have.</li>
+<li><strong>No kind for the MCP <code>create_task</code> tool.</strong> It continues to file ship tasks only, as it does for
+scout today. An agent cannot file a plan task; a human chooses the kind.</li>
+</ul>
+<h2 id="risks">Risks</h2>
+<ul>
+<li><strong>The rename is the majority of the work and delivers nothing a person can see.</strong> It is
+sequenced first because it is foundational, and it is scoped to be behaviour-preserving for
+scouts, which is what makes it reviewable: the existing scout tests must pass unchanged through
+the renamed library.</li>
+<li><strong>A plan dispatch now depends on two opt-in toggles.</strong> Refusing at dispatch makes the dependency
+loud instead of silent, but it is a new way for a dispatch to fail. The refusal message must name
+the toggle and the settings location, or it will read as a bug.</li>
+<li><strong>The validator relaxation widens a deliberately narrow security surface.</strong> Confining it to
+navigational attributes, and pinning each fetching slot with a test, is what keeps the widening
+from spreading.</li>
+<li><strong>Foreman&#x27;s classifier exemption is a behaviour change keyed on kind.</strong> It is required by the
+approved wrap-up decision, and it must not disturb the classifier&#x27;s judgement for ship tasks
+that genuinely produce only mockups.</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<ul>
+<li>The existing scout suite passes unchanged against the generalized library, which is the
+behaviour-preservation proof for the rename.</li>
+<li>Golden bundle vectors cover both the legacy format read path and the new format write path.</li>
+<li><code>test/task-kinds.test.ts</code> extends to three kinds, and <code>KNOWN_HAND_WRITTEN</code> empties.</li>
+<li>A Playwright spec drives the dispatch form to <code>plan</code>, asserts the after-work preselection and
+its lossless reversal, and asserts the kind chip renders. UI changes in this repository require
+a browser spec; the older layers are additions to that requirement and never substitutes.</li>
+<li>A dispatch with <code>html-plans</code> disabled is refused with the message naming the toggle.</li>
+</ul></article>
+  </div>
+  <footer><span>Source of truth: plan.md</span><span>Offline render · no external requests</span></footer>
+</body>
+</html>

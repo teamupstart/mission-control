@@ -23,12 +23,14 @@ import { expect, test } from "../fixtures/test.ts";
  * ↵ were all spoken for before the pass existed. Whether those two agree is not a fact about
  * either of them separately, and this is the only layer that can ask.
  *
- * The reset regression submits one backlog task and one dispatch. The browser fixture routes
- * every agent binary to the fake, so the launched session spends no model tokens.
+ * The shipped-default regression submits one dispatch to prove <kbd>Control+Enter</kbd> still
+ * reaches the ordinary form after <kbd>Tab</kbd>. Together, it and the reset regression submit
+ * one backlog task and two dispatches. Every agent binary and the task titler are redirected
+ * at the fixture fakes, so none of them spends model tokens.
  *
- * The preference is turned ON in-test, deliberately: it ships off in this phase, and the
- * shared `dashboard` fixture pins it off explicitly so that no OTHER spec depends on the
- * shipped default. These tests are the ones that want the opposite value, so they say so.
+ * The shared `dashboard` fixture pins the preference OFF explicitly, independent of the
+ * shipped default. Tests that want the pass turn it on themselves; the one test of the
+ * shipped default uses the raw `page` fixture so that pin cannot make it pass.
  */
 
 /** The dispatch modal, with the guided pass running and parked on its first question, Repo. */
@@ -173,6 +175,63 @@ async function shoot(page: Page, name: string): Promise<void> {
   // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/guided-dispatch/${name}.png`);
 }
+
+test("a fresh profile gets the guided pass, and Tab hands back the working form", async ({
+  page,
+  daemon,
+}) => {
+  // Raw `page`, not `dashboard`: the shared dashboard fixture pins Guided off to protect the
+  // roughly fifty specs that use the dispatch form as setup. This test is the one place that
+  // must inherit the product default, or changing that default would test nothing.
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await page.evaluate(() => window.localStorage.clear());
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
+
+  await page.keyboard.press("+");
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("switch", { name: "Guided" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toBeFocused();
+  await shoot(page, "06-default-on");
+
+  await page.keyboard.press("Tab");
+
+  // The bounded cost of changing an existing shortcut: one key reaches the same controls,
+  // defaults and caret the ordinary form has always opened with.
+  await expect(rail(dialog)).toBeHidden();
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(taskBox(dialog)).toBeFocused();
+  await expect(repoField(dialog)).toHaveValue("");
+  await expect(kindSelect(dialog)).toHaveValue("ship");
+  await expect(agentSelect(dialog)).toHaveValue("claude");
+  await expect(afterWorkSelect(dialog)).toHaveValue("__default");
+  await expect(dialog.getByRole("heading", { name: "Dispatch an agent" })).toBeVisible();
+  await expect(dialog.getByRole("radiogroup", { name: "Launch mode" })).toBeVisible();
+  await expect(dialog.getByRole("switch", { name: "Guided" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Close" })).toBeVisible();
+  const modalTop = await dialog.evaluate((element) => element.getBoundingClientRect().top);
+  expect(
+    modalTop,
+    "Tab scrolled the ordinary form's header above the viewport",
+  ).toBeGreaterThanOrEqual(0);
+
+  // It is the working form, not a lookalike. Fill only what dispatch requires, opt out of
+  // the fixture repo's unavailable Workflow default, and submit through the existing chord.
+  await repoField(dialog).fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await taskBox(dialog).fill("verify the shipped guided dispatch default");
+  await afterWorkSelect(dialog).selectOption("__none");
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  await page.keyboard.press("Control+Enter");
+
+  await expect(dialog).toBeHidden();
+  await expect(page.locator("article.card")).toHaveCount(1);
+});
 
 // ---- the Repo question -----------------------------------------------------------------
 

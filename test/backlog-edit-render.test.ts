@@ -6,9 +6,29 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 import type { Task } from "../src/shared/types.ts";
 import type { TaskSourceInstance } from "../src/shared/task-source.ts";
-import { DispatchLayer, PushToSourceBlock } from "../src/web/components/DispatchModal.tsx";
-import { BacklogColumn } from "../src/web/components/layouts/BacklogColumn.tsx";
 import { hasTooltip } from "./helpers/markup.ts";
+
+// This file is about the ordinary form's edit and footer contracts, not which composition
+// path ships. State that precondition before importing the module-level UI config store, just
+// as the e2e dashboard fixture does for specs that use Dispatch as setup. Otherwise a product
+// default flip hides the footer under the guided pass and turns these assertions into tests of
+// an unrelated preference.
+const uiStore = new Map<string, string>([
+  ["mission-control.ui", JSON.stringify({ guidedDispatch: false })],
+]);
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  value: {
+    getItem: (key: string) => uiStore.get(key) ?? null,
+    setItem: (key: string, value: string) => void uiStore.set(key, value),
+    removeItem: (key: string) => void uiStore.delete(key),
+  },
+});
+
+const { DispatchLayer, PushToSourceBlock } = await import(
+  "../src/web/components/DispatchModal.tsx"
+);
+const { BacklogColumn } = await import("../src/web/components/layouts/BacklogColumn.tsx");
 
 // Reopening a shelved task in the form that wrote it. Static markup rather than a
 // driven browser: the dashboard's pages don't take script injection from the

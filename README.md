@@ -18,14 +18,14 @@ what is active, what needs a decision, and what is ready for the next step.
 Start a task in the right repository, choose its harness and runtime, and leave it attached
 to the backlog and workflow that will carry it through review.
 
-Turn on **Guided** in the dispatch modal's header and <kbd>+</kbd> asks the three decisions
-that actually change - kind, harness, what runs after the work - as single keystrokes, then
-hands over that same form with the answers set and the caret in the task box. <kbd>⇥</kbd> or
-the first <kbd>esc</kbd> leaves the pass at any point and keeps what it has; a second
-<kbd>esc</kbd> closes Dispatch. Closing and reopening also keeps the current question and
-every answer; **Clear**, **Dispatch now**, and **Add to backlog** reset the pass for the next
-task. It ships off; the switch turns it on, and so does
-**Settings → Dispatch**, which is where ⌘K finds it by name. See
+<kbd>+</kbd> starts the guided pass by default. It asks for the repository, kind, harness and
+what runs after the work, then hands over the same dispatch form with those answers set and
+the caret in the task box. The choices print their one-key answers. <kbd>⇥</kbd> or the first
+<kbd>Esc</kbd> leaves the pass at any point and keeps what it has; a second <kbd>Esc</kbd>
+closes Dispatch. Closing and reopening keep the current question and every answer, while
+**Clear**, **Dispatch now**, and **Add to backlog** reset the pass for the next task.
+**Guided** in the modal header and **Settings → Dispatch** control the preference, which ⌘K
+also finds by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
 
 A task can attach more than one repository. Dispatch it and you get **one** agent session

@@ -19,8 +19,8 @@ import { settled } from "../fixtures/settle.ts";
  * Nothing is stubbed on the browser side and nothing inside the daemon. The ONE substitution
  * is the model: `MISSION_CLAUDE_BIN` points at a fake that, on seeing the scout contract in
  * its prompt, writes a static page into its own checkout and POSTs to `/mcp/scouts/submit`
- * with the harness token. No model API is reached and no tokens are spent - see
- * `e2e/fixtures/fake-claude.mjs`.
+ * with the harness token and the daemon-issued checkout credential. No model API is reached
+ * and no tokens are spent - see `e2e/fixtures/fake-claude.mjs`.
  */
 
 const SCOUT_TASK = "find out why a resumed agent lost repository permissions";

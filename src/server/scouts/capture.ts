@@ -197,8 +197,6 @@ async function planSubmitted(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promi
   }
 
   const files: PlannedFile[] = [];
-  const missing: ScoutManifestMissing[] = [];
-
   const report = await resolveCheckoutFile(primary.realRoot, submission.reportPath);
   if (!report.ok) {
     problems.push(`${submission.reportPath}: ${report.reason}`);
@@ -221,9 +219,12 @@ async function planSubmitted(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promi
     });
     const companions = await planReportDirectory(primary, reportDir, report.path);
     if (!companions.ok) return companions;
-    problems.push(...companions.ignoredProblems);
+    problems.push(
+      ...companions.missing.map(
+        (entry) => `${entry.expectedSource}: ${entry.reason}`,
+      ),
+    );
     files.push(...companions.files);
-    missing.push(...companions.missing);
   }
 
   const supporting = await planSupporting(job, roots, reportDir, primary.slot);
@@ -234,7 +235,7 @@ async function planSubmitted(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promi
 
   const limits = limitProblems(files);
   if (limits.length > 0) return { ok: false, problems: limits };
-  return { ok: true, files, missing, captureStatus: "complete" };
+  return { ok: true, files, missing: [], captureStatus: "complete" };
 }
 
 /**
@@ -349,7 +350,12 @@ async function planRecovery(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promis
       captureStatus: "partial",
     };
   }
-  return { ok: true, files, missing: companions.missing, captureStatus: "complete" };
+  return {
+    ok: true,
+    files,
+    missing: companions.missing,
+    captureStatus: companions.missing.length === 0 ? "complete" : "partial",
+  };
 }
 
 /**
@@ -399,14 +405,12 @@ async function planReportDirectory(
       ok: true;
       files: PlannedFile[];
       missing: ScoutManifestMissing[];
-      ignoredProblems: string[];
     }
   | { ok: false; problems: string[] }
 > {
   const base = path.join(root.realRoot!, reportDir);
   const files: PlannedFile[] = [];
   const missing: ScoutManifestMissing[] = [];
-  const ignoredProblems: string[] = [];
   const problems: string[] = [];
 
   const walk = async (dir: string, relative: string): Promise<void> => {
@@ -446,7 +450,6 @@ async function planReportDirectory(
       if (absolute === reportRealPath) continue;
       const originalPath = `${reportDir}/${rel}`;
       if (await isIgnored(root.realRoot!, originalPath)) {
-        ignoredProblems.push(`${originalPath} is ignored by git and was not archived`);
         missing.push({
           kind: "report_companion",
           expectedSource: originalPath,
@@ -480,7 +483,7 @@ async function planReportDirectory(
   if (problems.length > 0) return { ok: false, problems };
   // Bounded before anything is copied, so a runaway directory costs one walk rather than
   // 128 MiB of writes that then have to be thrown away.
-  return { ok: true, files, missing: missing.slice(0, 64), ignoredProblems };
+  return { ok: true, files, missing: missing.slice(0, 64) };
 }
 
 /** The additional files a scout explicitly named, each through the same defences. */

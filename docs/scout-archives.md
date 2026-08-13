@@ -163,9 +163,10 @@ and then, in the background:
 
 1. a report the scout actually submitted always wins;
 2. otherwise it looks for exactly **one** `docs/reports/*/report.html` in the checkouts the
-   task still holds, and captures that one with its companions;
+   task still holds, and captures that one with its representable companions;
 3. zero candidates, or more than one, publishes an honest `partial` archive naming what is
-   missing. It never guesses, and it never writes a report from conversation text.
+   missing. A recovered report with an unrepresentable companion is partial for the same reason.
+   It never guesses, and it never writes a report from conversation text.
 
 A partial archive is a real, portable record - it just does not claim to hold the answer, and
 it does not satisfy a normal completion.

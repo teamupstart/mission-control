@@ -30,8 +30,9 @@
  * with a permanently empty conversation. Writing that file is half of what this does.
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 /** Fixed so a test can assert against a known id; the driver only cares that it is stable. */
@@ -380,8 +381,8 @@ function replyTo(prompt) {
  * then refuses to complete the task until a verified archive exists, and both halves of that
  * are invisible unless something actually reads the prompt and calls the real MCP route. So
  * this reacts to the marker the daemon composes, writes a static page into its own checkout,
- * and posts to `/mcp/scouts/submit` over loopback with the harness token - the same request
- * the bundled MCP server makes, without the MCP server.
+ * and posts to `/mcp/scouts/submit` over loopback with the harness token and the daemon-issued
+ * checkout credential - the same request the bundled MCP server makes, without the MCP server.
  *
  * Everything it needs is inherited env: `MISSION_HOME` (the token file) and `MISSION_PORT`
  * (the daemon this dispatch came from). Nothing here reaches a model API, and nothing is
@@ -428,6 +429,18 @@ function daemonToken() {
   }
 }
 
+/** The opaque credential the daemon provisioned for this exact scout checkout. */
+function scoutCredential() {
+  const home = process.env.MISSION_HOME ?? process.env.HARNESS_HOME;
+  try {
+    const checkout = resolve(process.cwd());
+    const key = createHash("sha256").update(checkout).digest("hex");
+    return readFileSync(join(home, "scout-submission-credentials", key), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Write the page, then hand it over the way a real scout would.
  *
@@ -451,11 +464,12 @@ async function runScout(prompt) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/mcp/scouts/submit`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-harness-token": daemonToken() },
+      headers: {
+        "content-type": "application/json",
+        "x-harness-token": daemonToken(),
+        "x-mission-scout-credential": scoutCredential(),
+      },
       body: JSON.stringify({
-        env: {},
-        sessionId: SESSION_ID,
-        cwd: process.cwd(),
         reportPath: relative,
         summary: "Resume rebuilt the session without replaying the repository grant.",
         tags: ["resume", "permissions"],

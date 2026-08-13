@@ -213,7 +213,7 @@ test("an ignored non-hidden report companion is refused by name rather than arch
   if (outcome.ok) return;
   assert.match(
     outcome.problems.join(" "),
-    /docs\/reports\/resume\/credentials\.local is ignored by git and was not archived/,
+    /docs\/reports\/resume\/credentials\.local.*is ignored by git and was not archived/,
   );
   const read = await verifyScoutBundle(library, {
     producerId: PRODUCER,
@@ -317,25 +317,27 @@ test("a parent symlink swap cannot redirect a validated source outside the check
   assert.equal(read.kind, "absent");
 });
 
-test("a symlink beside the report is recorded as missing rather than followed", async () => {
+test("a submitted report with a symlinked companion is refused rather than called complete", async () => {
   const outside = mkdirp(join(home, "companion-target"));
   writeFileSync(join(outside, "secret.txt"), "not yours");
-  const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml() });
+  const root = makeCheckout({
+    "docs/reports/resume/report.html": validReportHtml(),
+    "docs/reports/resume/bad\\name.txt": "cannot be represented in a bundle",
+  });
   symlinkSync(join(outside, "secret.txt"), join(root, "docs/reports/resume/linked.txt"));
 
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
   const outcome = await captureScoutArchive(job, deps);
-  assert.equal(outcome.ok, true);
-  if (!outcome.ok) return;
-  const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
-  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
-  assert.equal(manifest.ok, true);
-  if (!manifest.ok) return;
-  assert.ok(!manifest.manifest.artifacts.some((a) => a.archivePath.endsWith("linked.txt")));
-  // Honest rather than silent: the archive says what it did not take, and why.
-  assert.equal(manifest.manifest.missing.length, 1);
-  assert.equal(manifest.manifest.missing[0]!.kind, "report_companion");
-  assert.match(manifest.manifest.missing[0]!.reason, /symbolic link/);
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.equal(outcome.problems.length, 2, "every automatically omitted companion is a problem");
+  assert.match(outcome.problems.join(" "), /docs\/reports\/resume\/linked\.txt.*symbolic link/);
+  assert.match(outcome.problems.join(" "), /bad\\name\.txt.*cannot be represented/);
+  const read = await verifyScoutBundle(library, {
+    producerId: PRODUCER,
+    archiveId: job.archiveId,
+  });
+  assert.equal(read.kind, "absent");
 });
 
 test("a supporting file already beside the report is refused rather than archived twice", async () => {
@@ -544,6 +546,25 @@ test("exactly one conventional report is recovered as a complete archive", async
   // No summary was invented for it. A recovered archive says what was written, not what a
   // model might have said about it.
   assert.equal(manifest.manifest.archive.summary, null);
+});
+
+test("a recovered report with a symlinked companion is an honest partial", async () => {
+  const outside = mkdirp(join(home, "recovered-companion-target"));
+  writeFileSync(join(outside, "secret.txt"), "not yours");
+  const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml() });
+  symlinkSync(join(outside, "secret.txt"), join(root, "docs/reports/resume/linked.txt"));
+
+  const { job } = makeJob({ root });
+  const outcome = await captureScoutArchive(job, deps);
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.captureStatus, "partial");
+  const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
+  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  assert.equal(manifest.ok, true);
+  if (!manifest.ok) return;
+  assert.equal(manifest.manifest.missing[0]?.expectedSource, "docs/reports/resume/linked.txt");
+  assert.match(manifest.manifest.missing[0]?.reason ?? "", /symbolic link/);
 });
 
 test("an ignored recovered primary report becomes a named partial and is not archived", async () => {

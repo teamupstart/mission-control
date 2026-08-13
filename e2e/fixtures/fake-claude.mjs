@@ -53,6 +53,26 @@ const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
 const SLOW_WORKFLOW_CONTEXT_MS = 5_000;
 /**
+ * An ensemble comparison that never answers, so a spec can kill the daemon while one is
+ * genuinely in flight.
+ *
+ * The marker rides in the ensemble's INTENT, which the comparison packet quotes verbatim, so
+ * it steers that one review and nothing else - the same channel the Persona verdicts below
+ * use. The watchdog is what stops a SIGKILLed daemon from orphaning this child: the parent
+ * dies without reaping it, and a held review must not outlive the run that asked for it.
+ */
+const HELD_REVIEW = "E2E_HOLD_ENSEMBLE_REVIEW";
+const HELD_REVIEW_MS = 120_000;
+/**
+ * An ensemble comparison whose provider is DOWN: the child dies without answering.
+ *
+ * Distinct from a malformed reply on purpose, because the engine charges the two to different
+ * budgets. Dying before a single frame is what a spawn failure, a crashed CLI or an unreachable
+ * provider looks like from the daemon's side, and it is the only way a browser spec can reach
+ * the parked-for-an-operator state without a real outage.
+ */
+const FAILED_REVIEW = "E2E_FAIL_ENSEMBLE_REVIEW";
+/**
  * The prompt that makes this CLI ask its human something, the way the real one does.
  *
  * The only frame here that travels UP the control protocol. Every other `control_request`
@@ -240,6 +260,11 @@ function runHeadlessSdk() {
   const finish = (prompt) => {
     if (answered) return;
     answered = true;
+    if (prompt.includes(HELD_REVIEW)) {
+      setTimeout(() => process.exit(1), HELD_REVIEW_MS);
+      return;
+    }
+    if (prompt.includes(FAILED_REVIEW)) process.exit(1);
     const answer = headlessAnswer(prompt);
     let structuredOutput;
     if (schema !== undefined) {

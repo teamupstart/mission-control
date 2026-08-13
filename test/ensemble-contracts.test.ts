@@ -37,6 +37,7 @@ import {
   EnsembleEventSchema,
   EnsemblePayloadEnvelopeSchema,
   EnsembleRunDetailSchema,
+  EnsembleStageAttemptSchema,
   EnsembleSummarySchema,
 } from "../src/shared/protocol.ts";
 
@@ -522,6 +523,60 @@ test("summary, detail, and event wire schemas match their shared contracts", () 
     decisions: [],
     llmCalls: [],
     events: [event],
+  };
+  assert.deepEqual(EnsembleRunDetailSchema.parse(detail), detail);
+});
+
+test("an interrupted stage attempt crosses the wire, and an unknown status still does not", () => {
+  // `EnsembleStageStatusSchema` derives from the tuple, so appending `interrupted` needed no edit
+  // here - which is exactly why it needs a test. Nothing else would notice if the derivation were
+  // ever replaced by a hand-kept list, and the browser would start dropping the status of every
+  // interrupted attempt with no error anywhere.
+  const stageAttempt = {
+    id: "sa-1",
+    runId: "run-1",
+    stageId: "stage-2",
+    driverKind: "review" as const,
+    driverKey: "comparative_review@1" as const,
+    attempt: 2,
+    commandKey: "review:run-1:stage-2:2",
+    status: "interrupted" as const,
+    input: { command: "review", attempt: 2 },
+    output: null,
+    error: "the daemon exited while this comparison was in flight",
+    createdAt: 1,
+    updatedAt: 2,
+    startedAt: 1,
+    finishedAt: 2,
+  };
+  assert.deepEqual(EnsembleStageAttemptSchema.parse(stageAttempt), stageAttempt);
+
+  // The infrastructure receipt rides on `output`, which is ordinary JSON to the wire. It has to
+  // survive the trip intact, because the browser reads the charge off it to decide whether a
+  // stage is retrying, blocked, or spending the evaluator's budget.
+  const infrastructure = {
+    ...stageAttempt,
+    status: "failed" as const,
+    output: { charge: "infrastructure", kind: "infrastructure", retryAt: 4000 },
+  };
+  assert.deepEqual(EnsembleStageAttemptSchema.parse(infrastructure), infrastructure);
+
+  // Still a closed vocabulary: appending one value must not have opened the door to any value.
+  assert.equal(
+    EnsembleStageAttemptSchema.safeParse({ ...stageAttempt, status: "abandoned" }).success,
+    false,
+  );
+  // And the detail response carries it, since that is the shape the dashboard actually reads.
+  const detail = {
+    run: run(),
+    members: [],
+    attempts: [],
+    artifacts: [],
+    stageAttempts: [stageAttempt],
+    evaluations: [],
+    decisions: [],
+    llmCalls: [],
+    events: [],
   };
   assert.deepEqual(EnsembleRunDetailSchema.parse(detail), detail);
 });

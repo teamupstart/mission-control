@@ -9,6 +9,7 @@ import {
   ENSEMBLE_PLAN_VERSION,
   ensemblePayload,
   ensembleIsRunnable,
+  readReviewAttemptReceipt,
   type CompiledEnsemblePlan,
 } from "../src/shared/ensemble.ts";
 
@@ -465,6 +466,74 @@ test("a command key is spent once, however many times the daemon replays it", ()
   assert.deepEqual(finished.value.output, { launched: 2 });
   assert.equal(store.finishStageAttempt(first.id, ["running"], "waiting").ok, false);
   assert.equal(store.finishStageAttempt(first.id, ["succeeded"], "running").ok, false);
+});
+
+test("an interrupted stage attempt round-trips, is terminal for its row, and retries as a new number", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const open = (attempt: number) =>
+    store.startStageAttempt({
+      runId: run.id,
+      stageId: "stage-2",
+      driverKind: "review",
+      driverKey: "comparative_review@1",
+      attempt,
+      commandKey: `review:${run.id}:stage-2:${attempt}`,
+      status: "running" as const,
+      input: { command: "review", attempt },
+    });
+
+  const first = open(1);
+  const interrupted = store.finishStageAttempt(first.id, ["running"], "interrupted", {
+    error: "the daemon exited while this comparison was in flight",
+  });
+  assert.equal(interrupted.ok, true);
+  if (!interrupted.ok) return;
+  // It survives the enum decoder: a status this build cannot read comes back null, so a null here
+  // would mean the appended value never reached `ENSEMBLE_STAGE_STATUSES`.
+  assert.equal(interrupted.value.status, "interrupted");
+  assert.equal(store.listStageAttempts(run.id).find((a) => a.id === first.id)?.status, "interrupted");
+  assert.ok(interrupted.value.finishedAt, "an interrupted attempt is finished, not still open");
+
+  // Terminal for the ROW: a late outcome cannot rewrite it into a verdict either way.
+  assert.equal(store.finishStageAttempt(first.id, ["running"], "succeeded").ok, false);
+  assert.equal(store.finishStageAttempt(first.id, ["interrupted"], "failed").ok, false);
+
+  // The retry is a new attempt NUMBER against the same stage - which is what keeps
+  // `UNIQUE (run_id, stage_id, attempt)` and the command-key replay identity intact.
+  const second = open(2);
+  assert.notEqual(second.id, first.id);
+  assert.equal(store.listStageAttempts(run.id).filter((a) => a.stageId === "stage-2").length, 2);
+});
+
+test("a review attempt receipt says which budget it spent, and an absent one reads as the model's", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const attempt = store.startStageAttempt({
+    runId: run.id,
+    stageId: "stage-2",
+    driverKind: "review",
+    driverKey: "comparative_review@1",
+    attempt: 1,
+    commandKey: `review:${run.id}:stage-2:1`,
+    status: "running" as const,
+    input: { command: "review" },
+  });
+  const finished = store.finishStageAttempt(attempt.id, ["running"], "failed", {
+    output: { charge: "infrastructure", kind: "infrastructure", retryAt: 4_000 },
+    error: "infrastructure: spawn ENOENT",
+  });
+  assert.equal(finished.ok, true);
+  if (!finished.ok) return;
+  assert.deepEqual(readReviewAttemptReceipt(finished.value.output), {
+    charge: "infrastructure",
+    kind: "infrastructure",
+    retryAt: 4_000,
+  });
+  // Rows written before the budgets were split carry no receipt, and were all charged to
+  // `maxAttempts` at the time. Reading them any other way would hand old runs free retries.
+  assert.deepEqual(readReviewAttemptReceipt(null), { charge: "model", kind: null, retryAt: null });
+  assert.equal(readReviewAttemptReceipt({ charge: "from-a-newer-build" }).charge, "model");
 });
 
 test("an evaluation is one row per stage attempt and attempt number, and reports what ran", () => {

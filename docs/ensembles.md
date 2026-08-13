@@ -602,8 +602,12 @@ Every effect is persist-before-act, so a daemon restart resumes rather than rest
 
 - A wave is durable before its first dispatch; recovery reconciles surviving agents without
   recreating their tasks and never launches a second fleet.
-- An interrupted review becomes `interrupted` (not `failed`) and retries against the **exact same
-  immutable subjects** and evaluator snapshot. Best of N leaves a completed comparison untouched.
+- An interrupted review becomes `interrupted` (not `failed`) at every level - the LLM call, the
+  evaluation, and the stage attempt itself - and retries against the **exact same immutable
+  subjects** and evaluator snapshot. An interruption spends none of the evaluator's attempt
+  budget, because nothing answered: that budget counts how many times a MODEL may answer badly,
+  and a daemon that exited says nothing about the evaluator. Best of N leaves a completed
+  comparison untouched.
   Panel vote retries the whole panel when a crash leaves its rows unsettled, but if the rows were
   settled and reached quorum before the stage receipt was written, recovery completes the stage
   from those durable ballots instead of paying for the calls again.
@@ -620,6 +624,15 @@ Every effect is persist-before-act, so a daemon restart resumes rather than rest
 - If work settles with **fewer than two** eligible artifacts, the run fails with an explanation and
   offers **Retry member**, **Restore result**, or **Cancel** - a competition is never manufactured
   from one artifact.
+- A review that cannot **reach** a model - a spawn failure, a timeout, a provider blip - spends its
+  own bounded budget rather than the evaluator's, waits longer before each retry (1s, then 4s), and
+  after three of them **parks** the run instead of failing it. Parking is deliberate: the expensive,
+  irreplaceable part of a run is the candidate work already on disk, so a provider outage leaves it
+  intact and waits for you. The pipeline marks that stage *paused* rather than failed - amber, naming
+  how many infrastructure errors it took and leaving the evaluator count untouched - because red
+  would say the candidates were gone when they are not. **Retry stage** grants one further attempt
+  per press. A review that DOES reach a model and comes back unusable is the evaluator's failure,
+  spends its attempt budget, and fails the run when that budget runs out.
 - A cleanup step that cannot finish leaves the run `finalizing` with an actionable error, resumed by
   **resolve finalization**.
 
@@ -640,8 +653,10 @@ post-selection review, and neither ensemble completion nor a rank-1 recommendati
 - Creating an ensemble authorises launching an exact count or bounded range of **local** agents; the
   preview shows initial, maximum, concurrency, waves and evaluation calls before you confirm.
 - Hard ceilings no strategy config or driver output may exceed: **16** members, **8** concurrent,
-  **8** waves, **5** stage attempts. Strategy-specific candidate, judge, result, and material bounds
-  are listed below.
+  **8** waves, **5** stage attempts. That last one bounds a stage two ways: the attempts it may
+  charge to its budget, and the attempt rows it may open at all - so a crash loop cannot spin rows
+  forever even though restarts and provider blips are never charged. Strategy-specific candidate,
+  judge, result, and material bounds are listed below.
 - Every evaluator result is advisory and tool-less: it cannot launch, promote, publish, cancel, reap
   or delete. Every destructive finalization requires an explicit human confirmation. A Consensus
   run performs no destructive finalization at all, and still requires the human answer before it

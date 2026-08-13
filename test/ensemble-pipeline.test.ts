@@ -42,6 +42,7 @@ function attempt(
   stageId: string,
   status: EnsembleStageAttempt["status"],
   n = 1,
+  output: EnsembleStageAttempt["output"] = null,
 ): EnsembleStageAttempt {
   return {
     id: `${stageId}-${n}`,
@@ -53,13 +54,18 @@ function attempt(
     commandKey: `command-${stageId}-${n}`,
     status,
     input: {},
-    output: null,
+    output,
     error: null,
     createdAt: 1000,
     updatedAt: 1000 + n,
     startedAt: 1000,
     finishedAt: status === "running" || status === "waiting" ? null : 1000 + n,
   };
+}
+
+/** A failed review attempt's receipt: which budget it spent, and whether a retry is owed. */
+function receipt(charge: "model" | "infrastructure", retryAt: number | null = null) {
+  return { charge, kind: charge === "model" ? "invalid_output" : "infrastructure", retryAt };
 }
 
 test("all three shipped strategy plans project to the shared operator vocabulary", () => {
@@ -133,6 +139,91 @@ test("an unreadable run never projects stale evidence as active work", () => {
     memberCount: plan.roles.length,
   });
   assert.deepEqual(view, { steps: [], barrier: null });
+});
+
+test("the review counter counts the budget it spent, never the attempt row it is on", () => {
+  const plan = compile(bestOfNStrategy);
+  const review = plan.stages.find((stage) => stage.driverKind === "review")!;
+  assert.equal(review.maxAttempts, 2);
+  const view = projectEnsemblePipeline({
+    run: { status: "evaluating", activeStageId: review.id, plan },
+    summary: summary(plan, { readyArtifacts: plan.roles.length }),
+    // Two restarts and a provider blip, then the live attempt. The row number is 4; the number of
+    // times a model has been given the chance to answer badly is one.
+    stageAttempts: [
+      attempt(review.id, "interrupted", 1),
+      attempt(review.id, "interrupted", 2),
+      attempt(review.id, "failed", 3, receipt("infrastructure", 5000)),
+      attempt(review.id, "running", 4),
+    ],
+    memberCount: plan.roles.length,
+  });
+  const step = view.steps.find((s) => s.id === review.id)!;
+  assert.equal(step.state, "active");
+  assert.equal(step.detail, "attempt 1 of 2", "attempt 4 of 2 is not a sentence about a budget");
+});
+
+test("a spent evaluator attempt does count, and a retry that is owed says so", () => {
+  const plan = compile(bestOfNStrategy);
+  const review = plan.stages.find((stage) => stage.driverKind === "review")!;
+  const spent = attempt(review.id, "failed", 1, receipt("model"));
+
+  const live = projectEnsemblePipeline({
+    run: { status: "evaluating", activeStageId: review.id, plan },
+    summary: summary(plan, { readyArtifacts: plan.roles.length }),
+    stageAttempts: [spent, attempt(review.id, "running", 2)],
+    memberCount: plan.roles.length,
+  });
+  assert.equal(live.steps.find((s) => s.id === review.id)?.detail, "attempt 2 of 2");
+
+  // An infrastructure failure that still owes a backoff is a stage between attempts, not a dead
+  // one: it stays active, and says why the operator is looking at a pause.
+  const waiting = projectEnsemblePipeline({
+    run: { status: "evaluating", activeStageId: review.id, plan },
+    summary: summary(plan, { readyArtifacts: plan.roles.length }),
+    stageAttempts: [attempt(review.id, "failed", 1, receipt("infrastructure", 5000))],
+    memberCount: plan.roles.length,
+  });
+  const step = waiting.steps.find((s) => s.id === review.id)!;
+  assert.equal(step.state, "active");
+  assert.equal(step.detail, "attempt 1 of 2 · retrying after an infrastructure error");
+});
+
+test("a review with no retry left to come is blocked, which is not failed", () => {
+  const plan = compile(bestOfNStrategy);
+  const review = plan.stages.find((stage) => stage.driverKind === "review")!;
+  // `retryAt` null on an infrastructure charge is exactly how the engine records "I have stopped
+  // retrying and am waiting for a person". The run is NOT terminal here, every artifact is still
+  // ready, and one press starts the next attempt - so drawing this the same as a dead run would
+  // tell the operator their work is gone at the moment it is intact and waiting for them.
+  const blocked = [
+    attempt(review.id, "failed", 1, receipt("infrastructure", 2000)),
+    attempt(review.id, "failed", 2, receipt("infrastructure", 5000)),
+    attempt(review.id, "failed", 3, receipt("infrastructure", null)),
+  ];
+  const view = projectEnsemblePipeline({
+    run: { status: "evaluating", activeStageId: review.id, plan },
+    summary: summary(plan, { readyArtifacts: plan.roles.length }),
+    stageAttempts: blocked,
+    memberCount: plan.roles.length,
+  });
+  const step = view.steps.find((s) => s.id === review.id)!;
+  assert.equal(step.state, "blocked");
+  assert.equal(
+    step.detail,
+    "attempt 1 of 2 · paused after 3 infrastructure errors",
+    "a blocked step says what it is waiting for, and that no evaluator attempt was spent",
+  );
+
+  // The same rows on a run that really did end are drawn as the failure they are: `blocked` is a
+  // statement about a run that can still be resumed, and a terminal run cannot be.
+  const terminal = projectEnsemblePipeline({
+    run: { status: "failed", activeStageId: review.id, plan },
+    summary: summary(plan, { readyArtifacts: plan.roles.length }),
+    stageAttempts: blocked,
+    memberCount: plan.roles.length,
+  });
+  assert.equal(terminal.steps.find((s) => s.id === review.id)?.state, "failed");
 });
 
 test("terminal runs keep the full walked pipeline visible", () => {

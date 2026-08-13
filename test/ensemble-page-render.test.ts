@@ -628,6 +628,47 @@ test("stage retry uses only the latest supported non-member attempt", () => {
   assert.match(failedHtml, /Retry stage/);
 });
 
+test("a blocked review offers the retry, and an interrupted one leaves it to the engine", () => {
+  // The two statuses either side of the operator door, on the reader that decides whether it is
+  // drawn at all. A review whose INFRASTRUCTURE budget is spent parks on a non-terminal run, and
+  // this button is the only way a person can start it again - so it has to be here.
+  const blocked: EnsembleStageAttempt = {
+    ...stage,
+    status: "failed",
+    output: { charge: "infrastructure", kind: "infrastructure", retryAt: null },
+    error: "infrastructure: spawn ENOENT",
+  };
+  const blockedHtml = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, stageAttempts: [blocked] },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.match(blockedHtml, /Retry stage/);
+
+  // An `interrupted` attempt is the daemon's own record that it stopped watching, and the engine
+  // re-drives it without being asked. Offering a button for it would invite a person to press
+  // something that was already happening, so the door stays shut on this one.
+  const interrupted: EnsembleStageAttempt = {
+    ...stage,
+    status: "interrupted",
+    error: "the daemon exited while this comparison was in flight",
+  };
+  const interruptedHtml = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, stageAttempts: [interrupted] },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.doesNotMatch(interruptedHtml, /Retry stage/);
+});
+
 test("unreadable runs can still be cancelled and healthy handoffs cannot be skipped", () => {
   const unreadable = {
     ...run,

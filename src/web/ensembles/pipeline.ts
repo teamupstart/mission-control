@@ -1,6 +1,7 @@
 import {
   ensembleIsTerminal,
   ensembleStageDriverWord,
+  readReviewAttemptReceipt,
   type CompiledEnsemblePlan,
   type EnsembleRun,
   type EnsembleStageAttempt,
@@ -8,7 +9,15 @@ import {
   type EnsembleSummary,
 } from "@shared/ensemble.ts";
 
-export type EnsemblePipelineStepState = "upcoming" | "active" | "complete" | "failed";
+/**
+ * `blocked` is not `failed`, because the engine did not fail it.
+ *
+ * A review whose infrastructure budget is spent PARKS: the run stays non-terminal, every
+ * candidate artifact stays ready, and one operator press starts the next attempt. Drawing that
+ * in the same red as a run that is over would tell a person their work is gone at the exact
+ * moment it is intact and waiting for them.
+ */
+export type EnsemblePipelineStepState = "upcoming" | "active" | "complete" | "blocked" | "failed";
 
 export interface EnsemblePipelineStep {
   id: string;
@@ -56,6 +65,30 @@ function latestAttempts(
   return latest;
 }
 
+/**
+ * Where a settled review attempt leaves the stage, when the engine is not done with it.
+ *
+ * Read from the row rather than from a clock: an `interrupted` attempt always retries, and an
+ * infrastructure failure carries the wall clock it is waiting for - which the engine sets to null
+ * at exactly the point it stops retrying and starts waiting for a person. So `retrying` and
+ * `blocked` are both quoting the receipt, not predicting from elapsed time, and the difference
+ * between them is the difference between "wait" and "you are needed".
+ */
+function reviewPause(
+  run: EnsemblePipelineInput["run"],
+  stage: EnsembleStageSpec,
+  latest: EnsembleStageAttempt | undefined,
+): "retrying" | "blocked" | null {
+  if (!latest || stage.driverKind !== "review") return null;
+  if (run.status === null || ensembleIsTerminal(run.status)) return null;
+  if (run.activeStageId !== stage.id) return null;
+  if (latest.status === "interrupted") return "retrying";
+  if (latest.status !== "failed") return null;
+  const receipt = readReviewAttemptReceipt(latest.output);
+  if (receipt.charge !== "infrastructure") return null;
+  return receipt.retryAt === null ? "blocked" : "retrying";
+}
+
 function stepState(
   run: EnsemblePipelineInput["run"],
   stage: EnsembleStageSpec,
@@ -64,6 +97,13 @@ function stepState(
 ): EnsemblePipelineStepState {
   if (run.status === "completed") return "complete";
   if (latest?.status === "succeeded") return "complete";
+  // A stage between attempts is still working, and a stage waiting for a person is stopped but
+  // not over. Only an attempt nothing will follow is a failure: an interruption cost the budget
+  // nothing, and an infrastructure error owed a backoff rather than a verdict, so drawing either
+  // as a dead stage would report a run that is still going as one that ended.
+  const pause = reviewPause(run, stage, latest);
+  if (pause === "retrying") return "active";
+  if (pause === "blocked") return "blocked";
   if (latest?.status === "failed" || latest?.status === "cancelled") return "failed";
   if (run.status !== null && ensembleIsTerminal(run.status)) {
     if (run.activeStageId === stage.id) return "failed";
@@ -81,6 +121,48 @@ function stepState(
   return "upcoming";
 }
 
+/**
+ * The review counter, in the unit its denominator is written in.
+ *
+ * `stage.maxAttempts` is a budget over MODEL answers, so the numerator counts the attempts that
+ * spent it and not the attempt NUMBER, which is a monotonic row identity that also counts
+ * restarts and provider blips. Rendering the row number against this budget is how an operator
+ * ends up reading "attempt 4 of 2".
+ */
+function reviewAttemptDetail(
+  stage: EnsembleStageSpec,
+  stageAttempts: readonly EnsembleStageAttempt[],
+  latest: EnsembleStageAttempt,
+): string {
+  let consumed = 0;
+  let infrastructure = 0;
+  for (const attempt of stageAttempts) {
+    if (attempt.stageId !== stage.id || attempt.status !== "failed") continue;
+    if (readReviewAttemptReceipt(attempt.output).charge === "model") consumed += 1;
+    else infrastructure += 1;
+  }
+  const live =
+    latest.status === "running" || latest.status === "waiting" || latest.status === "queued";
+  const shown = Math.min(Math.max(consumed + (live ? 1 : 0), 1), stage.maxAttempts);
+  const label = `attempt ${shown} of ${stage.maxAttempts}`;
+  if (live) return label;
+  const receipt = readReviewAttemptReceipt(latest.output);
+  if (latest.status === "failed" && receipt.charge === "infrastructure") {
+    // The stage said which of the two it is; say it in the operator's words rather than leaving
+    // a bare counter that reads the same whether the next attempt is seconds away or never.
+    //
+    // Kept to one clause because this column is a 10.5px glance surface roughly 25 characters
+    // wide: an extra sentence of advice here wraps to four lines and makes one step twice the
+    // height of its neighbours. The count is the part that cannot be read anywhere else at a
+    // glance - it says the daemon tried and kept trying - and the next move is already on
+    // screen as the Retry stage button. The provider's own error text is on the attempt row.
+    return receipt.retryAt === null
+      ? `${label} · paused after ${infrastructure} infrastructure errors`
+      : `${label} · retrying after an infrastructure error`;
+  }
+  return label;
+}
+
 function activeDetail(
   stage: EnsembleStageSpec,
   latest: EnsembleStageAttempt | undefined,
@@ -88,6 +170,7 @@ function activeDetail(
     maxMembers: number;
     readyArtifacts: number;
     membersNeedingInput: number;
+    stageAttempts: readonly EnsembleStageAttempt[];
   },
   barrier: string | null,
 ): string | null {
@@ -101,7 +184,7 @@ function activeDetail(
     return parts.join(" · ");
   }
   if (stage.driverKind === "review" && latest) {
-    return `attempt ${latest.attempt} of ${stage.maxAttempts}`;
+    return reviewAttemptDetail(stage, counts.stageAttempts, latest);
   }
   if (stage.driverKind === "decision") return barrier;
   return null;
@@ -192,11 +275,19 @@ export function projectEnsemblePipeline(input: EnsemblePipelineInput): EnsembleP
       label: ensembleStageDriverWord(stage.driverKind),
       state,
       detail:
-        state === "active"
+        // A blocked step carries its detail for the same reason an active one does, and a
+        // stronger one: it is the line that tells a person the run is waiting for them rather
+        // than over. Completed history stays quiet.
+        state === "active" || state === "blocked"
           ? activeDetail(
               stage,
               latest,
-              { maxMembers, readyArtifacts, membersNeedingInput },
+              {
+                maxMembers,
+                readyArtifacts,
+                membersNeedingInput,
+                stageAttempts: input.stageAttempts,
+              },
               barrier,
             )
           : null,

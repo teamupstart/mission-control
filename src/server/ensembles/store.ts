@@ -937,7 +937,17 @@ const TERMINAL_ATTEMPT_STATUSES: readonly EnsembleAttemptStatus[] = [
   "failed",
   "cancelled",
 ];
-const TERMINAL_STAGE_STATUSES: readonly EnsembleStageStatus[] = ["succeeded", "failed", "cancelled"];
+/**
+ * `interrupted` is terminal for the ROW, exactly as it already is for an evaluation: the attempt
+ * it settles is over and a retry is a new attempt number, so a late outcome must not be able to
+ * rewrite it into a success or a failure. That the STAGE may still retry is the engine's question.
+ */
+const TERMINAL_STAGE_STATUSES: readonly EnsembleStageStatus[] = [
+  "succeeded",
+  "failed",
+  "cancelled",
+  "interrupted",
+];
 const TERMINAL_EVALUATION_STATUSES: readonly EnsembleEvaluationStatus[] = [
   "succeeded",
   "failed",

@@ -182,21 +182,33 @@ let isolatedOverride: string | undefined;
  * opens with every check skipped. That is a worse hole than the ones the checks catch,
  * because it needs no unusual path at all.
  *
- * So the durable half is a marker `test/setup-state.mjs` defines non-writable and
- * non-configurable on `globalThis` before any test module loads - `delete` answers false and
- * assignment is ignored, and unlike the environment it cannot be spent. The env var stays as
- * the second half, read here at import so that a worker which reaches this line under the
- * runner is latched as one even if the variable is removed afterwards. A worker launched
- * WITHOUT the preload and stripped of the variable before this import is the one case
- * neither half sees, which is the concrete reason the documented commands all carry the
- * preload rather than treating it as a convenience.
+ * Three signals, because each covers what the others cannot:
+ *
+ *   1. A marker `test/setup-state.mjs` defines non-writable and non-configurable on
+ *      `globalThis` before any test module loads. `delete` answers false and assignment is
+ *      ignored, so unlike the environment it cannot be spent.
+ *   2. `NODE_TEST_CONTEXT`, read at import, so a worker that reaches this line under the
+ *      runner is latched as one even if the variable is removed afterwards.
+ *   3. `process.execArgv`, which is how a worker launched WITHOUT the preload is still
+ *      recognised after the variable is deleted. Every `node --test` child is spawned with a
+ *      `--test-*` family - `--test-isolation=process`, `--test-timeout=0`, and others - and
+ *      that is true of a bare `node --test file.js` with no preload and no loader. Ordinary
+ *      `node` carries none of them, so the daemon is never mistaken for a worker.
+ *
+ * None of this makes `openDb` a sandbox, and it is not trying to be one: a test that WANTS
+ * the operator's database can import `node:sqlite` and open it directly, without coming
+ * through here at all. What these three close is the accident - and the sequence that reads
+ * most like an accident, deleting an inherited variable before importing, no longer turns
+ * the checks off.
  *
  * Production reads a boolean and stops - cheaper than the environment lookup this replaced.
- * The name is duplicated in `test/setup-state.mjs`, which cannot import from here; the
- * db-isolation case named in that file's comment fails if the two ever drift.
+ * The marker name is duplicated in `test/setup-state.mjs`, which cannot import from here;
+ * the db-isolation case named in that file's comment fails if the two ever drift.
  */
 const UNDER_TEST_RUNNER =
-  Object.hasOwn(globalThis, "__missionControlTestState") || Boolean(process.env.NODE_TEST_CONTEXT);
+  Object.hasOwn(globalThis, "__missionControlTestState") ||
+  Boolean(process.env.NODE_TEST_CONTEXT) ||
+  process.execArgv.some((flag) => flag.startsWith("--test-"));
 
 /**
  * Refuse to open anything but a disposable test state dir from inside the test runner.

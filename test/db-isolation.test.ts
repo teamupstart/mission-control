@@ -1,10 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // What is at stake: the operator's real settings database.
 //
@@ -67,29 +67,33 @@ type ChildResult = { status: number; stdout: string; stderr: string };
  * `bootstrap` decides which of the two layers is under test: with it, the child is a worker
  * launched by the repo's commands; without it, a worker launched some other way, where only
  * the refusal stands between the import and live state.
+ *
+ * `spec` runs a real `node --test` worker over a file instead of evaluating `script`, for the
+ * one case that turns on what the RUNNER hands its children rather than on what this file can
+ * set by hand.
  */
 function runChild(
   script: string,
   extraEnv: Record<string, string> = {},
-  opts: { bootstrap?: boolean } = {},
+  opts: { bootstrap?: boolean; spec?: string } = {},
 ): ChildResult {
-  const env: Record<string, string | undefined> = {
-    ...process.env,
-    NODE_TEST_CONTEXT: "child-v8",
-    HOME: home,
-  };
+  const env: Record<string, string | undefined> = { ...process.env, HOME: home };
   delete env.MISSION_HOME;
   delete env.FLEET_HOME;
   delete env.HARNESS_HOME;
+  // A real runner must NOT inherit this: `node --test` reads it to decide whether it is
+  // itself a spawned worker, so handing it to the parent stops it behaving as the runner.
+  // Everywhere else the child IS the simulated worker, so it is stated explicitly.
+  if (opts.spec) delete env.NODE_TEST_CONTEXT;
+  else env.NODE_TEST_CONTEXT = "child-v8";
   Object.assign(env, extraEnv);
 
   const args = [
+    ...(opts.spec ? ["--test"] : []),
     ...(opts.bootstrap ? ["--import", "./test/setup-state.mjs"] : []),
     "--import",
     "tsx",
-    "--input-type=module",
-    "-e",
-    script,
+    ...(opts.spec ? [opts.spec] : ["--input-type=module", "-e", script]),
   ];
   try {
     const stdout = execFileSync(process.execPath, args, {
@@ -207,6 +211,44 @@ test("a state home reached through a broken symlink is refused", () => {
   assert.notEqual(res.status, 0, "a path through a broken link was opened");
   assert.match(res.stderr, /does not resolve - a broken symlink/);
   assert.equal(existsSync(operator), false, "the link's target was created after all");
+});
+
+test("deleting NODE_TEST_CONTEXT does not disarm the guard without the preload either", () => {
+  // The sibling of the case below, and the one that needs a REAL `node --test` worker rather
+  // than a simulated one: the point is a worker with no preload, so there is no marker on
+  // `globalThis` and the environment variable is the only thing the runner supplied - which
+  // this file then deletes before importing, exactly as the in-preload case does.
+  //
+  // What recognises it is `process.execArgv`. Every `node --test` child is spawned carrying a
+  // `--test-*` family (`--test-isolation=process`, `--test-timeout=0`, …), with no preload and
+  // no loader needed, and ordinary `node` carries none - so this cannot make the daemon look
+  // like a worker.
+  const jail = join(home, "no-preload-jail");
+  const operator = join(jail, ".mission-control");
+  mkdirSync(jail, { recursive: true });
+
+  const spec = join(jail, "probe.test.mjs");
+  const dbUrl = pathToFileURL(join(REPO_ROOT, "src/server/db.ts")).href;
+  writeFileSync(
+    spec,
+    `import test from "node:test";
+     test("tries to open the operator db", async () => {
+       delete process.env.NODE_TEST_CONTEXT;
+       process.env.MISSION_HOME = ${JSON.stringify(operator)};
+       const { openDb } = await import(${JSON.stringify(dbUrl)});
+       openDb();
+     });`,
+  );
+
+  // No `--import ./test/setup-state.mjs`: that omission IS the case.
+  const res = runChild("", { HOME: jail }, { spec });
+  assert.notEqual(res.status, 0, "the operator db was opened by a worker with no preload");
+  assert.match(res.stdout + res.stderr, /real\s+state dir/i);
+  assert.equal(
+    existsSync(operator),
+    false,
+    "the operator's state dir was created once the variable was gone",
+  );
 });
 
 test("deleting NODE_TEST_CONTEXT does not disarm the guard", () => {

@@ -28,6 +28,7 @@ import { enumeratePluginPersonaDocuments } from "../plugins/persona-sources.ts";
 import { WorkflowStore } from "./store.ts";
 import type { PersonaStoreWrite } from "./store.ts";
 import { readImportedSource, readPersonaSourceHash } from "./persona-import.ts";
+import type { PersonaImportCatalog } from "./persona-import.ts";
 
 /**
  * What one boot-time catalog reconciliation did, for the log line that reports it.
@@ -188,7 +189,7 @@ export class PersonaManager {
   async importFromFile(
     sourcePath: string,
     now = Date.now(),
-    catalog: { sourceKey: string; catalogLabel: string } | null = null,
+    catalog: PersonaImportCatalog | null = null,
   ): Promise<PersonaMutation> {
     const { source, provenance } = await readImportedSource(sourcePath, now, catalog);
     const name = personaNameFromDocument(
@@ -247,6 +248,7 @@ export class PersonaManager {
         outcome = await this.importFromFile(document.sourcePath, now, {
           sourceKey: document.sourceKey,
           catalogLabel: document.catalogLabel,
+          pluginVersion: document.pluginVersion,
         });
       } catch (cause) {
         result.skipped.push({

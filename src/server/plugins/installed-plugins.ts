@@ -2,8 +2,6 @@ import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { envVar } from "@shared/harness-runtime.mjs";
-
 import { readFileWithinCap } from "../session-files.ts";
 
 // What Claude Code has installed on THIS machine, read from Claude Code's own record.
@@ -55,8 +53,13 @@ export interface InstalledPlugin {
  * that assumed `~/.claude` would disagree about whether anything is installed at all.
  */
 export function claudePluginsDir(home = homedir()): string {
-  const configured = envVar("CLAUDE_CONFIG_DIR");
-  const root = configured && configured.trim().length > 0
+  // `process.env` DIRECTLY, and deliberately not this codebase's `envVar` helper: that helper
+  // resolves Mission Control's own namespaced variables (`MISSION_*` / `FLEET_* `/ `HARNESS_*`),
+  // and this is somebody else's variable read under the name they publish. Reached for `envVar`
+  // first and it read nothing at all, which is the quiet direction for this to be wrong in - a
+  // relocated config would silently look like a machine with no plugins installed.
+  const configured = process.env.CLAUDE_CONFIG_DIR;
+  const root = configured !== undefined && configured.trim().length > 0
     ? configured.trim()
     : path.join(home, ".claude");
   return path.join(root, PLUGINS_DIR);

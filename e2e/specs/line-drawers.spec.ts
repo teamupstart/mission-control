@@ -48,8 +48,15 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
     headers: { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  if (!response.ok) throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
-  return (await response.json()) as T;
+  const text = await response.text();
+  if (!response.ok) throw new Error(`${path} answered ${response.status}: ${text}`);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // A 200 of HTML is the SPA fallback answering for a path no route claimed - a mistyped path
+    // or the wrong method. Naming it beats `Unexpected token '<'` thrown three frames away.
+    throw new Error(`${path} answered ${response.status} with non-JSON: ${text.slice(0, 160)}`);
+  }
 }
 
 const stage = (page: Page, name: string): Locator =>
@@ -290,6 +297,74 @@ test("the Decide drawer confirms and cancels a live ensemble run", async ({
   await expect.poll(async () =>
     (await api<{ run: { status: string } }>(daemon, `/api/ensembles/${created.run.id}`)).run.status,
   ).toBe("cancelled");
+});
+
+/** The bounded detail read, for the facts a spec has to wait on the DAEMON to establish. */
+interface EnsembleDetailRead {
+  run: { status: string | null; error: string | null };
+  members: Array<{ id: string; ordinal: number; status: string | null; taskId: string | null }>;
+}
+
+test("a failed run's member card offers no Retry the server would refuse", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The documented failure: work settles with fewer than two eligible artifacts, so the comparison
+  // can never happen and the run fails terminally. Reached without a model token and without a
+  // fake-agent failure switch - both member Tasks are cancelled through the ordinary task route,
+  // and a member Task that ends without submitting IS a failed member to the engine.
+  const title = "Barrier that can no longer be met";
+  const created = await api<{ run: { id: string } }>(daemon, "/api/ensembles", {
+    sourceKey: "e2e-failed-run-member-retry",
+    title,
+    intent: "Neither candidate will submit a result.",
+    repoRoot: daemon.repo,
+    strategyId: "best_of_n",
+    strategyConfig: { members: [{}, {}] },
+  });
+  const detail = (): Promise<EnsembleDetailRead> =>
+    api<EnsembleDetailRead>(daemon, `/api/ensembles/${created.run.id}`);
+
+  // Both members hold a real Task before either is cancelled: cancelling one that has not been
+  // reserved yet would settle a member the engine is still launching, which is a different state
+  // from the one under test.
+  await expect
+    .poll(async () => (await detail()).members.filter((member) => member.taskId).length, {
+      timeout: 60_000,
+    })
+    .toBe(2);
+  for (const member of (await detail()).members) {
+    // A body, because that is what makes this helper POST. The route itself reads none.
+    await api(daemon, `/api/tasks/${member.taskId}/cancel`, {});
+  }
+
+  await expect.poll(async () => (await detail()).run.status, { timeout: 60_000 }).toBe("failed");
+  const failed = await detail();
+  expect(failed.members.map((member) => member.status)).toEqual(["failed", "failed"]);
+  // The failure is the documented one - the comparison's barrier can no longer be met - and not
+  // some other terminal state (a refused dispatch, a deadline) that would reach the same page by
+  // a path this spec is not describing.
+  expect(failed.run.error).toMatch(/barrier/);
+
+  await dashboard.goto(`${daemon.baseURL}/#/ensembles/${created.run.id}`);
+  const run = dashboard.getByRole("article", { name: `Ensemble ${title}` });
+  await expect(run).toBeVisible({ timeout: 30_000 });
+  const members = run.getByRole("region", { name: "Members" });
+  // Both cards are on the page - the per-member Task link is the one control every member keeps -
+  // and they say the members failed, which is the state that used to draw a Retry button.
+  await expect(members.getByRole("button", { name: "Open task" })).toHaveCount(2);
+  await expect(members.getByText("Failed").first()).toBeVisible();
+
+  // The whole point. `retryMember` refuses every terminal run, so this button could only ever
+  // have produced a 400 - and it offered to relaunch an agent whose worktree the failure has
+  // already reclaimed. Cancel is hidden for the same reason and always was; Delete is the one
+  // run-level verb a terminal run really does accept.
+  await expect(run.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+  await expect(run.getByRole("button", { name: "Cancel run…" })).toHaveCount(0);
+  await expect(run.getByRole("button", { name: "Delete run…" })).toBeVisible();
+  // The cards themselves, in frame: the evidence for "no Retry" has to show where it would be.
+  await members.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "failed-run-no-member-retry");
 });
 
 test("the drawer pushes the board down and hands the space back, and never resizes a card", async ({

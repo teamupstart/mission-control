@@ -256,13 +256,22 @@ const detail: EnsembleRunDetailResponse = {
   pagination: { eventsTotal: 1, eventsReturned: 1, attemptsTotal: 2, attemptsReturned: 2 },
 };
 
-function renderDetail(over: Partial<EnsembleRunDetailResponse> = {}): string {
+function renderDetail(
+  over: Partial<EnsembleRunDetailResponse> = {},
+  action: {
+    actionPending?: string | null;
+    actionError?: string | null;
+    actionErrorKind?: string | null;
+    actionErrorMemberId?: string | null;
+  } = {},
+): string {
   return renderToStaticMarkup(
     createElement(EnsembleDetail, {
       detail: { ...detail, ...over },
       actionPending: null,
       actionError: null,
       actionErrorKind: null,
+      ...action,
       onAction: () => {},
       onDelete: () => {},
       onLoadPatch: async () => ({ error: "not loaded" }),
@@ -885,9 +894,35 @@ test("decision busy state and errors stay owned by their action surface", () => 
   );
   assert.match(detailSource, /busy: actionBusy/);
   assert.match(detailSource, /actionErrorKind === "decide" \? actionError : null/);
-  assert.match(detailSource, /actionErrorKind !== "decide" \? actionError : null/);
+  // Three surfaces raise an action, so three own a refusal: the decision form, the member card
+  // whose button was clicked, and - only for what is left - the Actions section. Asserted on the
+  // source because the routing is a set of mutually exclusive conditions, and a render can show
+  // that one of them fired without showing that the other two did not.
+  assert.match(detailSource, /actionErrorKind !== "decide" && memberActionError === null \? actionError : null/);
+  assert.match(detailSource, /actionError=\{memberActionError\}/);
+  assert.match(detailSource, /actionErrorMemberId !== null\s*\? \{ memberId: actionErrorMemberId, message: actionError \}/);
   assert.match(detailSource, /actionsDisabled=\{actionBusy\}/);
   assert.match(decisionSource, /!decision\.busy/);
+});
+
+test("a member-addressed refusal reaches the member card and leaves the Actions section clean", () => {
+  const html = renderDetail(
+    { run: { ...run, status: "failed", error: "stage stage-2 can no longer meet its barrier" } },
+    {
+      actionError: "that member cannot be retried right now",
+      actionErrorKind: "retry_member",
+      actionErrorMemberId: "m-1",
+    },
+  );
+  // Once, on the card - not a second time under `Actions`, which is where it used to land, a
+  // whole page away from the control that produced it.
+  assert.equal(html.match(/that member cannot be retried right now/g)?.length, 1);
+  const actionsAt = html.indexOf('aria-label="Run actions"');
+  assert.ok(actionsAt > 0, "the actions surface rendered");
+  assert.ok(
+    html.indexOf("that member cannot be retried right now") < actionsAt,
+    "the refusal is rendered with the member, above the run's own action surface",
+  );
 });
 
 test("collapsed stage payloads defer bounded serialization until expansion", () => {

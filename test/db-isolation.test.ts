@@ -251,6 +251,38 @@ test("deleting NODE_TEST_CONTEXT does not disarm the guard without the preload e
   );
 });
 
+test("emptying execArgv as well does not disarm the guard", () => {
+  // Both JS-visible signals removed at once - the variable deleted AND every `--test-*`
+  // spliced out of `process.execArgv` - in a worker with no preload, so there is no marker
+  // either. Everything the process can say about itself now says "not a test".
+  //
+  // What answers is the operating system: `/proc/self/cmdline` on Linux, the diagnostic
+  // report elsewhere. Neither is stored in the JS heap, so neither can be rewritten from a
+  // test file, and that is the whole reason this case is worth a real runner and a spawn.
+  const jail = join(home, "tampered-jail");
+  const operator = join(jail, ".mission-control");
+  mkdirSync(jail, { recursive: true });
+
+  const spec = join(jail, "probe.test.mjs");
+  const dbUrl = pathToFileURL(join(REPO_ROOT, "src/server/db.ts")).href;
+  writeFileSync(
+    spec,
+    `import test from "node:test";
+     test("tries to open the operator db", async () => {
+       delete process.env.NODE_TEST_CONTEXT;
+       process.execArgv = process.execArgv.filter((f) => !f.startsWith("--test-"));
+       process.env.MISSION_HOME = ${JSON.stringify(operator)};
+       const { openDb } = await import(${JSON.stringify(dbUrl)});
+       openDb();
+     });`,
+  );
+
+  const res = runChild("", { HOME: jail }, { spec });
+  assert.notEqual(res.status, 0, "a worker that scrubbed both signals opened the operator db");
+  assert.match(res.stdout + res.stderr, /real\s+state dir/i);
+  assert.equal(existsSync(operator), false, "the operator's state dir was created");
+});
+
 test("deleting NODE_TEST_CONTEXT does not disarm the guard", () => {
   // The cheapest possible bypass, and the one that needs no unusual path at all: the refusal
   // used to begin `if (!process.env.NODE_TEST_CONTEXT) return`, and that is an ordinary

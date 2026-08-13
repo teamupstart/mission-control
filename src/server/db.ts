@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
@@ -195,20 +195,66 @@ let isolatedOverride: string | undefined;
  *      that is true of a bare `node --test file.js` with no preload and no loader. Ordinary
  *      `node` carries none of them, so the daemon is never mistaken for a worker.
  *
+ * Signals 2 and 3 are both ordinary mutable JS, so both are read at module load, which
+ * latches a worker that reached this line under the runner. `commandLineFromOs()` is the
+ * backstop for a worker that emptied both BEFORE importing - it asks the operating system
+ * rather than the process, and that answer cannot be edited from JS.
+ *
  * None of this makes `openDb` a sandbox, and it is not trying to be one: a test that WANTS
  * the operator's database can import `node:sqlite` and open it directly, without coming
- * through here at all. What these three close is the accident - and the sequence that reads
- * most like an accident, deleting an inherited variable before importing, no longer turns
- * the checks off.
+ * through here at all. What these close is the accident, and every spelling of "turn the
+ * guard off first" that a confused test might reach for.
  *
- * Production reads a boolean and stops - cheaper than the environment lookup this replaced.
  * The marker name is duplicated in `test/setup-state.mjs`, which cannot import from here;
  * the db-isolation case named in that file's comment fails if the two ever drift.
  */
-const UNDER_TEST_RUNNER =
+const CHEAP_TEST_SIGNAL =
   Object.hasOwn(globalThis, "__missionControlTestState") ||
   Boolean(process.env.NODE_TEST_CONTEXT) ||
-  process.execArgv.some((flag) => flag.startsWith("--test-"));
+  process.execArgv.some(isTestRunnerFlag);
+
+function isTestRunnerFlag(flag: string): boolean {
+  return flag.startsWith("--test-");
+}
+
+/**
+ * The command line the OPERATING SYSTEM says this process was started with - not the copy JS
+ * can edit.
+ *
+ * `process.execArgv` and `process.env` are both ordinary mutable values, so a test can empty
+ * them before importing this module and the three signals above all read false. This is the
+ * one source that survives that, because it is not stored in the JS heap at all.
+ *
+ * Read once, lazily, and only when every cheap signal has already said no. That ordering is
+ * what keeps the cost off the paths that would feel it: a test worker never reaches this,
+ * because its marker or its environment answered first, and the daemon reaches it exactly
+ * once, on its first `openDb()`. Measured: 0.06ms on Linux through `/proc`, and 14ms on
+ * macOS, where `process.report` is the only route and rebuilds a whole diagnostic report to
+ * get one field. Once, against a daemon boot already measured in hundreds of milliseconds.
+ */
+let osCommandLine: readonly string[] | undefined;
+function commandLineFromOs(): readonly string[] {
+  if (osCommandLine) return osCommandLine;
+  try {
+    // Linux: the kernel's own NUL-separated copy.
+    return (osCommandLine = readFileSync("/proc/self/cmdline", "utf8").split("\0").filter(Boolean));
+  } catch {
+    try {
+      // Elsewhere: the diagnostic report regenerates this from the process, not from execArgv.
+      const report = process.report?.getReport() as { header?: { commandLine?: string[] } };
+      return (osCommandLine = report?.header?.commandLine ?? []);
+    } catch {
+      return (osCommandLine = []); // no way to ask; the signals above are all there is
+    }
+  }
+}
+
+let osVerdict: boolean | undefined;
+function underTestRunner(): boolean {
+  if (CHEAP_TEST_SIGNAL) return true;
+  if (osVerdict === undefined) osVerdict = commandLineFromOs().some(isTestRunnerFlag);
+  return osVerdict;
+}
 
 /**
  * Refuse to open anything but a disposable test state dir from inside the test runner.
@@ -245,12 +291,12 @@ const UNDER_TEST_RUNNER =
  *      is the check that can say what is actually wrong.
  *   4. It lives in the platform temp dir, so what it opens is disposable by construction.
  *
- * Production pays for none of it: outside a test worker (see `UNDER_TEST_RUNNER`) this
- * returns on its first line, and the live daemon opens whatever `stateDir()` resolved,
- * exactly as before.
+ * Production pays for none of it: outside a test worker (see `underTestRunner`) this returns
+ * on its first line, and the live daemon opens whatever `stateDir()` resolved, exactly as
+ * before.
  */
 function assertTestStateIsolation(): void {
-  if (!UNDER_TEST_RUNNER) return;
+  if (!underTestRunner()) return;
   const override = envVar("HOME");
   // Same override as the last accepted call - nothing about the answer can have changed,
   // and this is the path every helper takes.

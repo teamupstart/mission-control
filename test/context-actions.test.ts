@@ -183,3 +183,15 @@ test("raw URL detection requires the caret offset to fall inside the match", () 
   assert.equal(urlAtPoint(documentAt(inside), { x: 10, y: 10 }), "https://example.com/run/42");
   assert.equal(urlAtPoint(documentAt(2), { x: 10, y: 10 }), null);
 });
+
+test("raw URL detection leaves sentence punctuation outside the candidate", () => {
+  const url = "https://example.com/run/42?view=full";
+  for (const suffix of [".", ", then retry", "!", "; next"]) {
+    const text = `Inspect ${url}${suffix}`;
+    const textNode = { nodeType: 3, textContent: text } as unknown as Node;
+    const documentAt = (offset: number): Document => ({
+      caretPositionFromPoint: () => ({ offsetNode: textNode, offset }),
+    }) as unknown as Document;
+    assert.equal(urlAtPoint(documentAt(text.indexOf("example.com")), { x: 4, y: 8 }), url);
+  }
+});

@@ -51,6 +51,22 @@ async function selectPhrase(body: Locator, phrase: string): Promise<{ x: number;
   }, phrase);
 }
 
+/** Return a rendered point inside a phrase without creating a document selection. */
+async function pointInPhrase(body: Locator, phrase: string): Promise<{ x: number; y: number }> {
+  return body.evaluate((element, value) => {
+    const node = element.firstChild;
+    if (!(node instanceof Text)) throw new Error("context specimen has no text node");
+    const start = node.data.indexOf(value);
+    if (start < 0) throw new Error(`could not find ${value}`);
+    const middle = start + Math.floor(value.length / 2);
+    const range = document.createRange();
+    range.setStart(node, middle);
+    range.setEnd(node, middle + 1);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }, phrase);
+}
+
 test("context actions work by pointer and keyboard without leaking grid shortcuts", async ({
   dashboard,
   daemon,
@@ -112,6 +128,25 @@ test("context actions work by pointer and keyboard without leaking grid shortcut
   await evidence(dashboard, "worded-link-menu.png");
   await menu.getByRole("menuitem", { name: "Copy URL" }).click();
   expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(URL);
+
+  // Raw text URL detection stops before terminal sentence punctuation.
+  const rawUrl = dashboard.getByLabel("Raw URL context specimen");
+  await dashboard.evaluate((url) => {
+    const specimen = document.createElement("span");
+    specimen.setAttribute("aria-label", "Raw URL context specimen");
+    specimen.textContent = `Raw destination: ${url}.`;
+    specimen.style.position = "fixed";
+    specimen.style.left = "12px";
+    specimen.style.bottom = "12px";
+    document.body.append(specimen);
+  }, URL);
+  const rawPoint = await pointInPhrase(rawUrl, URL);
+  await dashboard.mouse.click(rawPoint.x, rawPoint.y, { button: "right" });
+  menu = dashboard.getByRole("menu", { name: "Actions" });
+  await expect(menu.getByRole("menuitem")).toHaveText(["Copy URL", "Open link"]);
+  await menu.getByRole("menuitem", { name: "Copy URL" }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(URL);
+  await rawUrl.evaluate((element) => element.remove());
 
   // The Electron bridge is the explicit Open-link path. A browser-side stand-in records the
   // call without navigating this page, which is the renderer half of the desktop contract.

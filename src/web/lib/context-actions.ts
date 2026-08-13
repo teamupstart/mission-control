@@ -280,6 +280,11 @@ export function resolveContextActions(
 }
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"')\]]+/g;
+const RAW_URL_TRAILING_PUNCTUATION = /[.,;:!?}]+$/;
+
+function rawUrlCandidate(text: string): string {
+  return text.replace(RAW_URL_TRAILING_PUNCTUATION, "");
+}
 
 /** Find the URL whose text range contains the caret at a viewport point. */
 export function urlAtPoint(document: Document, point: ContextPoint): string | null {
@@ -300,7 +305,12 @@ export function urlAtPoint(document: Document, point: ContextPoint): string | nu
   URL_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = URL_RE.exec(text))) {
-    if (offset >= match.index && offset <= match.index + match[0].length) return match[0];
+    const candidate = rawUrlCandidate(match[0]);
+    if (
+      candidate !== "" &&
+      offset >= match.index &&
+      offset <= match.index + candidate.length
+    ) return candidate;
   }
   return null;
 }

@@ -24,6 +24,8 @@ the caret in the task box. The choices print their one-key answers. <kbd>⇥</kb
 <kbd>Esc</kbd> leaves the pass at any point and keeps what it has; a second <kbd>Esc</kbd>
 closes Dispatch. Closing and reopening keep the current question and every answer, while
 **Clear**, **Dispatch now**, and **Add to backlog** reset the pass for the next task.
+While the questions are active, dropping an image anywhere on the window attaches it to the
+same task without advancing the pass.
 **Guided** in the modal header and **Settings → Dispatch** control the preference, which ⌘K
 also finds by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).

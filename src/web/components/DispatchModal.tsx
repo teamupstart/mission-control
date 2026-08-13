@@ -814,7 +814,6 @@ function DispatchModal({
   // listener is subscribed once, so pointing it at a ref rather than at a closure is what
   // keeps typing in the task box from re-subscribing a window listener on every keystroke.
   const guidedKeyRef = useRef<(event: KeyboardEvent) => boolean>(() => false);
-  const drop = useImageDrop({ attachments: draft.attachments, onChange: onAttachmentsChange });
   // Parsed once per render: the preview below and the submit body must never disagree
   // about what the typed text means.
   const labels = parseLabelInput(draft.labels);
@@ -867,6 +866,14 @@ function DispatchModal({
    */
   const pass = guidedApplies ? (guidedPass ?? startGuidedPass()) : NO_GUIDED_PASS;
   const setPass = (next: GuidedPass | null): void => onGuidedPassChange?.(next);
+  const guidedRunning = isGuidedPassRunning(pass);
+  const drop = useImageDrop({
+    attachments: draft.attachments,
+    onChange: onAttachmentsChange,
+    // The pass makes the Task field inert, but a file dropped on the window still means
+    // exactly what it means over that field. Handoff removes this wider target again.
+    windowTarget: guidedRunning,
+  });
   /**
    * `null` means "wherever the draft already points", resolved at render.
    *
@@ -1083,7 +1090,6 @@ function DispatchModal({
   // drawing is in `GuidedDispatch.tsx`.
 
   const guidedStep = activeGuidedStep(pass);
-  const guidedRunning = isGuidedPassRunning(pass);
 
   /**
    * The After work value as its `<select>` spells it, so the pass's list and the control it
@@ -2024,7 +2030,7 @@ function DispatchModal({
             : "drop or paste images to attach them"}
         </span>
       </span>
-      <div className="drop-zone" {...drop.dropProps}>
+      <div className="drop-zone" {...(guidedRunning ? {} : drop.dropProps)}>
         <textarea
           ref={intentRef}
           className="field-input field-textarea"

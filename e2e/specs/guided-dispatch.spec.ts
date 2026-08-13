@@ -122,6 +122,28 @@ const taskBox = (dialog: Locator): Locator =>
 const rail = (dialog: Locator): Locator =>
   dialog.getByRole("navigation", { name: "Guided dispatch" });
 
+/** A real 1x1 PNG, small enough that the assertion is about routing rather than upload time. */
+const PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/** Drop a browser File on the page body, outside the Task box. */
+async function dropImageOnWindow(page: Page, name: string): Promise<void> {
+  const dataTransfer = await page.evaluateHandle(
+    ([encoded, fileName]) => {
+      const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], fileName, { type: "image/png" }));
+      return transfer;
+    },
+    [PNG, name] as const,
+  );
+  const body = page.locator("body");
+  await body.dispatchEvent("dragenter", { dataTransfer });
+  await body.dispatchEvent("dragover", { dataTransfer });
+  await body.dispatchEvent("drop", { dataTransfer });
+  await dataTransfer.dispose();
+}
+
 /**
  * The text of a `<select>`'s chosen option.
  *
@@ -486,6 +508,37 @@ test("each mnemonic lands its value in the form's own control", async ({ dashboa
   await expect(dialog.getByRole("listbox")).toHaveCount(0);
   await expect(taskBox(dialog)).toBeFocused();
   await shoot(dashboard, "05-handed-over");
+});
+
+test("an image dropped on the window attaches before the questions are answered", async ({
+  dashboard,
+}) => {
+  const dialog = await openGuided(dashboard);
+  const name = "before-guided-handoff.png";
+
+  // The first question is still owning the dialog, which makes the Task box inert. Dropping
+  // on body rather than `.drop-zone` is the regression: before the window handoff there was
+  // no handler on this event path, so the browser never even attempted an upload.
+  await expect(repoAsk(dialog)).toBeVisible();
+  const uploaded = dashboard.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().endsWith("/api/uploads"),
+  );
+  await dropImageOnWindow(dashboard, name);
+  expect((await uploaded).status()).toBe(200);
+
+  // It is the Task attachment, not an answer or a second guided-only holding area. The pass
+  // stays on Repo, and the same chip survives the ordinary Tab handoff into the Task box.
+  await expect(dialog.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
+  await expect(repoAsk(dialog)).toBeVisible();
+  await expect(repoField(dialog)).toBeFocused();
+  // The success frame shows the human-visible claim the selectors cannot: a Task attachment
+  // chip and the unanswered Repo question are on screen together after a window-level drop.
+  await shoot(dashboard, "05-window-drop-attached");
+  await dashboard.keyboard.press("Tab");
+  await expect(rail(dialog)).toBeHidden();
+  await expect(taskBox(dialog)).toBeFocused();
+  await expect(dialog.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
 });
 
 test("arrows and Enter reach the same place as the mnemonics", async ({ dashboard }) => {

@@ -71,7 +71,9 @@ finish in is the ordinary one.
 click an answered rung to go back to it, or ignore the list entirely and use the field's own
 control - the question it is about stays live, and using it answers it and moves the pass on
 just as the keyboard would. **Clear** puts the form back where it opened, which for a guided
-dispatch means back at the first question.
+dispatch means back at the first question. The Task box is inert while those questions own
+the dialog, but image drops are not: drop an image anywhere on the window and it attaches to
+that same Task draft without advancing the pass.
 
 Closing the modal is not an undo. Reopening resumes at the current question with the
 answered rungs and form values intact; if the pass already handed over, it reopens on that

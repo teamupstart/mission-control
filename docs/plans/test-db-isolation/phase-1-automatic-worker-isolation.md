@@ -12,9 +12,10 @@ This is the only implementation phase.
 
 - Direct dependency: the planning session and its pull request containing `plan.md`,
   `phased-plan.md`, and this phase file must be merged.
-- Start from the default branch after that merge.
-- Read the repository root `AGENTS.md`, then the source plan and phased index in this directory.
-- Confirm no newer test-runner or state-path change has superseded the findings below.
+- Required baseline: the default branch after that planning merge.
+- Governing context: the repository root `AGENTS.md`, the source plan, and the phased index in this
+  directory.
+- Freshness condition: no newer test-runner or state-path change has superseded the findings below.
 
 ## Scope
 
@@ -210,4 +211,5 @@ separate isolation contracts.
   subset establishes the requested safety boundary.
 - 2026-08-13: Confirmed no later-phase consumer, concurrency edge, schema owner, UI surface, or
   multi-repository dependency exists.
-
+- 2026-08-13: Rephrased entry criteria as descriptive prerequisites during review. Dependency,
+  governing context, and freshness requirements are unchanged.

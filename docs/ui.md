@@ -507,8 +507,9 @@ Markdown open in Preview by default, while every other file type opens in the ed
 generated page a session links to is read as the page it is, and source is read as source. The
 Preview and Editor buttons publish which of the two is showing as their pressed state, so the
 view a file landed in is legible to a screen reader and not only to the eye. HTML preview
-remains inert: a bounded set of checkout-local stylesheets is inlined through the contained
-file reader, without granting the sandbox scripts or network access.
+remains inert: its document renders immediately, then a bounded set of checkout-local
+stylesheets is inlined through the contained file reader without granting the sandbox scripts
+or network access. A slow stylesheet read therefore delays styling, not the document itself.
 
 **The Diff tab has the same door.** The bar naming the file you are reading carries an
 **Open in Files** action, on every file, which opens that file in the Files tab beside it -

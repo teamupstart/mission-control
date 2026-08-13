@@ -86,14 +86,17 @@ async function sessionCwd(daemon: DaemonHandle): Promise<string> {
   return sessions[0]!.cwd!;
 }
 
-test("a changed file in the Diff tab opens in the Files tab", async ({ dashboard, daemon }) => {
+test("a changed HTML file in the Diff tab opens rendered in the Files tab", async ({
+  dashboard,
+  daemon,
+}) => {
   await dispatch(dashboard, daemon);
   const cwd = await sessionCwd(daemon);
 
   // Two changed files, so the spec can prove the button acts on the file being READ
   // rather than on the first file in the list.
   writeFileSync(join(cwd, "alpha.txt"), "first change\n");
-  writeFileSync(join(cwd, "beta.txt"), "second change\n");
+  writeFileSync(join(cwd, "beta.html"), "<h1>Second change</h1>\n");
   // A name ending in `:<digits>`, which the transcript's href parser would read as a
   // line number and truncate to `notes`. A diff path is exact; see the third case.
   writeFileSync(join(cwd, "notes:12"), "colon named\n");
@@ -111,7 +114,7 @@ test("a changed file in the Diff tab opens in the Files tab", async ({ dashboard
 
   // Read the second file, not the one the diff opens on.
   const changed = dashboard.getByRole("navigation", { name: "Changed files" });
-  await changed.getByRole("button", { name: /beta\.txt/ }).click();
+  await changed.getByRole("button", { name: /beta\.html/ }).click();
 
   const jump = dashboard.getByRole("button", { name: "Open in Files" });
   await expect(jump).toBeVisible();
@@ -122,13 +125,68 @@ test("a changed file in the Diff tab opens in the Files tab", async ({ dashboard
   await expect(tabs.getByRole("tab", { name: /Files$/ })).toHaveAttribute("aria-selected", "true");
   // ...and it moved to the file that was on screen in the diff, not to a default.
   const files = dashboard.getByRole("listbox", { name: "Session files" });
-  await expect(files.getByRole("option", { name: "beta.txt" })).toHaveAttribute(
+  await expect(files.getByRole("option", { name: "beta.html" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
-  // The file's contents are what the diff was showing, so this is the same file and not
-  // just a matching name in the list.
-  await expect(dashboard.getByText("second change")).toBeVisible();
+  // The file opens rendered on the FIRST visit. Before the regression fix this iframe
+  // mounted with an empty srcdoc; an Editor/Preview round trip only appeared to fix it
+  // after the delayed preparation had time to land and the iframe mounted again.
+  const preview = dashboard.frameLocator('iframe[title="Preview of beta.html"]');
+  await expect(preview.getByRole("heading", { name: "Second change" })).toBeVisible();
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  await expect(modes.getByRole("button", { name: "Preview" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
+test("a changed HTML file in the Diff window opens rendered in the Files window", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  const cwd = await sessionCwd(daemon);
+  writeFileSync(join(cwd, "alpha.txt"), "first change\n");
+  writeFileSync(
+    join(cwd, "beta.html"),
+    '<link rel="stylesheet" href="theme.css"><h1>Window change</h1>\n',
+  );
+  writeFileSync(join(cwd, "theme.css"), "h1 { color: rebeccapurple; }\n");
+
+  // Keep stylesheet preparation open long enough to observe the first paint. The HTML
+  // itself is already available and must render while this optional enhancement waits.
+  await dashboard.route("**/api/sessions/*/file?*", async (route) => {
+    const path = new URL(route.request().url()).searchParams.get("path");
+    if (path === "theme.css") {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    await route.continue();
+  });
+
+  // Cards is the shipped default. Its Diff action replaces one overlay with another,
+  // unlike Console where both readers are persistent tabs in one detail pane.
+  await dashboard.getByRole("button", { name: "View changes vs source branch" }).click();
+  const diff = dashboard.getByRole("dialog", { name: "Session diff" });
+  await expect(diff).toBeVisible();
+  await diff
+    .getByRole("navigation", { name: "Changed files" })
+    .getByRole("button", { name: /beta\.html/ })
+    .click();
+  await diff.getByRole("button", { name: "Open in Files" }).click();
+
+  await expect(diff).toBeHidden();
+  const filesWindow = dashboard.getByRole("dialog", { name: /Files for / });
+  await expect(filesWindow).toBeVisible();
+  await expect(
+    filesWindow
+      .getByRole("listbox", { name: "Session files" })
+      .getByRole("option", { name: "beta.html" }),
+  ).toHaveAttribute("aria-selected", "true");
+  const preview = filesWindow.frameLocator('iframe[title="Preview of beta.html"]');
+  const heading = preview.getByRole("heading", { name: "Window change" });
+  await expect(heading).toBeVisible({ timeout: 500 });
+  await expect(heading).toHaveCSS("color", "rgb(102, 51, 153)");
 });
 
 test("a changed file whose name ends in a line-number suffix opens as itself", async ({

@@ -74,6 +74,21 @@ function pointInSelection(selection: Selection, point: ContextPoint): boolean {
   return false;
 }
 
+function selectionForTarget(selection: Selection | null, target?: Element): string {
+  if (!selection || selection.isCollapsed) return "";
+  const selected = selection.toString();
+  if (!selected.trim()) return "";
+  if (!target) return selected;
+  for (let index = 0; index < selection.rangeCount; index++) {
+    try {
+      if (selection.getRangeAt(index).intersectsNode(target)) return selected;
+    } catch {
+      // A detached target cannot own a selection that remains in the live document.
+    }
+  }
+  return "";
+}
+
 /**
  * The one context-menu host for the whole renderer.
  *
@@ -135,7 +150,7 @@ export function ContextMenuHost({
   ): boolean => {
     const selection = window.getSelection();
     if (point && selection && !pointInSelection(selection, point)) selection.removeAllRanges();
-    const selected = selection && !selection.isCollapsed ? selection.toString() : "";
+    const selected = selectionForTarget(selection, point ? undefined : target);
     const actions = resolveContextActions(target, contextInfo(selected, point));
     if (actions.length === 0) {
       setMenu(null);
@@ -159,7 +174,9 @@ export function ContextMenuHost({
 
   const close = useCallback((restoreFocus = false): void => {
     setMenu((current) => {
-      if (restoreFocus) current?.returnFocus?.focus({ preventScroll: true });
+      if (restoreFocus && current?.returnFocus?.isConnected) {
+        current.returnFocus.focus({ preventScroll: true });
+      }
       return null;
     });
   }, []);
@@ -221,7 +238,9 @@ export function ContextMenuHost({
     } catch {
       announce(action.kind === "open" ? "Could not open link" : "The action did not complete", "error");
     } finally {
-      if (!action.managesFocus) current.returnFocus?.focus({ preventScroll: true });
+      if (!action.managesFocus && current.returnFocus?.isConnected) {
+        current.returnFocus.focus({ preventScroll: true });
+      }
     }
   }, [announce, menu]);
 

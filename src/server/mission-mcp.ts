@@ -223,6 +223,18 @@ const HANDSHAKE_TIMEOUT_MS = 15_000;
 const MAX_TOOL_PAGES = 20;
 
 /**
+ * The most stdout we will hold while still waiting for a newline.
+ *
+ * MCP's stdio framing is line-delimited JSON, so an unterminated line is the only part of the
+ * stream that accumulates - and a bundle in a log loop can produce one as fast as the pipe
+ * allows. The 15-second timeout bounds how long we listen; it does nothing about how many bytes
+ * arrive in that time, which is a daemon-sized heap on a machine whose control plane this is.
+ * Measured rather than guessed: this server's real `tools/list` is 9,082 bytes for eight tools,
+ * so a megabyte is about a hundredfold headroom.
+ */
+const MAX_STDOUT_FRAME_BYTES = 1_048_576;
+
+/**
  * The protocol version this probe speaks.
  *
  * A server supporting a different revision answers with ITS version rather than an error (the
@@ -291,8 +303,7 @@ function errText(err: unknown): string {
  * not repeating it", which points at reproducing the spawn by hand. Every one of these
  * failures has the same fix anyway, and `reason` already names it.
  */
-function saidOnStderr(stderr: string): string {
-  const bytes = Buffer.byteLength(stderr, "utf8");
+function saidOnStderr(bytes: number): string {
   return bytes > 0 ? ` (it wrote ${bytes} bytes to stderr, not repeated here)` : "";
 }
 
@@ -327,8 +338,11 @@ async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedToo
     const found = new Set<string>();
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
+    // The UNTERMINATED remainder of stdout, never the whole stream: complete lines are parsed
+    // and dropped as they arrive, so this only grows while a line is still missing its newline.
     let pending = "";
-    let stderr = "";
+    // A COUNT, never the bytes. See `saidOnStderr` for why none of it is kept.
+    let stderrBytes = 0;
     let pages = 0;
     let listId = 2;
 
@@ -403,7 +417,7 @@ async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedToo
         ok: false,
         reason:
           `it did not answer initialize + tools/list within ${HANDSHAKE_TIMEOUT_MS}ms` +
-          saidOnStderr(stderr),
+          saidOnStderr(stderrBytes),
       });
     }, HANDSHAKE_TIMEOUT_MS);
     // Never hold the daemon's event loop open on a probe.
@@ -424,12 +438,32 @@ async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedToo
         ok: false,
         reason:
           `it exited (code ${code}, signal ${signal}) during the handshake` +
-          saidOnStderr(stderr),
+          saidOnStderr(stderrBytes),
       });
     });
-    child.stderr?.on("data", (d) => (stderr += String(d)));
+    // Counted and discarded chunk by chunk. Holding it would be both a leak (see
+    // `saidOnStderr`) and a way for a bundle stuck in a log loop to grow the daemon's heap for
+    // the whole timeout - the clock bounds how long we listen, never how much arrives.
+    child.stderr?.on("data", (d: Buffer | string) => {
+      stderrBytes += typeof d === "string" ? Buffer.byteLength(d, "utf8") : d.length;
+    });
     child.stdout?.on("data", (d) => {
       pending += String(d);
+      // A single line that never ends is the one thing that can grow without limit here, and a
+      // broken or hostile bundle can produce one as fast as the pipe allows. Refuse it at a
+      // bound instead: the real `tools/list` for this server's eight tools measures 9,082
+      // bytes, so a megabyte is roughly a hundredfold headroom - far past any honest answer,
+      // and far below anything that troubles the daemon.
+      if (pending.length > MAX_STDOUT_FRAME_BYTES) {
+        finish({
+          ok: false,
+          reason:
+            `it wrote more than ${MAX_STDOUT_FRAME_BYTES} bytes of stdout with no newline, ` +
+            `so it is not speaking MCP's line-delimited JSON`,
+        });
+        pending = "";
+        return;
+      }
       for (;;) {
         const nl = pending.indexOf("\n");
         if (nl === -1) break;

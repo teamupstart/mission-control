@@ -334,6 +334,35 @@ test("what the bundle prints on stderr never reaches the refusal it produces", a
   });
 });
 
+test("a bundle that floods stdout with no newline is refused, not buffered", async () => {
+  // The timeout bounds how long this probe listens; it says nothing about how much arrives in
+  // that time. MCP's stdio framing is line-delimited JSON, so an unterminated line is the one
+  // part of the stream that accumulates - and a broken or hostile bundle can produce one as
+  // fast as the pipe allows. Fifteen seconds of that is a daemon-sized heap on the machine
+  // whose control plane this is.
+  const flood = join(home, "flood.mjs");
+  writeFileSync(
+    flood,
+    // No newline, ever. Writes until the probe stops reading.
+    `const chunk = "x".repeat(64 * 1024);\n` +
+      `function pump() { while (process.stdout.write(chunk)) {} }\n` +
+      `process.stdout.on("drain", pump);\npump();\nsetInterval(() => {}, 1000);\n`,
+  );
+  await withBundle(flood, async () => {
+    const before = process.memoryUsage().heapUsed;
+    const check = await verifyMissionMcpTools(["submit_scout_artifacts"]);
+    const grew = process.memoryUsage().heapUsed - before;
+    assert.equal(check.ok, false);
+    assert.match(check.reason!, /no newline/, "say what is wrong with the stream, not just that it failed");
+    // The bound is the point. Well under the 15s timeout's worth of a 64KB-per-write flood,
+    // and generous enough that a real answer (9,082 bytes for eight tools) is never near it.
+    assert.ok(
+      grew < 32 * 1024 * 1024,
+      `the probe retained ${Math.round(grew / 1024 / 1024)}MB of a flooding bundle's stdout`,
+    );
+  });
+});
+
 test("a dispatch declaring no Mission tools never spawns the bundle at all", async () => {
   // The status quo this must not touch. A ship task's launch declares nothing, so there is
   // nothing to verify - and a guard that handshook anyway would put a subprocess, and a new

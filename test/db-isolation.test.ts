@@ -1,7 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -152,6 +152,31 @@ test("an override that names the operator's own state dir is refused", () => {
     assert.match(res.stderr, /real\s+state dir/i);
     assert.equal(existsSync(operator), false, `${name} was created before the refusal`);
   }
+});
+
+test("a temp-looking symlink into the operator's state dir is refused", () => {
+  // The spelling is not the path. `<temp>/looks-disposable` passes the operator-name check
+  // and the temp-dir check on its characters alone, and then SQLite follows the link and
+  // opens `~/.mission-control/harness.db` anyway - a lexical guard reads as protection and
+  // provides none. This is the case that forces the refusal to judge the resolved path.
+  //
+  // Its own `$HOME` inside the shared jail, so the operator dir this creates cannot be
+  // mistaken for one of the earlier cases' - those assert that `<jail>/.mission-control` was
+  // never created, and a test that shares a home with this one would depend on file order.
+  const jail = join(home, "symlink-jail");
+  const operator = join(jail, ".mission-control");
+  mkdirSync(operator, { recursive: true });
+  const disguised = join(jail, "looks-disposable");
+  symlinkSync(operator, disguised, "dir");
+
+  const res = runChild(OPEN_AND_REPORT, { HOME: jail, MISSION_HOME: disguised });
+  assert.notEqual(res.status, 0, "a symlink into the operator's state dir was opened");
+  assert.match(res.stderr, /real\s+state dir/i);
+  assert.equal(
+    existsSync(join(operator, "harness.db")),
+    false,
+    "the operator's database was created through the link",
+  );
 });
 
 test("an override outside the temp dir is refused even though it is explicit", () => {

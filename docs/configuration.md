@@ -172,35 +172,10 @@ deliberately does not fetch Chromium - that would tax every contributor for a su
 runs never touch - so run `npx playwright install chromium` once per machine. Without it the
 run fails with `browserType.launch: Executable doesn't exist`.
 
-To run a single test file with the same loader the suite uses:
-
-```sh
-node --test --import ./test/setup-state.mjs --import tsx test/session-contracts.test.ts
-```
-
-The `--import ./test/setup-state.mjs` preload is the isolation. `npm test` and
-`npm run test:electron` already carry it; a hand-typed command has to say it. It gives every
-test worker its own `mission-test-state-*` directory in the platform temp dir before any
-import can resolve one, and removes that directory when the worker exits. A test file that
-never sets a state home is therefore isolated anyway, instead of quietly resolving the
-operator's real `~/.mission-control` - which is where a branch's config test once ran
-`DELETE FROM app_config` on every run, and where fixture rows from a workflow test were
-later found.
-
-It seeds `HARNESS_HOME` specifically, and clears any inherited `MISSION_HOME` and
-`FLEET_HOME`. That is a precedence decision, not a preference for the old name: `envVar`
-reads `MISSION_` then `FLEET_` then `HARNESS_`, so the last name in the chain is the only
-one a test file can override without ceremony - and roughly 130 files set `HARNESS_HOME`
-themselves to point at a hand-built fixture database. **`MISSION_HOME` remains the name to
-set everywhere else**, in tests, in a daemon, and in an operator's environment.
-
-`src/server/db.ts` backs the preload up rather than trusting it. Under the test runner
-`openDb` opens only the `harness.db` named by the state home that is set *right now*, and
-only when that home is inside the temp dir; a missing override, one applied after the path
-was already resolved, one naming a real `~/.mission-control` (under any of its historical
-names), and one changed after the connection was opened are all refused before SQLite is
-touched. Outside the test runner the check returns immediately and the daemon opens the
-operator's state exactly as before.
+Running a single test file has its own command, because the suite's state isolation rides on
+a `--import` preload that `npm test` supplies and a hand-typed `node --test` does not. The
+command and the contract behind it live in [AGENTS.md](../AGENTS.md#commands), which owns
+contributor execution mechanics; they are deliberately not restated here.
 
 `measure-inspector-prompt` prints the review prompt's byte size for the current source and
 for a pre-fix revision beside it, so a change to what the Inspector carries can be shown in

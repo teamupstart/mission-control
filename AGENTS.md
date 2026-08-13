@@ -36,11 +36,31 @@ Run one test file with the same loader as the full suite:
 node --test --import ./test/setup-state.mjs --import tsx test/session-contracts.test.ts
 ```
 
-`--import ./test/setup-state.mjs` is not optional decoration. It gives the worker a
-throwaway state dir before any import can resolve one, which is what keeps a test that never
-redirected `MISSION_HOME` off the operator's `~/.mission-control/harness.db`. `npm test` and
-`npm run test:electron` load it for you; drop it from a hand-typed command and `openDb`
-refuses to open anything, which is the designed outcome and not a bug to work around.
+`--import ./test/setup-state.mjs` is not optional decoration, and this is the one place that
+contract is written down - do not restate it in `docs/`. It gives each test worker its own
+`mission-test-state-*` directory in the temp dir before any import can resolve one, and
+removes it when the worker exits. A test file that never redirected `MISSION_HOME` is
+therefore isolated anyway, instead of quietly resolving the operator's
+`~/.mission-control/harness.db` - which is where a branch's config test once ran
+`DELETE FROM app_config` on every run. `npm test` and `npm run test:electron` already carry
+it; a hand-typed command has to say it, and `openDb` refuses to open anything when it is
+missing. That refusal is the designed outcome, not a bug to work around.
+
+The preload seeds `HARNESS_HOME` and clears any inherited `MISSION_HOME` and `FLEET_HOME`.
+That is a precedence decision, not a preference for the old name: `envVar` reads `MISSION_`
+then `FLEET_` then `HARNESS_`, so the last name in the chain is the only one a test file can
+override without ceremony - and around 130 files set `HARNESS_HOME` themselves to reach a
+hand-built fixture database. **`MISSION_HOME` is still the name to set everywhere else**, in
+a test, in a daemon, and in an operator's environment.
+
+A test that needs a particular database keeps seeding its own home above its imports, exactly
+as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test
+runner `openDb` opens only the `harness.db` named by the state home set *right now*, and only
+when that home resolves - through symlinks, not just as spelled - to somewhere inside the temp
+dir. A missing override, one applied after the path was already frozen, one naming a real
+state dir under any of its historical names, and one changed after the connection was opened
+are all refused before SQLite is touched. Outside the test runner the check returns
+immediately and the daemon opens the operator's state exactly as it always has.
 
 `--test-concurrency` is deliberately not in that command. It caps how many test *files* run
 at once, so naming a single file makes it inert, and carrying it here implied a single-file

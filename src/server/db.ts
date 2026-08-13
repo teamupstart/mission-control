@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
 import { DB_PATH, envVar } from "./config.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
@@ -82,6 +82,57 @@ function testStateRoots(): readonly string[] {
 }
 
 /**
+ * The path the filesystem will actually open, with any not-yet-created tail kept.
+ *
+ * `resolve()` is lexical, and a lexical check is not a check. A state home spelled
+ * `<temp>/looks-disposable` clears both tests below on its characters alone while being a
+ * symlink to `~/.mission-control`, and `new DatabaseSync` then follows it into the operator's
+ * database - the exact outcome this guard exists to prevent. What gets opened is the physical
+ * path, so the physical path is what has to be judged.
+ *
+ * Most test homes do not exist yet at this point - `HARNESS_HOME=<temp>/state` is the
+ * documented pattern and `openDb` is what creates it - so a bare `realpathSync` would throw on
+ * the honest case. Walking up to the nearest ancestor that DOES exist and re-attaching the
+ * tail keeps those working while still resolving every link that is already on disk, which is
+ * where a link has to be to redirect the open.
+ */
+function physicalPath(path: string): string {
+  const absolute = resolve(path);
+  const tail: string[] = [];
+  let cursor = absolute;
+  for (;;) {
+    try {
+      return join(realpathSync(cursor), ...tail);
+    } catch {
+      const parent = dirname(cursor);
+      if (parent === cursor) return absolute; // nothing along this path exists yet
+      tail.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+/**
+ * The operator's state dir under every name the app has shipped, in both spellings.
+ *
+ * The physical form matters on any machine whose home is reached through a link (a network
+ * or relocated home, `/home` -> `/System/Volumes/Data/home`): comparing only the lexical
+ * `~/.mission-control` there would miss the very directory it names. Cached, like the temp
+ * roots, so the filesystem work happens once rather than per `openDb()`.
+ */
+let operatorStateDirs: readonly string[] | undefined;
+function operatorStateRoots(): readonly string[] {
+  if (operatorStateDirs) return operatorStateDirs;
+  const roots = new Set<string>();
+  for (const name of STATE_DIRS) {
+    const dir = join(homedir(), name);
+    roots.add(resolve(dir));
+    roots.add(physicalPath(dir));
+  }
+  return (operatorStateDirs = [...roots]);
+}
+
+/**
  * `child` IS `parent` or sits inside it - compared by path segment.
  *
  * A bare `startsWith` would read `/tmp/state-10` as living inside `/tmp/state-1`, which in a
@@ -157,11 +208,18 @@ function assertTestStateIsolation(): void {
         "state dir - it was resolved before the override was set",
     );
   }
-  if (STATE_DIRS.some((name) => isInside(selected, join(homedir(), name)))) {
-    throw refusal(`${selected} is the machine's real state dir, whichever alias named it`);
-  }
-  if (!testStateRoots().some((root) => isInside(selected, root))) {
-    throw refusal(`${selected} is outside ${tmpdir()}, so it is not a disposable test state dir`);
+  // Judged on BOTH spellings: the one written down, and the one the filesystem resolves it
+  // to. Checking only the first is bypassable by a symlink; checking only the second would
+  // stop naming the path the author actually set when it comes time to explain the refusal.
+  const physical = physicalPath(selected);
+  for (const candidate of physical === selected ? [selected] : [selected, physical]) {
+    const subject = candidate === selected ? candidate : `${selected} -> ${candidate}`;
+    if (operatorStateRoots().some((dir) => isInside(candidate, dir))) {
+      throw refusal(`${subject} is the machine's real state dir, whichever alias named it`);
+    }
+    if (!testStateRoots().some((root) => isInside(candidate, root))) {
+      throw refusal(`${subject} is outside ${tmpdir()}, so it is not a disposable test state dir`);
+    }
   }
 
   isolatedOverride = override;

@@ -52,6 +52,12 @@ if (process.env.NODE_TEST_CONTEXT) {
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a
   // fixture directory the test built instead of the one this file made.
+  //
+  // `exit` covers a normal finish and an uncaught throw, and by construction cannot cover a
+  // worker killed with SIGKILL - no handler runs there. What that leaks is one empty
+  // directory in the OS temp dir, which is the right place for it and is why this does not
+  // sweep for strays on startup: a `readdir` of the temp dir on each of 596 worker launches
+  // would cost more, every run, than the rare leak it tidies.
   process.on("exit", () => {
     rmSync(root, { recursive: true, force: true });
   });

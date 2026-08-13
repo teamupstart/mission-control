@@ -92,6 +92,24 @@ test("a bare autolink keeps the precise Copy URL label instead of a duplicate Co
   assert.deepEqual(labels(resolveContextActions(el, info())), ["Copy URL", "Open link"]);
 });
 
+test("keyboard link actions do not claim an unrelated live selection", () => {
+  const anchor = fakeAnchor("https://example.com/docs", "the docs");
+  const el = fakeElement({ "a[href]": anchor });
+  const actions = resolveContextActions(el, info("selected somewhere else"));
+
+  assert.deepEqual(labels(actions), ["Copy", "Copy URL", "Open link", "Copy"]);
+  assert.deepEqual(actions.map((action) => action.payload), [
+    "the docs",
+    "https://example.com/docs",
+    "https://example.com/docs",
+    "selected somewhere else",
+  ]);
+
+  const pointerInfo = info("selected link words");
+  pointerInfo.point = { x: 1, y: 1 };
+  assert.equal(resolveContextActions(el, pointerInfo)[0]?.payload, "selected link words");
+});
+
 test("a live selection is a container target and whitespace alone is not", () => {
   const el = fakeElement({});
   assert.deepEqual(labels(resolveContextActions(el, info("selected words"))), ["Copy"]);

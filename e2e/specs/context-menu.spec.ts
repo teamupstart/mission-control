@@ -99,6 +99,14 @@ test("context actions work by pointer and keyboard without leaking keys to the g
     "https://example.com/menu-target",
   );
 
+  // Keyboard invocation has no pointer proving an unrelated live selection belongs to this
+  // focused link. Its first Copy action therefore uses the visible link text.
+  await pointForText(turn, SELECTED, true);
+  await link.focus();
+  await dashboard.keyboard.press("Shift+F10");
+  await dashboard.getByRole("menuitem", { name: /^Copy$/ }).first().click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("CI page");
+
   // A URL-shaped text run stops before prose punctuation, even though the punctuation is in
   // the same text node. Both clipboard and open actions therefore receive the usable URL.
   const rawUrlPoint = await pointForText(turn, TRAILING_URL, false);

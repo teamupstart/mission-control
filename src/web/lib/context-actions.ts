@@ -243,7 +243,10 @@ function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): Contex
 }
 
 function linkActions(link: LinkSnapshot, ctx: ContextInfo): ContextAction[] {
-  const copyPayload = ctx.selection || link.text;
+  // Pointer invocation has already proven the click is inside the live Selection. Keyboard
+  // invocation has no such spatial evidence, so its link-level Copy must use visible link text;
+  // any unrelated selection remains available through the container tier below.
+  const copyPayload = (ctx.point ? ctx.selection : "") || link.text;
   const actions: ContextAction[] = [];
   // The precise Copy URL label wins when a bare autolink would otherwise produce two
   // byte-identical writes. A worded link still offers both real choices.

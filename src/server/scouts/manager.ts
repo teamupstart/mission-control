@@ -253,10 +253,15 @@ export class ScoutArchiveManager {
    * do", which is what keeps ship completion byte-for-byte what it was.
    */
   async ensureReady(taskId: string): Promise<ScoutCaptureResult> {
-    if (!this.tasks?.isScout(taskId)) return { ok: true, archive: null, replayed: false };
-    const jobs = this.captureStore.forTask(taskId);
+    const subject = this.tasks?.subjectForTask(taskId);
+    if (!subject) return { ok: true, archive: null, replayed: false };
+    const jobs = this.captureStore
+      .forTask(taskId)
+      .filter((job) => job.episodeId === subject.episodeId);
 
-    // An already-published COMPLETE archive satisfies this task whichever episode produced it.
+    // Only this work episode can satisfy this completion. A cancelled and rescheduled scout
+    // keeps its earlier immutable archive, but that archive answers the superseded attempt and
+    // cannot stand in for evidence from the agent currently doing the work.
     let publishedIncomplete = false;
     for (const job of jobs) {
       if (job.status !== "published") continue;

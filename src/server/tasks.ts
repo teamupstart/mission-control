@@ -203,6 +203,14 @@ interface CompletionInput {
   inferredFrom: string | null;
 }
 
+/** The task facts a scout completion must not cross while its archive gate awaits. */
+interface ScoutCompletionSnapshot {
+  status: Task["status"];
+  sessionId: string | null;
+  episodeId: string | null;
+  cleanupResources: string;
+}
+
 /**
  * What `TaskManager` needs from the scout archive owner, and nothing else.
  *
@@ -2339,11 +2347,69 @@ export class TaskManager {
     input: CompletionInput,
     gate: ScoutArchiveGate,
   ): Promise<Task | null> {
-    this.assertCompletable(id, input.requireStopped);
-    if (!this.registry.getTask(id)) return null;
+    const before = this.scoutCompletionSnapshot(id, input.requireStopped);
+    if (!before) return null;
     const ready = await gate.ensureReady(id);
     if (!ready.ok) throw new ScoutArchiveNotReadyError(ready.problems);
+    this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
     return this.finishCompletion(id, input);
+  }
+
+  /**
+   * Freeze the lifecycle facts an asynchronous scout completion is allowed to finish over.
+   *
+   * `status` catches cancel, `episodeId` catches a cancel/reschedule/re-dispatch that has
+   * already returned to running, and the cleanup fields catch reclaim, which deliberately
+   * preserves status while releasing the session and worktrees. Other task edits may proceed
+   * while the archive is verified; only a lifecycle change makes the evidence stale.
+   */
+  private scoutCompletionSnapshot(
+    id: string,
+    requireStopped: boolean,
+  ): ScoutCompletionSnapshot | null {
+    this.assertCompletable(id, requireStopped);
+    const task = this.registry.getTask(id);
+    if (!task) return null;
+    return {
+      status: task.status,
+      sessionId: task.sessionId,
+      episodeId: this.registry.workEpisodeForTask(id)?.episodeId ?? null,
+      cleanupResources: JSON.stringify([
+        task.worktreePath,
+        task.branch,
+        task.provider,
+        task.baseSha,
+        task.homeName,
+        task.terminalResourceId,
+        task.extraRepos.map((repo) => [
+          repo.repoRoot,
+          repo.worktreePath,
+          repo.branch,
+          repo.provider,
+          repo.baseSha,
+        ]),
+      ]),
+    };
+  }
+
+  /** Refuse to write `done` over a lifecycle transition that landed during archive I/O. */
+  private assertScoutCompletionUnchanged(
+    id: string,
+    requireStopped: boolean,
+    before: ScoutCompletionSnapshot,
+  ): void {
+    const after = this.scoutCompletionSnapshot(id, requireStopped);
+    if (!after) return;
+    if (
+      after.status !== before.status ||
+      after.sessionId !== before.sessionId ||
+      after.episodeId !== before.episodeId ||
+      after.cleanupResources !== before.cleanupResources
+    ) {
+      throw new TaskStatusConflictError(
+        "task changed while its scout archive was being verified; retry completion against its current run",
+      );
+    }
   }
 
   /**

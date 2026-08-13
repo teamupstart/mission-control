@@ -8,6 +8,8 @@ import { SCOUT_REPORT_PATH_SHAPE } from "../src/shared/scouts.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import { validReportHtml } from "./helpers/scout-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { ScoutArchiveGate } from "../src/server/tasks.ts";
 
 /**
  * Where the archive meets the task lifecycle.
@@ -30,7 +32,7 @@ process.env.MISSION_HOME = home;
 process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager, ScoutArchiveNotReadyError } = await import("../src/server/tasks.ts");
+const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");
 const { ScoutArchiveManager } = await import("../src/server/scouts/manager.ts");
 const { RegistryScoutTaskGateway } = await import("../src/server/scouts/task-gateway.ts");
 const { clearScoutCaptureJobs } = await import("../src/server/scouts/capture-store.ts");
@@ -168,6 +170,72 @@ async function submit(
   });
 }
 
+function pauseCompletionGate(delegate: ScoutArchiveGate): {
+  gate: ScoutArchiveGate;
+  entered: Promise<void>;
+  release: () => void;
+} {
+  let entered!: () => void;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    gate: {
+      ensureReady: async (taskId) => {
+        entered();
+        await paused;
+        return delegate.ensureReady(taskId);
+      },
+      settleBeforeCleanup: (taskId) => delegate.settleBeforeCleanup(taskId),
+    },
+    entered: waiting,
+    release,
+  };
+}
+
+function discoveredSession(id: string, cwd: string, repoRoot: string): DiscoveredSession {
+  return {
+    syntheticId: id,
+    agent: "claude",
+    name: id,
+    nameSource: "process",
+    cwd,
+    gitBranch: "harness/scout-episode",
+    gitRoot: repoRoot,
+    repoRoot,
+    pid: ++seq,
+    tty: null,
+    terminals: [],
+    startedAt: 0,
+  };
+}
+
+function beginEpisode(
+  h: Harness,
+  task: Task,
+  cwd: string,
+  repoRoot: string,
+  sessionId: string,
+  agentSessionId: string,
+): string {
+  h.registry.applyDiscovery([discoveredSession(sessionId, cwd, repoRoot)]);
+  h.registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: agentSessionId,
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  h.registry.upsertTask({ ...task, status: "running", sessionId });
+  h.registry.bindTaskToWorkEpisode(task.id, sessionId);
+  return h.registry.workEpisodeForTask(task.id)!.episodeId;
+}
+
 // ---------------------------------------------------------------------------
 // Completion waits for the archive
 // ---------------------------------------------------------------------------
@@ -269,6 +337,111 @@ test("two completion signals for one scout publish exactly one archive", async (
   const jobs = h.scouts.captureJobsForTask(task.id);
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0]!.status, "published");
+});
+
+test("completion cannot overwrite a cancellation that finishes during archive verification", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  assert.equal(
+    (await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" })).ok,
+    true,
+  );
+
+  const pause = pauseCompletionGate(h.scouts);
+  const racingTasks = new TaskManager(h.registry, undefined, undefined, undefined, pause.gate);
+  const completion = racingTasks.complete(task.id, "found it");
+  await pause.entered;
+  assert.equal((await racingTasks.cancel(task.id)).ok, true);
+  pause.release();
+
+  await assert.rejects(completion, TaskStatusConflictError);
+  assert.equal(h.registry.getTask(task.id)?.status, "cancelled");
+  assert.equal(h.registry.getTask(task.id)?.worktreePath, null);
+});
+
+test("completion cannot restore resources released by a concurrent reclaim", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  assert.equal(
+    (await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" })).ok,
+    true,
+  );
+
+  const pause = pauseCompletionGate(h.scouts);
+  const racingTasks = new TaskManager(h.registry, undefined, undefined, undefined, pause.gate);
+  const completion = racingTasks.complete(task.id, "found it");
+  await pause.entered;
+  assert.equal((await racingTasks.reclaim(task.id)).ok, true);
+  pause.release();
+
+  await assert.rejects(completion, TaskStatusConflictError);
+  assert.equal(h.registry.getTask(task.id)?.status, "running");
+  assert.equal(h.registry.getTask(task.id)?.worktreePath, null);
+});
+
+test("a rescheduled scout cannot complete from its superseded episode's archive", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  const sessionId = `episode-session-${++seq}`;
+  const oldEpisode = beginEpisode(h, task, cwd, repoRoot, sessionId, `episode-old-${seq}`);
+  const oldSubmission = await h.scouts.submit({
+    env: {},
+    sessionId,
+    cwd,
+    submission: {
+      reportPath: "docs/reports/resume/report.html",
+      summary: "the first attempt's answer",
+      tags: [],
+      supporting: [],
+    },
+  });
+  assert.equal(oldSubmission.ok, true, JSON.stringify(oldSubmission));
+
+  const current = h.registry.getTask(task.id)!;
+  h.registry.upsertTask({ ...current, status: "cancelled" });
+  h.registry.upsertTask({ ...current, status: "backlog", sessionId: null });
+  const newEpisode = beginEpisode(
+    h,
+    h.registry.getTask(task.id)!,
+    cwd,
+    repoRoot,
+    sessionId,
+    `episode-new-${seq}`,
+  );
+  assert.notEqual(newEpisode, oldEpisode);
+
+  await assert.rejects(() => h.tasks.complete(task.id, "found it"), ScoutArchiveNotReadyError);
+  assert.equal(h.registry.getTask(task.id)?.status, "running");
+
+  const newSubmission = await h.scouts.submit({
+    env: {},
+    sessionId,
+    cwd,
+    submission: {
+      reportPath: "docs/reports/resume/report.html",
+      summary: "the current attempt's answer",
+      tags: [],
+      supporting: [],
+    },
+  });
+  assert.equal(newSubmission.ok, true, JSON.stringify(newSubmission));
+  assert.equal((await h.tasks.complete(task.id, "found it"))?.status, "done");
+  assert.deepEqual(
+    h.scouts.captureJobsForTask(task.id).map((job) => job.episodeId).sort(),
+    [newEpisode, oldEpisode].sort(),
+  );
 });
 
 // ---------------------------------------------------------------------------

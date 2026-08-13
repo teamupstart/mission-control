@@ -49,6 +49,7 @@ import {
   LEGACY_WORKFLOW_RESUMPTION_POLICY,
   SESSION_ACTION_COMPLETION_KINDS,
   emptyWorkflowCommandView,
+  personaOriginRank,
   personaSnapshotOf,
   personasForDisplay,
   sessionActionSnapshotOf,
@@ -1722,9 +1723,22 @@ export class WorkflowStore {
    * `listPersonas(false)` still lists, so the archived listing - which is what the SSE
    * snapshot is built from - would stop being a superset of the active one.
    */
+  /**
+   * Library order: by ORIGIN first, then by name.
+   *
+   * The origin tier is what stops eleven role documents an operator did not write from being
+   * interleaved alphabetically through the reviewers they did. It is applied here, in the one
+   * place both `listPersonas` and `personaCatalog` pass through, so the sidebar, the pickers and
+   * a workflow's reviewer choices cannot disagree about order.
+   *
+   * Name and id still decide within a tier, so the ordering stays total and stable: two
+   * Personas of the same origin sort exactly as they always did.
+   */
   private sortPersonas(personas: Persona[]): Persona[] {
     return personas.sort((a, b) =>
-      a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
+      personaOriginRank(a) - personaOriginRank(b)
+      || a.normalizedName.localeCompare(b.normalizedName, "en-US")
+      || a.id.localeCompare(b.id));
   }
 
   private withBuiltins(rows: Persona[]): Persona[] {
@@ -1785,6 +1799,34 @@ export class WorkflowStore {
       }
     }
     return this.withAddressableBuiltins(out);
+  }
+
+  /**
+   * Every catalog document identity this database already knows about.
+   *
+   * Deliberately includes ARCHIVED rows, and that is the whole contract. An operator who
+   * archives a supplied Persona has said they do not want it, and a boot-time sync that only
+   * looked at live rows would hand it back on the next restart - which is the single worst
+   * behaviour this feature could have. Presence of the key means "decided", never "present".
+   *
+   * Read through `parsePersonaRow` rather than by selecting the JSON column directly, so a blob
+   * this build cannot understand degrades to no key by the same tolerant rule that governs every
+   * other read of it. The cost of that degradation is one duplicate import an operator can
+   * archive, which is strictly better than a malformed blob making a row invisible to the sync
+   * forever.
+   */
+  personaSourceKeys(): Set<string> {
+    const rows = this.db.prepare(`SELECT * FROM personas`).all() as unknown[];
+    const keys = new Set<string>();
+    for (const row of rows) {
+      try {
+        const key = parsePersonaRow(row).provenance?.sourceKey;
+        if (key != null) keys.add(key);
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    return keys;
   }
 
   getPersona(id: string): Persona | null {

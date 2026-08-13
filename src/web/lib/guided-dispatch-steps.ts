@@ -9,13 +9,13 @@ import type { DispatchDraft } from "./task-draft.ts";
  * the part `test/` can cover in milliseconds without a DOM. `DispatchModal` owns the state,
  * the option lists and the key handling; everything here is a function of its arguments.
  *
- * The ORDER IS DATA, not a switch, because a later phase inserts Repo in front of Kind. A
- * step added to `GUIDED_STEPS` is asked, drawn on the rail and reachable by ⌫ with no
- * transition rewritten.
+ * The ORDER IS DATA, not a switch, which is how Repo joined the front of it without a
+ * transition being rewritten. A step added to `GUIDED_STEPS` is asked, drawn on the rail and
+ * reachable by ⌫ for free.
  */
 
-/** The steps this pass asks, in the order it asks them. Repo joins the front in phase 4. */
-export const GUIDED_STEP_IDS = ["kind", "harness", "afterWork"] as const;
+/** The steps this pass asks, in the order it asks them. */
+export const GUIDED_STEP_IDS = ["repo", "kind", "harness", "afterWork"] as const;
 
 export type GuidedStepId = (typeof GUIDED_STEP_IDS)[number];
 
@@ -31,6 +31,24 @@ export interface GuidedStep {
    */
   readonly question: string;
   /**
+   * What answers the step.
+   *
+   * `options` is a closed set this pass draws itself and takes by mnemonic, position digit or
+   * ↵. `field` is the form's OWN control answering it, and Repo is the only one: it drives
+   * `RepoCombobox`, an open filter over every repo in the workspace, which already filters,
+   * already arrow-navigates and already portals its list clear of anything that scrolls. The
+   * pass contributes the rung, the question and the fact that ↵ advances - never a second list
+   * beside that one.
+   *
+   * Two rules follow, stated here because they are exceptions rather than accidents and a
+   * later step must not copy them without meaning to. In a `field` step every character is a
+   * character, so a DIGIT TYPES rather than selecting by position - repository names contain
+   * digits, and a digit that picked would make a repo called `service2` unfilterable. And
+   * ESCAPE BELONGS TO THE LIST, which closes on it and ends the pass with it, leaving the
+   * ordinary form; a second press closes the dialog, as Escape does everywhere else.
+   */
+  readonly answeredBy: "options" | "field";
+  /**
    * The draft keys answering this step may write.
    *
    * Declared rather than inferred because it is the claim worth testing: the pass fills the
@@ -44,21 +62,34 @@ export interface GuidedStep {
 
 export const GUIDED_STEPS: readonly GuidedStep[] = [
   {
+    id: "repo",
+    name: "Repo",
+    // Asked FIRST, and first is what makes ↵ alone a real answer: the draft opens on
+    // `readLastDispatchRepo()`, and operators dispatch in runs, so the commonest answer to
+    // this question is already in the field before it is asked.
+    question: "Which repo is this for?",
+    answeredBy: "field",
+    writes: ["repoRoot"],
+  },
+  {
     id: "kind",
     name: "Kind",
     question: "What kind of run is this?",
+    answeredBy: "options",
     writes: ["kind", "workflowId"],
   },
   {
     id: "harness",
     name: "Harness",
     question: "Which harness runs it?",
+    answeredBy: "options",
     writes: ["agent", "model", "effort"],
   },
   {
     id: "afterWork",
     name: "After work",
     question: "What runs after the work?",
+    answeredBy: "options",
     writes: ["workflowId"],
   },
 ];
@@ -125,6 +156,10 @@ export function answerGuidedStep(pass: GuidedPass): GuidedPass {
  * A no-op at the first step rather than an exit, because ⇥ is the exit and it is printed on
  * the strip. Backspacing out of the pass would make the same key mean "correct that" three
  * times and "abandon this" once.
+ *
+ * The first step never reaches this in practice now that it is Repo: there ⌫ is the field's,
+ * deleting a character out of the text being filtered on. Both readings agree - neither takes
+ * the operator anywhere - which is why prepending Repo needed nothing here.
  */
 export function backGuidedStep(pass: GuidedPass): GuidedPass {
   const at = indexOfStep(pass.active);

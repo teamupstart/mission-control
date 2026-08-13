@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
@@ -84,6 +84,8 @@ export interface ScoutCaptureDeps {
   rename?: (from: string, to: string) => Promise<void>;
   /** Injected so a test can swap a validated path immediately before its source is opened. */
   beforeCopy?: (source: string) => Promise<void>;
+  /** Injected so a test can swap a report subdirectory immediately before it is traversed. */
+  beforeCompanionDirectory?: (directory: string) => Promise<void>;
   now?: () => number;
 }
 
@@ -121,8 +123,8 @@ export async function captureScoutArchive(
 
   const roots = await resolveRoots(job.repos);
   const plan = job.submission
-    ? await planSubmitted(job, roots)
-    : await planRecovery(job, roots);
+    ? await planSubmitted(job, roots, deps)
+    : await planRecovery(job, roots, deps);
   if (!plan.ok) return { ok: false, problems: plan.problems };
 
   return publish(job, identity, plan, roots, deps, now);
@@ -180,7 +182,11 @@ type CapturePlan =
  * Every refusal collects rather than short-circuits, so an agent correcting its submission
  * learns about all four bad paths at once instead of one per round trip.
  */
-async function planSubmitted(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promise<CapturePlan> {
+async function planSubmitted(
+  job: ScoutCaptureJob,
+  roots: ResolvedRoot[],
+  deps: ScoutCaptureDeps,
+): Promise<CapturePlan> {
   const submission = job.submission!;
   const problems: string[] = [];
   const primary = primaryRoot(roots);
@@ -217,7 +223,12 @@ async function planSubmitted(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promi
       originalPath: submission.reportPath,
       bytes: report.bytes,
     });
-    const companions = await planReportDirectory(primary, reportDir, report.path);
+    const companions = await planReportDirectory(
+      primary,
+      reportDir,
+      report.path,
+      deps.beforeCompanionDirectory,
+    );
     if (!companions.ok) return companions;
     problems.push(
       ...companions.missing.map(
@@ -246,7 +257,11 @@ async function planSubmitted(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promi
  * publishes somebody's draft as the answer, permanently, in a format that is immutable by
  * contract. Zero and two are the same verdict: an honest partial that names what is missing.
  */
-async function planRecovery(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promise<CapturePlan> {
+async function planRecovery(
+  job: ScoutCaptureJob,
+  roots: ResolvedRoot[],
+  deps: ScoutCaptureDeps,
+): Promise<CapturePlan> {
   const candidates: Array<{ root: ResolvedRoot; relativePath: string }> = [];
   for (const root of roots) {
     if (!root.realRoot) continue;
@@ -320,7 +335,12 @@ async function planRecovery(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promis
       bytes: report.bytes,
     },
   ];
-  const companions = await planReportDirectory(only.root, reportDir, report.path);
+  const companions = await planReportDirectory(
+    only.root,
+    reportDir,
+    report.path,
+    deps.beforeCompanionDirectory,
+  );
   // A recovery that cannot even enumerate the report directory degrades to a partial rather
   // than failing: the alternative is refusing cleanup for ever over a checkout that is on its
   // way out anyway, which is the one thing this path exists to avoid.
@@ -400,6 +420,7 @@ async function planReportDirectory(
   root: ResolvedRoot,
   reportDir: string,
   reportRealPath: string,
+  beforeDirectory?: (directory: string) => Promise<void>,
 ): Promise<
   | {
       ok: true;
@@ -408,21 +429,31 @@ async function planReportDirectory(
     }
   | { ok: false; problems: string[] }
 > {
-  const base = path.join(root.realRoot!, reportDir);
   const files: PlannedFile[] = [];
   const missing: ScoutManifestMissing[] = [];
   const problems: string[] = [];
 
-  const walk = async (dir: string, relative: string): Promise<void> => {
+  const walk = async (relative: string): Promise<void> => {
     if (problems.length > 0) return;
-    const entries = await readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    const directoryPath = relative === "" ? reportDir : `${reportDir}/${relative}`;
+    const before = await resolveCheckoutDirectory(root.realRoot!, directoryPath);
+    if (!before.ok) {
+      problems.push(`${directoryPath}: ${before.reason}`);
+      return;
+    }
+    const entries = await readdir(before.path, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
       problems.push(`${reportDir}/${relative}: could not be read (${error.code ?? "unknown"})`);
       return null;
     });
     if (!entries) return;
+    const after = await resolveCheckoutDirectory(root.realRoot!, directoryPath);
+    if (!after.ok || after.dev !== before.dev || after.ino !== before.ino) {
+      problems.push(`${directoryPath}: changed while the report directory was being inspected`);
+      return;
+    }
     for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       if (entry.name.startsWith(".")) continue;
-      const absolute = path.join(dir, entry.name);
+      const absolute = path.join(before.path, entry.name);
       const rel = relative === "" ? entry.name : `${relative}/${entry.name}`;
       const info = await lstat(absolute).catch(() => null);
       if (!info) continue;
@@ -435,7 +466,8 @@ async function planReportDirectory(
         continue;
       }
       if (info.isDirectory()) {
-        await walk(absolute, rel);
+        await beforeDirectory?.(absolute);
+        await walk(rel);
         continue;
       }
       if (!info.isFile()) {
@@ -449,6 +481,20 @@ async function planReportDirectory(
       // The report itself arrives through the primary entry, with its own role and id.
       if (absolute === reportRealPath) continue;
       const originalPath = `${reportDir}/${rel}`;
+      // `readdir` and `lstat` describe what occupied this name at one instant, but a parent
+      // directory can be replaced before recursion reaches the leaf. Resolve the whole path
+      // beneath the checkout again, exactly like an explicitly submitted supporting file.
+      // If a parent became a symlink this refuses it; if it changes after this check, the
+      // opened handle's device/inode proof in `copyIntoBundle` refuses the replacement.
+      const resolved = await resolveCheckoutFile(root.realRoot!, originalPath);
+      if (!resolved.ok) {
+        missing.push({
+          kind: "report_companion",
+          expectedSource: originalPath,
+          reason: `the file ${resolved.reason} and was not archived`,
+        });
+        continue;
+      }
       if (await isIgnored(root.realRoot!, originalPath)) {
         missing.push({
           kind: "report_companion",
@@ -467,19 +513,19 @@ async function planReportDirectory(
         continue;
       }
       files.push({
-        source: absolute,
-        sourceDev: info.dev,
-        sourceIno: info.ino,
+        source: resolved.path,
+        sourceDev: resolved.dev,
+        sourceIno: resolved.ino,
         archivePath,
         role: "report_companion",
         repoSlot: root.slot,
         originalPath,
-        bytes: info.size,
+        bytes: resolved.bytes,
       });
     }
   };
 
-  await walk(base, "");
+  await walk("");
   if (problems.length > 0) return { ok: false, problems };
   // Bounded before anything is copied, so a runaway directory costs one walk rather than
   // 128 MiB of writes that then have to be thrown away.
@@ -588,12 +634,16 @@ function limitProblems(files: readonly PlannedFile[]): string[] {
 // Checkout-side containment
 // ---------------------------------------------------------------------------
 
+type ResolvedCheckoutEntry =
+  | { ok: true; path: string; info: Stats }
+  | { ok: false; reason: string };
+
 type ResolvedCheckoutFile =
   | { ok: true; path: string; bytes: number; dev: number; ino: number }
   | { ok: false; reason: string };
 
 /**
- * One checkout-relative path, resolved to a real regular file inside a real root.
+ * One checkout-relative entry, resolved to a real path inside a real root.
  *
  * The same three refusals `resolveArchiveFile` makes on the archive side, for the same
  * reasons, against a different root: the path must be relative and free of NUL and control
@@ -601,7 +651,10 @@ type ResolvedCheckoutFile =
  * the only check that sees a symlink swapped in after the plan was made. `lstat` rather than
  * `stat` throughout, because `stat` follows a link and would report its target's type.
  */
-async function resolveCheckoutFile(realRoot: string, relativePath: string): Promise<ResolvedCheckoutFile> {
+async function resolveCheckoutEntry(
+  realRoot: string,
+  relativePath: string,
+): Promise<ResolvedCheckoutEntry> {
   if (relativePath === "" || path.isAbsolute(relativePath)) {
     return { ok: false, reason: "must be a path relative to the checkout" };
   }
@@ -625,12 +678,36 @@ async function resolveCheckoutFile(realRoot: string, relativePath: string): Prom
   }
   const info = await lstat(joined).catch(() => null);
   if (!info) return { ok: false, reason: "does not exist" };
-  if (!info.isFile()) return { ok: false, reason: "is not an ordinary file" };
   const real = await realpath(joined).catch(() => null);
   if (!real || !isInside(realRoot, real)) {
     return { ok: false, reason: "resolves outside the checkout" };
   }
-  return { ok: true, path: real, bytes: info.size, dev: info.dev, ino: info.ino };
+  return { ok: true, path: real, info };
+}
+
+/** One checkout-relative path, resolved to a real regular file inside a real root. */
+async function resolveCheckoutFile(realRoot: string, relativePath: string): Promise<ResolvedCheckoutFile> {
+  const entry = await resolveCheckoutEntry(realRoot, relativePath);
+  if (!entry.ok) return entry;
+  if (!entry.info.isFile()) return { ok: false, reason: "is not an ordinary file" };
+  return {
+    ok: true,
+    path: entry.path,
+    bytes: entry.info.size,
+    dev: entry.info.dev,
+    ino: entry.info.ino,
+  };
+}
+
+/** A report-directory path, resolved without accepting a symlinked component. */
+async function resolveCheckoutDirectory(
+  realRoot: string,
+  relativePath: string,
+): Promise<{ ok: true; path: string; dev: number; ino: number } | { ok: false; reason: string }> {
+  const entry = await resolveCheckoutEntry(realRoot, relativePath);
+  if (!entry.ok) return entry;
+  if (!entry.info.isDirectory()) return { ok: false, reason: "is not a directory" };
+  return { ok: true, path: entry.path, dev: entry.info.dev, ino: entry.info.ino };
 }
 
 /**

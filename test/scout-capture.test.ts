@@ -317,6 +317,37 @@ test("a parent symlink swap cannot redirect a validated source outside the check
   assert.equal(read.kind, "absent");
 });
 
+test("a companion directory swap cannot redirect discovery outside the checkout", async () => {
+  const outside = mkdirp(join(home, `companion-dir-swap-${++checkouts}`));
+  writeFileSync(join(outside, "secret.txt"), "outside bytes that must not be archived");
+  const root = makeCheckout({
+    "docs/reports/resume/report.html": validReportHtml(),
+    "docs/reports/resume/evidence/inside.txt": "validated checkout bytes",
+  });
+  const sourceParent = join(root, "docs/reports/resume/evidence");
+  const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
+  let swapped = false;
+  const outcome = await captureScoutArchive(job, {
+    ...deps,
+    beforeCompanionDirectory: async (directory) => {
+      if (directory !== sourceParent) return;
+      rmSync(sourceParent, { recursive: true, force: true });
+      symlinkSync(outside, sourceParent, "dir");
+      swapped = true;
+    },
+  });
+
+  assert.equal(swapped, true, "the directory changed after inspection and before descent");
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(outcome.problems.join(" "), /evidence.*symbolic link/);
+  const read = await verifyScoutBundle(library, {
+    producerId: PRODUCER,
+    archiveId: job.archiveId,
+  });
+  assert.equal(read.kind, "absent");
+});
+
 test("a submitted report with a symlinked companion is refused rather than called complete", async () => {
   const outside = mkdirp(join(home, "companion-target"));
   writeFileSync(join(outside, "secret.txt"), "not yours");

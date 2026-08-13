@@ -33,8 +33,14 @@ npm run package
 Run one test file with the same loader as the full suite:
 
 ```sh
-node --test --import tsx test/session-contracts.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/session-contracts.test.ts
 ```
+
+`--import ./test/setup-state.mjs` is not optional decoration. It gives the worker a
+throwaway state dir before any import can resolve one, which is what keeps a test that never
+redirected `MISSION_HOME` off the operator's `~/.mission-control/harness.db`. `npm test` and
+`npm run test:electron` load it for you; drop it from a hand-typed command and `openDb`
+refuses to open anything, which is the designed outcome and not a bug to work around.
 
 `--test-concurrency` is deliberately not in that command. It caps how many test *files* run
 at once, so naming a single file makes it inert, and carrying it here implied a single-file

@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, realpathSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
+import { STATE_DIRS } from "@shared/harness-runtime.mjs";
 import { DB_PATH, envVar } from "./config.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import type {
@@ -55,39 +57,122 @@ import { normalizeLabels } from "@shared/task.ts";
 let db: DatabaseSync;
 
 /**
- * Refuse to open the operator's real state dir from inside the test runner.
+ * Where a test's state dir is allowed to live, in every spelling the platform hands out.
+ *
+ * macOS resolves `$TMPDIR` through a symlink - `/var/folders/…` and `/private/var/folders/…`
+ * name the same directory - and the suite uses both: most files take `mkdtempSync` at face
+ * value, while the ones that compare stored paths (workflow-check-lease, and the provider
+ * column fixture beside it) canonicalize with `realpathSync` first. Refusing either spelling
+ * would fail honest tests, so both roots are held.
+ *
+ * Resolved once and cached. This is the only filesystem call the refusal makes, and it must
+ * not become one per `openDb()`: the helpers below call it constantly.
+ */
+let temporaryRoots: readonly string[] | undefined;
+function testStateRoots(): readonly string[] {
+  if (temporaryRoots) return temporaryRoots;
+  const configured = resolve(tmpdir());
+  const roots = new Set([configured]);
+  try {
+    roots.add(resolve(realpathSync(configured)));
+  } catch {
+    // An unreadable temp dir just means the symlinked spelling is the only one we know.
+  }
+  return (temporaryRoots = [...roots]);
+}
+
+/**
+ * `child` IS `parent` or sits inside it - compared by path segment.
+ *
+ * A bare `startsWith` would read `/tmp/state-10` as living inside `/tmp/state-1`, which in a
+ * guard is the dangerous direction: sibling temp dirs are precisely what `mkdtempSync` hands
+ * out to concurrent workers.
+ */
+function isInside(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
+/** The last override that passed the checks below, so the steady state is one string compare. */
+let isolatedOverride: string | undefined;
+
+/**
+ * Refuse to open anything but a disposable test state dir from inside the test runner.
  *
  * Twice now a test has destroyed live state: the state-dir rename once moved
  * `~/.fleet-control` out from under a running daemon (see migrate-state.ts), and a
  * branch's config test ran `DELETE FROM app_config` against the real db on every
  * `npm test`, wiping every setting the operator had saved - repeatedly, since agents
- * run the suite before every PR. Both had the same shape: a test file that imports
- * server modules without redirecting the state dir first, failing silently into
- * someone's home directory.
+ * run the suite before every PR. Fixture rows from `workflow-inspector-bypass.test.ts`
+ * were later found sitting in the operator's database too. All of them had the same
+ * shape: a test file that imports server modules without redirecting the state dir
+ * first, failing silently into someone's home directory.
+ *
+ * `test/setup-state.mjs` now hands every worker a temp dir before its imports run, which
+ * removes the omission as a routine mistake. This stays as the boundary that catches what
+ * a preloader cannot: a nonstandard command that never loaded it, an override set after
+ * `config.ts` already froze the real path, and an override that names somewhere real.
  *
  * The check is here rather than in `stateDir()` because resolution has to stay
  * side-effect free and is evaluated at module load by files that never touch the db
  * (health.test.ts imports routes.ts and is rightly hermetic without any env). Opening
  * the db is the moment real damage becomes possible, so it is the moment to refuse.
  *
- * Comparing DB_PATH against the CURRENT override catches both mistakes: no override
- * at all, and an override set after `config.ts` had already resolved the real home -
- * the same wipe with an alibi.
+ * Four claims, each one a way live state has been or could be reached:
+ *
+ *   1. An override is set at all. No override means `stateDir()` resolved the home dir.
+ *   2. The frozen `DB_PATH` is exactly the `harness.db` the override names NOW. This is
+ *      the "same wipe with an alibi" case - an override applied after config.ts read the
+ *      real home - and it is path equality rather than the prefix test this used to run,
+ *      because `~/.mission-c` is a prefix of `~/.mission-control/harness.db` and a bare
+ *      `startsWith` accepted it.
+ *   3. It is not the operator's state dir under ANY name the app has used. Redundant with
+ *      (4) on a normal machine and not on one whose `$TMPDIR` sits under `$HOME`, and it
+ *      is the check that can say what is actually wrong.
+ *   4. It lives in the platform temp dir, so what it opens is disposable by construction.
+ *
+ * Production pays for none of it: without `NODE_TEST_CONTEXT` this returns on its first
+ * line, and the live daemon opens whatever `stateDir()` resolved, exactly as before.
  */
 function assertTestStateIsolation(): void {
   if (!process.env.NODE_TEST_CONTEXT) return;
   const override = envVar("HOME");
-  if (override && DB_PATH.startsWith(override)) return;
-  throw new Error(
-    `refusing to open ${DB_PATH} under the test runner: this is the machine's real ` +
-      "state dir. Set MISSION_HOME (or HARNESS_HOME) to a fresh temp dir BEFORE " +
-      "importing anything that resolves it - see ui-config-store.test.ts for the pattern.",
-  );
+  // Same override as the last accepted call - nothing about the answer can have changed,
+  // and this is the path every helper takes.
+  if (override !== undefined && override === isolatedOverride) return;
+
+  const fix =
+    " Set MISSION_HOME to a fresh temp dir BEFORE importing anything that resolves it - see" +
+    " ui-config-store.test.ts for the pattern - or run this file the way AGENTS.md documents," +
+    " which preloads test/setup-state.mjs and gives the worker a disposable one.";
+  const refusal = (why: string): Error =>
+    new Error(`refusing to open ${DB_PATH} under the test runner: ${why}.${fix}`);
+
+  if (!override) {
+    throw refusal("no state-dir override is set, so this is the machine's real state dir");
+  }
+  const selected = resolve(override);
+  if (resolve(DB_PATH) !== join(selected, "harness.db")) {
+    throw refusal(
+      `the override now names ${selected}, so this path was frozen against a different ` +
+        "state dir - it was resolved before the override was set",
+    );
+  }
+  if (STATE_DIRS.some((name) => isInside(selected, join(homedir(), name)))) {
+    throw refusal(`${selected} is the machine's real state dir, whichever alias named it`);
+  }
+  if (!testStateRoots().some((root) => isInside(selected, root))) {
+    throw refusal(`${selected} is outside ${tmpdir()}, so it is not a disposable test state dir`);
+  }
+
+  isolatedOverride = override;
 }
 
 export function openDb(): DatabaseSync {
-  if (db) return db;
+  // BEFORE the singleton return, not after. A cached handle is how a late override change
+  // would otherwise keep writing to a state dir the process no longer names - the caller
+  // believes it redirected itself, and every statement still lands in the previous one.
   assertTestStateIsolation();
+  if (db) return db;
   mkdirSync(dirname(DB_PATH), { recursive: true });
   db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL;");

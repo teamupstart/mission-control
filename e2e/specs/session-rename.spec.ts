@@ -53,6 +53,18 @@ async function dispatch(page: Page, daemon: DaemonHandle, task = TASK): Promise<
   await expect(dialog).toBeHidden();
 }
 
+async function useBoardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "board" }),
+  });
+  const body = (await response.json()) as { config?: { layout?: string } };
+  expect(body.config?.layout, "the daemon accepted the Board layout").toBe("board");
+  await page.reload();
+  await expect(page.locator("main.board")).toBeVisible();
+}
+
 test("a shortened generated name keeps its full name in the tooltip", async ({
   dashboard,
   daemon,
@@ -66,9 +78,18 @@ test("a shortened generated name keeps its full name in the tooltip", async ({
   await expect(title).toContainText("…");
   await title.hover();
   await expect(dashboard.locator(".tooltip")).toHaveText(`Rename "${FULL_LONG_TITLE}"`);
+
+  await useBoardLayout(dashboard, daemon);
+  const tile = dashboard.locator(".tile").first();
+  const tileName = tile.locator(".tile-name");
+  await expect(tileName).toContainText("…");
+  await tileName.hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText(`Open ${FULL_LONG_TITLE}`);
+  await expect(tile.locator(".tile-open")).toHaveAttribute("aria-label", `Open ${FULL_LONG_TITLE}`);
+
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
-    await dashboard.screenshot({ path: `${EVIDENCE}/full-name-tooltip.png` });
+    await dashboard.screenshot({ path: `${EVIDENCE}/board-full-name-tooltip.png` });
   }
 });
 

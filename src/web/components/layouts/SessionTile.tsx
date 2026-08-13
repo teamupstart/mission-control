@@ -3,7 +3,7 @@ import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { liveActivity } from "@shared/session.ts";
-import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
+import { relativeTime, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
 import { useInterrupting } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import {
@@ -122,6 +122,7 @@ export function SessionTile({
   // and the run owns its next turn. Same source as the `held` flag above, so the tag and the
   // refusal cannot disagree about one tile.
   const droppable = canAcceptTask(session, draggingRepo, workflowRuns);
+  const openName = session.name ? sessionTitleDetail(session) : "unnamed session";
 
   return (
     <div
@@ -170,7 +171,7 @@ export function SessionTile({
           because the root declines clicks that merely end a text selection. Reaching a
           session by keyboard must not depend on whether something happens to be selected
           somewhere on the page. */}
-      <Tooltip label={`Open ${session.name || "unnamed session"}`}>
+      <Tooltip label={`Open ${openName}`}>
         <button
           type="button"
           className="tile-open"
@@ -178,14 +179,14 @@ export function SessionTile({
             e.stopPropagation();
             onOpen();
           }}
-          aria-label={`Open ${session.name || "unnamed session"}`}
+          aria-label={`Open ${openName}`}
           aria-current={selected}
         />
       </Tooltip>
 
       <span className="tile-head">
         <AgentDot agent={session.agent} />
-        <Tooltip label={`Open ${session.name || "unnamed session"}`}>
+        <Tooltip label={`Open ${openName}`}>
           <span className="tile-name">{session.name || "(unnamed)"}</span>
         </Tooltip>
         {/* Says the same thing as the section rule this tile sits under, and is not redundant

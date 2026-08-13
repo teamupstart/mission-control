@@ -58,6 +58,19 @@ function resultFailure(frame: ClaudeSdkMessage): Error {
   );
 }
 
+/**
+ * The answer this run produced: the structured value on a schema run, the text otherwise.
+ *
+ * A schema run reads `structured_output` and NOTHING ELSE, deliberately. Falling back to
+ * `frame.result` when it is missing was considered and rejected on three counts. It could
+ * not have saved the failure this module was fixed for - `error_max_turns` carries
+ * `result: null`, and the success gate in the stream loop returns before this is ever
+ * called on a failed frame. It would quietly turn `guaranteesInputShape` into a promise
+ * sourced from prose scraping. And `parseModelJson`'s candidate ladder takes the widest
+ * `{`...`}` span in the text, over prompts that embed untrusted child-session transcripts -
+ * so a verdict-shaped object planted in a reviewed transcript becomes a candidate answer.
+ * A missing structured output is a real failure and throwing degrades correctly.
+ */
 function resultText(frame: ClaudeSdkMessage, structured: boolean): string {
   if (structured) {
     if (!("structured_output" in frame)) {
@@ -137,6 +150,14 @@ export async function runClaudeSdkOneShot(
     // transcripts and repo content from a diff, the model only ever needs to emit JSON,
     // and a crafted transcript must not be able to steer it into invoking tools.
     //
+    // ONE tool survives that filter, and only when `outputFormat` is set below: the CLI
+    // appends `StructuredOutput` AFTER applying the tool list, so "every tool disabled" is
+    // not literally true on the schema path. The safety claim above still holds, because of
+    // what that one tool is - read-only, not open-world, permission-free, and it does
+    // nothing but hand back the model's own answer. There is no capability there for a
+    // crafted transcript to steer into. Read the sentence as "nothing that can ACT", not
+    // "nothing that can be called".
+    //
     // A validated grant widens that for a caller that has argued for it. Today only the
     // Inspector does. Its deny rules travel as inline flag settings, which the SDK defines
     // as the same highest-priority layer as CLI `--settings`; `settingSources: []` disables
@@ -173,12 +194,48 @@ export async function runClaudeSdkOneShot(
         tools: grant ? [...grant.tools] : [],
         ...(grant ? { settings: claudeGrantSettings(grant) } : {}),
         settingSources: [],
-        // A tool-less one-shot can and should finish in one turn. A granted Inspector
-        // review cannot: the first assistant turn commonly asks Read/Grep/Glob, then the
-        // tool result has to reach a later assistant turn before a verdict exists. Keeping
-        // `maxTurns: 1` on that path makes every real granted review terminate with
-        // `error_max_turns`; its existing wall-clock timeout remains the hard bound.
-        ...(grant ? {} : { maxTurns: 1 }),
+        // What each of the three shapes of run here costs in turns. The claim that used to
+        // stand here - that a tool-less one-shot "can and should finish in one turn" - was
+        // true only of the third, and applying it to the second shipped a P0: 4 of 6 small
+        // prompts and 1 of 1 at a realistic 198 KB died `error_max_turns`, and 6 of 8 live
+        // workflow context compactions silently degraded to `status:"fallback"`.
+        //
+        // A GRANT gets no cap at all. An Inspector review's first assistant turn commonly
+        // asks Read/Grep/Glob, and the tool result has to reach a later assistant turn
+        // before a verdict exists; there is no honest number to guess, and its wall-clock
+        // timeout is the real bound. Note the Inspector sends a grant AND a schema, so this
+        // branch also covers everything below.
+        //
+        // A SCHEMA costs THREE, and the budget is measured rather than guessed.
+        // `outputFormat: { type: "json_schema" }` below is settled only by a
+        // `StructuredOutput` call, and disassembling the CLI this actually runs gives three.
+        // Which binary that is matters: `sdk-deps.ts` pins the OPERATOR's installed `claude`
+        // (2.1.228 when this was measured), never the CLI bundled inside
+        // `@anthropic-ai/claude-agent-sdk`, whose own code here only serializes flags - so
+        // reading the npm package to predict this behaviour answers about the wrong build.
+        //   1. the model answers in prose, because nothing forces the tool up front;
+        //   2. `[structured-output-enforce]` is injected, AT MOST ONCE per real user turn -
+        //      an explicit already-enforced sentinel means there is no enforcement loop to
+        //      leave room for;
+        //   3. one Ajv revalidation, because an ERRORED `StructuredOutput` result does not
+        //      end the turn. Live here rather than theoretical: every schema
+        //      `providerJsonSchema` renders falls back to NON-strict on `minLength` /
+        //      `minimum` / `maximum` / `default` (8 such fields in `QueueVerdictSchema`, 4
+        //      in `TriageReportSchema`, 2 in `BacklogReportSchema`), so the provider is left
+        //      unconstrained while the tool still Ajv-validates the whole schema.
+        // `maxTurns: 2` measured 6/6 and 2/2 only because it never reached step 3.
+        //
+        // EVERYTHING ELSE costs one, and that is the shape the old claim was actually true
+        // of: with no grant there is no tool result to wait for, and with no schema there is
+        // no enforcement or revalidation to pay for.
+        //
+        // Explicit rather than omitted, on purpose. The SDK does bound this path itself
+        // (`error_max_structured_output_retries` / `structured_output_retry_exhausted`,
+        // sdk.d.ts:4271 and :6909), but every number above is an undocumented vendor
+        // internal on a surface that has already moved, and this block exists to say which
+        // bounds are OURS. Inheriting theirs silently would make the next move invisible
+        // from here.
+        ...(grant ? {} : { maxTurns: opts.schema ? 3 : 1 }),
         cwd: realpathSync(grant?.cwd ?? HEADLESS_CWD),
         pathToClaudeCodeExecutable: executable,
         // A headless Claude run fires the same machine-installed hooks as an interactive

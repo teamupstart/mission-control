@@ -180,6 +180,22 @@ export const claudeRunner: LlmRunner = {
     return { costUsd: usage.reportedCostUsd, basis: "reported", pricingVersion: "" };
   },
 
+  /**
+   * Provider-validated input shape, and true of BOTH transports - but only because the SDK
+   * one is now allowed the turns it takes to keep the promise.
+   *
+   * It was flatly false for `sdk` while `runClaudeSdkOneShot` capped a schema run at one
+   * turn: the run died `error_max_turns` before any validated value existed. The honest fix
+   * was the cap, not this declaration. What backs it on each side is different and worth
+   * naming - `claude -p --json-schema` validates before printing, while the SDK path is
+   * validated by the `StructuredOutput` tool, which Ajv-checks the WHOLE schema even where
+   * the provider fell back to non-strict. Both therefore hand back a value of the declared
+   * shape or fail loudly; neither ever returns unvalidated prose, because `resultText`
+   * refuses to read `result` on a schema run.
+   *
+   * This is only ever a claim about INPUT shape. Every caller still runs its own Zod parse,
+   * which is where transforms and refinements no JSON Schema can express get applied.
+   */
   structuredOutput: { guaranteesInputShape: true },
 
   sandbox: CLAUDE_SANDBOX,

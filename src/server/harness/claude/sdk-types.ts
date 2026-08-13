@@ -194,7 +194,12 @@ export interface ClaudeSdkOneShotQueryOptions {
   /** Inline flag settings, used only when a validated grant carries deny rules. */
   settings?: string;
   settingSources: ("user" | "project" | "local")[];
-  /** Optional because granted reviews need later turns after tool results. */
+  /**
+   * Optional because a granted review takes as many turns as its tool results need, so it
+   * sends no cap at all. The capped runs are not all worth the same number: a schema run
+   * has to pay for the `StructuredOutput` enforcement and one Ajv revalidation on top of
+   * its answer. `llm/claude-sdk.ts` derives each figure.
+   */
   maxTurns?: number;
   model?: string;
   maxBudgetUsd?: number;

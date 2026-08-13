@@ -193,6 +193,9 @@ re-verifies it and returns.
 carrying the reserved archive identity and the checkout locators recovery needs. It is **not**
 evidence. A published bundle needs none of it to be read, and deleting the database loses the
 ability to resume an unfinished capture, never the ability to open a finished archive.
+On startup, a job with a recorded submission resumes even if its scout is still running. Only
+an unsubmitted reservation waits while its agent is still expected, so recovery cannot publish
+a partial archive ahead of the report that agent may still submit.
 
 ## Discovery is automatic
 

@@ -36,7 +36,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");
 const { ScoutArchiveManager } = await import("../src/server/scouts/manager.ts");
 const { RegistryScoutTaskGateway } = await import("../src/server/scouts/task-gateway.ts");
-const { clearScoutCaptureJobs } = await import("../src/server/scouts/capture-store.ts");
+const { ScoutCaptureStore, clearScoutCaptureJobs } = await import("../src/server/scouts/capture-store.ts");
 const { clearScoutTables } = await import("../src/server/scouts/store.ts");
 const { openDb } = await import("../src/server/db.ts");
 
@@ -1022,25 +1022,58 @@ test("the daemon derives the archive's identity - a submission carries none of i
 // Restart recovery
 // ---------------------------------------------------------------------------
 
-test("a job left unfinished by a restart is resumed, unless its agent is still expected", async () => {
+test("restart recovery waits only for a live scout with no durable submission", async () => {
   const h = harness();
-  const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const store = new ScoutCaptureStore(db);
+  const gateway = new RegistryScoutTaskGateway(h.registry);
+  const reserve = (task: Task, cwd: string, live: boolean) => {
+    h.registry.upsertTask(task);
+    if (live) bindSession(h, task, cwd);
+    const subject = gateway.subjectForTask(task.id);
+    assert.ok(subject);
+    return store.reserve({ ...subject, producerId: h.scouts.producer.id });
+  };
 
   // A scout still running: the daemon died between reserving and recording a submission, and
   // publishing a partial now would burn the archive id it is about to submit against.
-  const live = mkScout({ worktreePath: cwd, repoRoot: cwd, status: "running" });
-  h.registry.upsertTask(live);
-  h.registry.emit("session_exit", bindSession(h, live, cwd));
-  const liveJob = h.scouts.captureJobsForTask(live.id)[0]!;
-  assert.ok(liveJob);
+  const pendingTree = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const pending = mkScout({
+    worktreePath: pendingTree.worktreePath,
+    repoRoot: pendingTree.repoRoot,
+    status: "running",
+  });
+  const pendingJob = reserve(pending, pendingTree.worktreePath, true);
+
+  // A crash after recordSubmission has durable inputs. Both a fresh submitted row and a
+  // retryable failure must resume even though their scout tasks still expect an agent.
+  const recoverable = [];
+  for (const status of ["submitted", "failed"] as const) {
+    const tree = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+    const task = mkScout({ worktreePath: tree.worktreePath, repoRoot: tree.repoRoot, status: "running" });
+    const job = reserve(task, tree.worktreePath, true);
+    const submitted = store.recordSubmission(job.operationKey, {
+      reportPath: "docs/reports/resume/report.html",
+      summary: `durable ${status} submission`,
+      tags: [],
+      supporting: [],
+    })!;
+    if (status === "failed") store.markFailed(submitted.operationKey, "daemon stopped during capture");
+    recoverable.push({ task, operationKey: submitted.operationKey });
+  }
 
   // A scout whose task is terminal: its agent is not coming back, so it is resumed.
-  const gone = mkScout({ worktreePath: cwd, repoRoot: cwd, status: "failed" });
-  h.registry.upsertTask(gone);
-  await h.scouts.settleBeforeCleanup(gone.id);
+  const goneTree = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
+  const gone = mkScout({ worktreePath: goneTree.worktreePath, repoRoot: goneTree.repoRoot, status: "failed" });
+  const goneJob = reserve(gone, goneTree.worktreePath, false);
 
   await h.scouts.recoverJobs();
-  assert.equal(h.scouts.captureJobsForTask(gone.id)[0]!.status, "published");
+  assert.equal(store.get(pendingJob.operationKey)!.status, "reserved", "the live unsubmitted job waits");
+  for (const item of recoverable) {
+    const recovered = store.get(item.operationKey)!;
+    assert.equal(recovered.status, "published", `${item.task.id} resumes its durable submission`);
+    assert.equal(recovered.captureStatus, "complete");
+  }
+  assert.equal(store.get(goneJob.operationKey)!.status, "published", "the terminal reservation recovers");
 });
 
 function escape(value: string): string {

@@ -406,17 +406,17 @@ export class ScoutArchiveManager {
   /**
    * Resume every capture this daemon owes, at startup.
    *
-   * Deliberately skips a job whose task is still waiting on its agent: a `reserved` row for a
-   * live scout means the daemon died between reserving and recording a submission, and
-   * publishing a partial for it would burn the archive id the scout is about to submit
-   * against. Those settle through the completion gate or the exit listener instead, which is
-   * where the evidence about whether the agent is still there actually lives.
+   * Deliberately skips an UNSUBMITTED job whose task is still waiting on its agent: a
+   * `reserved` row for a live scout means the daemon died between reserving and recording a
+   * submission, and publishing a partial for it would burn the archive id the scout is about
+   * to submit against. Once a submission is durable, startup must resume it even while the
+   * scout is live; otherwise a crash after `recordSubmission` strands its accepted report.
    */
   async recoverJobs(): Promise<void> {
     if (!this.tasks) return;
     for (const job of this.captureStore.unfinished()) {
       if (!this.acceptingJobs) return;
-      if (this.tasks.awaitsAgent(job.taskId)) continue;
+      if (job.submission === null && this.tasks.awaitsAgent(job.taskId)) continue;
       const outcome = await this.runCapture(job.operationKey);
       if (!outcome.ok) {
         this.log("could not resume a capture job", {

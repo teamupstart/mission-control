@@ -265,34 +265,14 @@ export class ScoutArchiveManager {
     let publishedIncomplete = false;
     for (const job of jobs) {
       if (job.status !== "published") continue;
-      // The index row is a PROJECTION of the reconciler's own verification of this exact
-      // bundle, so reading it answers "is this complete?" without opening a file. That matters
-      // because a merged scout with a partial archive is re-examined by every merge
-      // reconciliation tick, and re-digesting a 512 MiB bundle a minute is not a completion
-      // gate, it is a background job nobody asked for.
-      const row = this.store.get(scoutArchiveKey(job.producerId, job.archiveId));
-      if (row) {
-        if (row.status === "ready") {
-          return {
-            ok: true,
-            archive: {
-              key: row.key,
-              relativePath: row.relativePath,
-              captureStatus: "complete",
-              artifactCount: row.artifactCount,
-            },
-            replayed: true,
-          };
-        }
-        publishedIncomplete = true;
-        continue;
-      }
-      // Not indexed yet: the bundle was renamed into place moments ago, or the daemon died
-      // between the rename and the row. Verify it from disk, which is both the answer and the
-      // recovery.
+      // The index is disposable discovery state, not completion authority. A bundle can be
+      // deleted or damaged after its ready row was written, so every stated completion must
+      // verify the filesystem through the capture path. An absent bundle is rebuilt from the
+      // retained checkout; a damaged final directory is preserved and completion is refused.
       const outcome = await this.runCapture(job.operationKey);
-      if (outcome.ok && outcome.captureStatus === "complete") return this.result(outcome);
-      if (outcome.ok) publishedIncomplete = true;
+      if (!outcome.ok) return this.result(outcome);
+      if (outcome.captureStatus === "complete") return this.result(outcome);
+      publishedIncomplete = true;
     }
 
     const pending = jobs.find((job) => job.submission !== null && job.status !== "published");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
@@ -286,6 +286,60 @@ test("a scout becomes done once its archive is published and verified", async ()
   assert.equal(page.archives.length, 1);
   assert.equal(page.archives[0]!.status, "ready");
   assert.equal(page.archives[0]!.title, task.title);
+});
+
+test("completion rebuilds a deleted bundle instead of trusting its cached ready row", async () => {
+  const h = harness();
+  const report = validReportHtml();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": report,
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  assert.equal(
+    (await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" })).ok,
+    true,
+  );
+  await h.scouts.reconcileNow();
+  const job = h.scouts.captureJobsForTask(task.id)[0]!;
+  const attempts = job.attempts;
+  rmSync(join(h.library, job.producerId, job.archiveId), { recursive: true, force: true });
+
+  assert.equal((await h.tasks.complete(task.id, "found it"))?.status, "done");
+  assert.ok(h.scouts.captureJobsForTask(task.id)[0]!.attempts > attempts);
+  assert.equal(
+    readFileSync(join(h.library, job.producerId, job.archiveId, SCOUT_PRIMARY_REPORT_PATH), "utf8"),
+    report,
+  );
+});
+
+test("completion refuses a corrupt bundle even when its cached index row is ready", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  assert.equal(
+    (await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" })).ok,
+    true,
+  );
+  await h.scouts.reconcileNow();
+  const job = h.scouts.captureJobsForTask(task.id)[0]!;
+  writeFileSync(
+    join(h.library, job.producerId, job.archiveId, SCOUT_PRIMARY_REPORT_PATH),
+    "tampered after indexing",
+  );
+
+  await assert.rejects(
+    () => h.tasks.complete(task.id, "found it"),
+    (error: unknown) => {
+      assert.ok(error instanceof ScoutArchiveNotReadyError);
+      assert.match(error.message, /archive already exists/);
+      return true;
+    },
+  );
+  assert.equal(h.registry.getTask(task.id)?.status, "running");
 });
 
 test("an invalid report leaves the task and its checkout available for a correction", async () => {

@@ -292,6 +292,20 @@ async function planRecovery(job: ScoutCaptureJob, roots: ResolvedRoot[]): Promis
       captureStatus: "partial",
     };
   }
+  if (await isIgnored(only.root.realRoot!, only.relativePath)) {
+    return {
+      ok: true,
+      files: [],
+      missing: [
+        {
+          kind: "primary_report",
+          expectedSource: only.relativePath,
+          reason: "the recovered report is ignored by git and was not archived",
+        },
+      ],
+      captureStatus: "partial",
+    };
+  }
 
   const files: PlannedFile[] = [
     {

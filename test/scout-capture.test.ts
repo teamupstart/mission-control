@@ -546,6 +546,25 @@ test("exactly one conventional report is recovered as a complete archive", async
   assert.equal(manifest.manifest.archive.summary, null);
 });
 
+test("an ignored recovered primary report becomes a named partial and is not archived", async () => {
+  const root = makeCheckout({
+    ".gitignore": "docs/reports/\n",
+    "docs/reports/resume/report.html": validReportHtml(),
+  });
+  const { job } = makeJob({ root });
+  const outcome = await captureScoutArchive(job, deps);
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.captureStatus, "partial");
+  assert.equal(outcome.artifactCount, 0);
+  const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
+  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  assert.equal(manifest.ok, true);
+  if (!manifest.ok) return;
+  assert.equal(manifest.manifest.missing[0]?.expectedSource, "docs/reports/resume/report.html");
+  assert.match(manifest.manifest.missing[0]?.reason ?? "", /ignored by git and was not archived/);
+});
+
 test("two candidate reports are never guessed between - the archive is an honest partial", async () => {
   const root = makeCheckout({
     "docs/reports/resume/report.html": validReportHtml(),

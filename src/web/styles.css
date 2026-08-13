@@ -13496,6 +13496,72 @@ select.ensemble-judge-persona {
 /* The reviewer name is a flex row with its own gap; the stage name is plain text, so the
    mark carries the same 6px itself or the two read as different marks. */
 .wf-pipeline-stage-name .wf-pipeline-disabled-mark { margin-right: 6px; }
+
+/* A stage this round carried forward rather than re-ran.
+   It RECEDES and never disappears: the pipeline's shape is what makes the gap legible, so a
+   reader can see that the stages below are the only ones working. Deliberately NOT dashed -
+   dashed is this surface's mark for "not authored" (the Inspector footer, a Check row), and a
+   carried stage is authored, it simply did not run here. Softening the panel and the border
+   says "nothing happened in this card" without borrowing a meaning that is already taken. */
+.wf-pipeline-stage.is-carried {
+  border-color: color-mix(in oklab, var(--border) 62%, transparent);
+  background: color-mix(in oklab, var(--panel) 52%, transparent);
+}
+.wf-pipeline-stage.is-carried .wf-pipeline-stage-name { color: var(--muted); }
+.wf-pipeline-stage.is-carried .wf-pipeline-stage-sub { color: var(--dim); }
+
+/* The provenance line: where a carried stage's pass actually lives, and the way back to it.
+   The tick is the ONLY green on a carried stage, and it lives here rather than on the status
+   chip on purpose - it is a claim about a DIFFERENT round. The chip speaks for the round on
+   screen, where nothing ran, so it stays neutral grey.
+   One rule serves both the `<p>` (the Board ladder, which has no scrubber to send anyone to)
+   and the `<button>` (the runs monitor, where the round is one click away). */
+.wf-carried {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 5px 7px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--idle) 7%, transparent);
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: left;
+}
+.wf-carried-tick {
+  flex: none;
+  color: var(--idle);
+  font-weight: 700;
+}
+.wf-carried-text { min-width: 0; }
+/* Pushed to the trailing edge so the affordance reads as "go there" rather than as
+   punctuation on the sentence. */
+.wf-carried-go {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim);
+}
+button.wf-carried.is-link {
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+button.wf-carried.is-link:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--idle) 34%, var(--border));
+  background: color-mix(in oklab, var(--idle) 13%, transparent);
+}
+button.wf-carried.is-link:hover .wf-carried-go { color: var(--fg); }
+button.wf-carried.is-link:focus-visible {
+  outline: 2px solid var(--idle);
+  outline-offset: -2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  button.wf-carried.is-link { transition: none; }
+}
 .wf-pipeline-empty {
   padding: 9px;
   font-size: 10.5px;
@@ -19280,6 +19346,19 @@ span.line-run-prov {
 .wf-ladder-rung.workflow-blocked {
   --wf-ladder-tone: var(--danger);
 }
+/* A carried rung keeps the ladder's default `--dim` tone - `stopped` maps to no tone of its
+   own precisely because nothing ran - and only softens its name, so the rail and the dot stay
+   the ladder's and the eye still lands on the rung that IS working. */
+.wf-ladder-rung.is-carried .wf-ladder-name { color: var(--muted); }
+/* The Board ladder has no scrubber to send a reader to, so the provenance line here is a plain
+   sentence rather than a button. `width: auto` because the rung is not a card: the run
+   monitor's line fills a fixed-width stage, and stretching this one to the ladder's full column
+   would make a short sentence read as a banner across the whole panel. */
+.wf-ladder-rung.is-carried .wf-carried {
+  width: auto;
+  margin: 6px 0 0;
+  font-size: 9.5px;
+}
 /* One connector per gap: the final rung never grows a line below its terminal mark. */
 .wf-ladder-rung:not(:last-child)::before {
   content: "";
@@ -21126,6 +21205,27 @@ span.line-run-prov {
 .wf-tile-peek-sentence strong {
   color: var(--fg);
   font-weight: 650;
+}
+/* The tile's one line about everything this round did not have to run again.
+   Quieter than the sentence above it and with no tone fill of its own: it is about the stages
+   the tile is NOT showing, so it must not compete with the rung that it IS showing. The tick
+   is green because the passes are real; the text stays dim because they were earned
+   elsewhere. Clamped to one line - the Board tile's height is the scarce thing here.
+   A BLOCK rather than a flex row, so `text-overflow` has a block container to act on: on a
+   flex parent the bare text node becomes an anonymous item and the ellipsis never renders,
+   which is exactly the tile that would then clip mid-word instead. */
+.wf-tile-peek-carried {
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 9.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.wf-tile-peek-carried .wf-carried-tick {
+  color: var(--idle);
+  font-weight: 700;
 }
 .wf-tile-peek-unavailable {
   margin: 6px 0 0;

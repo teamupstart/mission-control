@@ -1750,7 +1750,7 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
  */
 export const UI_CONFIG_DEFAULTS = {
   layout: "grid",
-  conversationView: "chat",
+  conversationView: "terminal",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -1762,10 +1762,9 @@ export const UI_CONFIG_DEFAULTS = {
 export const UiConfigSchema = z.object({
   layout: LayoutModeSchema.default(UI_CONFIG_DEFAULTS.layout),
   /**
-   * Which rendering the Conversation opens in. `chat` by default: the terminal reading is
-   * a deliberate choice about how you want to read a session, not a change anyone should
-   * arrive at. A per-session override lives in the browser only and never reaches here -
-   * see `src/web/lib/conversation-view.ts` for why that one is honestly tab-scoped.
+   * Which rendering the Conversation opens in. A per-session override lives in the browser
+   * only and never reaches here - see `src/web/lib/conversation-view.ts` for why that one is
+   * honestly tab-scoped.
    */
   conversationView: ConversationViewSchema.default(UI_CONFIG_DEFAULTS.conversationView),
   /**

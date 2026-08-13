@@ -1,0 +1,349 @@
+import type { Locator, Page } from "@playwright/test";
+
+import { expect, test } from "../fixtures/test.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { settled } from "../fixtures/settle.ts";
+
+const TRAILING_URL = "https://example.com/docs_(draft)";
+const TURN = `Context menu selection target and [CI page](https://example.com/menu-target). Raw \`${TRAILING_URL},\` follows.`;
+const SELECTED = "selection target";
+const PASTED = "pasted from the context menu";
+
+async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("exercise the context menu");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+}
+
+/** Find one text run, optionally make it the live Selection, and return its centre point. */
+async function pointForText(
+  locator: Locator,
+  needle: string,
+  select: boolean,
+  characterOffset?: number,
+): Promise<{ x: number; y: number }> {
+  return locator.evaluate((root, input) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+      const text = node.textContent ?? "";
+      const at = text.indexOf(input.needle);
+      if (at >= 0) {
+        const selectionRange = document.createRange();
+        selectionRange.setStart(node, at);
+        selectionRange.setEnd(node, at + input.needle.length);
+        if (input.select) {
+          const selection = window.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(selectionRange);
+        }
+        const pointRange = input.characterOffset === undefined
+          ? selectionRange
+          : document.createRange();
+        if (input.characterOffset !== undefined) {
+          pointRange.setStart(node, at + input.characterOffset);
+          pointRange.setEnd(node, at + input.characterOffset + 1);
+        }
+        const rect = pointRange.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      }
+      node = walker.nextNode();
+    }
+    throw new Error(`Could not find text: ${input.needle}`);
+  }, { needle, select, characterOffset });
+}
+
+test("context actions work by pointer and keyboard without leaking keys to the grid", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await dispatch(dashboard, daemon);
+
+  const card = dashboard.locator("article.card").first();
+  await card.getByRole("button", { name: "Expand conversation" }).click();
+  const composer = card.getByPlaceholder(/^Reply to this session/);
+  await expect(composer).toBeEnabled();
+  await composer.fill(TURN);
+  await composer.press("Enter");
+
+  const turn = card.locator(".turn-user:not(.pending-turn)").filter({ hasText: "Context menu selection target" });
+  await expect(turn).toBeVisible();
+  await settled(card);
+
+  // A right-click inside the live selection preserves it and Copy writes those exact bytes.
+  const selectedPoint = await pointForText(turn, SELECTED, true);
+  await dashboard.mouse.click(selectedPoint.x, selectedPoint.y, { button: "right" });
+  let menu = dashboard.getByRole("menu", { name: "Actions for this item" });
+  await expect(menu).toBeVisible();
+  await menu.getByRole("menuitem", { name: /^Copy$/ }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(SELECTED);
+  await expect(dashboard.getByRole("status").filter({ hasText: "Copied" })).toBeVisible();
+
+  // Pointing somewhere else collapses the old selection before resolution, so that remote
+  // selection can never be copied by accident.
+  const outsidePoint = await pointForText(turn, "Context menu", false);
+  await dashboard.mouse.click(outsidePoint.x, outsidePoint.y, { button: "right" });
+  await expect(menu).toBeHidden();
+  await expect(dashboard.getByRole("menuitem", { name: /^Copy$/ })).toHaveCount(0);
+
+  const link = turn.getByRole("link", { name: "CI page" });
+  await link.click({ button: "right" });
+  menu = dashboard.getByRole("menu", { name: "Actions for this item" });
+  await expect(menu.getByRole("menuitem", { name: "Copy URL" })).toBeVisible();
+
+  // While the anchored menu owns the keyboard, a bare grid shortcut cannot reach the selected
+  // card behind it. The menu stays up and no Kill dialog appears.
+  await dashboard.keyboard.press("k");
+  await expect(menu).toBeVisible();
+  await expect(dashboard.getByRole("dialog", { name: "Kill session" })).toHaveCount(0);
+  await menu.getByRole("menuitem", { name: "Copy URL" }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(
+    "https://example.com/menu-target",
+  );
+
+  // Keyboard invocation has no pointer proving an unrelated live selection belongs to this
+  // focused link. Its first Copy action therefore uses the visible link text.
+  await pointForText(turn, SELECTED, true);
+  await link.focus();
+  await dashboard.keyboard.press("Shift+F10");
+  await dashboard.getByRole("menuitem", { name: /^Copy$/ }).first().click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("CI page");
+
+  // The host drops a selection that does not intersect the keyboard target, so an otherwise
+  // actionless focused control cannot open a menu for text somewhere else in the document.
+  const collapse = card.getByRole("button", { name: "Collapse conversation" });
+  await collapse.focus();
+  await pointForText(turn, SELECTED, true);
+  await dashboard.keyboard.press("Shift+F10");
+  await expect(menu).toBeHidden();
+
+  // A URL-shaped text run stops before prose punctuation, even though the punctuation is in
+  // the same text node. Both clipboard and open actions therefore receive the usable URL.
+  const rawUrlPoint = await pointForText(turn, TRAILING_URL, false);
+  await dashboard.mouse.click(rawUrlPoint.x, rawUrlPoint.y, { button: "right" });
+  await dashboard.getByRole("menuitem", { name: "Copy URL" }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe(TRAILING_URL);
+
+  // The first caret position after the URL belongs to its trailing comma, not to the URL.
+  const commaPoint = await pointForText(turn, `${TRAILING_URL},`, false, TRAILING_URL.length);
+  await dashboard.mouse.click(commaPoint.x, commaPoint.y, { button: "right" });
+  await expect(menu).toBeHidden();
+
+  // The desktop preload bridge wins when it exists, and opening never navigates this page.
+  const dashboardUrl = dashboard.url();
+  await dashboard.evaluate(() => {
+    const probe = window as Window & { __contextMenuOpened?: string };
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        openExternal: async (url: string) => { probe.__contextMenuOpened = url; },
+      },
+    });
+  });
+  await link.click({ button: "right" });
+  await dashboard.getByRole("menuitem", { name: "Open link" }).click();
+  await expect.poll(() => dashboard.evaluate(
+    () => (window as Window & { __contextMenuOpened?: string }).__contextMenuOpened,
+  )).toBe("https://example.com/menu-target");
+  expect(dashboard.url()).toBe(dashboardUrl);
+
+  // A desktop bridge refusal reaches the visible error path instead of becoming an unhandled
+  // rejection or implying that the link opened.
+  await dashboard.evaluate(() => {
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        openExternal: async () => { throw new Error("no registered handler"); },
+      },
+    });
+  });
+  await link.click({ button: "right" });
+  await dashboard.getByRole("menuitem", { name: "Open link" }).click();
+  await expect(
+    dashboard.getByRole("status").filter({ hasText: "Could not open link" }),
+  ).toBeVisible();
+
+  // Firefox's Shift+right-click convention remains the escape hatch to the native menu.
+  await link.click({ button: "right", modifiers: ["Shift"] });
+  await expect(menu).toBeHidden();
+
+  // Shift+F10 bypasses the text-field typing guard, captures the field offsets before focus
+  // moves into the menu, and the selected Paste row drives the controlled React textarea.
+  await dashboard.evaluate((text) => navigator.clipboard.writeText(text), PASTED);
+  await composer.fill("Before ");
+  await composer.focus();
+  await dashboard.keyboard.press("Shift+F10");
+  menu = dashboard.getByRole("menu", { name: "Actions for this item" });
+  await expect(menu.getByRole("menuitem", { name: /^Paste$/ })).toBeVisible();
+  await menu.getByRole("menuitem", { name: /^Paste$/ }).click();
+  await expect(composer).toHaveValue(`Before ${PASTED}`);
+
+  // Cut exercises the other DOM-mutation path with a partial selection, so this cannot pass
+  // through a field clear that happens to produce the same visible result.
+  await composer.fill("ship the fix");
+  await composer.evaluate((field: HTMLTextAreaElement) => {
+    field.focus();
+    field.setSelectionRange(9, 12);
+  });
+  await dashboard.keyboard.press("Shift+F10");
+  await menu.getByRole("menuitem", { name: /^Cut$/ }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("fix");
+  await expect(composer).toHaveValue("ship the ");
+  expect(await composer.evaluate((field: HTMLTextAreaElement) => [
+    field.selectionStart,
+    field.selectionEnd,
+  ])).toEqual([9, 9]);
+
+  // A clipboard read that settles after the field changes cannot apply stale offsets.
+  await composer.fill("captured draft");
+  await composer.evaluate((field: HTMLTextAreaElement) => {
+    field.focus();
+    field.setSelectionRange(0, 8);
+  });
+  await dashboard.evaluate(() => {
+    const clipboard = navigator.clipboard;
+    const original = clipboard.readText.bind(clipboard);
+    const gate: {
+      original: () => Promise<string>;
+      resolve: ((text: string) => void) | null;
+    } = { original, resolve: null };
+    (window as unknown as { contextClipboardGate: typeof gate }).contextClipboardGate = gate;
+    Object.defineProperty(clipboard, "readText", {
+      configurable: true,
+      value: () => new Promise<string>((resolve) => { gate.resolve = resolve; }),
+    });
+  });
+  await dashboard.keyboard.press("Shift+F10");
+  await menu.getByRole("menuitem", { name: /^Paste$/ }).click();
+  await composer.fill("newer draft");
+  await dashboard.evaluate(() => {
+    const gate = (window as unknown as {
+      contextClipboardGate: { resolve: ((text: string) => void) | null };
+    }).contextClipboardGate;
+    gate.resolve?.("stale clipboard");
+  });
+  await expect(composer).toHaveValue("newer draft");
+  await expect(
+    dashboard.getByRole("status").filter({ hasText: "Field changed before paste" }),
+  ).toBeVisible();
+  await dashboard.evaluate(() => {
+    const host = window as unknown as {
+      contextClipboardGate: { original: () => Promise<string> };
+    };
+    Object.defineProperty(navigator.clipboard, "readText", {
+      configurable: true,
+      value: host.contextClipboardGate.original,
+    });
+    Reflect.deleteProperty(host, "contextClipboardGate");
+  });
+
+  // Paste confirmation never repeats clipboard contents, including a password-field value.
+  const secret = "context-menu-secret-sentinel";
+  const password = dashboard.getByLabel("Password context menu specimen");
+  await dashboard.evaluate(async (value) => {
+    const field = document.createElement("input");
+    field.type = "password";
+    field.setAttribute("aria-label", "Password context menu specimen");
+    field.style.position = "fixed";
+    field.style.left = "12px";
+    field.style.bottom = "12px";
+    document.body.append(field);
+    field.focus();
+    await navigator.clipboard.writeText(value);
+  }, secret);
+  await dashboard.keyboard.press("Shift+F10");
+  await menu.getByRole("menuitem", { name: /^Paste$/ }).click();
+  await expect(password).toHaveValue(secret);
+  const pasteStatus = dashboard.getByRole("status").filter({ hasText: "Pasted" });
+  await expect(pasteStatus).toBeVisible();
+  await expect(pasteStatus).not.toContainText(secret);
+  await password.evaluate((field) => field.remove());
+
+  // A readonly field can copy its selection, but never offers an action that mutates it.
+  const readonly = dashboard.getByLabel("Readonly context menu specimen");
+  await dashboard.evaluate(() => {
+    const field = document.createElement("input");
+    field.setAttribute("aria-label", "Readonly context menu specimen");
+    field.value = "locked draft";
+    field.readOnly = true;
+    field.style.position = "fixed";
+    field.style.left = "12px";
+    field.style.bottom = "12px";
+    document.body.append(field);
+    field.focus();
+    field.setSelectionRange(0, 6);
+  });
+  await dashboard.keyboard.press("Shift+F10");
+  await expect(menu.getByRole("menuitem", { name: /^Copy$/ })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /^Cut$/ })).toHaveCount(0);
+  await expect(menu.getByRole("menuitem", { name: /^Paste/ })).toHaveCount(0);
+  await menu.getByRole("menuitem", { name: /^Copy$/ }).click();
+  expect(await dashboard.evaluate(() => navigator.clipboard.readText())).toBe("locked");
+  await expect(readonly).toHaveValue("locked draft");
+  await readonly.evaluate((field) => field.remove());
+
+  // Copy itself does not manage field focus, so the host restores the invoking textarea and
+  // typing can continue after the menu action completes.
+  await composer.selectText();
+  await dashboard.keyboard.press("Shift+F10");
+  await dashboard.getByRole("menuitem", { name: /^Copy$/ }).click();
+  await expect(composer).toBeFocused();
+  await dashboard.keyboard.type("!");
+  await expect(composer).toHaveValue("!");
+
+  // The fixed Menu key is a structural alias, not a second row in Keyboard settings.
+  await composer.evaluate((field) => {
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true }));
+  });
+  await expect(menu).toBeVisible();
+  await dashboard.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(composer).toBeFocused();
+
+  // Passive viewport dismissal returns keyboard control to the invoking field. Outside clicks
+  // keep their separate non-restoring path so the pointer's new target can receive focus.
+  for (const eventType of ["wheel", "touchmove", "resize"] as const) {
+    await dashboard.keyboard.press("Shift+F10");
+    await expect(menu).toBeVisible();
+    await dashboard.evaluate((type) => window.dispatchEvent(new Event(type)), eventType);
+    await expect(menu).toBeHidden();
+    await expect(composer).toBeFocused();
+  }
+
+  // A customizable named key with native field behavior remains native while typing. The same
+  // binding can still open the global menu outside text fields.
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ keybindings: { contextMenu: "Backspace" } }),
+  });
+  const body = (await response.json()) as {
+    config?: { keybindings?: { contextMenu?: string } };
+  };
+  expect(body.config?.keybindings?.contextMenu).toBe("Backspace");
+  await dashboard.reload();
+
+  const reboundCard = dashboard.locator("article.card").first();
+  await expect(reboundCard).toBeVisible();
+  const expand = reboundCard.getByRole("button", { name: "Expand conversation" });
+  if (await expand.isVisible()) await expand.click();
+  const reboundComposer = reboundCard.getByPlaceholder(/^Reply to this session/);
+  await reboundComposer.fill("native edit");
+  await reboundComposer.focus();
+  await dashboard.keyboard.press("Backspace");
+  await expect(reboundComposer).toHaveValue("native edi");
+  const reboundMenu = dashboard.getByRole("menu", { name: "Actions for this item" });
+  await expect(reboundMenu).toBeHidden();
+
+  await reboundCard.getByRole("link", { name: "CI page" }).first().focus();
+  await dashboard.keyboard.press("Backspace");
+  await expect(reboundMenu).toBeVisible();
+});

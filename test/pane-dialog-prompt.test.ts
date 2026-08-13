@@ -271,6 +271,7 @@ test("the reply box reopens once the menu is gone", () => {
       session: mkSession(), canSend: true, dialogOpen: false,
     }),
   );
-  assert.match(closed, /Reply to this session/);
+  assert.match(closed, /<textarea/);
+  assert.doesNotMatch(closed, /<textarea[^>]*disabled/);
   assert.ok(!closed.includes("Waiting on a menu"));
 });

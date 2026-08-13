@@ -11,6 +11,7 @@ import { FileEditor } from "./FileEditor.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
+import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -202,6 +203,31 @@ export function FileWorkspace({
   const buffer = selectedPath ? state?.buffers[selectedPath] : null;
   const mode = state?.mode ?? "preview";
   const previewable = buffer?.document.kind === "html" || buffer?.document.kind === "markdown";
+  /*
+   * The conflict notice's "Copy local".
+   *
+   * It called `navigator.clipboard.writeText` behind a `void` and rendered nothing either way,
+   * so the one moment a reader most needs to know their text is safe - the file changed under
+   * them and they are about to discard or overwrite - was the moment the control said least.
+   * Through `copyText` now, and it confirms and reports like every other copy in the app.
+   *
+   * Keyed to THE CONFLICT, not to the file, because this component never remounts and a
+   * refusal arms no hold to expire - so that red sentence has whatever lifetime this key gives
+   * it and no other. The file alone is too coarse in both directions: it leaves a refusal
+   * standing after Reload disk or Overwrite disk has settled the conflict it was about, and it
+   * puts that same stale sentence back on screen the instant a LATER edit reopens a conflict on
+   * the same file, before the reader has attempted anything. Resolving to `selectedPath` while
+   * there is no conflict is what makes both transitions a change.
+   *
+   * The path goes last so that a path containing the separator cannot shift the fields before
+   * it; revision and the deleted flag never contain one.
+   */
+  const conflict = buffer?.conflict ?? null;
+  const copyLocal = useCopyFeedback({
+    resetOn: conflict
+      ? `${conflict.revision ?? "none"}:${conflict.deleted ? "gone" : "changed"}:${selectedPath ?? ""}`
+      : selectedPath,
+  });
   const [previewText, setPreviewText] = useState("");
   useEffect(() => {
     let live = true;
@@ -463,7 +489,10 @@ export function FileWorkspace({
             <Tooltip label="Overwrite the newer file on disk with your local edits"><button className="btn btn-danger" disabled={!buffer.conflict.revision} onClick={() => {
               if (window.confirm("Overwrite the newer file on disk with your local edits?")) controller.overwriteDisk(session.id, buffer.document.path);
             }}>Overwrite disk</button></Tooltip>
-            <Tooltip label="Copy your local version to the clipboard"><button className="btn" onClick={() => void navigator.clipboard.writeText(buffer.text)}>Copy local</button></Tooltip>
+            <Tooltip label="Copy your local version to the clipboard"><button className="btn" onClick={() => { void copyLocal.copy(() => buffer.text); }}>{copyLocal.copied ? COPY_FEEDBACK_LABEL : "Copy local"}</button></Tooltip>
+            {/* Its own class so it opts out of the `.file-notice > span` rule that pins the
+                leading sentence left - this one belongs beside the button it reports on. */}
+            {copyLocal.error && <span className="file-notice-error" role="alert">{copyLocal.error}</span>}
           </div>
         )}
       </div>

@@ -43,8 +43,14 @@ removes it when the worker exits. A test file that never redirected `MISSION_HOM
 therefore isolated anyway, instead of quietly resolving the operator's
 `~/.mission-control/harness.db` - which is where a branch's config test once ran
 `DELETE FROM app_config` on every run. `npm test` and `npm run test:electron` already carry
-it; a hand-typed command has to say it, and `openDb` refuses to open anything when it is
-missing. That refusal is the designed outcome, not a bug to work around.
+it; a hand-typed command has to say it.
+
+Without it, a file that sets its own disposable `MISSION_HOME` above its imports still runs
+exactly as it always has - that is the pattern most of the suite uses and it is fully
+supported. What breaks is the file that sets nothing, or sets something unsafe: `openDb`
+refuses a state home it cannot resolve, one that is not disposable, or one that is missing
+altogether, rather than falling back to the operator's. That refusal is the designed outcome,
+not a bug to work around.
 
 The preload seeds `HARNESS_HOME` and clears any inherited `MISSION_HOME` and `FLEET_HOME`.
 That is a precedence decision, not a preference for the old name: `envVar` reads `MISSION_`

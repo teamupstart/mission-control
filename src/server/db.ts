@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
@@ -95,17 +95,40 @@ function testStateRoots(): readonly string[] {
  * the honest case. Walking up to the nearest ancestor that DOES exist and re-attaching the
  * tail keeps those working while still resolving every link that is already on disk, which is
  * where a link has to be to redirect the open.
+ *
+ * The two reasons `realpathSync` can fail are not interchangeable, and conflating them is a
+ * hole. "No such component" is the honest case above. "The component is there but does not
+ * resolve" is a BROKEN SYMLINK, and re-attaching its name as though it were an ordinary
+ * missing directory hands back a path that passes every check below while naming somewhere
+ * else entirely - `<temp>/looks-disposable/nested`, where `looks-disposable` dangles into
+ * `~/.mission-control`. `lstatSync` is what tells them apart: it does not follow the link, so
+ * it answers "this name exists" for a link whose target does not.
+ *
+ * Such a path is refused rather than resolved. Where it would land is a question about a
+ * directory that does not exist yet, and a guard that cannot answer must not guess. This is
+ * deliberately not left to `mkdirSync` to trip over: today it happens to fail ENOENT through
+ * a dangling link on both macOS and Linux, which means the safety of this path currently
+ * rests on the error behaviour of a syscall nobody chose for that purpose.
  */
-function physicalPath(path: string): string {
+type PhysicalPath = { path: string } | { unresolvable: string };
+
+function physicalPath(path: string): PhysicalPath {
   const absolute = resolve(path);
   const tail: string[] = [];
   let cursor = absolute;
   for (;;) {
     try {
-      return join(realpathSync(cursor), ...tail);
+      return { path: join(realpathSync(cursor), ...tail) };
     } catch {
+      let present = true;
+      try {
+        lstatSync(cursor);
+      } catch {
+        present = false; // genuinely absent - the honest not-yet-created case
+      }
+      if (present) return { unresolvable: cursor };
       const parent = dirname(cursor);
-      if (parent === cursor) return absolute; // nothing along this path exists yet
+      if (parent === cursor) return { path: absolute }; // nothing along this path exists yet
       tail.unshift(basename(cursor));
       cursor = parent;
     }
@@ -127,7 +150,11 @@ function operatorStateRoots(): readonly string[] {
   for (const name of STATE_DIRS) {
     const dir = join(homedir(), name);
     roots.add(resolve(dir));
-    roots.add(physicalPath(dir));
+    // An operator dir that is itself an unresolvable link contributes only its lexical form;
+    // the candidate below is still refused, because a candidate that cannot resolve never
+    // reaches this comparison at all.
+    const physical = physicalPath(dir);
+    if ("path" in physical) roots.add(physical.path);
   }
   return (operatorStateDirs = [...roots]);
 }
@@ -237,7 +264,14 @@ function assertTestStateIsolation(): void {
   // Judged on BOTH spellings: the one written down, and the one the filesystem resolves it
   // to. Checking only the first is bypassable by a symlink; checking only the second would
   // stop naming the path the author actually set when it comes time to explain the refusal.
-  const physical = physicalPath(selected);
+  const resolved = physicalPath(selected);
+  if ("unresolvable" in resolved) {
+    throw refusal(
+      `${resolved.unresolvable} is present but does not resolve - a broken symlink - so which ` +
+        `directory ${selected} would create cannot be known`,
+    );
+  }
+  const physical = resolved.path;
   for (const candidate of physical === selected ? [selected] : [selected, physical]) {
     const subject = candidate === selected ? candidate : `${selected} -> ${candidate}`;
     if (operatorStateRoots().some((dir) => isInside(candidate, dir))) {

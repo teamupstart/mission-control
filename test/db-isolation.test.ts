@@ -179,6 +179,36 @@ test("a temp-looking symlink into the operator's state dir is refused", () => {
   );
 });
 
+test("a state home reached through a broken symlink is refused", () => {
+  // The dangling cousin of the case above, and the one that shows why the refusal cannot be
+  // left to `mkdirSync` to trip over. `looks-disposable` points into `.mission-control` while
+  // that target does not exist yet, so `realpathSync` fails on it exactly as it fails on a
+  // not-yet-created fixture dir - and treating those two the same re-attaches the name and
+  // hands back `<jail>/looks-disposable/nested`, which passes every check on this file.
+  //
+  // Measured before the fix: the guard DID pass this path, and what stopped it was
+  // `mkdirSync` returning ENOENT through the dangling link - on macOS and on Linux node:24
+  // alike. So no operator database was ever created. That is worth being precise about,
+  // because it means this case is not a reproduction of data loss; it is a reproduction of
+  // the guard declining to answer and something else happening to catch it. The assertion is
+  // therefore on the REFUSAL, not merely on a non-zero exit: a test that only checked the
+  // exit code passed before this change too, on an error from a syscall nobody chose as a
+  // safety boundary.
+  const jail = join(home, "dangling-jail");
+  const operator = join(jail, ".mission-control"); // deliberately never created
+  mkdirSync(jail, { recursive: true });
+  symlinkSync(operator, join(jail, "looks-disposable"), "dir");
+
+  const res = runChild(OPEN_AND_REPORT, {
+    HOME: jail,
+    MISSION_HOME: join(jail, "looks-disposable", "nested"),
+  });
+
+  assert.notEqual(res.status, 0, "a path through a broken link was opened");
+  assert.match(res.stderr, /does not resolve - a broken symlink/);
+  assert.equal(existsSync(operator), false, "the link's target was created after all");
+});
+
 test("deleting NODE_TEST_CONTEXT does not disarm the guard", () => {
   // The cheapest possible bypass, and the one that needs no unusual path at all: the refusal
   // used to begin `if (!process.env.NODE_TEST_CONTEXT) return`, and that is an ordinary

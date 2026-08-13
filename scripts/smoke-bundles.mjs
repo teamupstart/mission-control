@@ -72,9 +72,12 @@ const KILL_GRACE_MS = 2_000;
  * - exactly the malformed-bundle case the reaper exists for, silently unhandled. Observed: two
  * such orphans survived a "successful" smoke run against a SIGTERM-trapping bundle.
  *
- * So the child stays referenced and this awaits its `exit`, which keeps the process alive until
- * the escalation lands. The last-resort bound exists only so that a child which somehow survives
- * SIGKILL (uninterruptible IO) still cannot hang the build; it reports rather than pretending.
+ * So the child stays referenced and this awaits its `exit` UNCONDITIONALLY. There is no
+ * give-up path on purpose: returning early while the process is still alive would be this
+ * function reporting a reap it did not perform, which is the same false assurance in a
+ * different disguise. `SIGKILL` cannot be trapped, so the only way to outlive it is a state no
+ * userland retry could fix anyway - and a build that stops with an obvious hung teardown is
+ * more honest than one that prints "ok" over a live orphan.
  */
 async function reap(child) {
   for (const stream of [child.stdout, child.stderr, child.stdin]) {
@@ -86,24 +89,17 @@ async function reap(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   // Attached BEFORE the signal, so a child that dies instantly cannot settle between the check
   // above and the listener below and leave this waiting on an event that already fired.
-  const exited = new Promise((r) => child.once("exit", () => r(true)));
+  const exited = new Promise((r) => child.once("exit", () => r()));
   child.kill("SIGTERM");
-  const escalate = setTimeout(() => {
+  // An interval rather than one shot: it keeps escalating for as long as the child is there,
+  // and being referenced it also keeps this process alive to deliver them.
+  const escalate = setInterval(() => {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }, KILL_GRACE_MS);
-  let abandon;
-  const gaveUp = new Promise((r) => {
-    abandon = setTimeout(() => r(false), KILL_GRACE_MS * 5);
-  });
   try {
-    if (await Promise.race([exited, gaveUp])) return;
-    // SIGKILL cannot be trapped, so this is close to unreachable - but "close to" is not "never",
-    // and a smoke that hangs here would be the very failure this function prevents elsewhere.
-    fail(`a bundle survived SIGKILL and was left running (pid ${child.pid})`);
-    child.unref();
+    await exited;
   } finally {
-    clearTimeout(escalate);
-    clearTimeout(abandon);
+    clearInterval(escalate);
   }
 }
 

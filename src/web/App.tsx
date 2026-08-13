@@ -87,6 +87,7 @@ import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { PersonaLibrary } from "./workflows/PersonaLibrary.tsx";
 import { personaDriftSurface, usePersonaDrift } from "./workflows/usePersonaDrift.ts";
 import { SessionActionLibrary } from "./workflows/SessionActionLibrary.tsx";
+import { CommandLibrary } from "./workflows/CommandLibrary.tsx";
 import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
@@ -187,6 +188,7 @@ export function App(): React.JSX.Element {
     tasks,
     personas,
     sessionActions,
+    workflowCommands,
     workflowSummaries,
     workflowRunSummaries: workflowRuns,
     workflowBindingSummaries,
@@ -2037,6 +2039,10 @@ export function App(): React.JSX.Element {
     (id: string | null) => replaceLibrarySelection("actions", id),
     [replaceLibrarySelection],
   );
+  const onCommandSelected = useCallback(
+    (id: string | null) => replaceLibrarySelection("commands", id),
+    [replaceLibrarySelection],
+  );
 
   const libraryShelf = route.page === "library" ? route.shelf ?? null : null;
   const libraryAssetId = route.page === "library" ? route.assetId ?? null : null;
@@ -2061,6 +2067,7 @@ export function App(): React.JSX.Element {
           summaries={workflowSummaries}
           personas={personas}
           sessionActions={sessionActions}
+          workflowCommands={workflowCommands}
           hasSnapshot={hasSnapshot}
           initialWorkflowId={libraryAssetId}
           startNew={libraryCreating}
@@ -2078,6 +2085,20 @@ export function App(): React.JSX.Element {
             // "choose a version" state reachable instead of inventing a selection.
             workflowVersionId: workflow.currentVersionId ?? undefined,
           })}
+        />
+      </main>
+    )
+    : libraryShelf === "commands"
+    ? (
+      // The one Library surface with a CLOSED catalog: four built-in slots, no New, and the
+      // live views straight off the snapshot rather than a second fetch of the same rows.
+      <main className="lib-surface">
+        <CommandLibrary
+          commands={workflowCommands}
+          hasSnapshot={hasSnapshot}
+          initialSlot={libraryAssetId}
+          onDirtyChange={setWorkflowDirty}
+          onSelectionChange={onCommandSelected}
         />
       </main>
     )
@@ -2118,6 +2139,7 @@ export function App(): React.JSX.Element {
             personas={personas}
             personaUpstream={personaDrift.upstream}
             sessionActions={sessionActions}
+            workflowCommands={workflowCommands}
             workflowRuns={workflowRuns}
             ensembleSummaries={ensembleSummaries}
             ensembleAttentionCount={ensembleAttentionCount}

@@ -6,12 +6,16 @@ import {
   personaUpstreamLabel,
   sessionActionCompletionLabel,
   sessionActionSkillLabel,
+  workflowCommandFact,
   workflowRunIsOpen,
+  WORKFLOW_CHECK_SLOTS,
+  WORKFLOW_COMMAND_PURPOSE,
 } from "@shared/workflow.ts";
 import type {
   PersonaUpstreamState,
   PersonaView,
   SessionAction,
+  WorkflowCommandView,
   WorkflowRunSummary,
   WorkflowSummary,
 } from "@shared/workflow.ts";
@@ -40,7 +44,7 @@ export interface LibraryShelfCopy {
 }
 
 /**
- * The five shelves, in reading order.
+ * The six shelves, in reading order.
  *
  * The questions are the headings and the nouns are demoted to eyebrows deliberately: the
  * problem this page was built for is that nothing in the product ever said what a workflow,
@@ -88,6 +92,21 @@ export const LIBRARY_SHELF_COPY: readonly LibraryShelfCopy[] = [
     why: "Both stop at the backlog. A mission files a task on a cadence; a source pulls your "
       + "real backlog in. Neither ever launches an agent.",
     glyph: "◷",
+  },
+  {
+    id: "commands",
+    eyebrow: "Commands",
+    question: "What does each standard gate run?",
+    // Says the two halves an operator has to hold together: a workflow names a portable
+    // slot, and this is where the machine says what that slot actually runs. The last
+    // sentence is the one that keeps the shelf honest about authoring - saving a Command
+    // does not run it.
+    why: "A workflow names a slot, never a command, so it travels between repositories. "
+      + "Here each slot gets one machine-wide default plus any repository exceptions. "
+      + "Nothing runs until a workflow reaches the slot.",
+    // A shell prompt's caret: the one glyph in Library's mono vocabulary that already means
+    // "a command line", and no icon package for it.
+    glyph: "❯",
   },
 ];
 
@@ -205,6 +224,30 @@ export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {
         sessionActionCompletionLabel(action.completion)
       }`,
     }));
+}
+
+/**
+ * The four portable Command slots, always all four and always in registry order.
+ *
+ * Driven off `WORKFLOW_CHECK_SLOTS` rather than off the passed catalog, so a slot the daemon
+ * has not answered for yet is still a card: "unconfigured" and "not loaded" would otherwise
+ * be the same missing tile, and the first is a state an operator acts on.
+ *
+ * There is no ＋ New card on this shelf and there cannot be one. The slots ship with the
+ * product; what an operator authors is what each one runs.
+ */
+export function commandCards(views: readonly WorkflowCommandView[]): LibraryCard[] {
+  const bySlot = new Map(views.map((view) => [view.slot, view]));
+  return WORKFLOW_CHECK_SLOTS.map((slot) => ({
+    id: slot,
+    name: slot,
+    description: WORKFLOW_COMMAND_PURPOSE[slot],
+    tags: [{ label: "built-in", tone: "builtin" as const }],
+    // Durable configuration, never run status. `Not configured` is not toned as a warning:
+    // a slot nobody configured is a gate that passes with a note, which is the designed
+    // behaviour of a portable workflow rather than something to fix.
+    fact: workflowCommandFact(bySlot.get(slot)),
+  }));
 }
 
 /**

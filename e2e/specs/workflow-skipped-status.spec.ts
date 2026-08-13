@@ -110,7 +110,7 @@ test("skipped checks stay amber while prior passes turn green in an Inspector re
   await expect(check).toContainText("Skipped");
   await checkStatus.hover();
   await expect(dashboard.locator(".tooltip")).toHaveText(
-    "Skipped because no command is configured for this check.",
+    "Skipped because this machine configures nothing for this Command.",
   );
 
   // Inspector-only submissions are normally created after a live GitHub finding and a new
@@ -160,7 +160,7 @@ test("skipped checks stay amber while prior passes turn green in an Inspector re
   await expect(repairedCheck).toContainText("Skipped");
   await repairedCheckStatus.hover();
   await expect(dashboard.locator(".tooltip")).toHaveText(
-    "Skipped because no command is configured for this check.",
+    "Skipped because this machine configures nothing for this Command.",
   );
 
   await expect(personaStatus).toHaveClass(/workflow-passed/);

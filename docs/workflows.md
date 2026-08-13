@@ -132,7 +132,7 @@ through 7 are preserved for bindings that already pin them, and version 8 is cur
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
-Stage 1 is a deterministic gate: the [`typecheck` and `test` checks](#check-nodes), placed
+Stage 1 is a deterministic gate: the [`typecheck` and `test` Commands](#command-nodes), placed
 ahead of every reviewer so that a change which does not compile costs no model calls at all.
 Both are evaluated on the same submission and both must pass at their All-pass Join before
 anything behind them starts, so one failing gate returns the submission to the session with the
@@ -142,7 +142,7 @@ Those checks are live from version 3 onward, on a machine where you have switche
 configured a command - the graph did not change, the runtime behind it arrived. Where you have
 not, the gates report Not run and pass, and versions 3 onward follow the same Persona review
 path version 2 does while preserving the deterministic stage in the graph. The
-[Check nodes](#check-nodes) section owns the rules for configured, unconfigured and unauthorized
+[Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
 Behind it are the four built-in Personas wired the way they were written to compose. Intent
@@ -407,55 +407,66 @@ observation can still change the answer.
 A blocked action is never a review failure. It writes no verdict, sends no repair packet back
 to the session, and spends no repair round.
 
-### Check nodes
+### Command nodes
 
-A **Check** represents a deterministic command gate instead of a model review. **A configured,
-authorized check now runs its command, and a non-zero exit fails the submission** - the failing
-output comes back to the session as a repair packet, exactly the way a Persona's requested
-changes do. It runs in a [pooled worktree of its own](worktrees-and-checks.md#check-leases), pinned to the commit the
-run captured, under a [supervisor](worktrees-and-checks.md#running-a-check-command) that can prove afterwards that the
-command and everything it spawned is gone.
+A **Command** represents a deterministic command gate instead of a model review. **A
+configured, authorized Command runs its argv, and a non-zero exit fails the submission** - the
+failing output comes back to the session as a repair packet, exactly the way a Persona's
+requested changes do. It runs in a [pooled worktree of its own](worktrees-and-checks.md#check-leases),
+pinned to the commit the run captured, under a
+[supervisor](worktrees-and-checks.md#running-a-check-command) that can prove afterwards that
+the command and everything it spawned is gone.
 
-> **If you already had checks switched on, this changes your results.** Earlier builds shipped
-> the node without an execution runtime, so a configured check recorded **Not run** and passed.
-> Those same commands now run and can fail. That is the fix rather than a regression, but a
-> gate that has been quietly green may go red on the first run after upgrading, and the first
-> thing to check is whether the command actually passes on the captured commit.
+The node is called a Command everywhere a person reads it. Its **wire kind is still `check`**
+and always will be: published versions, run attempts, node ids and bookmarks all name it, and
+renaming a durable value for a word would break every one of them. `WorkflowCheckSlot`,
+`workflow_node_attempts` and the check runtime modules keep their spellings for the same
+reason.
 
-**Check commands run on Linux and macOS.** Everywhere else a check reports Not run and passes,
+> **If you already had these switched on, this changes your results.** Earlier builds shipped
+> the node without an execution runtime, so a configured Command recorded **Not run** and
+> passed. Those same commands now run and can fail. That is the fix rather than a regression,
+> but a gate that has been quietly green may go red on the first run after upgrading, and the
+> first thing to check is whether the command actually passes on the captured commit.
+
+**Workflow Commands run on Linux and macOS.** Everywhere else one reports Not run and passes,
 which is the same already-shipped path an unconfigured slot takes - see [Running a check
 command](worktrees-and-checks.md#running-a-check-command) for why the platform floor exists.
 
-**A Check names a slot, never a command.** The slots are `test`, `lint`, `typecheck` and
-`build`. The command assigned to each slot is configured per repository under **Settings →
-Workflows**, keeping the exportable published version machine-neutral and free of argv. The
-execution contract accepts an **argv**, not a shell string, so `&&`, `|` and `$HOME` are
-ordinary arguments. The settings field splits a typed line quote-aware (`'…'` literal, `"…"`
-honouring `\"` and `\\`, a backslash escaping the next character outside quotes, adjacent
-runs joining into one token) and **shows the parsed argv back**, so you see what the
-execution runtime will receive.
+**A Command names a slot, never an argv.** The slots are `test`, `lint`, `typecheck` and
+`build`. What each one runs is configured in
+[Library › Commands](library-and-line.md#commands) (`#/library/commands/<slot>`), keeping the
+exportable published version machine-neutral and free of argv. The execution contract accepts
+an **argv**, not a shell string, so `&&`, `|` and `$HOME` are ordinary arguments. The editor
+splits a typed line quote-aware (`'…'` literal, `"…"` honouring `\"` and `\\`, a backslash
+escaping the next character outside quotes, adjacent runs joining into one token) and **shows
+the parsed argv back**, so you see what the execution runtime will receive.
 
-The repository box beside it is the same picker the dispatch form uses. It offers the
-allowlisted repositories first - a check only runs in one of those - then every git
-repository under the workspace roots, filtered as you type. It starts empty and still takes
-a typed path, which is how a subdirectory override is entered: the list holds roots, and the
-override is a path below one.
+Each slot carries:
 
-Each repository may configure a slot **once**; a second entry for the same pair is refused
-rather than silently ignored. A **subdirectory** entry beats the repository-wide one, which
+- one optional **global default**, which is repository-neutral and runs at the checkout root;
+- zero or more **overrides**, each keyed by a repository root or by a subdirectory inside one.
+
+The repository box beside an override is the same picker the dispatch form uses. It offers the
+repositories granted the Workflows cell first - a Command only runs in one of those - then
+every git repository under the workspace roots, filtered as you type. It starts empty and
+still takes a typed path, which is how a subdirectory override is entered: the list holds
+roots, and the override is a path below one.
+
+Each repository may override a slot **once**; a second entry for the same pair is refused
+rather than silently ignored. A **subdirectory** override beats the repository-wide one, which
 is how a monorepo gives one package its own command - and the command then runs *in that
-subdirectory*, not at the top of the tree.
+subdirectory*, not at the top of the tree. A global default carries no opinion about which
+subdirectory to stand in, so a losing subdirectory override never lends it one.
 
-**A slot may also carry one repository-neutral default**, which is what runs wherever no
-repository entry matches. Defaults live in the same catalog as the entries above and are
-authored through `PUT /api/workflow-commands/<slot>`; the Settings table shown here edits the
-repository exceptions only, because its first column *is* a repository and there is no honest
-row in it for a command that names none. A default runs at the **checkout root** - it carries
-no opinion about which subdirectory to stand in, so a losing subdirectory entry never lends it
-one. Resolution is therefore three rungs, in this order: the longest matching subdirectory or
-repository entry, then the slot's default, then *skipped*. Everything after that - consent,
-Trust, the platform floor, the runtime - is unchanged, and a configured default still runs
-only in a repository that holds the Workflows grant.
+Resolution is therefore three rungs, in this order: the longest matching subdirectory or
+repository override, then the slot's global default, then *skipped*. Everything after that -
+consent, Trust, the platform floor, the runtime - is unchanged, and a configured default still
+runs only in a repository that holds the Workflows grant.
+
+Saving a slot replaces its default and its complete override list in one compare-and-swap, so
+the two halves are never stored apart and a second window's save is refused rather than
+silently overwriting unsaved typing.
 
 Worktrees of a configured repository count too,
 wherever they live on disk: a dispatched session usually stands in a pooled checkout under
@@ -465,45 +476,46 @@ checkout's `packages/web` resolves the command configured for the repository's
 `examples/packages/web` gets the repository-wide command, not the one configured for
 `packages/web`.
 
-**An unrun gate passes, with a note saying why.** A slot with no entry for this repository and
-no default is *skipped*; a repository that has not been authorized is *not run*; a platform that
-cannot run checks, or an executable that is not there, is *not run* too. All of them pass,
-because a workflow that failed on every unconfigured machine would be broken by default, and
-each says which of them happened so it is never mistaken for a gate that ran. Only a command
-that ran and exited non-zero fails.
+**An unrun gate passes, with a note saying why.** A slot with no override for this repository
+and no global default is *skipped*; a repository that has not been authorized is *not run*; a
+platform that cannot run Commands, or an executable that is not there, is *not run* too. All of
+them pass, because a workflow that failed on every unconfigured machine would be broken by
+default, and each says which of them happened so it is never mistaken for a gate that ran.
+Only a command that ran and exited non-zero fails.
 
 An infrastructure problem is never a fail either. A timeout, a kill, a pool with no worktree to
 give: none of them is a statement about the change under review, so they retry and then block
 the run visibly rather than reporting a verdict.
 
-**Checks are consent-gated twice**, and are off by default. **Settings → Workflows**
-(`#/settings/workflows`) carries both controls: **Enable workflow check commands**, the switch,
-and **Check commands**, the table of repository root, slot and argv. The switch alone is not
-enough - the repository must also hold the **Workflows** grant in
-**Settings → Trust** (`#/settings/trust`), the same grant Live delivery uses, and neither is
-granted by default. Enabling both authorizes running code the reviewed branch supplies - its
-scripts, dependencies and build steps - with the daemon's own filesystem authority. **This is
-not a sandbox**, and the grant rather than anything in the runtime is what bounds it.
+**Commands are consent-gated twice**, and are off by default. The two questions live apart on
+purpose: *what* a slot runs is authoring and lives in Library, and *whether* it may run at all
+is policy and lives in **Settings → Workflows** (`#/settings/workflows`) as **Allow workflow
+Commands**. The switch alone is not enough - the repository must also hold the **Workflows**
+grant in **Settings → Trust** (`#/settings/trust`), the same grant Live delivery uses, and
+neither is granted by default. Enabling both authorizes running code the reviewed branch
+supplies - its scripts, dependencies and build steps - with the daemon's own filesystem
+authority. **This is not a sandbox**, and the grant rather than anything in the runtime is what
+bounds it.
 
 Because that pairing is the heaviest thing any grant in the matrix permits, Trust flies a
-double dagger on every Workflows cell while the check switch is on, names those repositories,
-and offers **Turn checks off** in place. A grant with checks off is not flagged: no command
-can run, and amber on an inert grant is how a matrix teaches you to stop reading it.
+double dagger on every Workflows cell while the switch is on, names those repositories, and
+offers **Turn Commands off** in place. A grant with Commands off is not flagged: nothing can
+run, and amber on an inert grant is how a matrix teaches you to stop reading it.
 
-**Checks use the treehouse pool whenever the binary is installed.** Unlike dispatch, a check does
-not consult `treehouse.toml`; it keeps using the pool for a repository that has no such file. Two
-check commands run at once, and each one holds a pooled worktree for as long as it runs - drawn
+**Commands use the treehouse pool whenever the binary is installed.** Unlike dispatch, a Command
+does not consult `treehouse.toml`; it keeps using the pool for a repository that has no such file.
+Two Commands run at once, and each one holds a pooled worktree for as long as it runs - drawn
 from the same `max_trees` a dispatched session draws from (`treehouse.toml` in the repository;
 this one sets 32). On a repository with a small pool, a long test suite gating a review is a slot
-a dispatch is waiting for. Raise `max_trees` there if dispatch starts queuing behind checks.
+a dispatch is waiting for. Raise `max_trees` there if dispatch starts queuing behind Commands.
 
-When `treehouse` is not installed, a check instead uses a throwaway detached `git worktree` pinned
-to the captured commit. The configured command still runs and its real result still gates the
-workflow; the fallback does not record the check as passed without running it. Checks also run
+When `treehouse` is not installed, a Command instead uses a throwaway detached `git worktree`
+pinned to the captured commit. The configured argv still runs and its real result still gates the
+workflow; the fallback does not record the gate as passed without running it. Commands also run
 through their own small attempt budget, separate from the review budget, so a build never spends
 a Persona's slot.
 
-Run detail draws a check as its own card: the slot, the configured argv, the exit code, and the
+Run detail draws a Command as its own card: the slot, the configured argv, the exit code, and the
 last few kilobytes of output with a count of anything dropped - or, for a gate that did not run,
 the sentence saying which of the reasons above applied.
 
@@ -1014,7 +1026,7 @@ says so: the refusal is `live_not_authorized` on the run, not silence.
 A Live binding can be saved only while its current session is in a granted checkout. Revoking
 consent keeps the binding choice visible but refuses the next delivery; it is never silently
 changed to Preview. The Workflows panel holds the second, independent switch for
-[Check nodes](#check-nodes), which shares that one grant and is still
+[Command nodes](#command-nodes), which shares that one grant and is still
 **off** by default, because it grants something different in kind: running branch-authored code
 on your disk, rather than typing text a human can read before it acts. One cell in Trust,
 two capabilities, each still armed by its own switch - which is why the cell's tooltip names
@@ -1045,7 +1057,7 @@ has queue items, prompted when it does not. Exactly one, because re-arming both 
 single repair packet produce two completion claims and therefore two review rounds for one fix.
 So the whole cycle runs without you:
 
-1. A Persona (or a [Check](#check-nodes)) fails. The run parks in
+1. A Persona (or a [Command](#command-nodes)) fails. The run parks in
    `waiting_for_session` and the repair packet is typed into the pane.
 2. Confirming that delivery re-arms one Foreman completion episode.
 3. The session makes the change and goes idle.

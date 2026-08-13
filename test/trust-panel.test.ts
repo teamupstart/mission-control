@@ -323,7 +323,7 @@ test("the Workflows column names both capabilities its one grant covers", () => 
     repoAllowlist: ["/repo"],
   }));
   assert.match(html, /Live repairs typed into its sessions/);
-  assert.match(html, /Check commands run against branch code/);
+  assert.match(html, /workflow Commands run against branch code/);
   assert.match(html, /armed separately in Workflows settings/);
 });
 
@@ -387,7 +387,7 @@ test("a workflow grant with checks armed flies the double dagger and names the r
   assert.match(html, /trust-arm-note/);
   assert.match(html, /branch-authored code/);
   assert.match(html, /It is not a sandbox/);
-  assert.match(html, /Turn checks off/);
+  assert.match(html, /Turn Commands off/);
   // The pill carries the marker, and stays a GRANTED pill - amber, not revoked.
   assert.match(html, /trust-grant is-on is-armed/);
   assert.match(html, /in <span[^>]*>repo<\/span>/);

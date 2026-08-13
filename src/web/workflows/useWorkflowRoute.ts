@@ -4,7 +4,11 @@ import {
   isSettingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
-import { WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "@shared/workflow.ts";
+import {
+  WORKFLOW_CHECK_SLOTS,
+  WORKFLOW_RUN_STATUSES,
+  type WorkflowRunStatus,
+} from "@shared/workflow.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
 // dashboard has - fleet, Library, Runs, Ensembles, Settings - is a variant of `MissionRoute`
@@ -18,9 +22,10 @@ import { WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "@shared/workflow.
 // longer such a page to parse into.
 
 /**
- * The Library's five shelves, in the order they are read on the page.
+ * The Library's six shelves, in the order they are read on the page.
  *
- * Append-only, and the strings are the hash segments: a rename is a broken bookmark.
+ * Append-only, and the strings are the hash segments: a rename is a broken bookmark. The
+ * sixth is appended rather than filed beside Workflows for exactly that reason.
  */
 export const LIBRARY_SHELVES = [
   "workflows",
@@ -28,11 +33,12 @@ export const LIBRARY_SHELVES = [
   "actions",
   "ensembles",
   "missions",
+  "commands",
 ] as const;
 export type LibraryShelf = (typeof LIBRARY_SHELVES)[number];
 
 /**
- * The three shelves whose assets are AUTHORED one level deeper, and so the only ones that can
+ * The four shelves whose assets are AUTHORED one level deeper, and so the only ones that can
  * appear in a route.
  *
  * Ensembles shelves launchers rather than assets (its cards open Dispatch) and Missions ·
@@ -40,11 +46,24 @@ export type LibraryShelf = (typeof LIBRARY_SHELVES)[number];
  * deep-link into. Typing the route field this narrowly is what stops `#/library/ensembles`
  * from becoming a page that has to be invented later to answer a link.
  */
-export const LIBRARY_SURFACES = ["workflows", "personas", "actions"] as const;
+export const LIBRARY_SURFACES = ["workflows", "personas", "actions", "commands"] as const;
 export type LibrarySurface = (typeof LIBRARY_SURFACES)[number];
 
 export function isLibrarySurface(value: string): value is LibrarySurface {
   return (LIBRARY_SURFACES as readonly string[]).includes(value);
+}
+
+/**
+ * The one surface whose asset ids are a CLOSED set that ships with the build.
+ *
+ * Every other Library surface deep-links to a row an operator created, so its id is opaque
+ * here and the surface resolves it. Commands has four fixed slots and no way to make a
+ * fifth, so an id that is not one of them names nothing that could ever exist - it takes the
+ * surface's default rather than being carried into the address bar as a link to nowhere. The
+ * same rule makes `/new` inexpressible: there is no blank Command to draft.
+ */
+function isFixedLibraryAsset(shelf: LibrarySurface, assetId: string): boolean {
+  return shelf !== "commands" || (WORKFLOW_CHECK_SLOTS as readonly string[]).includes(assetId);
 }
 
 /**
@@ -165,11 +184,19 @@ export function parseMissionRoute(hash: string): MissionRoute {
     // the same rule an unknown settings category takes.
     if (shelf === null || !isLibrarySurface(shelf)) return { page: "library" };
     if (library[2] === undefined) return { page: "library", shelf };
-    if (library[2] === LIBRARY_NEW_SEGMENT) return { page: "library", shelf, creating: true };
+    if (library[2] === LIBRARY_NEW_SEGMENT) {
+      // A fixed catalog has nothing to draft, so `/new` is not "open a blank one" there - it
+      // is an id naming no slot, and takes the same fallback every other unusable id takes.
+      return shelf === "commands"
+        ? { page: "library", shelf }
+        : { page: "library", shelf, creating: true };
+    }
     // An id nothing can decode names no asset, so it opens the surface on whatever that
     // surface would have opened by itself.
     const assetId = segment(library[2]);
-    return assetId ? { page: "library", shelf, assetId } : { page: "library", shelf };
+    return assetId && isFixedLibraryAsset(shelf, assetId)
+      ? { page: "library", shelf, assetId }
+      : { page: "library", shelf };
   }
   // `/runs` and `/workflows/runs` are ONE rule, and so are the two ensembles spellings. The
   // legacy prefix is stripped before matching rather than handled by a parallel pair of
@@ -249,8 +276,14 @@ export function missionRouteHash(route: MissionRoute): string {
   if (route.page === "settings") return `#/settings/${route.category}`;
   if (route.page === "library") {
     if (!route.shelf) return "#/library";
-    if (route.creating) return `#/library/${route.shelf}/${LIBRARY_NEW_SEGMENT}`;
-    return route.assetId
+    // The `creating` guard is the parser's rule stated on the way out too. `parseMissionRoute`
+    // cannot produce a creating Commands route, but a hand-built one would otherwise serialize
+    // to a hash that parses back to something else - and a codec that does not round-trip is
+    // how the address bar starts disagreeing with the page.
+    if (route.creating && route.shelf !== "commands") {
+      return `#/library/${route.shelf}/${LIBRARY_NEW_SEGMENT}`;
+    }
+    return route.assetId && isFixedLibraryAsset(route.shelf, route.assetId)
       ? `#/library/${route.shelf}/${encodeURIComponent(route.assetId)}`
       : `#/library/${route.shelf}`;
   }

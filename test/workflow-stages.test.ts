@@ -478,33 +478,33 @@ test("a stage says what it holds, counted by kind", () => {
   // One sentence, shared by the editor and the run monitor. "2 reviewers" was correct only
   // while a member could not be anything else.
   assert.equal(stageSummary(solo("intent")), "1 reviewer");
-  assert.equal(stageSummary(gate("test")), "1 check");
+  assert.equal(stageSummary(gate("test")), "1 command");
   assert.equal(stageSummary(parallel("g", ["security", "style"])), "2 reviewers · all must pass");
   assert.equal(
     stageSummary(mixed("g", [
       { nodeId: "a", kind: "check", slot: "typecheck" },
       { nodeId: "b", kind: "check", slot: "test" },
     ])),
-    "2 checks · all must pass",
+    "2 commands · all must pass",
   );
   assert.equal(
     stageSummary(mixed("g", [
       { nodeId: "a", kind: "persona", personaId: "intent" },
       { nodeId: "b", kind: "check", slot: "lint" },
     ])),
-    "1 reviewer, 1 check · all must pass",
+    "1 reviewer, 1 command · all must pass",
   );
 });
 
 test("a single-check stage is named by its slot, and a check still blocks when miswired", () => {
   const one = compileStages(pipeline([gate("build")]), empty);
-  assert.equal(stageName(projectStages(one)!.stages[0]!, 0, personas), "Check · build");
+  assert.equal(stageName(projectStages(one)!.stages[0]!, 0, personas), "Command · build");
 
   // A check parked off to the side is a stray node like any other now - the phase-2 blocker
   // that named the node KIND is gone, because the kind is no longer the reason.
   const island = compileStages(pipeline([solo("intent")]), empty);
   island.nodes.push({ id: "stray", kind: "check", slot: "lint", position: { x: 60, y: 400 } });
-  assert.deepEqual(stageBlockers(island, personas), ["Check · lint is not part of the pipeline."]);
+  assert.deepEqual(stageBlockers(island, personas), ["Command · lint is not part of the pipeline."]);
   assert.equal(projectStages(island), null);
 });
 
@@ -514,5 +514,5 @@ test("a Check node is labelled by its slot everywhere a name is printed", () => 
   draft.nodes.push(gate);
   // Never "Missing persona", which is what the persona fall-through returned before the
   // label switch grew a check arm.
-  assert.equal(nodeLabel(draft, gate, personas), "Check · build");
+  assert.equal(nodeLabel(draft, gate, personas), "Command · build");
 });

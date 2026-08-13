@@ -240,11 +240,15 @@ function baseLabel(
 }
 
 /**
- * A Check names its slot and nothing else, so its label is the slot with the word that says
+ * A Command names its slot and nothing else, so its label is the slot with the word that says
  * what kind of thing it is - "test" alone next to a Persona's name reads as a reviewer.
+ *
+ * The WORD is Command and the wire kind stays `check`. The function keeps its old name for
+ * the same reason the kind does: renaming it would touch every call site and every published
+ * graph's vocabulary for no reader's benefit. What a person sees is what changed.
  */
 export function checkLabel(slot: WorkflowCheckSlot): string {
-  return `Check · ${slot}`;
+  return `Command · ${slot}`;
 }
 
 /** Published snapshots win over the live list, which is empty for a published graph anyway. */
@@ -289,7 +293,7 @@ export function stageName(
 }
 
 /**
- * What a stage HOLDS, counted by kind: "1 reviewer", "2 checks", "1 reviewer, 1 check".
+ * What a stage HOLDS, counted by kind: "1 reviewer", "2 commands", "1 reviewer, 1 command".
  *
  * Shared rather than spelled at each surface because the editor and the run monitor draw the
  * same stage: "2 reviewers" was correct only while a member could not be anything else, and
@@ -303,10 +307,10 @@ export function stageName(
 export function stageContents(stage: Stage): string {
   if (stage.kind === "session_action") return "1 session action";
   const reviewers = stage.members.filter((member) => member.kind === "persona").length;
-  const checks = stage.members.length - reviewers;
+  const commands = stage.members.length - reviewers;
   return [
     ...(reviewers > 0 ? [`${reviewers} reviewer${reviewers === 1 ? "" : "s"}`] : []),
-    ...(checks > 0 ? [`${checks} check${checks === 1 ? "" : "s"}`] : []),
+    ...(commands > 0 ? [`${commands} command${commands === 1 ? "" : "s"}`] : []),
   ].join(", ");
 }
 

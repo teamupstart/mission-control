@@ -8,6 +8,7 @@ import {
   parseMissionRoute,
 } from "../src/web/workflows/useWorkflowRoute.ts";
 import { LIBRARY_SHELF_COPY } from "../src/web/library/library-model.ts";
+import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
 
 // What is at stake: `#/library` is the app's second home and its hashes are links people
 // keep. Every spelling below is published in the README, so a change here is a change to a
@@ -23,6 +24,11 @@ test("library hashes round-trip, shelf and asset alike", () => {
     assert.deepEqual(parseMissionRoute(`#/library/${shelf}`), { page: "library", shelf });
     assert.equal(missionRouteHash({ page: "library", shelf }), `#/library/${shelf}`);
 
+    // Commands is the one surface whose ids are a CLOSED set - the four built-in slots - so
+    // an arbitrary asset id names nothing there and `new` drafts nothing. Both are covered
+    // by their own case below; every other surface takes any id an operator's row can have.
+    if (shelf === "commands") continue;
+
     const withAsset = { page: "library", shelf, assetId: "asset 7" } as const;
     assert.equal(missionRouteHash(withAsset), `#/library/${shelf}/asset%207`);
     assert.deepEqual(parseMissionRoute(missionRouteHash(withAsset)), withAsset);
@@ -31,6 +37,42 @@ test("library hashes round-trip, shelf and asset alike", () => {
     assert.equal(missionRouteHash(creating), `#/library/${shelf}/new`);
     assert.deepEqual(parseMissionRoute(missionRouteHash(creating)), creating);
   }
+});
+
+// The Commands shelf routes to four built-in slots and to nothing else. Every claim here is
+// about a link somebody can paste or hand-build: a slot that no longer exists, a `/new` typed
+// out of habit from the other shelves, and a route object assembled in code.
+test("a Command route names a slot or nothing, and never a blank draft", () => {
+  for (const slot of WORKFLOW_CHECK_SLOTS) {
+    const route = { page: "library", shelf: "commands", assetId: slot } as const;
+    assert.equal(missionRouteHash(route), `#/library/commands/${slot}`);
+    assert.deepEqual(parseMissionRoute(missionRouteHash(route)), route);
+  }
+  // An id that is not a slot names no Command that could ever exist, so it opens the surface
+  // on its own default rather than being carried into the address bar as a link to nowhere.
+  assert.deepEqual(parseMissionRoute("#/library/commands/deploy"), {
+    page: "library",
+    shelf: "commands",
+  });
+  assert.deepEqual(parseMissionRoute("#/library/commands/%E0%A4%A"), {
+    page: "library",
+    shelf: "commands",
+  });
+  // `new` is not "open a blank one" here: there is no fifth slot to author.
+  assert.deepEqual(parseMissionRoute("#/library/commands/new"), {
+    page: "library",
+    shelf: "commands",
+  });
+  // And the serializer refuses to write either spelling, so a hand-built route cannot
+  // produce a hash that parses back into something else.
+  assert.equal(
+    missionRouteHash({ page: "library", shelf: "commands", creating: true }),
+    "#/library/commands",
+  );
+  assert.equal(
+    missionRouteHash({ page: "library", shelf: "commands", assetId: "deploy" }),
+    "#/library/commands",
+  );
 });
 
 test("a built-in id survives its colon, and an undecodable one opens the shelf anyway", () => {

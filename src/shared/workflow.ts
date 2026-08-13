@@ -1111,7 +1111,9 @@ export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerd
 }
 
 export function verdictAuthor(node: WorkflowVerdictNode): string {
-  return node.kind === "persona" ? node.persona.name : `Check · ${node.slot}`;
+  // "Command", not the wire kind. The node is serialized as `check` forever - see
+  // `WorkflowCommandView` - and every surface a person reads says Command.
+  return node.kind === "persona" ? node.persona.name : `Command · ${node.slot}`;
 }
 
 export type WorkflowSessionActionNode = Extract<PublishedWorkflowNode, { kind: "session_action" }>;
@@ -1634,6 +1636,68 @@ export function emptyWorkflowCommandView(
 }
 
 /**
+ * What one slot IS, in one sentence, for the surfaces that offer it.
+ *
+ * The conventional gate rather than a command: this catalog exists precisely because the
+ * argv differs per machine, so naming a package manager here would be the claim the whole
+ * feature is built to stop making.
+ */
+export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
+  test: "The automated test suite this repository gates on.",
+  lint: "The style and correctness pass that runs before review.",
+  typecheck: "The type checker, when this repository has one separate from its build.",
+  build: "The build or bundle step that proves the change compiles.",
+};
+
+/**
+ * The DURABLE configuration state of one Command slot, as the line a card or a list row
+ * shows: `Global default · 2 overrides`, `Global default`, `1 override · no global default`,
+ * or `Not configured`.
+ *
+ * Shared rather than spelled at each surface because three of them show it - the Library
+ * shelf card, the Command editor's slot rail, and the workflow palette - and a fact that
+ * reads differently in three places is three answers to one question. It says nothing about
+ * a run: whether a Command is configured is a property of this machine, not of any workflow.
+ */
+export function workflowCommandFact(
+  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+): string {
+  const overrides = view?.overrides.length ?? 0;
+  const plural = overrides === 1 ? "override" : "overrides";
+  const hasDefault = Boolean(view?.defaultCommand && view.defaultCommand.length > 0);
+  if (hasDefault) {
+    return overrides === 0 ? "Global default" : `Global default · ${overrides} ${plural}`;
+  }
+  if (overrides > 0) return `${overrides} ${plural} · no global default`;
+  return "Not configured";
+}
+
+/**
+ * The same state as a SENTENCE, for the workflow palette, where the operator is deciding
+ * whether adding this node will do anything.
+ *
+ * It states the skip rather than converting it into a validation error: a portable workflow
+ * is meant to name a slot a given machine may not configure, and passing with a note is the
+ * designed behaviour rather than a mistake to prevent.
+ */
+export function workflowCommandStatusSentence(
+  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+): string {
+  const overrides = view?.overrides.length ?? 0;
+  if (view?.defaultCommand && view.defaultCommand.length > 0) {
+    return overrides === 0
+      ? "A global default is configured, so this runs wherever the workflow reaches it."
+      : `A global default is configured, with ${overrides} repository `
+        + `${overrides === 1 ? "exception" : "exceptions"}.`;
+  }
+  if (overrides > 0) {
+    return `Configured in ${overrides} ${overrides === 1 ? "repository" : "repositories"} only. `
+      + "Everywhere else this Command skips and passes with a note.";
+  }
+  return "Nothing is configured, so this Command skips and passes with a note.";
+}
+
+/**
  * The legacy flat `checkCommands` projection of the catalog.
  *
  * Overrides ONLY. A global default has no repository and therefore no legacy row it could
@@ -1945,7 +2009,7 @@ export function checkBlockedReason(
   repoRoot: string | null,
 ): string | null {
   if (!config.checksEnabled) {
-    return "Workflow checks are switched off, so no command was run.";
+    return "Workflow Commands are switched off, so no command was run.";
   }
   if (!repoAllowlisted(cwd, repoRoot, config.repoAllowlist)) {
     return "This repository is not on the workflow allowlist, so no command was run.";

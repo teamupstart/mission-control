@@ -457,7 +457,7 @@ const CHECK_STATUSES: Record<
   retry_wait: { tone: "waiting", label: "Retrying" },
   waiting: { tone: "waiting", label: "Waiting" },
   completed: { tone: "waiting", label: "No result" },
-  error: { tone: "failed", label: "Check failed to run" },
+  error: { tone: "failed", label: "Command failed to run" },
   cancelled: { tone: "waiting", label: "Cancelled" },
 };
 
@@ -493,14 +493,14 @@ const CHECK_OUTCOME_STATUSES: Record<WorkflowCheckStatus, PipelineStatus | null>
   skipped: {
     tone: "waiting",
     label: "Skipped",
-    tooltip: "Skipped because no command is configured for this check.",
+    tooltip: "Skipped because this machine configures nothing for this Command.",
     skipKind: "unconfigured_check",
     degraded: true,
   },
   unavailable: {
     tone: "waiting",
     label: "Not run",
-    tooltip: "This check could not run. Open the run details for its recorded reason.",
+    tooltip: "This Command could not run. Open the run details for its recorded reason.",
     skipKind: "unavailable_check",
     degraded: true,
   },
@@ -614,8 +614,8 @@ export function stageStatus(
       status.skipKind === "unconfigured_check").length;
     const allSkipped = skipped === members.length;
     const tooltip = allSkipped
-      ? "Skipped because no command is configured for the checks in this stage."
-      : "One or more checks in this stage did not run. Hover each check for its reason.";
+      ? "Skipped because this machine configures nothing for the Commands in this stage."
+      : "One or more Commands in this stage did not run. Hover each one for its reason.";
     return notRun === members.length
       ? {
           tone: "waiting",
@@ -1081,7 +1081,8 @@ const CHECK_STATUS_SENTENCES: Record<WorkflowCheckStatus, { label: string; sente
   },
   skipped: {
     label: "Skipped",
-    sentence: "No command is configured for this slot here, so the gate passed without running.",
+    sentence: "No Command is configured for this slot on this machine, so the gate passed "
+      + "without running.",
   },
   unavailable: {
     label: "Not run",

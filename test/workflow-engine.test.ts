@@ -1060,7 +1060,7 @@ test("a failing check returns a repair packet to the Session, citing its own out
   const delivery = store.listDeliveries("run-check-fail")[0]!;
   assert.equal(delivery.kind, "persona_feedback");
   assert.equal(delivery.state, "prepared");
-  assert.match(delivery.payload, /## Check · test/);
+  assert.match(delivery.payload, /## Command · test/);
   assert.match(delivery.payload, /TS2345/);
 });
 
@@ -1300,7 +1300,7 @@ test("the shipped v3 gate fails a broken build at stage 1 with zero Persona call
   const gate = attempts.find((item) => item.nodeId === "nmr-check-typecheck")!;
   assert.equal((gate.verdict as { verdict: string }).verdict, "fail");
   const delivery = store.listDeliveries("run-nmr-gate")[0]!;
-  assert.match(delivery.payload, /## Check · typecheck/);
+  assert.match(delivery.payload, /## Command · typecheck/);
   assert.match(delivery.payload, /TS2345/);
   assert.equal(store.getSubmission("submission-nmr-gate")?.status, "waiting_for_session");
 });

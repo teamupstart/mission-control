@@ -61,8 +61,9 @@ turns in it: one instruction at a time, never two in a turn expecting neither.
 
 ## Build the operating system around the work
 
-The Library keeps reusable workflows, personas, session actions, ensemble strategies, and
-mission sources together rather than burying them in individual terminals.
+The Library keeps reusable workflows, personas, session actions, ensemble strategies, mission
+sources, and the commands behind each standard gate together rather than burying them in
+individual terminals.
 
 ![Mission Control Library](docs/images/library.png)
 

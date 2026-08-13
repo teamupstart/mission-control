@@ -269,7 +269,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     // where an operator asking this question is going: the card names the count and carries
     // the Manage-in-Trust link. Pointing the row straight at `trust/matrix` would skip the
     // sentence explaining that one grant covers both delivery and checks.
-    description: "Where Live delivery may send and Check nodes may run. Granted in Trust.",
+    description: "Where Live delivery may send and Command nodes may run. Granted in Trust.",
     category: "workflows",
     anchor: "workflows/allowlist",
     keywords: ["allowlist", "repo", "repository", "workflow", "live delivery", "grant", "trust"],
@@ -277,23 +277,34 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   },
   {
     id: "workflow-checks",
-    label: "Enable workflow check commands",
-    description: "Whether a Check node may run a configured command, executing branch-authored code.",
+    label: "Allow workflow Commands",
+    description: "Whether a Command node may run its configured argv, executing branch-authored code.",
     category: "workflows",
+    // The anchor is unchanged and permanently so: it is a kept link, and the control it names
+    // is the same machine-wide switch it always was. Only the words on it moved.
     anchor: "workflows/checks",
-    keywords: ["check", "command", "test", "lint", "typecheck", "build", "gate", "exit code"],
+    keywords: [
+      "check", "command", "test", "lint", "typecheck", "build", "gate", "exit code", "allow",
+      "pause",
+    ],
     kind: "toggle",
     // Risky for the same reason Live delivery is, and more so: this one authorizes running
     // code the reviewed branch supplies, with the daemon's filesystem authority.
     risky: true,
   },
   {
+    // Kept under its old id and keywords, pointed at the card that now says where the catalog
+    // went. An operator searching "check commands" for a table this panel no longer has is
+    // exactly who this row exists for, and dropping it would answer them with nothing.
     id: "workflow-check-commands",
-    label: "Workflow check commands",
-    description: "What each repository runs for the test, lint, typecheck and build slots.",
+    label: "What each Command runs",
+    description: "The test, lint, typecheck and build argvs - authored in Library › Commands.",
     category: "workflows",
-    anchor: "workflows/check-commands",
-    keywords: ["check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "repo"],
+    anchor: "workflows/command-catalog",
+    keywords: [
+      "check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "repo",
+      "override", "default", "library",
+    ],
     kind: "jump",
   },
   {

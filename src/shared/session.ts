@@ -133,6 +133,94 @@ export function dialogIdentity(dialog: PaneDialog): string {
   ]);
 }
 
+/** Rotate a 32-bit word left, the primitive SHA-1 uses in every round. */
+function rotateLeft(word: number, bits: number): number {
+  return ((word << bits) | (word >>> (32 - bits))) >>> 0;
+}
+
+/**
+ * SHA-1 as a browser-safe pure function.
+ *
+ * This is not a security boundary. It preserves the compact marker already persisted on
+ * Foreman notes while letting the browser verify that a note and an open dialog name the
+ * same ask. Using Web Crypto would make the check asynchronous, and keeping Node's
+ * `createHash` in the server would leave the two sides with separate marker algorithms.
+ */
+export function sha1Hex(input: string): string {
+  const source = new TextEncoder().encode(input);
+  const paddedLength = Math.ceil((source.length + 9) / 64) * 64;
+  const bytes = new Uint8Array(paddedLength);
+  bytes.set(source);
+  bytes[source.length] = 0x80;
+
+  const view = new DataView(bytes.buffer);
+  const bitLength = source.length * 8;
+  view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x1_0000_0000), false);
+  view.setUint32(paddedLength - 4, bitLength >>> 0, false);
+
+  let h0 = 0x67452301;
+  let h1 = 0xefcdab89;
+  let h2 = 0x98badcfe;
+  let h3 = 0x10325476;
+  let h4 = 0xc3d2e1f0;
+  const words = new Uint32Array(80);
+
+  for (let offset = 0; offset < paddedLength; offset += 64) {
+    for (let i = 0; i < 16; i += 1) words[i] = view.getUint32(offset + i * 4, false);
+    for (let i = 16; i < 80; i += 1) {
+      words[i] = rotateLeft(words[i - 3]! ^ words[i - 8]! ^ words[i - 14]! ^ words[i - 16]!, 1);
+    }
+
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    for (let i = 0; i < 80; i += 1) {
+      let f: number;
+      let k: number;
+      if (i < 20) {
+        f = (b & c) | (~b & d);
+        k = 0x5a827999;
+      } else if (i < 40) {
+        f = b ^ c ^ d;
+        k = 0x6ed9eba1;
+      } else if (i < 60) {
+        f = (b & c) | (b & d) | (c & d);
+        k = 0x8f1bbcdc;
+      } else {
+        f = b ^ c ^ d;
+        k = 0xca62c1d6;
+      }
+      const next = (rotateLeft(a, 5) + f + e + k + words[i]!) >>> 0;
+      e = d;
+      d = c;
+      c = rotateLeft(b, 30);
+      b = a;
+      a = next;
+    }
+
+    h0 = (h0 + a) >>> 0;
+    h1 = (h1 + b) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0;
+  }
+
+  return [h0, h1, h2, h3, h4].map((word) => word.toString(16).padStart(8, "0")).join("");
+}
+
+/**
+ * The stable marker for the ask represented by a pane or driver dialog.
+ *
+ * Shared by the daemon that writes the note and the browser that decides whether the
+ * note is optional context for the open form. The SHA-1 prefix is an existing persisted
+ * shape, so changing it would strand live notes and make Foreman judge the same ask twice.
+ */
+export function dialogMarker(dialog: PaneDialog): string {
+  return `dialog:${sha1Hex(dialogIdentity(dialog)).slice(0, 12)}`;
+}
+
 /**
  * How a menu describes itself in one line. The count is what tells a permission prompt
  * (2-3 rows) from a question worth opening the card for. Shared so the wording lives in

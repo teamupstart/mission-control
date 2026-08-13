@@ -1,7 +1,10 @@
-import { createHash } from "node:crypto";
 import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
-import { activePaneDialog, dialogIdentity } from "@shared/session.ts";
+import { activePaneDialog, dialogMarker } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
+
+// Kept as a re-export because answer routes and tests historically import the marker from
+// this module. Its implementation is shared now so the browser can recognize the same ask.
+export { dialogMarker } from "@shared/session.ts";
 
 // Works out what a needs-you session is actually blocked on - the single pure
 // classification the worker and the triage tiers share. Kept out of worker.ts so
@@ -75,11 +78,6 @@ export interface Pending {
  * (`retireNoteAnsweredByYou`). A second spelling of the digest would silently retire
  * nothing - the note would still be there, and the miss would look like the original bug.
  */
-export function dialogMarker(dialog: PaneDialog): string {
-  const digest = createHash("sha1").update(dialogIdentity(dialog)).digest("hex").slice(0, 12);
-  return `dialog:${digest}`;
-}
-
 /**
  * Stand-in `question` `classifyPending` substitutes when a needs-you session carries no
  * activity line at all. It is phrased as prose because it goes straight into the Tier 2

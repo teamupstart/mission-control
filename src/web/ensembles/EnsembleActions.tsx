@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
-import { ensembleIsTerminal } from "@shared/ensemble.ts";
+import { ensembleIsTerminal, ensembleReviewIsInfrastructureBlocked } from "@shared/ensemble.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleRunDetailResponse } from "./types.ts";
 
@@ -51,11 +51,24 @@ export function EnsembleActions({
     }
   }
   const failedStage = [...latestStageAttempts.values()]
-    .filter(
-      (attempt) =>
-        attempt.status === "failed" &&
-        (attempt.driverKind === "review" || attempt.driverKind === "finalize"),
-    )
+    .filter((attempt) => {
+      // A finalize stage that failed is always the operator's to restart: nothing re-drives it
+      // on its own, so a failed row IS the state that needs this door.
+      if (attempt.driverKind === "finalize") return attempt.status === "failed";
+      if (attempt.driverKind !== "review") return false;
+      if (attempt.status !== "failed" && attempt.status !== "interrupted") return false;
+      // A review offers its door exactly when the DAEMON has stopped, which is when its
+      // infrastructure budget is spent - and that one question answers for both statuses.
+      //
+      // Neither of them means "stopped" on its own. Mid-backoff the newest row is `failed` and a
+      // timer is already armed to try again; an interruption is re-driven the same way. Offering
+      // the button in either case invites a person to press something that is already happening,
+      // and the pipeline is drawing that same stage as *retrying* while it does - one screen
+      // making two claims. It also had a consequence: an operator-granted attempt skips the
+      // pending backoff, so a press during the 1s or 4s wait fired the next call immediately and
+      // undid the spacing that stops one provider blip becoming three.
+      return ensembleReviewIsInfrastructureBlocked(detail.stageAttempts, attempt.stageId);
+    })
     .sort((a, b) => b.updatedAt - a.updatedAt)[0];
 
   const [confirmCancel, setConfirmCancel] = useState(false);

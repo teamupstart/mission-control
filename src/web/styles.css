@@ -9391,6 +9391,20 @@ select:not([multiple]) option:focus-visible {
   border-color: color-mix(in srgb, var(--idle) 55%, var(--border));
 }
 
+/*
+ * Blocked wears `--attention`, not `--danger`: the run is intact and waiting for a press, and
+ * the same red as a dead run would say the opposite. Same amber the rest of the dashboard uses
+ * for "you are needed".
+ */
+.ensemble-pipeline-step.is-blocked {
+  color: var(--attention);
+}
+
+.ensemble-pipeline-step.is-blocked .ensemble-pipeline-marker {
+  border-color: var(--attention);
+  background: color-mix(in srgb, var(--attention) 14%, var(--panel));
+}
+
 .ensemble-pipeline-step.is-failed {
   color: var(--danger);
 }

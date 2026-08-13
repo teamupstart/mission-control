@@ -602,8 +602,12 @@ Every effect is persist-before-act, so a daemon restart resumes rather than rest
 
 - A wave is durable before its first dispatch; recovery reconciles surviving agents without
   recreating their tasks and never launches a second fleet.
-- An interrupted review becomes `interrupted` (not `failed`) and retries against the **exact same
-  immutable subjects** and evaluator snapshot. Best of N leaves a completed comparison untouched.
+- An interrupted review becomes `interrupted` (not `failed`) at every level - the LLM call, the
+  evaluation, and the stage attempt itself - and retries against the **exact same immutable
+  subjects** and evaluator snapshot. An interruption spends none of the evaluator's attempt
+  budget, because nothing answered: that budget counts how many times a MODEL may answer badly,
+  and a daemon that exited says nothing about the evaluator. Best of N leaves a completed
+  comparison untouched.
   Panel vote retries the whole panel when a crash leaves its rows unsettled, but if the rows were
   settled and reached quorum before the stage receipt was written, recovery completes the stage
   from those durable ballots instead of paying for the calls again.
@@ -626,6 +630,18 @@ Every effect is persist-before-act, so a daemon restart resumes rather than rest
   `refs/mission-control/ensembles/`, and its diff is re-derived from the shared git dir, so the
   Artifacts and comparison views keep working for as long as the run is retained. The way on from a
   failed run is to read those artifacts and start a new run, not to revive this one.
+- A review that cannot **reach** a model - a spawn failure, a timeout, a provider blip - spends its
+  own bounded budget rather than the evaluator's, waits longer before each retry (1s, then 4s), and
+  after three of them **parks** the run instead of failing it. This is the one review outcome that
+  is a pause rather than a hard stop, and the distinction is the point: nothing reached a model, so
+  nothing was learned about the candidates, and the expensive, irreplaceable part of a run is the
+  candidate work already on disk. The pipeline marks that stage *paused* rather than failed - amber,
+  naming how many infrastructure errors it took and leaving the evaluator count untouched - because
+  red would say the candidates were gone when they are not. **Retry stage** grants one further
+  attempt per press, however the last one settled, and a restart that interrupts a granted attempt
+  leaves the stage parked and still asking for you. Only a person ends a parked run. A review that
+  DOES reach a model and comes back unusable is the evaluator's failure, spends its attempt budget,
+  and fails the run when that budget runs out.
 - A cleanup step that cannot finish leaves the run `finalizing` with an actionable error, resumed by
   **resolve finalization**.
 
@@ -646,8 +662,13 @@ post-selection review, and neither ensemble completion nor a rank-1 recommendati
 - Creating an ensemble authorises launching an exact count or bounded range of **local** agents; the
   preview shows initial, maximum, concurrency, waves and evaluation calls before you confirm.
 - Hard ceilings no strategy config or driver output may exceed: **16** members, **8** concurrent,
-  **8** waves, **5** stage attempts. Strategy-specific candidate, judge, result, and material bounds
-  are listed below.
+  **8** waves, **5** stage attempts. That last one bounds a stage two ways: the attempts it may
+  charge to its budget, and the number of times it may be **interrupted** without settling - so a
+  daemon crash loop cannot spin free attempts forever even though restarts are never charged. It
+  counts interruptions rather than rows because the two retry budgets already bound themselves,
+  and at the shipped defaults they sum to exactly this ceiling: a bound on rows would leave a
+  stage no room to be interrupted at all. Strategy-specific candidate, judge, result, and material
+  bounds are listed below.
 - Every evaluator result is advisory and tool-less: it cannot launch, promote, publish, cancel, reap
   or delete. Every destructive finalization requires an explicit human confirmation. A Consensus
   run performs no destructive finalization at all, and still requires the human answer before it

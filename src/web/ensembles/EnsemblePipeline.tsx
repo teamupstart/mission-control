@@ -32,7 +32,9 @@ export function EnsemblePipeline({
           <li
             key={step.id}
             className={`ensemble-pipeline-step is-${step.state}`}
-            aria-current={step.state === "active" ? "step" : undefined}
+            // A blocked step is still where the run IS, so it keeps `aria-current`: the run
+            // stopped at it, it did not move past it.
+            aria-current={step.state === "active" || step.state === "blocked" ? "step" : undefined}
           >
             <span className="ensemble-pipeline-marker" aria-hidden>
               {step.state === "complete" ? "✓" : index + 1}

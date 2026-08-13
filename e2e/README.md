@@ -96,6 +96,33 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --reporter=list
 ```
 
+### A paused ensemble review, against a failed one
+
+`e2e/.artifacts/ensemble-review-pause/` holds the pair that settles a question no class-name
+assertion can: whether a person can tell a review that is WAITING for them from one that is over.
+
+- `blocked-amber-pipeline.png` - a review whose infrastructure budget is spent. Amber, naming how
+  many infrastructure errors it took, with the evaluator's own count untouched at `attempt 1 of 2`.
+  The run is non-terminal and both candidate snapshots are still on disk.
+- `failed-red-pipeline.png` - the same review on a run the operator then CANCELLED, which is the
+  only thing that ends a parked one. Red, no detail, no door, run over.
+- `*-page.png` - each of those in situ, because a step that reads correctly cropped can still be
+  lost on the real page.
+
+The pair is the point. These two states differ only in a colour and a line of text, and getting
+them confused means an operator abandons a run whose candidates are intact and waiting - so
+`toHaveClass(/is-blocked/)` describes the tree, not the thing at stake. Both frames are taken
+after that test's own assertions pass, so the picture and the measurement cannot drift apart.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/ensemble-review-restart.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Resolving a stuck Inspector finding
 
 `e2e/.artifacts/inspector-resolve-findings/` holds three frames from the run that asserts an

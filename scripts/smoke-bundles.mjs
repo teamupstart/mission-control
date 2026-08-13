@@ -56,20 +56,27 @@ function fail(msg) {
 const KILL_GRACE_MS = 2_000;
 
 /**
- * End a spawned bundle for good, however badly it is behaving.
+ * End a spawned bundle for good, and do not return until it is actually gone.
  *
- * `SIGTERM` is a request, and the bundles this script exists to catch are the ones least
- * likely to honour it. A smoke that sends one and moves on leaves the child alive with its
- * stdio pipes attached to us - and because those handles keep the event loop open, `npm run
- * smoke` then never exits. That is worse than the failure it was looking for: a hung build is
- * not a red build, it is a CI job that burns its whole timeout and reports nothing useful.
+ * `SIGTERM` is a request, and the bundles this script exists to catch are the ones least likely
+ * to honour it. A smoke that sends one and moves on leaves the child alive with its stdio pipes
+ * attached to us, which keeps the event loop open and means `npm run smoke` never exits. A hung
+ * build is not a red build: it burns the job's whole timeout and reports nothing useful.
  *
- * Same shape as `reap()` in `src/server/mission-mcp.ts`, and for the same reason - detach the
- * stdio first so nothing keeps us open or keeps filling buffers, then escalate to `SIGKILL`
- * after a grace period. The timer and the child are unref'd so a slow death cannot hold the
- * process open either.
+ * AWAITED, and deliberately NOT `unref`'d - which is where this differs from its counterpart in
+ * `src/server/mission-mcp.ts`, and why the two cannot share one implementation. The daemon is a
+ * long-lived process that must never be held open by a dying probe, so unref is right there.
+ * This is a short-lived CLI with the opposite hazard: on the success path nothing else is
+ * referenced by the time this returns, so an unref'd escalation timer lets node exit BEFORE the
+ * SIGKILL is ever delivered. The smoke then reports a clean run while leaving the orphan behind
+ * - exactly the malformed-bundle case the reaper exists for, silently unhandled. Observed: two
+ * such orphans survived a "successful" smoke run against a SIGTERM-trapping bundle.
+ *
+ * So the child stays referenced and this awaits its `exit`, which keeps the process alive until
+ * the escalation lands. The last-resort bound exists only so that a child which somehow survives
+ * SIGKILL (uninterruptible IO) still cannot hang the build; it reports rather than pretending.
  */
-function reap(child) {
+async function reap(child) {
   for (const stream of [child.stdout, child.stderr, child.stdin]) {
     stream?.removeAllListeners("data");
     // `destroy()` and a racing EPIPE both emit `error`, and an `error` with no listener throws.
@@ -77,12 +84,27 @@ function reap(child) {
     stream?.destroy();
   }
   if (child.exitCode !== null || child.signalCode !== null) return;
+  // Attached BEFORE the signal, so a child that dies instantly cannot settle between the check
+  // above and the listener below and leave this waiting on an event that already fired.
+  const exited = new Promise((r) => child.once("exit", () => r(true)));
   child.kill("SIGTERM");
-  const grace = setTimeout(() => {
+  const escalate = setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }, KILL_GRACE_MS);
-  grace.unref?.();
-  child.unref();
+  let abandon;
+  const gaveUp = new Promise((r) => {
+    abandon = setTimeout(() => r(false), KILL_GRACE_MS * 5);
+  });
+  try {
+    if (await Promise.race([exited, gaveUp])) return;
+    // SIGKILL cannot be trapped, so this is close to unreachable - but "close to" is not "never",
+    // and a smoke that hangs here would be the very failure this function prevents elsewhere.
+    fail(`a bundle survived SIGKILL and was left running (pid ${child.pid})`);
+    child.unref();
+  } finally {
+    clearTimeout(escalate);
+    clearTimeout(abandon);
+  }
 }
 
 /**
@@ -136,7 +158,7 @@ async function smokeDaemon() {
       await new Promise((r) => setTimeout(r, POLL_MS));
     }
   } finally {
-    reap(child);
+    await reap(child);
     await rm(home, { recursive: true, force: true });
   }
 }
@@ -178,7 +200,6 @@ async function smokeMcp() {
     let pending = "";
     const done = (value) => {
       clearTimeout(timer);
-      reap(child);
       resolve(value);
     };
     const timer = setTimeout(
@@ -230,6 +251,10 @@ async function smokeMcp() {
       },
     });
   });
+
+  // Awaited before anything is reported, so the child is confirmed gone on every path -
+  // including the successful one, where nothing else would keep this process alive.
+  await reap(child);
 
   if (result.error) {
     fail(`the MCP bundle did not complete an MCP handshake: ${result.error}`);

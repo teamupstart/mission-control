@@ -477,6 +477,44 @@ export function openDb(): DatabaseSync {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_session_actions_normalized_name
       ON session_actions(normalized_name);
 
+    -- The Global Command catalog: what each portable workflow slot runs on this machine.
+    --
+    -- One row per built-in slot, seeded on first open, holding the repository-NEUTRAL default
+    -- argv. Normalized out of the workflows app_config blob it used to share, because a
+    -- command is no longer a preference: it has its own revision, its own compare-and-swap
+    -- write path, and its own live projection, none of which a JSON blob under one key can
+    -- give four independently edited slots.
+    --
+    -- The slot column carries NO CHECK constraint on purpose. The slot list is append-only,
+    -- and a CHECK would make shipping a fifth slot an ALTER-and-rebuild of a table holding
+    -- operator data rather than one line in a TypeScript array.
+    --
+    -- default_command_json is nullable and stores an argv array; NULL is "no machine-wide
+    -- command", which is a different fact from an empty argv and is the fresh-install state.
+    CREATE TABLE IF NOT EXISTS workflow_commands (
+      slot                 TEXT PRIMARY KEY,
+      default_command_json TEXT,
+      revision             INTEGER NOT NULL DEFAULT 1,
+      created_at           INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL
+    );
+
+    -- One repository or subdirectory exception to a slot's default command.
+    --
+    -- Separate rows rather than a JSON array on the slot, because these elements have
+    -- identity: (slot, repo_root) is the key resolution picks by and the key a duplicate
+    -- write has to be refused on, and a composite PRIMARY KEY is the only place that
+    -- refusal cannot be forgotten. repo_root is a repository root OR a path beneath one -
+    -- the monorepo override - and the longest match wins at resolution time.
+    CREATE TABLE IF NOT EXISTS workflow_command_overrides (
+      slot         TEXT NOT NULL,
+      repo_root    TEXT NOT NULL,
+      command_json TEXT NOT NULL,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (slot, repo_root)
+    );
+
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,
     -- executions, delivery identity and later audit data all share one migration boundary.
     CREATE TABLE IF NOT EXISTS workflow_definitions (

@@ -81,6 +81,7 @@ test("workflow limits are finite front-door contracts", () => {
     // one that matters - 32 arguments of 1,000 characters is an argv no execve would take.
     checkRepoRoot: 4_096,
     checkCommands: 200,
+    commandOverrides: 200,
     checkCommandArgs: 32,
     checkCommandArg: 1_000,
     checkCommandLength: 4_000,

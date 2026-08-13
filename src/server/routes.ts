@@ -101,6 +101,7 @@ import {
   SetWorkflowNodesDisabledSchema,
   SetWorkflowPersonaDirectiveSchema,
   WorkflowCompletionClaimSchema,
+  UpdateWorkflowCommandSchema,
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
   SubmitWorkflowSchema,
@@ -267,11 +268,19 @@ import type {
   WorkflowRuntimeMutation,
   WorkflowValidationMutation,
 } from "./workflows/manager.ts";
-import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES } from "@shared/workflow.ts";
 import {
-  getWorkflowConfig,
+  JSON_UTF8_MAX_BYTES_PER_CHAR,
+  WORKFLOW_LIMITS,
+  WORKFLOW_RUN_STATUSES,
+  legacyCheckCommands,
+} from "@shared/workflow.ts";
+import type { WorkflowConfig } from "@shared/workflow.ts";
+import { WorkflowCommandManager } from "./workflows/commands.ts";
+import type { WorkflowCommandMutation } from "./workflows/commands.ts";
+import {
+  getWorkflowPolicy,
   resolveTaskWorkflowId,
-  setWorkflowConfig,
+  setWorkflowPolicy,
 } from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
 import type { ScheduleService } from "./schedules/manager.ts";
@@ -305,6 +314,29 @@ const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1
  * limit set to the ceiling itself would reject prompts the schema accepts.
  */
 const SESSION_ACTION_BODY_MAX_BYTES = WORKFLOW_LIMITS.sessionActionPromptBytes * 6 + 16 * 1024;
+/**
+ * One slot's whole state: a default argv plus up to `commandOverrides` paths and argvs.
+ *
+ * Derived from those bounds rather than chosen, so raising a limit cannot silently leave this
+ * behind and turn a legal write into a 413. The `+ 1` is the slot's own default command, which
+ * is bounded exactly like an override's argv and is not one of them.
+ *
+ * The multiplication by `JSON_UTF8_MAX_BYTES_PER_CHAR` is the load-bearing part, and leaving it
+ * out is a bug this constant already had: the schema counts CHARACTERS and `bodyLimit` counts
+ * BYTES, so a catalog of non-ASCII paths satisfies every Zod ceiling and is still refused before
+ * validation ever runs. A 413 is also the worst place to be wrong, because it carries no field
+ * and no reason - the operator sees a save that failed and no way to learn which value did it.
+ *
+ * The per-entry constant covers JSON's own punctuation - the key names, quotes, commas and
+ * brackets around each override and each argument - and is deliberately generous, because the
+ * schema is the real bound here. This is a cheap pre-parse guard against an absurd body, not a
+ * second opinion about what a valid catalog looks like.
+ */
+const WORKFLOW_COMMAND_BODY_MAX_BYTES =
+  (WORKFLOW_LIMITS.commandOverrides + 1)
+    * ((WORKFLOW_LIMITS.checkRepoRoot + WORKFLOW_LIMITS.checkCommandLength)
+        * JSON_UTF8_MAX_BYTES_PER_CHAR
+      + 512);
 /**
  * The ceiling for a body that carries one integer, wherever it appears.
  *
@@ -667,6 +699,16 @@ export function buildApp(
    * two background walks over the same directory, two writers of the same derived rows.
    */
   scouts?: ScoutArchiveManager,
+  /**
+   * The Global Command catalog owner. Appended LAST for the reason every optional above it
+   * is: `buildApp` is called positionally by around fifty focused tests, and none of them
+   * should have to learn about Commands to keep compiling.
+   *
+   * Absent means the catalog routes answer 503 and the legacy config route projects an empty
+   * command list. A route-built twin would be a second writer of one catalog and a second
+   * emitter on one live stream.
+   */
+  workflowCommands?: WorkflowCommandManager,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -1106,7 +1148,20 @@ export function buildApp(
     }
     return c.json(manager.list(raw === "true"));
   });
-  app.get("/api/workflows/config", (c) => c.json(getWorkflowConfig()));
+  const workflowCommandManager = (): WorkflowCommandManager | null => workflowCommands ?? null;
+  /**
+   * The legacy config shape, COMPOSED rather than stored.
+   *
+   * `checkCommands` is a projection of the Command catalog's overrides, so an old caller sees
+   * exactly what the daemon will run - and there is no second list that could disagree with
+   * it. Global defaults are absent by construction: they have no repository, so no legacy row
+   * could describe one honestly.
+   */
+  const legacyWorkflowConfig = (): WorkflowConfig => ({
+    ...getWorkflowPolicy(),
+    checkCommands: legacyCheckCommands(workflowCommandManager()?.list() ?? []),
+  });
+  app.get("/api/workflows/config", (c) => c.json(legacyWorkflowConfig()));
   app.get("/api/workflows/status", (c) => {
     const manager = workflowManager();
     return manager
@@ -1126,7 +1181,62 @@ export function buildApp(
         return c.json({ error: "The dispatch default must be an active published workflow" }, 409);
       }
     }
-    return c.json(setWorkflowConfig(parsed.data));
+    // ONE transaction over both halves, because the old route's contract is that its body is
+    // one object. `checkCommands` belongs to the Command catalog now and everything else to
+    // the config blob, and committing the catalog while the policy write failed would answer
+    // with a refusal over a change that had already happened - the operator reloads and finds
+    // half of it applied, the half that decides which commands run.
+    const commands = workflowCommandManager();
+    if (!commands) {
+      // Only a build with no catalog reaches this, and it cannot honour the command half of
+      // the request. Refusing outright beats persisting policy and silently dropping the rest.
+      if (parsed.data.checkCommands.length > 0) {
+        return c.json({ error: "Command catalog unavailable" }, 503);
+      }
+      setWorkflowPolicy(parsed.data);
+      return c.json(legacyWorkflowConfig());
+    }
+    commands.saveLegacyConfig(parsed.data.checkCommands, () => setWorkflowPolicy(parsed.data));
+    return c.json(legacyWorkflowConfig());
+  });
+
+  // --- Global Command catalog: what each portable workflow slot runs on this machine ---
+  //
+  // Four fixed slots, so this family has no create and no delete: only a list, a read, and
+  // one compare-and-swap replacement of a slot's whole state. The legacy config route above
+  // writes through the same manager, so there is exactly one durable authority and one live
+  // event whichever surface an operator used.
+  const workflowCommandFailure = (
+    c: Context,
+    result: Exclude<WorkflowCommandMutation, { ok: true }>,
+  ) => {
+    const code = `workflow_command_${result.reason}`;
+    if (result.reason === "not_found") {
+      return c.json({ error: "no such command slot", code }, 404);
+    }
+    return c.json({ error: result.reason.replaceAll("_", " "), code, current: result.current }, 409);
+  };
+  app.get("/api/workflow-commands", (c) => {
+    const manager = workflowCommandManager();
+    if (!manager) return c.json({ error: "Command catalog unavailable" }, 503);
+    return c.json(manager.list());
+  });
+  app.get("/api/workflow-commands/:slot", (c) => {
+    const manager = workflowCommandManager();
+    if (!manager) return c.json({ error: "Command catalog unavailable" }, 503);
+    const view = manager.get(c.req.param("slot"));
+    return view ? c.json(view) : c.json({ error: "no such command slot" }, 404);
+  });
+  app.put("/api/workflow-commands/:slot", bodyLimit({
+    maxSize: WORKFLOW_COMMAND_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Command request is too large" }, 413),
+  }), async (c) => {
+    const manager = workflowCommandManager();
+    if (!manager) return c.json({ error: "Command catalog unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateWorkflowCommandSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.replace(c.req.param("slot"), parsed.data);
+    return result.ok ? c.json(result.view) : workflowCommandFailure(c, result);
   });
   app.post("/api/workflows", bodyLimit({
     maxSize: WORKFLOW_BODY_MAX_BYTES,
@@ -1191,7 +1301,7 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowConfig().defaultWorkflowId === id) {
+    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
       return c.json({
         error: "Choose another dispatch default before archiving this workflow",
       }, 409);
@@ -1218,7 +1328,7 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowConfig().defaultWorkflowId === id) {
+    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
       return c.json({
         error: "Choose another dispatch default before deleting this workflow",
       }, 409);

@@ -25,7 +25,7 @@ import { supportsEffort } from "./harness-capabilities.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
-  DEFAULT_WORKFLOW_CONFIG,
+  DEFAULT_WORKFLOW_POLICY,
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   EVIDENCE_REF_KINDS,
   INSPECTOR_FINDINGS_POLICIES,
@@ -3225,57 +3225,111 @@ export const WorkflowInspectorGateStateSchema = z.object({
 });
 
 /**
- * One repository's command for one slot.
+ * One executable argv, in the one place every command surface bounds it.
  *
- * `command` is bounded three ways because it is a durable blob an operator types: element
- * count, per-element length, and joined length. An unbounded argv is a blob nobody bounded,
- * and the joined bound is the one that matters - 32 arguments of 1,000 characters each is
- * an argv no `execve` will take anyway.
+ * Bounded three ways because it is a durable blob an operator types: element count,
+ * per-element length, and joined length. An unbounded argv is a blob nobody bounded, and the
+ * joined bound is the one that matters - 32 arguments of 1,000 characters each is an argv no
+ * `execve` will take anyway.
+ *
+ * Stated ONCE and reused by the legacy config shape and the Command catalog alike, so the
+ * two write paths that now reach the same storage cannot disagree about what fits.
  */
+export const WorkflowCommandArgvSchema = z
+  .array(z.string().min(1).max(WORKFLOW_LIMITS.checkCommandArg))
+  .min(1)
+  .max(WORKFLOW_LIMITS.checkCommandArgs)
+  .refine(
+    (argv) => argv.join(" ").length <= WORKFLOW_LIMITS.checkCommandLength,
+    { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
+  );
+
+/** One repository's command for one slot, in the legacy flat shape. */
 export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
-  command: z
-    .array(z.string().min(1).max(WORKFLOW_LIMITS.checkCommandArg))
-    .min(1)
-    .max(WORKFLOW_LIMITS.checkCommandArgs)
-    .refine(
-      (argv) => argv.join(" ").length <= WORKFLOW_LIMITS.checkCommandLength,
-      { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
-    ),
+  command: WorkflowCommandArgvSchema,
+});
+
+/** One repository or subdirectory exception, inside the slot that owns it. */
+export const WorkflowCommandOverrideSchema = z.object({
+  repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
+  command: WorkflowCommandArgvSchema,
 });
 
 /**
- * The STRICT schema, and the one the PUT route parses.
+ * One atomic replacement of a Command slot's COMPLETE state.
+ *
+ * Both fields are required rather than defaulted, and that is the safety property: a caller
+ * who omits `overrides` would otherwise silently clear every exception an operator wrote,
+ * and a caller who omits `defaultCommand` would silently clear the machine-wide command. A
+ * partial write of a slot is not expressible, so the two halves can never be committed apart.
+ *
+ * `expectedRevision` is compare-and-swap, exactly as the Persona and SessionAction catalogs
+ * do it: two open windows editing one slot must not silently overwrite one another.
+ */
+export const UpdateWorkflowCommandSchema = z.object({
+  expectedRevision: z.number().int().min(1),
+  defaultCommand: WorkflowCommandArgvSchema.nullable(),
+  overrides: z
+    .array(WorkflowCommandOverrideSchema)
+    .max(WORKFLOW_LIMITS.commandOverrides)
+    // `repoRoot` is the KEY resolution picks by, so two overrides sharing one are two
+    // commands an operator can see and only one that can ever run - which of them depends on
+    // array order, a thing no surface displays. REFUSED rather than deduplicated: a write
+    // that quietly dropped one of two is a caller who sent two and is never told which
+    // survived. The store's composite key refuses it a second time.
+    .refine(
+      (overrides) => new Set(overrides.map((entry) => entry.repoRoot)).size === overrides.length,
+      { message: "Each repository may configure a Command only once" },
+    ),
+});
+export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
+
+/**
+ * The STRICT policy schema: everything about workflows that is still stored in `app_config`.
  *
  * No `.catch()` anywhere in it, deliberately: this is a write path, and `.catch()` on a
  * write turns an invalid value from the panel into a silent no-op - the field reverts on
  * the next poll and nothing says why - where a 400 is a refusal an operator can read. Read
- * tolerance is `StoredWorkflowConfigSchema` below, which is a different question asked of
+ * tolerance is `StoredWorkflowPolicySchema` below, which is a different question asked of
  * the same shape.
  */
-export const WorkflowConfigSchema = z.object({
-  liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_CONFIG.liveEnabled),
+export const WorkflowPolicySchema = z.object({
+  liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
   defaultWorkflowId: z.string().min(1).max(500).nullable()
-    .default(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId),
+    .default(DEFAULT_WORKFLOW_POLICY.defaultWorkflowId),
   retention: z.object({
     rawEvidenceDays: z.number().int().min(1).max(365)
-      .default(DEFAULT_WORKFLOW_CONFIG.retention.rawEvidenceDays),
+      .default(DEFAULT_WORKFLOW_POLICY.retention.rawEvidenceDays),
     completedRunDays: z.number().int().min(30).max(3_650)
-      .default(DEFAULT_WORKFLOW_CONFIG.retention.completedRunDays),
+      .default(DEFAULT_WORKFLOW_POLICY.retention.completedRunDays),
     maxCompletedRuns: z.number().int().min(100).max(10_000)
-      .default(DEFAULT_WORKFLOW_CONFIG.retention.maxCompletedRuns),
-  }).default(DEFAULT_WORKFLOW_CONFIG.retention),
-  checksEnabled: z.boolean().default(DEFAULT_WORKFLOW_CONFIG.checksEnabled),
+      .default(DEFAULT_WORKFLOW_POLICY.retention.maxCompletedRuns),
+  }).default(DEFAULT_WORKFLOW_POLICY.retention),
+  checksEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.checksEnabled),
+});
+export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
+
+/**
+ * Policy PLUS the legacy flat command list: the complete body `PUT /api/workflows/config`
+ * still accepts.
+ *
+ * `checkCommands` is validated here exactly as strictly as it always was, then handed to the
+ * Command catalog rather than persisted beside the policy. Keeping the field on the write
+ * schema is what lets the existing Settings form keep saving through one request while the
+ * durable owner changes underneath it.
+ */
+export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
   checkCommands: z
     .array(WorkflowCheckCommandSchema)
     .max(WORKFLOW_LIMITS.checkCommands)
-    // `(repoRoot, slot)` is the KEY `checkCommandFor` resolves by, so two entries sharing
-    // one are two commands an operator can see and only one that can ever run - which of
-    // them depends on array order, a thing no surface displays. The panel already replaces
-    // rather than appends on a repeat; this is the same rule for a direct API write, which
-    // otherwise stores a config the panel could not have produced.
+    // `(repoRoot, slot)` is the KEY resolution picks by, so two entries sharing one are two
+    // commands an operator can see and only one that can ever run - which of them depends on
+    // array order, a thing no surface displays. The panel already replaces rather than
+    // appends on a repeat; this is the same rule for a direct API write, which otherwise
+    // stores a config the panel could not have produced.
     //
     // REFUSED, not silently deduplicated, for the reason this schema carries no `.catch()`:
     // a write that quietly dropped one of two commands is a caller who sent two and is
@@ -3288,15 +3342,14 @@ export const WorkflowConfigSchema = z.object({
     )
     .default([]),
 });
-export type WorkflowConfigInput = z.input<typeof WorkflowConfigSchema>;
 
 /**
- * The same shape read back off `app_config`, where a value this build cannot parse must not
+ * The policy read back off `app_config`, where a value this build cannot parse must not
  * throw.
  *
  * `.default()` already covers an UPGRADE - a blob written before a field existed simply
  * lacks it - so this outer `.catch()` is only for a blob that is present and unreadable: a
- * downgrade from a newer build, or a hand-edited row. `getWorkflowConfig` is on the path of
+ * downgrade from a newer build, or a hand-edited row. `getWorkflowPolicy` is on the path of
  * every workflow read, every binding gate and the retention sweep, so a throw there takes
  * all of them down over a preference.
  *
@@ -3310,8 +3363,12 @@ export type WorkflowConfigInput = z.input<typeof WorkflowConfigSchema>;
  * fallback would be the dangerous one - it could keep a parsed allowlist beside a defaulted
  * consent flag and grant exactly what neither half was written to allow. An operator whose
  * config cannot be read sees the panel showing defaults, which is a state they can fix.
+ *
+ * Commands are deliberately NOT in this fallback any more. An unreadable policy blob no
+ * longer takes an operator's configured commands with it: those live in their own table with
+ * their own revisions, and a preference this build cannot parse says nothing about them.
  */
-export const StoredWorkflowConfigSchema = WorkflowConfigSchema.catch(DEFAULT_WORKFLOW_CONFIG);
+export const StoredWorkflowPolicySchema = WorkflowPolicySchema.catch(DEFAULT_WORKFLOW_POLICY);
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
 export const WorkflowCheckOutcomeSchema = z.object({

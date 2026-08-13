@@ -13,6 +13,7 @@ import type {
   PersonaView,
   SessionAction,
   WorkflowBindingSummary,
+  WorkflowCommandView,
   WorkflowRunSummary,
   WorkflowSummary,
 } from "@shared/workflow.ts";
@@ -39,6 +40,15 @@ export interface MissionState {
   personas: PersonaView[];
   /** The SessionAction catalog, archived rows included so a node can always name its source. */
   sessionActions: SessionAction[];
+  /**
+   * The Global Command catalog: what each portable workflow slot runs on this machine.
+   *
+   * Always exactly four entries, in slot order, configured or not - the daemon projects the
+   * built-in slots rather than only the written ones, so a surface never has to decide
+   * whether a missing entry means "unconfigured" or "not loaded yet". Snapshot and one
+   * upsert event are the ONLY refresh mechanism; nothing here polls the command routes.
+   */
+  workflowCommands: WorkflowCommandView[];
   workflowSummaries: WorkflowSummary[];
   workflowRunSummaries: WorkflowRunSummary[];
   /** What each conversation is ARMED with, which precedes and outlives its runs. */
@@ -134,6 +144,9 @@ export function useEventStream(): MissionState {
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [personas, setPersonas] = useState<Map<string, PersonaView>>(new Map());
   const [sessionActions, setSessionActions] = useState<Map<string, SessionAction>>(new Map());
+  const [workflowCommands, setWorkflowCommands] = useState<Map<string, WorkflowCommandView>>(
+    new Map(),
+  );
   const [workflowSummaries, setWorkflowSummaries] = useState<Map<string, WorkflowSummary>>(new Map());
   const [workflowRuns, setWorkflowRuns] = useState<Map<string, WorkflowRunSummary>>(new Map());
   const [workflowBindings, setWorkflowBindings] = useState<Map<string, WorkflowBindingSummary>>(new Map());
@@ -196,6 +209,9 @@ export function useEventStream(): MissionState {
           setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
           setPersonas(new Map(msg.personas.map((persona) => [persona.id, persona])));
           setSessionActions(new Map(msg.sessionActions.map((action) => [action.id, action])));
+          // Replaced wholesale, like every other collection here. A daemon that migrated or
+          // cleared a slot while this tab was disconnected is the authority on reconnect.
+          setWorkflowCommands(new Map((msg.workflowCommands ?? []).map((c) => [c.slot, c])));
           setWorkflowSummaries(new Map(msg.workflowSummaries.map((workflow) => [workflow.id, workflow])));
           setWorkflowRuns(new Map(msg.workflowRunSummaries.map((run) => [run.id, run])));
           setWorkflowBindings(new Map(msg.workflowBindingSummaries.map((b) => [b.id, b])));
@@ -286,6 +302,11 @@ export function useEventStream(): MissionState {
             next.delete(msg.id);
             return next;
           });
+          break;
+        // No remove twin, deliberately: a built-in slot is emptied, never deleted, and an
+        // emptied slot is still a card that has to say "Not configured".
+        case "workflow_command_upsert":
+          setWorkflowCommands((prev) => new Map(prev).set(msg.command.slot, msg.command));
           break;
         case "workflow_upsert":
           setWorkflowSummaries((prev) => new Map(prev).set(msg.workflow.id, msg.workflow));
@@ -398,6 +419,7 @@ export function useEventStream(): MissionState {
     tasks: [...tasks.values()],
     personas: [...personas.values()],
     sessionActions: [...sessionActions.values()],
+    workflowCommands: [...workflowCommands.values()],
     workflowSummaries: [...workflowSummaries.values()],
     workflowRunSummaries: [...workflowRuns.values()],
     workflowBindingSummaries: [...workflowBindings.values()],

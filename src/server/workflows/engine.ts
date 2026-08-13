@@ -15,7 +15,9 @@ import type {
   WorkflowVersion,
   PersonaExecutionView,
   WorkflowCheckOutcome,
-  WorkflowConfig,
+  WorkflowCheckSlot,
+  WorkflowCommandView,
+  WorkflowPolicy,
 } from "@shared/workflow.ts";
 import type { WorkflowVerdictNode } from "@shared/workflow.ts";
 import {
@@ -35,7 +37,7 @@ import { resolvePersonaExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
 import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
 import { workflowLog } from "./log.ts";
-import { getWorkflowConfig } from "./config.ts";
+import { getWorkflowPolicy } from "./config.ts";
 import {
   DEFAULT_CHECK_CONCURRENCY,
   createCheckScheduler,
@@ -161,7 +163,16 @@ export interface WorkflowEngineOptions {
    */
   unresolvedCheckLease?: (submissionId: string, nodeId: string) => boolean;
   /** Read per attempt, never cached, so a Settings edit lands on the next check. */
-  workflowConfig?: () => WorkflowConfig;
+  workflowPolicy?: () => WorkflowPolicy;
+  /**
+   * This machine's Command catalog entry for one slot, read per attempt for the same reason.
+   *
+   * Defaults to the engine's OWN store handle rather than a module global: the daemon is the
+   * only writer, and the store the engine already holds is the same connection the Command
+   * manager writes through, so an edit made in Settings or through the catalog routes lands
+   * on the next check without a second source of truth or a cache to invalidate.
+   */
+  workflowCommand?: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
 }
 
 function isPersona(node: PublishedWorkflowNode): node is Extract<PublishedWorkflowNode, { kind: "persona" }> {
@@ -300,7 +311,8 @@ export class WorkflowEngine {
   private readonly checkLimit: CheckScheduler;
   private readonly checkDeps: NonNullable<WorkflowEngineOptions["checkDeps"]>;
   private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
-  private readonly workflowConfig: () => WorkflowConfig;
+  private readonly workflowPolicy: () => WorkflowPolicy;
+  private readonly workflowCommand: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
   private stopped = true;
   private pumping = false;
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -325,7 +337,9 @@ export class WorkflowEngine {
       ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
     this.checkDeps = options.checkDeps ?? (() => ({}));
     this.unresolvedCheckLease = options.unresolvedCheckLease ?? (() => false);
-    this.workflowConfig = options.workflowConfig ?? getWorkflowConfig;
+    this.workflowPolicy = options.workflowPolicy ?? getWorkflowPolicy;
+    this.workflowCommand = options.workflowCommand
+      ?? ((slot) => this.store.getWorkflowCommand(slot));
   }
 
   start(): void {
@@ -1035,7 +1049,8 @@ export class WorkflowEngine {
     try {
       result = await runCheck({
         slot: node.slot,
-        config: this.workflowConfig(),
+        command: this.workflowCommand(node.slot),
+        policy: this.workflowPolicy(),
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: submission.prHeadSha ?? context.data.evidence.headSha,

@@ -53,7 +53,7 @@ const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
-const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { buildApp } = await import("../src/server/routes.ts");
@@ -320,7 +320,7 @@ function reportIdle(
 // Live delivery consent, so the repair packet is really typed into the pane. Foreman is
 // enabled only so the control arms below can create a `foreman_complete` binding at all; every
 // AUTO assertion in this file is reached with no Foreman queue and no drain guard whatsoever.
-setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 setForemanConfig({ enabled: true });
 
 // ---------------------------------------------------------------------------

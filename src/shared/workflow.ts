@@ -109,11 +109,39 @@ export const WORKFLOW_LIMITS = {
   externalSourceSegment: 200,
   externalSourceKey: 1_000,
   checkRepoRoot: 4_096,
+  /** The legacy flat `checkCommands` list, across every slot. Still the PUT route's bound. */
   checkCommands: 200,
+  /**
+   * Overrides one Command slot may carry.
+   *
+   * The same number as the flat ceiling above, applied per SLOT because the slot is now the
+   * unit of both storage and update. That is no looser than before for any single slot - one
+   * slot could always have used the whole flat budget - and it deliberately does not divide
+   * the old ceiling by four, which would have made a legitimate existing config unmigratable.
+   * The aggregate ceiling is therefore four times the old one; both are far above any real
+   * configuration, and the bound's job is to stop one write making every later read expensive.
+   */
+  commandOverrides: 200,
   checkCommandArgs: 32,
   checkCommandArg: 1_000,
   checkCommandLength: 4_000,
 } as const;
+
+/**
+ * Worst-case bytes one character of a bounded string can become, once JSON-encoded as UTF-8.
+ *
+ * Every character ceiling in `WORKFLOW_LIMITS` is exactly that - a count of UTF-16 code units,
+ * which is what `z.string().max()` measures. It is NOT a byte count, so any byte budget derived
+ * from one has to carry the expansion or it refuses payloads the schema accepts: a 4,096-
+ * character repository path of CJK or emoji is four times that many bytes on the wire, and a
+ * request rejected before validation is a 413 an operator cannot read a reason out of.
+ *
+ * SIX rather than four, and the extra two are not padding. Four is the widest UTF-8 encoding, but
+ * JSON escapes a control character to `\u00XX`, which is six ASCII bytes for one code unit - and
+ * `parseCheckCommand` accepts a tab inside a quoted argument, so a control character in a stored
+ * argv is a shape this product supports rather than a hypothetical.
+ */
+export const JSON_UTF8_MAX_BYTES_PER_CHAR = 6;
 
 export const WORKFLOW_EXECUTION_LIMITS = {
   contextJsonBytes: 2_000_000,
@@ -1528,7 +1556,14 @@ export interface WorkflowCaptureExpectation {
   requireCleanWorktree: true;
 }
 
-/** What one repository runs for one slot. */
+/**
+ * What one repository runs for one slot, in the LEGACY flat shape.
+ *
+ * Retained as the wire projection `GET /api/workflows/config` still answers with and the
+ * shape `PUT` still accepts, so the Settings form keeps working while the durable catalog
+ * moves underneath it. It is no longer a persisted shape: see `WorkflowCommandView`, which
+ * is the one authority, and `legacyCheckCommands`, which flattens it back to this.
+ */
 export interface WorkflowCheckCommand {
   repoRoot: string;
   slot: WorkflowCheckSlot;
@@ -1540,7 +1575,98 @@ export interface WorkflowCheckCommand {
   command: string[];
 }
 
-export interface WorkflowConfig {
+/**
+ * One repository or subdirectory exception to a Command's machine-wide default.
+ *
+ * No `slot`: an override only ever exists inside the slot that owns it, and repeating the
+ * slot on the row would be a second place for it to disagree with its parent.
+ */
+export interface WorkflowCommandOverride {
+  repoRoot: string;
+  command: string[];
+}
+
+/**
+ * The complete durable state of ONE portable Command slot - the grouped view every surface
+ * reads and the only persisted command authority in the daemon.
+ *
+ * Grouped rather than flat because the slot is the unit an operator reasons about ("what
+ * does `test` run on this machine, and where is that not true?") and, more load-bearing, the
+ * unit of the atomic write: one CAS replaces the nullable default AND the complete override
+ * set together, so a surface can never commit half of a slot's configuration.
+ *
+ * All four built-in slots are always projected, in `WORKFLOW_CHECK_SLOTS` order, including
+ * the ones nobody has configured. A slot that vanished until it was written would make
+ * "unconfigured" indistinguishable from "not loaded" for every reader.
+ */
+export interface WorkflowCommandView {
+  slot: WorkflowCheckSlot;
+  /**
+   * What this slot runs when no override matches - repository-neutral, and null when the
+   * operator has not named one.
+   *
+   * Deliberately NOT inferred from any override during migration. That a repository runs
+   * `npm test` is not evidence the same argv is correct, or safe, in every other checkout
+   * a workflow may reach.
+   */
+  defaultCommand: string[] | null;
+  /** Unique by `repoRoot` within the slot, canonical paths, longest match wins. */
+  overrides: WorkflowCommandOverride[];
+  /** Compare-and-swap token. Starts at 1 for a seeded, never-edited slot. */
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** The projected state of a slot nobody has configured yet. */
+export function emptyWorkflowCommandView(
+  slot: WorkflowCheckSlot,
+  now = 0,
+): WorkflowCommandView {
+  return {
+    slot,
+    defaultCommand: null,
+    overrides: [],
+    revision: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/**
+ * The legacy flat `checkCommands` projection of the catalog.
+ *
+ * Overrides ONLY. A global default has no repository and therefore no legacy row it could
+ * honestly occupy - inventing one per repository would tell the old surface a default is an
+ * override, and the next save it made would write that fiction back as one.
+ *
+ * Deterministic: registry slot order, then the store's canonical override order. The old
+ * field was an append-ordered array whose order no surface displayed, so pinning a stable
+ * order here is strictly more legible than what it replaces.
+ */
+export function legacyCheckCommands(
+  views: readonly WorkflowCommandView[],
+): WorkflowCheckCommand[] {
+  const bySlot = new Map(views.map((view) => [view.slot, view]));
+  const rows: WorkflowCheckCommand[] = [];
+  for (const slot of WORKFLOW_CHECK_SLOTS) {
+    for (const override of bySlot.get(slot)?.overrides ?? []) {
+      rows.push({ repoRoot: override.repoRoot, slot, command: [...override.command] });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Machine-wide workflow POLICY - the part of the old config that is still stored in
+ * `app_config`.
+ *
+ * Split from the commands it used to sit beside because they are owned by different things
+ * now: policy is a small settings blob, and commands are a normalized catalog with its own
+ * revisions and its own write path. `checkBlockedReason` reads this and nothing else, which
+ * is what keeps authorization a separate question from resolution.
+ */
+export interface WorkflowPolicy {
   /**
    * Machine-wide authorisation to TYPE a repair packet into a session's pane.
    *
@@ -1575,10 +1701,23 @@ export interface WorkflowConfig {
    * `checkBlockedReason` is the one place both are asked.
    */
   checksEnabled: boolean;
+}
+
+/**
+ * Policy PLUS the legacy flat command projection: the shape `/api/workflows/config` still
+ * answers with and still accepts.
+ *
+ * Not a persisted shape any more. `checkCommands` is composed from the Command catalog on
+ * read and mapped back into it on write, so the field an old caller sees is a view of the
+ * one authority rather than a second copy of it.
+ */
+export interface WorkflowConfig extends WorkflowPolicy {
   /**
    * A LIST rather than a `Record<repoRoot, …>` for `repoAllowlist`'s reason: repository
    * roots are absolute paths and make poor object keys, and the flat shape is how this
-   * config already stores roots.
+   * config already stored roots.
+   *
+   * Overrides only. A slot's global default has no repository and so has no row here.
    */
   checkCommands: WorkflowCheckCommand[];
 }
@@ -1592,7 +1731,7 @@ export interface WorkflowRetentionConfig {
   maxCompletedRuns: number;
 }
 
-export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
+export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
   // Authorised, and gated on `repoAllowlist` being non-empty. See the field's docstring: an
   // empty allowlist authorises nothing, so this changes nothing for a repository nobody named.
   liveEnabled: true,
@@ -1607,53 +1746,89 @@ export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
     maxCompletedRuns: 1_000,
   },
   checksEnabled: false,
+};
+
+/** The default policy under the legacy wire shape: no commands, because none are stored. */
+export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
+  ...DEFAULT_WORKFLOW_POLICY,
   checkCommands: [],
 };
 
 /**
- * The argv configured for this checkout and slot, or null when nobody configured one.
+ * What one Command slot actually runs here, and where - or null when nobody configured it.
  *
- * Shared so the daemon and the settings panel resolve identically: a panel that showed a
- * command the daemon would not pick is a gate an operator believes they configured.
+ * The argv is COPIED and the working path is carried beside it. The matched override root is
+ * not decoration: when a nested override wins, it is also the directory the command has to
+ * run in, and a caller handed only the argv would run the package's command at the top of
+ * the repository and report the answer as the package's.
+ */
+export interface WorkflowCommandResolution {
+  command: string[];
+  /**
+   * Where the command runs, RELATIVE to the checkout root. `""` is the root.
+   *
+   * Relative, never absolute: the execution runtime leases a pooled worktree pinned to the
+   * submission's commit rather than standing in the operator's own directory.
+   */
+  workingSubpath: string;
+  /** Which rung of the ladder answered. Diagnostic only; execution treats both alike. */
+  source: "override" | "default";
+}
+
+/**
+ * Resolve one slot for one location: longest matching override, else the global default.
+ *
+ * Shared so the daemon and every authoring surface resolve identically: a surface that
+ * showed a command the daemon would not pick is a gate an operator believes they configured.
  *
  * `cwd` and `repoRoot` are BOTH consulted, through the same `repoAllowlisted` boundary the
  * consent gate uses, because a session normally stands in a pooled worktree under
  * `~/.treehouse/` while its `repoRoot` names the shared main repository. Matching on either
- * is what makes an entry naming the project reach a worktree of that project.
+ * is what makes an override naming the project reach a worktree of that project.
  *
  * The LONGEST matching root wins, so a monorepo subdirectory can override the entry that
- * covers the whole tree. Two entries sharing a root and slot cannot occur, and that is
- * ENFORCED at the write boundary rather than assumed here: `WorkflowConfigSchema` refuses
- * a duplicate `(repoRoot, slot)` pair. It has to be enforced somewhere, because this
- * function silently keeps the first of a tie - which would make the command that runs
+ * covers the whole tree. Two overrides sharing a root cannot occur within a slot, and that
+ * is ENFORCED at the write boundary rather than assumed here: the update schema and the
+ * store's composite key both refuse a duplicate. It has to be enforced somewhere, because
+ * this function silently keeps the first of a tie - which would make the command that runs
  * depend on array order, a thing no surface shows the operator.
  *
- * A nested entry has a THIRD way to match, and it is the one that carries the common case.
- * Absolute containment alone selects `/repo/packages/web` only for a session standing under
- * that literal path - but a dispatched session stands in a pooled worktree under
+ * A nested override has a THIRD way to match, and it is the one that carries the common
+ * case. Absolute containment alone selects `/repo/packages/web` only for a session standing
+ * under that literal path - but a dispatched session stands in a pooled worktree under
  * `~/.treehouse/`, whose `cwd` is outside `/repo` entirely while its `repoRoot` still names
- * `/repo`. Containment therefore falls through to the repository-wide entry, so the package
- * override would work for a plain checkout and silently never for a dispatched one. A
- * worktree mirrors its repository's layout, so the entry's repository-relative subpath is
- * matched against `location.checkoutSubpath` - the session's position within its OWN
+ * `/repo`. Containment therefore falls through to the repository-wide override, so the
+ * package override would work for a plain checkout and silently never for a dispatched one.
+ * A worktree mirrors its repository's layout, so the override's repository-relative subpath
+ * is matched against `location.checkoutSubpath` - the session's position within its OWN
  * checkout, compared by whole path components.
+ *
+ * The global default is the LAST rung, reached only when no override matched, and it runs at
+ * the checkout ROOT. A default is repository-neutral by definition, so it carries no opinion
+ * about which subdirectory to stand in, and inheriting a losing override's subpath would run
+ * a machine-wide command somewhere it was never configured for.
  */
-export function checkCommandFor(
-  config: Pick<WorkflowConfig, "checkCommands">,
+export function resolveWorkflowCommand(
+  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null,
   location: CheckLocation,
-  slot: WorkflowCheckSlot,
-): WorkflowCheckCommand | null {
-  let best: WorkflowCheckCommand | null = null;
-  for (const entry of config.checkCommands) {
-    if (entry.slot !== slot) continue;
+): WorkflowCommandResolution | null {
+  if (!view) return null;
+  let best: WorkflowCommandOverride | null = null;
+  for (const entry of view.overrides) {
     if (!checkCommandApplies(entry.repoRoot, location)) continue;
     if (!best || entry.repoRoot.length > best.repoRoot.length) best = entry;
   }
-  // The whole ENTRY, not just its argv. The matched root is not decoration: when a nested
-  // entry wins, it is also the directory that command has to run in, and a caller handed
-  // only the argv has no way to know that - it would run the package's command at the top
-  // of the repository and report the answer as the package's.
-  return best ? { ...best, command: [...best.command] } : null;
+  if (best) {
+    return {
+      command: [...best.command],
+      workingSubpath: checkCommandSubpath(location.repoRoot, best.repoRoot),
+      source: "override",
+    };
+  }
+  if (view.defaultCommand && view.defaultCommand.length > 0) {
+    return { command: [...view.defaultCommand], workingSubpath: "", source: "default" };
+  }
+  return null;
 }
 
 /** Drop a single trailing separator so `/repo/` and `/repo` compare equal. */
@@ -1765,7 +1940,7 @@ export function checkCommandSubpath(
  * other is adding this repository - and a boolean makes the surface guess which.
  */
 export function checkBlockedReason(
-  config: Pick<WorkflowConfig, "checksEnabled" | "repoAllowlist">,
+  config: Pick<WorkflowPolicy, "checksEnabled" | "repoAllowlist">,
   cwd: string | null,
   repoRoot: string | null,
 ): string | null {

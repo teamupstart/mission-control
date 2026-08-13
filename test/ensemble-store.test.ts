@@ -9,6 +9,8 @@ import {
   ENSEMBLE_PLAN_VERSION,
   ensemblePayload,
   ensembleIsRunnable,
+  ensembleReviewChargeCounts,
+  ensembleReviewIsInfrastructureBlocked,
   readReviewAttemptReceipt,
   type CompiledEnsemblePlan,
 } from "../src/shared/ensemble.ts";
@@ -534,6 +536,52 @@ test("a review attempt receipt says which budget it spent, and an absent one rea
   // `maxAttempts` at the time. Reading them any other way would hand old runs free retries.
   assert.deepEqual(readReviewAttemptReceipt(null), { charge: "model", kind: null, retryAt: null });
   assert.equal(readReviewAttemptReceipt({ charge: "from-a-newer-build" }).charge, "model");
+});
+
+test("one tally answers what a review spent, for the daemon and the dashboard alike", () => {
+  // The daemon decides whether a stage is parked from this; the pipeline renders its counter and
+  // its pause line from this; the actions surface decides whether to offer the door from this.
+  // They were three loops once, and the daemon and the browser reached different verdicts about
+  // the same stage - so the property worth pinning is that the count is computed in one place and
+  // reads persisted rows, not that any one caller happens to agree today.
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const settle = (n: number, status: "failed" | "interrupted" | "succeeded", output?: unknown) => {
+    const opened = store.startStageAttempt({
+      runId: run.id,
+      stageId: "stage-2",
+      driverKind: "review",
+      driverKey: "comparative_review@1",
+      attempt: n,
+      commandKey: `review:${run.id}:stage-2:${n}`,
+      status: "running" as const,
+      input: { command: "review", attempt: n },
+    });
+    store.finishStageAttempt(opened.id, ["running"], status, output === undefined ? {} : { output: output as never });
+  };
+  settle(1, "failed", { charge: "infrastructure", kind: "infrastructure", retryAt: 1_000 });
+  settle(2, "interrupted");
+  settle(3, "failed", { charge: "model", kind: "invalid_output", retryAt: null });
+  settle(4, "failed", { charge: "infrastructure", kind: "infrastructure", retryAt: null });
+  settle(5, "succeeded");
+  const attempts = store.listStageAttempts(run.id);
+
+  assert.deepEqual(ensembleReviewChargeCounts(attempts, "stage-2"), { model: 1, infrastructure: 2 });
+  assert.equal(
+    ensembleReviewIsInfrastructureBlocked(attempts, "stage-2"),
+    false,
+    "two infrastructure failures is under the budget of three",
+  );
+  // Only FAILED rows charge anything: an interruption is free by design and a success is not a
+  // charge at all, which is the distinction the whole change rests on.
+  assert.equal(attempts.filter((a) => a.stageId === "stage-2").length, 5);
+
+  settle(6, "failed", { charge: "infrastructure", kind: "infrastructure", retryAt: null });
+  const spent = store.listStageAttempts(run.id);
+  assert.deepEqual(ensembleReviewChargeCounts(spent, "stage-2"), { model: 1, infrastructure: 3 });
+  assert.equal(ensembleReviewIsInfrastructureBlocked(spent, "stage-2"), true);
+  // Scoped to its own stage, so a busy run's other stages never move this one's verdict.
+  assert.deepEqual(ensembleReviewChargeCounts(spent, "stage-9"), { model: 0, infrastructure: 0 });
 });
 
 test("an evaluation is one row per stage attempt and attempt number, and reports what ran", () => {

@@ -4,12 +4,12 @@ import {
   ENSEMBLE_HARD_LIMITS,
   ENSEMBLE_LIMITS,
   MAX_REVIEW_INFRA_ATTEMPTS,
+  ensembleReviewChargeCounts,
   ensembleJsonEqual,
   ensembleIsRunnable,
   ensembleIsTerminal,
   ensemblePayload,
   readReviewAttemptReceipt,
-  type EnsembleReviewCharge,
   type CompiledEnsemblePlan,
   type EnsembleArtifact,
   type EnsembleAttempt,
@@ -418,8 +418,10 @@ function reviewStageBudget(
   attempts: readonly EnsembleStageAttempt[],
   stageId: string,
 ): ReviewStageBudget {
-  let consumed = 0;
-  let infrastructure = 0;
+  // The charged tally comes from shared, where the dashboard reads the same one. Counting it here
+  // as well is how the daemon and the browser came to disagree about whether a stage was parked,
+  // and a threshold or a charge rule that moved in only one of two loops would do it again.
+  const charges = ensembleReviewChargeCounts(attempts, stageId);
   let interrupted = 0;
   let latestNumber = 0;
   let latest: EnsembleStageAttempt | null = null;
@@ -430,17 +432,20 @@ function reviewStageBudget(
       latest = attempt;
     }
     // `interrupted` and `cancelled` spend neither budget: nobody read an answer, so nobody gave
-    // one. Interruptions are still counted, because the ceiling below is a bound on exactly them.
+    // one. Interruptions are counted here rather than in shared because they are not a CHARGE -
+    // they are the thing the crash-loop ceiling bounds, and only the daemon asks that question.
     if (attempt.status === "interrupted") interrupted += 1;
-    if (attempt.status !== "failed") continue;
-    const charge: EnsembleReviewCharge = readReviewAttemptReceipt(attempt.output).charge;
-    if (charge === "infrastructure") infrastructure += 1;
-    else consumed += 1;
   }
   // Only the NEWEST row can owe a wait. An older backoff was either already served or made moot
   // by whatever opened a row after it - a restart's interruption included.
   const receipt = latest && latest.status === "failed" ? readReviewAttemptReceipt(latest.output) : null;
-  return { consumed, infrastructure, interrupted, latestNumber, retryAt: receipt?.retryAt ?? null };
+  return {
+    consumed: charges.model,
+    infrastructure: charges.infrastructure,
+    interrupted,
+    latestNumber,
+    retryAt: receipt?.retryAt ?? null,
+  };
 }
 
 /**

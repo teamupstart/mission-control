@@ -1,5 +1,6 @@
 import {
   ensembleIsTerminal,
+  ensembleReviewChargeCounts,
   ensembleReviewIsInfrastructureBlocked,
   MAX_REVIEW_INFRA_ATTEMPTS,
   ensembleStageDriverWord,
@@ -148,13 +149,9 @@ function reviewAttemptDetail(
   stageAttempts: readonly EnsembleStageAttempt[],
   latest: EnsembleStageAttempt,
 ): string {
-  let consumed = 0;
-  let infrastructure = 0;
-  for (const attempt of stageAttempts) {
-    if (attempt.stageId !== stage.id || attempt.status !== "failed") continue;
-    if (readReviewAttemptReceipt(attempt.output).charge === "model") consumed += 1;
-    else infrastructure += 1;
-  }
+  // Same tally the daemon spends from, from the same function, so the number a person reads and
+  // the number the engine acts on cannot come apart.
+  const { model: consumed, infrastructure } = ensembleReviewChargeCounts(stageAttempts, stage.id);
   const live =
     latest.status === "running" || latest.status === "waiting" || latest.status === "queued";
   const shown = Math.min(Math.max(consumed + (live ? 1 : 0), 1), stage.maxAttempts);

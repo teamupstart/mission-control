@@ -1058,24 +1058,48 @@ export type EnsembleReviewCharge = (typeof ENSEMBLE_REVIEW_CHARGES)[number];
  */
 export const MAX_REVIEW_INFRA_ATTEMPTS = 3;
 
+/** What one review stage's failed attempts have charged, per budget. */
+export interface EnsembleReviewChargeCounts {
+  /** Charged to the evaluator's `maxAttempts`: a model answered, and the answer was unusable. */
+  model: number;
+  /** Charged to the infrastructure budget: no answer was ever reached. */
+  infrastructure: number;
+}
+
 /**
- * Whether a review stage has spent its infrastructure budget, from its durable attempt rows.
+ * What a review stage has spent, per budget, from its durable attempt rows.
+ *
+ * The ONE place this tally is computed. The daemon reads it to decide whether a stage is parked,
+ * the pipeline reads it to render the counter and the pause line, and the actions surface reads
+ * it to decide whether to offer the door - and the last time these were three separate loops the
+ * daemon and the dashboard reached different verdicts about the same stage, which is a bug that
+ * ends with an operator staring at a run that says it is working and never moves again.
  *
  * Aggregated over every row, never read off the newest one. The newest row says what happened
- * LAST, which is a different question: an operator-granted retry that a restart interrupted
- * leaves an `interrupted` row on a stage the daemon is still parking, and a stage that reads its
- * own state from that row alone concludes a retry is coming when nothing is going to start one.
+ * LAST, which is a different question: an operator-granted retry that a restart interrupted leaves
+ * an `interrupted` row on a stage the daemon is still parking, and a reader that takes its verdict
+ * from that row alone concludes a retry is coming when nothing is going to start one.
  */
-export function ensembleReviewIsInfrastructureBlocked(
+export function ensembleReviewChargeCounts(
   attempts: readonly EnsembleStageAttempt[],
   stageId: string,
-): boolean {
+): EnsembleReviewChargeCounts {
+  let model = 0;
   let infrastructure = 0;
   for (const attempt of attempts) {
     if (attempt.stageId !== stageId || attempt.status !== "failed") continue;
     if (readReviewAttemptReceipt(attempt.output).charge === "infrastructure") infrastructure += 1;
+    else model += 1;
   }
-  return infrastructure >= MAX_REVIEW_INFRA_ATTEMPTS;
+  return { model, infrastructure };
+}
+
+/** Whether a review stage has spent its infrastructure budget, and so is parked for a person. */
+export function ensembleReviewIsInfrastructureBlocked(
+  attempts: readonly EnsembleStageAttempt[],
+  stageId: string,
+): boolean {
+  return ensembleReviewChargeCounts(attempts, stageId).infrastructure >= MAX_REVIEW_INFRA_ATTEMPTS;
 }
 
 /** What a settled review stage attempt recorded about its own failure, on its `output` receipt. */

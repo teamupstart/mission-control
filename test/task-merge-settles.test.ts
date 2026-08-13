@@ -296,10 +296,10 @@ test("an agent that rolled onto new work and then vanished LANDS on the earlier 
   assert.equal(t.outcomeUrl, PR);
 });
 
-test("a task an operator already completed is not rewritten", () => {
+test("a task an operator already completed is not rewritten", async () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-idempotent");
-  f.tasks.complete(f.taskId, "done by hand");
+  await f.tasks.complete(f.taskId, "done by hand");
   merge(f);
   agentGone(f);
   const t = f.registry.getTask(f.taskId)!;
@@ -538,13 +538,13 @@ test("an agent that resumes work reopens the task we concluded from its idleness
   assert.equal(t.outcomeUrl, null);
 });
 
-test("a HUMAN's completion is never reopened by the agent going busy again", () => {
+test("a HUMAN's completion is never reopened by the agent going busy again", async () => {
   // The guard that keeps the above from overwriting somebody's recorded outcome. Only
   // conclusions this class drew from idleness are reversible; a human's is a statement
   // about the work, not an inference.
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-human-done", true);
-  f.tasks.complete(f.taskId, "shipped, and I say so");
+  await f.tasks.complete(f.taskId, "shipped, and I say so");
   f.registry.applyHook({
     agent: "claude",
     event: "UserPromptSubmit",
@@ -559,12 +559,12 @@ test("a HUMAN's completion is never reopened by the agent going busy again", () 
   assert.equal(t.outcome, "shipped, and I say so");
 });
 
-test("a human completion supersedes an earlier reversible idle completion", () => {
+test("a human completion supersedes an earlier reversible idle completion", async () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-human-overrides-idle");
   merge(f);
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
-  f.tasks.complete(f.taskId, "verified and completed by hand");
+  await f.tasks.complete(f.taskId, "verified and completed by hand");
   f.registry.applyHook({
     agent: "claude",
     event: "UserPromptSubmit",

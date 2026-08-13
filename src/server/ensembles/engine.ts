@@ -236,8 +236,13 @@ export interface EnsembleTaskGateway {
    *
    * So this records an outcome and nothing else. Freeing the tree stays behind the operator's
    * confirmed Clean up, exactly as it does for a task whose agent went away.
+   *
+   * Asynchronous because task completion is: a scout's `done` waits on a verified durable
+   * archive. An ensemble member is a ship task, so this resolves without any archive work -
+   * but the promise is the owner's contract, and a gateway that dropped it would report the
+   * run finalized before the Task it was settling had actually moved.
    */
-  settleSuperseded(taskId: string, outcome: string): void;
+  settleSuperseded(taskId: string, outcome: string): Promise<void>;
   /** The current durable status of a member Task, or null if it is gone. */
   status(taskId: string): TaskGatewayStatus | null;
   /** The worktree a member Task is running in, once provisioned. */
@@ -2424,7 +2429,7 @@ export class EnsembleEngine {
     // Same step, and it belongs here rather than beside the materialization that caused it: the
     // winner's original Task is only superseded once the replacement it was superseded BY is a ready
     // winner, so settling it earlier would strand it terminal around a dispatch that can still fail.
-    const superseded = this.settleSupersededWinner(state, winnerMember, winnerAttemptTaskId(state, winnerArtifact), ready.replacementTaskId);
+    const superseded = await this.settleSupersededWinner(state, winnerMember, winnerAttemptTaskId(state, winnerArtifact), ready.replacementTaskId);
     if (!superseded.ok) {
       return this.parkFinalize(run.id, stageAttempt.id, progress, superseded.detail ?? "the superseded winner Task could not be settled");
     }
@@ -2715,12 +2720,12 @@ export class EnsembleEngine {
    * already terminal and does nothing. A winner whose session had already vanished is likewise
    * already terminal via `agentWentAway`, and is left exactly as that path settled it.
    */
-  private settleSupersededWinner(
+  private async settleSupersededWinner(
     state: RunState,
     winnerMember: EnsembleMember,
     originalTaskId: string | null,
     replacementTaskId: string | null,
-  ): { ok: boolean; detail?: string } {
+  ): Promise<{ ok: boolean; detail?: string }> {
     // Restored path: the winner's original Task IS the promoted one, and it must stay running to
     // receive its continuation. Only a replacement supersedes anything.
     if (replacementTaskId === null || originalTaskId === null) return { ok: true };
@@ -2728,7 +2733,7 @@ export class EnsembleEngine {
     const status = this.tasks.status(originalTaskId);
     if (status === null || !LIVE_TASK_STATUSES.includes(status)) return { ok: true };
     try {
-      this.tasks.settleSuperseded(
+      await this.tasks.settleSuperseded(
         originalTaskId,
         `selected as the ensemble winner; promoted to task ${replacementTaskId}`,
       );

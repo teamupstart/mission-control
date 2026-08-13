@@ -411,6 +411,11 @@ test("a shortened session title exposes its full generated task title", () => {
 
   const plain = bit(SessionTitle, { session, canRename: false, renaming: false });
   assert.ok(hasTooltip(plain, full));
+
+  const boardTile = tile(session);
+  assert.ok(hasTooltip(boardTile, `Open ${full}`));
+  assert.ok(boardTile.includes(`aria-label="Open ${full}"`));
+  assert.ok(boardTile.includes(shortened), "the visible board heading stays shortened");
 });
 
 test("the card's context meter is the shared RuntimeMetaRow", () => {

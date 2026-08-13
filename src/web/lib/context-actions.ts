@@ -41,7 +41,7 @@ export interface ContextTarget {
 }
 
 export interface ContextInfo {
-  /** The exact live document selection, or an empty string. */
+  /** The live selection scoped by the host to this invocation target, or an empty string. */
   selection: string;
   /** Present for pointer invocation. Keyboard invocation has no caret point to inspect. */
   point?: ContextPoint;
@@ -54,6 +54,7 @@ export interface ContextInfo {
 
 interface TextFieldSnapshot {
   field: HTMLInputElement | HTMLTextAreaElement;
+  value: string;
   start: number;
   end: number;
   selected: string;
@@ -65,20 +66,38 @@ interface LinkSnapshot {
 }
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"]+/g;
+const URL_TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", "\u2019", "'"]);
+const URL_DELIMITER_PAIRS = [["(", ")"], ["[", "]"], ["{", "}"]] as const;
 const MAX_ACTIONS = 6;
 
 function urlCandidate(raw: string): string | null {
-  let candidate = raw.replace(/[.,;:!?\u2019']+$/u, "");
-  const pairs = { ")": "(", "]": "[", "}": "{" } as const;
-  while (candidate) {
-    const closer = candidate.at(-1) as keyof typeof pairs;
-    const opener = pairs[closer];
-    if (!opener) break;
-    const openings = [...candidate].filter((character) => character === opener).length;
-    const closings = [...candidate].filter((character) => character === closer).length;
-    if (closings <= openings) break;
-    candidate = candidate.slice(0, -1);
+  const delimiters = URL_DELIMITER_PAIRS.map(
+    ([opening, closing]) => ({ opening, closing, openingCount: 0, closingCount: 0 }),
+  );
+  for (const character of raw) {
+    for (const delimiter of delimiters) {
+      if (character === delimiter.opening) delimiter.openingCount += 1;
+      if (character === delimiter.closing) delimiter.closingCount += 1;
+    }
   }
+
+  let end = raw.length;
+  while (end > 0) {
+    const character = raw.charAt(end - 1);
+    if (URL_TRAILING_PUNCTUATION.has(character)) {
+      end -= 1;
+      continue;
+    }
+    const delimiter = delimiters.find((item) => item.closing === character);
+    if (delimiter && delimiter.closingCount > delimiter.openingCount) {
+      delimiter.closingCount -= 1;
+      end -= 1;
+      continue;
+    }
+    break;
+  }
+
+  const candidate = raw.slice(0, end);
   try {
     const parsed = new URL(candidate);
     return /^https?:$/.test(parsed.protocol) && parsed.hostname ? candidate : null;
@@ -97,7 +116,7 @@ function textFieldAt(el: Element): TextFieldSnapshot | null {
   }
   const start = Math.min(field.selectionStart, field.selectionEnd);
   const end = Math.max(field.selectionStart, field.selectionEnd);
-  return { field, start, end, selected: field.value.slice(start, end) };
+  return { field, value: field.value, start, end, selected: field.value.slice(start, end) };
 }
 
 type LegacyCaretDocument = Document & {
@@ -150,6 +169,31 @@ function quoteBlock(text: string): string {
   return `${text.split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
 }
 
+function fieldMutationIsCurrent(snapshot: TextFieldSnapshot): boolean {
+  const field = snapshot.field;
+  return field.isConnected
+    && !field.disabled
+    && !field.readOnly
+    && field.value === snapshot.value
+    && field.selectionStart === snapshot.start
+    && field.selectionEnd === snapshot.end;
+}
+
+function reportStaleFieldMutation(
+  snapshot: TextFieldSnapshot,
+  ctx: ContextInfo,
+  operation: "cut" | "paste",
+): void {
+  if (snapshot.field.isConnected) {
+    ctx.announce(
+      operation === "cut"
+        ? "Field changed before cut. Nothing was removed."
+        : "Field changed before paste. Nothing was pasted.",
+      "error",
+    );
+  }
+}
+
 function setFieldSelection(snapshot: TextFieldSnapshot): void {
   snapshot.field.focus({ preventScroll: true });
   snapshot.field.setSelectionRange(snapshot.start, snapshot.end);
@@ -170,11 +214,16 @@ function replaceFieldRange(snapshot: TextFieldSnapshot, replacement: string): vo
   const caret = snapshot.start + replacement.length;
   field.focus({ preventScroll: true });
   field.setSelectionRange(caret, caret);
-  field.dispatchEvent(new InputEvent("input", {
-    bubbles: true,
-    data: replacement,
-    inputType: replacement ? "insertText" : "deleteByCut",
-  }));
+  const InputEventCtor = field.ownerDocument?.defaultView?.InputEvent;
+  const event = InputEventCtor
+    ? new InputEventCtor("input", {
+      bubbles: true,
+      composed: true,
+      data: replacement,
+      inputType: replacement ? "insertText" : "deleteByCut",
+    })
+    : new Event("input", { bubbles: true, composed: true });
+  field.dispatchEvent(event);
 }
 
 function copyAction(
@@ -206,7 +255,12 @@ function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): Contex
         payload: snapshot.selected,
         managesFocus: true,
         run: async () => {
-          if (await ctx.copy(snapshot.selected)) replaceFieldRange(snapshot, "");
+          const copied = await ctx.copy(snapshot.selected);
+          if (!fieldMutationIsCurrent(snapshot)) {
+            reportStaleFieldMutation(snapshot, ctx, "cut");
+            return;
+          }
+          if (copied) replaceFieldRange(snapshot, "");
           else setFieldSelection(snapshot);
         },
       });
@@ -225,6 +279,10 @@ function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): Contex
     run: async () => {
       try {
         const text = await ctx.readClipboard();
+        if (!fieldMutationIsCurrent(snapshot)) {
+          reportStaleFieldMutation(snapshot, ctx, "paste");
+          return;
+        }
         if (!text) {
           setFieldSelection(snapshot);
           ctx.announce("Clipboard is empty");
@@ -233,6 +291,10 @@ function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): Contex
         replaceFieldRange(snapshot, asQuote ? quoteBlock(text) : text);
         ctx.announce(asQuote ? "Pasted as quote" : "Pasted", "ok");
       } catch {
+        if (!fieldMutationIsCurrent(snapshot)) {
+          reportStaleFieldMutation(snapshot, ctx, "paste");
+          return;
+        }
         setFieldSelection(snapshot);
         ctx.announce("Paste needs clipboard permission. Press ⌘V instead.", "error");
       }
@@ -243,10 +305,9 @@ function textFieldActions(snapshot: TextFieldSnapshot, ctx: ContextInfo): Contex
 }
 
 function linkActions(link: LinkSnapshot, ctx: ContextInfo): ContextAction[] {
-  // Pointer invocation has already proven the click is inside the live Selection. Keyboard
-  // invocation has no such spatial evidence, so its link-level Copy must use visible link text;
-  // any unrelated selection remains available through the container tier below.
-  const copyPayload = (ctx.point ? ctx.selection : "") || link.text;
+  // The host has already scoped a pointer selection to its click or a keyboard selection to
+  // the focused target, so any selection that reaches this item is safe to prefer over text.
+  const copyPayload = ctx.selection || link.text;
   const actions: ContextAction[] = [];
   // The precise Copy URL label wins when a bare autolink would otherwise produce two
   // byte-identical writes. A worded link still offers both real choices.

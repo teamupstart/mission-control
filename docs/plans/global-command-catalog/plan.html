@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Global Command catalog plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f4f1e8;
+      --muted: #a9b2bd;
+      --quiet: #74808e;
+      --paper: #11161c;
+      --panel: #171e26;
+      --panel-2: #1d2630;
+      --line: #2e3b49;
+      --blue: #7db7ff;
+      --cyan: #6ed6cc;
+      --amber: #e6bd70;
+      --red: #e58d88;
+      --green: #91d1a8;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 8% -10%, rgba(82, 135, 186, .18), transparent 30rem),
+        radial-gradient(circle at 95% 20%, rgba(70, 155, 145, .1), transparent 25rem),
+        var(--paper);
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.55;
+    }
+    a { color: var(--blue); }
+    code, pre { font-family: var(--mono); }
+    code { color: #b8dcff; }
+    .shell { width: min(1220px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 96px; }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 270px;
+      gap: 40px;
+      padding: 40px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: linear-gradient(145deg, rgba(28, 38, 49, .96), rgba(18, 24, 31, .98));
+      box-shadow: 0 26px 70px rgba(0, 0, 0, .32);
+    }
+    .eyebrow { margin: 0 0 10px; color: var(--cyan); font: 700 12px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+    h1 { max-width: 790px; margin: 0; font-size: clamp(40px, 7vw, 76px); line-height: .98; letter-spacing: -.045em; }
+    .lead { max-width: 760px; margin: 24px 0 0; color: #c9d0d8; font-size: 19px; }
+    .meta { display: grid; gap: 12px; align-content: start; }
+    .meta-card { padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: rgba(10, 14, 19, .45); }
+    .meta-card small { display: block; color: var(--quiet); font: 700 10px/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .meta-card strong { display: block; margin-top: 5px; font-size: 14px; }
+    .toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 0; }
+    .toc a { padding: 7px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); text-decoration: none; font: 600 12px/1 var(--mono); }
+    .toc a:hover { border-color: var(--blue); color: var(--ink); }
+    section { margin-top: 64px; scroll-margin-top: 24px; }
+    h2 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.03em; }
+    h3 { margin: 0 0 8px; font-size: 19px; }
+    p { margin: 0 0 14px; }
+    .section-lead { max-width: 830px; color: var(--muted); font-size: 17px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 22px; }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: rgba(24, 32, 41, .86); }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .card .tag { display: inline-block; margin-bottom: 12px; color: var(--amber); font: 700 10px/1 var(--mono); letter-spacing: .11em; text-transform: uppercase; }
+    ul, ol { margin: 12px 0 0; padding-left: 22px; }
+    li + li { margin-top: 7px; }
+    .decision-list { display: grid; gap: 1px; margin-top: 22px; border: 1px solid var(--line); border-radius: 15px; overflow: hidden; background: var(--line); }
+    .decision { display: grid; grid-template-columns: 180px 1fr; gap: 20px; padding: 16px 18px; background: var(--panel); }
+    .decision strong { color: var(--cyan); font: 700 12px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .07em; }
+    .decision span { color: #d6dbe0; }
+    .mock-window { margin-top: 26px; border: 1px solid #3a4857; border-radius: 18px; overflow: hidden; background: #0e1318; box-shadow: 0 24px 70px rgba(0, 0, 0, .38); }
+    .mock-top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 10px 14px; border-bottom: 1px solid #293642; background: #171e26; }
+    .traffic { display: flex; gap: 6px; }
+    .traffic i { width: 9px; height: 9px; border-radius: 50%; background: #42505d; }
+    .mock-nav { display: flex; gap: 5px; padding: 3px; border: 1px solid #2c3945; border-radius: 9px; font: 650 11px/1 var(--mono); }
+    .mock-nav span { padding: 6px 10px; color: #8995a1; }
+    .mock-nav .active { border-radius: 6px; color: #f4f1e8; background: #293541; }
+    .connected { justify-self: end; color: var(--green); font: 600 10px/1 var(--mono); }
+    .mock-body { display: grid; grid-template-columns: 300px 1fr; min-height: 510px; }
+    .mock-side { padding: 28px 22px; border-right: 1px solid #293642; background: #121920; }
+    .mock-side h3 { margin-top: 6px; font-size: 24px; line-height: 1.12; }
+    .mock-side > p { color: #929eaa; font-size: 13px; }
+    .slot-list { display: grid; gap: 7px; margin-top: 25px; }
+    .slot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid transparent; border-radius: 10px; color: #a7b0b9; }
+    .slot.active { border-color: #4e6f8d; background: #1b2a36; color: white; }
+    .slot strong { font: 700 13px/1 var(--mono); }
+    .slot small { color: #748493; font-size: 10px; text-align: right; }
+    .mock-main { padding: 30px; }
+    .editor-head { display: flex; justify-content: space-between; gap: 24px; padding-bottom: 20px; border-bottom: 1px solid #293642; }
+    .editor-head h4 { margin: 6px 0 3px; font-size: 30px; }
+    .chip { display: inline-block; padding: 4px 7px; border-radius: 5px; color: #a9d1ff; background: #1b344b; font: 700 9px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .editor-head p { color: #8f9aa5; font-size: 13px; }
+    .button { align-self: start; padding: 9px 13px; border-radius: 8px; color: #0f161d; background: #90c7ff; font: 750 11px/1 var(--mono); }
+    .form { display: grid; gap: 24px; margin-top: 24px; }
+    .field-label { display: block; margin-bottom: 8px; color: #9aa6b2; font: 700 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .command { display: flex; gap: 7px; min-height: 44px; align-items: center; padding: 9px 11px; border: 1px solid #3b4a58; border-radius: 8px; background: #0d1319; font: 12px/1 var(--mono); }
+    .arg { padding: 5px 7px; border: 1px solid #344554; border-radius: 5px; color: #c8d0d8; background: #19232c; }
+    .arg.exe { border-color: #436d72; color: #9ee2d9; background: #183034; }
+    .argv { margin-top: 7px; color: #788794; font: 10px/1.4 var(--mono); }
+    .override { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: center; padding: 11px 0; border-bottom: 1px solid #25313b; font-size: 12px; }
+    .override code { color: #d5dbe0; }
+    .override small { color: #7f8d99; }
+    .remove { color: #d69b96; font: 650 10px/1 var(--mono); }
+    .note { padding: 14px 16px; border: 1px solid #344a4e; border-radius: 10px; color: #adc3c0; background: #152527; font-size: 12px; }
+    .flow { margin-top: 24px; padding: 18px; border: 1px solid var(--line); border-radius: 16px; background: rgba(17, 23, 29, .7); overflow-x: auto; }
+    .flow svg { display: block; min-width: 860px; width: 100%; height: auto; }
+    .sequence { counter-reset: step; display: grid; gap: 12px; margin-top: 22px; }
+    .sequence .step { display: grid; grid-template-columns: 44px 1fr; gap: 14px; padding: 17px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
+    .sequence .step::before { counter-increment: step; content: counter(step); display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: #10171e; background: var(--amber); font: 800 13px/1 var(--mono); }
+    table { width: 100%; margin-top: 20px; border-collapse: collapse; border: 1px solid var(--line); background: var(--panel); }
+    th, td { padding: 13px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font: 700 10px/1.3 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .callout { margin-top: 22px; padding: 18px 20px; border-left: 3px solid var(--amber); border-radius: 0 12px 12px 0; background: rgba(84, 62, 27, .2); color: #e6d7bd; }
+    .foot { margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--quiet); font: 11px/1.5 var(--mono); }
+    @media (max-width: 820px) {
+      .hero, .grid, .grid.three, .mock-body { grid-template-columns: 1fr; }
+      .mock-side { border-right: 0; border-bottom: 1px solid #293642; }
+      .mock-body { min-height: 0; }
+      .decision { grid-template-columns: 1fr; gap: 5px; }
+      .override { grid-template-columns: 1fr; }
+    }
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: light; --ink:#17232d; --muted:#56636f; --quiet:#6f7b86; --paper:#f5f2ea; --panel:#fffdf8; --panel-2:#f0eee7; --line:#cbd2d7; --blue:#175f9c; --cyan:#16756d; --amber:#9b6516; --red:#a24a46; --green:#367b4e; }
+      body { background:radial-gradient(circle at 8% -10%,rgba(73,133,184,.15),transparent 30rem),radial-gradient(circle at 95% 20%,rgba(73,155,143,.1),transparent 25rem),var(--paper); }
+      .hero { background:linear-gradient(145deg,rgba(255,253,248,.98),rgba(238,242,241,.98)); box-shadow:0 22px 60px rgba(50,61,70,.12); }
+      .lead, .decision span { color:#3e4c57; }
+      .meta-card { background:rgba(255,255,255,.55); }
+      .card, .sequence .step, table { background:rgba(255,253,248,.92); }
+      .flow { background:rgba(255,253,248,.7); }
+      .callout { background:rgba(183,126,43,.12); color:#664613; }
+    }
+    @media print {
+      :root { color-scheme: light; --ink: #14202a; --muted: #4b5863; --paper: white; --panel: #f6f8fa; --line: #ccd4db; }
+      body { background: white; }
+      .shell { width: 100%; padding: 0; }
+      .hero, .card, .decision, table { box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Approved product plan · Option 4</p>
+        <h1>Global Command catalog</h1>
+        <p class="lead">Move workflow command authoring into Library, add repository-neutral defaults to the four portable slots, and preserve explicit repository or package overrides.</p>
+        <nav class="toc" aria-label="Plan sections">
+          <a href="#outcome">Outcome</a><a href="#product">Product</a><a href="#mockup">Mockup</a><a href="#runtime">Resolution</a><a href="#safety">Safety</a><a href="#data">Data</a><a href="#delivery">Delivery</a>
+        </nav>
+      </div>
+      <div class="meta">
+        <div class="meta-card"><small>Visible noun</small><strong>Command</strong></div>
+        <div class="meta-card"><small>Catalog</small><strong>test · lint · typecheck · build</strong></div>
+        <div class="meta-card"><small>Home</small><strong>Library</strong></div>
+        <div class="meta-card"><small>Scheduled implementation</small><strong>Claude · 2 serial tasks</strong></div>
+      </div>
+    </header>
+
+    <section id="outcome">
+      <p class="eyebrow">01 · Outcome</p>
+      <h2>Configure the common case once</h2>
+      <p class="section-lead">An operator can define what <code>test</code> normally means on this machine without first choosing a repository. Workflows remain portable and resolve the concrete argv only after a run knows its repository.</p>
+      <div class="decision-list">
+        <div class="decision"><strong>Library shelf</strong><span>Add Commands as the sixth, question-led shelf.</span></div>
+        <div class="decision"><strong>Global default</strong><span>Each fixed slot has one optional repository-neutral argv.</span></div>
+        <div class="decision"><strong>Exceptions</strong><span>Repository and monorepo subdirectory overrides remain available and secondary.</span></div>
+        <div class="decision"><strong>Compatibility</strong><span>Visible copy says Command; persisted nodes stay <code>{ kind: "check", slot }</code>.</span></div>
+        <div class="decision"><strong>Execution</strong><span>Saving in Library never runs anything. Workflows execute later through the existing guarded runtime.</span></div>
+      </div>
+    </section>
+
+    <section id="product">
+      <p class="eyebrow">02 · Product model</p>
+      <h2>A fixed catalog, not another free-form asset system</h2>
+      <div class="grid three">
+        <article class="card"><span class="tag">Shelf</span><h3>What does each standard gate run?</h3><p>Four cards always appear in append-only slot order. There is no New or Archive action.</p></article>
+        <article class="card"><span class="tag">Editor</span><h3>Default first, exceptions second</h3><p>The selected slot owns one global command and a collapsible or visually secondary override list.</p></article>
+        <article class="card"><span class="tag">Workflow</span><h3>Portable by construction</h3><p>A workflow adds <strong>Command · test</strong>, not <code>npm test</code>. Resolution waits for run context.</p></article>
+      </div>
+      <table>
+        <thead><tr><th>Card fact</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>Global default · 3 overrides</td><td>The common argv exists; three paths intentionally replace it.</td></tr>
+          <tr><td>Global default</td><td>The slot has one repository-neutral command and no exceptions.</td></tr>
+          <tr><td>2 overrides · no global default</td><td>Only named paths resolve; all other trusted repositories skip.</td></tr>
+          <tr><td>Not configured</td><td>No command resolves, so the workflow records a skipped pass with a note.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="mockup">
+      <p class="eyebrow">03 · Selected mockup</p>
+      <h2>Library · Commands · test</h2>
+      <p class="section-lead">The visual shape follows the existing Library split editors: fixed catalog on the left, selected asset draft on the right, repository selection through the shared combobox, and the current exact argv parser.</p>
+      <figure class="mock-window" aria-label="Mockup of the Library Command editor">
+        <div class="mock-top"><span class="traffic"><i></i><i></i><i></i></span><span class="mock-nav"><span>Fleet</span><span class="active">Library</span><span>Runs</span></span><span class="connected">● connected</span></div>
+        <div class="mock-body">
+          <aside class="mock-side">
+            <span class="eyebrow">Commands</span>
+            <h3>What does each standard gate run?</h3>
+            <p>Workflows name portable slots. The catalog supplies defaults and explicit exceptions.</p>
+            <div class="slot-list">
+              <div class="slot active"><strong>test</strong><small>global default<br>3 overrides</small></div>
+              <div class="slot"><strong>lint</strong><small>global default</small></div>
+              <div class="slot"><strong>typecheck</strong><small>1 override<br>no default</small></div>
+              <div class="slot"><strong>build</strong><small>not configured</small></div>
+            </div>
+          </aside>
+          <div class="mock-main">
+            <header class="editor-head"><div><span class="chip">built-in slot</span><h4>test</h4><p>Portable deterministic gate used by workflow Command nodes.</p></div><span class="button">Save Command</span></header>
+            <div class="form">
+              <div><span class="field-label">Default command</span><div class="command"><span class="arg exe">npm</span><span class="arg">test</span></div><div class="argv">Runs as argv: 1. npm&nbsp;&nbsp;&nbsp;2. test</div></div>
+              <div><span class="field-label">Repository exceptions · 3</span>
+                <div class="override"><strong>Mission Control</strong><code>npm test</code><small>repository root</small></div>
+                <div class="override"><strong>Web client</strong><code>pnpm test</code><small>repository root</small></div>
+                <div class="override"><strong>Monorepo</strong><code>npm test</code><small>packages/web</small></div>
+                <div class="override"><span>Add repository or subdirectory…</span><code>Command…</code><span class="remove">Add override</span></div>
+              </div>
+              <div class="note">Nothing runs from Library. A workflow executes this argv later, without a shell, in a commit-pinned checkout of a repository granted through Trust.</div>
+            </div>
+          </div>
+        </div>
+      </figure>
+    </section>
+
+    <section id="runtime">
+      <p class="eyebrow">04 · Resolution contract</p>
+      <h2>Specific override, then global default</h2>
+      <div class="flow">
+        <svg viewBox="0 0 1050 250" role="img" aria-labelledby="flow-title flow-desc">
+          <title id="flow-title">Command resolution and execution flow</title>
+          <desc id="flow-desc">A workflow Command slot is resolved against path overrides, then a global default, then policy gates, before the existing runtime executes it.</desc>
+          <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#718596"/></marker></defs>
+          <g fill="#18212a" stroke="#40505f" stroke-width="1.5">
+            <rect x="18" y="70" width="155" height="92" rx="12"/><rect x="223" y="70" width="170" height="92" rx="12"/><rect x="443" y="70" width="165" height="92" rx="12"/><rect x="658" y="70" width="160" height="92" rx="12"/><rect x="868" y="70" width="164" height="92" rx="12"/>
+          </g>
+          <g fill="none" stroke="#718596" stroke-width="2" marker-end="url(#arrow)"><path d="M173 116H215"/><path d="M393 116H435"/><path d="M608 116H650"/><path d="M818 116H860"/></g>
+          <g fill="#f4f1e8" font-family="ui-sans-serif, system-ui" text-anchor="middle">
+            <text x="95" y="104" font-size="15" font-weight="700">Command · test</text><text x="95" y="128" font-size="11" fill="#8f9dab">persisted kind: check</text>
+            <text x="308" y="101" font-size="15" font-weight="700">Longest override</text><text x="308" y="124" font-size="11" fill="#8f9dab">repo or subdirectory</text><text x="308" y="142" font-size="11" fill="#6ed6cc">if one matches</text>
+            <text x="525" y="101" font-size="15" font-weight="700">Global default</text><text x="525" y="124" font-size="11" fill="#8f9dab">checkout root</text><text x="525" y="142" font-size="11" fill="#6ed6cc">otherwise</text>
+            <text x="738" y="101" font-size="15" font-weight="700">Policy gates</text><text x="738" y="124" font-size="11" fill="#8f9dab">Allow Commands + Trust</text><text x="738" y="142" font-size="11" fill="#e6bd70">unavailable if blocked</text>
+            <text x="950" y="101" font-size="15" font-weight="700">Existing runtime</text><text x="950" y="124" font-size="11" fill="#8f9dab">argv · no shell</text><text x="950" y="142" font-size="11" fill="#91d1a8">commit-pinned tree</text>
+          </g>
+          <path d="M525 166V213H95V170" fill="none" stroke="#718596" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#arrow)"/>
+          <text x="310" y="233" fill="#a9b2bd" font-family="ui-monospace, monospace" font-size="11" text-anchor="middle">no override and no default → skipped pass with note</text>
+        </svg>
+      </div>
+    </section>
+
+    <section id="safety">
+      <p class="eyebrow">05 · Safety and copy</p>
+      <h2>Fewer warnings, same enforcement</h2>
+      <div class="grid">
+        <article class="card"><span class="tag">Keep</span><h3>Authorization and runtime barriers</h3><ul><li>Machine-wide Allow workflow Commands control</li><li>Workflows Trust repository grant</li><li>argv without a shell</li><li>commit-pinned leased worktree</li><li>environment scrubbing, bounded output, concurrency, teardown, and recovery</li></ul></article>
+        <article class="card"><span class="tag">Simplify</span><h3>One meaningful consent moment</h3><ul><li>One confirmation when enabling or re-enabling</li><li>One neutral execution note in the editor</li><li>No persistent red banner around every field</li><li>No per-command acknowledgement</li><li>No claim that a global default runs automatically</li></ul></article>
+      </div>
+      <div class="callout"><strong>Not in scope:</strong> splitting repair delivery and Command execution into separate Trust grants. That is a policy project with its own migration and UX, not part of relocating this catalog.</div>
+    </section>
+
+    <section id="data">
+      <p class="eyebrow">06 · Persistence and compatibility</p>
+      <h2>One catalog authority</h2>
+      <p class="section-lead">The daemon owns normalized slot and override records through a store and manager. All four built-in slots are projected even when empty. Browser state rides the existing snapshot and upsert stream.</p>
+      <div class="sequence">
+        <article class="step"><div><h3>Seed fixed slots</h3><p>Fresh databases project all four slot views without adding a creatable asset model.</p></div></article>
+        <article class="step"><div><h3>Migrate old rows as overrides</h3><p>Group existing <code>checkCommands</code> by slot. Never infer a global default from one repository's argv.</p></div></article>
+        <article class="step"><div><h3>Cut runtime over</h3><p>The new manager becomes the only persisted command source. Policy remains in workflow config.</p></div></article>
+        <article class="step"><div><h3>Bridge the old editor temporarily</h3><p>Phase 1 projects catalog overrides through the current config route so Settings stays operable between merges.</p></div></article>
+        <article class="step"><div><h3>Move authoring to Library</h3><p>Phase 2 consumes the dedicated catalog API and live collection, then removes the old Settings table.</p></div></article>
+      </div>
+    </section>
+
+    <section id="delivery">
+      <p class="eyebrow">07 · Delivery</p>
+      <h2>Two dependency-linked Claude tasks</h2>
+      <table>
+        <thead><tr><th>Phase</th><th>Merge unit</th><th>Exit state</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Authoritative catalog and runtime cutover</td><td>Migration, routes, SSE, resolution, and compatibility adapter are complete; current Settings editor still works.</td></tr>
+          <tr><td>2</td><td>Library Commands and workflow vocabulary</td><td>Library is the only authoring home; Settings retains policy; visible workflow surfaces say Command; Playwright covers the flow.</td></tr>
+        </tbody>
+      </table>
+      <div class="grid">
+        <article class="card"><span class="tag">Required verification</span><h3>Every phase</h3><p><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, build, and smoke in proportion to the changed runtime.</p></article>
+        <article class="card"><span class="tag">UI verification</span><h3>Phase 2</h3><p>Built-dashboard Playwright coverage plus wide/narrow visual inspection, with evidence kept out of the repository.</p></article>
+      </div>
+      <p class="foot">Authoritative Markdown: <a href="plan.md">plan.md</a> · Implementation index: <a href="phased-plan.html">phased-plan.html</a></p>
+    </section>
+  </main>
+</body>
+</html>

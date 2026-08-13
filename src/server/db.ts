@@ -1619,6 +1619,56 @@ export function openDb(): DatabaseSync {
       PRIMARY KEY (key, ordinal)
     );
     CREATE INDEX IF NOT EXISTS idx_scout_segments_key ON scout_search_segments(key);
+
+    -- Capture COORDINATION for scouts this daemon is archiving, and nothing a reader of a
+    -- finished bundle ever needs. The three tables above are a projection of the library; this
+    -- one is the opposite - purely local bookkeeping about work in flight, keyed by an
+    -- operation key that is stable for one task work episode.
+    --
+    -- That key is what makes submission idempotent across a lost HTTP response, an MCP retry,
+    -- and a daemon restart: the first call reserves the row and generates the archive identity,
+    -- and every later call for the same episode finds it and returns the same answer instead of
+    -- publishing a second archive of the same evidence.
+    --
+    -- task_id and session_id are VALUES here, deliberately with no foreign key and no cascade.
+    -- A published archive must survive its task being deleted, so a constraint pointing at the
+    -- tasks table would make the durable thing depend on the disposable one - and a row that
+    -- outlives its task is exactly what lets a replay answer "already archived, here it is".
+    --
+    -- The source locators (repos_json) are SERVER-DERIVED checkout roots recorded while the
+    -- session still exists, because the whole point of reserving on exit is that they are about
+    -- to stop being derivable. Nothing an agent typed reaches this table.
+    CREATE TABLE IF NOT EXISTS scout_capture_jobs (
+      operation_key   TEXT NOT NULL PRIMARY KEY,
+      task_id         TEXT NOT NULL,
+      session_id      TEXT,
+      episode_id      TEXT,
+      -- reserved | submitted | published | failed. Append-only: a status this build does not
+      -- know is treated as unfinished rather than as done, which is the safe direction.
+      status          TEXT NOT NULL,
+      producer_id     TEXT,
+      archive_id      TEXT,
+      -- What the scout submitted, when it has. Null on a job reserved by an unexpected exit.
+      report_path     TEXT,
+      summary         TEXT,
+      tags_json       TEXT,
+      supporting_json TEXT,
+      -- Display and provenance the manifest needs, frozen at reservation time.
+      title           TEXT,
+      question        TEXT,
+      origin_json     TEXT,
+      repos_json      TEXT,
+      -- Where the published bundle landed under the library root, once it did.
+      relative_path   TEXT,
+      capture_status  TEXT,
+      error           TEXT,
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at INTEGER,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scout_capture_jobs_task ON scout_capture_jobs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_scout_capture_jobs_status ON scout_capture_jobs(status);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);

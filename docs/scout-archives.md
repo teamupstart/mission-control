@@ -4,11 +4,11 @@ A scout answers a question. The answer outlives the agent that found it, the tas
 asked for it, the worktree it was found in, and the database that once indexed it - because
 the answer is kept as ordinary files on your machine, not as rows.
 
-This page describes the local scout library: where it lives, what a bundle contains, how
-Mission Control discovers one, and what deleting one does. It is the storage and API
-reference. Automatic capture at the end of a scout task, and the Scouts page that reads the
-library, arrive in later changes; today the library is reachable through the daemon's HTTP
-API and through your own file manager.
+This page describes the local scout library: where it lives, what a bundle contains, how a
+scout produces one, how Mission Control discovers one, and what deleting one does. It is the
+storage, capture, and API reference. The Scouts page that reads the library arrives in a later
+change; today the library is reachable through the daemon's HTTP API and through your own file
+manager.
 
 ## Where it lives
 
@@ -108,6 +108,95 @@ Applied before a bundle is published locally and again before an imported one is
 Crossing one is refused by name. Mission Control does not publish a green archive that
 silently omitted evidence.
 
+## How a scout produces one
+
+Every task whose kind is **scout** is told, in its own prompt, that its deliverable is a page:
+
+> Write the report to `docs/reports/<slug>/report.html` ... Answer first ... Self-contained and
+> static ... call the `submit_scout_artifacts` tool with the report path, a short plain-text
+> summary of the finding, optional tags, and only the additional files worth preserving.
+
+That instruction is appended by the daemon, not by a skill, so it arrives whether Skills are
+enabled or not, and on both delivery paths - a fresh dispatch and a backlog scout dropped onto
+an agent that was already running. The shipped `html-report` skill still teaches an agent how
+to write a *good* one; the requirement itself does not depend on it being installed.
+
+A scout dispatch also **requires** the `submit_scout_artifacts` tool at launch. If Mission
+Control's MCP bundle cannot be registered, the launch fails before the agent starts rather
+than producing a scout that can never hand its work over.
+
+### What gets captured
+
+| Submitted | Captured as |
+|---|---|
+| `reportPath` | `report/report.html`, byte for byte |
+| every file beside it, recursively | `report/…`, keeping its relative layout so the page's own links still resolve |
+| `supporting: [{ repoSlot, path }]` | `artifacts/<repo-slot>/…` |
+
+`repoSlot` is a generated name (`repo-01`) that the task's own prompt hands out, one per
+attached checkout. An absolute path, a path that leaves the checkout, a path that resolves
+through a symbolic link, a path git ignores, and a file that changes while it is being read are
+each refused **by name** - a submission fails with every offending path listed, and the task
+stays exactly where it was so the agent can correct all of them at once.
+
+Files beside the report are captured automatically and must not be listed as supporting files.
+Hidden entries (`.DS_Store`, an editor swap file) cannot be represented inside a bundle at all,
+so they are skipped; if the report actually links to one, the whole capture is refused rather
+than published with a dead link.
+
+### Completion waits for the archive
+
+A scout cannot be marked **done** until its bundle exists, has been verified, and is
+`complete`. A missing submission, an invalid report, a changed file, or a limit crossed leaves
+the task exactly as it was - still running, still holding its session and its checkout - and
+returns the exact problem. Indexing is not part of that: the bundle is durable before the
+database knows about it, and a failed index is retried in the background.
+
+Nothing else is a fallback. There is no completion from the conversation, the last assistant
+message, or the set of changed files.
+
+### An unexpected exit
+
+If a scout's session goes away before it submitted, Mission Control reserves a capture at the
+moment of eviction - while the task, its work episode and its checkouts can still be derived -
+and then, in the background:
+
+1. a report the scout actually submitted always wins. Once a submission has been attributed
+   to the live scout episode, exit recovery waits for it to be recorded and captured before it
+   can publish that episode's archive;
+2. otherwise it looks for exactly **one** `docs/reports/*/report.html` in the checkouts the
+   task still holds, and captures that one with its representable companions;
+3. zero candidates, or more than one, publishes an honest `partial` archive naming what is
+   missing. A recovered report with an unrepresentable companion is partial for the same reason.
+   It never guesses, and it never writes a report from conversation text.
+
+A partial archive is a real, portable record - it just does not claim to hold the answer, and
+it does not satisfy a normal completion.
+
+### Cleanup asks first
+
+Reclaim, Remove, Cancel, Reschedule, and the startup pass that reclaims a worktree whose agent
+did not survive a restart all publish the scout's archive **before** they destroy its checkout.
+When a launched agent is still alive, cleanup stops it before capture so the archive sees the
+final bytes at the stop boundary; an agent the operator started and later assigned is never
+stopped on the task's behalf.
+If that fails, the cleanup is refused: the worktree stays, the task stays reclaimable, and you
+can retry. Losing an answer to a transient disk error is not a trade Mission Control makes on
+your behalf.
+
+Reclaiming a scout that finished normally is cheap - its bundle already exists, and the guard
+re-verifies it and returns.
+
+### Capture jobs are local bookkeeping
+
+`scout_capture_jobs` in the database coordinates all of this: one row per task work episode,
+carrying the reserved archive identity and the checkout locators recovery needs. It is **not**
+evidence. A published bundle needs none of it to be read, and deleting the database loses the
+ability to resume an unfinished capture, never the ability to open a finished archive.
+On startup, a job with a recorded submission resumes even if its scout is still running. Only
+an unsubmitted reservation waits while its agent is still expected, so recovery cannot publish
+a partial archive ahead of the report that agent may still submit.
+
 ## Discovery is automatic
 
 There is no import step, no reindex button, and no startup migration. SQLite holds a
@@ -162,7 +251,29 @@ GET    /api/scouts/:archiveKey
 GET    /api/scouts/:archiveKey/artifacts/:artifactId
 POST   /api/scouts/:archiveKey/artifacts/:artifactId/open
 DELETE /api/scouts/:archiveKey
+POST   /mcp/scouts/submit
 ```
+
+`/mcp/scouts/submit` is the agent-facing one. It requires both the shared harness token and a
+daemon-signed credential scoped to the current task checkout. Mission Control provisions that
+credential before a dispatched or assigned scout receives its prompt; the MCP bridge reads it
+from local state at call time, so a long-lived assigned session receives the credential for its
+current task. The request body carries no attribution fields:
+
+```json
+{ "reportPath": "docs/reports/resume/report.html",
+  "summary": "Resume rebuilt the session without replaying the grant.",
+  "tags": ["resume"],
+  "supporting": [{ "repoSlot": "repo-01", "path": "evidence/resume-debug.log" }] }
+```
+
+There is no environment, task id, session id, cwd, work episode, producer id, archive id,
+destination, absolute path, digest, or completion status a caller can send. The signed credential
+selects one task and checkout, and the daemon confirms that task is still bound to a live session
+in that checkout before deriving the work episode and archive destination. Holding the shared
+harness token alone cannot submit for another scout. Calling the tool twice returns the same
+archive rather than publishing a second one, and it never writes task status: a scout that has
+submitted is a scout that *can* finish.
 
 `archiveKey` is `<producer-id>~<archive-id>`. Both routes and the index address an archive by
 that key and an artifact by a generated id - **never by a path.** A request cannot name a

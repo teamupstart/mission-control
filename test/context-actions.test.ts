@@ -33,8 +33,17 @@ function fakeField(value: string, start: number, end: number): HTMLTextAreaEleme
     selectionEnd: end,
     disabled: false,
     readOnly: false,
+    isConnected: true,
     focus: () => {},
-    setSelectionRange: () => {},
+    setSelectionRange(
+      this: { selectionStart: number; selectionEnd: number },
+      nextStart: number,
+      nextEnd: number,
+    ): void {
+      this.selectionStart = nextStart;
+      this.selectionEnd = nextEnd;
+    },
+    dispatchEvent: () => true,
   } as unknown as HTMLTextAreaElement;
 }
 
@@ -72,6 +81,84 @@ test("a field without a selection still offers both paste actions", () => {
   assert.deepEqual(labels(resolveContextActions(el, info())), ["Paste", "Paste as quote"]);
 });
 
+test("inputs without editable selection ranges expose no field actions", () => {
+  const email = {
+    value: "operator@example.com",
+    selectionStart: null,
+    selectionEnd: null,
+  } as unknown as HTMLInputElement;
+  const el = fakeElement({ "textarea, input": email });
+
+  assert.deepEqual(resolveContextActions(el, info()), []);
+});
+
+test("readonly and disabled fields expose copying but no mutating actions", () => {
+  for (const state of ["readOnly", "disabled"] as const) {
+    const field = fakeField("locked value", 0, 6);
+    field[state] = true;
+    const el = fakeElement({ "textarea, input": field });
+    assert.deepEqual(labels(resolveContextActions(el, info())), ["Copy"]);
+
+    field.selectionStart = field.selectionEnd = 6;
+    assert.deepEqual(resolveContextActions(el, info()), []);
+  }
+});
+
+test("async field mutations stop when the captured value or selection changes", async () => {
+  const field = fakeField("captured draft", 0, 8);
+  const el = fakeElement({ "textarea, input": field });
+
+  let finishCopy!: (copied: boolean) => void;
+  const copy = new Promise<boolean>((resolve) => { finishCopy = resolve; });
+  const cutMessages: string[] = [];
+  const cutInfo = info();
+  cutInfo.copy = async () => copy;
+  cutInfo.announce = (message) => { cutMessages.push(message); };
+  const cut = resolveContextActions(el, cutInfo).find((action) => action.id === "field.cut");
+  assert.ok(cut);
+  const cutRun = cut.run();
+  field.value = "newer draft";
+  finishCopy(true);
+  await cutRun;
+  assert.equal(field.value, "newer draft");
+  assert.deepEqual(cutMessages, ["Field changed before cut. Nothing was removed."]);
+
+  field.value = "captured draft";
+  field.selectionStart = 0;
+  field.selectionEnd = 8;
+  let finishRead!: (text: string) => void;
+  const read = new Promise<string>((resolve) => { finishRead = resolve; });
+  const pasteMessages: string[] = [];
+  const pasteInfo = info();
+  pasteInfo.readClipboard = async () => read;
+  pasteInfo.announce = (message) => { pasteMessages.push(message); };
+  const paste = resolveContextActions(el, pasteInfo).find((action) => action.id === "field.paste");
+  assert.ok(paste);
+  const pasteRun = paste.run();
+  field.selectionStart = field.selectionEnd = field.value.length;
+  finishRead("stale clipboard");
+  await pasteRun;
+  assert.equal(field.value, "captured draft");
+  assert.deepEqual(pasteMessages, ["Field changed before paste. Nothing was pasted."]);
+});
+
+test("paste confirmation never repeats the clipboard payload", async () => {
+  const secret = "not-for-a-status-toast";
+  const field = fakeField("", 0, 0);
+  const el = fakeElement({ "textarea, input": field });
+  const announcements: Array<[string, "ok" | "error" | undefined]> = [];
+  const ctx = info();
+  ctx.readClipboard = async () => secret;
+  ctx.announce = (message, tone) => { announcements.push([message, tone]); };
+  const paste = resolveContextActions(el, ctx).find((action) => action.id === "field.paste");
+  assert.ok(paste);
+  await paste.run();
+
+  assert.equal(field.value, secret);
+  assert.deepEqual(announcements, [["Pasted", "ok"]]);
+  assert.equal(JSON.stringify(announcements).includes(secret), false);
+});
+
 test("a worded external link offers link text, URL and open as separate choices", () => {
   const anchor = fakeAnchor("https://example.com/docs", "the docs");
   const el = fakeElement({ "a[href]": anchor });
@@ -92,22 +179,17 @@ test("a bare autolink keeps the precise Copy URL label instead of a duplicate Co
   assert.deepEqual(labels(resolveContextActions(el, info())), ["Copy URL", "Open link"]);
 });
 
-test("keyboard link actions do not claim an unrelated live selection", () => {
+test("link actions use the target-scoped selection supplied by the host", () => {
   const anchor = fakeAnchor("https://example.com/docs", "the docs");
   const el = fakeElement({ "a[href]": anchor });
-  const actions = resolveContextActions(el, info("selected somewhere else"));
+  const actions = resolveContextActions(el, info("selected link words"));
 
-  assert.deepEqual(labels(actions), ["Copy", "Copy URL", "Open link", "Copy"]);
+  assert.deepEqual(labels(actions), ["Copy", "Copy URL", "Open link"]);
   assert.deepEqual(actions.map((action) => action.payload), [
-    "the docs",
+    "selected link words",
     "https://example.com/docs",
     "https://example.com/docs",
-    "selected somewhere else",
   ]);
-
-  const pointerInfo = info("selected link words");
-  pointerInfo.point = { x: 1, y: 1 };
-  assert.equal(resolveContextActions(el, pointerInfo)[0]?.payload, "selected link words");
 });
 
 test("a live selection is a container target and whitespace alone is not", () => {
@@ -138,6 +220,10 @@ test("URL text detection excludes sentence punctuation but keeps balanced URL pu
     ["See https://example.com/docs. Then continue", "https://example.com/docs"],
     ["(https://example.com/docs)", "https://example.com/docs"],
     ["See https://example.com/docs_(draft).", "https://example.com/docs_(draft)"],
+    ["See https://example.com/search/[draft],", "https://example.com/search/[draft]"],
+    ["See https://example.com/object/{id}!", "https://example.com/object/{id}"],
+    ["See https://example.com/docs_(draft)).", "https://example.com/docs_(draft)"],
+    ["See https://example.com/run/42.]", "https://example.com/run/42"],
     ["See https://example.com/a,b today", "https://example.com/a,b"],
     ["See https://example.com/search?q=yes now", "https://example.com/search?q=yes"],
   ] as const;

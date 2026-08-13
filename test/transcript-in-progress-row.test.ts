@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PendingTurn, Session, TranscriptMessage } from "../src/shared/types.ts";
+import type { ConversationView } from "../src/shared/protocol.ts";
 import { liveActivity } from "../src/shared/session.ts";
 import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
 import { resetSessionViews, writeSessionView } from "../src/web/lib/conversation-view.ts";
@@ -62,20 +63,26 @@ function queued(): PendingTurn {
 }
 
 /** The real panel, hydrated with a real conversation through the history map. */
-function render(over: Partial<Session> = {}): string {
+function render(over: Partial<Session> = {}, view: ConversationView = "terminal"): string {
   resetHistories();
   seedTail("s1", { messages: messages(), start: 0, atStart: true, pos: 1000 });
-  return renderToStaticMarkup(
-    createElement(TranscriptPanel, {
-      session: mkSession({ id: "s1", state: "working", activity: ACTIVITY, ...over }),
-      canSend: true,
-    }),
-  );
+  // Every assertion names its rendering rather than inheriting the application default.
+  writeSessionView("s1", view);
+  try {
+    return renderToStaticMarkup(
+      createElement(TranscriptPanel, {
+        session: mkSession({ id: "s1", state: "working", activity: ACTIVITY, ...over }),
+        canSend: true,
+      }),
+    );
+  } finally {
+    resetSessionViews();
+  }
 }
 
 test("a working session's current step reads at the tail of the log", () => {
   const html = render();
-  assert.match(html, /<p class="turn-progress"/, "the row should render");
+  assert.match(html, /<p class="turn-progress pty-entry"/, "the row should render");
   assert.match(html, /class="turn-progress-text">running Bash</);
   // Whose step it is. The byline is the same speaker the assistant turns above carry, drawn
   // through the log's own `.turn-role` so the row reads in the same rhythm as them.
@@ -88,15 +95,10 @@ test("the terminal drawing gets the row as an entry in its stream", () => {
   // diff - the row was sitting flush against the last entry and two dozen pixels left of
   // everything else. It takes `.pty-entry` there rather than restating those rules, which
   // is also what puts the spine's `:last-child` stop on the row that is actually last.
-  writeSessionView("s1", "terminal");
-  try {
-    assert.match(render(), /class="turn-progress pty-entry"/);
-  } finally {
-    resetSessionViews();
-  }
+  assert.match(render({}, "terminal"), /class="turn-progress pty-entry"/);
   // And the chat drawing does NOT, which is what makes the class a rendering choice rather
   // than something the row carries everywhere.
-  assert.match(render(), /class="turn-progress"/);
+  assert.match(render({}, "chat"), /class="turn-progress"/);
 });
 
 test("the row says what it is, so it is never read as a recorded turn", () => {
@@ -111,7 +113,7 @@ test("the row says what it is, so it is never read as a recorded turn", () => {
 
 test("it is drawn before the human's queued messages, not after them", () => {
   const html = render({ pendingTurns: [queued()] });
-  const progress = html.indexOf('class="turn-progress"');
+  const progress = html.indexOf('class="turn-progress');
   const pending = html.indexOf("pending-turn is-queued");
   const lastTurn = html.indexOf("starting with the worktree pool");
   assert.ok(progress > lastTurn, "the row belongs after the turns the transcript recorded");
@@ -157,13 +159,13 @@ test("the in-progress row and the Observed activity rail are different things", 
   // would have to delete one of these two assertions to pass.
   const html = render();
   assert.match(html, /Tool calls observed in the loaded transcript\./);
-  assert.match(html, /<p class="turn-progress"/);
+  assert.match(html, /<p class="turn-progress pty-entry"/);
   // And the row is not inside the rail: it is a child of the log, which is what puts it at
   // the tail of the conversation rather than in the column beside it.
   const log = html.slice(html.indexOf('<div class="transcript-log"'));
   const rail = log.indexOf('<section class="activity-rail"');
   assert.ok(rail >= 0, "the rail should render beside the log");
-  assert.ok(log.indexOf('class="turn-progress"') < rail, "the row belongs to the log, not the rail");
+  assert.ok(log.indexOf('class="turn-progress') < rail, "the row belongs to the log, not the rail");
 });
 
 test("the row cannot wrap, because wrapping would break the log's stick-to-bottom", () => {

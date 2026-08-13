@@ -219,9 +219,10 @@ test("an embedded launch is handed the same MCP descriptor the terminal argv ren
   setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
   const registry = new Registry();
   registry.upsertTask(
-    mkTask({ id: "task-mcp-ok", status: "dispatching", repoRoot: repo, agent: "claude" }),
+    mkTask({ id: "task-mcp-ok", status: "dispatching", repoRoot: repo, agent: "claude", kind: "scout" }),
   );
   const supervisor = fakeSupervisor(registry);
+  let credentialScope: { taskId: string; cwd: string } | null = null;
   await new Dispatcher(registry, async () => {}, {
     supervisor,
     missionMcpDescriptor: async () => ({
@@ -230,6 +231,10 @@ test("an embedded launch is handed the same MCP descriptor the terminal argv ren
       args: ["/dist/mcp/server.mjs"],
       env: {},
     }),
+    provisionScoutCredential: (taskId, cwd) => {
+      credentialScope = { taskId, cwd };
+      return "test-credential";
+    },
   }).dispatch("task-mcp-ok", { missionMcp: { tools: ["report_status"] } });
 
   // One descriptor, rendered into whichever launch grammar the runtime speaks. The ask
@@ -238,6 +243,10 @@ test("an embedded launch is handed the same MCP descriptor the terminal argv ren
   // asking questions, so the server still rides along.
   assert.equal(supervisor.starts.length, 1);
   assert.equal(supervisor.starts[0]!.mcp?.serverName, "mission-control");
+  assert.deepEqual(credentialScope, {
+    taskId: "task-mcp-ok",
+    cwd: supervisor.starts[0]!.cwd,
+  });
 });
 
 test("an embedded launch that cannot carry required MCP tools fails rather than starting", async () => {

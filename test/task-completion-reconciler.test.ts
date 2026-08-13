@@ -309,7 +309,7 @@ test("an outcome an operator recorded is never rewritten", async () => {
     prUrl: url,
     mergedAt: NOW - 1,
   });
-  f.tasks.complete(f.taskId, "done by hand");
+  await f.tasks.complete(f.taskId, "done by hand");
 
   f.tasks.reconcileMergedTasks();
 

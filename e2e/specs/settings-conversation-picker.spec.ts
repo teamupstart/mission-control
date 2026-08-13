@@ -45,18 +45,18 @@ const PRE_FIX_ROWS = [383, 749] as const;
 const PRE_FIX_SECTION = 1139;
 
 test("the conversation picker draws sized thumbnails, not a full-width picture", async ({
-  dashboard,
+  page,
   daemon,
 }) => {
-  await dashboard.setViewportSize({ width: 1500, height: 900 });
-  await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
+  await page.setViewportSize({ width: 1500, height: 900 });
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
 
-  const picker = dashboard.getByRole("radiogroup", { name: "Conversation rendering" });
+  const picker = page.getByRole("radiogroup", { name: "Conversation rendering" });
   await expect(picker).toBeVisible();
   const chat = picker.getByRole("radio", { name: /^Chat/ });
   const terminal = picker.getByRole("radio", { name: /^Terminal/ });
-  await expect(chat).toBeChecked();
-  await expect(terminal).not.toBeChecked();
+  await expect(terminal).toBeChecked();
+  await expect(chat).not.toBeChecked();
 
   // THE assertion. Before the fix each of these was as wide as the pane and ~790px tall.
   // Exact rather than bounded: 44x32 is a fixed CSS size that no font metric moves, so a
@@ -87,7 +87,7 @@ test("the conversation picker draws sized thumbnails, not a full-width picture",
   }
 
   // The whole section fits the screen, which is the thing an operator actually noticed.
-  const section = dashboard.locator('[data-anchor="display/conversation-view"]').locator("..");
+  const section = page.locator('[data-anchor="display/conversation-view"]').locator("..");
   const sectionBox = (await section.boundingBox())!;
   expect(Math.ceil(sectionBox.height)).toBeLessThan(300);
 
@@ -96,8 +96,8 @@ test("the conversation picker draws sized thumbnails, not a full-width picture",
   // off `color` because that is what the `fill="currentColor"` rects resolve against.
   const tint = async (index: number): Promise<string> =>
     thumbs.nth(index).evaluate((node) => getComputedStyle(node).color);
-  const selectedTint = await tint(0);
-  const restingTint = await tint(1);
+  const restingTint = await tint(0);
+  const selectedTint = await tint(1);
   expect(selectedTint).not.toBe(restingTint);
   expect(selectedTint, "the selected thumbnail is painting black").not.toMatch(
     /rgba?\(0,\s*0,\s*0/,
@@ -110,7 +110,7 @@ test("the conversation picker draws sized thumbnails, not a full-width picture",
     mkdirSync(EVIDENCE, { recursive: true });
     // Off every control first: `Tooltip` portals a bubble under a resting pointer, and it
     // lands on top of the rows being photographed.
-    await dashboard.mouse.move(0, 0);
+    await page.mouse.move(0, 0);
     await section.screenshot({ path: `${EVIDENCE}02-after.png` });
     // eslint-disable-next-line no-console
     console.log(
@@ -122,20 +122,20 @@ test("the conversation picker draws sized thumbnails, not a full-width picture",
 });
 
 test("choosing a rendering in the picker reaches the daemon and survives a reload", async ({
-  dashboard,
+  page,
   daemon,
 }) => {
   // The control still does its job. Worth asserting beside the sizing because the fix moved
   // the thumbnail out of the label text, and a picture that stops being part of the label is
   // one click target smaller - the row must still select from anywhere on it.
-  await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
-  const picker = dashboard.getByRole("radiogroup", { name: "Conversation rendering" });
-  const terminal = picker.getByRole("radio", { name: /^Terminal/ });
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  const picker = page.getByRole("radiogroup", { name: "Conversation rendering" });
+  const chat = picker.getByRole("radio", { name: /^Chat/ });
 
   // Clicked on the thumbnail rather than the word, which is the half of the row that moved.
-  await picker.locator(".layout-option").filter({ hasText: "Terminal" }).locator(".view-thumb").click();
-  await expect(terminal).toBeChecked();
-  await expect(picker.getByRole("radio", { name: /^Chat/ })).not.toBeChecked();
+  await picker.locator(".layout-option").filter({ hasText: "Chat" }).locator(".view-thumb").click();
+  await expect(chat).toBeChecked();
+  await expect(picker.getByRole("radio", { name: /^Terminal/ })).not.toBeChecked();
 
   // It reached the daemon: the reload rehydrates from `GET /api/ui/config`, so a choice that
   // only ever lived in the browser comes back as the shipped default.
@@ -145,11 +145,11 @@ test("choosing a rendering in the picker reaches the daemon and survives a reloa
       const body = (await response.json()) as { config?: { conversationView?: string } };
       return body.config?.conversationView;
     })
-    .toBe("terminal");
-  await dashboard.reload();
+    .toBe("chat");
+  await page.reload();
   await expect(
-    dashboard
+    page
       .getByRole("radiogroup", { name: "Conversation rendering" })
-      .getByRole("radio", { name: /^Terminal/ }),
+      .getByRole("radio", { name: /^Chat/ }),
   ).toBeChecked();
 });

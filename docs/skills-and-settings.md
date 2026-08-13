@@ -66,10 +66,12 @@ agent's own loading path; the harness never reimplements it.
 The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
 PR. Inspector-gated workflows also require it for **Prepare PR in session** and invoke it
 through the bound harness's native skill syntax, so that final handoff is enforced rather
-than left to model selection. Its reviewer-ready description contract - two sections, **For
-Humans** for the why, the concise feature description, the tradeoffs, the known gaps, the
-evidence and the recommended follow-ups, and **For Agents** for the design decisions and
-implementation detail - lives in
+than left to model selection. Its reviewer-ready description contract has two sections: a
+concise, bullet-forward **For Humans** for the why, feature description, tradeoffs, known gaps,
+evidence, and recommended follow-ups; and **For Agents** for direct links to the plan and
+technical documentation, technical context those documents do not cover, and deliberately
+handled failure modes. It does not inventory changed tests or repeat design detail already
+covered by the linked documents. The full contract lives in
 [`skills/pull-request/SKILL.md`](../skills/pull-request/SKILL.md).
 
 The opt-in **Retro** row carries the retrospective procedure: read a finished session back
@@ -96,6 +98,12 @@ the report in the Files tab, rendered rather than as source. The page carries no
 purpose: the Files preview is a sandboxed iframe that runs only its own two bridge scripts, so a
 report that built itself at runtime would be blank in the one place it is most likely to be read.
 The contract lives in [`skills/html-report/SKILL.md`](../skills/html-report/SKILL.md).
+
+This row is opt-in and a **scout task does not depend on it**. A scout is told to write and
+submit its page by its own prompt, composed by the daemon at the moment the task is delivered,
+so the requirement arrives with the global toggle off and with no skills installed at all. The
+skill is how to write a good report; the scout contract is whether one exists, and it is
+enforced by [scout archives](scout-archives.md) rather than by a setting.
 
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`

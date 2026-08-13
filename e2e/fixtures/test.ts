@@ -45,14 +45,17 @@ export const test = base.extend<{
    * profile - or a second test in the same context - would open the modal pointed at a repo
    * this daemon has never heard of.
    *
-   * `guidedDispatch` is then pinned OFF, explicitly, and that is not the same statement as
-   * "it ships off". Roughly fifty specs drive the dispatch modal, and every one of them
+   * `guidedDispatch` is then pinned OFF and `conversationView` to Chat, explicitly, and
+   * neither is the same statement as "it ships that way". Roughly fifty specs drive the
+   * dispatch modal, and every one of them
    * expects the ordinary form with the caret in the task box; the preference decides which
    * of two forms they get. Left to the shipped default, all of them would silently depend on
-   * it, and the phase that flips it to `true` would turn the whole suite red for a reason
+   * it, and a default flip would turn the whole suite red for a reason
    * that has nothing to do with the change being made. Pinned here, that flip is one line in
    * `UI_CONFIG_DEFAULTS` and this fixture goes on saying what it always said. The specs that
    * want the pass turn it on for themselves - see `specs/guided-dispatch.spec.ts`.
+   * Conversation-facing specs likewise keep their original Chat precondition; the default
+   * itself is covered through the raw page fixture in `settings-conversation-picker.spec.ts`.
    *
    * Both halves are needed. The PUT is what `hydrateUiConfig()` adopts as the truth on the
    * next load; the cache write is what the FIRST PAINT reads, synchronously, before that
@@ -64,13 +67,13 @@ export const test = base.extend<{
     const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ guidedDispatch: false }),
+      body: JSON.stringify({ guidedDispatch: false, conversationView: "chat" }),
     });
     expect(pinned.ok, "the daemon should accept the guided-dispatch pin").toBe(true);
     await page.evaluate(() =>
       window.localStorage.setItem(
         "mission-control.ui",
-        JSON.stringify({ guidedDispatch: false }),
+        JSON.stringify({ guidedDispatch: false, conversationView: "chat" }),
       ),
     );
     await page.reload();

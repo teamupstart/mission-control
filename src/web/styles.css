@@ -5797,8 +5797,7 @@ mark.find-hit.is-current {
 /* ---- conversation: the Native PTY rendering ----
    The second reading of a conversation (docs/plans/conversation-native-pty/plan.md): the
    same rows, drawn as one terminal stream. Everything here is scoped under the frame or
-   the `pty-` prefix, so the chat log's rules are untouched and the default rendering
-   cannot regress from this block. */
+   the `pty-` prefix, so the chat log's rules remain untouched. */
 .pty-frame {
   /* Takes the height `.find-split` takes in the chat rendering, and passes it on: the
      `min-height: 0` chain from `.transcript` down to `.transcript-log` runs THROUGH this
@@ -7253,8 +7252,25 @@ button.dispatch-guided-rung .dispatch-guided-num {
   gap: 6px;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--fg);
+}
+/* The answer's text, capped and ellipsized.
+   Four rungs and the escape hint share one 640px line, and one of those answers is a name the
+   operator chose rather than a label this app wrote - a repo's, a workflow's. Uncapped, a
+   60-character repo name drew the rungs after it ON TOP of itself and pushed the row past the
+   modal's edge, which `overflow: visible` on `.dispatch-modal` then happily painted.
+   `min-width: 0` on the rung is what lets any of this take: a flex item refuses to shrink
+   below its content until it is told it may. 180px is about 26 characters here - beyond any
+   repo name worth reading in full, and the field the rung sends you back to still holds the
+   whole path. */
+.dispatch-guided-rung {
+  min-width: 0;
+}
+.dispatch-guided-answer {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dispatch-guided-tick {
   flex: none;
@@ -7301,6 +7317,26 @@ button.dispatch-guided-rung .dispatch-guided-num {
 }
 .dispatch-body .dispatch-guided-dim {
   pointer-events: none;
+}
+
+/* The Repo question, in the repo field's own hint slot - the step drives `RepoCombobox`, whose
+   portalled list covers everything below the input, so the line that asks has to sit above it
+   rather than beside the answers.
+
+   The keycaps stay INLINE, which is the whole reason they are bare `<kbd>`s here instead of the
+   `.dispatch-guided-keys` row the floating pickers use: that row is an inline-flex box, and its
+   height would push the label line - and every field under it - down by two pixels the moment
+   the question appeared. A pass must not move the form it is handing over. Vertical padding on
+   an inline element paints without touching the line box, so these do not. */
+.dispatch-guided-ask {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: color-mix(in oklab, var(--working) 62%, var(--fg));
+}
+.dispatch-guided-ask kbd {
+  font-size: 9.5px;
+  padding: 2px 4px;
+  color: var(--dim);
 }
 
 /* The anchor is the field the question is about; z-index lifts it over `.dispatch-workflow`,

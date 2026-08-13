@@ -109,8 +109,8 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   const card = dashboard.locator("article.card").first();
   await openConversation(card);
 
-  // The shipped default is the chat log, and nothing about this session says otherwise
-  // yet. Asserting it first is what makes the switch below mean something.
+  // This suite pins its ordinary dashboard fixture to Chat so rendering-focused specs state
+  // their own precondition. Asserting it first is what makes the switch below mean something.
   await expect(card.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
   await seedRun(card, card.getByPlaceholder(/^Reply to this session/));
 
@@ -230,7 +230,7 @@ test("a Codex run of commands folds into one record too", async ({ dashboard, da
   // nothing.
   await dispatch(dashboard, daemon, "fold a codex run of commands", "codex");
 
-  // The chat log first, on the shipped default, because the reader that was fixed feeds BOTH
+  // The chat log first, on this suite's pinned precondition, because the reader feeds BOTH
   // renderings and the fold is shared. Here the run is one `turn-toolrun` row - "codex
   // executed" and its chips - where it used to be three chips hanging off the preamble turn.
   const chat = dashboard.locator("article.card").first();

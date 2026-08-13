@@ -70,10 +70,10 @@ function chain(registry: InstanceType<typeof Registry>): void {
 
 // ---- the default is unchanged ----------------------------------------------------------
 
-test("completing without the flag leaves the declared edge open, exactly as before", () => {
+test("completing without the flag leaves the declared edge open, exactly as before", async () => {
   const { registry, tasks } = setup();
   chain(registry);
-  tasks.complete("root", "done by hand");
+  await tasks.complete("root", "done by hand");
   const dependent = registry.getTask("dependent")!;
   assert.equal(dependent.dependencies[0]?.satisfiedAt, null);
   assert.equal(blockersFor(dependent, null, registry.listTasks()).length, 1);
@@ -89,10 +89,10 @@ test("satisfyDependents defaults to false on the wire", () => {
 
 // ---- the opt-in exit --------------------------------------------------------------------
 
-test("completing WITH the flag closes the declared edge and frees the dependent", () => {
+test("completing WITH the flag closes the declared edge and frees the dependent", async () => {
   const { registry, tasks } = setup();
   chain(registry);
-  tasks.complete("root", "landed via another PR", undefined, true);
+  await tasks.complete("root", "landed via another PR", undefined, true);
   const dependent = registry.getTask("dependent")!;
   assert.equal(typeof dependent.dependencies[0]?.satisfiedAt, "number");
   assert.deepEqual(blockersFor(dependent, null, registry.listTasks()), []);
@@ -102,19 +102,19 @@ test("completing WITH the flag closes the declared edge and frees the dependent"
   );
 });
 
-test("the stamp is on the EDGE, so it survives the completed row being pruned", () => {
+test("the stamp is on the EDGE, so it survives the completed row being pruned", async () => {
   // `TaskDependency.satisfiedAt` is persisted for exactly this reason: terminal rows are
   // eventually dropped from the registry, and a completion readable only from the
   // target's status would silently re-block every dependent when it goes.
   const { registry, tasks } = setup();
   chain(registry);
-  tasks.complete("root", "landed", undefined, true);
+  await tasks.complete("root", "landed", undefined, true);
   registry.removeTask("root");
   const dependent = registry.getTask("dependent")!;
   assert.deepEqual(blockersFor(dependent, null, registry.listTasks()), []);
 });
 
-test("it closes every edge aimed at the task, not just the first", () => {
+test("it closes every edge aimed at the task, not just the first", async () => {
   const { registry, tasks } = setup();
   chain(registry);
   registry.upsertTask(baseTask({
@@ -133,13 +133,13 @@ test("it closes every edge aimed at the task, not just the first", () => {
       satisfiedAt: null,
     }],
   }));
-  tasks.complete("root", "landed", undefined, true);
+  await tasks.complete("root", "landed", undefined, true);
   for (const id of ["dependent", "second"]) {
     assert.equal(typeof registry.getTask(id)!.dependencies[0]?.satisfiedAt, "number", id);
   }
 });
 
-test("edges aimed at OTHER tasks are untouched", () => {
+test("edges aimed at OTHER tasks are untouched", async () => {
   const { registry, tasks } = setup();
   chain(registry);
   registry.upsertTask(baseTask({ id: "other", title: "Other", status: "running" }));
@@ -159,11 +159,11 @@ test("edges aimed at OTHER tasks are untouched", () => {
       satisfiedAt: null,
     }],
   }));
-  tasks.complete("root", "landed", undefined, true);
+  await tasks.complete("root", "landed", undefined, true);
   assert.equal(registry.getTask("unrelated")!.dependencies[0]?.satisfiedAt, null);
 });
 
-test("an already-satisfied edge keeps its original timestamp", () => {
+test("an already-satisfied edge keeps its original timestamp", async () => {
   // Re-stamping would move a merge's recorded moment to whenever somebody pressed
   // Complete, which is the one thing the persisted field is supposed to preserve.
   const { registry, tasks } = setup();
@@ -173,7 +173,7 @@ test("an already-satisfied edge keeps its original timestamp", () => {
     ...dependent,
     dependencies: [{ ...dependent.dependencies[0]!, satisfiedAt: 42 }],
   });
-  tasks.complete("root", "landed", undefined, true);
+  await tasks.complete("root", "landed", undefined, true);
   assert.equal(registry.getTask("dependent")!.dependencies[0]?.satisfiedAt, 42);
 });
 

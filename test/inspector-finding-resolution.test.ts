@@ -1,6 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,7 +62,16 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 const statePath = process.env.FAKE_GITHUB_STATE;
 const load = () => JSON.parse(fs.readFileSync(statePath, "utf8"));
-const save = (state) => fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+// Written through a temp file in the same directory and renamed, never in place.
+// The test polls this file every 20ms while this process is writing it, and a plain
+// writeFileSync truncates before it writes - so a poll landing in that window reads
+// "" and dies on JSON.parse. A rename is atomic: a reader sees the whole old file or
+// the whole new one. Observed as a node 26 CI failure on an unrelated pull request.
+const save = (state) => {
+  const tmp = statePath + "." + process.pid + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+  fs.renameSync(tmp, statePath);
+};
 
 if (args[0] === "api" && args[1] === "user") {
   process.stdout.write("operator\\n");
@@ -202,7 +211,11 @@ function writeGithubState(state: Partial<FakeGithubState>): void {
     actions: [],
     ...state,
   };
-  writeFileSync(statePath, JSON.stringify(full, null, 2));
+  // Atomic for the same reason the fake's own writer is: the Inspector loop may already be
+  // running and reading this file when a case re-seeds it.
+  const tmp = `${statePath}.seed.tmp`;
+  writeFileSync(tmp, JSON.stringify(full, null, 2));
+  renameSync(tmp, statePath);
 }
 
 function readGithubState(): FakeGithubState {

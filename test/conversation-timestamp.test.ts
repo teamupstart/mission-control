@@ -12,6 +12,7 @@ import {
   formatConversationTimestamp,
   formatConversationTimestampLong,
 } from "../src/web/lib/format.ts";
+import { resetSessionViews, writeSessionView } from "../src/web/lib/conversation-view.ts";
 import { resetHistories, seedTail } from "../src/web/lib/transcript-history.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 import { tooltipLabels } from "./helpers/markup.ts";
@@ -49,9 +50,17 @@ test("the conversation dates prose and a folded tool run from its first turn", (
     { id: "u2", role: "user", text: "Undated", tools: [], ts: 0 },
   ];
   seedTail("s1", { messages, start: 0, atStart: true, pos: 100 });
-  const html = renderToStaticMarkup(
-    createElement(TranscriptPanel, { session: mkSession({ id: "s1" }), canSend: true }),
-  );
+  // This test inspects Chat's bylines and chips, so name that rendering instead of
+  // inheriting the application's default.
+  writeSessionView("s1", "chat");
+  let html: string;
+  try {
+    html = renderToStaticMarkup(
+      createElement(TranscriptPanel, { session: mkSession({ id: "s1" }), canSend: true }),
+    );
+  } finally {
+    resetSessionViews();
+  }
 
   assert.equal((html.match(/class="conversation-time turn-time"/g) ?? []).length, 2);
   assert.match(html, /dateTime="2026-07-31T13:42:07.000Z"/);

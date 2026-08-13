@@ -99,11 +99,24 @@ test("a pre-feature database opens safely and keeps every task it already had", 
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'scout_%' ORDER BY name`)
       .all() as unknown as Array<{ name: string }>
   ).map((row) => row.name);
-  assert.deepEqual(tables, ["scout_archives", "scout_artifacts", "scout_search_segments"]);
+  // `scout_capture_jobs` is here too, and it is a different kind of table: local coordination
+  // for archives still being written, not a projection of the library. It arrives on the same
+  // additive upgrade path and, like the other three, holds no foreign key to anything.
+  assert.deepEqual(tables, [
+    "scout_archives",
+    "scout_artifacts",
+    "scout_capture_jobs",
+    "scout_search_segments",
+  ]);
 });
 
 test("no scout table references a task or a session", () => {
-  for (const table of ["scout_archives", "scout_artifacts", "scout_search_segments"]) {
+  for (const table of [
+    "scout_archives",
+    "scout_artifacts",
+    "scout_capture_jobs",
+    "scout_search_segments",
+  ]) {
     const keys = db.prepare(`PRAGMA foreign_key_list(${table})`).all();
     assert.deepEqual(keys, [], `${table} must have no foreign keys - a bundle outlives every row it came from`);
   }

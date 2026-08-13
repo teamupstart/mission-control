@@ -121,7 +121,13 @@ export function GuidedRail({
                           aria-hidden
                         />
                       )}
-                      {answer.text}
+                      {/* The text in an element of its own so it can ellipsize. Its parent is
+                          a flex box (it has to be, for the dot), and `text-overflow` does
+                          nothing to a flex container's own children - the string would be cut
+                          mid-letter with no ellipsis and no cap. This is the only text on the
+                          strip the OPERATOR chose, and so the only one that can be any length:
+                          a repo's name, a workflow's. See the width cap beside it in the CSS. */}
+                      <span className="dispatch-guided-answer">{answer.text}</span>
                     </span>
                   </button>
                 </Tooltip>

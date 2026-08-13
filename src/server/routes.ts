@@ -121,10 +121,17 @@ import type {
   WorkItem,
 } from "@shared/types.ts";
 import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
-import { TaskDependencyError, TaskStatusConflictError, type TaskManager } from "./tasks.ts";
+import {
+  ScoutArchiveNotReadyError,
+  TaskDependencyError,
+  TaskStatusConflictError,
+  type TaskManager,
+} from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { scoutErrorStatus, type ScoutArchiveManager } from "./scouts/manager.ts";
+import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
+import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { SCOUT_SEARCH_LIMITS } from "@shared/scouts.ts";
 import { recordInjection } from "./injections.ts";
 import { runRetro } from "./retro.ts";
@@ -278,6 +285,7 @@ import {
   EnsembleMemberSubmitSchema,
   EnsemblePreviewSchema,
   SubmitEnsembleResultSchema,
+  SubmitScoutArtifactsSchema,
 } from "@shared/protocol.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { artifactAdapterFor } from "./ensembles/artifacts/index.ts";
@@ -2180,6 +2188,47 @@ export function buildApp(
     return c.json(response.body, response.status);
   });
 
+  // --- scout report submission (token-guarded MCP; attribution is server-side) ---
+  //
+  // The one door a scout's evidence comes through, and the shape of the body is the argument:
+  // a report path, a summary, tags, and locators made of a slot this task was issued. No task,
+  // session, episode, producer, archive, destination, or absolute path - the daemon derives
+  // every one of those from the authenticated session, so a submission can neither archive on
+  // another scout's behalf nor choose where the bytes land.
+  //
+  // Deliberately does NOT write task status. Completion is the task owner's, and a scout that
+  // has submitted is a scout that CAN finish, not one that has - see `TaskManager.complete`.
+  app.post("/mcp/scouts/submit", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const library = scoutLibrary();
+    if (!library) return c.json({ error: "scout library unavailable" }, 503);
+    const parsed = await parseBody(c, SubmitScoutArtifactsSchema);
+    if (!parsed.ok) return parsed.res;
+    const authority = verifyScoutSubmissionCredential(
+      c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER),
+    );
+    if (!authority) {
+      return c.json({ error: "this scout submission has no valid session credential" }, 403);
+    }
+    const result = await library.submit({
+      authority,
+      submission: {
+        reportPath: parsed.data.reportPath,
+        summary: parsed.data.summary,
+        tags: parsed.data.tags,
+        supporting: parsed.data.supporting,
+      },
+    });
+    if (result.ok) {
+      return c.json({ ok: true, replayed: result.replayed, archive: result.archive });
+    }
+    // An attribution refusal carries its own status (no live session, not a scout, already
+    // terminal). A capture refusal is always a 409: the request was well formed and the
+    // checkout is untouched, so the agent fixes the named paths and calls again.
+    const status = "status" in result ? (result.status as 400 | 404 | 409 | 500 | 503) : 409;
+    return c.json({ error: result.problems.join("; "), problems: result.problems }, status);
+  });
+
   // --- ensemble catalog: list, side-effect-free preview, idempotent create ---
   app.get("/api/ensembles", (c) => {
     const manager = ensembleManager();
@@ -3967,7 +4016,10 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     let t;
     try {
-      t = tasks.complete(
+      // Awaited now: a scout's completion waits for its durable archive to be published and
+      // verified, so the modal that called this stays open until the evidence exists rather
+      // than reporting `done` over a report that was never captured.
+      t = await tasks.complete(
         c.req.param("id"),
         parsed.data.outcome,
         parsed.data.outcomeUrl,
@@ -3976,6 +4028,13 @@ export function buildApp(
       );
     } catch (error) {
       if (error instanceof TaskStatusConflictError) return c.json({ error: error.message }, 409);
+      // The task is untouched and its checkout is intact, so this is a conflict the caller can
+      // fix and retry - and it carries every problem rather than one, because the fix is
+      // usually several paths at once. 422 would read as "malformed request"; the request was
+      // fine, the world was not ready.
+      if (error instanceof ScoutArchiveNotReadyError) {
+        return c.json({ error: error.message, problems: error.problems }, 409);
+      }
       throw error;
     }
     if (!t) return c.json({ error: "no such task" }, 404);

@@ -9,10 +9,14 @@ import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import {
   SCOUT_INDEX_STATUSES,
+  SCOUT_REPORT_PATH_SHAPE,
   SCOUT_SEARCH_LIMITS,
+  SCOUT_SUBMISSION_LIMITS,
   SCOUT_TEXT_LIMITS,
   decodeScoutCursor,
   isScoutId,
+  isScoutRepoSlot,
+  scoutReportSlug,
 } from "./scouts.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "./types.ts";
@@ -1746,7 +1750,7 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
  */
 export const UI_CONFIG_DEFAULTS = {
   layout: "grid",
-  conversationView: "chat",
+  conversationView: "terminal",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -1758,10 +1762,9 @@ export const UI_CONFIG_DEFAULTS = {
 export const UiConfigSchema = z.object({
   layout: LayoutModeSchema.default(UI_CONFIG_DEFAULTS.layout),
   /**
-   * Which rendering the Conversation opens in. `chat` by default: the terminal reading is
-   * a deliberate choice about how you want to read a session, not a change anyone should
-   * arrive at. A per-session override lives in the browser only and never reaches here -
-   * see `src/web/lib/conversation-view.ts` for why that one is honestly tab-scoped.
+   * Which rendering the Conversation opens in. A per-session override lives in the browser
+   * only and never reaches here - see `src/web/lib/conversation-view.ts` for why that one is
+   * honestly tab-scoped.
    */
   conversationView: ConversationViewSchema.default(UI_CONFIG_DEFAULTS.conversationView),
   /**
@@ -4485,3 +4488,55 @@ export const OpenScoutArtifactSchema = z.object({
   target: z.enum(OPEN_TARGET_IDS),
 });
 export type OpenScoutArtifactBody = z.infer<typeof OpenScoutArtifactSchema>;
+
+/**
+ * One additional supporting file a scout asks to keep, located by a SERVER-ISSUED slot.
+ *
+ * The slot is validated as a generated `repo-NN` here rather than merely bounded, which is
+ * what stops it from being a path fragment: it becomes a directory component under
+ * `artifacts/` in the published bundle, and every other component below it comes from the
+ * checkout-relative path after its own containment check.
+ */
+const ScoutSupportingLocatorSchema = z.object({
+  repoSlot: z.string().refine(isScoutRepoSlot, "not a repository slot issued for this task"),
+  path: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars),
+});
+
+/**
+ * The MCP `submit_scout_artifacts` request.
+ *
+ * The shape is the whole security argument, so read what is ABSENT: no environment, task id,
+ * session id, cwd, work episode, producer id, archive id, destination, absolute source, digest,
+ * or completion status. A scout says what it wrote and what is worth keeping; the daemon
+ * derives which task that was, which episode, which checkouts, and where the bundle goes from
+ * the signed checkout credential on the HTTP request. A field in this body could only ever be
+ * a field used to archive on somebody else's behalf.
+ *
+ * `reportPath` is checked against the convention HERE, at the schema edge, so a path that is
+ * not `docs/reports/<slug>/report.html` is refused with the required shape before any
+ * filesystem work happens. That is a shape check and nothing more: containment, symlinks,
+ * regular-file-ness, and ignore rules are the daemon's, against a realpath'd root it chose.
+ *
+ * The zod in `src/mcp/server.ts` is a hand-written mirror of this. They are duplicated
+ * deliberately and change together; `test/mission-mcp.test.ts` catches a rename.
+ */
+export const SubmitScoutArtifactsSchema = z.object({
+  reportPath: z
+    .string()
+    .trim()
+    .min(1)
+    .max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
+    .refine((value) => scoutReportSlug(value) !== null, `the report must be at ${SCOUT_REPORT_PATH_SHAPE}`),
+  summary: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.summary),
+  tags: z
+    .array(z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.tag))
+    .max(SCOUT_SUBMISSION_LIMITS.tags)
+    .optional()
+    .default([]),
+  supporting: z
+    .array(ScoutSupportingLocatorSchema)
+    .max(SCOUT_SUBMISSION_LIMITS.supportingFiles)
+    .optional()
+    .default([]),
+});
+export type SubmitScoutArtifactsInput = z.infer<typeof SubmitScoutArtifactsSchema>;

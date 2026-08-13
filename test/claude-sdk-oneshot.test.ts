@@ -144,13 +144,77 @@ test("one fresh query has tools off, deterministic settings, and no context opti
   }
 });
 
-test("a rendered schema becomes outputFormat and structured_output becomes JSON text", async () => {
-  const schema = {
-    type: "object",
-    properties: { answer: { type: "string" } },
-    required: ["answer"],
-    additionalProperties: false,
+const SCHEMA = {
+  type: "object",
+  properties: { answer: { type: "string" } },
+  required: ["answer"],
+  additionalProperties: false,
+};
+
+/**
+ * The turns a schema run actually costs in the CLI this transport drives (2.1.228).
+ *
+ * Modelled from that binary rather than from what would be convenient: `json_schema` is
+ * settled only by a `StructuredOutput` call, so the run pays for (1) a prose answer,
+ * because nothing forces the tool up front, (2) the `[structured-output-enforce]` reply,
+ * injected at most once per user turn, and (3) one Ajv revalidation, because an errored
+ * tool result does not end the turn - reachable for every schema this repo renders, since
+ * `providerJsonSchema` falls back to non-strict on `minLength`/`minimum`/`maximum`/
+ * `default` while the tool still Ajv-checks the whole schema.
+ *
+ * So a cap below 3 kills the run holding a good answer, and `error_max_turns` carries
+ * `result: null` - the answer is gone, not merely unread. Measured live: `maxTurns: 1`
+ * failed 4/6 small and 1/1 at 198 KB, and `maxTurns: 2` passed 6/6 and 2/2 only by never
+ * reaching step 3.
+ *
+ * `e2e/fixtures/fake-claude.mjs` cannot stand in for this: it returns `structured_output`
+ * in a single turn, so the enforcement round-trip does not exist there and no browser spec
+ * can reach this bug.
+ */
+const SCHEMA_TURN_BUDGET = 3;
+
+function structuredEnforcingDeps(answer: Record<string, unknown>): {
+  deps: ClaudeSdkOneShotDeps;
+  options: () => ClaudeSdkOneShotQueryOptions;
+} {
+  let options!: ClaudeSdkOneShotQueryOptions;
+  return {
+    options: () => options,
+    deps: {
+      executable: async () => "/fake/bin/claude",
+      env: () => ({ PATH: "/usr/bin" }),
+      query: async (params) => {
+        options = params.options;
+        const cap = params.options.maxTurns;
+        // No schema, no enforcement: the injected turn exists only to chase a
+        // `StructuredOutput` call, so a schema-less run settles in its one turn.
+        if (params.options.outputFormat === undefined) {
+          return new FakeQuery([{ ...SPEND_FRAME, result: "the model text" }]);
+        }
+        if (cap !== undefined && cap < SCHEMA_TURN_BUDGET) {
+          return new FakeQuery([{
+            ...SPEND_FRAME,
+            subtype: "error_max_turns",
+            is_error: true,
+            num_turns: cap,
+            terminal_reason: "max_turns",
+            // The real frame carries no text on this path, which is why no fallback in
+            // `resultText` could have rescued the answer.
+            result: null,
+          }]);
+        }
+        return new FakeQuery([{
+          ...SPEND_FRAME,
+          num_turns: SCHEMA_TURN_BUDGET,
+          result: JSON.stringify(answer),
+          structured_output: answer,
+        }]);
+      },
+    },
   };
+}
+
+test("a rendered schema becomes outputFormat and structured_output becomes JSON text", async () => {
   let options!: ClaudeSdkOneShotQueryOptions;
   const fake = fakeDeps([
     {
@@ -162,31 +226,71 @@ test("a rendered schema becomes outputFormat and structured_output becomes JSON 
     options = captured.options;
   });
 
-  const result = await runClaudeSdkOneShot("answer as JSON", { schema }, fake.deps);
+  const result = await runClaudeSdkOneShot("answer as JSON", { schema: SCHEMA }, fake.deps);
   assert.equal(result.text, JSON.stringify({ answer: "yes" }));
-  assert.deepEqual(options.outputFormat, { type: "json_schema", schema });
+  assert.deepEqual(options.outputFormat, { type: "json_schema", schema: SCHEMA });
+});
+
+test("a schema-carrying one-shot is given the turns StructuredOutput actually costs", async () => {
+  const fake = structuredEnforcingDeps({ answer: "yes" });
+
+  const result = await runClaudeSdkOneShot("answer as JSON", { schema: SCHEMA }, fake.deps);
+
+  // At `maxTurns: 1` this run dies `error_max_turns` and the answer is gone with it. That
+  // is the P0: 6 of 8 live workflow compactions degraded to `status:"fallback"`.
+  assert.equal(result.text, JSON.stringify({ answer: "yes" }));
+  assert.equal(
+    fake.options().maxTurns,
+    SCHEMA_TURN_BUDGET,
+    "a schema costs an answer, the StructuredOutput enforcement, and one Ajv revalidation",
+  );
+});
+
+test("a schema-less one-shot keeps its single turn", async () => {
+  const fake = structuredEnforcingDeps({ answer: "yes" });
+  await runClaudeSdkOneShot("summarise this session", {}, fake.deps);
+  // The budget is raised for a SCHEMA, not for tool-lessness. With no schema there is no
+  // enforcement turn to pay for, and one turn remains the honest bound.
+  assert.equal(fake.options().maxTurns, 1);
+});
+
+test("a schema run that produced no structured output fails instead of scraping text", async () => {
+  // The text is a well-formed answer and is still refused. Reading it would source
+  // `guaranteesInputShape` from prose, and `parseModelJson` takes the widest brace span in
+  // a prompt that embeds untrusted transcripts - so a planted verdict-shaped object would
+  // become a candidate answer.
+  const fake = fakeDeps([{ ...SPEND_FRAME, result: JSON.stringify({ answer: "yes" }) }]);
+  await assert.rejects(
+    runClaudeSdkOneShot("answer as JSON", { schema: SCHEMA }, fake.deps),
+    /returned no structured output/,
+  );
 });
 
 test("a validated grant reaches the SDK with the Inspector's exact tools, cwd, and deny settings", async () => {
   const cwd = mkdtempSync(join(root, "inspector-worktree-"));
   let options!: ClaudeSdkOneShotQueryOptions;
-  const fake = fakeDeps([SPEND_FRAME], (captured) => {
+  const fake = fakeDeps([{ ...SPEND_FRAME, structured_output: { answer: "ship it" } }], (captured) => {
     options = captured.options;
   });
 
+  // A grant AND a schema, which is the Inspector's real shape (`inspector/worker.ts`) and
+  // the one combination the two single-axis cases above cannot reach.
   const result = await runClaudeSdkOneShot("review this diff", {
+    schema: SCHEMA,
     grant: { tools: [...CLAUDE_GRANTABLE_TOOLS], cwd, denyPaths: DENY_PATHS },
   }, fake.deps);
 
-  assert.equal(result.text, "OK");
+  assert.equal(result.text, JSON.stringify({ answer: "ship it" }));
   assert.deepEqual(options.tools, REVIEW_TOOLS.split(","));
   assert.equal(options.cwd, realpathSync(cwd));
   assert.equal(options.settings, DENY_SETTINGS);
   assert.deepEqual(options.settingSources, []);
+  assert.deepEqual(options.outputFormat, { type: "json_schema", schema: SCHEMA });
   assert.equal(
     Object.hasOwn(options, "maxTurns"),
     false,
-    "a granted review needs a later turn after its tool result",
+    "a granted review needs later turns for its tool results, and the schema budget must "
+      + "not be imposed on it either",
   );
 });
 

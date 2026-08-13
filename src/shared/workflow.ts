@@ -1650,6 +1650,16 @@ export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
 };
 
 /**
+ * What every Command surface says when the catalog has not arrived.
+ *
+ * Not `Not configured`, and not "Loading…" either: this one sentence has to cover both halves
+ * of the same absence - the snapshot has not landed yet, or the daemon has stopped answering -
+ * and no surface can tell those apart. Stated once so the shelf, the editor rail and the
+ * palette cannot answer the same question three ways.
+ */
+export const WORKFLOW_COMMAND_UNKNOWN = "Waiting for the daemon";
+
+/**
  * The DURABLE configuration state of one Command slot, as the line a card or a list row
  * shows: `Global default · 2 overrides`, `Global default`, `1 override · no global default`,
  * or `Not configured`.
@@ -1658,10 +1668,19 @@ export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
  * shelf card, the Command editor's slot rail, and the workflow palette - and a fact that
  * reads differently in three places is three answers to one question. It says nothing about
  * a run: whether a Command is configured is a property of this machine, not of any workflow.
+ *
+ * `hasSnapshot` is REQUIRED, and that is the safety property rather than ceremony. Every
+ * string below is a claim about what this machine has stored, and an absent view means one of
+ * two very different things: nobody configured this slot, or the catalog has not arrived. A
+ * caller that could omit the flag would default to the first and invite an operator to type
+ * over a global default that merely had not loaded. A present view is trusted whatever the
+ * flag says - the flag describes an absence, and a slot the stream delivered is not absent.
  */
 export function workflowCommandFact(
   view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+  hasSnapshot: boolean,
 ): string {
+  if (!view && !hasSnapshot) return WORKFLOW_COMMAND_UNKNOWN;
   const overrides = view?.overrides.length ?? 0;
   const plural = overrides === 1 ? "override" : "overrides";
   const hasDefault = Boolean(view?.defaultCommand && view.defaultCommand.length > 0);
@@ -1679,10 +1698,19 @@ export function workflowCommandFact(
  * It states the skip rather than converting it into a validation error: a portable workflow
  * is meant to name a slot a given machine may not configure, and passing with a note is the
  * designed behaviour rather than a mistake to prevent.
+ *
+ * `hasSnapshot` for `workflowCommandFact`'s reason, and it matters MORE here: this sentence
+ * does not merely describe configuration, it promises what a run will do. "Nothing is
+ * configured, so this Command skips" read off a catalog that has not arrived tells an operator
+ * their working gate is inert.
  */
 export function workflowCommandStatusSentence(
   view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+  hasSnapshot: boolean,
 ): string {
+  if (!view && !hasSnapshot) {
+    return `${WORKFLOW_COMMAND_UNKNOWN}, so what this Command runs here is not known yet.`;
+  }
   const overrides = view?.overrides.length ?? 0;
   if (view?.defaultCommand && view.defaultCommand.length > 0) {
     return overrides === 0

@@ -227,18 +227,6 @@ export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {
 }
 
 /**
- * What a card says while the catalog has not arrived.
- *
- * Not "Not configured", which is the whole point: that is a claim about what this machine has
- * stored, and drawing it before the daemon has answered invites an operator to type over a
- * global default that merely has not loaded yet. Deliberately the same sentence
- * `commandRevisionLine` gives an editor with no view, because it answers both halves of the
- * same absence honestly - the snapshot has not landed yet, or the daemon has stopped
- * answering, and the shelf cannot tell those apart either.
- */
-export const COMMAND_FACT_UNKNOWN = "Waiting for the daemon";
-
-/**
  * The four portable Command slots, always all four and always in registry order.
  *
  * Driven off `WORKFLOW_CHECK_SLOTS` rather than off the passed catalog, so a slot the daemon
@@ -266,14 +254,10 @@ export function commandCards(
     tags: [{ label: "built-in", tone: "builtin" as const }],
     // Durable configuration, never run status. `Not configured` is not toned as a warning:
     // a slot nobody configured is a gate that passes with a note, which is the designed
-    // behaviour of a portable workflow rather than something to fix.
-    //
-    // A view that HAS arrived is trusted whatever the snapshot flag says, which is the same
-    // rule the editor's rail follows: the flag exists to describe an absence, and a slot the
-    // stream has already delivered is not absent.
-    fact: hasSnapshot || bySlot.has(slot)
-      ? workflowCommandFact(bySlot.get(slot))
-      : COMMAND_FACT_UNKNOWN,
+    // behaviour of a portable workflow rather than something to fix - and the unloaded
+    // reading is `workflowCommandFact`'s own, so this shelf, the editor's rail and the
+    // workflow palette cannot answer the same question three ways.
+    fact: workflowCommandFact(bySlot.get(slot), hasSnapshot),
   }));
 }
 

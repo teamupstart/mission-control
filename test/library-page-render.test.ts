@@ -9,7 +9,10 @@ import type {
   WorkflowCommandView,
   WorkflowSummary,
 } from "../src/shared/workflow.ts";
-import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import {
+  emptyWorkflowCommandView,
+  WORKFLOW_COMMAND_UNKNOWN,
+} from "../src/shared/workflow.ts";
 import { LibraryPage } from "../src/web/library/LibraryPage.tsx";
 import {
   actionCards,
@@ -19,7 +22,6 @@ import {
   personaCards,
   workflowCards,
   workflowRunsCrossLink,
-  COMMAND_FACT_UNKNOWN,
   LIBRARY_SHELF_COPY,
 } from "../src/web/library/library-model.ts";
 
@@ -340,7 +342,7 @@ test("an unloaded catalog is said out loud, not drawn as four unconfigured slots
   const unloaded = commandCards([], false);
   assert.deepEqual(
     unloaded.map((card) => card.fact),
-    Array.from({ length: 4 }, () => COMMAND_FACT_UNKNOWN),
+    Array.from({ length: 4 }, () => WORKFLOW_COMMAND_UNKNOWN),
   );
   // The cards themselves stay: the four slots ship with the build, so their existence is
   // knowable without the daemon even though what they run is not.
@@ -353,7 +355,7 @@ test("an unloaded catalog is said out loud, not drawn as four unconfigured slots
     false,
   );
   assert.equal(partial.find((card) => card.id === "lint")?.fact, "Global default");
-  assert.equal(partial.find((card) => card.id === "test")?.fact, COMMAND_FACT_UNKNOWN);
+  assert.equal(partial.find((card) => card.id === "test")?.fact, WORKFLOW_COMMAND_UNKNOWN);
 
   // And through the page, which defaults to unloaded for the same reason the projection
   // requires the flag: the optimistic default is exactly the bug.
@@ -366,6 +368,6 @@ test("an unloaded catalog is said out loud, not drawn as four unconfigured slots
     onOpenMissions: () => {},
     onOpenTaskSources: () => {},
   }));
-  assert.match(html, new RegExp(COMMAND_FACT_UNKNOWN));
+  assert.match(html, new RegExp(WORKFLOW_COMMAND_UNKNOWN));
   assert.doesNotMatch(html, /Not configured/);
 });

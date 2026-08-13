@@ -15,6 +15,7 @@ import {
   workflowCommandFact,
   workflowCommandStatusSentence,
   WORKFLOW_CHECK_SLOTS,
+  WORKFLOW_COMMAND_UNKNOWN,
 } from "../src/shared/workflow.ts";
 import type { WorkflowCommandView } from "../src/shared/workflow.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
@@ -227,28 +228,60 @@ test("the revision line tells a never-configured slot from an edited one", () =>
 // card, this editor's rail, and the workflow palette - and a fact that reads differently in
 // three places is three answers to one question.
 test("one catalog fact and one status sentence serve every surface", () => {
-  assert.equal(workflowCommandFact(null), "Not configured");
-  assert.equal(workflowCommandFact({ defaultCommand: [], overrides: [] }), "Not configured");
+  assert.equal(workflowCommandFact(null, true), "Not configured");
+  assert.equal(workflowCommandFact({ defaultCommand: [], overrides: [] }, true), "Not configured");
   assert.equal(
-    workflowCommandFact({ defaultCommand: ["a"], overrides: [{ repoRoot: "/a", command: ["a"] }] }),
+    workflowCommandFact({ defaultCommand: ["a"], overrides: [{ repoRoot: "/a", command: ["a"] }] }, true),
     "Global default · 1 override",
   );
   assert.equal(
     workflowCommandFact({
       defaultCommand: null,
       overrides: [{ repoRoot: "/a", command: ["a"] }, { repoRoot: "/b", command: ["b"] }],
-    }),
+    }, true),
     "2 overrides · no global default",
   );
   // The sentence states the SKIP rather than converting it into a validation error: a
   // portable workflow is meant to name a slot a machine may not configure.
-  assert.match(workflowCommandStatusSentence(null), /skips and passes with a note/);
+  assert.match(workflowCommandStatusSentence(null, true), /skips and passes with a note/);
   assert.match(
-    workflowCommandStatusSentence({ defaultCommand: null, overrides: [{ repoRoot: "/a", command: ["a"] }] }),
+    workflowCommandStatusSentence({ defaultCommand: null, overrides: [{ repoRoot: "/a", command: ["a"] }] }, true),
     /Everywhere else this Command skips and passes/,
   );
   assert.match(
-    workflowCommandStatusSentence({ defaultCommand: ["a"], overrides: [] }),
+    workflowCommandStatusSentence({ defaultCommand: ["a"], overrides: [] }, true),
     /runs wherever the workflow reaches it/,
   );
+});
+
+// Both helpers gate on the snapshot, and the gate is REQUIRED rather than defaulted. Every
+// string they return is a claim about what this machine has stored, and an absent view means
+// one of two very different things - nobody configured this slot, or the catalog has not
+// arrived. Three surfaces read these (the shelf card, this editor's rail, the workflow
+// palette), so the rule lives here rather than being re-derived at each of them.
+test("neither helper claims durable state without the catalog to back it", () => {
+  // The unloaded reading, and it is one wording rather than three.
+  assert.equal(workflowCommandFact(null, false), WORKFLOW_COMMAND_UNKNOWN);
+  assert.equal(workflowCommandFact(undefined, false), WORKFLOW_COMMAND_UNKNOWN);
+  assert.equal(commandRevisionLine(null), WORKFLOW_COMMAND_UNKNOWN);
+  assert.match(workflowCommandStatusSentence(null, false), new RegExp(WORKFLOW_COMMAND_UNKNOWN));
+
+  // The palette's sentence matters MORE than the fact, because it does not merely describe
+  // configuration - it promises what a run will do. "Skips and passes" read off a catalog
+  // that has not arrived tells an operator their working gate is inert.
+  assert.doesNotMatch(workflowCommandStatusSentence(null, false), /skips and passes/);
+  assert.doesNotMatch(workflowCommandStatusSentence(undefined, false), /Nothing is configured/);
+
+  // A view that HAS arrived is trusted whatever the flag says: the flag describes an absence,
+  // and a slot the stream delivered is not absent.
+  const configured = { defaultCommand: ["npm", "test"], overrides: [] };
+  assert.equal(workflowCommandFact(configured, false), "Global default");
+  assert.match(
+    workflowCommandStatusSentence(configured, false),
+    /runs wherever the workflow reaches it/,
+  );
+
+  // And with the catalog in hand, an absent view is the honest "nobody configured this".
+  assert.equal(workflowCommandFact(null, true), "Not configured");
+  assert.match(workflowCommandStatusSentence(null, true), /skips and passes with a note/);
 });

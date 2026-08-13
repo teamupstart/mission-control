@@ -6,6 +6,7 @@ import {
   formatCheckCommand,
   parseCheckCommand,
   workflowCommandFact,
+  WORKFLOW_COMMAND_UNKNOWN,
 } from "@shared/workflow.ts";
 import type {
   WorkflowCheckSlot,
@@ -152,7 +153,9 @@ export function commandRepoOptions(
 
 /** `Revision 3 · updated <date>`, or the honest answer for a slot nobody has saved yet. */
 export function commandRevisionLine(view: WorkflowCommandView | null): string {
-  if (!view) return "Waiting for the daemon";
+  // The same sentence every other Command surface uses for an absent view, through the same
+  // constant: "the daemon has not said" is one state and deserves one wording.
+  if (!view) return WORKFLOW_COMMAND_UNKNOWN;
   if (view.revision <= 1 && view.defaultCommand === null && view.overrides.length === 0) {
     return "Never configured on this machine";
   }
@@ -458,7 +461,7 @@ export function CommandLibrary({
                   </span>
                   <small>{WORKFLOW_COMMAND_PURPOSE[slot]}</small>
                   <small className="wf-command-list-meta">
-                    {hasSnapshot || view ? workflowCommandFact(view) : "Loading…"}
+                    {workflowCommandFact(view, hasSnapshot)}
                   </small>
                 </button>
               </Tooltip>

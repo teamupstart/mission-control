@@ -11,18 +11,17 @@ import { dialogMarker } from "../../src/server/foreman/pending.ts";
 /**
  * A decision you have already made must stop being asked of you.
  *
- * Foreman escalates by pinning a note that reads "needs your decision", carrying a suggested
- * answer and a control to send it. Answering the question yourself spends that note - the
- * child is unblocked and the suggestion answers nothing - and nothing used to say so. The
- * note stayed until someone clicked Dismiss, which is the click this regression removes.
+ * Foreman escalates with a recommendation about a question the canonical review form already
+ * owns. The recommendation is optional context on that form, never a second pinned answer
+ * path. Answering the question yourself spends the note: the child is unblocked and the
+ * suggestion answers nothing.
  *
  * Both channels a session asks through are driven here, because the note was stranded on each
  * for a different reason and only one of them looked stale:
  *
  *  - The DRIVER form, which is what an SDK session's own `AskUserQuestion` raises. Its marker
- *    is a `dialog:` digest, so `deliveryTarget` could not tell the ask had been answered and
- *    drew a live Approve & send. On this surface that button is not merely useless: it injects
- *    Foreman's prose into a session that already has its answer.
+ *    is a `dialog:` digest. Its recommendation is revealed from the form and highlights the
+ *    actual option it names, but only the form can send the answer.
  *  - The MCP review. Its marker names the review, so the dashboard did degrade it to "already
  *    resolved, nothing to send it to" - but the banner stayed, and its only remaining control
  *    was the Dismiss nobody should have had to press.
@@ -179,7 +178,7 @@ async function askAndWait(page: Page): Promise<{ card: Locator; form: Locator }>
   return { card, form };
 }
 
-/** The Foreman panel on the expanded card. */
+/** The separate Foreman panel that must not compete with a matching canonical ask. */
 const notePanel = (card: Locator): Locator => card.locator(".foreman-note");
 
 /**
@@ -211,17 +210,35 @@ test("answering the agent's own question retires the note pinned on it", async (
     disposition: "escalated",
   });
 
-  // Present before it is asserted absent, which is the standing rule in e2e/README.md: a
-  // spec that only checked the note was gone would pass with the note never written.
+  // The normal review owns the answer. Foreman rides on it as a disclosure whose prose is
+  // still closed, and its old separate card, recommendation text and send action are gone.
   const note = notePanel(card);
-  await expect(note).toContainText("needs your decision");
-  await expect(note).toContainText("Suggested answer");
-  await expect(note).toContainText(SUGGESTION);
+  await expect(note).toHaveCount(0);
+  const recommendation = form.getByRole("button", { name: "View Foreman recommendation" });
+  await expect(recommendation).toBeVisible();
+  await expect(form).not.toContainText(SUGGESTION);
+  await expect(card.getByRole("button", { name: "Approve & send" })).toHaveCount(0);
 
-  // The reported state, photographed: the banner and the question it is about, on one card.
-  // A viewport tall enough to hold both, so the frame is not a crop that cuts one off.
+  // The pick is legible BEFORE anything is opened - that is the half of the chosen design
+  // the sidecar cannot carry. What stays closed is the reasoning, not which option was named,
+  // and marking an option must never select it.
+  const biome = form.getByRole("radio", { name: /biome/ });
+  await expect(biome).toContainText("Foreman's pick");
+  await expect(biome).toHaveAttribute("aria-checked", "false");
+  await expect(form.getByRole("radio", { name: /eslint/ })).not.toContainText("Foreman's pick");
+
+  // Opening adds the other half: the full reasoning, bounded in a sidecar, still with no
+  // second send path. The mark survives the disclosure it is independent of.
+  await recommendation.click();
+  const sidecar = dashboard.getByRole("dialog", { name: "Foreman recommendation" });
+  await expect(sidecar).toContainText(SUGGESTION);
+  await expect(sidecar).toContainText("Both are defensible");
+  await expect(biome).toContainText("Foreman's pick");
+  await expect(biome).toHaveAttribute("aria-checked", "false");
+
+  // The reported state, photographed: one review, its optional context, and the pick mark.
   await dashboard.setViewportSize({ width: 1280, height: 1500 });
-  await shoot(dashboard, "note-pinned-beside-the-open-question", card);
+  await shoot(dashboard, "recommendation-open-on-the-question", card);
 
   // Answer the agent, and touch nothing on the Foreman panel. Deliberately NOT what Foreman
   // recommended: the note is retired because the question is closed, not because the operator
@@ -239,20 +256,17 @@ test("answering the agent's own question retires the note pinned on it", async (
   await expect(card.getByRole("button", { name: "Dismiss" })).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Approve & send" })).toHaveCount(0);
 
-  // The purpose survives: this retires a spent DECISION, not the card's account of what the
-  // session is for.
-  await expect(note).toContainText("Which linter this repo should adopt.");
+  await expect(sidecar).toBeHidden();
+  await expect(recommendation).toHaveCount(0);
 
   // The same card, same run, after one answer and no Dismiss. This is the frame the bug report
   // was missing.
   await shoot(dashboard, "note-retired-after-your-answer", card);
 });
 
-test("the drafted reply's Approve button goes with it", async ({ dashboard, daemon }) => {
-  // The dangerous half, and the reason this is not merely tidiness. A `pending` draft draws a
-  // live Approve & send, and on the driver surface approving delivers by INJECTING the text
-  // into the session - so a stale draft offered to type an answer to a question that was
-  // already answered, into an agent that was already running again.
+test("a drafted reply also yields to the canonical form", async ({ dashboard, daemon }) => {
+  // Semi-auto used to draw a live Approve & send beside the driver's own form. It now uses
+  // the same context-only disclosure as an escalation, so the form remains the only sender.
   await dispatch(dashboard, daemon);
   const { card, form } = await askAndWait(dashboard);
 
@@ -262,17 +276,16 @@ test("the drafted reply's Approve button goes with it", async ({ dashboard, daem
     disposition: "pending",
   });
 
-  const note = notePanel(card);
-  await expect(note).toContainText("drafted a reply");
-  const approve = note.getByRole("button", { name: "Approve & send" });
-  await expect(approve).toBeVisible();
+  await expect(notePanel(card)).toHaveCount(0);
+  await expect(form.getByRole("button", { name: "View Foreman recommendation" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Approve & send" })).toHaveCount(0);
 
   await form.getByRole("radio", { name: /eslint/ }).click();
   await form.getByRole("checkbox", { name: /tests/ }).click();
   await form.getByRole("button", { name: "Submit answers" }).click();
   await expect(form).toBeHidden({ timeout: 15_000 });
 
-  await expect(approve, "nothing is left to send, so nothing offers to send it").toHaveCount(0);
+  await expect(form.getByRole("button", { name: "View Foreman recommendation" })).toHaveCount(0);
   await goneFromCard(card, "Proposed reply");
   await goneFromCard(card, SUGGESTION);
 });
@@ -312,19 +325,36 @@ test("answering the review channel's question retires it too", async ({ dashboar
 
   const card = dashboard.locator("article.card").first();
   await card.getByRole("button", { name: "Expand conversation" }).click();
-  const note = notePanel(card);
-  await expect(note).toContainText("needs your decision");
-  await expect(note).toContainText(SUGGESTION);
-  // While the review is live the note is not stale, so the dashboard makes no such claim.
-  await expect(note).not.toContainText(STALE_HINT);
-  await dashboard.setViewportSize({ width: 1280, height: 1500 });
-  await shoot(dashboard, "review-note-pinned", card);
+  await expect(notePanel(card)).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Approve & send" })).toHaveCount(0);
 
   await card.getByRole("button", { name: "to review" }).click();
   const form = dashboard.locator(".review-modal");
+  const recommendation = form.getByRole("button", { name: "View Foreman recommendation" });
+  await expect(recommendation).toBeVisible();
+  await expect(form).not.toContainText(SUGGESTION);
+
+  // Same split on the durable review as on the driver form: the pick reads at a glance while
+  // the prose behind it stays closed until asked for.
+  const biomeOption = form.locator(".decision-option").filter({ hasText: "biome" });
+  await expect(biomeOption).toContainText("Foreman's pick");
+
+  await recommendation.click();
+  const sidecar = dashboard.getByRole("dialog", { name: "Foreman recommendation" });
+  await expect(sidecar).toContainText(SUGGESTION);
+  await expect(biomeOption).toContainText("Foreman's pick");
+  // Submit sits on the side the sidecar occupies, so "is it reachable" is a question only a
+  // frame of the WHOLE viewport can answer - a crop of the form would look identical whether
+  // the panel reserved its width or painted over it.
+  await expect(form.getByRole("button", { name: "Submit" })).toBeVisible();
+  await dashboard.setViewportSize({ width: 1280, height: 1500 });
+  await shoot(dashboard, "review-recommendation-open", form);
+  await shoot(dashboard, "review-recommendation-layout");
+
   await form.getByRole("radio", { name: /eslint/ }).check();
   await form.getByRole("button", { name: "Submit" }).click();
   await expect(form).toBeHidden();
+  await expect(sidecar).toBeHidden();
 
   // What used to be here: the banner still pinned, now explaining that the question it is
   // about has already been resolved, with a Dismiss button as its only remaining control.

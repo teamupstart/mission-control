@@ -1,49 +1,190 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
-// `claude-cli.ts` reads the claude binary and the full-review budget from the env at module
-// load, so both are pinned BEFORE importing it. The fake bin never exits, which exercises the
-// real spawn + timeout + process-group-kill path rather than a stubbed promise.
-const dir = mkdtempSync(join(tmpdir(), "foreman-review-"));
-const fakeBin = join(dir, "fake-claude.sh");
-writeFileSync(fakeBin, "#!/bin/sh\nsleep 30\n");
-chmodSync(fakeBin, 0o755);
-process.env.FOREMAN_CLAUDE_BIN = fakeBin;
+import { dialogMarker, sha1Hex } from "../src/shared/session.ts";
+import type { PaneDialog, ReviewItem, SessionNoteSummary } from "../src/shared/types.ts";
+import { PaneDialogPrompt } from "../src/web/components/PaneDialogPrompt.tsx";
+import { ReviewCard } from "../src/web/components/ReviewModal.tsx";
+import {
+  foremanNoteCompanionsOpenAsk,
+  foremanNoteForDialog,
+  foremanNoteForReview,
+  recommendedChoiceKeys,
+} from "../src/web/lib/foreman-review.ts";
 
-/**
- * Which budget fired is only observable as elapsed time, so the two are pinned an order of
- * magnitude apart with the assertion boundary between them: a run landing under the boundary
- * can only have used the caller's budget, one landing over it can only have used the default.
- * `node --test` runs test files in parallel, so a bound set just past the shorter budget would
- * report a loaded machine as a regression instead of measuring the code. The default-budget
- * test costs its full DEFAULT_BUDGET_MS - the honest price of exercising the real spawn.
- */
-const DEFAULT_BUDGET_MS = 4000;
-const CALLER_BUDGET_MS = 200;
-const BOUNDARY_MS = 2000;
-process.env.FOREMAN_REVIEW_TIMEOUT_MS = String(DEFAULT_BUDGET_MS);
+const DIALOG: PaneDialog = {
+  source: "driver",
+  requestId: "request-1",
+  kind: "question",
+  prompt: "Which database?",
+  highlighted: 0,
+  options: [
+    { number: 1, label: "SQLite" },
+    { number: 2, label: "Postgres" },
+  ],
+};
 
-const { runClaudeText } = await import("../src/server/claude-cli.ts");
+function note(marker: string): SessionNoteSummary {
+  return {
+    purpose: "Choose storage.",
+    brief: "SQLite keeps this dependency-free.",
+    recommendation: 'Choose "SQLite" for the smallest operational footprint.',
+    disposition: "escalated",
+    lastAction: "escalated for your decision",
+    handledMarker: marker,
+    updatedAt: 1,
+  };
+}
 
-test("runClaudeText honours a caller's own timeoutMs", async () => {
-  // The Tier 1 router passes a budget sized for Haiku emitting one small object; it must not
-  // inherit the full reviewer's, which is sized for Opus reading a 60-turn window (head plus
-  // tail - see `client.transcript`) with the whole POLICY.
-  // In `on` mode the router and the full review run serially, so a shared cap would let a
-  // degraded API double the serial queue's worst case instead of failing fast into a route-up.
-  const started = Date.now();
-  await assert.rejects(runClaudeText("hi", { timeoutMs: CALLER_BUDGET_MS }), /timed out/);
-  const elapsed = Date.now() - started;
-  assert.ok(elapsed < BOUNDARY_MS, `used the caller's budget, not the full review's (took ${elapsed}ms)`);
+test("the shared dialog marker preserves the persisted server SHA-1 shape", () => {
+  // This exact value was produced by Node createHash before the marker moved to shared.
+  // Pinning it prevents a browser-safe implementation that agrees only with itself from
+  // stranding notes already written by an older daemon.
+  assert.equal(dialogMarker(DIALOG), "dialog:c912d46a1283");
 });
 
-test("runClaudeText defaults to the full review's budget when no timeout is given", async () => {
-  // Tier 2 is deliberately unchanged: an absent `timeoutMs` still means REVIEW_TIMEOUT_MS.
-  const started = Date.now();
-  await assert.rejects(runClaudeText("hi"), /timed out/);
-  const elapsed = Date.now() - started;
-  assert.ok(elapsed >= BOUNDARY_MS, `waited the full review's budget, not a caller's (took ${elapsed}ms)`);
+test("the browser-safe SHA-1 agrees with node:crypto on the shapes that break padding", () => {
+  // One pinned digest exercises exactly one input length. This marker is persisted, so a
+  // padding or encoding bug would not fail loudly - it would strand every note whose dialog
+  // happens to land on the wrong length. The block boundary (55/56/57 and 63/64/65 bytes)
+  // is where a hand-rolled implementation goes wrong, and multi-byte input is where a
+  // length counted in characters rather than bytes does.
+  const cases = [
+    "",
+    "a",
+    "abc",
+    ...[54, 55, 56, 57, 63, 64, 65, 119, 120, 128].map((n) => "x".repeat(n)),
+    "Which database? SQLite/Postgres",
+    "café ☕ naïve — 日本語",
+    "🙂".repeat(20),
+  ];
+  for (const input of cases) {
+    assert.equal(
+      sha1Hex(input),
+      createHash("sha1").update(input).digest("hex"),
+      `shared SHA-1 disagreed with node:crypto for a ${input.length}-character input`,
+    );
+  }
 });
+
+test("only the note for this exact dialog becomes optional review context", () => {
+  const matching = note(dialogMarker(DIALOG));
+  assert.equal(foremanNoteForDialog(DIALOG, matching), matching);
+  assert.equal(foremanNoteForDialog(DIALOG, note("dialog:some-other-ask")), null);
+  assert.equal(
+    foremanNoteForDialog(DIALOG, { ...matching, disposition: "answered" }),
+    null,
+    "finished notes belong to history",
+  );
+});
+
+test("a live review marker integrates while an unrelated escalation stays separate", () => {
+  const review = { id: "review-1" };
+  const matching = note("review:review-1");
+  assert.equal(foremanNoteForReview(review, matching), matching);
+  assert.equal(foremanNoteForReview(review, note("review:review-2")), null);
+  assert.equal(
+    foremanNoteCompanionsOpenAsk({
+      dialog: null,
+      note: matching,
+      pendingReviewIds: new Set(["review-1"]),
+    }),
+    true,
+  );
+  assert.equal(
+    foremanNoteCompanionsOpenAsk({
+      dialog: DIALOG,
+      note: note("state:awaiting_input:41"),
+      pendingReviewIds: new Set(),
+    }),
+    false,
+  );
+});
+
+test("Foreman's exact option label becomes a pick without preselecting it", () => {
+  const choices = [
+    { key: "one", label: "State fix + orphan backstop (Recommended)", number: 1 },
+    { key: "two", label: "State fix only", number: 2 },
+    { key: "three", label: "No, leave it alone", number: 3 },
+  ];
+  assert.deepEqual(
+    [...recommendedChoiceKeys('Choose "State fix + orphan backstop" for the durable fix.', choices)],
+    ["one"],
+  );
+  assert.deepEqual([...recommendedChoiceKeys("Choose option 2.", choices)], ["two"]);
+  assert.deepEqual(
+    [...recommendedChoiceKeys("Use the safer approach.", choices)],
+    [],
+    "semantic guesses never paint a false pick",
+  );
+});
+
+test("the pane form shows the pick at a glance but keeps the reasoning closed", () => {
+  const html = renderToStaticMarkup(
+    createElement(PaneDialogPrompt, {
+      sessionId: "s1",
+      dialog: DIALOG,
+      note: note(dialogMarker(DIALOG)),
+    }),
+  );
+  assert.match(html, /View Foreman recommendation/);
+  // The chosen design splits these two. Which option Foreman named is cheap enough to read
+  // without asking, so it is marked on the option itself.
+  assert.match(html, /Foreman&#x27;s pick/);
+  // The prose is what crowded the console out, so it stays behind the trigger, and there is
+  // still no second path that could send an answer.
+  assert.doesNotMatch(html, /Choose &quot;SQLite&quot; for the smallest operational footprint/);
+  assert.doesNotMatch(html, /Approve &amp; send/);
+});
+
+test("a recommendation naming no offered option marks nothing", () => {
+  const html = renderToStaticMarkup(
+    createElement(PaneDialogPrompt, {
+      sessionId: "s1",
+      dialog: DIALOG,
+      note: { ...note(dialogMarker(DIALOG)), recommendation: "Ask the operator to decide." },
+    }),
+  );
+  // The disclosure is still offered, because the brief is worth reading. What must not happen
+  // is a mark landing on an arbitrary option just because a note exists.
+  assert.match(html, /View Foreman recommendation/);
+  assert.doesNotMatch(html, /Foreman&#x27;s pick/);
+});
+
+test("the durable review form gets the same split disclosure", () => {
+  const review: ReviewItem = {
+    id: "review-1",
+    sessionId: "s1",
+    kind: "input",
+    title: "Which database?",
+    body: "Which database?",
+    status: "pending",
+    createdAt: 1,
+    resolvedAt: null,
+    resolvedBy: null,
+    response: null,
+    selections: null,
+    decisions: [
+      {
+        id: "database",
+        question: "Which database?",
+        options: [
+          { id: "sqlite", label: "SQLite" },
+          { id: "postgres", label: "Postgres" },
+        ],
+      },
+    ],
+  };
+  const html = renderToStaticMarkup(
+    createElement(ReviewCard, { review, note: note("review:review-1") }),
+  );
+  assert.match(html, /View Foreman recommendation/);
+  assert.match(html, /Foreman&#x27;s pick/);
+  // Marked, but emphatically not answered: a checked radio here would be Foreman deciding.
+  assert.doesNotMatch(html, /checked/);
+  assert.doesNotMatch(html, /Approve &amp; send/);
+});
+

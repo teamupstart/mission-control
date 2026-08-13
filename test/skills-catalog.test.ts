@@ -359,7 +359,7 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   assert.match(text, /use bullets wherever possible/i);
   assert.match(text, /Remove filler/i);
   assert.match(text, /plan document exists.*link directly/is);
-  assert.match(text, /technical documentation.*link directly/is);
+  assert.match(text, /link directly to any\s+technical documentation/i);
   assert.match(text, /Do not repeat design decisions or implementation detail/i);
   assert.match(text, /Do not list tests added or modified/i);
   assert.match(text, /Always list the failure modes and edge cases/i);

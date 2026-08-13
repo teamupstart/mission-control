@@ -1392,6 +1392,36 @@ function DispatchModal({
   function guidedRepoEscaped(): void {
     if (guidedStep?.id === "repo") guidedLeave();
   }
+
+  /**
+   * Repo Escape still has its first rung after the combobox has lost focus.
+   *
+   * The input owns Escape while its dropdown is open and reports the swallowed press through
+   * `guidedRepoEscaped` above. Blur closes that dropdown without a key, though, and focus can
+   * move to a live header or footer control while the Repo question remains active. In that
+   * state `Overlay` would see the next Escape first and close the whole modal.
+   *
+   * Listen in capture only for the case the combobox cannot own: an Escape whose target is
+   * not the repo input while Repo is active. `stopImmediatePropagation` is intentional because
+   * Overlay's dismiss listener is another window listener; stopping ordinary propagation at
+   * the same node would not stop that sibling listener. An Escape in the input falls through
+   * untouched, preserving the combobox's close-and-report path instead of recreating the
+   * one-press-two-rungs bug described above.
+   */
+  useEffect(() => {
+    if (pass.active !== "repo") return;
+    function onBlurredRepoEscape(event: KeyboardEvent): void {
+      if (event.key !== "Escape" || event.target === repoInputRef.current) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setPass((current) =>
+        current.active === "repo" ? endGuidedPass(current) : current,
+      );
+      setHighlight(null);
+    }
+    window.addEventListener("keydown", onBlurredRepoEscape, true);
+    return () => window.removeEventListener("keydown", onBlurredRepoEscape, true);
+  }, [pass.active]);
   guidedKeyRef.current = handleGuidedKey;
 
   /**

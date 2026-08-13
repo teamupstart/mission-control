@@ -315,6 +315,30 @@ test("Escape leaves the pass for the ordinary form, and a second closes the moda
   await expect(dialog).toBeHidden();
 });
 
+test("Escape still leaves the pass after the Repo field has blurred", async ({ dashboard }) => {
+  const dialog = await openGuided(dashboard);
+  await dashboard.keyboard.type("second");
+  await expect(repoList(dashboard)).toBeVisible();
+
+  // A live modal control can take focus without answering Repo. Blur closes the combobox's
+  // portalled list, so the list has no Escape left to swallow and report to the pass.
+  await dialog.getByRole("button", { name: "Cancel" }).focus();
+  await expect(repoField(dialog)).not.toBeFocused();
+  await expect(repoList(dashboard)).toBeHidden();
+  await expect(repoAsk(dialog)).toBeVisible();
+
+  await dashboard.keyboard.press("Escape");
+
+  // The first rung belongs to the still-active Repo question even without an open list.
+  await expect(rail(dialog)).toBeHidden();
+  await expect(dialog).toBeVisible();
+  await expect(repoField(dialog)).toHaveValue("second");
+  await expect(taskBox(dialog)).toBeFocused();
+
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});
+
 test("Backspace from Kind returns to Repo with the answer intact", async ({
   dashboard,
   daemon,

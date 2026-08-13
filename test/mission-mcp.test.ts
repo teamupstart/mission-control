@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { mcpFixtureSpawns, writeMcpFixture } from "./helpers/mcp-fixture.ts";
 
 // What is at stake: a dispatched session told a tool exists that it cannot call.
 //
@@ -38,6 +39,7 @@ const {
   missionMcpDescriptor,
   missionMcpPaths,
   missionMcpToolName,
+  verifyMissionMcpTools,
 } = await import("../src/server/mission-mcp.ts");
 const { mcpServerPath } = await import("../src/server/config.ts");
 const { askChannelArgs, ASK_TOOL } = await import("../src/server/ask-channel.ts");
@@ -123,8 +125,12 @@ test("every tool the server registers is reachable by a launch that requires it"
   // a dispatched session can call it without stopping on a permission prompt (auto mode does
   // NOT blanket-approve MCP tools). Neither `--allowed-tools` nor this list can put a tool
   // into a session's `tools/list` - only the running bundle does that, which is why the
-  // observed miss was a stale `dist/mcp/server.mjs` and not a drift this suite could see -
-  // but once the tool IS published, this is what proves a caller can actually reach it.
+  // observed miss was a stale `dist/mcp/server.mjs` rather than a drift between the two
+  // SOURCES this test reads. Once the tool IS published, this proves a caller can reach it.
+  //
+  // That remaining gap - "is it published at all" - is no longer unwatched, and this comment
+  // used to say it was. It is answered by a real handshake now: see the fixture-bundle cases
+  // below, and `dispatcher-runtime.test.ts` for the same refusal driven through a launch.
   //
   // Anchored on the server's OWN registrations, so a tool that exists yet no launch can
   // pre-approve fails here rather than passing a check written against a list that forgot it.
@@ -149,6 +155,106 @@ test("every tool the server registers is reachable by a launch that requires it"
         `mcp__${MISSION_MCP_SERVER_NAME}__${tool} - it would stop on a permission prompt`,
     );
   }
+});
+
+// ---- what the bundle actually PUBLISHES ----------------------------------------------
+//
+// The two tests above scrape `registerTool(` out of SOURCE, and say so: they pin what this
+// build BELIEVES, which is why neither could see the incident they document. The daemon runs
+// from source under `tsx watch` and hands every dispatched agent `dist/mcp/server.mjs`, which
+// only `npm run build` refreshes and which git ignores - so the bytes an agent runs can be
+// arbitrarily far behind the source these tests read, and were: a bundle built six days before
+// `submit_scout_artifacts` landed served its other seven tools perfectly while a scout that
+// MUST call it to finish was told to call it.
+//
+// So these run a real MCP handshake - `initialize`, `notifications/initialized`, `tools/list` -
+// against a real child process, and assert on the names that come back. Against fixture servers
+// rather than `dist/`, for the reason the fake bundle at the top of this file exists: everything
+// in `test/` runs against `src/` and must pass on a fresh checkout, so a case that needed
+// `npm run build` would report a missing build as a broken guard.
+
+/** A real stdio MCP server publishing exactly `tools`. See `helpers/mcp-fixture.ts`. */
+function fixtureServer(name: string, tools: readonly string[]): string {
+  return writeMcpFixture(join(home, `${name}.mjs`), tools);
+}
+
+/** Point the resolver at a fixture for one test, then put it back. */
+async function withBundle<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const prior = process.env.HARNESS_MCP_SERVER;
+  process.env.HARNESS_MCP_SERVER = path;
+  try {
+    return await fn();
+  } finally {
+    if (prior === undefined) delete process.env.HARNESS_MCP_SERVER;
+    else process.env.HARNESS_MCP_SERVER = prior;
+  }
+}
+
+test("a bundle missing a declared tool is REFUSED, naming the tool and the rebuild", async () => {
+  // The observed bundle, reproduced exactly: every tool but the scout's, which is the one
+  // shape that reads as a healthy install to every existence check we had. The launch this
+  // refuses is the launch that would otherwise deadlock - a scout is told to call
+  // `submit_scout_artifacts` and its task cannot reach `done` until it does.
+  const stale = fixtureServer(
+    "stale",
+    MISSION_MCP_TOOLS.filter((t) => t !== "submit_scout_artifacts"),
+  );
+  await withBundle(stale, async () => {
+    const check = await verifyMissionMcpTools(["submit_scout_artifacts"]);
+    assert.equal(check.ok, false, "a tool the server does not publish must not pass");
+    assert.match(check.reason!, /submit_scout_artifacts/, "name the tool that is missing");
+    assert.match(check.reason!, /npm run build/, "name the fix, not just the fault");
+
+    // Everything the bundle DOES publish still launches. A refusal that widened to the
+    // whole toolbox would ground every ensemble over one absent scout tool.
+    assert.deepEqual(await verifyMissionMcpTools(["submit_ensemble_result", "report_status"]), {
+      ok: true,
+    });
+  });
+});
+
+test("a complete bundle is accepted, handshaked ONCE, and re-read after a rebuild", async () => {
+  const bundle = fixtureServer("rebuilt", MISSION_MCP_TOOLS.filter((t) => t !== "report_status"));
+  await withBundle(bundle, async () => {
+    assert.equal((await verifyMissionMcpTools(["report_status"])).ok, false);
+
+    // One handshake, not one per dispatch: ten more asks spawn nothing.
+    for (let i = 0; i < 10; i++) await verifyMissionMcpTools(["report_status"]);
+    assert.equal(mcpFixtureSpawns(bundle), 1, "the answer is cached per build, not re-probed per launch");
+
+    // …and the cache is keyed by the bundle's identity on disk rather than held for the
+    // daemon's lifetime, which is the whole reason it is keyed at all. `npm run build` does
+    // not touch `src/`, so it does NOT restart a `tsx watch` daemon - a lifetime-cached
+    // refusal would outlive the rebuild that fixed it and go on refusing dispatches to an
+    // operator who had just done exactly the right thing.
+    fixtureServer("rebuilt", MISSION_MCP_TOOLS);
+    assert.deepEqual(await verifyMissionMcpTools(MISSION_MCP_TOOLS), { ok: true });
+    assert.equal(mcpFixtureSpawns(bundle), 2, "a rebuilt bundle is re-read");
+  });
+});
+
+test("a bundle that cannot complete a handshake is refused, not assumed good", async () => {
+  // Present on disk, loads, and dies - which is what the `jsonc-parser` UMD defect did to the
+  // daemon bundle, and what an `ELECTRON_RUN_AS_NODE`-less Electron runtime does to this one.
+  // Every `existsSync` guard passes it. An MCP client gets nothing out of it, so the tool it
+  // was supposed to publish is exactly as absent as if the file had never been built.
+  const broken = join(home, "broken.mjs");
+  writeFileSync(broken, `throw new Error("Dynamic require of \\"./impl/format\\" is not supported");\n`);
+  await withBundle(broken, async () => {
+    const check = await verifyMissionMcpTools(["submit_scout_artifacts"]);
+    assert.equal(check.ok, false);
+    assert.match(check.reason!, /could not be interrogated/);
+    assert.match(check.reason!, /npm run build/);
+  });
+});
+
+test("a dispatch declaring no Mission tools never spawns the bundle at all", async () => {
+  // The status quo this must not touch. A ship task's launch declares nothing, so there is
+  // nothing to verify - and a guard that handshook anyway would put a subprocess, and a new
+  // way to fail, on the common path. Pointed at a bundle that would refuse if asked.
+  await withBundle(join(home, "never-built.mjs"), async () => {
+    assert.deepEqual(await verifyMissionMcpTools([]), { ok: true });
+  });
 });
 
 test("a tool name is namespaced by the server name it is registered under", () => {

@@ -1330,13 +1330,24 @@ would be reported as such rather than silently skipped.)
 > registration records the *path*, and the rebuild replaces the file it points at (re-add only
 > when the server *name* changes). The dev stack is the same trap in disguise - `npm run dev` /
 > `make start` auto-reload the daemon from source, but the MCP bundle is not on that watch, so
-> an MCP tool change still needs a manual rebuild. The tell is a session whose `mission-control`
-> tool list is shorter than the set below (`create_task` missing, say): the bundle it launched
-> predates the tool.
+> an MCP tool change still needs a manual rebuild. `dist/` is gitignored, so a `git pull` that
+> brings you a new tool never brings you a bundle that serves it.
+>
+> **You are told, rather than left to notice.** Three things watch for it now, because the
+> failure it produces is silent - a scout told to call `submit_scout_artifacts` cannot finish
+> its task without it, and an absent tool ends the work with no error anywhere:
+>
+> - The daemon completes a real MCP handshake against the bundle at startup and logs
+>   `Mission Control's MCP server at … does not publish …` when it is behind the source.
+> - A dispatch or assignment that **requires** a tool - every scout, every ensemble member -
+>   is refused before the agent spawns, naming the tool and `npm run build`.
+> - `npm run smoke` fails if the built bundle's published tools do not match
+>   `MISSION_MCP_TOOLS` exactly, in either direction.
 
-This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It
-exposes six review-channel tools (an ensemble member session also gets
-[`submit_ensemble_result`](ensembles.md#multi-agent-ensembles):
+This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It exposes
+six review-channel tools, plus two submission tools a session is given only when its task needs
+one - [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an ensemble member and
+[`submit_scout_artifacts`](scout-archives.md) for a scout:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -1422,9 +1433,20 @@ carries the redirect that tells the agent where to go instead, inline.
 If **anything** prevents the full set - the MCP bundle is missing (`npm run build` never
 ran), or the state directory cannot be written - then **none** of them are passed and the
 session keeps the built-in menu. An agent with nowhere to ask is worse than one with a menu
-we can read, so every failure disarms the whole channel rather than half of it, and none of
-them fails the dispatch: setting this up is best-effort, and the daemon logs which condition
-it hit.
+we can read, so every failure disarms the whole channel rather than half of it, and setting
+up the *ask channel* never fails the dispatch: it is best-effort, and the daemon logs which
+condition it hit.
+
+A launch that **requires** a Mission tool is the exception, and it is a different question.
+Asking is best-effort because a session that keeps the built-in menu is merely the status quo;
+submitting is not, because a scout with no `submit_scout_artifacts` and an ensemble member with
+no `submit_ensemble_result` have no way to finish their task at all. So those launches are
+checked twice before the agent spawns - that the registration reached the argv, and that the
+bundle it names actually **publishes** the tools, established by a real MCP handshake against
+that exact file. Either check failing fails the dispatch, names the tool and points at
+`npm run build`, and tears the worktree down for a clean retry. See
+[Adding or changing a tool means rebuilding the bundle](#review-channel-mcp) for why a bundle
+can be present and still be behind the source.
 
 The redirect is not optional. Measured on live sessions, `--disallowed-tools` on its own
 does not send the agent anywhere - it asks its question in prose and ends the turn. It rides
@@ -1441,7 +1463,8 @@ still reads off the pane and answers. Codex is untouched too - these are Claude'
 
 *Which* MCP server those flags point at is decided in one place, `src/server/mission-mcp.ts`:
 the built bundle's path, the runtime that can execute it (a real `node`, or the Electron
-binary in node mode when there isn't one), and the name it is registered under. Claude reads
+binary in node mode when there isn't one), the name it is registered under, and - for a launch
+that requires tools - whether that bundle really serves them. Claude reads
 that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same answer as
 `-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and
 leaves whatever **Install integrations** registered machine-wide alone.

@@ -1,5 +1,14 @@
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import type { Task } from "@shared/types.ts";
 import { STATE_DIR, mcpServerPath } from "./config.ts";
@@ -149,6 +158,373 @@ export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | nul
     args: [server],
     env: runtime.env,
   };
+}
+
+// ---- does the resolved bundle actually PUBLISH what a launch declares? ----------------
+//
+// Every other guard in this file, in `dispatcher.ts` and in `tasks.ts` asks whether the
+// bundle EXISTS. None of them asks what is inside it, and that gap is a live failure rather
+// than a theoretical one:
+//
+//   The daemon runs from SOURCE under `tsx watch`, but hands every dispatched agent a BUILD
+//   artifact - `mcpServerPath()` resolves `dist/mcp/server.mjs`. `build:mcp` runs only under
+//   `npm run build` and `dist/` is gitignored, so the bundle goes stale BY DESIGN and a
+//   `git pull` never refreshes it. Observed on an operator's machine: a `dist/mcp/server.mjs`
+//   built 2026-08-06 containing zero occurrences of `submit_scout_artifacts`, which landed in
+//   source 2026-08-12. The other seven tools were present. Live agents were running those
+//   bytes.
+//
+// The consequence is the worst shape a bug can take here. A scout's prompt tells it to call
+// `submit_scout_artifacts` and its task cannot reach `done` until it does, but the tool is
+// simply absent from the toolbox it was handed - so the agent works to a finished report and
+// then has nowhere to put it. No error, no warning, no red test. `MISSION_MCP_TOOLS` cannot
+// see it either: that list is a CLIENT-side pre-approval, never read by the server, which is
+// exactly the hazard `scouts/submission-tool.ts` already names - "a launch that pre-approves
+// a tool the server never registered pre-approves nothing at all". The two drift tests in
+// `mission-mcp.test.ts` regex-scrape `registerTool(` out of SOURCE, so they agree with the
+// source and learn nothing about the bytes on disk.
+//
+// So this asks the only question that settles it: it runs a real MCP `initialize` +
+// `tools/list` against the bundle we are about to register and reads back the names the
+// RUNNING SERVER publishes. That is the same answer the agent's own MCP client will get,
+// obtained the same way, before the agent spawns instead of an hour into its task.
+//
+// ---- why not resolve the MCP server from SOURCE under `tsx watch`? -------------------
+//
+// It was considered, because it would delete this entire failure class in dev, and REJECTED.
+// Three reasons, in order of weight:
+//
+// 1. It does not fix the failure class, only its dev instance. A packaged install can carry a
+//    stale or partial `dist/` too - an interrupted `npm run build`, an `electron-builder` copy
+//    that raced, a `dist/` restored from an older archive - and source resolution has nothing
+//    to say about any of them. A guard that reads the running bundle's own `tools/list` covers
+//    every cause at once, including the ones nobody has thought of yet.
+// 2. It would make dev the ONE configuration that never runs the artifact we ship.
+//    `scripts/smoke-bundles.mjs` exists because a bundle can fail in ways its source cannot -
+//    the `jsonc-parser` UMD/dynamic-require defect that crash-looped a packaged app 18,052
+//    times while every gate stayed green. Point the dev daemon at `src/mcp/server.ts` and the
+//    first person to observe any future bundling defect in this server is an operator running
+//    a packaged build.
+// 3. The agent, not the daemon, spawns this server, once per session, and keeps it for the
+//    life of that session. A registration pointing at TypeScript makes a live agent's toolbox
+//    depend on a source file being loadable at whatever instant its client happens to start -
+//    so a half-saved edit takes the tools away from a session mid-task, for a reason no
+//    operator would ever connect to the file they just saved. A built bundle is immutable
+//    between builds, which is precisely the property a launch-scoped registration wants.
+//
+// The residue - that an operator who has not rebuilt cannot dispatch a scout - is intended.
+// It is a loud, immediate, actionable refusal naming `npm run build`, in place of a task that
+// silently cannot finish.
+
+/** Long enough for a cold ESM load of a ~740KB bundle on a slow machine, bounded so a bundle that hangs cannot hang a dispatch. */
+const HANDSHAKE_TIMEOUT_MS = 15_000;
+
+/** A runaway `nextCursor` loop is a broken server, not a big toolbox. */
+const MAX_TOOL_PAGES = 20;
+
+/**
+ * The protocol version this probe speaks.
+ *
+ * A server supporting a different revision answers with ITS version rather than an error (the
+ * spec requires that), and we do not care what it picks - `tools/list` is in every revision.
+ */
+const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+/** What a real `tools/list` said, or why we could not get one. */
+type PublishedTools =
+  | { ok: true; tools: ReadonlySet<string> }
+  | { ok: false; reason: string };
+
+/**
+ * The handshake result for ONE bundle, keyed by that bundle's identity on disk.
+ *
+ * Cached beside `cachedRuntime` and for its reason: this shells out, and a dispatch must not
+ * pay for it. Keyed by path + mtime + size rather than simply held for the daemon's lifetime,
+ * which is a deliberate step past "once per daemon lifetime" and costs nothing: the operator's
+ * fix for a refusal is `npm run build`, which does NOT restart a `tsx watch` daemon (it never
+ * touches `src/`), so a lifetime-cached refusal would outlive the rebuild that fixed it and
+ * report the stale answer to someone who had just done the right thing. An unchanged bundle
+ * still handshakes exactly once.
+ */
+let cachedPublished: { key: string; answer: Promise<PublishedTools> } | undefined;
+
+/** What makes one build of the bundle distinguishable from the next. */
+function bundleIdentity(path: string): string {
+  try {
+    const s = statSync(path);
+    return `${path}:${s.mtimeMs}:${s.size}`;
+  } catch {
+    // Unreadable is its own identity - the handshake below will fail and say why.
+    return `${path}:missing`;
+  }
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Speak MCP to the bundle and return the tool names it publishes.
+ *
+ * Hand-rolled rather than driven through `@modelcontextprotocol/sdk`'s client: the whole point
+ * is to exercise the bundle the way an arbitrary MCP client will, and the one thing we must not
+ * do is prove the bundle works by using the same library that produced it. It is also two
+ * requests over newline-delimited JSON, which is the entirety of MCP's stdio framing.
+ *
+ * Never throws. Every failure - a runtime that will not start, a server that dies on load, a
+ * malformed answer, a hang - comes back as `{ ok: false, reason }` so the caller decides what a
+ * launch does about it.
+ */
+async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedTools> {
+  return await new Promise<PublishedTools>((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(descriptor.command, descriptor.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        // The descriptor's env is an OVERLAY on the inherited environment, which is how
+        // Claude and Codex both apply an `env` block. Probing with a bare `descriptor.env`
+        // would strip PATH and HOME and fail for a reason the real launch never hits.
+        env: { ...process.env, ...descriptor.env },
+      });
+    } catch (err) {
+      resolve({ ok: false, reason: `it could not be started (${errText(err)})` });
+      return;
+    }
+
+    const found = new Set<string>();
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    let pending = "";
+    let stderr = "";
+    let pages = 0;
+    let listId = 2;
+
+    const finish = (answer: PublishedTools): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      // The probe owns this process and nothing else may inherit it.
+      child.kill("SIGTERM");
+      resolve(answer);
+    };
+
+    const send = (msg: unknown): void => {
+      try {
+        child.stdin?.write(`${JSON.stringify(msg)}\n`);
+      } catch (err) {
+        finish({ ok: false, reason: `its stdin closed mid-handshake (${errText(err)})` });
+      }
+    };
+
+    const requestTools = (cursor?: string): void => {
+      pages += 1;
+      send({
+        jsonrpc: "2.0",
+        id: listId,
+        method: "tools/list",
+        params: cursor === undefined ? {} : { cursor },
+      });
+    };
+
+    const onMessage = (msg: Record<string, unknown>): void => {
+      const error = msg.error as { message?: string } | undefined;
+      const result = msg.result as
+        | { tools?: unknown; nextCursor?: unknown }
+        | undefined;
+      if (msg.id === 1) {
+        if (error) {
+          finish({ ok: false, reason: `it refused initialize (${error.message ?? "no message"})` });
+          return;
+        }
+        send({ jsonrpc: "2.0", method: "notifications/initialized" });
+        requestTools();
+        return;
+      }
+      if (msg.id !== listId) return; // A notification, or an answer we did not ask for.
+      if (error) {
+        finish({ ok: false, reason: `it refused tools/list (${error.message ?? "no message"})` });
+        return;
+      }
+      if (!Array.isArray(result?.tools)) {
+        finish({ ok: false, reason: "its tools/list answer carried no tool array" });
+        return;
+      }
+      for (const tool of result.tools) {
+        const name = (tool as { name?: unknown } | null)?.name;
+        if (typeof name === "string") found.add(name);
+      }
+      // Paginated on purpose. The SDK answers in one page today, but a server that grows a
+      // cursor would otherwise start reporting its later tools as missing - a false refusal,
+      // which is the one failure this guard must never invent.
+      const cursor = result.nextCursor;
+      if (typeof cursor === "string" && cursor !== "" && pages < MAX_TOOL_PAGES) {
+        listId += 1;
+        requestTools(cursor);
+        return;
+      }
+      finish({ ok: true, tools: found });
+    };
+
+    timer = setTimeout(() => {
+      finish({
+        ok: false,
+        reason:
+          `it did not answer initialize + tools/list within ${HANDSHAKE_TIMEOUT_MS}ms` +
+          (stderr.trim() ? ` (stderr: ${stderr.trim().slice(0, 300)})` : ""),
+      });
+    }, HANDSHAKE_TIMEOUT_MS);
+    // Never hold the daemon's event loop open on a probe.
+    timer.unref?.();
+
+    child.on("error", (err) => {
+      finish({ ok: false, reason: `it could not be started (${errText(err)})` });
+    });
+    // A bundle that dies on load - the exact `jsonc-parser` shape this repo has already
+    // shipped once - closes its stdin under our first write, and an EPIPE on a stream with no
+    // `error` listener is an UNCAUGHT exception, which would take the daemon down. A probe
+    // whose whole job is to make a stale bundle safe must not be a new way to crash on one.
+    child.stdin?.on("error", (err) => {
+      finish({ ok: false, reason: `its stdin closed mid-handshake (${errText(err)})` });
+    });
+    child.on("exit", (code, signal) => {
+      finish({
+        ok: false,
+        reason:
+          `it exited (code ${code}, signal ${signal}) during the handshake` +
+          (stderr.trim() ? ` - ${stderr.trim().slice(0, 300)}` : ""),
+      });
+    });
+    child.stderr?.on("data", (d) => (stderr += String(d)));
+    child.stdout?.on("data", (d) => {
+      pending += String(d);
+      for (;;) {
+        const nl = pending.indexOf("\n");
+        if (nl === -1) break;
+        const line = pending.slice(0, nl).trim();
+        pending = pending.slice(nl + 1);
+        if (!line) continue;
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue; // Tolerate a banner or a stray log line on stdout.
+        }
+        onMessage(msg);
+      }
+    });
+
+    send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "mission-control-launch-guard", version: "1" },
+      },
+    });
+  });
+}
+
+/** The published tool names for the bundle we would register right now, handshaking at most once per build. */
+async function publishedTools(descriptor: MissionMcpDescriptor): Promise<PublishedTools> {
+  const key = bundleIdentity(descriptor.args[0] ?? "");
+  if (cachedPublished?.key === key) return await cachedPublished.answer;
+  const answer = handshake(descriptor);
+  cachedPublished = { key, answer };
+  return await answer;
+}
+
+/** Whether the bundle a launch is about to register can actually serve what that launch declares. */
+export type MissionMcpToolCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Assert that every tool a launch DECLARES is one the resolved bundle actually publishes.
+ *
+ * Called before the agent spawns, so the answer can still change the outcome. The failure it
+ * prevents is not a crash but a deadlock: a scout that cannot call `submit_scout_artifacts`
+ * has no way to reach `done`, and an ensemble member that cannot call `submit_ensemble_result`
+ * runs to completion and then cannot signal it is ready. Both look like an agent that simply
+ * stopped.
+ *
+ * A bundle we cannot interrogate at all fails exactly like a bundle missing the tool, and that
+ * is not caution - a server that will not complete a handshake for US will not complete one for
+ * the agent's MCP client either, so the tool is just as absent. The two cases carry different
+ * sentences because they have different fixes.
+ *
+ * `reason` is written to be pasted into a task's error and understood without reading this file.
+ */
+export async function verifyMissionMcpTools(
+  required: readonly MissionMcpTool[],
+  /**
+   * The exact registration to interrogate, when the caller is holding one.
+   *
+   * An embedded launch hands the supervisor a descriptor it already resolved, and verifying a
+   * SECOND resolution of it would be checking a different object than the one the session gets.
+   * A terminal launch has no such handle - its registration was rendered into argv inside
+   * `askChannelArgs` / `prepareCodexLaunch` - so it omits this and we resolve the same way
+   * those two do, which is the only reading that matches what was actually registered.
+   */
+  launched?: MissionMcpDescriptor | null,
+): Promise<MissionMcpToolCheck> {
+  // An empty requirement is not a weak check, it is the absence of one: a dispatch that
+  // declares no Mission tools is the status quo this must not touch, so it never spawns
+  // anything and never fails a launch that would have worked.
+  if (required.length === 0) return { ok: true };
+  const descriptor = launched ?? (await missionMcpDescriptor());
+  if (!descriptor) {
+    return {
+      ok: false,
+      reason: `Mission Control's MCP server is not built at ${mcpServerPath()} - run: npm run build`,
+    };
+  }
+  const published = await publishedTools(descriptor);
+  if (!published.ok) {
+    return {
+      ok: false,
+      reason:
+        `Mission Control's MCP server at ${descriptor.args[0]} could not be interrogated: ` +
+        `${published.reason}. Rebuild it with: npm run build`,
+    };
+  }
+  const missing = required.filter((tool) => !published.tools.has(tool));
+  if (missing.length === 0) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      `Mission Control's MCP server at ${descriptor.args[0]} does not publish ` +
+      `${missing.join(", ")} (it publishes ${[...published.tools].sort().join(", ") || "nothing"}). ` +
+      `The built bundle is stale - it is only rebuilt by \`npm run build\`, which a git pull does ` +
+      `not do. Run: npm run build`,
+  };
+}
+
+/**
+ * Every tool this build's SOURCE says should exist, checked against the running bundle - the
+ * daemon's own startup signal.
+ *
+ * Distinct from `verifyMissionMcpTools` in what it asks: that one asks whether ONE launch can
+ * go ahead, this one asks whether the operator's machine is in a state where scouts and
+ * ensembles will work at all, and says so at boot instead of at the first dispatch that trips
+ * over it. It also warms the cache, so that first dispatch pays nothing.
+ *
+ * A CONTENT check rather than the obvious mtime comparison of the bundle against `src/mcp/` and
+ * `src/shared/`. Mtime was tried on paper and rejected: `src/shared/` changes on almost every
+ * commit in this repo, so a bundle that is behind by one irrelevant shared-module edit would
+ * warn identically to one missing a tool, on nearly every dev iteration - and a warning that
+ * fires constantly is a warning nobody reads by the time it is true. This asks the question the
+ * operator actually cares about, and answers it with no false alarms and nothing to tune. It is
+ * also silent by construction on a packaged install, where there is no `src/` to compare against
+ * and the bundle is published by the same step that built it.
+ */
+export async function reportMissionMcpDrift(): Promise<void> {
+  const check = await verifyMissionMcpTools(MISSION_MCP_TOOLS);
+  if (check.ok) return;
+  console.warn(
+    `[mission-control] ${check.reason}\n` +
+      `[mission-control]   Until then, dispatching a scout or an ensemble member that needs a ` +
+      `missing tool is REFUSED rather than left to deadlock.`,
+  );
 }
 
 // ---- Claude: a launch-scoped `--mcp-config` file -------------------------------------

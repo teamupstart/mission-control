@@ -71,6 +71,8 @@ After provisioning, dispatch branches once:
 
 An invalid stored runtime falls back to terminal and reports what was dropped. If SDK was requested but no supervisor exists, fail instead of silently changing runtime.
 
+A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task at all, and the existence check alone cannot see a stale `dist/`. A dispatch declaring no tools never spawns the probe and is unaffected.
+
 ## Harnesses and terminals
 
 Harness capabilities split by purity:

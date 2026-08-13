@@ -976,6 +976,55 @@ test("a scout is refused before the reset when the MCP bundle cannot be launched
   );
 });
 
+test("a scout is refused before the reset when the built bundle lacks its submission tool", async () => {
+  // The sibling of the refusal above, for the case that reads as a HEALTHY install: the
+  // bundle is on this machine, it starts, it answers - it just does not publish
+  // `submit_scout_artifacts`, because `dist/mcp/server.mjs` is rebuilt only by
+  // `npm run build` and ignored by git, so it sits behind the source that added the tool.
+  //
+  // Everything below this point strips the agent - detaches its checkout, drops its queue,
+  // wipes its context - so admitting it here costs an operator their working tree for a task
+  // that provably cannot finish. Existence was the honest question right up until a stale
+  // bundle made "present" and "usable" different answers.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-scout-stale-mcp-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "scout" }));
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "node",
+      args: ["server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({
+      ok: false as const,
+      reason:
+        "Mission Control's MCP server at /dist/mcp/server.mjs does not publish " +
+        "submit_scout_artifacts. Run: npm run build",
+    }),
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /scout/);
+  assert.match(res.error ?? "", /submit_scout_artifacts/, "name the tool that is missing");
+  assert.match(res.error ?? "", /npm run build/, "name the fix");
+  assert.equal(reset, false, "nothing may be done to an agent that cannot finish the task");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+  assert.equal(
+    gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"),
+    "feature/mine",
+    "the checkout is untouched - the refusal happens before the reset",
+  );
+});
+
 test("a scout is refused before reset when its scoped submission credential cannot be provisioned", async () => {
   const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-scout-no-credential-");
   r.upsertTask(mkTask({ repoRoot: clone, kind: "scout" }));
@@ -990,6 +1039,11 @@ test("a scout is refused before reset when its scoped submission credential cann
       args: ["server.mjs"],
       env: {},
     }),
+    // That descriptor names no real bundle, because this test is about the step AFTER the
+    // MCP checks. The content guard beside them would refuse to handshake with it - rightly -
+    // so it is answered here. `mission-mcp.test.ts` runs the real handshake, and
+    // `dispatcher-runtime.test.ts` drives a real stale bundle through a real launch.
+    verifyMissionMcpTools: async () => ({ ok: true as const }),
     provisionScoutCredential: () => {
       throw new Error("credential state is read-only");
     },
@@ -1021,6 +1075,8 @@ test("an assigned scout is typed the report contract, and an assigned ship task 
         args: ["server.mjs"],
         env: {},
       }),
+      // As above: a fake bundle, so the content guard is answered rather than pointed at it.
+      verifyMissionMcpTools: async () => ({ ok: true as const }),
       provisionScoutCredential: (taskId, cwd) => {
         credentialScope = { taskId, cwd };
         return "test-credential";

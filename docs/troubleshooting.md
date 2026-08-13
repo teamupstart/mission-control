@@ -52,6 +52,26 @@ Run `npm run build` before `npm run test:e2e`. The daemon used by the suite serv
 built dashboard from `dist/`; without that build it cannot serve the application the
 browser tests exercise. The required command order is in the [browser end-to-end test guide](../e2e/README.md).
 
+## A scout or ensemble dispatch is refused, or the daemon says the MCP bundle is behind
+
+Run `npm run build` (or just `npm run build:mcp`).
+
+Symptoms, all of which are the same cause:
+
+- The daemon logs at startup:
+  `[mission-control] Mission Control's MCP server at …/dist/mcp/server.mjs does not publish submit_scout_artifacts …`
+- A scout or ensemble dispatch fails with `this claude session requires the Mission MCP tools
+  …`, or assigning a scout is refused before its checkout is reset.
+- `npm run smoke` fails with `MISSION_MCP_TOOLS declares … which the MCP bundle does not publish`.
+
+Dispatched agents are handed the **built** `dist/mcp/server.mjs`, never `src/mcp/server.ts`.
+That file is rebuilt only by `npm run build` and is gitignored, so a `git pull` that brings you
+a new MCP tool never brings you a bundle that serves it - and `npm run dev` reloads the daemon
+from source without touching the bundle. The refusal is deliberate: a scout that cannot call
+`submit_scout_artifacts` can never mark its task **done**, so failing the launch is better than
+an agent that finishes its work and has nowhere to put it. See [Adding or changing a tool means
+rebuilding the bundle](sessions.md#review-channel-mcp).
+
 ## A treehouse pool has no available worktree, or a check lease looks stale
 
 Run `treehouse status` first. Mission Control automatically reclaims only leases it can

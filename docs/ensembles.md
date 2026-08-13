@@ -253,7 +253,12 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
 4. Each candidate implements and tests alone. Its prompt forbids pushing, opening a PR, or running
    the shipping gate, and tells it to **submit** when ready.
 5. A member submits through the launch-scoped `submit_ensemble_result` MCP tool (or the manual
-   Submit action in the run detail). The daemon attributes the submission from the calling
+   Submit action in the run detail). That tool is a launch **precondition**: a member launch is
+   refused before the agent spawns unless Mission Control's MCP bundle both registers and
+   actually publishes it, checked by a real handshake against the built bundle, because a member
+   that runs to completion and cannot signal it is ready stalls the whole run (see
+   [Adding or changing a tool means rebuilding the bundle](sessions.md#review-channel-mcp)).
+   The daemon attributes the submission from the calling
    session -> its task -> its active member; a member never names itself, so a guessed id reaches
    nothing. Submission captures the working tree as an **immutable private Git commit** (see refs
    below) and records reported checks, observed diff statistics, and the member's agent cost.

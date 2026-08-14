@@ -136,11 +136,20 @@ const ALPHANUMERIC = /[\p{L}\p{N}]/u;
  * like "+ add a step" or "(none)" has punctuation at that edge, and demanding a non-word
  * character beyond it would reject the very sentence that does name it.
  */
-function namesLabel(prose: string, label: string): boolean {
-  if (!label) return false;
+function occurrences(prose: string, label: string): Array<[number, number]> {
+  if (!label) return [];
   const before = ALPHANUMERIC.test(label[0]!) ? "(?<![\\p{L}\\p{N}])" : "";
   const after = ALPHANUMERIC.test(label[label.length - 1]!) ? "(?![\\p{L}\\p{N}])" : "";
-  return new RegExp(`${before}${escapeRegExp(label)}${after}`, "u").test(prose);
+  const pattern = new RegExp(`${before}${escapeRegExp(label)}${after}`, "gu");
+  const spans: Array<[number, number]> = [];
+  for (const match of prose.matchAll(pattern)) {
+    spans.push([match.index, match.index + label.length]);
+  }
+  return spans;
+}
+
+function namesLabel(prose: string, label: string): boolean {
+  return occurrences(prose, label).length > 0;
 }
 
 /**
@@ -195,19 +204,34 @@ export function recommendedChoiceKeys(
     if (longest) hits.set(choice.key, longest);
   }
 
-  // One label containing another is enough to mark both: prose naming "Merge now and notify
-  // the team" also names "Merge now", and the boundary after it is a space either way. These
-  // are mutually exclusive rows, so marking both says Foreman picked two, and the most
-  // specific one wins.
+  // One label containing another is enough to match both: prose naming "Merge now and notify
+  // the team" also names "Merge now", and the boundary after it is a space either way. The
+  // shorter one is spurious there - it was never named in its own right, it was read out of
+  // the middle of the longer phrase.
   //
-  // Subsumption is decided with the SAME boundary rule the matching used, not bare substring
-  // containment. "Redeploy now" contains the letters of "Deploy" without naming it, so a bare
-  // `includes` would silently drop a correctly matched "Deploy" that the prose named in its
-  // own right - suppressing a true pick instead of a false one.
+  // Decided by WHERE the text occurs, not by which choices matched. A shorter hit is dropped
+  // only when EVERY one of its occurrences sits inside an occurrence of a longer hit. If the
+  // prose names it anywhere else, it was named, and it keeps its mark.
+  //
+  // That is why this deliberately does not check `group`, which would be the obvious way to
+  // express "mutually exclusive rows". Scoping to one question would restore the mark whenever
+  // the two labels live on different questions - including when the shorter one appears only
+  // inside the longer one's phrase, which is a FALSE pick, and this matcher's whole contract
+  // is that it never paints one. Occurrence coverage gets both cases right without the
+  // grouping: two decisions that genuinely name their own options each keep their mark,
+  // because each has an occurrence the other's phrase does not cover.
   const texts = [...hits.values()];
   const matched = new Set<string>();
   for (const [key, text] of hits) {
-    if (texts.some((other) => other.length > text.length && namesLabel(other, text))) continue;
+    const mine = occurrences(prose, text);
+    const swallowed = mine.every(([start, end]) =>
+      texts.some(
+        (other) =>
+          other.length > text.length &&
+          occurrences(prose, other).some(([from, to]) => from <= start && end <= to),
+      ),
+    );
+    if (mine.length > 0 && swallowed) continue;
     matched.add(key);
   }
   if (matched.size > 0) return matched;

@@ -158,6 +158,40 @@ test("a label that is a prefix of another marks only the option actually named",
   assert.deepEqual([...recommendedChoiceKeys("Just merge now.", choices)], ["now"]);
 });
 
+test("two decisions that each name their own option both keep the mark", () => {
+  // Suppression is about one phrase being read out of the middle of another, not about which
+  // question a row belongs to. When the prose names each decision's option in its own right,
+  // both were named, and neither may be dropped because the other happens to be longer.
+  const choices = [
+    { key: "rollout:now", label: "Deploy now", group: "rollout" },
+    { key: "comms:notify", label: "Deploy now and notify the team", group: "comms" },
+  ];
+  assert.deepEqual(
+    [
+      ...recommendedChoiceKeys(
+        "For the rollout, Deploy now. For comms, Deploy now and notify the team.",
+        choices,
+      ),
+    ].sort(),
+    ["comms:notify", "rollout:now"],
+  );
+});
+
+test("a shorter label read only out of a longer phrase is still not a pick", () => {
+  // The reason suppression cannot simply be scoped to one question. These labels are on
+  // DIFFERENT decisions, so a same-group rule would mark both - but "Deploy now" appears
+  // nowhere except inside the longer option's phrase, so marking it would be a false pick on
+  // a decision the prose never addressed.
+  const choices = [
+    { key: "rollout:now", label: "Deploy now", group: "rollout" },
+    { key: "comms:notify", label: "Deploy now and notify the team", group: "comms" },
+  ];
+  assert.deepEqual(
+    [...recommendedChoiceKeys("Deploy now and notify the team.", choices)],
+    ["comms:notify"],
+  );
+});
+
 test("a label offered by two questions is attributed to neither", () => {
   // One form asks several questions and their options arrive here flattened. Two plain
   // yes/no questions are the ordinary case, and prose naming "yes" once cannot say which

@@ -314,6 +314,7 @@ test("while the capability answer is in flight, the chip claims nothing", async 
   })).toHaveCount(0);
   // And the sentence beneath states the action's own contract throughout, unqualified.
   await expect(contract(dashboard)).toContainText("Pull request is opened and verified");
+  await shoot(dashboard, "08-capabilities-in-flight");
 
   answer();
 

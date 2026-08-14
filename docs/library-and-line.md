@@ -193,8 +193,11 @@ adapter proves anywhere in the browser.
 A completion this build cannot prove is **kept, marked and readable while the control is shut**:
 the chip draws amber and a sentence beside it says why. It stays selected, because rewriting it
 would silently change the proof contract the action was authored with, and it cannot be chosen
-again - the option is there to be read, disabled. Everything left over is the instruction editor,
-whose Markdown reaches the session byte for byte.
+again - the option is there to be read, disabled. The mark waits for the daemon's answer: which
+completions a build can prove is read over HTTP, and until that read lands nothing on the screen
+claims anything about it. Save stands down in the meantime and says so, because a pending read is
+not a refusal. Everything left over is the instruction editor, whose Markdown reaches the session
+byte for byte.
 
 ### The Ship log
 

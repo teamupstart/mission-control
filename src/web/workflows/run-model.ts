@@ -1532,6 +1532,15 @@ export interface ChangeWorklistRow {
   /** The last round inside the window that raised it. */
   lastRound: number;
   /**
+   * The round the owning reviewer PASSED in, or null unless `state` is `"resolved"`.
+   *
+   * Not the same fact as `lastRound`, and the difference is the sentence "Resolved in round N":
+   * `lastRound` is the last round the change was still being ASKED FOR, so a reviewer that
+   * dropped it in round 3 and passed in round 5 has `lastRound: 2` and `resolvedRound: 5`.
+   * Rendering the former under that wording would name a round the change was open in.
+   */
+  resolvedRound: number | null;
+  /**
    * How many rounds RAISED it between `firstRound` and `lastRound` inclusive - a count of
    * appearances, never a span, so it cannot claim a round its reviewer stayed silent in.
    */
@@ -1569,13 +1578,19 @@ function changeState(
   folded: FoldedRun,
   inWindow: readonly number[],
   row: { nodeId: string; lastRound: number },
-): ChangeWorklistState {
+): Pick<ChangeWorklistRow, "state" | "resolvedRound"> {
   const later = inWindow
     .filter((round) => round > row.lastRound)
-    .map((round) => folded.rounds.get(round)?.get(row.nodeId)?.verdict)
-    .filter((verdict): verdict is PersonaVerdict => verdict != null);
-  if (later.length === 0) return "open";
-  return later.some((verdict) => verdict.verdict === "pass") ? "resolved" : "unconfirmed";
+    .map((round) => ({ round, verdict: folded.rounds.get(round)?.get(row.nodeId)?.verdict }))
+    .filter((spoke): spoke is { round: number; verdict: PersonaVerdict } =>
+      spoke.verdict != null);
+  if (later.length === 0) return { state: "open", resolvedRound: null };
+  // The EARLIEST later pass, because that is the round the reviewer confirmed in. A pass says
+  // it has nothing left to ask, which settles every earlier ask along with this one.
+  const passed = later.find((spoke) => spoke.verdict.verdict === "pass");
+  return passed
+    ? { state: "resolved", resolvedRound: passed.round }
+    : { state: "unconfirmed", resolvedRound: null };
 }
 
 /**
@@ -1613,9 +1628,10 @@ export function runChangeWorklist(
     .filter((round) => round <= horizon)
     .sort((left, right) => left - right);
 
-  const raised = new Map<string, Omit<ChangeWorklistRow, "roundsOpen" | "state"> & {
-    rounds: Set<number>;
-  }>();
+  const raised = new Map<
+    string,
+    Omit<ChangeWorklistRow, "roundsOpen" | "state" | "resolvedRound"> & { rounds: Set<number> }
+  >();
   for (const round of inWindow) {
     for (const { attempt, verdict } of folded.rounds.get(round)?.values() ?? []) {
       if (!attempt.persona) continue;
@@ -1647,7 +1663,7 @@ export function runChangeWorklist(
     .map(({ rounds, ...row }): ChangeWorklistRow => ({
       ...row,
       roundsOpen: rounds.size,
-      state: changeState(folded, inWindow, row),
+      ...changeState(folded, inWindow, row),
     }))
     .sort((left, right) =>
       CHANGE_STATE_ORDER[left.state] - CHANGE_STATE_ORDER[right.state]

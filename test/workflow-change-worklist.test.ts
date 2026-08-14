@@ -338,7 +338,39 @@ test("a change its own reviewer stopped raising, and then passed, is resolved", 
   const row = runChangeWorklist(detail, null)[0]!;
   assert.equal(row.state, "resolved");
   assert.equal(row.lastRound, 2);
+  assert.equal(row.resolvedRound, 3);
   assert.equal(row.roundsOpen, 2);
+});
+
+test("a resolved change names the round its reviewer passed in, not the round it was raised", () => {
+  // The sentence Phase 2 puts on an Archive row is "Resolved in round N". `lastRound` is the
+  // last round the change was still being ASKED FOR, so using it there would name a round the
+  // change was open in - here, round 2, three rounds before anybody confirmed anything.
+  const detail = detailOf([
+    { round: 1, verdict: fail(change("Attach the test output")) },
+    { round: 2, verdict: fail(change("Attach the test output")) },
+    { round: 3, verdict: fail(change("Name the retry budget")) },
+    { round: 4, verdict: fail(change("Name the retry budget")) },
+    { round: 5, verdict: PASS },
+  ]);
+  const rows = runChangeWorklist(detail, null);
+  const resolved = rowFor(rows, "Attach the test output");
+  assert.equal(resolved.state, "resolved");
+  assert.equal(resolved.lastRound, 2);
+  assert.equal(resolved.resolvedRound, 5);
+  assert.equal(rowFor(rows, "Name the retry budget").resolvedRound, 5);
+});
+
+test("an open or unconfirmed change has no resolving round to name", () => {
+  const detail = detailOf([
+    { round: 1, verdict: fail(change("Attach the test output")) },
+    { round: 2, verdict: fail(change("Name the retry budget")) },
+  ]);
+  const rows = runChangeWorklist(detail, null);
+  assert.equal(rowFor(rows, "Attach the test output").state, "unconfirmed");
+  assert.equal(rowFor(rows, "Attach the test output").resolvedRound, null);
+  assert.equal(rowFor(rows, "Name the retry budget").state, "open");
+  assert.equal(rowFor(rows, "Name the retry budget").resolvedRound, null);
 });
 
 test("a reviewer that has not re-run leaves its change open, never resolved", () => {

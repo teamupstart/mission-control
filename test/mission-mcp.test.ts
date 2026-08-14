@@ -118,6 +118,37 @@ test("the tool vocabulary matches what the MCP server actually registers", () =>
   assert.deepEqual([...MISSION_MCP_TOOLS].sort(), [...registered].sort());
 });
 
+test("the bundle smoke can resolve every name MISSION_MCP_TOOLS is written with", () => {
+  // `scripts/smoke-bundles.mjs` is plain node with no TypeScript loader, so it SCRAPES that
+  // list and resolves any imported constant through a hand-written name -> module map. A name
+  // added to the list as a constant and not to that map makes the smoke FAIL - correctly, but
+  // only after a build, and only in CI if nobody ran `npm run smoke` locally. This is the same
+  // check for milliseconds, so the gap closes where it is cheap to notice.
+  //
+  // Deliberately about the SPELLING rather than the value: the smoke's own comparison against
+  // the running bundle is what checks the values, and duplicating that here would be the
+  // fourth copy of the vocabulary that both files exist to prevent.
+  const read = (relative: string) =>
+    readFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url)), "utf8");
+  const block = /export const MISSION_MCP_TOOLS = \[([\s\S]*?)\] as const;/
+    .exec(read("src/server/mission-mcp.ts"))?.[1];
+  assert.ok(block, "MISSION_MCP_TOOLS could not be scraped - the smoke reads it the same way");
+
+  const smoke = read("scripts/smoke-bundles.mjs");
+  const referenced = [...block.matchAll(/^\s*([A-Z_]+),$/gm)].map((m) => m[1]!);
+  for (const name of referenced) {
+    assert.match(
+      smoke,
+      new RegExp(`^\\s*${name}: "`, "m"),
+      `${name} is in MISSION_MCP_TOOLS but scripts/smoke-bundles.mjs cannot resolve it to a module`,
+    );
+  }
+  // And the map does not name constants the list has stopped using, which would leave a dead
+  // path nobody exercises and a module reference nobody keeps true.
+  const mapped = [...smoke.matchAll(/^\s*([A-Z_]+): "src\/[^"]+",$/gm)].map((m) => m[1]!);
+  assert.deepEqual([...mapped].sort(), [...referenced].sort());
+});
+
 test("every tool the server registers is reachable by a launch that requires it", async () => {
   // Companion to the vocabulary test above, and the gap that let create_task read as
   // present-but-uncallable. That test pins WHAT a launch may require - the list and the

@@ -134,6 +134,7 @@ import {
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
+import { planDispatchBlock } from "./plans/skills.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
@@ -3967,6 +3968,15 @@ export function buildApp(
         ? manager.workflowSelectionBlock(workflowId)
         : manager.dispatchWorkflowBlock(workflowId, parsed.data.agent, repoRoot);
       if (blocked) return c.json({ error: blocked }, 409);
+    }
+    // A plan task's intent invokes the planning skills instead of restating them, so a
+    // dispatch that could not invoke them is refused before the task exists - the operator
+    // reads the reason on the form they are still standing in, and there is no card to clean
+    // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
+    // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
+    if (!parsed.data.backlog) {
+      const planBlock = planDispatchBlock(parsed.data);
+      if (planBlock) return c.json({ error: planBlock }, 409);
     }
     let task;
     try {

@@ -38,6 +38,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { openDb, getForemanInvite } = await import("../src/server/db.ts");
 const { setHarnessesConfig, resolveDispatchRuntime } = await import("../src/server/harnesses.ts");
+const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
@@ -324,6 +325,125 @@ test("a launch is refused when the BUILT bundle does not publish a tool it requi
   // MCP bundle is missing a tool" sends someone hunting through source that already has it.
   assert.match(task?.error ?? "", /submit_scout_artifacts/);
   assert.match(task?.error ?? "", /npm run build/);
+});
+
+// A plan task's contract POINTS AT the two planning skills rather than restating them, so the
+// invocations have to be resolved before the intent can be composed - and a launch that cannot
+// resolve them cannot honour the contract at all. Both cases below are about WHERE that is
+// asked: in front of the worktree, or after one has been cut for a task that cannot start.
+
+test("a plan dispatch is refused before a worktree exists when its planning skills are off", async () => {
+  const repo = seedRepo("plan-noskill-repo");
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-plan-off", status: "dispatching", repoRoot: repo, agent: "claude", kind: "plan" }),
+  );
+  const supervisor = fakeSupervisor(registry);
+
+  await new Dispatcher(registry, async () => {}, {
+    supervisor,
+    planSkills: () => ({
+      ok: false,
+      message:
+        "Enable Skills and the html-plans skill before sending this instruction. "
+        + "Switch them on under Settings → Skills, then dispatch again.",
+    }),
+  }).dispatch("task-plan-off");
+
+  assert.equal(supervisor.starts.length, 0, "nothing may spawn for a contract that cannot be honoured");
+  const task = registry.getTask("task-plan-off")!;
+  assert.equal(task.status, "failed");
+  // The operator reads this on the card, so it has to name the toggle AND where it lives.
+  assert.match(task.error ?? "", /Enable Skills and the html-plans skill/);
+  assert.match(task.error ?? "", /Settings → Skills/);
+  // And the refusal is in FRONT of provisioning, which is the whole reason it sits where the
+  // pinned-base check does: a worktree cut here is one that has to be torn down again.
+  assert.equal(task.worktreePath, null, "no tree was taken for a launch that was never going to happen");
+});
+
+test("a plan launch carries the contract into turn one and requires the tools it names", async () => {
+  const repo = seedRepo("plan-contract-repo");
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "task-plan-on",
+      status: "dispatching",
+      repoRoot: repo,
+      agent: "claude",
+      kind: "plan",
+      intent: "plan the archives reading UI",
+    }),
+  );
+  const supervisor = fakeSupervisor(registry);
+  // A complete bundle, because a plan launch REQUIRES two of its tools and the guard above
+  // would otherwise refuse this dispatch for an unrelated reason.
+  const prior = process.env.MISSION_MCP_SERVER;
+  process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "plan-bundle.mjs"), [
+    ...MISSION_MCP_TOOLS,
+  ]);
+  try {
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      planSkills: () => ({
+        ok: true,
+        commands: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
+      }),
+    }).dispatch("task-plan-on");
+  } finally {
+    if (prior === undefined) delete process.env.MISSION_MCP_SERVER;
+    else process.env.MISSION_MCP_SERVER = prior;
+  }
+
+  assert.equal(registry.getTask("task-plan-on")?.status, "running", registry.getTask("task-plan-on")?.error ?? "");
+  const start = supervisor.starts[0]!;
+  // The operator's own words first, then the contract - the same ordering as the other seam.
+  assert.match(start.prompt, /^plan the archives reading UI/);
+  assert.match(start.prompt, /--- Mission Control plan ---/);
+  assert.match(start.prompt, /\/html-plans/, "the resolved invocation, verbatim");
+  assert.match(start.prompt, /\/phased-plan/);
+  // And the launch reached our MCP server, which it only does because the kind declared a
+  // requirement: nothing in this dispatch's options asked for one.
+  assert.ok(start.mcp, "a plan launch carries the Mission MCP descriptor");
+});
+
+test("a plan launch is refused when the built bundle cannot publish the review tool", async () => {
+  // The requirement is derived from the durable kind rather than from the caller, so this
+  // dispatch passes no `missionMcp` at all and is still held to it - which is the difference
+  // between a launch requirement and a caller's preference. A plan that reached an agent
+  // unable to call `request_plan_decisions` would work up a plan and then ask in prose, which
+  // is precisely the failure the whole kind exists to prevent, and nothing would go red.
+  const repo = seedRepo("plan-stale-bundle-repo");
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-plan-stale", status: "dispatching", repoRoot: repo, agent: "claude", kind: "plan" }),
+  );
+  const supervisor = fakeSupervisor(registry);
+  const prior = process.env.MISSION_MCP_SERVER;
+  process.env.MISSION_MCP_SERVER = writeMcpFixture(
+    join(home, "plan-stale-bundle.mjs"),
+    [...MISSION_MCP_TOOLS].filter((tool) => tool !== "request_plan_decisions"),
+  );
+  try {
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      planSkills: () => ({
+        ok: true,
+        commands: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
+      }),
+    }).dispatch("task-plan-stale");
+  } finally {
+    if (prior === undefined) delete process.env.MISSION_MCP_SERVER;
+    else process.env.MISSION_MCP_SERVER = prior;
+  }
+
+  assert.equal(supervisor.starts.length, 0, "nothing may spawn against a bundle missing the tool");
+  const task = registry.getTask("task-plan-stale")!;
+  assert.equal(task.status, "failed");
+  assert.match(task.error ?? "", /request_plan_decisions/, "name the tool that is missing");
+  assert.match(task.error ?? "", /npm run build/, "name the fix");
 });
 
 test("a build with no supervisor refuses the runtime rather than silently using the other", async () => {

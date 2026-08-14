@@ -4988,27 +4988,46 @@ kbd {
   background: color-mix(in oklab, var(--working) 10%, var(--bg-2));
   border-color: color-mix(in oklab, var(--working) 22%, var(--border-soft));
 }
-/* The turn the "Yours" rail jumped to. Wears find's hue rather than a new one: this is
-   the same act as landing on a match - the reader asked to be taken somewhere, and the
-   ring says "here". `scroll-margin` for the same reason `mark.find-hit` carries it, so a
-   jump never parks the turn under the floating find bar.
-   Held while the row stays selected instead of fading: the rail row and the turn are two
-   ends of one selection, and a mark that timed out would leave a selected row in the
-   rail pointing at nothing in the log. */
-.turn.is-marked .turn-text,
-.turn.is-marked .turn-tools {
-  border-color: color-mix(in oklab, var(--find) 55%, var(--border-soft));
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--find) 16%, transparent);
-}
-.turn.is-marked,
-.pty-entry.is-marked {
+/* A jump from the "Yours" rail lands here. `scroll-margin` on every turn, not only the
+   flashed one, for the same reason `mark.find-hit` carries it: a jump must never park a
+   turn under the floating find bar, and the margin has to be there before the scroll,
+   not applied by the same render that scrolls. */
+.turn,
+.pty-entry {
   scroll-margin: 60px 0;
 }
-/* The terminal rendering has no bubble to ring, so the mark goes on the entry itself. */
-.pty-entry.is-marked {
-  border-radius: 6px;
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--find) 22%, transparent);
-  background: color-mix(in oklab, var(--find) 7%, transparent);
+/* The flash itself. Find's hue rather than a new one, because this is the same act as
+   landing on a match - the reader asked to be taken somewhere and the ring says "here".
+   It FADES rather than holding: the rail row stays marked to answer "which message am I
+   reading?", while a turn wearing a permanent ring would read as a state the message is
+   in rather than as somewhere the reader was just taken. `outline` rather than a border
+   so nothing reflows, and the whole animation is 2s to match TURN_FLASH_MS. */
+@keyframes turn-flash {
+  from {
+    outline-color: color-mix(in oklab, var(--find) 85%, transparent);
+    background-color: color-mix(in oklab, var(--find) 13%, transparent);
+  }
+  to {
+    outline-color: transparent;
+    background-color: transparent;
+  }
+}
+.turn.is-flashed,
+.pty-entry.is-flashed {
+  outline: 2px solid transparent;
+  outline-offset: 3px;
+  border-radius: 9px;
+  animation: turn-flash 2s ease-out forwards;
+}
+/* The ring still arrives, it just does not animate in. A reader who has asked for less
+   motion still has to be able to see where the jump landed, so this trades the fade for
+   a static ring that the class coming off removes. */
+@media (prefers-reduced-motion: reduce) {
+  .turn.is-flashed,
+  .pty-entry.is-flashed {
+    animation: none;
+    outline-color: color-mix(in oklab, var(--find) 85%, transparent);
+  }
 }
 .pending-turn {
   border-left: 2px dashed color-mix(in oklab, var(--working) 48%, var(--border));
@@ -5758,6 +5777,11 @@ mark.find-hit.is-current {
   background: transparent;
   text-align: left;
   cursor: pointer;
+  /* The row, not the text span inside it, owns the colour that separates your messages
+     from the ones sent for you. It is the thing a reader points at and the thing a test
+     can address by its role, so the dimming is a property of the row rather than of a
+     span nested in one. */
+  color: var(--fg);
 }
 .yours-row:hover {
   background: var(--panel-2);
@@ -5796,7 +5820,7 @@ mark.find-hit.is-current {
 }
 .yours-text {
   font: 12px/1.35 var(--sans);
-  color: var(--fg);
+  color: inherit;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
@@ -5804,7 +5828,7 @@ mark.find-hit.is-current {
   overflow: hidden;
   overflow-wrap: anywhere;
 }
-.yours-row.is-injected .yours-text {
+.yours-row.is-injected {
   color: var(--muted);
 }
 

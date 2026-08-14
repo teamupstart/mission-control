@@ -82,6 +82,16 @@ const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 8000;
 
 /**
+ * How long a jumped-to turn keeps its flash.
+ *
+ * Long enough to find with the eye after the scroll settles, short enough that it has
+ * gone by the time the reader has finished the message. The stylesheet fades the ring
+ * out across the same span, so this is when the class comes off rather than when the
+ * flash becomes invisible.
+ */
+const TURN_FLASH_MS = 2000;
+
+/**
  * Imperative surface the card holds onto so the send shortcut can reach this panel's
  * reply box - the card's single compose box while it's expanded.
  */
@@ -288,14 +298,24 @@ export function TranscriptPanel({
    */
   const [railTab, setRailTab] = useState<ActivityTab>("activity");
   /**
-   * The turn the "Yours" rail last jumped to, marked in the log until another is chosen.
+   * The turn the "Yours" rail last jumped to.
    *
-   * Persistent rather than a timed flash: the rail row and the turn are two ends of ONE
-   * selection, so the mark answers "which row am I looking at?" for as long as that is
-   * still the question. A flash that faded would leave the rail showing a selected row
-   * pointing at nothing, and would be unassertable in a browser test without racing it.
+   * The nonce is what makes clicking the SAME row twice work: keyed on the id alone the
+   * state would be unchanged, so the effects below would not re-run and the second click
+   * would do nothing at all for a reader who had scrolled away since the first. With it,
+   * the log re-centres on the turn and the flash's timer starts again.
    */
-  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
+  const [jump, setJump] = useState<{ id: string; nonce: number } | null>(null);
+  /**
+   * The turn currently flashing, cleared on a timer.
+   *
+   * The two ends of a jump are deliberately different: the RAIL row stays marked, because
+   * "which message am I reading?" stays true, while the TURN only flashes, because the
+   * log is a conversation and a turn wearing a permanent ring would read as a state the
+   * message is in rather than as somewhere the reader was just taken.
+   */
+  const [flashedTurnId, setFlashedTurnId] = useState<string | null>(null);
+  const turnFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -404,10 +424,35 @@ export function TranscriptPanel({
    * layout effect and wins the tick they both fire on - the same ordering find relies on.
    */
   useEffect(() => {
-    if (!selectedTurnId) return;
-    const el = logRef.current?.querySelector(`[data-turn-id="${CSS.escape(selectedTurnId)}"]`);
+    if (!jump) return;
+    const el = logRef.current?.querySelector(`[data-turn-id="${CSS.escape(jump.id)}"]`);
     el?.scrollIntoView({ block: "center" });
-  }, [selectedTurnId, terminal]);
+  }, [jump, terminal]);
+
+  /**
+   * Flash the turn that was jumped to, then let it settle back into the conversation.
+   *
+   * Separate from the scroll above so that switching rendering mid-read re-centres the
+   * turn without re-flashing it: the reader did not ask to be taken anywhere the second
+   * time. The timer is cleared and restarted per jump, so a run of quick clicks leaves
+   * exactly one turn flashing rather than several fading at once.
+   */
+  useEffect(() => {
+    if (!jump) return;
+    setFlashedTurnId(jump.id);
+    if (turnFlashTimer.current) clearTimeout(turnFlashTimer.current);
+    turnFlashTimer.current = setTimeout(() => {
+      turnFlashTimer.current = null;
+      setFlashedTurnId(null);
+    }, TURN_FLASH_MS);
+  }, [jump]);
+
+  useEffect(
+    () => () => {
+      if (turnFlashTimer.current) clearTimeout(turnFlashTimer.current);
+    },
+    [],
+  );
 
   // Registered the same way the launchers are: App holds a per-session map and reaches
   // the mounted panel through it. Deregistering on unmount is what stops the chord from
@@ -884,7 +929,7 @@ export function TranscriptPanel({
                   onOpenFile={linkHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
-                  marked={row.id === selectedTurnId}
+                  flashed={row.id === flashedTurnId}
                 />
               ) : (
                 <Turn
@@ -894,7 +939,7 @@ export function TranscriptPanel({
                   onOpenFile={linkHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
-                  marked={row.id === selectedTurnId}
+                  flashed={row.id === flashedTurnId}
                 />
               ),
         )}
@@ -949,8 +994,8 @@ export function TranscriptPanel({
               // asked to see that list, which is the same request the caret makes.
               setActivityOpen(true);
             }}
-            selectedTurnId={selectedTurnId}
-            onSelectTurn={setSelectedTurnId}
+            selectedTurnId={jump?.id ?? null}
+            onSelectTurn={(id) => setJump((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))}
           />
         )}
       </div>
@@ -1347,15 +1392,15 @@ function Turn({
   onOpenFile,
   filePaths,
   find,
-  marked,
+  flashed,
 }: {
   m: TranscriptMessage;
   agentLabel: string;
   onOpenFile?: WorkspaceLinkHandler;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
-  /** This is the turn the "Yours" rail jumped to. */
-  marked?: boolean;
+  /** The "Yours" rail just jumped here, so say so briefly. */
+  flashed?: boolean;
 }): React.JSX.Element {
   const [richText] = useRichText();
   const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
@@ -1378,9 +1423,15 @@ function Turn({
    */
   const highlight = textHits.length > 0;
   return (
-    // `data-turn-id` is what the rail's jump effect queries, so a click on a row lands on
-    // the turn itself rather than on the nearest thing that happens to carry an id.
-    <div className={`turn turn-${m.origin ?? m.role}${marked ? " is-marked" : ""}`} data-turn-id={m.id}>
+    // An `article`, matching what the terminal rendering has always drawn a turn as: one
+    // turn is a self-contained composition, and having both renderings say so means a
+    // reader - or a test - can address "the turn holding this message" without reaching
+    // for a class. `data-turn-id` is what the rail's jump effect queries, so a click on a
+    // row lands on the turn itself rather than on the nearest thing carrying an id.
+    <article
+      className={`turn turn-${m.origin ?? m.role}${flashed ? " is-flashed" : ""}`}
+      data-turn-id={m.id}
+    >
       {/* Not searched: a byline is chrome, not conversation. Were it included,
           "you" would match the label above every message the human ever sent. */}
       <div className="turn-role">
@@ -1403,7 +1454,7 @@ function Turn({
         </div>
       )}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
-    </div>
+    </article>
   );
 }
 
@@ -1488,7 +1539,7 @@ function TerminalTurn({
   onOpenFile,
   filePaths,
   find,
-  marked,
+  flashed,
 }: {
   m: TranscriptMessage;
   agentLabel: string;
@@ -1499,8 +1550,8 @@ function TerminalTurn({
   onOpenFile?: WorkspaceLinkHandler;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
-  /** This is the turn the "Yours" rail jumped to. */
-  marked?: boolean;
+  /** The "Yours" rail just jumped here, so say so briefly. */
+  flashed?: boolean;
 }): React.JSX.Element {
   const [richText] = useRichText();
   const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
@@ -1511,7 +1562,7 @@ function TerminalTurn({
   // readers most of the time.
   if (m.role === "user") {
     return (
-      <article className={`pty-entry pty-user${marked ? " is-marked" : ""}`} data-turn-id={m.id}>
+      <article className={`pty-entry pty-user${flashed ? " is-flashed" : ""}`} data-turn-id={m.id}>
         <p className="pty-commandline">
           {/* A shell host is one token, so a two-word author becomes one: "mission
               control" is `mission-control@mission`, the same name the titlebar uses. */}
@@ -1544,7 +1595,7 @@ function TerminalTurn({
   }
   const highlight = textHits.length > 0;
   return (
-    <article className={`pty-entry pty-agent${marked ? " is-marked" : ""}`} data-turn-id={m.id}>
+    <article className={`pty-entry pty-agent${flashed ? " is-flashed" : ""}`} data-turn-id={m.id}>
       <header className="pty-speaker">
         {who} / stdout
         <ConversationTimestamp at={m.ts} className="pty-time" />

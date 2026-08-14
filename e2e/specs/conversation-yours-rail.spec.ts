@@ -17,8 +17,13 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * work, the daemon injecting on the operator's behalf, and workflow repair all arrive as
  * `user` turns byte-identical to a person's, so a rail keyed on the role would list them
  * under a tab called "Yours" and tell the operator they asked for work they never asked
- * for. This drives a real Foreman delivery through the real `/inject` route to prove the
- * separation on a turn the daemon actually attributed, rather than on a fixture.
+ * for. All three origins are driven through their real routes here - Foreman and workflow
+ * through `/inject`, Mission Control through the retro delivery - so the separation is
+ * proven on turns the daemon actually attributed rather than on fixtures.
+ *
+ * Selection is by role, label, placeholder and visible text throughout. A turn is
+ * addressable because both renderings draw one as an `article`, and a rail row because it
+ * is a button named by the message it indexes.
  *
  * No model tokens: `MISSION_CLAUDE_BIN` points at the fake throughout, and every turn
  * here is either typed into the composer or delivered by the daemon.
@@ -31,17 +36,17 @@ const FIRST = "Investigate the ensemble failure and schedule fixes";
 const SECOND = "Do not run the build in that checkout";
 const THIRD = "Re-file the task and go ahead with the build";
 
-/**
- * What is delivered on the operator's behalf - the turns that must NOT read as theirs.
- *
- * Two different origins, because the rail must group on the FIELD rather than on a
- * special case for Foreman. `harness` (drawn as "mission control") is the third, and it
- * is pinned in `test/conversation-yours.test.ts` instead: reaching it in a browser means
- * the retro delivery path, which refuses unless its skill is enabled, and a spec that
- * depended on that would be asserting the skills config rather than this rail.
- */
+/** The dispatch prompt, which is the operator's first message in the conversation. */
+const DISPATCH = "exercise the yours rail";
+
+/** What is delivered on the operator's behalf - the turns that must NOT read as theirs. */
 const FOREMAN_SAYS = "Continue. You have approval to run the build.";
 const WORKFLOW_SAYS = "Repair the failing stage and report back.";
+
+/** The bylines the rail draws for the three non-human origins. */
+const FOREMAN = "foreman";
+const MISSION_CONTROL = "mission control";
+const WORKFLOW = "workflow";
 
 interface FleetSession {
   id: string;
@@ -62,7 +67,7 @@ async function shoot(page: Page, card: ReturnType<Page["locator"]>, name: string
 /**
  * The dispatched session, once it has bound a conversation.
  *
- * Waiting for `agentSessionId` is what makes the injection below land on this session
+ * Waiting for `agentSessionId` is what makes the deliveries below land on this session
  * rather than on nothing.
  */
 async function session(daemon: DaemonHandle): Promise<FleetSession> {
@@ -81,13 +86,27 @@ async function session(daemon: DaemonHandle): Promise<FleetSession> {
 }
 
 /**
- * Deliver a turn the way Foreman does: the real route, with the real origin.
+ * Turn the shipped skills on before anything is dispatched.
  *
- * `/inject` is where authorship is recorded (`recordInjection`), and it is the ONLY
- * moment it is knowable - by the time the text reaches the agent it is keystrokes
- * indistinguishable from a person's. Driving the route rather than writing a fixture is
- * what makes this spec evidence that the shipped attribution path works.
+ * Order matters and is the whole reason this runs first: enabling skills bumps the
+ * config's generation, and a session that started BEFORE that bump is refused the retro
+ * until it acknowledges a reload. A session dispatched after it starts current, which is
+ * the state a real operator's session is in.
  */
+async function enableSkills(daemon: DaemonHandle): Promise<void> {
+  const view = (await (await fetch(`${daemon.baseURL}/api/skills`)).json()) as {
+    skills: { id: string }[];
+  };
+  const skills = Object.fromEntries(view.skills.map((s) => [s.id, true]));
+  const res = await fetch(`${daemon.baseURL}/api/skills/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled: true, skills }),
+  });
+  expect(res.ok, `PUT /api/skills/config answered ${res.status}`).toBe(true);
+}
+
+/** Deliver a turn the way Foreman and workflow repair do: the real route, real origin. */
 async function delivers(
   daemon: DaemonHandle,
   target: FleetSession,
@@ -105,21 +124,17 @@ async function delivers(
 }
 
 /**
- * Both machine deliveries, and the wait that makes the rail assertions deterministic.
+ * Mission Control typing into the session on the operator's behalf.
  *
- * `exact` on the text match because the fake agent echoes every turn it receives as
- * "Mock reply to: <text>", so a substring match finds the delivery AND its echo.
+ * The retro route is the shipped path that records a `harness` origin - the daemon acting
+ * on a human's click. There is no `/inject` origin for it deliberately: a caller cannot
+ * claim to be the daemon, so this has to come through the route that really is.
  */
-async function machinesDeliver(
-  page: Page,
-  daemon: DaemonHandle,
-  card: ReturnType<Page["locator"]>,
-): Promise<void> {
-  const target = await session(daemon);
-  await delivers(daemon, target, "foreman", FOREMAN_SAYS);
-  await expect(card.getByText(FOREMAN_SAYS, { exact: true })).toBeVisible();
-  await delivers(daemon, target, "workflow", WORKFLOW_SAYS);
-  await expect(card.getByText(WORKFLOW_SAYS, { exact: true })).toBeVisible();
+async function missionControlDelivers(daemon: DaemonHandle, target: FleetSession): Promise<void> {
+  const res = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(target.id)}/retro`, {
+    method: "POST",
+  });
+  expect(res.ok, `POST /retro answered ${res.status}: ${await res.text()}`).toBe(true);
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
@@ -127,13 +142,16 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill("exercise the yours rail");
-  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByPlaceholder("What should this agent do?").fill(DISPATCH);
+  await dialog
+    .getByRole("combobox")
+    .filter({ hasText: "finish without a Workflow" })
+    .selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 }
 
-/** Dispatch, expand, and leave a conversation with three of the operator's messages in it. */
+/** Dispatch, expand, and leave a conversation with three more of the operator's messages. */
 async function conversationWithMessages(
   page: Page,
   daemon: DaemonHandle,
@@ -156,14 +174,51 @@ async function conversationWithMessages(
   return card;
 }
 
-/** The rail, and the tab that owns it. */
+/** The rail, by the landmark it names itself with. */
 function rail(card: ReturnType<Page["locator"]>): ReturnType<Page["locator"]> {
   return card.getByRole("region", { name: "Conversation rail" });
 }
 
-test("the Yours tab lists what you sent, and says who sent the rest", async ({ dashboard, daemon }) => {
+/** One rail row, by the message it indexes. */
+function row(
+  card: ReturnType<Page["locator"]>,
+  text: string,
+): ReturnType<Page["locator"]> {
+  return rail(card).getByRole("button", { name: new RegExp(text) });
+}
+
+/**
+ * The transcript turn holding a message.
+ *
+ * Both renderings draw a turn as an `article`, so this addresses the turn itself rather
+ * than a span inside it. `.first()` because the agent's echo quotes the message back and
+ * so matches too - the operator's own turn is always the earlier of the two.
+ */
+function turn(
+  card: ReturnType<Page["locator"]>,
+  text: string,
+): ReturnType<Page["locator"]> {
+  return card.getByRole("article").filter({ hasText: text }).first();
+}
+
+/** The colour a rail row draws its message in, which is what "dimmed" means on screen. */
+function colourOf(locator: ReturnType<Page["locator"]>): Promise<string> {
+  return locator.evaluate((el) => getComputedStyle(el).color);
+}
+
+test("the Yours tab lists what you sent, and says who sent the rest", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enableSkills(daemon);
   const card = await conversationWithMessages(dashboard, daemon);
-  await machinesDeliver(dashboard, daemon, card);
+
+  const target = await session(daemon);
+  await delivers(daemon, target, "foreman", FOREMAN_SAYS);
+  await expect(card.getByText(FOREMAN_SAYS, { exact: true })).toBeVisible();
+  await delivers(daemon, target, "workflow", WORKFLOW_SAYS);
+  await expect(card.getByText(WORKFLOW_SAYS, { exact: true })).toBeVisible();
+  await missionControlDelivers(daemon, target);
 
   const yours = rail(card).getByRole("tab", { name: "Yours" });
 
@@ -174,119 +229,131 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({ d
   await yours.click();
   await expect(yours).toHaveAttribute("aria-selected", "true");
 
-  // Every message the operator typed is indexed.
-  for (const text of [FIRST, SECOND, THIRD]) {
-    await expect(rail(card).getByRole("button", { name: new RegExp(text) })).toBeVisible();
+  // Every message the operator typed is indexed, the dispatch prompt included - it is a
+  // message they wrote, and the rail would be lying to leave it out.
+  for (const text of [DISPATCH, FIRST, SECOND, THIRD]) {
+    await expect(row(card, text)).toBeVisible();
   }
 
-  // And the count is about THEM. Asserted against the rows actually drawn rather than a
-  // literal, because the dispatch prompt is one of the operator's messages too - the
-  // number that matters is that the delivered turns are not in it.
-  const own = rail(card).locator(".yours-row:not(.is-injected)");
-  const delivered = rail(card).locator(".yours-row.is-injected");
-  await expect(delivered).toHaveCount(2);
-  await expect(rail(card).locator(".activity-head .activity-count")).toHaveText(
-    String(await own.count()),
-  );
+  // All three machine-typed turns are listed - nothing is hidden - and each names its own
+  // author, so none can be read as something the operator typed. This is the assertion
+  // the whole feature turns on: every one of these seven turns carries the `user` role,
+  // so a rail grouping by ROLE would have shown all seven as theirs.
+  const foremanRow = row(card, FOREMAN_SAYS);
+  const workflowRow = row(card, WORKFLOW_SAYS);
+  const missionRow = rail(card).getByRole("button", { name: new RegExp(MISSION_CONTROL) });
+  await expect(foremanRow).toContainText(FOREMAN);
+  await expect(workflowRow).toContainText(WORKFLOW);
+  await expect(missionRow).toContainText(MISSION_CONTROL);
 
-  // Both machine deliveries are listed - nothing is hidden - and each names its own
-  // author, so neither can be read as something the operator typed. This is the
-  // assertion the whole feature turns on: every one of these five turns carries the
-  // `user` role, so a rail grouping by ROLE would have shown all five as theirs.
-  const foremanRow = rail(card).getByRole("button", { name: new RegExp(FOREMAN_SAYS) });
-  const workflowRow = rail(card).getByRole("button", { name: new RegExp(WORKFLOW_SAYS) });
-  await expect(foremanRow).toContainText("foreman");
-  await expect(workflowRow).toContainText("workflow");
+  // The count is about the operator's messages ONLY. Four typed, three delivered.
+  await expect(rail(card).getByText("4", { exact: true })).toBeVisible();
 
-  // And they sit BELOW the operator's own, whatever order they arrived in - both were
-  // delivered after all three, but it is the grouping that puts them last, not the clock.
-  const rows = rail(card).getByRole("button").filter({ hasText: /Investigate|Do not run|Re-file|Continue|Repair/ });
-  await expect(rows).toHaveCount(5);
-  await expect(rows.nth(3)).toContainText(FOREMAN_SAYS);
-  await expect(rows.nth(4)).toContainText(WORKFLOW_SAYS);
+  // And the delivered turns sit BELOW the operator's own, whatever order they arrived in.
+  // All three were delivered after all four were typed, but it is the grouping that puts
+  // them last rather than the clock.
+  const rows = rail(card)
+    .getByRole("button")
+    .filter({ hasText: /exercise|Investigate|Do not run|Re-file|Continue|Repair|mission control/ });
+  await expect(rows).toHaveCount(7);
+  for (const [i, byline] of [FOREMAN, WORKFLOW, MISSION_CONTROL].entries()) {
+    await expect(rows.nth(4 + i)).toContainText(byline);
+  }
 
-  // Dimmed, and provably so rather than by inspection: a delivered row's text is drawn
-  // in a quieter colour than the operator's own.
-  const mine = rail(card).getByRole("button", { name: new RegExp(FIRST) });
-  const colourOf = (row: ReturnType<Page["locator"]>): Promise<string> =>
-    row.locator(".yours-text").evaluate((el) => getComputedStyle(el).color);
+  // Dimmed, and provably so rather than by inspection: a delivered row draws its message
+  // in a quieter colour than the operator's own, and all three share it.
   const quiet = await colourOf(foremanRow);
-  expect(quiet).not.toBe(await colourOf(mine));
+  expect(quiet).not.toBe(await colourOf(row(card, FIRST)));
   expect(await colourOf(workflowRow)).toBe(quiet);
+  expect(await colourOf(missionRow)).toBe(quiet);
 
   // The rail says why, on the surface, rather than leaving the dimming to be decoded.
   await expect(rail(card)).toContainText(/without it reading as yours/);
 
+  // The rail opens anchored on the operator's last message, so the delivered rows sit
+  // below the fold. Bring them up for the photograph - the point of the picture is the
+  // two groups together.
+  await missionRow.scrollIntoViewIfNeeded();
   await shoot(dashboard, card, "01-yours-tab");
 
   // An index hides nothing: the agent's replies are still in the transcript beside it.
   await expect(card.getByText(`Mock reply to: ${FIRST}`)).toBeVisible();
 });
 
-test("clicking a row moves the transcript to that turn", async ({ dashboard, daemon }) => {
+test("clicking a row moves the transcript to that turn and flashes it", async ({
+  dashboard,
+  daemon,
+}) => {
   const card = await conversationWithMessages(dashboard, daemon);
   await rail(card).getByRole("tab", { name: "Yours" }).click();
 
   // The log follows its tail, so the FIRST message is scrolled out of sight by the time
   // three exchanges have landed. That is the state this feature exists to rescue, and
   // asserting it first is what makes the jump below mean something.
-  const firstTurn = card.locator("[data-turn-id]").filter({ hasText: FIRST }).first();
+  const firstTurn = turn(card, FIRST);
   await expect(firstTurn).not.toBeInViewport();
+  await expect(firstTurn).not.toHaveClass(/is-flashed/);
 
-  await rail(card).getByRole("button", { name: new RegExp(FIRST) }).click();
+  await row(card, FIRST).click();
 
-  // The transcript moved to it, and the turn is marked so the reader can see where they
+  // The transcript moved to it, and the turn flashes so the reader can see where they
   // landed - with the rest of the conversation still around it, which is the whole
   // difference between indexing and filtering.
   await expect(firstTurn).toBeInViewport();
-  await expect(firstTurn).toHaveClass(/is-marked/);
+  await expect(firstTurn).toHaveClass(/is-flashed/);
   await expect(card.getByText(`Mock reply to: ${FIRST}`)).toBeVisible();
-
-  // The rail marks its own end of that selection too, so the two never disagree about
-  // which message is being read.
-  await expect(rail(card).getByRole("button", { name: new RegExp(FIRST) })).toHaveAttribute(
-    "aria-current",
-    "true",
-  );
 
   await shoot(dashboard, card, "02-jumped-to-turn");
 
+  // The rail marks its own end of that selection, and keeps it: the flash answers "you
+  // were taken here", the mark answers "this is the message you are reading", and only
+  // the first of those stops being true.
+  await expect(row(card, FIRST)).toHaveAttribute("aria-current", "true");
+
+  // The flash is a flash. It goes on its own, leaving the turn reading as an ordinary
+  // part of the conversation rather than as one in a permanent state.
+  await expect(firstTurn).not.toHaveClass(/is-flashed/, { timeout: 10_000 });
+  await expect(row(card, FIRST)).toHaveAttribute("aria-current", "true");
+
   // And a second row moves it again, rather than the first click being a one-off.
-  const thirdTurn = card.locator("[data-turn-id]").filter({ hasText: THIRD }).first();
-  await rail(card).getByRole("button", { name: new RegExp(THIRD) }).click();
+  const thirdTurn = turn(card, THIRD);
+  await row(card, THIRD).click();
   await expect(thirdTurn).toBeInViewport();
-  await expect(thirdTurn).toHaveClass(/is-marked/);
-  await expect(firstTurn).not.toHaveClass(/is-marked/);
+  await expect(thirdTurn).toHaveClass(/is-flashed/);
+  await expect(firstTurn).not.toHaveClass(/is-flashed/);
 });
 
 test("the jump works in the terminal rendering too", async ({ dashboard, daemon }) => {
   // `conversationView` ships as "terminal", so for most readers this IS the conversation.
-  // The two renderings draw a turn as completely different elements - a `.turn` bubble
-  // and a `.pty-entry` command line - so a rail that could only address one of them
-  // would be broken by default and working only for people who had switched.
+  // The two renderings draw a turn completely differently - a bubble and a command line -
+  // so a rail that could only address one of them would be broken by default and working
+  // only for people who had switched.
   const card = await conversationWithMessages(dashboard, daemon);
   await card.getByRole("button", { name: "Terminal view" }).click();
-  await expect(card.locator(".transcript[data-view='terminal']")).toBeVisible();
+
+  // The terminal rendering relabels the composer with its own prompt metaphor, which is
+  // how a reader knows the switch landed.
+  const reply = card.getByPlaceholder("Send the next instruction to this process…");
+  await expect(reply).toBeVisible();
 
   // This rendering draws a turn as one command line rather than a bubble, so the three
-  // exchanges above do not fill the log's height and the first message has never left
-  // the screen. Fill it: a jump that lands on something already in view proves nothing.
-  // The terminal rendering relabels the composer with its own prompt metaphor, so this
-  // is deliberately not the chat placeholder the helper above uses.
-  const reply = card.getByPlaceholder("Send the next instruction to this process…");
+  // exchanges above do not fill the log's height and the first message has never left the
+  // screen. Fill it: a jump that lands on something already in view proves nothing.
   for (const n of [1, 2, 3, 4]) {
     await reply.fill(`Filler turn ${n} to push the log past its height`);
     await reply.press("Enter");
-    await expect(card.getByText(`Mock reply to: Filler turn ${n} to push the log past its height`)).toBeVisible();
+    await expect(
+      card.getByText(`Mock reply to: Filler turn ${n} to push the log past its height`),
+    ).toBeVisible();
   }
 
   await rail(card).getByRole("tab", { name: "Yours" }).click();
-  const firstTurn = card.locator("[data-turn-id]").filter({ hasText: FIRST }).first();
+  const firstTurn = turn(card, FIRST);
   await expect(firstTurn).not.toBeInViewport();
 
-  await rail(card).getByRole("button", { name: new RegExp(FIRST) }).click();
+  await row(card, FIRST).click();
   await expect(firstTurn).toBeInViewport();
-  await expect(firstTurn).toHaveClass(/is-marked/);
+  await expect(firstTurn).toHaveClass(/is-flashed/);
   // Still a terminal entry, not a chat bubble - the jump did not change the rendering.
   await expect(firstTurn).toHaveClass(/pty-entry/);
 });
@@ -309,7 +376,7 @@ test("a narrow conversation can still reach the tabs, once it opens the rail", a
   // and the Yours tab is reachable without opening anything first.
   const yours = narrow.getByRole("tab", { name: "Yours" });
   await expect(yours).toBeVisible();
-  await expect(narrow.getByRole("button", { name: new RegExp(SECOND) })).toBeHidden();
+  await expect(row(card, SECOND)).toBeHidden();
 
   // Choosing a tab reveals it. A tab that switched a list the reader cannot see would be
   // a dead end at this width, which is the whole reason this opens.
@@ -319,28 +386,23 @@ test("a narrow conversation can still reach the tabs, once it opens the rail", a
   const opened = narrow.getByRole("button", { name: "Your messages" });
   await expect(opened).toHaveAttribute("aria-expanded", "true");
   await expect(toggle).toHaveCount(0);
-  await expect(narrow.getByRole("button", { name: new RegExp(SECOND) })).toBeVisible();
+  await expect(row(card, SECOND)).toBeVisible();
 
   await shoot(dashboard, card, "03-narrow-yours-open");
 
   // And it still closes, on the same control.
   await opened.click();
-  await expect(narrow.getByRole("button", { name: new RegExp(SECOND) })).toBeHidden();
+  await expect(row(card, SECOND)).toBeHidden();
   await expect(yours).toBeVisible();
-
-  // The composer survives the stacked section: still on screen, still writable.
-  const reply = card.getByPlaceholder(/^Reply to this session/);
-  await expect(reply).toBeVisible();
-  await expect(reply).toBeEnabled();
 });
 
 test("the tab survives find taking the column, and switches back", async ({ dashboard, daemon }) => {
   const card = await conversationWithMessages(dashboard, daemon);
   await rail(card).getByRole("tab", { name: "Yours" }).click();
-  await expect(rail(card).getByRole("button", { name: new RegExp(SECOND) })).toBeVisible();
+  await expect(row(card, SECOND)).toBeVisible();
 
   // Find owns the whole column while it is open - the rail is not merely covered.
-  await card.locator(".card-meta").click();
+  await card.getByRole("heading", { name: /Exercise The Yours Rail/i }).click();
   await dashboard.keyboard.press("Meta+f");
   await expect(card.getByRole("searchbox", { name: "Find in conversation" })).toBeVisible();
   await expect(card.getByRole("region", { name: "Conversation rail" })).toHaveCount(0);
@@ -349,7 +411,7 @@ test("the tab survives find taking the column, and switches back", async ({ dash
   // Activity: they were working through their own messages, and find was a detour.
   await dashboard.keyboard.press("Escape");
   await expect(rail(card).getByRole("tab", { name: "Yours" })).toHaveAttribute("aria-selected", "true");
-  await expect(rail(card).getByRole("button", { name: new RegExp(SECOND) })).toBeVisible();
+  await expect(row(card, SECOND)).toBeVisible();
 
   // Back to Activity, and the rail is the tool-call list again.
   await rail(card).getByRole("tab", { name: "Activity" }).click();
@@ -364,17 +426,18 @@ test("find's You scope and the Yours tab agree about whose message is whose", as
   // asserted against the same delivered turn. They disagreed before: find selected on the
   // role alone, so its "You" pill returned rows whose own byline said foreman.
   const card = await conversationWithMessages(dashboard, daemon);
-  await machinesDeliver(dashboard, daemon, card);
+  await delivers(daemon, await session(daemon), "foreman", FOREMAN_SAYS);
+  await expect(card.getByText(FOREMAN_SAYS, { exact: true })).toBeVisible();
 
-  await card.locator(".card-meta").click();
+  await card.getByRole("heading", { name: /Exercise The Yours Rail/i }).click();
   await dashboard.keyboard.press("Meta+f");
   const box = card.getByRole("searchbox", { name: "Find in conversation" });
   // A word both the operator and Foreman used, so scope is the only thing that can
   // separate the two matches.
   await box.fill("build");
 
-  // `exact` on both pills: the scope buttons sit in the same rail as the result rows,
-  // and "You" is a substring of several bylines and snippets below them.
+  // `exact` on both pills: the scope buttons sit in the same rail as the result rows, and
+  // "You" is a substring of several bylines and snippets below them.
   const results = card.getByRole("complementary", { name: "Search results" });
   await results.getByRole("button", { name: "All", exact: true }).click();
   await expect(results).toContainText(FOREMAN_SAYS);

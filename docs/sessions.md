@@ -990,7 +990,9 @@ first, and choosing one opens it.
 
 **Yours** answers a different question: *what did I actually ask for?* It lists the
 messages you sent, newest last, with the time and the first two lines of each. Clicking one
-takes the transcript to that turn and marks it.
+takes the transcript to that turn, which flashes where it landed. The row you picked stays
+marked in the rail; the flash on the turn fades, because it answers "you were taken here"
+rather than saying the message is in some state.
 
 It is an **index, not a filter**. Nothing is removed from the conversation - the agent's
 replies, its tool runs and everything else stay exactly where they were, which is the

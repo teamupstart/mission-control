@@ -1,9 +1,9 @@
-import { lstat, realpath } from "node:fs/promises";
 import type { Stats } from "node:fs";
+import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { run } from "../util/exec.ts";
-import { isInside } from "./paths.ts";
 import type { ArchiveRepoSlot } from "./capture-store.ts";
+import { isInside } from "./paths.ts";
 import type { ResolvedRoot } from "./plan.ts";
 
 /**

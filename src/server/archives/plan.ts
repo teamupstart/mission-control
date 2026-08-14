@@ -1,4 +1,3 @@
-import type { ArchiveCaptureJob, ArchiveRepoSlot } from "./capture-store.ts";
 import {
   ARCHIVE_LIMITS,
   ARCHIVE_REPORT_DIR,
@@ -7,6 +6,7 @@ import {
   type ArchiveManifestArtifact,
   type ArchiveManifestMissing,
 } from "@shared/archives.ts";
+import type { ArchiveCaptureJob, ArchiveRepoSlot } from "./capture-store.ts";
 
 /**
  * What a capture is going to copy, and who decides.

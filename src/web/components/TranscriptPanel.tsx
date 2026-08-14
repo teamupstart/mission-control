@@ -48,7 +48,7 @@ import {
   type FindHit,
   type FindScope,
 } from "../lib/find.ts";
-import { ConversationActivity } from "./ConversationActivity.tsx";
+import { ConversationActivity, type ActivityTab } from "./ConversationActivity.tsx";
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { TerminalStatusLine, TerminalTitlebar } from "./ConversationTerminal.tsx";
@@ -80,6 +80,16 @@ import { SessionLaunchers, type SessionLaunchersHandle } from "./LaunchMenu.tsx"
  */
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 8000;
+
+/**
+ * How long a jumped-to turn keeps its flash.
+ *
+ * Long enough to find with the eye after the scroll settles, short enough that it has
+ * gone by the time the reader has finished the message. The stylesheet fades the ring
+ * out across the same span, so this is when the class comes off rather than when the
+ * flash becomes invisible.
+ */
+const TURN_FLASH_MS = 2000;
 
 /**
  * Imperative surface the card holds onto so the send shortcut can reach this panel's
@@ -280,6 +290,32 @@ export function TranscriptPanel({
    * stylesheet shows the list and hides the toggle above the container breakpoint.
    */
   const [activityOpen, setActivityOpen] = useState(false);
+  /**
+   * Which of the secondary rail's two tabs is up. Held HERE rather than in the rail so
+   * it survives find: find unmounts the rail entirely while it owns the column, and a
+   * reader who was working through their own messages should get that list back when
+   * they close it, not be silently returned to Activity.
+   */
+  const [railTab, setRailTab] = useState<ActivityTab>("activity");
+  /**
+   * The turn the "Yours" rail last jumped to.
+   *
+   * The nonce is what makes clicking the SAME row twice work: keyed on the id alone the
+   * state would be unchanged, so the effects below would not re-run and the second click
+   * would do nothing at all for a reader who had scrolled away since the first. With it,
+   * the log re-centres on the turn and the flash's timer starts again.
+   */
+  const [jump, setJump] = useState<{ id: string; nonce: number } | null>(null);
+  /**
+   * The turn currently flashing, cleared on a timer.
+   *
+   * The two ends of a jump are deliberately different: the RAIL row stays marked, because
+   * "which message am I reading?" stays true, while the TURN only flashes, because the
+   * log is a conversation and a turn wearing a permanent ring would read as a state the
+   * message is in rather than as somewhere the reader was just taken.
+   */
+  const [flashedTurnId, setFlashedTurnId] = useState<string | null>(null);
+  const turnFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -373,6 +409,61 @@ export function TranscriptPanel({
     const el = logRef.current?.querySelector(`[data-find-key="${CSS.escape(currentKey)}"]`);
     el?.scrollIntoView({ block: "center" });
   }, [currentKey]);
+
+  /**
+   * Bring a turn the rail selected into view.
+   *
+   * Queried out of the DOM rather than held in a ref map, for the reason the episode
+   * jump already gives: the target may not be mounted. Both conversation renderings tag
+   * their turn roots with `data-turn-id`, so this one effect serves the chat log and the
+   * terminal rendering without knowing which is up.
+   *
+   * `block: "center"` and instant, matching find's jump: the reader asked to land on a
+   * message and read what surrounds it, which is the entire point of indexing rather
+   * than filtering. A passive effect, not a layout one, so it runs AFTER the tail-follow
+   * layout effect and wins the tick they both fire on - the same ordering find relies on.
+   */
+  useEffect(() => {
+    if (!jump) return;
+    const el = logRef.current?.querySelector(`[data-turn-id="${CSS.escape(jump.id)}"]`);
+    el?.scrollIntoView({ block: "center" });
+  }, [jump, terminal]);
+
+  /**
+   * Flash the turn that was jumped to, then let it settle back into the conversation.
+   *
+   * Separate from the scroll above so that switching rendering mid-read re-centres the
+   * turn without re-flashing it: the reader did not ask to be taken anywhere the second
+   * time. The timer is cleared and restarted per jump, so a run of quick clicks leaves
+   * exactly one turn flashing rather than several fading at once.
+   *
+   * The rewind is what makes a SECOND click on the same row flash again. Setting the id
+   * it already holds is a state update React bails on, so the class never leaves the DOM
+   * and the CSS animation - which only replays when the class is removed and re-added -
+   * would sit at its faded end state while the timer quietly extended. Rewinding the
+   * running animation instead restarts the ring without a re-render, without the class
+   * flicker a clear-then-set would cost, and without remounting the turn. It finds
+   * nothing on a first click, which is correct: there is no animation yet, and applying
+   * the class below starts one.
+   */
+  useEffect(() => {
+    if (!jump) return;
+    const el = logRef.current?.querySelector(`[data-turn-id="${CSS.escape(jump.id)}"]`);
+    for (const animation of el?.getAnimations() ?? []) animation.currentTime = 0;
+    setFlashedTurnId(jump.id);
+    if (turnFlashTimer.current) clearTimeout(turnFlashTimer.current);
+    turnFlashTimer.current = setTimeout(() => {
+      turnFlashTimer.current = null;
+      setFlashedTurnId(null);
+    }, TURN_FLASH_MS);
+  }, [jump]);
+
+  useEffect(
+    () => () => {
+      if (turnFlashTimer.current) clearTimeout(turnFlashTimer.current);
+    },
+    [],
+  );
 
   // Registered the same way the launchers are: App holds a per-session map and reaches
   // the mounted panel through it. Deregistering on unmount is what stops the chord from
@@ -849,6 +940,7 @@ export function TranscriptPanel({
                   onOpenFile={linkHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                  flashed={row.id === flashedTurnId}
                 />
               ) : (
                 <Turn
@@ -858,6 +950,7 @@ export function TranscriptPanel({
                   onOpenFile={linkHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                  flashed={row.id === flashedTurnId}
                 />
               ),
         )}
@@ -903,6 +996,17 @@ export function TranscriptPanel({
             messages={messages}
             open={activityOpen}
             onToggle={() => setActivityOpen((v) => !v)}
+            tab={railTab}
+            onTab={(next) => {
+              setRailTab(next);
+              // Picking a tab reveals it. At rail widths the list is already showing and
+              // this changes nothing; at narrow widths the list is behind the disclosure,
+              // and choosing a tab whose contents stay hidden is a dead end - the reader
+              // asked to see that list, which is the same request the caret makes.
+              setActivityOpen(true);
+            }}
+            selectedTurnId={jump?.id ?? null}
+            onSelectTurn={(id) => setJump((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))}
           />
         )}
       </div>
@@ -1299,12 +1403,15 @@ function Turn({
   onOpenFile,
   filePaths,
   find,
+  flashed,
 }: {
   m: TranscriptMessage;
   agentLabel: string;
   onOpenFile?: WorkspaceLinkHandler;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
+  /** The "Yours" rail just jumped here, so say so briefly. */
+  flashed?: boolean;
 }): React.JSX.Element {
   const [richText] = useRichText();
   const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
@@ -1327,7 +1434,21 @@ function Turn({
    */
   const highlight = textHits.length > 0;
   return (
-    <div className={`turn turn-${m.origin ?? m.role}`}>
+    // An `article`, matching what the terminal rendering has always drawn a turn as: one
+    // turn is a self-contained composition, and having both renderings say so means a
+    // reader - or a test - can address "the turn holding this message" without reaching
+    // for a class. `data-turn-id` is what the rail's jump effect queries, so a click on a
+    // row lands on the turn itself rather than on the nearest thing carrying an id.
+    //
+    // Named by its author, which is what the ARIA feed pattern asks of an article in a
+    // stream of them: unnamed, every turn announces as a bare "article" and a reader
+    // moving between them is told nothing about which is which. The name is the byline
+    // already drawn below, so it repeats one word rather than the message.
+    <article
+      className={`turn turn-${m.origin ?? m.role}${flashed ? " is-flashed" : ""}`}
+      aria-label={who}
+      data-turn-id={m.id}
+    >
       {/* Not searched: a byline is chrome, not conversation. Were it included,
           "you" would match the label above every message the human ever sent. */}
       <div className="turn-role">
@@ -1350,7 +1471,7 @@ function Turn({
         </div>
       )}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
-    </div>
+    </article>
   );
 }
 
@@ -1435,6 +1556,7 @@ function TerminalTurn({
   onOpenFile,
   filePaths,
   find,
+  flashed,
 }: {
   m: TranscriptMessage;
   agentLabel: string;
@@ -1445,14 +1567,23 @@ function TerminalTurn({
   onOpenFile?: WorkspaceLinkHandler;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
+  /** The "Yours" rail just jumped here, so say so briefly. */
+  flashed?: boolean;
 }): React.JSX.Element {
   const [richText] = useRichText();
   const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
   const who = turnWho(m, agentLabel);
   const currentKey = find?.currentKey ?? null;
+  // Tagged in BOTH renderings, and with the same attribute: the terminal view is the
+  // shipped default, so a rail that could only jump in chat mode would not work for most
+  // readers most of the time.
   if (m.role === "user") {
     return (
-      <article className="pty-entry pty-user">
+      <article
+        className={`pty-entry pty-user${flashed ? " is-flashed" : ""}`}
+        aria-label={who}
+        data-turn-id={m.id}
+      >
         <p className="pty-commandline">
           {/* A shell host is one token, so a two-word author becomes one: "mission
               control" is `mission-control@mission`, the same name the titlebar uses. */}
@@ -1485,7 +1616,11 @@ function TerminalTurn({
   }
   const highlight = textHits.length > 0;
   return (
-    <article className="pty-entry pty-agent">
+    <article
+      className={`pty-entry pty-agent${flashed ? " is-flashed" : ""}`}
+      aria-label={who}
+      data-turn-id={m.id}
+    >
       <header className="pty-speaker">
         {who} / stdout
         <ConversationTimestamp at={m.ts} className="pty-time" />

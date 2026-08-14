@@ -28,6 +28,7 @@ import { AgentDot } from "./components/session-bits.tsx";
 import { SpendChip } from "./components/SpendChip.tsx";
 import { KeepAwakeControl } from "./components/KeepAwakeControl.tsx";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
+import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
@@ -173,8 +174,15 @@ const PAGE_SEGMENTS = [
     glyph: "▷",
     hint: "Workflow Runs - live and finished workflow reviews",
   },
+  {
+    id: "scouts",
+    action: "scouts",
+    label: "Scouts",
+    glyph: "⌖",
+    hint: "Scouts - finished investigations and the evidence they kept",
+  },
 ] as const satisfies readonly {
-  id: "fleet" | "library" | "runs";
+  id: "fleet" | "library" | "runs" | "scouts";
   action: ActionId;
   label: string;
   glyph: string;
@@ -198,6 +206,10 @@ export function App(): React.JSX.Element {
     settingsStatus,
     keepAwakeStatus,
     harnessesRevision,
+    // One counter, bumped per reconciled batch of archives and once per reconnect. It is
+    // how the Scouts page learns to refetch its current window without the browser polling
+    // and without unbounded history entering the SSE snapshot.
+    scoutsRevision,
     schedules,
     connected,
     hasSnapshot,
@@ -2430,6 +2442,20 @@ export function App(): React.JSX.Element {
               />
             </ExecutionPage>
           )}
+          scouts={
+            // Mounted only when the route IS Scouts, like every other slot, so the archive
+            // list and detail fetches never run while somebody is on the fleet. The page
+            // owns its own header rather than an `ExecutionPage` frame: its search rail is
+            // the first thing on screen and has no page blurb above it.
+            route.page === "scouts" ? (
+              <ScoutsPage
+                route={route}
+                navigate={navigate}
+                replace={replace}
+                revision={scoutsRevision}
+              />
+            ) : null
+          }
           shipped={
             // The Ship log owns its own `ExecutionPage` frame, unlike the two above: the
             // header's trailing slot holds its range chips, which are the page's own state,

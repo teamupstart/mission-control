@@ -317,6 +317,85 @@ portable tombstone and cannot promise either behaviour.
 Deleting a task, or reclaiming its worktree, never deletes a scout archive. There is no
 automatic retention sweep - a ready archive stays until you delete it.
 
+## Reading one: the Scouts page
+
+**Scouts** is a permanent top-level page, the fourth segment in the title bar, reachable by
+<kbd>⇧</kbd><kbd>S</kbd> from anywhere and by a command-palette row that answers to the words
+an operator actually reaches for - investigation, findings, report, research, evidence,
+history, audit.
+
+![The Scouts page: the archive rail, the sandboxed report, and the evidence spine](images/scouts.png)
+
+Two stable routes, both copyable:
+
+```text
+#/scouts
+#/scouts/<producer-id>~<archive-id>
+#/scouts/<producer-id>~<archive-id>?q=&producer=&repo=&agent=&status=&from=&to=
+```
+
+The filter names are exactly the ones `GET /api/scouts` validates, so a link and a request
+never disagree. The pagination cursor is deliberately absent: it continues the window you are
+looking at rather than naming a place, so a pasted link cannot open on page three with no
+first page above it.
+
+Two different things can be wrong with a key, and they are answered differently:
+
+- **Malformed or undecodable** - not a `<producer-id>~<archive-id>` pair of lowercase UUIDs,
+  or an escape no decoder can read. The router drops it before anything is fetched, so the
+  link opens the filtered list rather than a blank reader. Nothing is asked of the daemon,
+  because nothing about the key could name an archive.
+- **Well formed but not here** - a real key for an archive this library does not hold, such
+  as one deleted since the link was copied, or one that only ever existed on another machine.
+  The key is kept and its detail IS requested, because a key absent from the current filtered
+  window may still be a real archive. The daemon answers 404 and the reader says *"This scout
+  could not be read"* with the reason, beside a control back to the list.
+
+### Three panes
+
+- **The rail** searches. Results are newest first under day headings, each row carrying its
+  title, time, artifact count and size, plus the daemon's snippet saying *why* it matched.
+- **The reader** opens the primary report by default, in the same sandbox the Files tab uses:
+  no scripts beyond the two hashed bridges, no network, and never `allow-same-origin`. A
+  relative link inside a report resolves only to a verified companion artifact in the same
+  bundle; every unclaimed link stays inert.
+- **The evidence spine** lists every artifact as a stop on one line, with its role, repository
+  slot, original checkout path, media type, byte count and SHA-256, and offers preview,
+  download and registered open. Below it sits the absolute bundle directory, copyable, so the
+  files are reachable without the app.
+
+### It is honest about what it has
+
+State is never carried by colour alone - every one of these is a word on screen:
+
+| Index state | What the page shows |
+| --- | --- |
+| `ready` | **Complete**. The report reads; the evidence is all present. |
+| `partial` | **Partial**, amber, and every `missing` entry enumerated with its expected source and reason. It is never presented as an answer. |
+| `unreadable` | **Unreadable**, red, showing only the daemon's safe diagnostic. There is nothing to read, and the page says so rather than rendering an empty document. An unreadable bundle has no title, so it is listed by its archive id. |
+
+A **failed request is not an empty library.** "The scout archive is unavailable" and "No
+scouts archived yet" are different sentences, because telling an operator their evidence is
+gone when the daemon merely refused would be the worst thing this page could do.
+
+A `producerLabel` copied in from another machine is shown and marked **unverified**: it is a
+claim in a manifest, not an authenticated identity.
+
+### It refreshes without polling
+
+The page consumes the `scout_archive_changed` revision from the existing event stream. A
+reconciled batch, or a reconnect, refetches the current window and the open archive. There is
+no interval, no second SSE connection, and no archive history in the opening snapshot.
+
+### Deleting from the page
+
+**Delete scout** appears in the selected archive's header and on every row. Both open one
+confirmation that names the archive, states the local consequence and the sync caveat, and
+requires the literal word `DELETE`. The archive key is captured when the control is pressed
+and echoed as `confirmArchiveKey`, so background reconciliation reordering the rail underneath
+an open dialog cannot redirect a confirmed deletion onto a different archive. Rows disappear
+only after the daemon confirms; a refusal keeps the dialog open with the reason.
+
 ## Related
 
 - [Configuration](configuration.md) for `MISSION_HOME` and `MISSION_SCOUT_RECONCILE_MS`.

@@ -262,8 +262,11 @@ unfinished list: the [Ship log](library-and-line.md#the-ship-log) is the only fu
 permanent chrome. The one door it does have is two clicks inside the fleet - the Line's ⚑
 Shipped stage opens its [drawer](#the-stage-drawers), whose header escalates here - so
 <kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app.
-Fleet, the Library and Runs are one press of the segmented control away, and a palette row
-beside a visible door would only be a second door.
+Fleet, the Library, Runs and Scouts are one press of the segmented control away, and a
+palette row beside a visible door would only be a second door. Scouts has one anyway,
+because the words an operator reaches for - investigation, findings, evidence, research -
+are none of them the page's name; that row is a static destination, and the archive
+catalog itself is searched inside the page rather than indexed into the palette.
 
 Archived assets are not indexed, because the shelf a hit would land on does not list them.
 Task sources appear under Settings rather than as their own kind, which is where the Library's
@@ -638,6 +641,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>f</kbd> | Open **Fleet** | Anywhere |
 | <kbd>w</kbd> | Open the **Library** | Anywhere |
 | <kbd>r</kbd> | Open **Workflow Runs** | Anywhere |
+| <kbd>⇧</kbd><kbd>S</kbd> | Open **Scouts** - the archive of finished investigations | Anywhere |
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |
 | type, <kbd>↑</kbd><kbd>↓</kbd>, <kbd>Enter</kbd> | Filter repositories by name, move through the matches and take one | Guided dispatch: Repo |

@@ -9,6 +9,11 @@ import {
   WORKFLOW_RUN_STATUSES,
   type WorkflowRunStatus,
 } from "@shared/workflow.ts";
+import {
+  SCOUT_INDEX_STATUSES,
+  parseScoutArchiveKey,
+  type ScoutIndexStatus,
+} from "@shared/scouts.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
 // dashboard has - fleet, Library, Runs, Ensembles, Settings - is a variant of `MissionRoute`
@@ -80,6 +85,41 @@ export interface WorkflowRunFilters {
   workflowId?: string;
   session?: string;
 }
+
+/**
+ * The Scouts page's bounded search, as the address bar carries it.
+ *
+ * These are the SAME names `ScoutSearchQuerySchema` validates on the way into
+ * `GET /api/scouts`, `status` included. The approved plan wrote that one filter as `state`
+ * in both its route sketch and its route table, but phase 1 shipped `status`, and one
+ * spelling in the hash with another on the wire would mean a translation step in the page
+ * whose only job is to keep two names for one filter agreeing forever.
+ *
+ * `cursor` and `limit` are deliberately NOT here: a cursor continues the current result
+ * window rather than naming a destination, so it must not survive a copied link - pasting
+ * page three of a search into a fresh tab would otherwise open on a window with no first
+ * page above it.
+ */
+export interface ScoutFilters {
+  /** Literal substring search, server-side, over every indexed segment. */
+  q?: string;
+  producer?: string;
+  repo?: string;
+  agent?: string;
+  status?: ScoutIndexStatus;
+  /** Epoch ms, inclusive, bounding the archive's sort time. */
+  from?: number;
+  to?: number;
+}
+
+/** Reads one epoch-ms bound, or undefined when it is not a value the API would accept. */
+function scoutBound(raw: string | null): number | undefined {
+  if (!raw) return undefined;
+  const value = Number(raw);
+  // Matches the server's `z.coerce.number().int().nonnegative()`. A bound the route accepts
+  // but the route's own API would refuse is a link that lands on a 400 instead of a page.
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
 export type MissionRoute =
   | { page: "fleet" }
   | {
@@ -116,19 +156,38 @@ export type MissionRoute =
        */
       page: "shipped";
     }
+  | {
+      /**
+       * The scout archive: a searchable history of what the fleet investigated, read long
+       * after the agent, task, transcript and worktree that produced it are gone.
+       *
+       * Its filters ARE in the hash, unlike the Ship log's, because this page's whole job
+       * is recovering one old answer and handing the link to someone else. Nothing about
+       * a task or session appears here - a bundle outlives both, so joining a route to
+       * either would make a permanent record addressable only while a transient one lives.
+       */
+      page: "scouts";
+      /** The selected archive, as its portable `<producerId>~<archiveId>` key. */
+      archiveKey?: string;
+      filters?: ScoutFilters;
+    }
   | { page: "settings"; category: SettingsCategoryId };
 
 /**
  * The route a direct page shortcut navigates to, or `null` when it must stand down.
  *
- * Fleet, Library and Runs each own a chord. None doubles as a toggle, so the key means the
- * same destination from every page. The common guards stay pure and shared with App's global
- * keydown handler: a letter types, renames, or leaves an overlay in control instead of
+ * Fleet, Library, Runs and Scouts each own a chord. None doubles as a toggle, so the key means
+ * the same destination from every page. The common guards stay pure and shared with App's
+ * global keydown handler: a letter types, renames, or leaves an overlay in control instead of
  * navigating behind it.
+ *
+ * Scouts navigates to the BARE page, dropping any filters the operator last had. A shortcut
+ * is "take me to that page", and a chord that reopened someone's stale search would be the
+ * one page whose key does not mean the same thing twice.
  */
 export function pageShortcutRoute(state: {
   /** The page whose resolved shortcut matched, or null when no page chord matched. */
-  target: "fleet" | "library" | "runs" | null;
+  target: "fleet" | "library" | "runs" | "scouts" | null;
   typing: boolean;
   renaming: boolean;
   overlayOpen: boolean;
@@ -160,14 +219,18 @@ export function parseMissionRoute(hash: string): MissionRoute {
   const [rawPath, rawQuery = ""] = withoutHash.split("?", 2);
   const path = rawPath!.replace(/\/+$/, "");
   const params = new URLSearchParams(rawQuery);
-  // THREE query parameters exist, they belong to the runs route alone, and every other one is
-  // dropped. A `MissionRoute` is a typed value rather than a URL: it is serialized back out of
-  // its own fields by `missionRouteHash`, so a parameter with no field to land in cannot
-  // survive the round trip and never has - `#/runs?source=x` loses it exactly as
-  // `#/workflows/runs?source=x` does. That is worth saying here because the legacy redirects
-  // make it look like a property of REDIRECTING, and it is not; carrying an arbitrary query
-  // through would mean parking an opaque bag on every route and printing meaningless
-  // parameters in the address bar forever.
+  // Query parameters belong to the route that declares them - three to `runs` here, seven to
+  // `scouts` in its own branch below - and every other one is dropped. A `MissionRoute` is a
+  // typed value rather than a URL: it is serialized back out of its own fields by
+  // `missionRouteHash`, so a parameter with no field to land in cannot survive the round trip
+  // and never has - `#/runs?source=x` loses it exactly as `#/workflows/runs?source=x` does.
+  // That is worth saying here because the legacy redirects make it look like a property of
+  // REDIRECTING, and it is not; carrying an arbitrary query through would mean parking an
+  // opaque bag on every route and printing meaningless parameters in the address bar forever.
+  //
+  // The three below are read unconditionally because `runs` has two spellings to reach; the
+  // scouts filters are read inside the scouts branch, where `status` means something else
+  // entirely and must not be confused with a workflow run status.
   const rawStatus = params.get("status");
   const filters: WorkflowRunFilters = {
     ...(rawStatus && (WORKFLOW_RUN_STATUSES as readonly string[]).includes(rawStatus)
@@ -177,6 +240,41 @@ export function parseMissionRoute(hash: string): MissionRoute {
     ...(params.get("session") ? { session: params.get("session")! } : {}),
   };
   const withFilters = Object.keys(filters).length > 0 ? filters : undefined;
+  if (path === "/scouts" || path.startsWith("/scouts/")) {
+    const rawStatusFilter = params.get("status");
+    const rawFrom = scoutBound(params.get("from"));
+    const rawTo = scoutBound(params.get("to"));
+    const scoutFilters: ScoutFilters = {
+      ...(params.get("q") ? { q: params.get("q")! } : {}),
+      ...(params.get("producer") ? { producer: params.get("producer")! } : {}),
+      ...(params.get("repo") ? { repo: params.get("repo")! } : {}),
+      ...(params.get("agent") ? { agent: params.get("agent")! } : {}),
+      // An unknown status is DROPPED rather than carried, exactly as an unknown run status
+      // is: the page would have to refuse it at the API anyway, and a filter chip naming a
+      // state this build does not have is a control nothing can clear.
+      ...(rawStatusFilter && (SCOUT_INDEX_STATUSES as readonly string[]).includes(rawStatusFilter)
+        ? { status: rawStatusFilter as ScoutIndexStatus }
+        : {}),
+      ...(rawFrom !== undefined ? { from: rawFrom } : {}),
+      ...(rawTo !== undefined ? { to: rawTo } : {}),
+    };
+    const withScoutFilters =
+      Object.keys(scoutFilters).length > 0 ? scoutFilters : undefined;
+    if (path === "/scouts") {
+      return { page: "scouts", ...(withScoutFilters ? { filters: withScoutFilters } : {}) };
+    }
+    const scout = /^\/scouts\/([^/]+)$/.exec(path);
+    // A key nothing can decode, a key that is not a well-formed `<producerId>~<archiveId>`
+    // pair, and a deeper path all name no archive, so they land on the filtered list rather
+    // than on a blank reader - the same rule a bad run id takes. Validating the SHAPE here
+    // keeps a malformed key from reaching a route that would ask the daemon about it.
+    const archiveKey = scout ? segment(scout[1]!) : null;
+    return {
+      page: "scouts",
+      ...(archiveKey && parseScoutArchiveKey(archiveKey) ? { archiveKey } : {}),
+      ...(withScoutFilters ? { filters: withScoutFilters } : {}),
+    };
+  }
   if (path === "/library") return { page: "library" };
   const library = /^\/library\/([^/]+)(?:\/([^/]+))?$/.exec(path);
   if (library) {
@@ -293,6 +391,28 @@ export function missionRouteHash(route: MissionRoute): string {
   // compile - it silently serializes to `#/ensembles`, and `navigate({page:"shipped"})`
   // lands on the wrong page with no error anywhere.
   if (route.page === "shipped") return "#/shipped";
+  if (route.page === "scouts") {
+    // The key is emitted only when it is well formed, mirroring the parser. A hand-built
+    // route carrying a malformed key would otherwise serialize to a hash that parses back
+    // without it, and a codec that does not round-trip is how the address bar starts
+    // disagreeing with the page.
+    const path =
+      route.archiveKey && parseScoutArchiveKey(route.archiveKey)
+        ? `#/scouts/${encodeURIComponent(route.archiveKey)}`
+        : "#/scouts";
+    const params = new URLSearchParams();
+    // Fixed order, so the same filter set always produces the same bytes and two links to
+    // one search compare equal.
+    if (route.filters?.q) params.set("q", route.filters.q);
+    if (route.filters?.producer) params.set("producer", route.filters.producer);
+    if (route.filters?.repo) params.set("repo", route.filters.repo);
+    if (route.filters?.agent) params.set("agent", route.filters.agent);
+    if (route.filters?.status) params.set("status", route.filters.status);
+    if (route.filters?.from !== undefined) params.set("from", String(route.filters.from));
+    if (route.filters?.to !== undefined) params.set("to", String(route.filters.to));
+    const query = params.toString();
+    return query ? `${path}?${query}` : path;
+  }
   if (route.page === "runs") {
     const path = route.runId ? `#/runs/${encodeURIComponent(route.runId)}` : "#/runs";
     const params = new URLSearchParams();

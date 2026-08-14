@@ -44,7 +44,11 @@ export type ActionId =
   | "complete"
   | "kill"
   | "interrupt"
-  | "reset";
+  | "reset"
+  // Appended, never inserted: these ids key persisted overrides in
+  // `app_config.ui.keybindings`, so moving one would silently reassign somebody's rebinding
+  // to a different action.
+  | "scouts";
 
 export interface ActionDef {
   id: ActionId;
@@ -81,6 +85,16 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Open Workflow Runs",
     description: "Show live and finished workflow runs.",
     defaultBinding: "r",
+    group: "global",
+  },
+  {
+    id: "scouts",
+    label: "Open Scouts",
+    description: "Search finished investigations and the evidence they kept.",
+    // Shift+S rather than a bare "s", which is Send. The shift is what makes this
+    // expressible: the chord grammar treats "shift+s" as distinct from "s", so claiming it
+    // takes nothing away from sending - see the modifier note further down this file.
+    defaultBinding: "shift+s",
     group: "global",
   },
   {

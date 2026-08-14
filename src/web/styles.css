@@ -24007,3 +24007,471 @@ span.line-run-prov {
     padding: 0;
   }
 }
+
+/* ---- Scouts: the archive dossier ------------------------------------------
+   Three panes that never move - find on the left, read in the middle, and what
+   survived on the right. Every colour here is a token that already means this
+   thing somewhere else in the app, and every one of them is paired with a word,
+   because "is this old report complete enough to trust" is exactly the read that
+   must not depend on distinguishing green from amber. */
+.scouts-page {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 268px;
+  min-height: 0;
+  min-width: 0;
+}
+/* Inside the scrolling shells the page fills the frame and each pane scrolls on
+   its own, which is what keeps the answer and the bytes that back it on screen
+   together rather than sliding past one another. */
+.app-console > .scouts-page,
+.app-board > .scouts-page {
+  flex: 1;
+  height: 100%;
+}
+.app > .scouts-page {
+  height: calc(100dvh - var(--topbar-h, 88px) - 24px);
+}
+
+.scouts-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius) 0 0 var(--radius);
+  border-right: 0;
+}
+.scouts-search {
+  flex: none;
+  padding: 12px 13px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.scouts-search-label {
+  display: block;
+  margin-bottom: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.scouts-search-input { font-size: 12.5px; }
+.scouts-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.scouts-filter { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.scouts-filter-label {
+  font-size: 11.5px;
+  font-weight: 560;
+  color: var(--muted);
+}
+.scouts-filter-select {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 7px;
+}
+.scouts-clear { font-size: 11.5px; }
+
+.scouts-results {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.scouts-group { margin: 0; }
+.scouts-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 12px 13px 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: var(--panel);
+}
+.scouts-rows { margin: 0; padding: 0; list-style: none; }
+.scouts-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  border-bottom: 1px solid var(--border-soft);
+}
+/* The app's signature 3px tone rail, on the 2px rail-row weight the console uses. */
+.scouts-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--tone-color, var(--neutral));
+  opacity: 0.8;
+}
+.scouts-row.tone-ready { --tone-color: var(--idle); }
+.scouts-row.tone-partial { --tone-color: var(--attention); }
+.scouts-row.tone-unreadable { --tone-color: var(--danger); }
+.scouts-row:hover { background: color-mix(in oklab, var(--panel-2) 70%, transparent); }
+.scouts-row.is-selected {
+  background: color-mix(in oklab, var(--select) 9%, var(--panel));
+  outline: 2px solid var(--select);
+  outline-offset: -2px;
+}
+.scouts-row-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 4px 10px 13px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.scouts-row-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.scouts-row-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scouts-dot-ready { background: var(--idle); }
+.scouts-dot-partial { background: var(--attention); }
+.scouts-dot-unreadable { background: var(--danger); }
+.scouts-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+/* The degraded states say their word in their own colour, next to the neutral
+   metadata, so the row reads as a sentence and not as a coloured stripe. */
+.scouts-row.tone-partial .scouts-row-meta { color: var(--attention); }
+.scouts-row.tone-unreadable .scouts-row-meta { color: var(--danger); }
+.scouts-row-snippet {
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.scouts-snippet-kind {
+  margin-right: 6px;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.scouts-row-more {
+  flex: none;
+  margin: 7px 6px 0 0;
+  padding: 2px 7px;
+  line-height: 1;
+  color: var(--dim);
+}
+.scouts-rail-foot {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  padding: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.scouts-reader {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-left: 1px solid var(--border-soft);
+  border-right: 0;
+}
+.scouts-head {
+  flex: none;
+  padding: 14px 22px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.scouts-back { display: none; margin-bottom: 6px; }
+.scouts-eyebrow {
+  margin: 0 0 3px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.scouts-question {
+  margin: 0 0 10px;
+  font-size: 17px;
+  font-weight: 640;
+  letter-spacing: -0.02em;
+}
+.scouts-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.scouts-provenance .chip {
+  font-size: 10.5px;
+  color: var(--dim);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+.scouts-foreign { border-style: dashed; }
+.scouts-missing {
+  margin: 10px 0 0;
+  padding: 9px 12px 9px 26px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: color-mix(in oklab, var(--attention) 78%, var(--fg));
+  background: color-mix(in oklab, var(--attention) 8%, transparent);
+  border: 1px solid color-mix(in oklab, var(--attention) 32%, var(--border));
+  border-radius: 9px;
+}
+
+.scouts-doc {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 22px 22px;
+}
+.scouts-sandbox-note {
+  flex: none;
+  margin: 0 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+.scouts-preview {
+  flex: 1;
+  min-height: 420px;
+  width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.scouts-markdown,
+.scouts-text {
+  flex: 1;
+  margin: 0;
+  padding: 20px 24px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.scouts-text {
+  font: 11.5px/1.65 var(--mono);
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.scouts-image {
+  max-width: 100%;
+  align-self: flex-start;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.scouts-opaque,
+.scouts-loading,
+.scouts-doc-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.scouts-doc-error,
+.scouts-open-error { color: var(--danger); }
+
+.scouts-spine {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 14px 14px 18px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.scouts-spine-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.scouts-spine-count { font-weight: 400; }
+/* The spine itself: one continuous rule with a node per artifact, so the shape of
+   the evidence is legible before a single word of it is read. */
+.scouts-stops {
+  position: relative;
+  margin: 0 0 14px;
+  padding: 0 0 0 14px;
+  list-style: none;
+}
+.scouts-stops::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--border);
+}
+.scouts-stop { position: relative; margin-bottom: 4px; }
+.scouts-stop-open {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.scouts-stop-open:hover { background: var(--panel-2); }
+.scouts-stop.is-selected .scouts-stop-open {
+  background: var(--panel-2);
+  border-color: color-mix(in oklab, var(--select) 45%, var(--border));
+}
+.scouts-stop-node {
+  position: absolute;
+  left: -14px;
+  top: 13px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--idle);
+  box-shadow: 0 0 0 3px var(--panel);
+}
+.scouts-stop-name {
+  font-size: 11.5px;
+  color: var(--fg);
+  word-break: break-all;
+}
+.scouts-stop-role { font-size: 11px; color: var(--muted); }
+.scouts-stop-meta,
+.scouts-stop-origin,
+.scouts-stop-digest { font-size: 10px; color: var(--dim); word-break: break-all; }
+.scouts-stop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 8px;
+}
+
+.scouts-bundle {
+  margin-top: auto;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.scouts-bundle-path {
+  margin: 0 0 9px;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  /* Absolute bundle paths are long and have no spaces. Without this they push the
+     whole three-pane grid wider than the viewport. */
+  word-break: break-all;
+}
+.scouts-library {
+  margin: 9px 0 0;
+  font-size: 10px;
+  color: var(--dim);
+  word-break: break-all;
+}
+
+.scouts-empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+.scouts-empty .empty-title { font-size: 14px; color: var(--fg); margin: 0 0 6px; }
+.scouts-empty .empty-sub { margin: 0 0 12px; font-size: 12.5px; }
+.scouts-loading { padding: 18px 13px; }
+
+.scout-delete-lede { margin: 6px 0 12px; font-size: 13px; }
+.scout-delete-consequence {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+.scout-delete-field { margin-top: 14px; }
+.scout-delete-error { margin: 12px 0 0; font-size: 12.5px; color: var(--danger); }
+
+/* ---- Scouts: the narrow fold ----
+   The rail is the first screen, selecting replaces it with the report, and the
+   evidence follows the report rather than sitting beside it. */
+@media (max-width: 900px) {
+  .scouts-page { grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; }
+  .app > .scouts-page { height: auto; }
+  .scouts-rail,
+  .scouts-reader,
+  .scouts-spine {
+    border-radius: var(--radius);
+    border: 1px solid var(--border-soft);
+  }
+  .scouts-reader { order: 1; }
+  .scouts-spine { order: 2; }
+  .scouts-back { display: inline-flex; align-items: center; gap: 6px; }
+  .scouts-preview { min-height: 60vh; }
+  .scouts-bundle { margin-top: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scouts-row,
+  .scouts-stop-open { transition: none; }
+}
+
+/* The daemon's diagnostic for a bundle it could not parse. Danger-toned and stated in a
+   sentence, because "unreadable" is a fact about the bundle and not a failure of the page. */
+.scouts-unreadable {
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: color-mix(in oklab, var(--danger) 82%, var(--fg));
+  background: color-mix(in oklab, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in oklab, var(--danger) 34%, var(--border));
+  border-radius: 9px;
+}

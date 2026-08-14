@@ -60,6 +60,97 @@ test("the Ship log parses and serializes, and never falls through to the ensembl
   assert.deepEqual(parseMissionRoute("#/workflows/shipped"), { page: "library" });
 });
 
+// A well-formed archive key, in the portable `<producerId>~<archiveId>` shape the manifest,
+// the routes and SQLite all agree on. Both halves must be lowercase UUIDs or the router is
+// required to drop the key.
+const SCOUT_KEY = "7aa704fd-d2ab-48b3-a726-0c2643ed91d2~9f5db6c8-79f5-4f9e-84aa-8b5dc15362f8";
+
+test("the Scouts list and one archive both round-trip, filters included", () => {
+  assert.deepEqual(parseMissionRoute("#/scouts"), { page: "scouts" });
+  assert.deepEqual(parseMissionRoute("#/scouts/"), { page: "scouts" });
+  assert.equal(missionRouteHash({ page: "scouts" }), "#/scouts");
+  // Same trap the Ship log case above guards: `missionRouteHash` ends in an unguarded
+  // ensembles return, so a page with no branch of its own silently serializes to
+  // `#/ensembles` and every navigation to it lands on the wrong page.
+  assert.notEqual(missionRouteHash({ page: "scouts" }), "#/ensembles");
+
+  const selected: MissionRoute = { page: "scouts", archiveKey: SCOUT_KEY };
+  assert.deepEqual(parseMissionRoute(`#/scouts/${SCOUT_KEY}`), selected);
+  // `~` is RFC 3986 unreserved, so `encodeURIComponent` leaves it alone and the key stays
+  // readable in the address bar. A key that round-tripped through an escape would still
+  // work, but nobody could recognize their own archive in a pasted link.
+  assert.equal(missionRouteHash(selected), `#/scouts/${SCOUT_KEY}`);
+  assert.deepEqual(parseMissionRoute(missionRouteHash(selected)), selected);
+
+  const filtered: MissionRoute = {
+    page: "scouts",
+    archiveKey: SCOUT_KEY,
+    filters: {
+      q: "permission grant",
+      producer: "7aa704fd-d2ab-48b3-a726-0c2643ed91d2",
+      repo: "mission-control",
+      agent: "codex",
+      status: "partial",
+      from: 1_760_000_000_000,
+      to: 1_770_000_000_000,
+    },
+  };
+  const hash = missionRouteHash(filtered);
+  assert.deepEqual(parseMissionRoute(hash), filtered);
+  // Fixed emission order, so one search always produces one string and two links to the
+  // same result set compare equal.
+  assert.equal(hash, `#/scouts/${SCOUT_KEY}?${[
+    "q=permission+grant",
+    "producer=7aa704fd-d2ab-48b3-a726-0c2643ed91d2",
+    "repo=mission-control",
+    "agent=codex",
+    "status=partial",
+    "from=1760000000000",
+    "to=1770000000000",
+  ].join("&")}`);
+  // A filtered LIST, with no archive selected, is a legal and linkable state.
+  assert.deepEqual(parseMissionRoute("#/scouts?q=flake"), {
+    page: "scouts",
+    filters: { q: "flake" },
+  });
+});
+
+test("a Scouts link nobody can honour degrades to the filtered list, never to a blank reader", () => {
+  // Not a key at all, only one half of one, a bad UUID, and an undecodable escape. Each
+  // names no archive, so each keeps the search it arrived with and drops only the selection
+  // - the same rule a dead run id takes, and the reason is the same: these are links people
+  // paste, and the useful answer is the list they can search from.
+  for (const bad of ["not-a-key", "7aa704fd-d2ab-48b3-a726-0c2643ed91d2", "zz~yy", "%E0%A4%A"]) {
+    assert.deepEqual(parseMissionRoute(`#/scouts/${bad}?q=resume`), {
+      page: "scouts",
+      filters: { q: "resume" },
+    });
+  }
+  // A deeper path is not an archive either.
+  assert.deepEqual(parseMissionRoute(`#/scouts/${SCOUT_KEY}/report`), { page: "scouts" });
+  // A malformed key on a HAND-BUILT route must not serialize either, or the address bar
+  // would carry a key that parses back to nothing and the codec would stop round-tripping.
+  assert.equal(missionRouteHash({ page: "scouts", archiveKey: "not-a-key" }), "#/scouts");
+
+  // An unknown status is dropped rather than carried: the daemon would refuse it, and a
+  // filter chip naming a state this build does not have is a control nothing can clear.
+  assert.deepEqual(parseMissionRoute("#/scouts?status=archived"), { page: "scouts" });
+  assert.deepEqual(parseMissionRoute("#/scouts?status=unreadable"), {
+    page: "scouts",
+    filters: { status: "unreadable" },
+  });
+  // Date bounds must survive as numbers or not at all - the route may not hand the API a
+  // value it validates as a nonnegative integer and would answer with a 400.
+  for (const bad of ["yesterday", "-1", "1.5", "9007199254740993"]) {
+    assert.deepEqual(parseMissionRoute(`#/scouts?from=${bad}`), { page: "scouts" });
+  }
+  assert.deepEqual(parseMissionRoute("#/scouts?from=0"), { page: "scouts", filters: { from: 0 } });
+  // A cursor is a continuation of the current window, not a destination, so it must not
+  // survive into the route - pasting page three of a search would otherwise open on a
+  // window with no first page above it.
+  assert.deepEqual(parseMissionRoute("#/scouts?cursor=123.abc&limit=50"), { page: "scouts" });
+});
+
 // Every `#/workflows/*` spelling that ever shipped, and where it now lands.
 //
 // This is the whole redirect contract in one table, and it is a table because the failure it
@@ -239,6 +330,7 @@ test("global overlays stay mounted on every page, and only one page body renders
     runs: "runs body",
     ensembles: "ensembles body",
     shipped: "shipped body",
+    scouts: "scouts body",
     settings: "settings body",
   };
   const pages = Object.keys(bodies) as MissionRoute["page"][];
@@ -250,6 +342,7 @@ test("global overlays stay mounted on every page, and only one page body renders
       runs: createElement("main", null, bodies.runs),
       ensembles: createElement("main", null, bodies.ensembles),
       shipped: createElement("main", null, bodies.shipped),
+      scouts: createElement("main", null, bodies.scouts),
       settings: createElement("main", null, bodies.settings),
       overlays: createElement("aside", null, "global overlays"),
     }));

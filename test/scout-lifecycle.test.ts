@@ -14,8 +14,8 @@ import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import { validReportHtml } from "./helpers/archive-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { ScoutArchiveGate } from "../src/server/tasks.ts";
-import type { ScoutSubject } from "../src/server/scouts/task-gateway.ts";
+import type { TaskArchiveGate } from "../src/server/tasks.ts";
+import type { ArchiveSubject } from "../src/server/archives/task-gateway.ts";
 
 /**
  * Where the archive meets the task lifecycle.
@@ -40,7 +40,7 @@ process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");
 const { ArchiveManager } = await import("../src/server/archives/manager.ts");
-const { RegistryScoutTaskGateway } = await import("../src/server/scouts/task-gateway.ts");
+const { RegistryArchiveTaskGateway } = await import("../src/server/archives/task-gateway.ts");
 const { ArchiveCaptureStore, clearArchiveCaptureJobs } = await import("../src/server/archives/capture-store.ts");
 const { clearArchiveTables } = await import("../src/server/archives/store.ts");
 const { openDb } = await import("../src/server/db.ts");
@@ -96,12 +96,12 @@ interface Harness {
   library: string;
 }
 
-function harness(options: { afterSubmissionAttribution?: (subject: ScoutSubject) => Promise<void> } = {}): Harness {
+function harness(options: { afterSubmissionAttribution?: (subject: ArchiveSubject) => Promise<void> } = {}): Harness {
   const registry = new Registry();
   const library = mkdirp(join(home, `library-${++seq}`));
   const scouts = new ArchiveManager({
     root: library,
-    tasks: new RegistryScoutTaskGateway(registry),
+    tasks: new RegistryArchiveTaskGateway(registry),
     intervalMs: null,
     watch: false,
     log: () => {},
@@ -174,8 +174,8 @@ async function submit(
   });
 }
 
-function pauseCompletionGate(delegate: ScoutArchiveGate): {
-  gate: ScoutArchiveGate;
+function pauseCompletionGate(delegate: TaskArchiveGate): {
+  gate: TaskArchiveGate;
   entered: Promise<void>;
   release: () => void;
 } {
@@ -623,7 +623,7 @@ test("a capture failure refuses the cleanup and keeps the resources tracked", as
   // The one failure a retry can actually clear: the rename into the library.
   const failing = new ArchiveManager({
     root: h.library,
-    tasks: new RegistryScoutTaskGateway(h.registry),
+    tasks: new RegistryArchiveTaskGateway(h.registry),
     intervalMs: null,
     watch: false,
     log: () => {},
@@ -1031,11 +1031,11 @@ test("the daemon derives the archive's identity - a submission carries none of i
 test("restart recovery waits only for a live scout with no durable submission", async () => {
   const h = harness();
   const store = new ArchiveCaptureStore(db);
-  const gateway = new RegistryScoutTaskGateway(h.registry);
+  const gateway = new RegistryArchiveTaskGateway(h.registry);
   const reserve = (task: Task, cwd: string, live: boolean) => {
     h.registry.upsertTask(task);
     if (live) bindSession(h, task, cwd);
-    const subject = gateway.subjectForTask(task.id);
+    const subject = gateway.subjectForTask(task.id, "scout");
     assert.ok(subject);
     return store.reserve({ ...subject, kind: "scout", producerId: h.scouts.producer.id });
   };

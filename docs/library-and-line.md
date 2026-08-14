@@ -131,6 +131,86 @@ third leaves the page.
 Both exits leave through the same navigation, so an unsaved draft raises the same
 leave-with-unsaved-changes question either way and neither is a route around it.
 
+### The Persona detail screen
+
+Behind a Persona card is a rail and a workspace, and both are arranged around the one thing on
+the screen that is the asset: the guidance Markdown.
+
+**The rail** lists Personas in two groups - **Built-in** and **Yours** - each with a count, so
+the roles that ship with the build stop reading as things you wrote and forgot. Each row's
+sub-label is the resolved runner and model, which is what tells two reviewers apart; the
+description is not repeated there, because on the shipped roles it restates the title. Search
+sits above the list. **Import .md**, **Import from path**, **Check upstream** and the
+**Archived** toggle sit in a footer below it, out of the path between the heading and the row
+you came for. The Archived toggle carries the archived count, so whether there is anything in
+there is answered without pressing it.
+
+**The workspace header** carries the name and description as the fields they are - editing the
+title edits the Persona - with the revision and the import provenance on one dim line beneath.
+Exactly one verb is promoted: **Save** on a Persona you can edit, **Duplicate to edit** on a
+built-in or an archived one, where there is no revision the editor could write. Copy Markdown,
+Download .md, Duplicate, Re-import from source and Archive live behind the `⋯` menu beside it.
+The menu closes on <kbd>Esc</kbd> without leaving the page.
+
+**Property chips** replace the metadata block. `provider` and `model` open the control that set
+them; `source` and `utf-8 bytes` are readouts. A chip whose value is inherited from the app
+defaults draws quiet, and one this Persona overrides draws solid - so what this Persona
+actually changes is legible without opening anything, and `source` names where the routing was
+decided. Everything left over is the guidance editor.
+
+### The Action detail screen
+
+![The Action detail screen: the rail grouped Built-in and Yours with contract sub-labels, the
+required-skill and completion chips, and the contract line beneath
+them](images/action-detail.png)
+
+The same rail and workspace as Personas, because an operator moving between them should be
+moving through one surface with different contents. What is specific to an Action is that it is
+the only Library asset carrying a **machine-checked contract**: something observable has to
+happen before a workflow stage may call it done, and - where the action names one - the bound
+session has to be able to invoke a named skill before the instruction is sent at all.
+
+The two halves are not equally optional. Every action names a completion; the **required skill
+is a choice**, and an action that requires none is not inheriting a default but asserting
+nothing, so it is sent to whatever skills the bound session has already loaded.
+
+**The rail** groups **Built-in** and **Yours** with counts, and each row's sub-label is that
+contract - `Skill · pull-request · Pull request is opened and verified`, or
+`No required skill · Session turn finishes` where the action asks for none. The description is
+not repeated there, because on the shipped pair it restates the title, and the contract is the
+thing that tells two actions apart. Search sits above the list; the **Archived** toggle, carrying
+its count, sits in a footer below it.
+
+**The workspace header** carries the name and description as the fields they are, with the
+revision and when it was last written on one dim line beneath. **Save** is promoted on an action
+you can edit and **Duplicate to edit** on a built-in or an archived one, where there is no
+revision the editor could write. Duplicate and Archive live behind the `⋯` menu, which is absent
+on a read-only action because both of its entries are.
+
+**Two property chips carry the contract** - `requires skill` and `completes when` - and each
+opens the control that sets it. `requires skill` draws quiet when the action requires none and
+solid when it names one, so what this action actually demands is legible without opening
+anything. **The contract line beneath them is the sentence those two values form**: what the
+stage sends, what the session must be able to invoke, and what Mission Control has to observe
+before the stages below this one may read the evidence. An action requiring no skill says so in
+that sentence rather than leaving the clause out, which would read as though the requirement had
+been forgotten. That completion clause is the same string the chip shows and the same one the
+pipeline card, the graph rail and the version history print, from the one shared table that owns
+it - there is no second wording of what an adapter proves anywhere in the browser.
+
+A completion this build cannot prove is **kept, marked and readable while the control is shut**:
+the chip draws amber and a sentence beside it says why. It stays selected, because rewriting it
+would silently change the proof contract the action was authored with, and it cannot be chosen
+again - the option is there to be read, disabled.
+
+**The mark waits for the daemon's answer.** Which completions a build can prove is read over
+HTTP, so for one round trip after the screen opens nothing is known - and a screen that marked
+the chip then would be accusing every action of naming something unprovable, including the
+ordinary default this daemon runs perfectly well. Until that read lands nothing on the screen
+claims anything about it. Save stands down in the meantime and says which fact it is waiting
+for, because a pending read is not a refusal but it is a reason not to write. Everything left
+over is the instruction editor, whose Markdown reaches the session byte for byte.
+
 ### The Ship log
 
 `#/shipped` is the cross-repo record of what the fleet landed: the Inspector's adoption

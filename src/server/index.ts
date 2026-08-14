@@ -44,7 +44,7 @@ import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
 import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
-import { RegistryScoutTaskGateway } from "./scouts/task-gateway.ts";
+import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
 import { warnIfSessionAttributionDisabled } from "./cost.ts";
 import { reconcileSkills } from "./skills/config.ts";
@@ -116,7 +116,7 @@ const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 const archives = new ArchiveManager({
   onChanged: () => registry.emitArchiveChanged(),
   watch: true,
-  tasks: new RegistryScoutTaskGateway(registry),
+  tasks: new RegistryArchiveTaskGateway(registry),
 });
 // The last-chance reservation. `onSessionExit` fires inside `beginEviction`, while the session
 // row, its task binding and its worktree paths can all still be derived - which is precisely

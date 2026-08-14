@@ -157,6 +157,15 @@ async function openPersonaEditor(page: Page, daemon: DaemonHandle): Promise<void
   await page.reload();
   await expect(page.locator("section.persona-fields").getByLabel("Name"))
     .toHaveValue("Shelf reviewer");
+  /*
+   * Copy Markdown lives in the header's overflow menu now, one click further in - the Rail
+   * rebuild promotes Save and puts the other four verbs behind `⋯`. Its accessible name and
+   * its whole behaviour are unchanged; it is a `menuitem` rather than a `button` because
+   * that is what it now is, and the row keeps the menu OPEN when it runs, precisely so the
+   * `Copied` confirmation below still has somewhere to appear.
+   */
+  await page.getByRole("button", { name: "More Persona actions" }).click();
+  await expect(page.getByRole("menu", { name: "More Persona actions" })).toBeVisible();
 }
 
 async function openSitrep(page: Page): Promise<void> {
@@ -248,14 +257,14 @@ test("the Persona markdown copy confirms, and survives a refusing Clipboard API"
   await openPersonaEditor(dashboard, daemon);
   await expectTheClipboardToRefuse(dashboard);
 
-  const copy = dashboard.getByRole("button", { name: "Copy Markdown" });
+  const copy = dashboard.getByRole("menuitem", { name: "Copy Markdown" });
   await copy.click();
 
-  await expect(dashboard.getByRole("button", { name: "Copied" })).toBeVisible();
-  await expect(dashboard.getByRole("button", { name: "Copied ✓" })).toHaveCount(0);
+  await expect(dashboard.getByRole("menuitem", { name: "Copied" })).toBeVisible();
+  await expect(dashboard.getByRole("menuitem", { name: "Copied ✓" })).toHaveCount(0);
   // The editor's own error banner stayed away, because nothing failed.
   await expect(dashboard.getByText("Clipboard access was blocked")).toHaveCount(0);
-  await shoot(dashboard.locator("header.persona-editor-head"), dashboard, "03-persona-copied");
+  await shoot(dashboard.locator("article.persona-editor"), dashboard, "03-persona-copied");
 
   // The guidance really is on the clipboard, written by the fallback this control could not
   // reach before. This is the assertion that would have failed in the packaged app.
@@ -292,12 +301,12 @@ test("a Persona copy that works clears the refusal an earlier one left", async (
   await openPersonaEditor(dashboard, daemon);
   await expectTheClipboardToRefuse(dashboard);
 
-  const copy = dashboard.getByRole("button", { name: "Copy Markdown" });
+  const copy = dashboard.getByRole("menuitem", { name: "Copy Markdown" });
   await copy.click();
 
   const banner = dashboard.getByText("Clipboard access was blocked");
   await expect(banner).toBeVisible();
-  await expect(dashboard.getByRole("button", { name: "Copied" })).toHaveCount(0);
+  await expect(dashboard.getByRole("menuitem", { name: "Copied" })).toHaveCount(0);
 
   await dashboard.evaluate(() => {
     const state = Reflect.get(window, "__missionCopyState") as { blocked: boolean };
@@ -305,6 +314,6 @@ test("a Persona copy that works clears the refusal an earlier one left", async (
   });
 
   await copy.click();
-  await expect(dashboard.getByRole("button", { name: "Copied" })).toBeVisible();
+  await expect(dashboard.getByRole("menuitem", { name: "Copied" })).toBeVisible();
   await expect(banner).toHaveCount(0);
 });

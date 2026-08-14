@@ -4,9 +4,7 @@ import {
   ARCHIVE_ARTIFACTS_DIR,
   ARCHIVE_LIMITS,
   ARCHIVE_PRIMARY_REPORT_PATH,
-  ARCHIVE_REPORT_DIR,
   validateArchivePath,
-  type ArchiveManifestMissing,
 } from "@shared/archives.ts";
 import {
   SCOUT_REPORT_FILENAME,
@@ -16,12 +14,8 @@ import {
   scoutReportSlug,
 } from "@shared/scouts.ts";
 import type { ArchiveCaptureJob } from "../archives/capture-store.ts";
-import {
-  isIgnored,
-  primaryRoot,
-  resolveCheckoutDirectory,
-  resolveCheckoutFile,
-} from "../archives/checkout.ts";
+import { isIgnored, primaryRoot, resolveCheckoutFile } from "../archives/checkout.ts";
+import { planCapturedDirectory } from "../archives/report-directory.ts";
 import {
   clipReason,
   limitProblems,
@@ -35,12 +29,18 @@ import {
  * Which files in a scout's checkout become its archive.
  *
  * This is everything about capture that is scout-shaped, and it is deliberately all of it:
- * the conventional report path, the report directory captured as one relative unit, the
- * explicitly submitted supporting files, and the recovery rule for a scout that ended
- * without submitting. `archives/` publishes whatever this returns and knows none of it.
+ * the conventional report path, the explicitly submitted supporting files, and the recovery
+ * rule for a scout that ended without submitting. `archives/` publishes whatever this returns
+ * and knows none of it.
  *
- * Registered as the `scout` planner in `archives/planners.ts`. A second kind arrives as a
- * second module beside this one, not as a branch inside it.
+ * Capturing a directory as one relative unit under `report/` is NOT one of those things and
+ * moved to `archives/report-directory.ts` when the second kind arrived: a scout's
+ * `docs/reports/<slug>/` and a plan's `docs/plans/<name>/` are the same problem wearing
+ * different names, and two copies of that walk is how one kind's containment checks quietly
+ * stop matching the other's.
+ *
+ * Registered as the `scout` planner in `archives/planners.ts`. The second kind did arrive as
+ * a second module beside this one (`plans/capture-plan.ts`) rather than as a branch inside it.
  */
 export async function planScoutCapture(
   job: ArchiveCaptureJob,
@@ -97,7 +97,7 @@ async function planSubmitted(
       originalPath: submission.reportPath,
       bytes: report.bytes,
     });
-    const companions = await planReportDirectory(
+    const companions = await planCapturedDirectory(
       primary,
       reportDir,
       report.path,
@@ -209,7 +209,7 @@ async function planRecovery(
       bytes: report.bytes,
     },
   ];
-  const companions = await planReportDirectory(
+  const companions = await planCapturedDirectory(
     only.root,
     reportDir,
     report.path,
@@ -272,138 +272,6 @@ async function discoverReports(realRoot: string): Promise<string[]> {
     if (info?.isFile() && !info.isSymbolicLink()) found.push(relativePath);
   }
   return found.sort();
-}
-
-/**
- * Every file beside the report, recursively, keeping its layout under `report/`.
- *
- * The directory is captured as ONE relative unit because that is what keeps the page's own
- * links working: a report that says `<img src="chart.svg">` is only readable in the archive if
- * `chart.svg` arrived at the same relative position. It is also why the static-HTML validator
- * is handed the set of captured companions - a link to a file that was not captured is refused
- * rather than left dangling.
- *
- * Hidden entries are skipped silently, and that is a deliberate pair of decisions rather than
- * an oversight. A bundle path may not contain a dot-prefixed segment at all
- * (`validateArchivePath`), so `.DS_Store` and an editor swap file CANNOT be archived; and
- * a hidden file the report actually depends on does not slip through unnoticed, because the
- * report then links to a companion that is not in the bundle and validation refuses the whole
- * capture by name. Silence for bookkeeping, a loud refusal when it mattered.
- */
-async function planReportDirectory(
-  root: ResolvedRoot,
-  reportDir: string,
-  reportRealPath: string,
-  beforeDirectory?: (directory: string) => Promise<void>,
-): Promise<
-  | {
-      ok: true;
-      files: PlannedFile[];
-      missing: ArchiveManifestMissing[];
-    }
-  | { ok: false; problems: string[] }
-> {
-  const files: PlannedFile[] = [];
-  const missing: ArchiveManifestMissing[] = [];
-  const problems: string[] = [];
-
-  const walk = async (relative: string): Promise<void> => {
-    if (problems.length > 0) return;
-    const directoryPath = relative === "" ? reportDir : `${reportDir}/${relative}`;
-    const before = await resolveCheckoutDirectory(root.realRoot!, directoryPath);
-    if (!before.ok) {
-      problems.push(`${directoryPath}: ${before.reason}`);
-      return;
-    }
-    const entries = await readdir(before.path, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-      problems.push(`${reportDir}/${relative}: could not be read (${error.code ?? "unknown"})`);
-      return null;
-    });
-    if (!entries) return;
-    const after = await resolveCheckoutDirectory(root.realRoot!, directoryPath);
-    if (!after.ok || after.dev !== before.dev || after.ino !== before.ino) {
-      problems.push(`${directoryPath}: changed while the report directory was being inspected`);
-      return;
-    }
-    for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
-      if (entry.name.startsWith(".")) continue;
-      const absolute = path.join(before.path, entry.name);
-      const rel = relative === "" ? entry.name : `${relative}/${entry.name}`;
-      const info = await lstat(absolute).catch(() => null);
-      if (!info) continue;
-      if (info.isSymbolicLink()) {
-        missing.push({
-          kind: "report_companion",
-          expectedSource: `${reportDir}/${rel}`,
-          reason: "a symbolic link beside the report was not archived",
-        });
-        continue;
-      }
-      if (info.isDirectory()) {
-        await beforeDirectory?.(absolute);
-        await walk(rel);
-        continue;
-      }
-      if (!info.isFile()) {
-        missing.push({
-          kind: "report_companion",
-          expectedSource: `${reportDir}/${rel}`,
-          reason: "a file beside the report is not an ordinary file and was not archived",
-        });
-        continue;
-      }
-      // The report itself arrives through the primary entry, with its own role and id.
-      if (absolute === reportRealPath) continue;
-      const originalPath = `${reportDir}/${rel}`;
-      // `readdir` and `lstat` describe what occupied this name at one instant, but a parent
-      // directory can be replaced before recursion reaches the leaf. Resolve the whole path
-      // beneath the checkout again, exactly like an explicitly submitted supporting file.
-      // If a parent became a symlink this refuses it; if it changes after this check, the
-      // opened handle's device/inode proof in `copyIntoBundle` refuses the replacement.
-      const resolved = await resolveCheckoutFile(root.realRoot!, originalPath);
-      if (!resolved.ok) {
-        missing.push({
-          kind: "report_companion",
-          expectedSource: originalPath,
-          reason: `the file ${resolved.reason} and was not archived`,
-        });
-        continue;
-      }
-      if (await isIgnored(root.realRoot!, originalPath)) {
-        missing.push({
-          kind: "report_companion",
-          expectedSource: originalPath,
-          reason: "the file is ignored by git and was not archived",
-        });
-        continue;
-      }
-      const archivePath = `${ARCHIVE_REPORT_DIR}/${rel}`;
-      if (!validateArchivePath(archivePath)) {
-        missing.push({
-          kind: "report_companion",
-          expectedSource: originalPath,
-          reason: "the file's name cannot be represented inside an archive",
-        });
-        continue;
-      }
-      files.push({
-        source: resolved.path,
-        sourceDev: resolved.dev,
-        sourceIno: resolved.ino,
-        archivePath,
-        role: "report_companion",
-        repoSlot: root.slot,
-        originalPath,
-        bytes: resolved.bytes,
-      });
-    }
-  };
-
-  await walk("");
-  if (problems.length > 0) return { ok: false, problems };
-  // Bounded before anything is copied, so a runaway directory costs one walk rather than
-  // 128 MiB of writes that then have to be thrown away.
-  return { ok: true, files, missing: missing.slice(0, 64) };
 }
 
 /** The additional files a scout explicitly named, each through the same defences. */

@@ -33,7 +33,7 @@ const { provisionScoutSubmissionCredential } = await import(
 const { SCOUT_SUBMISSION_CREDENTIAL_HEADER } = await import(
   "../src/shared/harness-runtime.mjs"
 );
-import type { ScoutTaskGateway } from "../src/server/scouts/task-gateway.ts";
+import type { ArchiveTaskGateway } from "../src/server/archives/task-gateway.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -72,7 +72,7 @@ function harness(
      * Absent by default so every read test keeps proving that the read surface needs no task
      * knowledge at all - which is the Phase 1 contract this file was written against.
      */
-    tasks?: ScoutTaskGateway;
+    tasks?: ArchiveTaskGateway;
   } = {},
 ): Harness {
   const root = options.root ?? newLibrary();
@@ -642,7 +642,7 @@ test("the shared harness token cannot select another scout session", async () =>
       },
       subjectForTask: () => null,
       subjectForExitingSession: () => null,
-      isScout: () => false,
+      captureKind: () => null,
       awaitsAgent: () => false,
     },
   });
@@ -696,7 +696,7 @@ test("a submission cannot name its own task, destination, or archive", async () 
       },
       subjectForTask: () => null,
       subjectForExitingSession: () => null,
-      isScout: () => false,
+      captureKind: () => null,
       awaitsAgent: () => false,
     },
   });

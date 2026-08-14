@@ -1,0 +1,1221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow runs: six mockups for the area below the pipeline</title>
+<style>
+/* ============================================================
+   REPORT SHELL - adapts to the reader's colour scheme.
+   The mockup viewports stay dark on purpose: they depict a
+   dark-only application, and drawing them light would be a
+   picture of a product that does not exist.
+   ============================================================ */
+:root{
+  color-scheme: light dark;
+  --r-bg:#ffffff; --r-fg:#16191d; --r-muted:#5b6470; --r-dim:#7b8593;
+  --r-border:#e0e4ea; --r-panel:#f6f8fa; --r-accent:#1f6feb; --r-warn:#9a6700; --r-good:#1a7f37;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  --sans: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --r-bg:#0d1117; --r-fg:#e6edf3; --r-muted:#9aa4b2; --r-dim:#7d8590;
+    --r-border:#262c36; --r-panel:#151b23; --r-accent:#589bff; --r-warn:#d29922; --r-good:#3fb950;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--sans);background:var(--r-bg);color:var(--r-fg);line-height:1.6;font-size:15px;padding:44px 24px 120px}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:30px;line-height:1.25;margin:0 0 10px;letter-spacing:-0.02em}
+h2{font-size:21px;margin:56px 0 6px;letter-spacing:-0.01em;padding-top:14px;border-top:1px solid var(--r-border)}
+h3{font-size:16px;margin:30px 0 8px}
+p{margin:0 0 12px}
+a{color:var(--r-accent)}
+code{font-family:var(--mono);font-size:.87em;background:var(--r-panel);border:1px solid var(--r-border);border-radius:4px;padding:1px 5px}
+.lede{font-size:17px;color:var(--r-muted);margin:0 0 4px}
+.q{border-left:3px solid var(--r-accent);padding:2px 0 2px 16px;margin:22px 0;color:var(--r-muted)}
+.q b{color:var(--r-fg)}
+.finding{border:1px solid var(--r-border);border-left:4px solid var(--r-warn);border-radius:10px;background:var(--r-panel);padding:18px 20px;margin:24px 0}
+.finding p:last-child{margin-bottom:0}
+.new{border-left-color:var(--r-good)}
+ul,ol{margin:0 0 14px;padding-left:22px}
+li{margin:0 0 6px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;margin:14px 0}
+th,td{border:1px solid var(--r-border);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:var(--r-panel);font-weight:600}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.toc{border:1px solid var(--r-border);border-radius:10px;padding:14px 18px;background:var(--r-panel);margin:26px 0}
+.toc ol{margin:0;padding-left:20px}
+.toc li{margin:3px 0}
+.note{font-size:13px;color:var(--r-dim);margin:8px 0 0}
+.tag{display:inline-block;font-size:11px;font-family:var(--mono);border:1px solid var(--r-border);border-radius:999px;padding:2px 9px;color:var(--r-muted);background:var(--r-bg);vertical-align:middle;margin-left:8px}
+.tag.fresh{border-color:var(--r-good);color:var(--r-good)}
+.thesis{margin:14px 0 18px}
+.thesis .axis{font-size:13px;color:var(--r-muted);margin:0}
+.thesis .axis b{color:var(--r-fg)}
+.answers{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:18px 0 0}
+.answers div{border:1px solid var(--r-border);border-radius:9px;padding:12px 14px;background:var(--r-panel)}
+.answers h5{margin:0 0 5px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--r-dim)}
+.answers p{margin:0;font-size:13.5px}
+.tradeoff{font-size:13.5px;border-left:3px solid var(--r-border);padding-left:14px;margin:16px 0 0;color:var(--r-muted)}
+.tradeoff b{color:var(--r-fg)}
+/* Inline flow, not flex: as a flex row the label became a shrinkable item and broke mid
+   phrase ("Diagram kept, and / promoted."), leaving the sentence beside it hanging off the
+   first line. It is one sentence with a bold opening, so it should wrap like one. */
+.keeps{font-size:13px;color:var(--r-good);margin:10px 0 0}
+.keeps b{color:var(--r-fg);margin-right:6px}
+
+/* ============================================================
+   APPLICATION MOCKUPS - real tokens from src/web/styles.css
+   ============================================================ */
+.ui{
+  --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+  --border:#232a33; --border-soft:#1b2129;
+  --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+  --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+  --exited:#707a88; --neutral:#8b94a3; --purple:#a371f7;
+  font-family:var(--sans); font-size:12px; line-height:1.5; color:var(--fg);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+    var(--bg);
+  border:1px solid #222a34; border-radius:14px; padding:16px 18px 18px;
+  margin:16px 0 0; overflow:hidden;
+  box-shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.28);
+}
+.ui *{box-sizing:border-box}
+.ui p{margin:0}
+.ui h2,.ui h3,.ui h4,.ui h5{margin:0;font-weight:600;text-transform:none;letter-spacing:normal;color:var(--fg);border:0;padding:0}
+.ui h4{font-size:12px}
+.ui h5{font-size:11.5px}
+.ui code{font-family:var(--mono);font-size:10.5px;background:transparent;border:0;padding:0;color:var(--dim)}
+.ui ul,.ui ol{margin:0;padding-left:18px}
+.ui li{margin:0}
+.ui a{color:var(--working);text-decoration:none}
+.eyebrow{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+
+/* chips */
+.chip{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;border:1px solid color-mix(in srgb,var(--working) 35%,var(--border));border-radius:999px;background:color-mix(in srgb,var(--working) 9%,var(--panel));color:var(--working);font-size:11px;line-height:1;padding:5px 9px}
+.chip.pass{border-color:color-mix(in srgb,var(--idle) 42%,var(--border));background:color-mix(in srgb,var(--idle) 10%,var(--panel));color:var(--idle)}
+.chip.fail{border-color:color-mix(in srgb,var(--danger) 45%,var(--border));background:color-mix(in srgb,var(--danger) 11%,var(--panel));color:var(--danger)}
+.chip.wait{border-color:color-mix(in srgb,var(--attention) 45%,var(--border));background:color-mix(in srgb,var(--attention) 11%,var(--panel));color:var(--attention)}
+.chip.off{border-color:var(--border-soft);background:color-mix(in srgb,var(--exited) 7%,var(--panel));color:var(--exited)}
+.chip.deg{border-color:color-mix(in srgb,var(--attention) 34%,var(--border));background:color-mix(in srgb,var(--attention) 7%,var(--panel));color:var(--attention)}
+.chip.sm{font-size:10px;padding:3px 7px}
+.chip.plain{color:var(--fg)}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:12px;font-weight:540;color:var(--muted);background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:5px 11px;cursor:pointer;white-space:nowrap}
+.btn.primary{color:var(--working);border-color:color-mix(in srgb,var(--working) 55%,var(--border));background:color-mix(in srgb,var(--working) 16%,var(--panel))}
+.btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,var(--border));background:transparent}
+.btn.dis{color:var(--exited);border-color:var(--border-soft);background:transparent;cursor:not-allowed}
+.btn.sm{font-size:11px;padding:4px 9px}
+
+.sect{display:grid;gap:12px;border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:14px}
+.sect-head{display:flex;align-items:center;flex-wrap:wrap;gap:10px}
+.sect-head h4{margin-right:auto}
+.meta{color:var(--dim);font-size:10.5px}
+.muted{color:var(--muted)}
+.stack{display:grid;gap:10px}
+.stack-lg{display:grid;gap:12px}
+.row{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+
+/* ------------------------------------------------------------
+   THE RUN HEADER + ROUND SCRUBBER + PIPELINE - kept as-is.
+   Redrawn from the screenshot so each mockup is a whole screen
+   rather than a fragment floating in space.
+   ------------------------------------------------------------ */
+.run-head{display:flex;align-items:flex-start;gap:14px;margin-bottom:12px}
+.run-id{display:grid;gap:4px;margin-right:auto;min-width:0}
+.run-live{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--working);font-family:var(--mono)}
+.run-live.stall{color:var(--danger)}
+.run-name{font-size:20px;font-weight:650;letter-spacing:-.015em;line-height:1.2}
+.run-facts{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.run-ver{border:1px solid var(--border);border-radius:999px;background:var(--panel);color:var(--muted);font-size:10.5px;padding:3px 9px}
+.run-sess{color:var(--working);border-bottom:1px solid color-mix(in srgb,var(--working) 45%,transparent);font-size:12px}
+.run-repo{color:var(--muted);font-size:12px}
+.run-when{color:var(--dim);font-size:11px}
+.run-acts{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.run-acts .sep{width:1px;height:20px;background:var(--border)}
+
+.scrub{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px}
+.rd{border:1px solid var(--border);border-radius:9px;background:var(--panel);padding:7px 11px;display:grid;gap:2px;min-width:74px}
+.rd b{font-size:11.5px;font-weight:600}
+.rd span{font-size:10px}
+.rd .cr{color:var(--danger)}
+.rd .ok{color:var(--idle)}
+.rd .ur{color:var(--working)}
+.rd.on{border-color:color-mix(in srgb,var(--working) 60%,var(--border));background:color-mix(in srgb,var(--working) 13%,var(--panel))}
+
+.pipe-wrap{border:1px solid var(--border-soft);border-radius:12px;background:color-mix(in srgb,var(--bg-2) 70%,transparent);padding:13px;margin-bottom:14px}
+.pipe{display:flex;align-items:stretch;gap:0;overflow-x:auto;padding-bottom:2px}
+.pipe-foot{color:var(--muted);font-size:11px;padding-top:11px;margin-top:11px;border-top:1px solid var(--border-soft)}
+
+.pnode{display:flex;flex-direction:column;gap:9px;justify-content:center;border:1px solid var(--border);border-radius:11px;background:var(--panel);padding:12px 13px;min-width:172px;flex-shrink:0}
+.pnode .ph{display:flex;gap:9px;align-items:flex-start}
+.pnode .dia{color:var(--dim);font-size:13px;line-height:1.25}
+.pnode b{font-size:12.5px;font-weight:640;display:block}
+.pnode .sub{font-size:10.5px;color:var(--muted);display:block}
+
+.seam{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;min-width:92px;flex-shrink:0;padding:0 6px}
+.gate{font:9.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);white-space:nowrap}
+.arrow{color:var(--dim);font-size:14px;line-height:1}
+
+.stage{display:flex;flex-direction:column;gap:9px;border:1px solid var(--border);border-radius:11px;background:var(--panel);padding:12px 13px;min-width:210px;flex-shrink:0}
+.st-head{display:flex;align-items:flex-start;gap:8px}
+.st-head .t{margin-right:auto;min-width:0}
+.st-head b{font-size:12.5px;font-weight:640;display:block}
+.st-head .sub{font-size:10.5px;color:var(--muted);display:block}
+.dots{border:1px solid var(--border);border-radius:7px;background:var(--panel-2);color:var(--dim);font-size:11px;line-height:1;padding:3px 6px;flex-shrink:0;letter-spacing:.06em}
+.mem{display:grid;gap:6px;border:1px solid var(--border-soft);border-radius:9px;background:var(--bg);padding:9px 10px}
+.mem .mh{display:flex;align-items:center;gap:7px}
+.mem .kind{font:9px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);border:1px solid var(--border-soft);border-radius:5px;padding:2px 5px}
+.mem .nm{font-size:11.5px;font-weight:600;margin-right:auto;line-height:1.35}
+.stage.sel{border-color:var(--working);box-shadow:0 0 0 2px color-mix(in srgb,var(--working) 30%,transparent)}
+.stage.sel .st-head b{color:var(--working)}
+.viewing{font:9px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--working)}
+
+/* why-line under the header */
+.why{font-size:11.5px;color:var(--muted);line-height:1.5;max-width:78ch}
+.why b{color:var(--fg);font-weight:600}
+
+/* ---- shared brief pieces (A) ---- */
+.brief{border:1px solid color-mix(in srgb,var(--attention) 42%,var(--border));border-left:4px solid var(--attention);border-radius:12px;background:linear-gradient(180deg,color-mix(in srgb,var(--attention) 9%,var(--panel)) 0%,var(--panel) 62%);padding:15px 16px;display:grid;gap:13px}
+.brief-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:9px}
+.brief-verdict{font-size:15px;font-weight:640;letter-spacing:-.01em;line-height:1.4}
+.brief-verdict .accent{color:var(--attention)}
+.brief-sub{color:var(--muted);font-size:12px;line-height:1.55;max-width:78ch}
+.brief-sub b{color:var(--fg);font-weight:600}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:8px}
+.tile{border:1px solid var(--border);border-radius:9px;background:var(--bg);padding:9px 11px;display:grid;gap:3px}
+.tile .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+.tile .v{font-size:16px;font-weight:640;line-height:1.15;font-variant-numeric:tabular-nums}
+.tile .n{font-size:10.5px;color:var(--muted);line-height:1.35}
+.tile.bad{border-color:color-mix(in srgb,var(--danger) 38%,var(--border))}
+.tile.bad .v{color:var(--danger)}
+.tile.warn{border-color:color-mix(in srgb,var(--attention) 38%,var(--border))}
+.tile.warn .v{color:var(--attention)}
+.tile.good .v{color:var(--idle)}
+
+.blockers{display:grid;gap:7px}
+.blk{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:start;border:1px solid var(--border);border-left:3px solid var(--danger);border-radius:9px;background:var(--bg);padding:10px 12px}
+.blk .num{font:600 10.5px var(--mono);color:var(--dim);padding-top:2px;font-variant-numeric:tabular-nums}
+.blk .body{display:grid;gap:3px;min-width:0}
+.blk .t{font-size:12.5px;font-weight:600;line-height:1.4}
+.blk .where{font:10.5px var(--mono);color:var(--working);word-break:break-all}
+.blk .who{font-size:10.5px;color:var(--dim)}
+.blk details{margin-top:2px}
+.blk summary{font-size:10.5px;color:var(--muted);cursor:pointer;list-style:none;width:fit-content}
+.blk summary::-webkit-details-marker{display:none}
+.blk summary::before{content:"\25B8";color:var(--dim);margin-right:5px}
+.blk details[open] summary::before{content:"\25BE"}
+.blk .whytx{font-size:11.5px;color:var(--muted);line-height:1.55;padding:7px 0 0;max-width:82ch}
+
+.alarm{display:grid;gap:6px;border:1px solid color-mix(in srgb,var(--danger) 40%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--danger) 9%,var(--panel));padding:11px 13px}
+.alarm .t{font-size:12px;font-weight:640;color:var(--danger);display:flex;align-items:center;gap:7px}
+.alarm .d{font-size:11.5px;color:var(--muted);line-height:1.55;max-width:84ch}
+.alarm .d b{color:var(--fg);font-weight:600}
+
+/* The button column is a shared width so sentences line up, but it is a variable rather than
+   a constant: a list whose longest label is "Disable Test Evidence Auditor" needs more room
+   than one whose longest is "Copy feedback", and a fixed width silently overlaps the text. */
+.opts{display:grid;gap:7px;--optcol:170px}
+.opt{display:grid;grid-template-columns:var(--optcol) minmax(0,1fr);gap:12px;align-items:start;border:1px solid var(--border);border-radius:9px;background:var(--bg);padding:9px 11px}
+.opt.off{border-style:dashed;border-color:var(--border-soft);background:transparent}
+.opt .c{display:flex}
+.opt .d{font-size:11.5px;color:var(--muted);line-height:1.5}
+.opt .d b{color:var(--fg);font-weight:600}
+.opt.off .d{color:var(--dim)}
+
+.folded{display:grid;gap:6px}
+.fold{border:1px solid var(--border);border-radius:9px;background:var(--panel)}
+.fold summary{display:flex;align-items:center;gap:9px;padding:10px 13px;cursor:pointer;font-size:12px;color:var(--fg);list-style:none}
+.fold summary::-webkit-details-marker{display:none}
+.fold summary::before{content:"\25B8";color:var(--dim);font-size:10px}
+.fold[open] summary::before{content:"\25BE"}
+.fold summary .g{margin-left:auto;color:var(--dim);font-size:10.5px}
+.fold .in{padding:0 13px 13px;display:grid;gap:8px}
+.passline{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--muted);padding:6px 0;border-top:1px solid var(--border-soft)}
+.passline b{color:var(--fg);font-weight:600}
+
+/* ---- B worklist ---- */
+.split{display:grid;grid-template-columns:minmax(0,336px) minmax(0,1fr);border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:hidden}
+.split .left{border-right:1px solid var(--border);padding:11px;display:grid;gap:8px;align-content:start;background:var(--bg-2)}
+.split .right{padding:15px 16px;display:grid;gap:13px;align-content:start;min-width:0}
+.seg{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--panel)}
+.seg span{flex:1;text-align:center;font-size:10.5px;padding:6px 4px;color:var(--muted);border-right:1px solid var(--border)}
+.seg span:last-child{border-right:0}
+.seg span.on{background:color-mix(in srgb,var(--working) 16%,var(--panel));color:var(--fg);font-weight:600}
+.wl{display:grid;gap:5px}
+.wli{display:grid;gap:4px;border:1px solid transparent;border-left:3px solid var(--danger);border-radius:8px;padding:9px 10px}
+.wli.on{border-color:var(--border);background:var(--panel)}
+.wli .t{font-size:11.5px;font-weight:600;line-height:1.4}
+.wli .s{font:10px var(--mono);color:var(--dim);word-break:break-all}
+.wli .r{font-size:10px;color:var(--dim)}
+.wli.done{border-left-color:var(--idle);opacity:.62}
+.detail-head{display:grid;gap:6px}
+.detail-head .t{font-size:15px;font-weight:640;letter-spacing:-.01em;line-height:1.35}
+.quote{border-left:2px solid var(--border);padding:2px 0 2px 11px;color:var(--muted);font-size:11px;line-height:1.55;font-family:var(--mono)}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px 18px}
+.kv div{display:grid;gap:2px}
+.kv .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim)}
+.kv .v{font-size:11.5px}
+.wl-foot{display:flex;gap:8px;flex-wrap:wrap;padding-top:11px;border-top:1px solid var(--border-soft)}
+
+/* ---- C matrix ---- */
+.mx{width:100%;border-collapse:separate;border-spacing:0;font-size:11px}
+.mx th,.mx td{border:0;padding:0;text-align:left;background:transparent}
+.mx thead th{font-size:9.5px;color:var(--dim);font-weight:500;text-align:center;padding:0 0 6px}
+.mx thead th.lab{text-align:left;padding-left:2px}
+.mx tbody th{font-weight:500;font-size:11.5px;color:var(--fg);padding:0 12px 0 2px;white-space:nowrap;border-bottom:1px solid var(--border-soft);height:30px}
+.mx tbody th .sub{display:block;font-size:9.5px;color:var(--dim);line-height:1.2}
+.mx tbody td{border-bottom:1px solid var(--border-soft);text-align:center;height:30px}
+/* The pattern column is prose under a left-aligned header, so it starts at the header's x.
+   Every other body cell is a centred 20px mark and stays centred. */
+.mx tbody td:last-child{text-align:left}
+.mx tbody tr:last-child th,.mx tbody tr:last-child td{border-bottom:0}
+.cell{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;font-size:10px;font-weight:700;line-height:1}
+.cell.p{background:color-mix(in srgb,var(--idle) 20%,var(--bg));color:var(--idle);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--idle) 34%,transparent)}
+.cell.f{background:color-mix(in srgb,var(--danger) 22%,var(--bg));color:var(--danger);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--danger) 40%,transparent)}
+.cell.s{background:color-mix(in srgb,var(--attention) 15%,var(--bg));color:var(--attention);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--attention) 32%,transparent)}
+.cell.now{outline:2px solid var(--working);outline-offset:1px}
+.streak{font-size:10px;color:var(--danger);white-space:nowrap;padding-left:10px}
+.streak.ok{color:var(--idle)}
+.streak.warn{color:var(--attention)}
+.mx-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;color:var(--dim);padding-top:4px}
+.mx-legend span{display:inline-flex;align-items:center;gap:5px}
+.open-item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:baseline;border-bottom:1px solid var(--border-soft);padding:8px 0}
+.open-item:last-child{border-bottom:0}
+.open-item .age{font-size:10px;color:var(--danger);white-space:nowrap}
+.open-item .t{font-size:11.5px;line-height:1.45}
+.open-item .t code{display:block;color:var(--working);font-size:10px;margin-top:2px}
+
+/* ---- D by file ---- */
+.wo{display:grid;gap:9px}
+.file{border:1px solid var(--border);border-radius:10px;background:var(--bg);overflow:hidden}
+.file-head{display:flex;align-items:center;gap:9px;padding:9px 12px;background:color-mix(in srgb,var(--working) 6%,var(--panel));border-bottom:1px solid var(--border)}
+.file-head .path{font:11.5px var(--mono);color:var(--working);word-break:break-all;margin-right:auto}
+.task{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:11px 12px;border-bottom:1px solid var(--border-soft);align-items:start}
+.task:last-child{border-bottom:0}
+.task .box{width:13px;height:13px;border:1px solid var(--dim);border-radius:3px;margin-top:2px}
+.task .b{display:grid;gap:4px;min-width:0}
+.task .t{font-size:12px;font-weight:600;line-height:1.4}
+.task .d{font-size:11.5px;color:var(--muted);line-height:1.55;max-width:86ch}
+.task .f{display:flex;gap:7px;flex-wrap:wrap;align-items:center;font-size:10px;color:var(--dim)}
+.rollup{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+.send{display:grid;gap:9px;border:1px solid color-mix(in srgb,var(--working) 34%,var(--border));border-radius:11px;background:color-mix(in srgb,var(--working) 7%,var(--panel));padding:12px 14px}
+.send .t{font-size:12px;font-weight:640}
+.send .d{font-size:11.5px;color:var(--muted);line-height:1.55;max-width:84ch}
+.bar{display:flex;height:5px;border-radius:999px;overflow:hidden;background:var(--border-soft);width:100%;max-width:230px}
+.bar i{display:block;height:100%}
+.bar .g{background:var(--idle)}
+.bar .r{background:var(--danger)}
+.bar .a{background:var(--attention)}
+
+/* ---- E stage drill-down ---- */
+.crumb{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding-bottom:11px;border-bottom:1px solid var(--border-soft)}
+.crumb .path{font-size:13.5px;font-weight:640;letter-spacing:-.01em}
+.crumb .of{font-size:10.5px;color:var(--dim)}
+.jump{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.jchip{border:1px solid var(--border);border-radius:8px;background:var(--panel-2);padding:5px 9px;font-size:10.5px;color:var(--muted);display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.jchip .dot{width:7px;height:7px;border-radius:999px;flex-shrink:0}
+.jchip .dot.p{background:var(--idle)}
+.jchip .dot.f{background:var(--danger)}
+.jchip .dot.s{background:var(--attention)}
+.jchip .dot.n{background:var(--exited)}
+.jchip.on{border-color:var(--working);background:color-mix(in srgb,var(--working) 15%,var(--panel));color:var(--fg);font-weight:600}
+.rev{border:1px solid var(--border);border-left:3px solid var(--danger);border-radius:10px;background:var(--bg);overflow:hidden}
+.rev.ok{border-left-color:var(--idle)}
+.rev-head{display:flex;align-items:center;gap:9px;padding:10px 12px;flex-wrap:wrap}
+.rev-head .nm{font-size:12.5px;font-weight:640;margin-right:auto}
+.rev-body{padding:0 12px 12px;display:grid;gap:9px}
+.rev-sum{font-size:11.5px;color:var(--muted);line-height:1.55;max-width:86ch}
+.ask{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px;border-top:1px solid var(--border-soft);padding-top:9px;align-items:start}
+.ask .n{font:600 10px var(--mono);color:var(--dim);padding-top:3px}
+.ask .b{display:grid;gap:3px;min-width:0}
+.ask .t{font-size:11.5px;font-weight:600;line-height:1.4}
+.ask .p{font:10.5px var(--mono);color:var(--working);word-break:break-all}
+.ask .d{font-size:11px;color:var(--muted);line-height:1.55;max-width:84ch}
+.rev-acts{display:flex;gap:7px;flex-wrap:wrap;padding-top:2px}
+
+/* ---- F round delta ---- */
+.delta{display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:9px}
+.dcol{border:1px solid var(--border);border-radius:10px;background:var(--bg);overflow:hidden;display:flex;flex-direction:column}
+.dcol-head{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--border-soft)}
+.dcol-head .t{font-size:11px;font-weight:640;letter-spacing:.02em}
+.dcol-head .c{margin-left:auto;font:600 12px var(--mono);font-variant-numeric:tabular-nums}
+.dcol.good .dcol-head{background:color-mix(in srgb,var(--idle) 8%,transparent)}
+.dcol.good .dcol-head .t,.dcol.good .dcol-head .c{color:var(--idle)}
+.dcol.bad .dcol-head{background:color-mix(in srgb,var(--danger) 8%,transparent)}
+.dcol.bad .dcol-head .t,.dcol.bad .dcol-head .c{color:var(--danger)}
+.dcol.warnc .dcol-head{background:color-mix(in srgb,var(--attention) 8%,transparent)}
+.dcol.warnc .dcol-head .t,.dcol.warnc .dcol-head .c{color:var(--attention)}
+.dcol.flat .dcol-head .t,.dcol.flat .dcol-head .c{color:var(--muted)}
+.ditem{padding:9px 11px;border-bottom:1px solid var(--border-soft);display:grid;gap:3px}
+.ditem:last-child{border-bottom:0}
+.ditem .t{font-size:11px;font-weight:600;line-height:1.4}
+.ditem .s{font:9.5px var(--mono);color:var(--dim);word-break:break-all}
+.ditem .r{font-size:10px;color:var(--dim)}
+.ditem .r b{color:var(--muted);font-weight:600}
+/* `margin:auto 0` centres the empty state in a column stretched to the tallest sibling.
+   Left at the top it read as a column that had failed to load rather than one whose count
+   is genuinely zero, and on this run the two zeros ARE the finding. */
+.dempty{padding:14px 11px;margin:auto 0;font-size:10.5px;color:var(--dim);text-align:center}
+.verdictbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid color-mix(in srgb,var(--danger) 40%,var(--border));border-radius:11px;background:color-mix(in srgb,var(--danger) 9%,var(--panel));padding:12px 14px}
+.verdictbar .big{font-size:14px;font-weight:640;letter-spacing:-.01em;color:var(--danger)}
+.verdictbar .sm{font-size:11.5px;color:var(--muted);line-height:1.55;max-width:70ch}
+.verdictbar .sm b{color:var(--fg);font-weight:600}
+.spark{display:flex;gap:3px;align-items:flex-end;height:26px}
+.spark i{width:9px;border-radius:2px;display:block;background:var(--danger)}
+.sparkwrap{display:grid;gap:4px}
+.sparkwrap .cap{font-size:9.5px;color:var(--dim);letter-spacing:.04em}
+.cmpsel{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.cmpsel .lbl{font-size:10.5px;color:var(--dim)}
+.pill{border:1px solid var(--border);border-radius:7px;background:var(--panel-2);color:var(--muted);font-size:10.5px;padding:4px 8px}
+.pill.on{border-color:var(--working);background:color-mix(in srgb,var(--working) 15%,var(--panel));color:var(--fg)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p style="color:var(--r-dim);font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 8px">Design &middot; Mission Control &middot; revision 2</p>
+<h1>Workflow runs: six mockups for the area <em>below</em> the pipeline</h1>
+<p class="lede">The header, round scrubber and stage diagram are kept exactly as they are in all six. Only what sits underneath them changes.</p>
+
+<div class="q">
+  <p style="margin:0 0 8px"><b>What changed in this revision.</b></p>
+  <ol style="margin:0">
+    <li>The run header, round scrubber and pipeline diagram are now drawn in every mockup, unchanged. <b>None of the four had to be discarded</b> - all fit underneath the diagram without modification.</li>
+    <li>Two fresh directions were added: <b>E &middot; Stage Drill-down</b> and <b>F &middot; Round Delta</b>.</li>
+  </ol>
+</div>
+
+<div class="toc">
+  <b style="font-size:13px">Contents</b>
+  <ol>
+    <li><a href="#keep">What the diagram already answers</a> - and what that leaves for the area below</li>
+    <li><a href="#case">The run every mockup draws</a></li>
+    <li><a href="#a">Mockup A - Decision Brief</a> <span class="tag">severity</span></li>
+    <li><a href="#b">Mockup B - Blocker Worklist</a> <span class="tag">one at a time</span></li>
+    <li><a href="#c">Mockup C - Round Matrix</a> <span class="tag">time</span></li>
+    <li><a href="#d">Mockup D - Work Order by File</a> <span class="tag">place</span></li>
+    <li><a href="#e">Mockup E - Stage Drill-down</a> <span class="tag fresh">new &middot; the diagram drives it</span></li>
+    <li><a href="#f">Mockup F - Round Delta</a> <span class="tag fresh">new &middot; progress</span></li>
+    <li><a href="#compare">Side by side</a></li>
+    <li><a href="#rec">Recommendation</a></li>
+    <li><a href="#limits">What I did not establish</a></li>
+  </ol>
+</div>
+
+<h2 id="keep">1. What the diagram already answers</h2>
+
+<p>Keeping the diagram is not a constraint on the redesign, it is a simplification of it. Drawing it out made that concrete: <b>the stage strip already answers "which stage failed" completely and better than prose could.</b> Session, Stage 1, the Intent Conformance gate, Stage 3, each with a status chip and each member's own chip inside it. Nothing below it needs to restate that.</p>
+
+<p>Which leaves the area below a much narrower job than the four original mockups assumed:</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th style="width:34%">Question</th><th style="width:22%">Answered by</th><th>What is left for the area below</th></tr></thead>
+<tbody>
+<tr><td><b>Which stage failed?</b></td><td>The diagram</td><td>Nothing. Do not repeat it.</td></tr>
+<tr><td><b>Which reviewer failed?</b></td><td>The diagram</td><td>Nothing. The member chip inside the stage card says so.</td></tr>
+<tr><td><b>Why did it fail?</b></td><td>Nothing today</td><td>The verdict summary, and the pattern across rounds.</td></tr>
+<tr><td><b>What is being asked?</b></td><td>Nothing today</td><td>Requested changes, concise, with the file.</td></tr>
+<tr><td><b>What can I do about it?</b></td><td>Partly the header</td><td>The full option set, including the moves that are unavailable and why.</td></tr>
+<tr><td><b>Am I making progress?</b></td><td>Nothing today</td><td>Round-over-round movement. This is what F is for.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="finding">
+<p><b>One thing the diagram exposes that the original four missed.</b> Drawing Stage 1 truthfully for this run puts <code>test</code> in the strip as a member of a stage whose status chip reads pass, when the command was never run - it is disabled for this run and auto-passed. In the diagram that is a single amber member chip inside an otherwise green stage, which is very easy to miss at a glance. Whatever goes below has to carry that as a named warning, because the strip alone will not.</p>
+</div>
+
+<h2 id="case">2. The run every mockup draws</h2>
+
+<p>All six render the same live run pulled from the daemon at <code>127.0.0.1:7317</code>, so they can be compared honestly: No-Mistakes Review v8, run <code>955694c7</code>, <code>waiting_for_session</code> at <b>round 10 of a 9-round budget</b>, two reviewers that have blocked all ten rounds, three requested changes across three files, and the <code>test</code> gate disabled since round 4. Behind it sit 10 submissions, 91 attempts, 56 model calls and 139 events.</p>
+
+<p class="note">Each mockup shows the reader pane only. The run rail on the left is unchanged in all six, per the original ask.</p>
+
+
+<!-- ==================== MOCKUP A ==================== -->
+<h2 id="a">3. Mockup A - Decision Brief</h2>
+<div class="thesis"><p class="axis"><b>Organising axis: severity.</b> One brief sits directly under the diagram and answers the remaining three questions in a single screen. The entire existing page survives below it, folded. Nothing is deleted, only demoted.</p></div>
+
+<div class="ui">
+  <div class="run-head">
+    <div class="run-id">
+      <span class="run-live stall">Waiting &middot; round 10 of 9</span>
+      <span class="run-name">No-Mistakes Review</span>
+      <span class="run-facts">
+        <span class="run-ver">v8</span>
+        <span class="chip wait sm">Waiting for the session</span>
+        <a class="run-sess" href="#a">Implement automatic test database isolation - Phase 1</a>
+        <span class="run-repo">ai-harness</span>
+      </span>
+      <span class="run-when">Started 8/7/2026, 2:14:03 PM &middot; updated 4m ago</span>
+    </div>
+    <div class="run-acts"><button class="btn">Copy feedback</button><span class="sep"></span><button class="btn danger">Cancel run</button></div>
+  </div>
+
+  <div class="scrub">
+    <div class="rd"><b>Round 1</b><span class="cr">Changes requested</span></div>
+    <div class="rd"><b>Round 2</b><span class="cr">Changes requested</span></div>
+    <div class="rd"><b>Round 3</b><span class="cr">Changes requested</span></div>
+    <div class="rd"><b>Round 4</b><span class="cr">Changes requested</span></div>
+    <div class="rd"><b>Round 5</b><span class="cr">Changes requested</span></div>
+    <div class="rd"><b>Round 6</b><span class="cr">Changes requested</span></div>
+    <div class="rd"><b>Round 7</b><span class="cr">Changes requested</span></div>
+    <div class="rd"><b>Round 8</b><span class="cr">Changes requested</span></div>
+    <div class="rd"><b>Round 9</b><span class="cr">Changes requested</span></div>
+    <div class="rd on"><b>Round 10</b><span class="cr">Changes requested</span></div>
+  </div>
+
+  <div class="pipe-wrap">
+    <div class="pipe">
+      <div class="pnode">
+        <span class="ph"><span class="dia">&#9671;</span><span><b>Session</b><span class="sub">Submits the work</span></span></span>
+        <span><span class="chip wait sm">Changes requested</span></span>
+      </div>
+      <div class="seam"><span class="gate">Submitted</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 1</b><span class="sub">2 commands &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip deg sm">Passed, degraded</span></span>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">typecheck</span><span class="dots">&middot;&middot;&middot;</span></span><span><span class="chip pass sm">Passed</span></span></div>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">test</span><span class="dots">&middot;&middot;&middot;</span></span><span><span class="chip deg sm">Not run &middot; disabled</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Intent Conformance Judge</b><span class="sub">1 reviewer</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip pass sm">Passed</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Intent Conformance Judge</span><span class="dots">&middot;&middot;&middot;</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">Pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 3</b><span class="sub">3 reviewers &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip fail sm">Changes requested</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Code Risk Reviewer</span><span class="dots">&middot;&middot;&middot;</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Test Evidence Auditor</span><span class="dots">&middot;&middot;&middot;</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Documentation Steward</span><span class="dots">&middot;&middot;&middot;</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="pnode">
+        <span class="ph"><span class="dia">&#9671;</span><span><b>Pull request</b><span class="sub">Session action</span></span></span>
+        <span><span class="chip off sm">Not reached</span></span>
+      </div>
+    </div>
+    <p class="pipe-foot">Any fail returns the submission to Session for repair, then the whole pipeline runs again.</p>
+  </div>
+
+  <div class="stack-lg">
+    <div class="brief">
+      <div class="brief-head">
+        <span class="chip fail">2 reviewers blocking</span>
+        <span class="chip deg">1 gate not run</span>
+        <span class="meta" style="margin-left:auto">Round 10 of 9 &middot; budget spent</span>
+      </div>
+      <div>
+        <p class="brief-verdict">This run is <span class="accent">out of repair rounds</span> and cannot send another one itself.</p>
+        <p class="brief-sub" style="margin-top:5px">Two reviewers in Stage 3 have blocked every round since the first, so the loop is not converging. Three changes are outstanding across three files.</p>
+      </div>
+      <div class="tiles">
+        <div class="tile bad"><span class="k">Round</span><span class="v">10 / 9</span><span class="n">Budget spent</span></div>
+        <div class="tile bad"><span class="k">Blocking</span><span class="v">3</span><span class="n">Requested changes</span></div>
+        <div class="tile good"><span class="k">Reviewers</span><span class="v">4 / 6</span><span class="n">Passed this round</span></div>
+        <div class="tile warn"><span class="k">Gates</span><span class="v">1</span><span class="n">Disabled, auto-passed</span></div>
+      </div>
+      <div class="alarm">
+        <p class="t">&#9888; Two reviewers have never passed</p>
+        <p class="d"><b>Code Risk Reviewer</b> and <b>Test Evidence Auditor</b> have each failed all 10 rounds. Nine rounds of repair have not moved either one, so a tenth is unlikely to. Consider disabling one for this run, or giving it critical feedback, rather than granting more rounds.</p>
+      </div>
+      <div class="stack">
+        <div class="row"><h4>Requested changes</h4><span class="meta">3 open &middot; deduplicated across reviewers</span></div>
+        <div class="blockers">
+          <div class="blk">
+            <span class="num">01</span>
+            <div class="body">
+              <p class="t">Keep spawned test children recognized after environment tampering</p>
+              <p class="where">src/server/db.ts</p>
+              <p class="who">Code Risk Reviewer &middot; 94% confident &middot; open since round 1</p>
+              <details><summary>Why</summary><p class="whytx"><code style="color:var(--muted)">underTestRunner()</code> treats a child as a test worker only through mutable environment signals or <code style="color:var(--muted)">--test-*</code> flags. A test can spawn ordinary <code style="color:var(--muted)">node</code>, delete <code style="color:var(--muted)">NODE_TEST_CONTEXT</code>, <code style="color:var(--muted)">MISSION_TEST_STATE</code> and the bootstrap <code style="color:var(--muted)">HARNESS_HOME</code>, then import <code style="color:var(--muted)">db.ts</code>. That child has no immutable marker and no flag, so the guard returns false and <code style="color:var(--muted)">openDb()</code> opens the operator database.</p></details>
+            </div>
+            <span class="chip fail sm">Blocker</span>
+          </div>
+          <div class="blk">
+            <span class="num">02</span>
+            <div class="body">
+              <p class="t">Attach completed db-isolation focused-test output</p>
+              <p class="where">test/db-isolation.test.ts</p>
+              <p class="who">Test Evidence Auditor &middot; 99% confident &middot; open since round 4</p>
+              <details><summary>Why</summary><p class="whytx">Show the real command output through its completion summary, including the individual symlink and late-cached-override cases. The supplied evidence only summarises the result and explicitly omits the listing.</p></details>
+            </div>
+            <span class="chip fail sm">Blocker</span>
+          </div>
+          <div class="blk">
+            <span class="num">03</span>
+            <div class="body">
+              <p class="t">Attach completed provider-column regression transcript</p>
+              <p class="where">test/workflow-check-provider-column.test.ts</p>
+              <p class="who">Test Evidence Auditor &middot; 99% confident &middot; open since round 4</p>
+              <details><summary>Why</summary><p class="whytx">The transcript claims both focused checks were run but contains no command output or completion summary for the provider-column regression, so this required compatibility behaviour has not been demonstrated in the submitted snapshot.</p></details>
+            </div>
+            <span class="chip fail sm">Blocker</span>
+          </div>
+        </div>
+      </div>
+      <div class="stack">
+        <h4>Your options</h4>
+        <div class="opts">
+          <div class="opt off"><span class="c"><button class="btn dis">Resume review</button></span><p class="d"><b>Unavailable.</b> This run has used every repair round its binding allows. Raise the budget on the workflow, or take one of the moves below.</p></div>
+          <div class="opt"><span class="c"><button class="btn primary">Copy feedback</button></span><p class="d">Puts the 3 requested changes on the clipboard so you can paste them into the session yourself, outside the round budget.</p></div>
+          <div class="opt"><span class="c"><button class="btn">Disable a reviewer</button></span><p class="d">Auto-passes a reviewer for the rest of this run. The obvious candidate is <b>Test Evidence Auditor</b>, which is asking for transcripts rather than code changes.</p></div>
+          <div class="opt"><span class="c"><button class="btn">Give critical feedback</button></span><p class="d">Adds an operator directive to a Persona before its next attempt. Use this when the reviewer is right in principle but wrong about this change.</p></div>
+          <div class="opt"><span class="c"><button class="btn danger">Cancel run</button></span><p class="d">Stops the run where it stands. This run holds no merge block, so nothing is released.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="folded">
+      <details class="fold"><summary>Passed this round <span class="chip pass sm">4</span><span class="g">no action needed</span></summary><div class="in">
+        <div class="passline"><span class="chip pass sm">Pass</span><b>Intent Conformance Judge</b><span>Conforms to the stated phase-1 intent.</span><span class="meta" style="margin-left:auto">90%</span></div>
+        <div class="passline"><span class="chip pass sm">Pass</span><b>Documentation Steward</b><span>Docs consistent with the implementation.</span><span class="meta" style="margin-left:auto">96%</span></div>
+        <div class="passline"><span class="chip pass sm">Pass</span><b>Command &middot; typecheck</b><span><code>make check</code> passed.</span><span class="meta" style="margin-left:auto">exit 0</span></div>
+        <div class="passline"><span class="chip deg sm">Not run</span><b>Command &middot; test</b><span style="color:var(--attention)">Disabled for this run, so this gate auto-passed without running.</span><span class="meta" style="margin-left:auto">degraded</span></div>
+      </div></details>
+      <details class="fold"><summary>Captured intent <span class="g">goal, 1 decision, 6 constraints, 5 acceptance criteria</span></summary><div class="in">
+        <p class="muted" style="font-size:11.5px;line-height:1.55">Prevent test writes to the operator database with fail-closed physical-path validation, preserve fixtures, and complete the review-supported verification gates.</p>
+        <p class="meta">Compacted by codex / gpt-5.6-luna. Raw prompt (4,005 chars, 9 nested repair preambles) available below.</p>
+      </div></details>
+      <details class="fold"><summary>Deliveries <span class="g">10 delivered</span></summary><div class="in"><p class="meta">Unchanged.</p></div></details>
+      <details class="fold"><summary>Model calls, timeline, audit <span class="g">56 calls &middot; 139 events</span></summary><div class="in"><p class="meta">Unchanged.</p></div></details>
+    </div>
+  </div>
+</div>
+
+<p class="keeps"><b>&#10003; Diagram kept.</b> Unmodified. The brief sits directly beneath it and repeats none of it.</p>
+<div class="answers">
+  <div><h5>Why did it fail</h5><p>Headline sentence plus a red tile. The stalemate alarm explains why nine rounds of repair did not help.</p></div>
+  <div><h5>What is being asked</h5><p>Three numbered rows, title and path visible, rationale behind a native <code>&lt;details&gt;</code>.</p></div>
+  <div><h5>What can I do</h5><p>An explicit options list. The unavailable move is shown greyed <i>with its reason</i>.</p></div>
+</div>
+<p class="tradeoff"><b>Trade-off.</b> The lowest-risk of the six and the only one that is purely additive. But the diagram plus the round scrubber already consume real vertical space, and the brief adds another screenful before the folded archive begins - with 8 or more requested changes the brief itself becomes the wall. Note the scrubber at 10 rounds now wraps to two lines, which is drawn honestly above and is worth fixing on its own.</p>
+
+
+<!-- ==================== MOCKUP B ==================== -->
+<h2 id="b">4. Mockup B - Blocker Worklist</h2>
+<div class="thesis"><p class="axis"><b>Organising axis: one item at a time.</b> Below the diagram the run becomes an inbox: blockers on the left, full detail for the selected one on the right, everything not blocking hidden behind a segmented control. You work the list down rather than scrolling past it.</p></div>
+
+<div class="ui">
+  <div class="run-head">
+    <div class="run-id">
+      <span class="run-live stall">Waiting &middot; round 10 of 9</span>
+      <span class="run-name">No-Mistakes Review</span>
+      <span class="run-facts"><span class="run-ver">v8</span><span class="chip wait sm">Waiting for the session</span><a class="run-sess" href="#b">Implement automatic test database isolation - Phase 1</a><span class="run-repo">ai-harness</span></span>
+    </div>
+    <div class="run-acts"><button class="btn">Copy feedback</button><span class="sep"></span><button class="btn danger">Cancel run</button></div>
+  </div>
+
+  <div class="pipe-wrap">
+    <div class="pipe">
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Session</b><span class="sub">Submits the work</span></span></span><span><span class="chip wait sm">Changes requested</span></span></div>
+      <div class="seam"><span class="gate">Submitted</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 1</b><span class="sub">2 commands &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip deg sm">Passed, degraded</span></span>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">typecheck</span></span><span><span class="chip pass sm">Passed</span></span></div>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">test</span></span><span><span class="chip deg sm">Not run &middot; disabled</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Intent Conformance Judge</b><span class="sub">1 reviewer</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip pass sm">Passed</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Intent Conformance Judge</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">Pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 3</b><span class="sub">3 reviewers &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip fail sm">Changes requested</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Code Risk Reviewer</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Test Evidence Auditor</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Documentation Steward</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Pull request</b><span class="sub">Session action</span></span></span><span><span class="chip off sm">Not reached</span></span></div>
+    </div>
+    <p class="pipe-foot">Any fail returns the submission to Session for repair, then the whole pipeline runs again.</p>
+  </div>
+
+  <p class="why" style="margin-bottom:13px"><b>Out of repair rounds at 10 of 9.</b> This run cannot send another packet on its own. Copy the feedback to the session, disable a reviewer, or cancel.</p>
+
+  <div class="split">
+    <div class="left">
+      <div class="seg"><span class="on">Blocking 3</span><span>Passed 4</span><span>Archive</span></div>
+      <div class="wl">
+        <div class="wli on"><span class="t">Keep spawned test children recognized after environment tampering</span><span class="s">src/server/db.ts</span><span class="r">Code Risk Reviewer &middot; round 1</span></div>
+        <div class="wli"><span class="t">Attach completed db-isolation focused-test output</span><span class="s">test/db-isolation.test.ts</span><span class="r">Test Evidence Auditor &middot; round 4</span></div>
+        <div class="wli"><span class="t">Attach completed provider-column regression transcript</span><span class="s">test/workflow-check-provider-column.test.ts</span><span class="r">Test Evidence Auditor &middot; round 4</span></div>
+        <div class="wli done"><span class="t">Preserve file-local temporary homes under the preload</span><span class="s">src/server/state-home.ts</span><span class="r">Resolved in round 9</span></div>
+      </div>
+      <div class="alarm" style="margin-top:2px"><p class="t" style="font-size:11px">&#9888; Stalemate</p><p class="d" style="font-size:10.5px">Code Risk and Test Evidence have failed all 10 rounds.</p></div>
+    </div>
+    <div class="right">
+      <div class="detail-head">
+        <div class="row"><span class="chip fail sm">Blocker</span><span class="meta">1 of 3</span><span class="meta" style="margin-left:auto">Code Risk Reviewer &middot; 94% confident &middot; opus-4.6</span></div>
+        <p class="t">Keep spawned test children recognized after environment tampering</p>
+        <p class="muted" style="font-size:11.5px;line-height:1.55;max-width:80ch">A spawned plain-Node child can still disable the guard before importing <code style="color:var(--muted)">db.ts</code> and open the operator database.</p>
+      </div>
+      <div class="kv">
+        <div><span class="k">File</span><span class="v"><a href="#b">src/server/db.ts</a></span></div>
+        <div><span class="k">First raised</span><span class="v">Round 1, 6 days ago</span></div>
+        <div><span class="k">Rounds open</span><span class="v" style="color:var(--danger)">10 of 10</span></div>
+        <div><span class="k">Evidence refs</span><span class="v">4</span></div>
+      </div>
+      <div class="stack">
+        <h5>What the reviewer wants</h5>
+        <p class="muted" style="font-size:11.5px;line-height:1.6;max-width:84ch"><code style="color:var(--muted)">underTestRunner()</code> treats a child as a test worker only through mutable environment or JS-visible signals, or <code style="color:var(--muted)">--test-*</code> command-line flags. A test can spawn ordinary <code style="color:var(--muted)">node</code>, delete <code style="color:var(--muted)">NODE_TEST_CONTEXT</code>, <code style="color:var(--muted)">MISSION_TEST_STATE</code> and the bootstrap <code style="color:var(--muted)">HARNESS_HOME</code>, then import <code style="color:var(--muted)">db.ts</code>. That child has no immutable marker and no <code style="color:var(--muted)">--test-*</code> flag, so <code style="color:var(--muted)">underTestRunner()</code> returns false and <code style="color:var(--muted)">openDb()</code> opens the default operator database.</p>
+      </div>
+      <div class="stack">
+        <h5>Cited evidence <span class="meta">4 refs</span></h5>
+        <p class="quote">diff &middot; src/server/db.ts:118<br>+ if (!underTestRunner()) return resolveOperatorHome();</p>
+        <p class="quote">standard &middot; AGENTS.md<br>Never let the Foreman worker touch SQLite. The daemon is the only database writer.</p>
+      </div>
+      <div class="wl-foot">
+        <button class="btn primary">Copy this change</button>
+        <button class="btn">Open file</button>
+        <button class="btn">Give this reviewer feedback</button>
+        <button class="btn">Disable Code Risk Reviewer</button>
+        <span style="margin-left:auto;display:flex;gap:6px"><button class="btn sm">&larr;</button><button class="btn sm">Next &rarr;</button></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="keeps"><b>&#10003; Diagram kept.</b> Unmodified, though the round scrubber is dropped here: the worklist's own "round N" annotations do that job, and keeping both was redundant.</p>
+<div class="answers">
+  <div><h5>Why did it fail</h5><p>The diagram and the one-line why carry it; the stalemate card in the rail keeps the pattern visible while you work items.</p></div>
+  <div><h5>What is being asked</h5><p>Strongest of the six. The list is the agenda, and resolved items stay visible with a green rail so progress is legible.</p></div>
+  <div><h5>What can I do</h5><p>Two tiers: run-level actions in the header, per-blocker actions in the footer, including disabling the specific reviewer that raised it.</p></div>
+</div>
+<p class="tradeoff"><b>Trade-off.</b> The best fit for actually working through changes, and it scales past 10 blockers where A stops working. But it is the only one of the six that cannot be read at a glance, and stacking a fixed-height split pane under an already-tall diagram means two independent scroll regions on one screen, which is the layout most likely to feel cramped in practice.</p>
+
+
+<!-- ==================== MOCKUP C ==================== -->
+<h2 id="c">5. Mockup C - Round Matrix</h2>
+<div class="thesis"><p class="axis"><b>Organising axis: time.</b> The diagram shows this round. The matrix below shows all ten at once, so convergence, or the absence of it, becomes a shape you see rather than a number you compute. This is the only view that answers "is another round going to help?"</p></div>
+
+<div class="ui">
+  <div class="run-head">
+    <div class="run-id">
+      <span class="run-live stall">Waiting &middot; round 10 of 9</span>
+      <span class="run-name">No-Mistakes Review</span>
+      <span class="run-facts"><span class="run-ver">v8</span><span class="chip wait sm">Waiting for the session</span><a class="run-sess" href="#c">Implement automatic test database isolation - Phase 1</a><span class="run-repo">ai-harness</span></span>
+    </div>
+    <div class="run-acts"><button class="btn">Copy feedback</button><span class="sep"></span><button class="btn danger">Cancel run</button></div>
+  </div>
+
+  <div class="pipe-wrap">
+    <div class="pipe">
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Session</b><span class="sub">Submits the work</span></span></span><span><span class="chip wait sm">Changes requested</span></span></div>
+      <div class="seam"><span class="gate">Submitted</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 1</b><span class="sub">2 commands &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip deg sm">Passed, degraded</span></span>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">typecheck</span></span><span><span class="chip pass sm">Passed</span></span></div>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">test</span></span><span><span class="chip deg sm">Not run &middot; disabled</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Intent Conformance Judge</b><span class="sub">1 reviewer</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip pass sm">Passed</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Intent Conformance Judge</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">Pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 3</b><span class="sub">3 reviewers &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip fail sm">Changes requested</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Code Risk Reviewer</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Test Evidence Auditor</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Documentation Steward</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Pull request</b><span class="sub">Session action</span></span></span><span><span class="chip off sm">Not reached</span></span></div>
+    </div>
+    <p class="pipe-foot">Any fail returns the submission to Session for repair, then the whole pipeline runs again.</p>
+  </div>
+
+  <div class="stack-lg">
+    <div class="sect">
+      <div class="sect-head"><h4>The same pipeline, all ten rounds</h4><span class="meta">Click any cell to load that round above</span></div>
+      <div class="scroll">
+      <table class="mx">
+        <thead><tr><th class="lab">Stage member</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7</th><th>8</th><th>9</th><th>10</th><th class="lab" style="padding-left:10px">Pattern</th></tr></thead>
+        <tbody>
+          <tr><th>Command &middot; typecheck<span class="sub">Stage 1</span></th>
+            <td><span class="cell f">&times;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p now">&check;</span></td>
+            <td><span class="streak ok">Fixed in round 2</span></td></tr>
+          <tr><th>Command &middot; test<span class="sub">Stage 1 &middot; disabled</span></th>
+            <td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell s">&ndash;</span></td><td><span class="cell s">&ndash;</span></td><td><span class="cell s">&ndash;</span></td><td><span class="cell s">&ndash;</span></td><td><span class="cell s">&ndash;</span></td><td><span class="cell s">&ndash;</span></td><td><span class="cell s now">&ndash;</span></td>
+            <td><span class="streak warn">Disabled since round 4, never re-run</span></td></tr>
+          <tr><th>Intent Conformance Judge<span class="sub">own stage</span></th>
+            <td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p now">&check;</span></td>
+            <td><span class="streak ok">Stable since round 6</span></td></tr>
+          <tr><th>Documentation Steward<span class="sub">Stage 3</span></th>
+            <td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p">&check;</span></td><td><span class="cell p now">&check;</span></td>
+            <td><span class="streak ok">Stable since round 7</span></td></tr>
+          <tr><th style="color:var(--danger)">Code Risk Reviewer<span class="sub">Stage 3</span></th>
+            <td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f now">&times;</span></td>
+            <td><span class="streak">Never passed &middot; 10 of 10</span></td></tr>
+          <tr><th style="color:var(--danger)">Test Evidence Auditor<span class="sub">Stage 3</span></th>
+            <td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f">&times;</span></td><td><span class="cell f now">&times;</span></td>
+            <td><span class="streak">Never passed &middot; 10 of 10</span></td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="mx-legend">
+        <span><span class="cell p" style="width:14px;height:14px;font-size:8px">&check;</span> passed</span>
+        <span><span class="cell f" style="width:14px;height:14px;font-size:8px">&times;</span> changes requested</span>
+        <span><span class="cell s" style="width:14px;height:14px;font-size:8px">&ndash;</span> not run / auto-passed</span>
+        <span style="margin-left:auto">Round 10 is on screen above</span>
+      </div>
+    </div>
+
+    <div class="alarm">
+      <p class="t">&#9888; This loop is not converging</p>
+      <p class="d">Four members settled by round 7 and have stayed green. <b>Code Risk Reviewer</b> and <b>Test Evidence Auditor</b> have blocked every single round, and the budget is now spent at 10 of 9. Nine repair attempts have not moved either one, so granting more rounds is the option least likely to work. <b>Command &middot; test</b> has been disabled since round 4 and has not actually run since round 3.</p>
+    </div>
+
+    <div class="sect">
+      <div class="sect-head"><h4>Still open after 10 rounds</h4><span class="meta">3 changes &middot; deduplicated by title</span></div>
+      <div>
+        <div class="open-item"><span class="chip fail sm">Code Risk</span><p class="t">Keep spawned test children recognized after environment tampering<code>src/server/db.ts</code></p><span class="age">raised r1 &middot; open 10 rounds</span></div>
+        <div class="open-item"><span class="chip fail sm">Test Evidence</span><p class="t">Attach completed db-isolation focused-test output<code>test/db-isolation.test.ts</code></p><span class="age">raised r4 &middot; open 7 rounds</span></div>
+        <div class="open-item"><span class="chip fail sm">Test Evidence</span><p class="t">Attach completed provider-column regression transcript<code>test/workflow-check-provider-column.test.ts</code></p><span class="age">raised r4 &middot; open 7 rounds</span></div>
+      </div>
+    </div>
+
+    <div class="sect">
+      <div class="sect-head"><h4>Given the pattern, your options</h4></div>
+      <div class="opts" style="--optcol:245px">
+        <div class="opt off"><span class="c"><button class="btn dis">Resume review</button></span><p class="d"><b>Unavailable.</b> Round budget spent at 10 of 9.</p></div>
+        <div class="opt"><span class="c"><button class="btn primary">Disable Test Evidence Auditor</button></span><p class="d"><b>Recommended by the pattern.</b> It has blocked 10 of 10 rounds and both of its asks are for transcripts, not code. Disabling it for this run leaves the one genuine code finding.</p></div>
+        <div class="opt"><span class="c"><button class="btn">Feedback to Code Risk</button></span><p class="d">Its finding has not changed in 10 rounds, which usually means the reviewer and the session disagree about scope rather than about the code.</p></div>
+        <div class="opt"><span class="c"><button class="btn">Re-enable Command &middot; test</button></span><p class="d">The gate has not run since round 3. Any pass since then is degraded.</p></div>
+        <div class="opt"><span class="c"><button class="btn danger">Cancel run</button></span><p class="d">Holds no merge block. Nothing is released.</p></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="keeps"><b>&#10003; Diagram kept</b>, and it improves the pairing: the strip is round 10, the matrix is rounds 1 to 10, and the matrix rows are named by the stage they sit in so the two read as one object. The round scrubber becomes redundant and is replaced by the matrix, which does the same job with nine more facts.</p>
+<div class="answers">
+  <div><h5>Why did it fail</h5><p>Unbeatable here. Two solid red rows and a legend, and you know in under a second that repair is not working and which reviewer owns it.</p></div>
+  <div><h5>What is being asked</h5><p>Deduplicated across rounds, with age. "Open 10 rounds" is information none of the others carry.</p></div>
+  <div><h5>What can I do</h5><p>The only one whose recommendation is derived from evidence on the same screen, so the suggestion is auditable rather than magic.</p></div>
+</div>
+<p class="tradeoff"><b>Trade-off.</b> Superb for this run and close to useless for a healthy one, where the matrix is a single column of green under a diagram that already said so. It needs to collapse to nothing below about three rounds. A 20-round run also needs horizontal scroll or bucketing.</p>
+
+
+<!-- ==================== MOCKUP D ==================== -->
+<h2 id="d">6. Mockup D - Work Order by File</h2>
+<div class="thesis"><p class="axis"><b>Organising axis: place.</b> The diagram is how the findings were <i>produced</i>; files are where the work <i>happens</i>. Below the strip, the run becomes a work order you could hand to a session, or do yourself, file by file.</p></div>
+
+<div class="ui">
+  <div class="run-head">
+    <div class="run-id">
+      <span class="run-live stall">Waiting &middot; round 10 of 9</span>
+      <span class="run-name">No-Mistakes Review</span>
+      <span class="run-facts"><span class="run-ver">v8</span><span class="chip wait sm">Waiting for the session</span><a class="run-sess" href="#d">Implement automatic test database isolation - Phase 1</a><span class="run-repo">ai-harness</span></span>
+    </div>
+    <div class="run-acts"><button class="btn">Copy feedback</button><span class="sep"></span><button class="btn danger">Cancel run</button></div>
+  </div>
+
+  <div class="pipe-wrap">
+    <div class="pipe">
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Session</b><span class="sub">Submits the work</span></span></span><span><span class="chip wait sm">Changes requested</span></span></div>
+      <div class="seam"><span class="gate">Submitted</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 1</b><span class="sub">2 commands &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip deg sm">Passed, degraded</span></span>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">typecheck</span></span><span><span class="chip pass sm">Passed</span></span></div>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">test</span></span><span><span class="chip deg sm">Not run &middot; disabled</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Intent Conformance Judge</b><span class="sub">1 reviewer</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip pass sm">Passed</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Intent Conformance Judge</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">Pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 3</b><span class="sub">3 reviewers &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip fail sm">Changes requested</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Code Risk Reviewer</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Test Evidence Auditor</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Documentation Steward</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Pull request</b><span class="sub">Session action</span></span></span><span><span class="chip off sm">Not reached</span></span></div>
+    </div>
+    <p class="pipe-foot">Any fail returns the submission to Session for repair, then the whole pipeline runs again.</p>
+  </div>
+
+  <div class="stack-lg">
+    <p class="why"><b>Out of repair rounds at 10 of 9.</b> The run cannot send this packet itself, and the two Stage 3 reviewers below have blocked every round since the first. Do the work order, then either raise the budget on the workflow or disable a reviewer for this run.</p>
+
+    <div class="sect">
+      <div class="sect-head"><h4>Work order</h4><span class="meta">3 changes &middot; 3 files &middot; grouped by where the edit goes</span><button class="btn sm primary">Copy as checklist</button></div>
+      <div class="wo">
+        <div class="file">
+          <div class="file-head"><span class="path">src/server/db.ts</span><span class="chip fail sm">1 change</span><button class="btn sm">Open</button></div>
+          <div class="task"><span class="box"></span><div class="b">
+            <p class="t">Keep spawned test children recognized after environment tampering</p>
+            <p class="d">Give the guard an immutable marker. A spawned plain <code style="color:var(--muted)">node</code> child can delete <code style="color:var(--muted)">NODE_TEST_CONTEXT</code>, <code style="color:var(--muted)">MISSION_TEST_STATE</code> and the bootstrap <code style="color:var(--muted)">HARNESS_HOME</code>, import <code style="color:var(--muted)">db.ts</code>, and <code style="color:var(--muted)">openDb()</code> will open the operator database.</p>
+            <p class="f"><span class="chip fail sm">Code Risk Reviewer</span> 94% confident &middot; open since round 1 &middot; 4 evidence refs &middot; <a href="#d">show quotes</a></p>
+          </div></div>
+        </div>
+        <div class="file">
+          <div class="file-head"><span class="path">test/db-isolation.test.ts</span><span class="chip fail sm">1 change</span><button class="btn sm">Open</button></div>
+          <div class="task"><span class="box"></span><div class="b">
+            <p class="t">Attach completed focused-test output</p>
+            <p class="d">Run it and paste the real output through its completion summary, including the individual symlink and late-cached-override cases. The current evidence summarises the result and omits the listing.</p>
+            <p class="f"><span class="chip fail sm">Test Evidence Auditor</span> 99% confident &middot; open since round 4 &middot; 3 evidence refs &middot; <a href="#d">show quotes</a></p>
+          </div></div>
+        </div>
+        <div class="file">
+          <div class="file-head"><span class="path">test/workflow-check-provider-column.test.ts</span><span class="chip fail sm">1 change</span><button class="btn sm">Open</button></div>
+          <div class="task"><span class="box"></span><div class="b">
+            <p class="t">Attach completed provider-column regression transcript</p>
+            <p class="d">The transcript claims both focused checks ran but carries no output or completion summary for this one, so the compatibility behaviour is undemonstrated.</p>
+            <p class="f"><span class="chip fail sm">Test Evidence Auditor</span> 99% confident &middot; open since round 4 &middot; 2 evidence refs &middot; <a href="#d">show quotes</a></p>
+          </div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="send">
+      <p class="t">Send this work order to the session</p>
+      <p class="d">The round budget is spent, so the daemon will not deliver another repair packet on its own. Copying the checklist and pasting it into <b>Implement automatic test database isolation</b> does the same work without consuming a round.</p>
+      <div class="row"><button class="btn primary">Copy checklist</button><button class="btn">Open session</button><button class="btn">Grant 2 more rounds</button><span class="meta" style="margin-left:auto">Two reviewers have failed all 10 rounds. More rounds may not converge.</span></div>
+    </div>
+
+    <div class="folded">
+      <details class="fold"><summary>Passed members <span class="chip pass sm">4</span><span class="g">1 degraded</span></summary><div class="in">
+        <div class="passline"><span class="chip deg sm">Not run</span><b>Command &middot; test</b><span style="color:var(--attention)">Disabled since round 4, so this gate auto-passed without running.</span></div>
+        <div class="passline"><span class="chip pass sm">Pass</span><b>Command &middot; typecheck</b><span><code>make check</code> passed.</span></div>
+        <div class="passline"><span class="chip pass sm">Pass</span><b>Intent Conformance Judge</b><span>Conforms to the stated phase-1 intent.</span></div>
+        <div class="passline"><span class="chip pass sm">Pass</span><b>Documentation Steward</b><span>Docs consistent with the implementation.</span></div>
+      </div></details>
+      <details class="fold"><summary>Captured intent, deliveries, model calls, audit <span class="g">unchanged</span></summary><div class="in"><p class="meta">Folded by default.</p></div></details>
+    </div>
+  </div>
+</div>
+
+<p class="keeps"><b>&#10003; Diagram kept.</b> It also removes the need for D's old reviewer roll-up bar, which was duplicating what the stage chips already say. The work order got shorter because the diagram is there.</p>
+<div class="answers">
+  <div><h5>Why did it fail</h5><p>Delegated entirely to the diagram plus a one-line why, which is now defensible rather than a weakness.</p></div>
+  <div><h5>What is being asked</h5><p>Strongest as <i>instructions</i>. Rationales rewritten imperatively, grouped in the order the work is done.</p></div>
+  <div><h5>What can I do</h5><p>Frames the real escape hatch explicitly: the packet the daemon will not send, you can send by hand without spending a round.</p></div>
+</div>
+<p class="tradeoff"><b>Trade-off.</b> The only one that maps onto the shape of the work rather than the shape of the review, and it benefits most from keeping the diagram, because the diagram covers the reviewer axis it drops. But <code>RequestedChange.path</code> is optional, so pathless changes fall into an unfiled bucket.</p>
+
+
+<!-- ==================== MOCKUP E ==================== -->
+<h2 id="e">7. Mockup E - Stage Drill-down <span class="tag fresh">new</span></h2>
+<div class="thesis"><p class="axis"><b>Organising axis: the diagram itself.</b> Rather than sitting below the strip as an independent section, the area below becomes the strip's detail pane. Clicking a stage card scopes everything underneath to that stage. It opens focused on the first failing stage, so the default view is already the one you want.</p></div>
+
+<div class="ui">
+  <div class="run-head">
+    <div class="run-id">
+      <span class="run-live stall">Waiting &middot; round 10 of 9</span>
+      <span class="run-name">No-Mistakes Review</span>
+      <span class="run-facts"><span class="run-ver">v8</span><span class="chip wait sm">Waiting for the session</span><a class="run-sess" href="#e">Implement automatic test database isolation - Phase 1</a><span class="run-repo">ai-harness</span></span>
+    </div>
+    <div class="run-acts"><button class="btn">Copy feedback</button><span class="sep"></span><button class="btn danger">Cancel run</button></div>
+  </div>
+
+  <div class="pipe-wrap">
+    <div class="pipe">
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Session</b><span class="sub">Submits the work</span></span></span><span><span class="chip wait sm">Changes requested</span></span></div>
+      <div class="seam"><span class="gate">Submitted</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 1</b><span class="sub">2 commands &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip deg sm">Passed, degraded</span></span>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">typecheck</span></span><span><span class="chip pass sm">Passed</span></span></div>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">test</span></span><span><span class="chip deg sm">Not run &middot; disabled</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Intent Conformance Judge</b><span class="sub">1 reviewer</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip pass sm">Passed</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Intent Conformance Judge</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">Pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage sel">
+        <div class="st-head"><span class="t"><b>Stage 3</b><span class="sub">3 reviewers &middot; all must pass</span></span><span class="viewing">Viewing</span></div>
+        <span><span class="chip fail sm">Changes requested</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Code Risk Reviewer</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Test Evidence Auditor</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Documentation Steward</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Pull request</b><span class="sub">Session action</span></span></span><span><span class="chip off sm">Not reached</span></span></div>
+    </div>
+    <p class="pipe-foot">Any fail returns the submission to Session for repair, then the whole pipeline runs again.</p>
+  </div>
+
+  <div class="sect">
+    <div class="crumb">
+      <span class="path">Stage 3</span>
+      <span class="chip fail sm">Changes requested</span>
+      <span class="of">3 reviewers &middot; all must pass &middot; round 10</span>
+      <span class="jump" style="margin-left:auto">
+        <span class="meta">Jump to</span>
+        <span class="jchip"><span class="dot n"></span>Session</span>
+        <span class="jchip"><span class="dot s"></span>Stage 1</span>
+        <span class="jchip"><span class="dot p"></span>Intent Conformance</span>
+        <span class="jchip on"><span class="dot f"></span>Stage 3</span>
+        <span class="jchip"><span class="dot n"></span>Pull request</span>
+      </span>
+    </div>
+
+    <p class="why" style="max-width:none"><b>This stage is why the run stopped.</b> Two of its three reviewers requested changes, and both have done so in every one of the 10 rounds. The stage gate is <b>all must pass</b>, so one blocker is enough to return the submission to Session.</p>
+
+    <div class="stack">
+      <div class="rev">
+        <div class="rev-head">
+          <span class="chip fail sm">Changes requested</span>
+          <span class="nm">Code Risk Reviewer</span>
+          <span class="meta">94% confident &middot; opus-4.6 &middot; 12.4s &middot; failed 10 of 10 rounds</span>
+        </div>
+        <div class="rev-body">
+          <p class="rev-sum">A spawned plain-Node child can still disable the guard before importing <code style="color:var(--muted)">db.ts</code> and open the operator database.</p>
+          <div class="ask"><span class="n">01</span><div class="b">
+            <p class="t">Keep spawned test children recognized after environment tampering</p>
+            <p class="p">src/server/db.ts</p>
+            <p class="d"><code style="color:var(--muted)">underTestRunner()</code> reads only mutable environment signals and <code style="color:var(--muted)">--test-*</code> flags. A test can spawn ordinary <code style="color:var(--muted)">node</code>, delete <code style="color:var(--muted)">NODE_TEST_CONTEXT</code>, <code style="color:var(--muted)">MISSION_TEST_STATE</code> and <code style="color:var(--muted)">HARNESS_HOME</code>, then import <code style="color:var(--muted)">db.ts</code>: no immutable marker, no flag, guard returns false, operator database opens.</p>
+          </div></div>
+          <div class="rev-acts"><button class="btn sm primary">Copy this change</button><button class="btn sm">Open file</button><button class="btn sm">Give critical feedback</button><button class="btn sm">Disable for this run</button></div>
+        </div>
+      </div>
+
+      <div class="rev">
+        <div class="rev-head">
+          <span class="chip fail sm">Changes requested</span>
+          <span class="nm">Test Evidence Auditor</span>
+          <span class="meta">99% confident &middot; opus-4.6 &middot; 9.1s &middot; failed 10 of 10 rounds</span>
+        </div>
+        <div class="rev-body">
+          <p class="rev-sum">The snapshot does not contain completed, reviewer-visible focused test transcripts for the required isolation and provider-column regressions.</p>
+          <div class="ask"><span class="n">02</span><div class="b">
+            <p class="t">Attach completed db-isolation focused-test output</p>
+            <p class="p">test/db-isolation.test.ts</p>
+            <p class="d">Show the real command output through its completion summary, including the individual symlink and late-cached-override cases. The supplied evidence only summarises the result and omits the listing.</p>
+          </div></div>
+          <div class="ask"><span class="n">03</span><div class="b">
+            <p class="t">Attach completed provider-column regression transcript</p>
+            <p class="p">test/workflow-check-provider-column.test.ts</p>
+            <p class="d">The transcript claims both focused checks were run but contains no command output or completion summary for the provider-column regression.</p>
+          </div></div>
+          <div class="rev-acts"><button class="btn sm primary">Copy these changes</button><button class="btn sm">Give critical feedback</button><button class="btn sm">Disable for this run</button></div>
+        </div>
+      </div>
+
+      <details class="fold"><summary><span class="chip pass sm">Passed</span> Documentation Steward <span class="g">96% confident &middot; no action needed</span></summary><div class="in">
+        <p class="muted" style="font-size:11.5px;line-height:1.55">The changed documentation is consistent with the implementation and assigns the test-runner isolation contract to AGENTS.md, with configuration.md reduced to a pointer.</p>
+      </div></details>
+    </div>
+
+    <div class="row" style="padding-top:2px;border-top:1px solid var(--border-soft);padding-top:12px">
+      <span class="meta">Stage-level</span>
+      <button class="btn sm dis">Resume review</button>
+      <span class="meta">unavailable, round budget spent at 10 of 9</span>
+      <button class="btn sm primary" style="margin-left:auto">Copy all 3 changes</button>
+      <button class="btn sm danger">Cancel run</button>
+    </div>
+  </div>
+</div>
+
+<p class="keeps"><b>&#10003; Diagram kept, and promoted.</b> It stops being a status picture and becomes the navigation control for everything below it. This is the only one of the six where removing the diagram would break the design outright.</p>
+<div class="answers">
+  <div><h5>Why did it fail</h5><p>Scoped and specific: the selected stage states its own gate rule ("all must pass") and why that made one blocker fatal.</p></div>
+  <div><h5>What is being asked</h5><p>Grouped by the reviewer that asked, inside the stage that blocked. Passing reviewers collapse to one line.</p></div>
+  <div><h5>What can I do</h5><p>Three tiers: per-change, per-reviewer, per-stage. Disabling a reviewer sits next to the verdict that would motivate it.</p></div>
+</div>
+<p class="tradeoff"><b>Trade-off.</b> The most coherent with what is already on screen, and it makes the page shorter rather than longer because only one stage renders at a time. But it hides everything outside the selected stage, so a run with blockers in two different stages shows you one of them and a coloured dot for the other. It also needs the selected node in the route to be linkable, and there is no obvious default for a healthy run where no stage failed.</p>
+
+
+<!-- ==================== MOCKUP F ==================== -->
+<h2 id="f">8. Mockup F - Round Delta <span class="tag fresh">new</span></h2>
+<div class="thesis"><p class="axis"><b>Organising axis: movement.</b> Every other view answers "what is the state now". This one answers <b>"am I better off than last round"</b>, which is the question you actually have when you are ten rounds deep and deciding whether to keep going. Nothing in the product answers it today.</p></div>
+
+<div class="ui">
+  <div class="run-head">
+    <div class="run-id">
+      <span class="run-live stall">Waiting &middot; round 10 of 9</span>
+      <span class="run-name">No-Mistakes Review</span>
+      <span class="run-facts"><span class="run-ver">v8</span><span class="chip wait sm">Waiting for the session</span><a class="run-sess" href="#f">Implement automatic test database isolation - Phase 1</a><span class="run-repo">ai-harness</span></span>
+    </div>
+    <div class="run-acts"><button class="btn">Copy feedback</button><span class="sep"></span><button class="btn danger">Cancel run</button></div>
+  </div>
+
+  <div class="pipe-wrap">
+    <div class="pipe">
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Session</b><span class="sub">Submits the work</span></span></span><span><span class="chip wait sm">Changes requested</span></span></div>
+      <div class="seam"><span class="gate">Submitted</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 1</b><span class="sub">2 commands &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip deg sm">Passed, degraded</span></span>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">typecheck</span></span><span><span class="chip pass sm">Passed</span></span></div>
+        <div class="mem"><span class="mh"><span class="kind">Command</span><span class="nm">test</span></span><span><span class="chip deg sm">Not run &middot; disabled</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Intent Conformance Judge</b><span class="sub">1 reviewer</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip pass sm">Passed</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Intent Conformance Judge</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">Pass</span><span class="arrow">&rarr;</span></div>
+      <div class="stage">
+        <div class="st-head"><span class="t"><b>Stage 3</b><span class="sub">3 reviewers &middot; all must pass</span></span><span class="dots">&middot;&middot;&middot;</span></div>
+        <span><span class="chip fail sm">Changes requested</span></span>
+        <div class="mem"><span class="mh"><span class="nm">Code Risk Reviewer</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Test Evidence Auditor</span></span><span><span class="chip fail sm">Changes requested</span></span></div>
+        <div class="mem"><span class="mh"><span class="nm">Documentation Steward</span></span><span><span class="chip pass sm">Passed</span></span></div>
+      </div>
+      <div class="seam"><span class="gate">All pass</span><span class="arrow">&rarr;</span></div>
+      <div class="pnode"><span class="ph"><span class="dia">&#9671;</span><span><b>Pull request</b><span class="sub">Session action</span></span></span><span><span class="chip off sm">Not reached</span></span></div>
+    </div>
+    <p class="pipe-foot">Any fail returns the submission to Session for repair, then the whole pipeline runs again.</p>
+  </div>
+
+  <div class="stack-lg">
+    <div class="verdictbar">
+      <div class="sparkwrap">
+        <span class="cap">OPEN CHANGES BY ROUND</span>
+        <span class="spark"><i style="height:26px"></i><i style="height:22px"></i><i style="height:24px"></i><i style="height:18px"></i><i style="height:16px"></i><i style="height:18px"></i><i style="height:14px"></i><i style="height:12px"></i><i style="height:12px"></i><i style="height:12px"></i></span>
+      </div>
+      <div style="display:grid;gap:3px">
+        <span class="big">No net progress for 3 rounds</span>
+        <span class="sm">Round 8, 9 and 10 each ended with the <b>same 3 open changes</b>. One reviewer recovered in round 7 and nothing has moved since. The budget is now spent at 10 of 9.</span>
+      </div>
+    </div>
+
+    <div class="sect">
+      <div class="sect-head">
+        <h4>What changed</h4>
+        <span class="cmpsel" style="margin-left:auto"><span class="lbl">Compare</span><span class="pill on">Round 10 vs 9</span><span class="pill">vs 7</span><span class="pill">vs first</span></span>
+      </div>
+      <div class="delta">
+        <div class="dcol good">
+          <div class="dcol-head"><span class="t">RESOLVED</span><span class="c">0</span></div>
+          <p class="dempty">No change requested in round 9 was resolved in round 10.</p>
+        </div>
+        <div class="dcol bad">
+          <div class="dcol-head"><span class="t">NEW</span><span class="c">0</span></div>
+          <p class="dempty">No reviewer raised anything it had not already raised.</p>
+        </div>
+        <div class="dcol warnc">
+          <div class="dcol-head"><span class="t">CARRIED</span><span class="c">3</span></div>
+          <div class="ditem"><span class="t">Keep spawned test children recognized after environment tampering</span><span class="s">src/server/db.ts</span><span class="r">Code Risk &middot; <b>10th round unchanged</b></span></div>
+          <div class="ditem"><span class="t">Attach completed db-isolation focused-test output</span><span class="s">test/db-isolation.test.ts</span><span class="r">Test Evidence &middot; <b>7th round unchanged</b></span></div>
+          <div class="ditem"><span class="t">Attach completed provider-column regression transcript</span><span class="s">test/workflow-check-provider-column.test.ts</span><span class="r">Test Evidence &middot; <b>7th round unchanged</b></span></div>
+        </div>
+        <div class="dcol flat">
+          <div class="dcol-head"><span class="t">REVIEWERS THAT MOVED</span><span class="c">0</span></div>
+          <div class="ditem"><span class="t">Documentation Steward</span><span class="r">Last flipped fail &rarr; pass in <b>round 7</b></span></div>
+          <div class="ditem"><span class="t">Intent Conformance Judge</span><span class="r">Last flipped fail &rarr; pass in <b>round 6</b></span></div>
+          <div class="ditem"><span class="t">Code Risk, Test Evidence</span><span class="r">Never flipped in <b>10 rounds</b></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sect">
+      <div class="sect-head"><h4>What the session did between round 9 and round 10</h4><span class="meta">evidence delta</span></div>
+      <div class="kv">
+        <div><span class="k">Files touched</span><span class="v">2 <span class="meta">src/server/db.ts, docs/plans/test-db-isolation/plan.md</span></span></div>
+        <div><span class="k">Diff size</span><span class="v">74,825 bytes <span class="meta" style="color:var(--idle)">+1,204 since r9</span></span></div>
+        <div><span class="k">Neither blocking file touched</span><span class="v" style="color:var(--danger)">test/db-isolation.test.ts, test/workflow-check-provider-column.test.ts</span></div>
+        <div><span class="k">Delivery</span><span class="v">Round 9 packet delivered <span class="meta">no refusal, no uncertainty</span></span></div>
+      </div>
+      <p class="why" style="max-width:none;padding-top:4px"><b>The packet arrived and the session acted on one of three items.</b> Both Test Evidence asks are for test transcripts, and neither test file was touched between rounds 9 and 10, which is consistent with a session that is reading those asks as already satisfied rather than ignoring them.</p>
+    </div>
+
+    <div class="sect">
+      <div class="sect-head"><h4>Given no movement, your options</h4></div>
+      <div class="opts" style="--optcol:225px">
+        <div class="opt off"><span class="c"><button class="btn dis">Resume review</button></span><p class="d"><b>Unavailable.</b> Round budget spent at 10 of 9. An 11th identical round is also what the last three rounds already were.</p></div>
+        <div class="opt"><span class="c"><button class="btn primary">Restate the 2 stuck asks</button></span><p class="d"><b>Recommended.</b> The session has not touched either test file in 3 rounds. Send the two Test Evidence asks on their own, worded as commands, rather than the full packet again.</p></div>
+        <div class="opt"><span class="c"><button class="btn">Disable Test Evidence Auditor</button></span><p class="d">Clears 2 of the 3 carried changes and leaves the one genuine code finding from Code Risk.</p></div>
+        <div class="opt"><span class="c"><button class="btn">Grant 2 more rounds</button></span><p class="d"><b>Least likely to work.</b> The last 3 rounds produced no net movement, so 2 more of the same is unlikely to differ.</p></div>
+        <div class="opt"><span class="c"><button class="btn danger">Cancel run</button></span><p class="d">Holds no merge block. Nothing is released.</p></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="keeps"><b>&#10003; Diagram kept.</b> The pairing is the point: the strip is the current state, the delta is the derivative. Neither says what the other says.</p>
+<div class="answers">
+  <div><h5>Why did it fail</h5><p>Reframed as "why is it still failing", which on round 10 is the more useful question. The sparkline shows the stall at a glance.</p></div>
+  <div><h5>What is being asked</h5><p>Only the changed set: resolved, new, carried. On a converging run this is far shorter than the full list.</p></div>
+  <div><h5>What can I do</h5><p>The only one that argues <i>against</i> an option ("grant more rounds: least likely to work") using movement as the evidence.</p></div>
+</div>
+<p class="tradeoff"><b>Trade-off.</b> The most decision-useful of the six on a stuck run, and the only one that would tell you a run is healthy and converging without you reading anything. But it is meaningless on round 1, it needs the same change-identity derivation B and C need, and the "files touched between rounds" panel needs a diff comparison the payload does not expose today. It is also the most inferential: "consistent with a session reading those asks as satisfied" is a hypothesis the UI would be putting in your head.</p>
+
+
+<!-- ==================== COMPARE ==================== -->
+<h2 id="compare">9. Side by side</h2>
+<div class="scroll">
+<table>
+<thead><tr><th style="width:15%">&nbsp;</th><th>A &middot; Brief</th><th>B &middot; Worklist</th><th>C &middot; Matrix</th><th>D &middot; Work order</th><th>E &middot; Drill-down</th><th>F &middot; Delta</th></tr></thead>
+<tbody>
+<tr><th>Organised by</th><td>Severity</td><td>One at a time</td><td>Time</td><td>File</td><td>The diagram</td><td>Movement</td></tr>
+<tr><th>Diagram</th><td>Kept</td><td>Kept</td><td>Kept, replaces scrubber</td><td>Kept</td><td><b>Kept and promoted</b></td><td>Kept</td></tr>
+<tr><th>Why it failed</th><td>Strong</td><td>Adequate</td><td><b>Strongest</b></td><td>Delegated</td><td>Strong, scoped</td><td><b>Strongest "still"</b></td></tr>
+<tr><th>Requested changes</th><td>Strong</td><td><b>Strongest</b></td><td>With age</td><td><b>Best as instructions</b></td><td>Grouped by reviewer</td><td>Only the delta</td></tr>
+<tr><th>Options in state</th><td><b>Strongest</b></td><td>Two tiers</td><td>Evidence-backed</td><td>Adequate</td><td>Three tiers</td><td><b>Argues against one</b></td></tr>
+<tr><th>Progress over time</th><td>No</td><td>Partial</td><td><b>Yes</b></td><td>No</td><td>No</td><td><b>Yes</b></td></tr>
+<tr><th>Adds page height</th><td>High</td><td>High</td><td>Medium</td><td>Medium</td><td><b>Lowest</b></td><td>Medium</td></tr>
+<tr><th>Healthy run</th><td>Collapses</td><td>Empty list</td><td>Degenerate</td><td>Collapses</td><td>No default stage</td><td>Reads as converging</td></tr>
+<tr><th>Needs route state</th><td>No</td><td>Yes</td><td>Yes</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+<tr><th>Needs new derivation</th><td>No</td><td>Change identity</td><td>Round matrix</td><td>Grouping</td><td>No</td><td>Change identity + evidence diff</td></tr>
+<tr><th>Risk</th><td><b>Lowest</b></td><td>High</td><td>Medium</td><td>Medium</td><td>Medium</td><td>Highest</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="rec">10. Recommendation</h2>
+
+<p>Keeping the diagram changed my answer from the first revision. Previously I recommended A as the shell with C inside it. Having drawn the strip, <b>E is now the strongest single direction</b>, because it is the only one that treats the diagram as the thing you already like rather than as a header to scroll past.</p>
+
+<ul>
+<li><b>Build E.</b> It makes the page shorter, not longer, which none of the others do. It has no new derivation to invent - the stage-to-attempt mapping already exists to render the strip. And it puts "disable this reviewer" next to the verdict that motivates it, which is the single most useful adjacency on this run.</li>
+<li><b>Put A's option list inside E's stage footer, and A's stalemate alarm above it.</b> E as drawn is scoped to one stage, so the run-level facts - budget spent, two reviewers never passed, one gate disabled - need somewhere to live that is not inside a stage. A short run-level strip between the diagram and the stage panel is the right home.</li>
+<li><b>Add F second, gated on round 3.</b> It is the highest-value addition on exactly the runs that hurt, and it is invisible on the runs that do not. Its "no net progress for 3 rounds" line is the one sentence on any of these six screens that would have saved the most time on this particular run.</li>
+<li><b>Take D's copy-as-checklist regardless.</b> Today's <i>Copy feedback</i> copies the raw delivery payload, which on this run is 4,000 characters with 9 nested repair preambles.</li>
+<li><b>Hold B and C.</b> C's matrix is superb but overlaps F once F exists, and F is cheaper. B is the best worklist but the most expensive, and this run has three changes.</li>
+</ul>
+
+<p>Three fixes are worth doing whichever direction wins, because they are defects rather than layout preferences:</p>
+<ol>
+<li><b>Render <code>repeatOffenders</code> on this page.</b> It is already in the payload and already computed, and only <code>WorkflowLadder</code> shows it. "Code Risk Reviewer has failed 10 rounds running" is the most decision-relevant fact on this run and it is not on screen.</li>
+<li><b>Lead the intent section with <code>refined</code>, not <code>rawPrompt</code>.</b> A 155-character sentence is demoted beneath 4,005 characters that are 9 copies of a repair preamble.</li>
+<li><b>Say a disabled gate is disabled, at run level.</b> In the strip it is one amber member chip inside a stage whose own chip reads pass. That is the one thing on the page that can mislead rather than merely bore.</li>
+</ol>
+<p>The round scrubber also wraps to two rows at 10 rounds, which mockup A draws honestly. Worth its own fix.</p>
+
+<h2 id="limits">11. What I did not establish</h2>
+
+<ul>
+<li><b>These are mockups, not implementations.</b> No component was changed and no test was written. Every screen is static HTML built to the app's own tokens from <code>src/web/styles.css</code>, not a render of <code>WorkflowRuns.tsx</code>.</li>
+<li><b>The diagram is redrawn, not reused.</b> I rebuilt the strip from your screenshot plus <code>RunPipeline.tsx</code> and <code>pipeline-bits.tsx</code>, so spacing, the exact menu affordance and the seam treatment are approximations. Stage grouping, the "N reviewers &middot; all must pass" subtitle, the gate labels and the footer sentence are taken from the real component.</li>
+<li><b>The per-round history in C and F is partly illustrative.</b> The two never-passing reviewers, the 10-round streaks, the disabled <code>test</code> gate and round 10 of 9 are real, read from the payload. The exact round at which each other member flipped, the sparkline heights, and the "files touched between rounds 9 and 10" panel are drawn plausibly rather than reconstructed.</li>
+<li><b>"Open since round N" has no backing today.</b> A <code>RequestedChange</code> carries no identity across rounds. B, C and F all lean on it; it would have to be derived, most likely by fingerprinting title plus path, with the failure mode that a reworded title reads as a new finding.</li>
+<li><b>One run, one workflow, one state.</b> Everything is drawn from a <code>waiting_for_session</code> run of No-Mistakes Review. I did not mock the Inspector-gate states, <code>waiting_for_pr</code>, <code>delivery_uncertain</code>, or an orphaned binding, and those carry option sets these layouts have not been tested against. E in particular has no drawn answer for a healthy run.</li>
+<li><b>No browser verification of the real page.</b> Chrome was holding its MCP profile, so there is no true before-and-after screenshot. The diagnosis is measured from the API payload and read from the component source.</li>
+</ul>
+
+</div>
+</body>
+</html>

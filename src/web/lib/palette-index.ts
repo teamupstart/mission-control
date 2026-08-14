@@ -32,6 +32,7 @@ import {
   type WorkflowRunSummary,
   type WorkflowSummary,
 } from "@shared/workflow.ts";
+import { personaRoutingLabel } from "../library/library-model.ts";
 import { runTriageRound, runTriageSentence } from "../workflows/run-model.ts";
 import type { MissionRoute } from "../workflows/useWorkflowRoute.ts";
 import { SETTINGS_CATEGORIES, settingsCategory } from "./settings-registry.ts";
@@ -380,7 +381,7 @@ const personaProvider: PaletteProvider = {
         id: `persona:${persona.id}`,
         kind: "persona" as const,
         title: persona.name,
-        detail: `${persona.execution.runner.id} · ${persona.execution.model.id}`,
+        detail: personaRoutingLabel(persona),
         keywords: [
           "reviewer",
           "judge",

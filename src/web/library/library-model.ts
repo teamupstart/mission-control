@@ -184,6 +184,24 @@ export function workflowCards(summaries: readonly WorkflowSummary[]): LibraryCar
  * the asset rather than a live one, which is why it belongs on a tag: a changed source file
  * stays changed until a human adopts it.
  */
+/**
+ * The two facts that decide whether a reviewer can run at all, as one line.
+ *
+ * `execution`, not `runner`/`model`: those two are the operator's stored OVERRIDES and are
+ * null on most Personas, while `execution` is what the daemon resolved and therefore what
+ * will actually run.
+ *
+ * It lives here, and every surface that says this reads it from here, because four of them
+ * were spelling the same template by hand - the Library card, the palette row, the pipeline
+ * picker and the workflow canvas - and the Persona rail was about to be a fifth. The rail
+ * and the palette row drifting apart on the same Persona is not a cosmetic problem: they are
+ * two answers to "which reviewer is this", and `test/palette-index.test.ts` pins this exact
+ * string.
+ */
+export function personaRoutingLabel(persona: Pick<PersonaView, "execution">): string {
+  return `${persona.execution.runner.id} · ${persona.execution.model.id}`;
+}
+
 export function personaCards(
   personas: readonly PersonaView[],
   upstream?: ReadonlyMap<string, PersonaUpstreamState>,
@@ -203,11 +221,29 @@ export function personaCards(
         name: persona.name,
         description: persona.description,
         tags,
-        // The two facts that decide whether this reviewer can run at all, and they are the
-        // Persona's own configuration rather than anything a run is doing with it.
-        fact: `${persona.execution.runner.id} · ${persona.execution.model.id}`,
+        // The Persona's own configuration rather than anything a run is doing with it.
+        fact: personaRoutingLabel(persona),
       };
     });
+}
+
+/**
+ * What an Action needs and what proves it finished, as the one line a card or a rail row
+ * prints.
+ *
+ * `personaRoutingLabel`'s neighbour, for its reason: these are the two facts that tell two
+ * Actions apart - the description on the shipped pair is the title again in a longer
+ * sentence - and the Library card and the Action rail are two answers to "which action is
+ * this". They read it from here so they cannot drift, and both halves come from the shared
+ * skill and completion helpers rather than being spelled locally, so a third adapter changes
+ * one table.
+ */
+export function sessionActionContractLabel(
+  action: Pick<SessionAction, "completion" | "requiredSkillId">,
+): string {
+  return `${sessionActionSkillLabel(action.requiredSkillId)} · ${
+    sessionActionCompletionLabel(action.completion)
+  }`;
 }
 
 export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {
@@ -220,9 +256,7 @@ export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {
       name: action.name,
       description: action.description,
       tags: action.builtin ? [{ label: "built-in", tone: "builtin" as const }] : [],
-      fact: `${sessionActionSkillLabel(action.requiredSkillId)} · ${
-        sessionActionCompletionLabel(action.completion)
-      }`,
+      fact: sessionActionContractLabel(action),
     }));
 }
 

@@ -106,5 +106,9 @@ test("workflow fail, uncertain, focus, disabled, and stale states have non-color
   assert.match(css, /stroke-dasharray/);
   assert.match(css, /\.wf-run-pruned/);
   assert.match(css, /\.workflow-node:focus-within/);
-  assert.match(css, /\.persona-guidance-toolbar \.file-size\.is-over-limit/);
+  // The Persona guidance and Action instruction byte counts are property chips now, not
+  // file-toolbar spans. Still not colour alone: the over-limit value takes a weight as well
+  // as the danger tone, and so does a completion this build cannot prove.
+  assert.match(css, /\.lib-chip\.is-danger \.lib-chip-v \{[^}]*font-weight/);
+  assert.match(css, /\.lib-chip\.is-attention \.lib-chip-v \{[^}]*font-weight/);
 });

@@ -192,6 +192,26 @@ test("a label offered by two questions is attributed to neither", () => {
   );
 });
 
+test("the hint-stripped spelling cannot slip past the ambiguity guard", () => {
+  // The hole the raw-label version of this guard left. A choice is matchable by more than one
+  // spelling - "Deploy now (Recommended)" is also matched as "Deploy now" - so grouping by the
+  // raw label made this pair look like two distinct unambiguous options while both were in
+  // fact reachable by the single phrase "Deploy now". Neither is a substring of the other, so
+  // the prefix rule could not catch it either, and one mention marked two questions.
+  const choices = [
+    { key: "a:now", label: "Deploy now (Recommended)", group: "a" },
+    { key: "b:now", label: "Deploy now", group: "b" },
+  ];
+  assert.deepEqual([...recommendedChoiceKeys("Deploy now.", choices)], []);
+
+  // Naming the hinted spelling is unambiguous - only question A offers it - so it still marks,
+  // and the collision on the shared spelling does not drag question A down with it.
+  assert.deepEqual(
+    [...recommendedChoiceKeys("Deploy now (Recommended) is the one to take.", choices)],
+    ["a:now"],
+  );
+});
+
 test("the sidecar stops its own clicks reaching the card behind it", () => {
   // A portal moves the DOM node but not the React tree, so a click inside the sidecar still
   // bubbles to this component's JSX ancestors. PaneDialogPrompt renders it as a SIBLING of

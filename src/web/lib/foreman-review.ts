@@ -149,27 +149,38 @@ export function recommendedChoiceKeys(
   if (!recommendation?.trim()) return new Set();
   const prose = folded(recommendation);
 
-  // Which questions offer each label. A form can ask several questions at once and their
-  // options arrive here flattened, so the same wording can belong to two of them - two plain
-  // yes/no questions being the obvious case. Prose naming that wording once cannot say which
-  // question it meant, and marking both would claim Foreman picked an answer to a question it
-  // never addressed. Ambiguity resolves to NO mark, which is the same rule the rest of this
-  // matcher follows: the sidecar still carries the full reasoning either way.
-  const groupsForLabel = new Map<string, Set<string>>();
-  for (const choice of choices) {
-    const key = folded(choice.label);
-    const groups = groupsForLabel.get(key) ?? new Set<string>();
-    groups.add(choice.group ?? "");
-    groupsForLabel.set(key, groups);
+  const spellings = choices.map((choice) => ({ choice, labels: labelsForMatch(choice.label) }));
+
+  // Which questions each SPELLING could have come from.
+  //
+  // A form can ask several questions at once and their options arrive here flattened, so the
+  // same wording can belong to two of them - two plain yes/no questions being the obvious
+  // case. Prose naming that wording once cannot say which question it meant, and marking both
+  // would claim Foreman answered a question it never addressed.
+  //
+  // Keyed on every spelling rather than on the raw label, because a choice is matchable by
+  // more than one: "Deploy now (Recommended)" is also matched as "Deploy now". Keying on raw
+  // labels makes that pair look like two distinct, unambiguous options while both are in fact
+  // reachable by the single phrase "Deploy now" - so the collision has to be checked against
+  // the text that actually does the matching. Ambiguity resolves to NO mark, the same rule
+  // the rest of this matcher follows; the sidecar still carries the full reasoning either way.
+  const groupsForText = new Map<string, Set<string>>();
+  for (const { choice, labels } of spellings) {
+    for (const label of labels) {
+      const groups = groupsForText.get(label) ?? new Set<string>();
+      groups.add(choice.group ?? "");
+      groupsForText.set(label, groups);
+    }
   }
 
   // The text that actually matched, per choice, keeping the longest when a choice offers a
-  // hinted and unhinted spelling of itself.
+  // hinted and unhinted spelling of itself. Ambiguous spellings are dropped individually, so
+  // a choice whose hinted spelling is unique is still attributable even when its unhinted one
+  // collides with a sibling question.
   const hits = new Map<string, string>();
-  for (const choice of choices) {
-    if ((groupsForLabel.get(folded(choice.label))?.size ?? 1) > 1) continue;
-    const [longest] = labelsForMatch(choice.label)
-      .filter((label) => namesLabel(prose, label))
+  for (const { choice, labels } of spellings) {
+    const [longest] = labels
+      .filter((label) => (groupsForText.get(label)?.size ?? 1) === 1 && namesLabel(prose, label))
       .sort((a, b) => b.length - a.length);
     if (longest) hits.set(choice.key, longest);
   }

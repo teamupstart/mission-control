@@ -180,7 +180,7 @@ async function conversationWithMessages(
     await reply.press("Enter");
     // The echo is written after the turn lands, so its arrival means the transcript
     // update carrying the operator's own message has already reached the browser.
-    await expect(card.getByText(`Mock reply to: ${text}`)).toBeVisible();
+    await expect(turn(card, `Mock reply to: ${text}`)).toBeVisible();
   }
   return card;
 }
@@ -226,9 +226,9 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({
 
   const target = await session(daemon);
   await delivers(daemon, target, "foreman", FOREMAN_SAYS);
-  await expect(card.getByText(FOREMAN_SAYS, { exact: true })).toBeVisible();
+  await expect(turn(card, FOREMAN_SAYS)).toBeVisible();
   await delivers(daemon, target, "workflow", WORKFLOW_SAYS);
-  await expect(card.getByText(WORKFLOW_SAYS, { exact: true })).toBeVisible();
+  await expect(turn(card, WORKFLOW_SAYS)).toBeVisible();
   await missionControlDelivers(daemon, target);
 
   const yours = rail(card).getByRole("tab", { name: "Yours" });
@@ -257,8 +257,10 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({
   await expect(workflowRow).toContainText(WORKFLOW);
   await expect(missionRow).toContainText(MISSION_CONTROL);
 
-  // The count is about the operator's messages ONLY. Four typed, three delivered.
-  await expect(rail(card).getByText("4", { exact: true })).toBeVisible();
+  // That the head COUNT is about the operator's messages only - four typed, three
+  // delivered, so it reads four - is pinned in `test/conversation-yours-render.test.ts`
+  // instead. The count is a bare number with no role and no label, and giving it one
+  // purely so a browser test could name it would be furniture, not accessibility.
 
   // And the delivered turns sit BELOW the operator's own, whatever order they arrived in.
   // All three were delivered after all four were typed, but it is the grouping that puts
@@ -288,7 +290,7 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({
   await shoot(dashboard, card, "01-yours-tab");
 
   // An index hides nothing: the agent's replies are still in the transcript beside it.
-  await expect(card.getByText(`Mock reply to: ${FIRST}`)).toBeVisible();
+  await expect(turn(card, `Mock reply to: ${FIRST}`)).toBeVisible();
 });
 
 test("clicking a row moves the transcript to that turn and flashes it", async ({
@@ -312,7 +314,7 @@ test("clicking a row moves the transcript to that turn and flashes it", async ({
   // difference between indexing and filtering.
   await expect(firstTurn).toBeInViewport();
   await expect(firstTurn).toHaveClass(/is-flashed/);
-  await expect(card.getByText(`Mock reply to: ${FIRST}`)).toBeVisible();
+  await expect(turn(card, `Mock reply to: ${FIRST}`)).toBeVisible();
 
   await shoot(dashboard, card, "02-jumped-to-turn");
 
@@ -354,7 +356,7 @@ test("the jump works in the terminal rendering too", async ({ dashboard, daemon 
     await reply.fill(`Filler turn ${n} to push the log past its height`);
     await reply.press("Enter");
     await expect(
-      card.getByText(`Mock reply to: Filler turn ${n} to push the log past its height`),
+      turn(card, `Mock reply to: Filler turn ${n} to push the log past its height`),
     ).toBeVisible();
   }
 
@@ -424,9 +426,12 @@ test("the tab survives find taking the column, and switches back", async ({ dash
   await expect(rail(card).getByRole("tab", { name: "Yours" })).toHaveAttribute("aria-selected", "true");
   await expect(row(card, SECOND)).toBeVisible();
 
-  // Back to Activity, and the rail is the tool-call list again.
+  // Back to Activity, and the column stops being your messages: the tabs swap which of
+  // the two lists the rail IS, rather than adding one below the other.
   await rail(card).getByRole("tab", { name: "Activity" }).click();
-  await expect(rail(card).getByText("Tool calls observed in the loaded transcript.")).toBeVisible();
+  await expect(rail(card).getByRole("tab", { name: "Activity" })).toHaveAttribute("aria-selected", "true");
+  await expect(rail(card).getByRole("tab", { name: "Yours" })).toHaveAttribute("aria-selected", "false");
+  await expect(row(card, SECOND)).toHaveCount(0);
 });
 
 test("find's You scope and the Yours tab agree about whose message is whose", async ({
@@ -438,7 +443,7 @@ test("find's You scope and the Yours tab agree about whose message is whose", as
   // role alone, so its "You" pill returned rows whose own byline said foreman.
   const card = await conversationWithMessages(dashboard, daemon);
   await delivers(daemon, await session(daemon), "foreman", FOREMAN_SAYS);
-  await expect(card.getByText(FOREMAN_SAYS, { exact: true })).toBeVisible();
+  await expect(turn(card, FOREMAN_SAYS)).toBeVisible();
 
   await card.getByRole("heading", { name: CARD_TITLE }).click();
   await dashboard.keyboard.press("Meta+f");

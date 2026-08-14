@@ -1,5 +1,14 @@
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import type { Task } from "@shared/types.ts";
 import { STATE_DIR, mcpServerPath } from "./config.ts";
@@ -149,6 +158,551 @@ export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | nul
     args: [server],
     env: runtime.env,
   };
+}
+
+// ---- does the resolved bundle actually PUBLISH what a launch declares? ----------------
+//
+// Every other guard in this file, in `dispatcher.ts` and in `tasks.ts` asks whether the
+// bundle EXISTS. None of them asks what is inside it, and that gap is a live failure rather
+// than a theoretical one:
+//
+//   The daemon runs from SOURCE under `tsx watch`, but hands every dispatched agent a BUILD
+//   artifact - `mcpServerPath()` resolves `dist/mcp/server.mjs`. `build:mcp` runs only under
+//   `npm run build` and `dist/` is gitignored, so the bundle goes stale BY DESIGN and a
+//   `git pull` never refreshes it. Observed on an operator's machine: a `dist/mcp/server.mjs`
+//   built 2026-08-06 containing zero occurrences of `submit_scout_artifacts`, which landed in
+//   source 2026-08-12. The other seven tools were present. Live agents were running those
+//   bytes.
+//
+// The consequence is the worst shape a bug can take here. A scout's prompt tells it to call
+// `submit_scout_artifacts` and its task cannot reach `done` until it does, but the tool is
+// simply absent from the toolbox it was handed - so the agent works to a finished report and
+// then has nowhere to put it. No error, no warning, no red test. `MISSION_MCP_TOOLS` cannot
+// see it either: that list is a CLIENT-side pre-approval, never read by the server, which is
+// exactly the hazard `scouts/submission-tool.ts` already names - "a launch that pre-approves
+// a tool the server never registered pre-approves nothing at all". The two drift tests in
+// `mission-mcp.test.ts` regex-scrape `registerTool(` out of SOURCE, so they agree with the
+// source and learn nothing about the bytes on disk.
+//
+// So this asks the only question that settles it: it runs a real MCP `initialize` +
+// `tools/list` against the bundle we are about to register and reads back the names the
+// RUNNING SERVER publishes. That is the same answer the agent's own MCP client will get,
+// obtained the same way, before the agent spawns instead of an hour into its task.
+//
+// ---- why not resolve the MCP server from SOURCE under `tsx watch`? -------------------
+//
+// It was considered, because it would delete this entire failure class in dev, and REJECTED.
+// Three reasons, in order of weight:
+//
+// 1. It does not fix the failure class, only its dev instance. A packaged install can carry a
+//    stale or partial `dist/` too - an interrupted `npm run build`, an `electron-builder` copy
+//    that raced, a `dist/` restored from an older archive - and source resolution has nothing
+//    to say about any of them. A guard that reads the running bundle's own `tools/list` covers
+//    every cause at once, including the ones nobody has thought of yet.
+// 2. It would make dev the ONE configuration that never runs the artifact we ship.
+//    `scripts/smoke-bundles.mjs` exists because a bundle can fail in ways its source cannot -
+//    the `jsonc-parser` UMD/dynamic-require defect that crash-looped a packaged app 18,052
+//    times while every gate stayed green. Point the dev daemon at `src/mcp/server.ts` and the
+//    first person to observe any future bundling defect in this server is an operator running
+//    a packaged build.
+// 3. The agent, not the daemon, spawns this server, once per session, and keeps it for the
+//    life of that session. A registration pointing at TypeScript makes a live agent's toolbox
+//    depend on a source file being loadable at whatever instant its client happens to start -
+//    so a half-saved edit takes the tools away from a session mid-task, for a reason no
+//    operator would ever connect to the file they just saved. A built bundle is immutable
+//    between builds, which is precisely the property a launch-scoped registration wants.
+//
+// The residue - that an operator who has not rebuilt cannot dispatch a scout - is intended.
+// It is a loud, immediate, actionable refusal naming `npm run build`, in place of a task that
+// silently cannot finish.
+
+/** Long enough for a cold ESM load of a ~740KB bundle on a slow machine, bounded so a bundle that hangs cannot hang a dispatch. */
+const HANDSHAKE_TIMEOUT_MS = 15_000;
+
+/** A runaway `nextCursor` loop is a broken server, not a big toolbox. */
+const MAX_TOOL_PAGES = 20;
+
+/**
+ * The most stdout we will hold while still waiting for a newline.
+ *
+ * MCP's stdio framing is line-delimited JSON, so an unterminated line is the only part of the
+ * stream that accumulates - and a bundle in a log loop can produce one as fast as the pipe
+ * allows. The 15-second timeout bounds how long we listen; it does nothing about how many bytes
+ * arrive in that time, which is a daemon-sized heap on a machine whose control plane this is.
+ * Measured rather than guessed: this server's real `tools/list` is 9,082 bytes for eight tools,
+ * so a megabyte is about a hundredfold headroom.
+ */
+const MAX_STDOUT_FRAME_BYTES = 1_048_576;
+
+/**
+ * How long a probed bundle gets to honour `SIGTERM` before it is killed outright.
+ *
+ * `SIGTERM` is a request, and a bundle broken enough to need this guard is exactly the kind
+ * that ignores one. Long enough for a healthy server to close its stdio and exit; short enough
+ * that a wedged one cannot outlive the dispatch that probed it.
+ */
+const KILL_GRACE_MS = 2_000;
+
+/**
+ * The protocol version this probe speaks.
+ *
+ * A server supporting a different revision answers with ITS version rather than an error (the
+ * spec requires that), and we do not care what it picks - `tools/list` is in every revision.
+ */
+const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+/** What a real `tools/list` said, or why we could not get one. */
+type PublishedTools =
+  | { ok: true; tools: ReadonlySet<string> }
+  | { ok: false; reason: string };
+
+/**
+ * The handshake result for ONE bundle, keyed by that bundle's identity on disk.
+ *
+ * Cached beside `cachedRuntime` and for its reason: this shells out, and a dispatch must not
+ * pay for it. An unchanged bundle handshakes exactly once, and every later dispatch reads the
+ * answer for free - measured at 104ms for the first and 0ms across the next fifty.
+ *
+ * ---- a DELIBERATE revision of the requirement, decided rather than drifted into ----
+ *
+ * This change was specified as "cache the result once per daemon lifetime ... so this costs one
+ * handshake, not one per dispatch". Keying by path + mtime + size instead means a REBUILD costs
+ * one more handshake, which is a literal departure from that wording. It was put to the human
+ * who set the requirement and kept on their decision; it is recorded here so the next reader
+ * finds a choice rather than a bug.
+ *
+ * What the wording would have cost, and why the intent survives the change: `npm run build`
+ * does not touch `src/`, so it does NOT restart a `tsx watch` daemon. A cache held for the
+ * daemon's lifetime therefore outlives the bundle it describes, and it does so in both
+ * directions:
+ *
+ *   - A cached REFUSAL survives the rebuild that fixed it. The operator does exactly the right
+ *     thing, is refused again, and nothing tells them a daemon restart is the missing step.
+ *   - A cached SUCCESS survives a rebuild that BROKE the bundle - an older branch checked out
+ *     and rebuilt, say - so launches are admitted against a server that no longer publishes the
+ *     tool. That is the silent scout deadlock this entire module exists to remove, reintroduced
+ *     by its own cache.
+ *
+ * The requirement's stated purpose - "not one per dispatch" - is fully met either way; the cost
+ * of the difference is one 104ms handshake per build. The second failure above is not a
+ * usability wrinkle but a correctness hole, and no amount of caching should be able to make the
+ * guard answer for a file that is no longer there.
+ */
+let cachedPublished: { key: string; answer: Promise<PublishedTools> } | undefined;
+
+/** What makes one build of the bundle distinguishable from the next. */
+function bundleIdentity(path: string): string {
+  try {
+    const s = statSync(path);
+    return `${path}:${s.mtimeMs}:${s.size}`;
+  } catch {
+    // Unreadable is its own identity - the handshake below will fail and say why.
+    return `${path}:missing`;
+  }
+}
+
+/** When the bundle was last written, or null when it cannot be read. */
+function bundleWrittenAt(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * That the child said something on stderr, and NEVER a word of what it said.
+ *
+ * `reason` does not stay in this process. A dispatch persists it as the task's `error` - into
+ * SQLite, onto the task card, into whatever a human copies out of it - and the startup check
+ * prints it to the daemon log. The bundle we probe inherits this daemon's whole environment
+ * and reads a harness token and a scout submission credential of its own, so a server that
+ * logged any of that on its way down would have had it copied straight through into durable,
+ * user-visible state by a probe that exists to make dispatch SAFER.
+ *
+ * Child output is untrusted for this purpose, and no redaction pass is trustworthy enough to
+ * make it safe - a denylist cannot know the shape of every secret a future dependency might
+ * print. So the content is dropped at the boundary rather than filtered after it.
+ *
+ * The byte count survives because it is the one thing a reader actually needs from stderr
+ * here: it separates "the bundle died silently" from "the bundle explained itself and we are
+ * not repeating it", which points at reproducing the spawn by hand. Every one of these
+ * failures has the same fix anyway, and `reason` already names it.
+ */
+function saidOnStderr(bytes: number): string {
+  return bytes > 0 ? ` (it wrote ${bytes} bytes to stderr, not repeated here)` : "";
+}
+
+/**
+ * Speak MCP to the bundle and return the tool names it publishes.
+ *
+ * Hand-rolled rather than driven through `@modelcontextprotocol/sdk`'s client: the whole point
+ * is to exercise the bundle the way an arbitrary MCP client will, and the one thing we must not
+ * do is prove the bundle works by using the same library that produced it. It is also two
+ * requests over newline-delimited JSON, which is the entirety of MCP's stdio framing.
+ *
+ * Never throws. Every failure - a runtime that will not start, a server that dies on load, a
+ * malformed answer, a hang - comes back as `{ ok: false, reason }` so the caller decides what a
+ * launch does about it.
+ */
+async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedTools> {
+  return await new Promise<PublishedTools>((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(descriptor.command, descriptor.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        // The descriptor's env is an OVERLAY on the inherited environment, which is how
+        // Claude and Codex both apply an `env` block. Probing with a bare `descriptor.env`
+        // would strip PATH and HOME and fail for a reason the real launch never hits.
+        env: { ...process.env, ...descriptor.env },
+      });
+    } catch (err) {
+      resolve({ ok: false, reason: `it could not be started (${errText(err)})` });
+      return;
+    }
+
+    const found = new Set<string>();
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    // The UNTERMINATED remainder of stdout, never the whole stream: complete lines are parsed
+    // and dropped as they arrive, so this only grows while a line is still missing its newline.
+    let pending = "";
+    // A COUNT, never the bytes. See `saidOnStderr` for why none of it is kept.
+    let stderrBytes = 0;
+    let pages = 0;
+    let listId = 2;
+
+    /**
+     * Stop listening to the child, then make sure it is actually gone.
+     *
+     * `SIGTERM` is a REQUEST, and the bundles this probe exists to catch are exactly the ones
+     * least likely to honour it - a server wedged in a loop, or one that traps the signal, sails
+     * straight past it. Sending it and resolving would leave a process alive with our stdio
+     * listeners still attached, burning CPU and holding this closure open, and every rebuilt
+     * bundle identity we probed afterwards would add another one. A guard against a broken
+     * bundle must not be a way for a broken bundle to accumulate daemons' worth of children.
+     *
+     * Detach BEFORE signalling: once the answer is decided nothing the child says can change
+     * it, and a survivor must not go on filling buffers we already stopped reading. An error
+     * sink stays attached through the destroy, because `destroy()` and a racing EPIPE both emit
+     * `error`, and an `error` with no listener is an uncaught exception - the daemon-killing
+     * shape this file already had to close once.
+     *
+     * Then SIGTERM, and SIGKILL after a grace period if it is still there. The grace timer is
+     * `unref`'d so a slow death can never hold the daemon's event loop open, and the child is
+     * `unref`'d for the same reason.
+     */
+    const reap = (): void => {
+      for (const stream of [child.stdout, child.stderr, child.stdin]) {
+        stream?.removeAllListeners("data");
+        stream?.on("error", () => {});
+        stream?.destroy();
+      }
+      pending = "";
+      // Already exited: `kill` would be a no-op, and there is nothing to escalate against.
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill("SIGTERM");
+      const grace = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }, KILL_GRACE_MS);
+      grace.unref?.();
+      child.unref();
+    };
+
+    const finish = (answer: PublishedTools): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      // The probe owns this process and nothing else may inherit it.
+      reap();
+      resolve(answer);
+    };
+
+    const send = (msg: unknown): void => {
+      try {
+        child.stdin?.write(`${JSON.stringify(msg)}\n`);
+      } catch (err) {
+        finish({ ok: false, reason: `its stdin closed mid-handshake (${errText(err)})` });
+      }
+    };
+
+    const requestTools = (cursor?: string): void => {
+      pages += 1;
+      send({
+        jsonrpc: "2.0",
+        id: listId,
+        method: "tools/list",
+        params: cursor === undefined ? {} : { cursor },
+      });
+    };
+
+    const onMessage = (msg: Record<string, unknown>): void => {
+      const error = msg.error as { message?: string } | undefined;
+      const result = msg.result as
+        | { tools?: unknown; nextCursor?: unknown }
+        | undefined;
+      if (msg.id === 1) {
+        if (error) {
+          finish({ ok: false, reason: `it refused initialize (${error.message ?? "no message"})` });
+          return;
+        }
+        send({ jsonrpc: "2.0", method: "notifications/initialized" });
+        requestTools();
+        return;
+      }
+      if (msg.id !== listId) return; // A notification, or an answer we did not ask for.
+      if (error) {
+        finish({ ok: false, reason: `it refused tools/list (${error.message ?? "no message"})` });
+        return;
+      }
+      if (!Array.isArray(result?.tools)) {
+        finish({ ok: false, reason: "its tools/list answer carried no tool array" });
+        return;
+      }
+      for (const tool of result.tools) {
+        const name = (tool as { name?: unknown } | null)?.name;
+        if (typeof name === "string") found.add(name);
+      }
+      // Paginated on purpose. The SDK answers in one page today, but a server that grows a
+      // cursor would otherwise start reporting its later tools as missing - a false refusal,
+      // which is the one failure this guard must never invent.
+      const cursor = result.nextCursor;
+      if (typeof cursor === "string" && cursor !== "" && pages < MAX_TOOL_PAGES) {
+        listId += 1;
+        requestTools(cursor);
+        return;
+      }
+      finish({ ok: true, tools: found });
+    };
+
+    timer = setTimeout(() => {
+      finish({
+        ok: false,
+        reason:
+          `it did not answer initialize + tools/list within ${HANDSHAKE_TIMEOUT_MS}ms` +
+          saidOnStderr(stderrBytes),
+      });
+    }, HANDSHAKE_TIMEOUT_MS);
+    // Never hold the daemon's event loop open on a probe.
+    timer.unref?.();
+
+    child.on("error", (err) => {
+      finish({ ok: false, reason: `it could not be started (${errText(err)})` });
+    });
+    // A bundle that dies on load - the exact `jsonc-parser` shape this repo has already
+    // shipped once - closes its stdin under our first write, and an EPIPE on a stream with no
+    // `error` listener is an UNCAUGHT exception, which would take the daemon down. A probe
+    // whose whole job is to make a stale bundle safe must not be a new way to crash on one.
+    child.stdin?.on("error", (err) => {
+      finish({ ok: false, reason: `its stdin closed mid-handshake (${errText(err)})` });
+    });
+    child.on("exit", (code, signal) => {
+      finish({
+        ok: false,
+        reason:
+          `it exited (code ${code}, signal ${signal}) during the handshake` +
+          saidOnStderr(stderrBytes),
+      });
+    });
+    // Counted and discarded chunk by chunk. Holding it would be both a leak (see
+    // `saidOnStderr`) and a way for a bundle stuck in a log loop to grow the daemon's heap for
+    // the whole timeout - the clock bounds how long we listen, never how much arrives.
+    child.stderr?.on("data", (d: Buffer | string) => {
+      stderrBytes += typeof d === "string" ? Buffer.byteLength(d, "utf8") : d.length;
+    });
+    child.stdout?.on("data", (d) => {
+      pending += String(d);
+      // A single line that never ends is the one thing that can grow without limit here, and a
+      // broken or hostile bundle can produce one as fast as the pipe allows. Refuse it at a
+      // bound instead: the real `tools/list` for this server's eight tools measures 9,082
+      // bytes, so a megabyte is roughly a hundredfold headroom - far past any honest answer,
+      // and far below anything that troubles the daemon.
+      if (pending.length > MAX_STDOUT_FRAME_BYTES) {
+        finish({
+          ok: false,
+          reason:
+            `it wrote more than ${MAX_STDOUT_FRAME_BYTES} bytes of stdout with no newline, ` +
+            `so it is not speaking MCP's line-delimited JSON`,
+        });
+        pending = "";
+        return;
+      }
+      for (;;) {
+        const nl = pending.indexOf("\n");
+        if (nl === -1) break;
+        const line = pending.slice(0, nl).trim();
+        pending = pending.slice(nl + 1);
+        if (!line) continue;
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue; // Tolerate a banner or a stray log line on stdout.
+        }
+        onMessage(msg);
+      }
+    });
+
+    send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "mission-control-launch-guard", version: "1" },
+      },
+    });
+  });
+}
+
+/** The published tool names for the bundle we would register right now, handshaking at most once per build. */
+async function publishedTools(descriptor: MissionMcpDescriptor): Promise<PublishedTools> {
+  const key = bundleIdentity(descriptor.args[0] ?? "");
+  if (cachedPublished?.key === key) return await cachedPublished.answer;
+  const answer = handshake(descriptor);
+  cachedPublished = { key, answer };
+  return await answer;
+}
+
+/** Whether the bundle a launch is about to register can actually serve what that launch declares. */
+export type MissionMcpToolCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Assert that every tool a launch DECLARES is one the resolved bundle actually publishes.
+ *
+ * Called before the agent spawns, so the answer can still change the outcome. The failure it
+ * prevents is not a crash but a deadlock: a scout that cannot call `submit_scout_artifacts`
+ * has no way to reach `done`, and an ensemble member that cannot call `submit_ensemble_result`
+ * runs to completion and then cannot signal it is ready. Both look like an agent that simply
+ * stopped.
+ *
+ * A bundle we cannot interrogate at all fails exactly like a bundle missing the tool, and that
+ * is not caution - a server that will not complete a handshake for US will not complete one for
+ * the agent's MCP client either, so the tool is just as absent. The two cases carry different
+ * sentences because they have different fixes.
+ *
+ * `reason` is written to be pasted into a task's error and understood without reading this file.
+ */
+export async function verifyMissionMcpTools(
+  required: readonly MissionMcpTool[],
+  /**
+   * The exact registration to interrogate, when the caller is holding one.
+   *
+   * An embedded launch hands the supervisor a descriptor it already resolved, and verifying a
+   * SECOND resolution of it would be checking a different object than the one the session gets.
+   * A terminal launch has no such handle - its registration was rendered into argv inside
+   * `askChannelArgs` / `prepareCodexLaunch` - so it omits this and we resolve the same way
+   * those two do, which is the only reading that matches what was actually registered.
+   */
+  launched?: MissionMcpDescriptor | null,
+): Promise<MissionMcpToolCheck> {
+  // An empty requirement is not a weak check, it is the absence of one: a dispatch that
+  // declares no Mission tools is the status quo this must not touch, so it never spawns
+  // anything and never fails a launch that would have worked.
+  if (required.length === 0) return { ok: true };
+  const descriptor = launched ?? (await missionMcpDescriptor());
+  if (!descriptor) {
+    return {
+      ok: false,
+      reason: `Mission Control's MCP server is not built at ${mcpServerPath()} - run: npm run build`,
+    };
+  }
+  const published = await publishedTools(descriptor);
+  if (!published.ok) {
+    return {
+      ok: false,
+      reason:
+        `Mission Control's MCP server at ${descriptor.args[0]} could not be interrogated: ` +
+        `${published.reason}. Rebuild it with: npm run build`,
+    };
+  }
+  const missing = required.filter((tool) => !published.tools.has(tool));
+  if (missing.length === 0) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      `Mission Control's MCP server at ${descriptor.args[0]} does not publish ` +
+      `${missing.join(", ")} (it publishes ${[...published.tools].sort().join(", ") || "nothing"}). ` +
+      `The built bundle is stale - it is only rebuilt by \`npm run build\`, which a git pull does ` +
+      `not do. Run: npm run build`,
+  };
+}
+
+/**
+ * The same question asked of an agent that is ALREADY RUNNING, which is a different question.
+ *
+ * `verifyMissionMcpTools` interrogates the bundle on disk, and for a launch that is the right
+ * reading - the agent is about to spawn and its MCP client will load exactly that file. For an
+ * assignment it is NOT: the target session started earlier and its MCP server is a child it
+ * spawned back then, holding whatever the file contained at that moment. Rebuild the bundle
+ * afterwards and the file on disk answers beautifully while the running child still cannot call
+ * the tool - so a probe of the file would wave through an assignment that resets the agent's
+ * checkout for a task it still cannot submit. That is the exact failure this whole change
+ * exists to prevent, reintroduced one path over.
+ *
+ * We cannot interrogate that child; nothing here can. What we CAN establish is whether the file
+ * we are allowed to interrogate is the same file it loaded, and mtime against the session's
+ * start settles it: a bundle written before the agent started is the bundle the agent is
+ * running, so the handshake speaks for the child. A bundle written after it is a different
+ * build, and the honest answer is that this session has to be restarted to pick it up.
+ *
+ * An unknown `startedAt` cannot order the two. That falls back to the disk check rather than
+ * refusing: a backend that could not report a process start is not evidence of a stale bundle,
+ * and grounding every assignment on one would trade a rare, narrow hole for a broken workflow.
+ * It is the status quo that shipped before this guard existed, and strictly better than it.
+ */
+export async function verifyMissionMcpToolsForRunningSession(
+  required: readonly MissionMcpTool[],
+  /** Process start for a terminal session, registration time for an SDK one. */
+  startedAt: number | null,
+  launched?: MissionMcpDescriptor | null,
+): Promise<MissionMcpToolCheck> {
+  if (required.length === 0) return { ok: true };
+  const descriptor = launched ?? (await missionMcpDescriptor());
+  const written = descriptor ? bundleWrittenAt(descriptor.args[0] ?? "") : null;
+  if (descriptor && written !== null && startedAt !== null && written > startedAt) {
+    return {
+      ok: false,
+      reason:
+        `Mission Control's MCP server at ${descriptor.args[0]} was rebuilt after this agent ` +
+        `started, so the agent is still running the previous build and this cannot establish ` +
+        `which tools it actually has. Restart the session so it picks up the current bundle`,
+    };
+  }
+  return await verifyMissionMcpTools(required, descriptor);
+}
+
+/**
+ * Every tool this build's SOURCE says should exist, checked against the running bundle - the
+ * daemon's own startup signal.
+ *
+ * Distinct from `verifyMissionMcpTools` in what it asks: that one asks whether ONE launch can
+ * go ahead, this one asks whether the operator's machine is in a state where scouts and
+ * ensembles will work at all, and says so at boot instead of at the first dispatch that trips
+ * over it. It also warms the cache, so that first dispatch pays nothing.
+ *
+ * A CONTENT check rather than the obvious mtime comparison of the bundle against `src/mcp/` and
+ * `src/shared/`. Mtime was tried on paper and rejected: `src/shared/` changes on almost every
+ * commit in this repo, so a bundle that is behind by one irrelevant shared-module edit would
+ * warn identically to one missing a tool, on nearly every dev iteration - and a warning that
+ * fires constantly is a warning nobody reads by the time it is true. This asks the question the
+ * operator actually cares about, and answers it with no false alarms and nothing to tune. It is
+ * also silent by construction on a packaged install, where there is no `src/` to compare against
+ * and the bundle is published by the same step that built it.
+ */
+export async function reportMissionMcpDrift(): Promise<void> {
+  const check = await verifyMissionMcpTools(MISSION_MCP_TOOLS);
+  if (check.ok) return;
+  console.warn(
+    `[mission-control] ${check.reason}\n` +
+      `[mission-control]   Until then, dispatching a scout or an ensemble member that needs a ` +
+      `missing tool is REFUSED rather than left to deadlock.`,
+  );
 }
 
 // ---- Claude: a launch-scoped `--mcp-config` file -------------------------------------

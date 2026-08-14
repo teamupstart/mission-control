@@ -26,6 +26,8 @@ Read it through one hook per preference (`useRichText`, `useGuidedDispatch`), ne
 
 MCP arguments are deliberately validated twice: in `src/shared/protocol.ts` and `src/mcp/server.ts`. Change both.
 
+A new MCP **tool** carries two more obligations, and skipping either is silent. Add its name to `MISSION_MCP_TOOLS` (`src/server/mission-mcp.ts`), or no launch can pre-approve it and calling it stops the agent on a permission prompt. Then rebuild: a dispatched agent runs the built `dist/mcp/server.mjs`, which only `npm run build` refreshes and which git ignores, so source alone never reaches a session. `npm run smoke` fails on either mistake, the daemon warns at startup, and a launch that requires an unpublished tool is refused before the agent spawns.
+
 Every mutating route requires a Zod schema in `protocol.ts` and `parseBody`. Do not hand-parse JSON.
 
 ## Database changes

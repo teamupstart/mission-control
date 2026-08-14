@@ -121,9 +121,34 @@ enabled or not, and on both delivery paths - a fresh dispatch and a backlog scou
 an agent that was already running. The shipped `html-report` skill still teaches an agent how
 to write a *good* one; the requirement itself does not depend on it being installed.
 
-A scout dispatch also **requires** the `submit_scout_artifacts` tool at launch. If Mission
-Control's MCP bundle cannot be registered, the launch fails before the agent starts rather
-than producing a scout that can never hand its work over.
+A scout also **requires** the `submit_scout_artifacts` tool, and that requirement is checked
+before the agent starts rather than discovered when it tries to submit - on both delivery
+paths, because a backlog scout dropped onto a running agent has its checkout reset first, and
+an agent taken apart for a task it cannot finish is the worst version of this.
+
+Two things are established, and they are different questions:
+
+- **Can the bundle be registered at all?** If `dist/mcp/server.mjs` is not on this machine,
+  there is nothing to point the launch at.
+- **Does that bundle actually publish `submit_scout_artifacts`?** A bundle can be present,
+  start cleanly and serve every other tool while missing this one, because `dist/` is rebuilt
+  only by `npm run build` and is gitignored - so pulling the scout feature gives you the tool
+  in `src/` and not in the file the agent runs. Mission Control answers this by completing a
+  real MCP handshake against that exact bundle and reading back its published tools.
+
+Either one failing refuses the launch or the assignment, naming the tool and `npm run build`.
+The alternative is the failure this replaces: a scout that writes a finished report and then
+has nowhere to hand it over, with no error, no warning, and a task that never reaches **done**.
+
+**An assignment asks a third question, because it targets an agent that is already running.**
+That agent's MCP server is a child it spawned at launch, holding whatever the bundle contained
+at that moment - so rebuilding the bundle afterwards does not change what the agent can call.
+The file on disk therefore only speaks for that agent while the two are the same build, which
+is settled by comparing the bundle's write time against the session's start. A session that
+started **before** the current bundle was built is refused with the remedy that actually works:
+restart it, so it picks the new bundle up. Rebuilding again would not help, and admitting it
+would reset the agent's checkout for a task it still could not submit. When a session's start
+time is unknown the two cannot be ordered, and the disk check stands on its own.
 
 ### What gets captured
 

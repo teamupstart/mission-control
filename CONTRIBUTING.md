@@ -48,7 +48,7 @@ mode, see [docs/setup.md](docs/setup.md).
 | `npm test` | Full Node test suite, including Electron geometry checks on macOS. |
 | `npm run test:electron` | Focused Electron geometry checks. |
 | `npm run test:e2e` | Playwright browser tests against built application bundles. |
-| `npm run smoke` | Boots built bundles after `npm run build`. |
+| `npm run smoke` | Boots built bundles after `npm run build`, and checks the MCP bundle publishes exactly the tools `MISSION_MCP_TOOLS` declares. |
 | `npm run package` | Builds the macOS application package. |
 | `npm run demo` | Starts a token-free demo. Build first. |
 | `npm run docs:screenshots` | Regenerates the committed README screenshots from the token-free demo. Build first. |

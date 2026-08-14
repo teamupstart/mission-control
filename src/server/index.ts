@@ -42,6 +42,7 @@ import { startGoalRefiner } from "./goal/refiner.ts";
 import { startAwayWatcher } from "./away/watcher.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
+import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ScoutArchiveManager } from "./scouts/manager.ts";
 import { RegistryScoutTaskGateway } from "./scouts/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
@@ -425,6 +426,16 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // any scout still waiting on a live agent - that one settles through the ordinary paths.
   void scouts.recoverJobs().catch((error: unknown) => {
     console.warn("[mission-control] could not resume scout captures:", error);
+  });
+  // Say at BOOT whether the MCP bundle this daemon would hand a dispatched agent still serves
+  // the tools this build knows about. The dispatch guards refuse a launch that needs a missing
+  // one, but a refusal is something the operator meets at the worst moment - when they finally
+  // dispatch the scout - and the answer was knowable the whole time. Fire-and-forget after the
+  // port for the reason the scout jobs above are: it spawns the bundle, and nothing about that
+  // may delay the daemon serving. It also warms the per-build cache, so the first dispatch pays
+  // nothing for the check.
+  void reportMissionMcpDrift().catch((error: unknown) => {
+    console.warn("[mission-control] could not check the MCP bundle:", error);
   });
   const where = hasDist
     ? `http://${HOST}:${info.port}`

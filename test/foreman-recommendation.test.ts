@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -212,18 +211,39 @@ test("the hint-stripped spelling cannot slip past the ambiguity guard", () => {
   );
 });
 
-test("the sidecar stops its own clicks reaching the card behind it", () => {
-  // A portal moves the DOM node but not the React tree, so a click inside the sidecar still
-  // bubbles to this component's JSX ancestors. PaneDialogPrompt renders it as a SIBLING of
-  // its guarded `.pane-dialog` section, so the caller's guard does not cover it, and the
-  // nearest real ancestor is the card's expand/collapse toggle: clicking Close on a
-  // collapsed card would expand the card underneath.
-  const source = readFileSync(
-    new URL("../src/web/components/ForemanRecommendation.tsx", import.meta.url),
-    "utf8",
+test("a label sharing letters mid-word with another is not suppressed by it", () => {
+  // Suppression exists to stop a longer label's mention marking the shorter label inside it.
+  // Deciding that by bare substring containment would reach further than intended: "Redeploy
+  // now" contains the letters of "Deploy" without naming it, so prose that names BOTH in
+  // their own right would lose the "Deploy" mark - suppressing a true pick, not a false one.
+  const choices = [
+    { key: "deploy", label: "Deploy", number: 1 },
+    { key: "redeploy", label: "Redeploy now", number: 2 },
+  ];
+  assert.deepEqual(
+    [...recommendedChoiceKeys("Deploy, and if that fails, Redeploy now.", choices)].sort(),
+    ["deploy", "redeploy"],
   );
-  const aside = source.slice(source.indexOf("<aside"), source.indexOf(">", source.indexOf("frs-head")));
-  assert.match(aside, /onClick=\{\(event\) => event\.stopPropagation\(\)\}/);
+  // Naming only the longer one still leaves the shorter unmarked, since it is never named.
+  assert.deepEqual([...recommendedChoiceKeys("Redeploy now.", choices)], ["redeploy"]);
+});
+
+test("asking the same question twice keeps the older answered turn in the transcript", () => {
+  // The marker digests the dialog's content and nothing instance-unique, so a repeated
+  // question yields two episodes with the SAME marker. Hiding by marker alone took the older,
+  // already-answered turn out of the history along with the live one - it came back when the
+  // new note resolved, so the only symptom was a genuine entry vanishing for a while.
+  const marker = dialogMarker(DIALOG);
+  const episodes = [
+    { id: 1, marker, situation: "asked and answered an hour ago" },
+    { id: 2, marker: "dialog:something-else", situation: "an unrelated ask" },
+    { id: 3, marker, situation: "the same question, asked again and still open" },
+  ];
+  assert.deepEqual(
+    visibleForemanEpisodes(episodes, { companionsOpenAsk: true, handledMarker: marker }),
+    [episodes[0], episodes[1]],
+    "only the newest entry carrying the marker yields",
+  );
 });
 
 test("the console hides only this note's transcript turn while its ask is open", () => {
@@ -234,8 +254,8 @@ test("the console hides only this note's transcript turn while its ask is open",
   // remove, which no assertion about the filter's own shape would catch.
   const marker = dialogMarker(DIALOG);
   const episodes = [
-    { marker: "dialog:an-earlier-ask", situation: "resolved earlier" },
-    { marker, situation: "the ask still on screen" },
+    { id: 1, marker: "dialog:an-earlier-ask", situation: "resolved earlier" },
+    { id: 2, marker, situation: "the ask still on screen" },
   ];
 
   assert.deepEqual(

@@ -77,8 +77,13 @@ export function foremanNoteCompanionsOpenAsk(o: {
  * `handledMarker` for its own idempotency, which is what makes `(note_key, marker)` unique in
  * `foreman_episodes`. Pinned in the tests so a drift in either spelling fails loudly rather
  * than turning this filter into a silent no-op.
+ *
+ * Exactly ONE entry yields, and it is the newest carrying that marker. The marker digests the
+ * dialog's content and nothing instance-unique, so a question asked twice in one session
+ * produces two episodes with the same marker - and hiding by marker alone would take the
+ * older, already-answered turn out of the history along with the live one.
  */
-export function visibleForemanEpisodes<T extends { marker: string }>(
+export function visibleForemanEpisodes<T extends { marker: string; id: number }>(
   episodes: T[],
   o: { companionsOpenAsk: boolean; handledMarker: string | null | undefined },
 ): T[] {
@@ -86,7 +91,12 @@ export function visibleForemanEpisodes<T extends { marker: string }>(
   // common case: a fresh array on every render would hand the transcript a new identity each
   // tick for no change in content.
   if (!o.companionsOpenAsk || !o.handledMarker) return episodes;
-  return episodes.filter((episode) => episode.marker !== o.handledMarker);
+  let live: T | undefined;
+  for (const episode of episodes) {
+    if (episode.marker === o.handledMarker && (!live || episode.id > live.id)) live = episode;
+  }
+  if (!live) return episodes;
+  return episodes.filter((episode) => episode !== live);
 }
 
 /** Fold typography without changing the meaningful words in an option label. */
@@ -185,15 +195,19 @@ export function recommendedChoiceKeys(
     if (longest) hits.set(choice.key, longest);
   }
 
-  // One label being a prefix of another is enough to mark both: prose naming "Merge now and
-  // notify the team" contains "Merge now", and the boundary after it is a space either way.
-  // These are mutually exclusive rows, so marking both says Foreman picked two. The most
-  // specific label wins, which is the one whose text the prose could not have satisfied by
-  // accident.
+  // One label containing another is enough to mark both: prose naming "Merge now and notify
+  // the team" also names "Merge now", and the boundary after it is a space either way. These
+  // are mutually exclusive rows, so marking both says Foreman picked two, and the most
+  // specific one wins.
+  //
+  // Subsumption is decided with the SAME boundary rule the matching used, not bare substring
+  // containment. "Redeploy now" contains the letters of "Deploy" without naming it, so a bare
+  // `includes` would silently drop a correctly matched "Deploy" that the prose named in its
+  // own right - suppressing a true pick instead of a false one.
   const texts = [...hits.values()];
   const matched = new Set<string>();
   for (const [key, text] of hits) {
-    if (texts.some((other) => other.length > text.length && other.includes(text))) continue;
+    if (texts.some((other) => other.length > text.length && namesLabel(other, text))) continue;
     matched.add(key);
   }
   if (matched.size > 0) return matched;

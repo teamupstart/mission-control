@@ -153,7 +153,12 @@ from the plan.
 4. When two reviewers have failed consecutive rounds, the page says so.
 5. A person can copy one change, open its file, give its reviewer feedback, or disable that
    reviewer, without leaving the worklist.
-6. The pipeline, header, round scrubber and run rail are byte-for-byte unchanged in behavior.
+6. A failed command gate is a blocker too, and keeps the exit code and output tail the current
+   page shows. A run stopped only by a failed check never presents as having nothing
+   outstanding.
+7. A change is only ever shown as resolved once its own reviewer has re-run and stopped raising
+   it, never because a different reviewer moved the run to a new round.
+8. The pipeline, header, round scrubber and run rail are byte-for-byte unchanged in behavior.
 
 ## Non-goals
 

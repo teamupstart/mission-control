@@ -79,12 +79,27 @@ than rendering an empty pane.
 
 - Segmented control: `Blocking {n}` / `Passed {n}` / `Archive {n}`. Implement as buttons with
   `aria-pressed`, not `data-testid`.
-- Blocking rows: title, path when present, `{personaName} · round {firstRound}`.
+- **Blocking holds failing checks as well as open changes.** A check is not a
+  `ChangeWorklistRow` and never will be, but a failed command is a blocker in exactly the sense
+  this segment means - it is why the run stopped. Failing checks sort **above** the persona
+  changes, because a red command gate usually explains the persona objections underneath it.
+  `Blocking {n}` counts both.
+- Blocking rows, persona changes: title, path when present, `{personaName} · round
+  {firstRound}`.
+- Blocking rows, failing checks: the existing `CheckCard`, unchanged, so the command, exit code,
+  output tail and truncated-byte count survive the redesign intact.
 - Archive rows: green rail, `Resolved in round {lastRound}`.
-- Passed segment: one line per passing reviewer and per check, reusing the existing
-  `CheckCard` for checks so their exit code and output tail are not lost.
+- Passed segment: one line per passing reviewer, plus checks whose outcome is `passed`,
+  `skipped` or `unavailable`. The latter two are **degraded passes**, not failures
+  (`CHECK_OUTCOME_STATUSES` marks them `degraded: true`); they keep their amber chip in
+  `Passed` and must not be silently drawn as green.
 - Stalemate card at the foot when `detail.repeatOffenders` is non-empty, using the ladder's
   sentence.
+
+The check routing is the one place this phase decides something Phase 1's model cannot express,
+so state it once here as the rule: **`checkOutcomeOf(attempt)` is asked first, exactly as it is
+today (`WorkflowRuns.tsx:991-992`), and its `status` picks the segment** - `failed` goes to
+Blocking, everything else to Passed. Nothing about checks flows through `runChangeWorklist`.
 
 ### 4. The detail pane
 
@@ -109,7 +124,14 @@ Every arm the old section had must survive:
   sentences.
 - Reviewers ran and all passed: the rail opens on `Passed` with `Blocking 0`, and the detail
   pane says the run has nothing outstanding rather than rendering blank.
-- A run with checks but no personas still shows its checks under `Passed`.
+- A run with checks but no personas still shows its checks - passing ones under `Passed`,
+  failing ones under `Blocking`.
+- A run blocked **only** by a failed check, with every persona passing, still opens on
+  `Blocking` with that check selected. This is the case the original draft of this phase
+  dropped entirely.
+- Selecting a failing check shows the `CheckCard` in the detail pane. The per-change actions
+  (copy, open file, reviewer feedback, disable reviewer) do not apply to a check and are
+  withheld rather than rendered disabled.
 
 ### 6. Styles
 
@@ -128,6 +150,16 @@ third scrollbar.
   Blocking segment, that selecting it shows its rationale, and that the Passed segment holds
   the passing reviewer. Assert by role and accessible name only. Do not assert a file path -
   the fixture emits none.
+- **Cover a failing check.** Either extend that spec or add a sibling: a workflow whose command
+  gate exits non-zero must show that check under `Blocking` with its exit code, not vanish from
+  the pane. `e2e/specs/workflow-skipped-status.spec.ts` is the closest precedent for *driving* a
+  non-passing check - it publishes a workflow whose command does not exist. Borrow how it
+  configures the check, noting it produces `skipped`, not `failed`; a `failed` outcome needs a
+  command that runs and exits non-zero.
+
+  **Do not re-point that spec.** It asserts against `.wf-pipeline-strip`, the stage diagram,
+  which this phase does not touch, so it neither breaks nor covers the new segment. Verified by
+  reading its locators.
 - **Add** a `renderToStaticMarkup` case in `test/` pinning the stalemate sentence, mirroring
   `test/workflow-ladder-repeat.test.ts`.
 
@@ -153,6 +185,9 @@ requires a Playwright spec for every UI change with no exemptions.
 ## Merge and exit criteria
 
 - The worklist renders for a run with open changes, and selecting a row shows its detail.
+- **A failed check renders under `Blocking` with its exit code and output tail**, and a run
+  blocked only by a failed check does not present as having nothing outstanding. Skipped and
+  unavailable checks render under `Passed` keeping their degraded chip.
 - A change carried from an earlier round says which round raised it and how many rounds it has
   been open; a resolved one says which round resolved it.
 - `repeatOffenders` renders, using the same sentence as the ladder.
@@ -188,3 +223,12 @@ There are no later phases. Future work that touches this surface should know:
   Phase 1's test list pins it so this phase inherits a derivation that cannot crash on it.
 - **Confirmed no concurrency.** Phase 2 depends on Phase 1 and there is no third phase, so
   there is nothing to run in parallel and no merge-order ambiguity.
+- **Inspector round 1, `major`, accepted.** Step 3 originally routed checks to `Passed` only,
+  which left a *failing* check with no segment at all: it is not a `ChangeWorklistRow` so it
+  cannot enter Blocking, and it is not passing so the wording excluded it from Passed. Today
+  every check renders regardless of outcome, so as drafted the redesign would have dropped a
+  failed command gate's exit code and output tail from the page. Failing checks now sort into
+  Blocking above the persona changes, with the segment rule stated explicitly, two new
+  degenerate cases, an exit criterion and e2e coverage. Re-checked against Phase 1: this is
+  resolved entirely inside Phase 2 by keeping the existing `checkOutcomeOf` path, so Phase 1's
+  scope and signatures are unchanged and the change model stays a change model.

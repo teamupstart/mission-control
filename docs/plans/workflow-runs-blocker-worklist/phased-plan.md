@@ -70,11 +70,16 @@ foundational interface, and it leaves the tree operable and green at the merge b
   selected-row identity. Phase 2 must not key rows positionally.
 - Rows arrive **pre-sorted** (open before resolved, then oldest first). Phase 2 does not
   re-sort.
-- `state` alone partitions the `Blocking` and `Archive` segments.
+- `state` alone partitions the `Blocking` and `Archive` segments, and is **conservative under a
+  partial round**: resolution is decided per owning persona, so a change whose reviewer has not
+  re-attempted stays `open` rather than reading as fixed because some other reviewer advanced
+  the round.
 - `roundsOpen` is a **count of appearances**, not a span, so it never claims a round the
   reviewer was silent in.
-- The model covers **requested changes only**. Checks and passing reviewers stay on the
-  existing `reviewerAttempts` / `checkOutcomeOf` path in Phase 2.
+- The model covers **requested changes only**. Checks never flow through it. Phase 2 keeps the
+  existing `checkOutcomeOf` path and routes on the outcome's `status`: a **failing** check
+  renders in `Blocking` above the persona changes, and `passed`, `skipped` and `unavailable`
+  render in `Passed`, the latter two keeping their degraded amber chip.
 - Both phases descend from the round-folding rule in `src/server/workflows/repeat-offender.ts`.
   Changing one is changing both.
 
@@ -106,6 +111,23 @@ Every requirement in `plan.md` is owned by exactly one phase:
 | A resolved change names the round that resolved it | 1 derives, 2 renders |
 | Consecutive-failure reviewers are named | 2 |
 | Per-change actions without leaving the worklist | 2 |
+| A failing check keeps its exit code and output tail | 2 |
 | Pipeline, header, scrubber, rail unchanged | Non-goal in both |
 
 No phase depends on an unmerged later phase to repair an intermediate state.
+
+## Review record
+
+Inspector round 1 raised two `major` findings against the design, both verified against the
+source and both accepted:
+
+1. **Phase 1's `state` could flip a still-blocking change to resolved mid-round.** Stage 3
+   personas do not finish together, so comparing each change's last-seen round against a global
+   newest round archives every change owned by a reviewer that has not re-run yet. Resolution is
+   now per owning `nodeId`, mirroring how `repeat-offender.ts` builds its candidate set.
+2. **Phase 2 left a failing check with no segment.** Every check renders today regardless of
+   outcome; as drafted, a failed command gate would have lost its exit code and output tail.
+   Failing checks now sort into `Blocking`.
+
+Both fixes tighten the design without touching an approved human decision, so neither was
+escalated. Each phase's cross-phase audit record carries the detail.

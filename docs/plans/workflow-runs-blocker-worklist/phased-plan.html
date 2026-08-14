@@ -135,9 +135,9 @@ pre{background:var(--panel);border:1px solid var(--border);border-radius:8px;pad
 <ul>
 <li><code>ChangeWorklistRow.key</code> is stable across renders and is both the React key and the selected-row identity. Phase 2 must not key rows positionally.</li>
 <li>Rows arrive <b>pre-sorted</b> (open before resolved, then oldest first). Phase 2 does not re-sort.</li>
-<li><code>state</code> alone partitions the <code>Blocking</code> and <code>Archive</code> segments.</li>
+<li><code>state</code> alone partitions the <code>Blocking</code> and <code>Archive</code> segments, and is <b>conservative under a partial round</b>: resolution is decided per owning persona, so a change whose reviewer has not re-attempted stays <code>open</code> rather than reading as fixed because some other reviewer advanced the round.</li>
 <li><code>roundsOpen</code> is a <b>count of appearances</b>, not a span, so it never claims a round the reviewer was silent in.</li>
-<li>The model covers <b>requested changes only</b>. Checks and passing reviewers stay on the existing <code>reviewerAttempts</code> / <code>checkOutcomeOf</code> path in Phase 2.</li>
+<li>The model covers <b>requested changes only</b>. Checks never flow through it. Phase 2 keeps the existing <code>checkOutcomeOf</code> path and routes on the outcome's <code>status</code>: a <b>failing</b> check renders in <code>Blocking</code> above the persona changes, and <code>passed</code>, <code>skipped</code> and <code>unavailable</code> render in <code>Passed</code>, the latter two keeping their degraded amber chip.</li>
 <li>Both phases descend from the round-folding rule in <code>src/server/workflows/repeat-offender.ts</code>. Changing one is changing both.</li>
 </ul>
 
@@ -162,11 +162,20 @@ npm run test:e2e</pre>
 <tr><td>A resolved change names the round that resolved it</td><td>1 derives, 2 renders</td></tr>
 <tr><td>Consecutive-failure reviewers are named</td><td>2</td></tr>
 <tr><td>Per-change actions without leaving the worklist</td><td>2</td></tr>
+<tr><td>A failing check keeps its exit code and output tail</td><td>2</td></tr>
 <tr><td>Pipeline, header, scrubber, rail unchanged</td><td>Non-goal in both</td></tr>
 </tbody>
 </table>
 </div>
 <p>No phase depends on an unmerged later phase to repair an intermediate state.</p>
+
+<h2>Review record</h2>
+<p>Inspector round 1 raised two <code>major</code> findings against the design, both verified against the source and both accepted:</p>
+<ol>
+<li><b>Phase 1's <code>state</code> could flip a still-blocking change to resolved mid-round.</b> Stage 3 personas do not finish together, so comparing each change's last-seen round against a global newest round archives every change owned by a reviewer that has not re-run yet. Resolution is now per owning <code>nodeId</code>, mirroring how <code>repeat-offender.ts</code> builds its candidate set.</li>
+<li><b>Phase 2 left a failing check with no segment.</b> Every check renders today regardless of outcome; as drafted, a failed command gate would have lost its exit code and output tail. Failing checks now sort into <code>Blocking</code>.</li>
+</ol>
+<p>Both fixes tighten the design without touching an approved human decision, so neither was escalated. Each phase's cross-phase audit record carries the detail.</p>
 
 </div>
 </body>

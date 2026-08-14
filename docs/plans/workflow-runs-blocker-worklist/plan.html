@@ -204,6 +204,8 @@ svg{display:block;max-width:100%;height:auto;margin:0 auto}
 <li>A change that stopped being raised says which round resolved it.</li>
 <li>When two reviewers have failed consecutive rounds, the page says so.</li>
 <li>A person can copy one change, open its file, give its reviewer feedback, or disable that reviewer, without leaving the worklist.</li>
+<li>A failed command gate is a blocker too, and keeps the exit code and output tail the current page shows. A run stopped only by a failed check never presents as having nothing outstanding.</li>
+<li>A change is only ever shown as resolved once its own reviewer has re-run and stopped raising it, never because a different reviewer moved the run to a new round.</li>
 <li>The pipeline, header, round scrubber and run rail are byte-for-byte unchanged in behavior.</li>
 </ol>
 

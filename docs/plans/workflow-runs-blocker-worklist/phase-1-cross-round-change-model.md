@@ -99,7 +99,26 @@ Derivation, in order:
 3. Accumulate per key: `firstRound` = lowest round it appeared in; `lastRound` = highest.
    Keep the **newest** round's title, rationale, evidence, path, line, confidence and persona
    name, so a reviewer that sharpens its wording shows the current wording.
-4. `state` is `"open"` when `lastRound === latestRound`, otherwise `"resolved"`.
+4. `state` is resolved **per owning persona, never against a global round number**. A change
+   is `"resolved"` only when its own `nodeId` has a completed attempt in some round later than
+   `lastRound` and did not re-raise the key in it. Otherwise it is `"open"`.
+
+   This is the trap in the obvious formulation. `state = lastRound === latestRound ? "open" :
+   "resolved"` is wrong the moment a round is partially evaluated: Stage 3 personas do not
+   finish together, so while round 10 is in flight Code Risk can have posted its fail before
+   Test Evidence has run at all. Every change owned by a persona that has not re-attempted yet
+   still has `lastRound = 9`, reads as `"resolved"`, and drops into Archive - not because the
+   issue is gone but because nobody has looked yet. That is precisely the question the worklist
+   exists to answer, answered backwards.
+
+   `repeat-offender.ts` avoids this by construction rather than by a special case: its
+   candidate set is `latestAttempts.values()`, so a node with no attempt in the latest round is
+   simply absent from the result and is never reported as having recovered. Mirror that
+   posture. Where it has no answer yet, say nothing rather than say "resolved".
+
+   Define `latestRound` as the newest round that actually **has folded attempt data**, matching
+   that module's `attemptsByRound.get(latest.round)` guard, and use it only for reporting - not
+   as the resolution test.
 5. `roundsOpen` counts the rounds from `firstRound` through `lastRound` **inclusive** in which
    the key appeared. Document whether it is a span or a count of appearances and make the test
    pin it; a change that lapses for a round and returns is the case that distinguishes them.
@@ -132,6 +151,13 @@ Cases:
 - A change that lapses in round 2 and returns in round 3 reports `roundsOpen: 2`, not 3.
 - The newest round's wording wins when a title is sharpened but keys the same.
 - An attempt with an unparseable verdict is skipped without throwing.
+- **Partial round, the regression this model exists to avoid.** Round 3 is in flight: persona A
+  has posted a fail, persona B has no attempt in round 3 at all. A's change is `"open"`. B's
+  change from round 2 is **also `"open"`**, not `"resolved"` - B has not re-checked it.
+- A change becomes `"resolved"` only once its **own** persona completes a later round without
+  re-raising it, not merely because some other persona advanced the round.
+- A latest round carrying no folded attempt data at all leaves every prior change `"open"`
+  rather than resolving the entire worklist at once.
 
 Run: `node --test --import tsx test/workflow-change-worklist.test.ts`
 
@@ -156,7 +182,10 @@ no runtime surface and no UI.
 
 - `runChangeWorklist` and `requestedChangeKey` are exported from `run-model.ts` with doc
   comments that state the identity rule and cite `marker.ts` as prior art.
-- Every unit test above passes, including the two-segments-one-round case.
+- Every unit test above passes, including the two-segments-one-round case and the partial-round
+  case.
+- No change is ever reported `"resolved"` on the strength of another persona having advanced
+  the round. Resolution is per owning `nodeId`.
 - Typecheck, lint and the full unit suite are green.
 - No file outside `src/web/workflows/run-model.ts` and `test/` is modified.
 - The repository is operable: the new module is additive and unconsumed until Phase 2.
@@ -171,6 +200,9 @@ Phase 2 may rely on:
   selected-row identity.
 - `state` partitioning the rows into the `Blocking` and `Archive` segments with no further
   filtering.
+- `state` being **conservative under a partial round**: a change whose persona has not
+  re-attempted stays `"open"`. Phase 2 never has to ask whether a round finished before
+  trusting the partition.
 - `roundsOpen` being a count of appearances, not a span.
 
 The boundary of this model, stated so Phase 2 does not wait for something that is not coming:
@@ -201,3 +233,10 @@ Phase 2 must not:
   to keep this model narrow rather than widen it, and the boundary now lives in this phase's
   downstream handoff, which is the earliest place that must own it. No scope or signature here
   changed.
+- **Inspector round 1, `major`, accepted.** Step 4 originally read `state = lastRound ===
+  latestRound ? "open" : "resolved"`, which marks a change resolved whenever any *other*
+  persona advances the round, because Stage 3 personas do not finish together. Rewritten to
+  resolve per owning `nodeId`, mirroring `repeat-offender.ts`'s candidate-set posture rather
+  than adding a special case, with three new test cases and a new exit criterion. Phase 2 was
+  re-checked and needs no change: it consumes `state` as an opaque partition, and the contract
+  it relies on got strictly stronger.

@@ -208,15 +208,17 @@ actually decides: which argv a repository resolves to.
 will never be a fifth, so there is no New, no search and no state filter. Each row's sub-label
 is the slot's stored state (`Global default · 2 overrides`, `Not configured`), which is the one
 fact that tells four rows apart; it is the same sentence the Library card and the workflow
-palette use, so the three cannot disagree. The slot's purpose is in the row's tooltip and again
-in the workspace, rather than repeated identically on all four rows. A note below the list says
-why the catalog is closed.
+palette use, so the three cannot disagree. The slot's purpose has moved off the rows to the
+row's tooltip, and it opens the workspace's execution note - so it is read once for the slot
+you opened, rather than four times identically down a list. A note below the list says why the
+catalog is closed.
 
 **The workspace header** carries the slot name and a `built-in slot` tag with the revision line
 beneath, and promotes exactly one verb: **Save Command**. There is no `⋯` menu, because a slot
 that cannot be copied, duplicated or archived has nothing to put in one. Two read-only property
 chips sit under it: the number of overrides in the open draft, and `runs` - a reminder that
-execution is shell-free and commit-pinned.
+execution is shell-free and commit-pinned. Below them, the execution note opens with what this
+slot gates on and then states, once, that saving stores an argv and runs nothing.
 
 **The default and its overrides are one table**, with a header row. The default is the first
 rule, labelled *Every repository - the default, where no override matches*, because that is

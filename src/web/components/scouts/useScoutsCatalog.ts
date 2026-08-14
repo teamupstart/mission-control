@@ -128,6 +128,12 @@ export function useScoutsCatalog({
   const [listError, setListError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [detail, setDetail] = useState<ArchiveDetail | null>(null);
+  /**
+   * The detail on screen, readable by the loading effect without depending on it.
+   *
+   * Depending on `detail` there would re-run the effect with every fetch it completes.
+   */
+  const detailRef = useRef<ArchiveDetail | null>(null);
   const [detailState, setDetailState] = useState<ScoutDetailState>("idle");
   const [detailError, setDetailError] = useState<string | null>(null);
   /** Bumped by `refresh()` to re-run the window effect without touching the route. */
@@ -234,6 +240,7 @@ export function useScoutsCatalog({
   useEffect(() => {
     if (!archiveKey) {
       detailAbort.current?.abort();
+      detailRef.current = null;
       setDetail(null);
       setDetailState("idle");
       setDetailError(null);
@@ -242,18 +249,31 @@ export function useScoutsCatalog({
     const controller = new AbortController();
     detailAbort.current?.abort();
     detailAbort.current = controller;
-    setDetailState((prev) => (prev === "ready" ? "ready" : "loading"));
+    // "ready" survives only a SAME-KEY refresh - a revision tick or a manual refresh of the
+    // archive already on screen. When the key itself changed this is a first load, and
+    // holding the previous archive's detail through it would leave the reader showing A's
+    // title, report, evidence and Delete button while the rail highlights B: an operator who
+    // pressed Delete, Download or Open in that window would act on the archive they had just
+    // navigated AWAY from.
+    const sameKey = detailRef.current?.key === archiveKey;
+    if (!sameKey) {
+      detailRef.current = null;
+      setDetail(null);
+    }
+    setDetailState(sameKey ? "ready" : "loading");
     // Fetched by key alone, never read out of the loaded window. That is what makes a deep
     // link to an archive the current filters exclude open the archive instead of an empty
     // reader - and what keeps it open when reconciliation reorders the list under it.
     void api.archiveDetail(archiveKey, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
       if (!result.ok) {
+        detailRef.current = null;
         setDetail(null);
         setDetailState("error");
         setDetailError(result.error);
         return;
       }
+      detailRef.current = result.value;
       setDetail(result.value);
       setDetailError(null);
       setDetailState("ready");

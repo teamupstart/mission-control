@@ -64,7 +64,15 @@ export function ScoutsPage({
   const selectedKey = route.archiveKey ?? null;
   const catalog = useScoutsCatalog({ filters, archiveKey: selectedKey, revision });
   const [deleting, setDeleting] = useState<ScoutDeleteTarget | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
+  /**
+   * The politely-announced confirmation, and a counter that makes each one a DOM change.
+   *
+   * React bails out of a re-render when `setState` gets an `Object.is`-equal value, so
+   * announcing "Scout deleted" a second time mutated nothing and a screen reader stayed
+   * silent for every delete after the first. The counter keys the rendered node, so each
+   * announcement is a genuine addition for the live region to read.
+   */
+  const [status, setStatus] = useState<{ text: string; n: number } | null>(null);
   /** The control that opened the modal, so focus can go back to it. */
   const invoker = useRef<HTMLElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
@@ -146,7 +154,7 @@ export function ScoutsPage({
       const remaining = catalog.archives.filter((archive) => archive.key !== key);
       const next = remaining[index] ?? remaining[index - 1] ?? null;
       setDeleting(null);
-      setStatus("Scout deleted");
+      setStatus((prev) => ({ text: "Scout deleted", n: (prev?.n ?? 0) + 1 }));
       // ONLY when the archive that was deleted is the one being read. Every row carries its
       // own delete, so an operator can remove a row while reading a different scout - and
       // navigating then would yank them out of the report they are reading to whatever now
@@ -158,10 +166,18 @@ export function ScoutsPage({
       // reader user on <body> with no landing point a second later. The reader header's
       // Delete button does persist, so it is still the right target when it was the invoker.
       const invokedFrom = invoker.current;
-      const durable = invokedFrom && railRef.current?.contains(invokedFrom)
-        ? railRef.current?.querySelector<HTMLElement>(".scouts-row-open") ?? railRef.current
-        : invokedFrom;
-      durable?.focus();
+      if (!invokedFrom || !railRef.current?.contains(invokedFrom)) {
+        invokedFrom?.focus();
+        return;
+      }
+      // The row that took the deleted one's place - the same row the selection rule above
+      // chose - rather than jumping to the top of the rail. After the commit, so the removed
+      // row is already gone and the index lines up with what is on screen.
+      const landing = Math.max(0, Math.min(index, remaining.length - 1));
+      requestAnimationFrame(() => {
+        const rows = railRef.current?.querySelectorAll<HTMLElement>(".scouts-row-open");
+        (rows?.[landing] ?? railRef.current)?.focus();
+      });
     },
     [catalog, select, selectedKey],
   );
@@ -380,7 +396,9 @@ export function ScoutsPage({
       />
 
       {/* Politely announced, and focus stays where it was. */}
-      <p className="sr-only" role="status" aria-live="polite">{status ?? ""}</p>
+      <p className="sr-only" role="status" aria-live="polite">
+        {status ? <span key={status.n}>{status.text}</span> : null}
+      </p>
 
       {deleting ? (
         <ScoutDeleteModal

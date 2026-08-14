@@ -56,6 +56,7 @@ export const OVERLAY_IDS = {
   palette: "palette",
   recurringMissions: "recurring-missions",
   personaDirective: "persona-directive",
+  scoutDelete: "scout-delete",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

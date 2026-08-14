@@ -250,6 +250,9 @@ export function SessionActionLibrary({
         className="wf-action-list-item"
         name={action.name}
         detail={sessionActionContractLabel(action)}
+        // The contract is two facts and a clause, not a runner and a model: on one line the
+        // completion half fell off every row.
+        detailLines={2}
         selected={selectedId === action.id}
         tooltip={action.builtin
           ? `Open the built-in ${action.name} - read-only, Duplicate to customize`

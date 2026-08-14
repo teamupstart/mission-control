@@ -164,13 +164,18 @@ test("the rail separates what ships from what you wrote, and names each row by i
   // The sub-label is the CONTRACT, from the one helper the Library card reads too. The
   // description sat here and, on the shipped pair, it is the title again in a longer
   // sentence - so two actions could not be told apart by the line meant to tell them apart.
+  //
+  // `is-two-line` is on the shared row because this rail asked for it with `detailLines={2}`,
+  // not because the rail restyled `.lib-rail-row-detail` from a selector of its own. That
+  // fork is what the primitive forbids, and it would outrank any rule the primitive grew
+  // later - so the class is asserted here, where the string it wraps is.
   assert.match(
     html,
-    /<small class="lib-rail-row-detail mono">No required skill · Session turn finishes<\/small>/,
+    /<small class="lib-rail-row-detail mono is-two-line">No required skill · Session turn finishes<\/small>/,
   );
   assert.match(
     html,
-    /<small class="lib-rail-row-detail mono">Skill · pull-request · Pull request is opened and verified<\/small>/,
+    /<small class="lib-rail-row-detail mono is-two-line">Skill · pull-request · Pull request is opened and verified<\/small>/,
   );
   assert.doesNotMatch(html, />Remove the scratch files</, "the description is not the sub-label");
   // Provenance is said once, at the head, for every row beneath it - rather than as a tag on
@@ -381,6 +386,10 @@ test("a capability read still in flight accuses the action of nothing", () => {
   const loading = completionChoices([], "session_turn", true);
   assert.deepEqual(loading.map((choice) => choice.kind), ["session_turn"]);
   assert.equal(loading[0]!.note, null, "a pending read is not an accusation");
+  // Nor is it a refusal. `disabled` on this arm means the daemon was ASKED and cannot prove
+  // this one - it is what the editor's chip marks itself from - so it stays false until there
+  // is an answer, and the picker holds the stored value without striking it out.
+  assert.equal(loading[0]!.disabled, false, "a pending read struck out the stored completion");
   // And it reads as itself rather than as the wire spelling. The shared table supplies the
   // WORDING; `available` still comes only from the daemon.
   assert.equal(loading[0]!.label, "Session turn finishes");

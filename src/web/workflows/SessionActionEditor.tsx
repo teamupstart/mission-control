@@ -336,7 +336,11 @@ export function isSessionActionSaveShortcut(
  *
  * The retained arm is what stops opening the built-in Pull Request action - whose adapter is
  * unavailable until Phase 4 - from silently rewriting it to `session_turn` on the next save.
- * It renders disabled, so it can be read and never chosen.
+ * Once the daemon has answered it renders disabled, so it can be read and never chosen.
+ *
+ * `disabled` on that arm therefore means REFUSED, and it is the one fact the editor's chip
+ * marks itself from. It is deliberately not "absent from what was offered", which would also
+ * be true of every action while nothing has been offered yet.
  */
 export function completionChoices(
   capabilities: readonly SessionActionCompletionCapability[],
@@ -346,7 +350,8 @@ export function completionChoices(
    *
    * Without it the retained arm below fires for the ~one round trip before the daemon
    * answers, and every freshly opened action briefly accuses itself of naming a completion
-   * this build cannot prove. Loading is not a refusal, so it says nothing.
+   * this build cannot prove. Loading is not a refusal, so the arm says nothing, is not
+   * struck out, and does not mark the chip that reads it.
    */
   loading = false,
 ): Array<{ kind: SessionActionCompletionKind; label: string; disabled: boolean; note: string | null }> {
@@ -368,7 +373,12 @@ export function completionChoices(
       // response - it is the difference between an operator reading "Pull request is opened
       // and verified" and reading the wire spelling `pull_request`.
       label: retained?.label ?? sessionActionCompletionLabel({ kind: selected }),
-      disabled: true,
+      // `disabled` on this arm means REFUSED - the daemon was asked and cannot prove this
+      // one - which is why it also drives the chip's mark. A read still in flight has
+      // refused nothing, so the arm holds the value without greying it out: an operator who
+      // opened the picker mid-fetch was shown a single option, struck through, which is the
+      // same false claim the chip used to make with a colour.
+      disabled: !loading,
       note: loading
         ? null
         : capabilities.length === 0
@@ -754,29 +764,26 @@ export function SessionActionEditor({
   });
   const choices = completionChoices(capabilities, draft.completionKind, capabilitiesLoading);
   /*
-   * The stored completion this build cannot prove - or NOTHING at all while the answer is still
-   * in flight.
+   * The stored completion this build cannot prove, and the single fact behind the chip's mark,
+   * its tooltip and the note beneath the chips.
    *
-   * The `capabilitiesLoading` arm is the review finding, and it is the same lesson
-   * `completionChoices` learned one level down. The retained arm is "selected and not among
-   * what was offered", which is true of every action for the round trip before the daemon
-   * answers, because nothing has been offered yet. Reading it ungated made the chip draw amber
-   * and state "This build cannot prove the completion this action names" about `session_turn`,
-   * on a daemon that plainly runs it - a false claim on the one surface whose job is to state a
+   * It reads `disabled`, which `completionChoices` defines as REFUSED - the daemon was asked
+   * and cannot prove this one - rather than as "not offered". The difference is the review
+   * finding: "not offered" is true of every action for the round trip before the answer lands,
+   * because nothing has been offered yet, so this drew amber and claimed "This build cannot
+   * prove the completion this action names" about `session_turn`, on a daemon that plainly
+   * runs it. That is a false statement on the one surface whose whole job is to state a
    * guarantee, not a cosmetic flash.
    *
-   * So the mark is gated here, once, rather than at each of the three places that read it: the
-   * tone, the tooltip and the note beneath the chips are three views of one fact, and a fact
-   * nobody has established yet has no views. Loading is not a refusal; the honest signal for a
-   * pending read is Save standing down with `sessionActionCapabilityBlock`'s "Waiting for this
-   * daemon to report which completions it can prove" on it, which is unchanged.
-   *
-   * An empty answer once the read has FINISHED still marks, because "the daemon never said" is
-   * a state to act on where "the daemon has not said yet" is one to wait through.
+   * Loading is not a refusal, so there is nothing to mark until the answer is in. The honest
+   * signal for a pending read is Save standing down with `sessionActionCapabilityBlock`'s
+   * "Waiting for this daemon to report which completions it can prove", which is unchanged.
+   * An empty answer once the read has FINISHED does mark, because "the daemon never said" is a
+   * state to act on where "the daemon has not said yet" is one to wait through.
    */
-  const retainedCompletion = capabilitiesLoading
-    ? undefined
-    : choices.find((choice) => choice.kind === draft.completionKind && choice.disabled);
+  const retainedCompletion = choices.find(
+    (choice) => choice.kind === draft.completionKind && choice.disabled,
+  );
   /*
    * What the closed chip reads: the SHARED clause, by the same call the contract line beneath
    * it makes.

@@ -134,6 +134,21 @@ test("the rail groups what ships apart from what you wrote, and names each row b
   const archived = rail.getByRole("button", { name: /^Archived/ });
   await expect(archived).toBeVisible();
   await expect(archived).toHaveText(/Archived\s*0/);
+
+  /*
+   * And the search narrows the list without the empty group turning into a claim about the
+   * catalog. "Nothing yet ... duplicate a built-in to see the shape" is advice for an operator
+   * who has written none; said under a search that simply matched none of theirs, it reads as
+   * their work having gone missing. Only a browser can set this state - `search` is internal
+   * to the rail, so no markup test can reach it.
+   */
+  await rail.getByPlaceholder("Search session actions").fill("pull");
+  await expect(rail.getByRole("button", { name: /Pull Request/ })).toBeVisible();
+  await expect(rail.getByRole("button", { name: /Rail action/ })).toHaveCount(0);
+  await expect(rail.getByText("Nothing yet.", { exact: false })).toHaveCount(0);
+  // Cleared, the sentence is available again for the state it is actually about.
+  await rail.getByPlaceholder("Search session actions").fill("");
+  await expect(rail.getByRole("button", { name: /Rail action/ })).toBeVisible();
 });
 
 test("the contract line states what will be checked, and follows the chip that decides it", async ({

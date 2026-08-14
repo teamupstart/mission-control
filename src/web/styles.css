@@ -12536,13 +12536,12 @@ select.ensemble-judge-persona {
 .lib-rail-row.active .lib-rail-row-name > span:first-child {
   font-weight: 600;
 }
-/* The Actions rail's sub-label wraps rather than truncating, and only that rail's does.
-   Its two facts are a skill id and a whole clause about what will be observed - "Skill ·
-   pull-request · Pull request is opened and verified" is 51 characters, where a Persona's
-   runner and model is 25 - so a single clipped line lost the completion half entirely on
-   every row, which is half of the fact the sub-label exists to carry. Two lines, clamped,
-   so a long id still cannot push a row taller than its neighbours. */
-.wf-action-list-item .lib-rail-row-detail {
+/* The two-line sub-label, which a rail asks for with `detailLines={2}` rather than by
+   overriding this class from its own selector - see `LibraryRail.tsx`. The Actions rail is
+   the one that needs it: its sub-label is a skill id AND a whole clause about what will be
+   observed, so a single clipped line lost the completion half on every row. Clamped, so a
+   long id still cannot push one row taller than its neighbours. */
+.lib-rail-row-detail.is-two-line {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
@@ -13008,7 +13007,6 @@ button.lib-chip:focus-visible {
   min-width: 0;
 }
 .persona-list-name > span,
-.wf-action-list-name > span,
 .wf-command-list-name > span {
   min-width: 0;
 }
@@ -13094,7 +13092,6 @@ button.lib-chip:focus-visible {
   gap: 18px;
 }
 .persona-actions,
-.wf-action-actions,
 .wf-command-actions {
   display: flex;
   align-items: center;

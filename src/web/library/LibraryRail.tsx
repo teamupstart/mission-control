@@ -61,6 +61,7 @@ export function LibraryRailRow({
   className,
   name,
   detail,
+  detailLines = 1,
   tags = [],
   selected,
   tooltip,
@@ -81,6 +82,22 @@ export function LibraryRailRow({
    * read.
    */
   detail: string;
+  /**
+   * How many lines the sub-label may take before it is clipped. One by default.
+   *
+   * A prop rather than each rail reaching in and restyling `.lib-rail-row-detail` from its
+   * own selector, which is the fork this file's header forbids: an override written as
+   * `.wf-action-list-item .lib-rail-row-detail` outranks any rule the primitive later grows,
+   * so the primitive would silently stop reaching one of its own rows. Here the two arms
+   * are side by side and a third would have to be decided here too.
+   *
+   * Two is what the Actions rail needs: `Skill · pull-request · Pull request is opened and
+   * verified` is 51 characters against a Persona's 25, so one clipped line lost the
+   * completion half of the contract on every row - half of the fact the sub-label exists to
+   * carry. It stays CLAMPED at two, so a long skill id cannot push one row taller than its
+   * neighbours.
+   */
+  detailLines?: 1 | 2;
   tags?: readonly LibraryRailTag[];
   selected: boolean;
   tooltip: string;
@@ -109,7 +126,11 @@ export function LibraryRailRow({
             </em>
           ))}
         </span>
-        <small className="lib-rail-row-detail mono">{detail}</small>
+        <small
+          className={`lib-rail-row-detail mono${detailLines === 2 ? " is-two-line" : ""}`}
+        >
+          {detail}
+        </small>
       </button>
     </Tooltip>
   );

@@ -21,9 +21,12 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * through `/inject`, Mission Control through the retro delivery - so the separation is
  * proven on turns the daemon actually attributed rather than on fixtures.
  *
- * Selection is by role, label, placeholder and visible text throughout. A turn is
- * addressable because both renderings draw one as an `article`, and a rail row because it
- * is a button named by the message it indexes.
+ * Every lookup here is `getByRole` or `getByPlaceholder` - no class, no attribute, and no
+ * reading of body text. Two things make that possible. A rail row is a button whose
+ * accessible name IS the message it indexes, so it can be named directly. A transcript
+ * turn is an `article` named for whoever typed it, in both renderings, so turns are
+ * addressed by author and then by position - and position is something this spec controls,
+ * because it sends known messages in a known order.
  *
  * No model tokens: `MISSION_CLAUDE_BIN` points at the fake throughout, and every turn
  * here is either typed into the composer or delivered by the daemon.
@@ -49,6 +52,15 @@ const CARD_TITLE = /exercise the yours rail/i;
 /** What is delivered on the operator's behalf - the turns that must NOT read as theirs. */
 const FOREMAN_SAYS = "Continue. You have approval to run the build.";
 const WORKFLOW_SAYS = "Repair the failing stage and report back.";
+
+/**
+ * How many prose replies the agent has written by the end of the setup.
+ *
+ * One for the dispatch prompt and one for each of the three messages typed after it. It
+ * is a count rather than a search for any one of them because a turn names its author,
+ * not its contents - which is what keeps every lookup here to a role and a name.
+ */
+const AGENT_REPLIES = 4;
 
 /** The bylines the rail draws for the three non-human origins. */
 const FOREMAN = "foreman";
@@ -150,10 +162,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill(DISPATCH);
-  await dialog
-    .getByRole("combobox")
-    .filter({ hasText: "finish without a Workflow" })
-    .selectOption("__none");
+  await dialog.getByRole("combobox", { name: "After work" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 }
@@ -175,12 +184,13 @@ async function conversationWithMessages(
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
 
-  for (const text of [FIRST, SECOND, THIRD]) {
+  for (const [i, text] of [FIRST, SECOND, THIRD].entries()) {
     await reply.fill(text);
     await reply.press("Enter");
-    // The echo is written after the turn lands, so its arrival means the transcript
-    // update carrying the operator's own message has already reached the browser.
-    await expect(turn(card, `Mock reply to: ${text}`)).toBeVisible();
+    // Wait on the operator's own turn ARRIVING rather than on the echo quoting it back.
+    // Counting is what makes this a role-only wait: the turns are named for their author,
+    // so "the dispatch prompt plus the ones sent so far" is a number the spec knows.
+    await expect(turnsBy(card, "you")).toHaveCount(i + 2);
   }
   return card;
 }
@@ -190,7 +200,7 @@ function rail(card: ReturnType<Page["locator"]>): ReturnType<Page["locator"]> {
   return card.getByRole("region", { name: "Conversation rail" });
 }
 
-/** One rail row, by the message it indexes. */
+/** One rail row, by the accessible name it takes from the message it indexes. */
 function row(
   card: ReturnType<Page["locator"]>,
   text: string,
@@ -199,17 +209,39 @@ function row(
 }
 
 /**
- * The transcript turn holding a message.
+ * Every rail row, in the order the rail draws them.
  *
- * Both renderings draw a turn as an `article`, so this addresses the turn itself rather
- * than a span inside it. `.first()` because the agent's echo quotes the message back and
- * so matches too - the operator's own turn is always the earlier of the two.
+ * No filter: at rail widths the disclosure caret is `display: none` and so is out of the
+ * accessibility tree, which leaves the rows as the only buttons in the column.
  */
-function turn(
+function rows(card: ReturnType<Page["locator"]>): ReturnType<Page["locator"]> {
+  return rail(card).getByRole("button");
+}
+
+/**
+ * The transcript turns by a given author, in conversation order.
+ *
+ * Both renderings draw a turn as an `article` named for whoever typed it, so a turn is
+ * addressable by role and accessible name alone - no class, no attribute, and no reading
+ * of the message body. Which of an author's turns is wanted is then a position, and
+ * position is what this spec controls: it sends known messages in a known order.
+ */
+function turnsBy(
   card: ReturnType<Page["locator"]>,
-  text: string,
+  who: string,
 ): ReturnType<Page["locator"]> {
-  return card.getByRole("article").filter({ hasText: text }).first();
+  return card.getByRole("article", { name: who, exact: true });
+}
+
+/** The operator's messages, indexed the way they were sent. */
+const YOURS = { DISPATCH: 0, FIRST: 1, SECOND: 2, THIRD: 3 } as const;
+
+/** One of the operator's own turns, by the order it was sent in. */
+function yourTurn(
+  card: ReturnType<Page["locator"]>,
+  index: (typeof YOURS)[keyof typeof YOURS],
+): ReturnType<Page["locator"]> {
+  return turnsBy(card, "you").nth(index);
 }
 
 /** The colour a rail row draws its message in, which is what "dimmed" means on screen. */
@@ -226,9 +258,9 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({
 
   const target = await session(daemon);
   await delivers(daemon, target, "foreman", FOREMAN_SAYS);
-  await expect(turn(card, FOREMAN_SAYS)).toBeVisible();
+  await expect(turnsBy(card, FOREMAN)).toBeVisible();
   await delivers(daemon, target, "workflow", WORKFLOW_SAYS);
-  await expect(turn(card, WORKFLOW_SAYS)).toBeVisible();
+  await expect(turnsBy(card, WORKFLOW)).toBeVisible();
   await missionControlDelivers(daemon, target);
 
   const yours = rail(card).getByRole("tab", { name: "Yours" });
@@ -265,12 +297,10 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({
   // And the delivered turns sit BELOW the operator's own, whatever order they arrived in.
   // All three were delivered after all four were typed, but it is the grouping that puts
   // them last rather than the clock.
-  const rows = rail(card)
-    .getByRole("button")
-    .filter({ hasText: /exercise|Investigate|Do not run|Re-file|Continue|Repair|mission control/ });
-  await expect(rows).toHaveCount(7);
+  const ordered = rows(card);
+  await expect(ordered).toHaveCount(7);
   for (const [i, byline] of [FOREMAN, WORKFLOW, MISSION_CONTROL].entries()) {
-    await expect(rows.nth(4 + i)).toContainText(byline);
+    await expect(ordered.nth(4 + i)).toHaveAccessibleName(new RegExp(byline));
   }
 
   // Dimmed, and provably so rather than by inspection: a delivered row draws its message
@@ -289,8 +319,10 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({
   await missionRow.scrollIntoViewIfNeeded();
   await shoot(dashboard, card, "01-yours-tab");
 
-  // An index hides nothing: the agent's replies are still in the transcript beside it.
-  await expect(turn(card, `Mock reply to: ${FIRST}`)).toBeVisible();
+  // An index hides nothing: the agent's replies are all still in the transcript beside it,
+  // one for every turn it was sent - the three delivered on the operator's behalf
+  // included, because the agent answers those exactly as it answers a typed one.
+  await expect(turnsBy(card, "claude")).toHaveCount(AGENT_REPLIES + 3);
 });
 
 test("clicking a row moves the transcript to that turn and flashes it", async ({
@@ -303,7 +335,7 @@ test("clicking a row moves the transcript to that turn and flashes it", async ({
   // The log follows its tail, so the FIRST message is scrolled out of sight by the time
   // three exchanges have landed. That is the state this feature exists to rescue, and
   // asserting it first is what makes the jump below mean something.
-  const firstTurn = turn(card, FIRST);
+  const firstTurn = yourTurn(card, YOURS.FIRST);
   await expect(firstTurn).not.toBeInViewport();
   await expect(firstTurn).not.toHaveClass(/is-flashed/);
 
@@ -314,7 +346,8 @@ test("clicking a row moves the transcript to that turn and flashes it", async ({
   // difference between indexing and filtering.
   await expect(firstTurn).toBeInViewport();
   await expect(firstTurn).toHaveClass(/is-flashed/);
-  await expect(turn(card, `Mock reply to: ${FIRST}`)).toBeVisible();
+  // The context around it survived the jump - that is the whole point of an index.
+  await expect(turnsBy(card, "claude").first()).toBeVisible();
 
   await shoot(dashboard, card, "02-jumped-to-turn");
 
@@ -329,7 +362,7 @@ test("clicking a row moves the transcript to that turn and flashes it", async ({
   await expect(row(card, FIRST)).toHaveAttribute("aria-current", "true");
 
   // And a second row moves it again, rather than the first click being a one-off.
-  const thirdTurn = turn(card, THIRD);
+  const thirdTurn = yourTurn(card, YOURS.THIRD);
   await row(card, THIRD).click();
   await expect(thirdTurn).toBeInViewport();
   await expect(thirdTurn).toHaveClass(/is-flashed/);
@@ -355,13 +388,11 @@ test("the jump works in the terminal rendering too", async ({ dashboard, daemon 
   for (const n of [1, 2, 3, 4]) {
     await reply.fill(`Filler turn ${n} to push the log past its height`);
     await reply.press("Enter");
-    await expect(
-      turn(card, `Mock reply to: Filler turn ${n} to push the log past its height`),
-    ).toBeVisible();
+    await expect(turnsBy(card, "you")).toHaveCount(4 + n);
   }
 
   await rail(card).getByRole("tab", { name: "Yours" }).click();
-  const firstTurn = turn(card, FIRST);
+  const firstTurn = yourTurn(card, YOURS.FIRST);
   await expect(firstTurn).not.toBeInViewport();
 
   await row(card, FIRST).click();
@@ -443,7 +474,7 @@ test("find's You scope and the Yours tab agree about whose message is whose", as
   // role alone, so its "You" pill returned rows whose own byline said foreman.
   const card = await conversationWithMessages(dashboard, daemon);
   await delivers(daemon, await session(daemon), "foreman", FOREMAN_SAYS);
-  await expect(turn(card, FOREMAN_SAYS)).toBeVisible();
+  await expect(turnsBy(card, FOREMAN)).toBeVisible();
 
   await card.getByRole("heading", { name: CARD_TITLE }).click();
   await dashboard.keyboard.press("Meta+f");

@@ -1428,8 +1428,14 @@ function Turn({
     // reader - or a test - can address "the turn holding this message" without reaching
     // for a class. `data-turn-id` is what the rail's jump effect queries, so a click on a
     // row lands on the turn itself rather than on the nearest thing carrying an id.
+    //
+    // Named by its author, which is what the ARIA feed pattern asks of an article in a
+    // stream of them: unnamed, every turn announces as a bare "article" and a reader
+    // moving between them is told nothing about which is which. The name is the byline
+    // already drawn below, so it repeats one word rather than the message.
     <article
       className={`turn turn-${m.origin ?? m.role}${flashed ? " is-flashed" : ""}`}
+      aria-label={who}
       data-turn-id={m.id}
     >
       {/* Not searched: a byline is chrome, not conversation. Were it included,
@@ -1562,7 +1568,11 @@ function TerminalTurn({
   // readers most of the time.
   if (m.role === "user") {
     return (
-      <article className={`pty-entry pty-user${flashed ? " is-flashed" : ""}`} data-turn-id={m.id}>
+      <article
+        className={`pty-entry pty-user${flashed ? " is-flashed" : ""}`}
+        aria-label={who}
+        data-turn-id={m.id}
+      >
         <p className="pty-commandline">
           {/* A shell host is one token, so a two-word author becomes one: "mission
               control" is `mission-control@mission`, the same name the titlebar uses. */}
@@ -1595,7 +1605,11 @@ function TerminalTurn({
   }
   const highlight = textHits.length > 0;
   return (
-    <article className={`pty-entry pty-agent${flashed ? " is-flashed" : ""}`} data-turn-id={m.id}>
+    <article
+      className={`pty-entry pty-agent${flashed ? " is-flashed" : ""}`}
+      aria-label={who}
+      data-turn-id={m.id}
+    >
       <header className="pty-speaker">
         {who} / stdout
         <ConversationTimestamp at={m.ts} className="pty-time" />

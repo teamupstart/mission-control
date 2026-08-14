@@ -22,6 +22,7 @@
  * written before archives declared a kind is.
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -245,15 +246,36 @@ test("the published job keeps the answer a replay must return", () => {
   assert.equal(job.relativePath, `${PRODUCER}/3b7d9c11-5a44-4b2c-8e01-2d4f6a8b0c11`);
 });
 
-test("the disposable index is empty, and reopening the database is a no-op", () => {
+test("the disposable index is empty rather than copied", () => {
   const count = db.prepare(`SELECT COUNT(*) AS n FROM archives`).get() as unknown as { n: number };
   assert.equal(count.n, 0, "the index is dropped and rebuilt from disk, never copied");
+});
 
+test("a second open of the migrated database migrates again without damage", () => {
   // Idempotency, which is what "upgrading databases must keep opening safely" means in
-  // practice: the migration runs on every open, and the second one must find nothing to do
-  // rather than throwing on a table it already dropped.
-  const second = new DatabaseSync(join(home, "harness.db"));
-  second.close();
-  const jobs = db.prepare(`SELECT COUNT(*) AS n FROM archive_capture_jobs`).get() as unknown as { n: number };
-  assert.equal(jobs.n, 3);
+  // practice: `migrate` runs on EVERY open, so the second one has to find nothing to do
+  // rather than throw on a table it already dropped or duplicate the rows it already
+  // copied. A child process is what actually proves it - `openDb` caches its handle, so a
+  // second call in this process would return the first connection and re-run nothing.
+  const stdout = execFileSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "-e",
+      `const { openDb } = await import("./src/server/db.ts");
+       const d = openDb();
+       const jobs = d.prepare("SELECT COUNT(*) AS n FROM archive_capture_jobs").get();
+       const kinds = d.prepare("SELECT DISTINCT kind AS k FROM archive_capture_jobs").all();
+       console.log(JSON.stringify({ jobs: jobs.n, kinds: kinds.map((row) => row.k) }));`,
+    ],
+    {
+      cwd: new URL("..", import.meta.url).pathname,
+      env: { ...process.env, MISSION_HOME: home, HARNESS_HOME: home, FLEET_HOME: undefined },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  assert.deepEqual(JSON.parse(stdout.trim()), { jobs: 3, kinds: ["scout"] });
 });

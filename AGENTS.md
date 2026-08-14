@@ -45,12 +45,18 @@ therefore isolated anyway, instead of quietly resolving the operator's
 `DELETE FROM app_config` on every run. `npm test` and `npm run test:electron` already carry
 it; a hand-typed command has to say it.
 
-Without it, a file that sets its own disposable `MISSION_HOME` above its imports still runs
-exactly as it always has - that is the pattern most of the suite uses and it is fully
-supported. What breaks is the file that sets nothing, or sets something unsafe: `openDb`
-refuses a state home it cannot resolve, one that is not disposable, or one that is missing
-altogether, rather than falling back to the operator's. That refusal is the designed outcome,
-not a bug to work around.
+Without it, `openDb` refuses every open, including a file that sets a perfectly good temp
+`MISSION_HOME` of its own. That is not caution for its own sake. `MISSION_HOME` is a
+supported setting that may name anywhere, the temp dir included, so an explicit path under
+the temp dir describes a fixture home and an operator's live state dir equally well - and the
+only thing that tells them apart is reading that setting before the preload clears it. A
+worker that skipped the preload never read it, so it is refused rather than guessed at. Child
+processes a test spawns inherit the capture and keep working.
+
+Set your home the way the suite does, in the file body above the imports, rather than through
+the environment: a value arriving through the environment was there before the preload ran,
+which is exactly what an operator's configured state dir looks like, and it is recorded as
+one.
 
 The preload seeds `HARNESS_HOME` and clears any inherited `MISSION_HOME` and `FLEET_HOME`.
 That is a precedence decision, not a preference for the old name: `envVar` reads `MISSION_`

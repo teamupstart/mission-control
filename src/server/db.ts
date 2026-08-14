@@ -70,9 +70,32 @@ let db: DatabaseSync;
  * checked rather than trusted - it is a global, and a wrong shape must degrade to the
  * fallback below rather than throw somewhere unhelpful.
  */
-const capturedTestState = (globalThis as Record<string, unknown>)["__missionControlTestState"] as
-  | { home?: unknown; tempRoots?: unknown; inheritedStateHomes?: unknown }
-  | undefined;
+type CapturedTestState = { home?: unknown; tempRoots?: unknown; inheritedStateHomes?: unknown };
+
+/**
+ * The capture, from the frozen property when this process ran the preload itself, and from
+ * the environment when it is a CHILD of a process that did.
+ *
+ * The second is not a weaker version of the first, it answers a different need. `globalThis`
+ * does not survive a spawn, and a good number of test files spawn a child with
+ * `...process.env` to drive the daemon from the outside; those children are test workers -
+ * they inherit `NODE_TEST_CONTEXT` - with no preload of their own. Inheriting the capture is
+ * what lets them carry the same denylist instead of starting blind.
+ */
+function readCapturedTestState(): CapturedTestState | undefined {
+  const marked = (globalThis as Record<string, unknown>)["__missionControlTestState"];
+  if (marked && typeof marked === "object") return marked as CapturedTestState;
+  const inherited = process.env.MISSION_TEST_STATE;
+  if (!inherited) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(inherited);
+    return parsed && typeof parsed === "object" ? (parsed as CapturedTestState) : undefined;
+  } catch {
+    return undefined; // unparseable is the same as absent, and absent fails closed below
+  }
+}
+
+const capturedTestState = readCapturedTestState();
 
 const CAPTURED_HOME = typeof capturedTestState?.home === "string" ? capturedTestState.home : undefined;
 
@@ -426,6 +449,20 @@ function assertTestStateIsolation(): void {
         `${subject} is outside ${testStateRoots().join(" and ")}, so it is not a disposable test state dir`,
       );
     }
+  }
+
+  // Last, because every check above says something more specific and should say it. This one
+  // is about what CANNOT be known: with no capture, "an explicit path under the temp dir" is
+  // the exact description of both a fixture home and an operator who runs the daemon with
+  // `MISSION_HOME` pointing there. The preload is what tells them apart, by reading that
+  // setting before clearing it - so a worker that never loaded it, and did not inherit a
+  // capture from one that did, is refused rather than guessed at.
+  if (!capturedTestState) {
+    throw refusal(
+      `${selected} looks disposable, but this worker loaded no test/setup-state.mjs and ` +
+        "inherited no capture from one that did, so a fixture dir and the state dir the " +
+        "daemon was configured with are indistinguishable here",
+    );
   }
 
   isolatedOverride = override;

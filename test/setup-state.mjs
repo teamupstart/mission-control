@@ -87,17 +87,31 @@ if (process.env.NODE_TEST_CONTEXT) {
     }
   }
 
+  const captured = {
+    root,
+    home: homedir(),
+    tempRoots: [...tempRoots],
+    inheritedStateHomes: [...inheritedStateHomes],
+  };
+
   Object.defineProperty(globalThis, "__missionControlTestState", {
-    value: Object.freeze({
-      root,
-      home: homedir(),
-      tempRoots: Object.freeze([...tempRoots]),
-      inheritedStateHomes: Object.freeze([...inheritedStateHomes]),
-    }),
+    value: Object.freeze({ ...captured, tempRoots: Object.freeze(captured.tempRoots), inheritedStateHomes: Object.freeze(captured.inheritedStateHomes) }),
     writable: false,
     configurable: false,
     enumerable: false,
   });
+
+  // The same capture again, in the environment, because `globalThis` does not survive a
+  // spawn and roughly seventeen test files spawn a child with `...process.env` to exercise
+  // the daemon from the outside. Those children inherit `NODE_TEST_CONTEXT` and so are test
+  // workers, but they load no preload of their own: without this they would have no captured
+  // roots at all, and `db.ts` refuses a worker it knows nothing about.
+  //
+  // This copy is deliberately NOT the tamper-proof one - the frozen property above is, for
+  // the process that owns it. What this buys is reach, not resistance: a child of an
+  // isolated worker inherits the same denylist, including the operator's own configured
+  // state dir, instead of starting blind.
+  process.env.MISSION_TEST_STATE = JSON.stringify(captured);
 
   // The LOWEST-priority alias, on purpose. `envVar("HOME")` reads MISSION_ then FLEET_ then
   // HARNESS_, so seeding MISSION_HOME here would outrank the 128 files that name

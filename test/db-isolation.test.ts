@@ -81,6 +81,11 @@ function runChild(
   delete env.MISSION_HOME;
   delete env.FLEET_HOME;
   delete env.HARNESS_HOME;
+  // Without `bootstrap`, the child must look like a worker that never met the preload at
+  // all - which means dropping the capture this worker's own preload put in the environment
+  // for its children. Inheriting it would quietly supply the very context the case is about
+  // not having.
+  if (!opts.bootstrap) delete env.MISSION_TEST_STATE;
   // A real runner must NOT inherit this: `node --test` reads it to decide whether it is
   // itself a spawned worker, so handing it to the parent stops it behaving as the runner.
   // Everywhere else the child IS the simulated worker, so it is stated explicitly.
@@ -138,9 +143,36 @@ test("a test that never redirected the state dir cannot open the real db", () =>
 });
 
 test("an override set the documented way opens exactly where it points", () => {
+  // The documented way is INSIDE the file, at the top, above the imports - which is after
+  // the preload has run. That distinction now carries weight: a home arriving through the
+  // environment was set before the preload and is therefore indistinguishable from an
+  // operator's configured state dir, so the preload records it as one. All 225 fixture files
+  // set theirs in the file body, which is the shape reproduced here.
   const state = join(home, "state");
-  assert.equal(openedStateDir(runChild(OPEN_AND_REPORT, { HARNESS_HOME: state })), state);
+  const res = runChild(
+    `process.env.HARNESS_HOME = ${JSON.stringify(state)};\n${OPEN_AND_REPORT}`,
+    {},
+    { bootstrap: true },
+  );
+  assert.equal(openedStateDir(res), state);
   assert.equal(existsSync(join(state, "harness.db")), true, "the db did not outlive the child");
+});
+
+test("a disposable-looking home is still refused when nothing captured the machine", () => {
+  // The honest limit of a path-shaped check. `<temp>/state` is what a fixture home looks
+  // like AND what an operator looks like who runs the daemon with `MISSION_HOME` pointing
+  // into the temp dir - explicit, resolving, under a temp root, below no home. Nothing about
+  // the path separates them; only reading that setting before it was cleared does, and that
+  // is the preload's job.
+  //
+  // So a worker that loaded no preload, and inherited no capture from one that did, is
+  // refused instead of guessed at. It is the one refusal here that is not about a path being
+  // wrong - it is about the process not knowing enough to say it is right.
+  const state = join(home, "uncaptured-state");
+  const res = runChild(OPEN_AND_REPORT, { HARNESS_HOME: state });
+  assert.notEqual(res.status, 0, "an unbootstrapped worker opened a state dir on faith");
+  assert.match(res.stderr, /loaded no test\/setup-state\.mjs/);
+  assert.equal(existsSync(join(state, "harness.db")), false);
 });
 
 test("an override that names the operator's own state dir is refused", () => {

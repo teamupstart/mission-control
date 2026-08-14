@@ -18,6 +18,15 @@ import { FileEditor } from "../components/FileEditor.tsx";
 import { Markdown } from "../components/Markdown.tsx";
 import { ModelField, ModelSuggestions } from "../components/ModelField.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import {
+  LibraryPropertyChip,
+  LibraryPropertyChips,
+} from "../library/LibraryPropertyChip.tsx";
+import {
+  LibraryWorkspaceHeader,
+  type LibraryMenuAction,
+  type LibraryPrimaryAction,
+} from "../library/LibraryWorkspaceHeader.tsx";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { personaMarkdownBlob, personaRequest } from "./personaApi.ts";
 
@@ -144,6 +153,186 @@ export function personaSourceLine(provenance: PersonaProvenance): string {
   const version = provenance.pluginVersion === null ? "" : ` (plugin ${provenance.pluginVersion})`;
   const when = new Date(provenance.importedAt).toLocaleString();
   return `Imported from ${provenance.sourcePath}${version} on ${when}`;
+}
+
+/**
+ * Where the routing this Persona will run with was decided.
+ *
+ * The read-only third chip, and the one that makes the other two legible: `provider` and
+ * `model` show a resolved value either way, so without this the row cannot distinguish
+ * "Codex, because this Persona says so" from "Codex, because that is what the app is set
+ * to". The block this replaced said it in a whole labelled box.
+ */
+export function personaRoutingSource(
+  draft: Pick<PersonaDraftSeed, "runner" | "model">,
+  model: ResolvedModel | undefined,
+): string {
+  if (draft.runner !== null || draft.model !== null) return "this Persona";
+  if (model === undefined) return "resolves after save";
+  if (model.source === "env") return "the daemon's environment";
+  return model.source === "config" ? "app settings" : "app defaults";
+}
+
+/**
+ * Everything the header does NOT promote, as data.
+ *
+ * A list rather than markup because that is the part worth pinning: which verbs a built-in,
+ * an archived row and an unsaved draft each offer is behaviour, and it survived four
+ * rearrangements of this header by being asserted about the buttons rather than about the
+ * row they sat in. Their labels are unchanged - a menu is where they live now, not what
+ * they are called.
+ */
+export function personaOverflowActions({
+  persona,
+  builtin,
+  archived,
+  canReimport,
+  copyLabel,
+  sourcePath,
+  onCopy,
+  onDownload,
+  onDuplicate,
+  onReimport,
+  onArchive,
+}: {
+  persona: boolean;
+  builtin: boolean;
+  archived: boolean;
+  canReimport: boolean;
+  /** `Copy Markdown`, or the confirmation it flips to for a few seconds after a copy. */
+  copyLabel: string;
+  sourcePath: string | null;
+  onCopy: () => void;
+  onDownload: () => void;
+  onDuplicate: () => void;
+  onReimport: () => void;
+  onArchive: () => void;
+}): LibraryMenuAction[] {
+  const readOnly = archived || builtin;
+  const actions: LibraryMenuAction[] = [
+    {
+      id: "copy",
+      label: copyLabel,
+      hint: "Copy this Persona's guidance markdown to the clipboard",
+      // The confirmation is the row's own label, so closing the menu would throw it away.
+      keepOpen: true,
+      onSelect: onCopy,
+    },
+    {
+      id: "download",
+      label: "Download .md",
+      hint: "Save this Persona's guidance to a markdown file",
+      onSelect: onDownload,
+    },
+  ];
+  // Not on a read-only Persona, where Duplicate is the promoted verb: offering it twice
+  // makes the more prominent one the one nobody can find again later.
+  if (persona && !readOnly) {
+    actions.push({
+      id: "duplicate",
+      label: "Duplicate",
+      hint: "Copy this Persona into a new one",
+      onSelect: onDuplicate,
+    });
+  }
+  if (canReimport) {
+    actions.push({
+      id: "reimport",
+      label: "Re-import from source",
+      hint: `Re-read ${sourcePath ?? "the source file"} and save it as a new revision`,
+      onSelect: onReimport,
+    });
+  }
+  if (persona && !archived && !builtin) {
+    actions.push({
+      id: "archive",
+      label: "Archive",
+      hint: "Archive this Persona - workflows already published keep their copy",
+      danger: true,
+      onSelect: onArchive,
+    });
+  }
+  return actions;
+}
+
+/**
+ * The provider `select`, lifted out of the metadata block into the chip's popover.
+ *
+ * Exported because a closed popover renders nothing, and `renderToStaticMarkup` cannot open
+ * one - so the rules worth asserting (every provider comes from the catalog, a stored id
+ * this build does not know stays listed and disabled rather than vanishing) would otherwise
+ * have no test at all. Same split, for the same reason, as `OpenInList` under `OpenInMenu`.
+ */
+export function PersonaProviderControl({
+  providers,
+  value,
+  disabled,
+  onChange,
+}: {
+  providers: readonly LlmProviderView[];
+  /** The STORED override, `null` for "inherit the app default" - not the resolved runner. */
+  value: string | null;
+  disabled: boolean;
+  onChange: (runner: string | null) => void;
+}): React.JSX.Element {
+  return (
+    <label className="persona-chip-field">
+      <span>Provider override</span>
+      <Tooltip label="Which model provider runs this Persona, overriding the app default">
+        <select
+          value={value ?? ""}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value || null)}
+        >
+          <option value="">App default</option>
+          {value !== null && knownRunner(value) === null && (
+            <option value={value} disabled>Unavailable: {value}</option>
+          )}
+          {providers.map((provider) => (
+            <option key={provider.id} value={provider.id}>{provider.label}</option>
+          ))}
+        </select>
+      </Tooltip>
+    </label>
+  );
+}
+
+/** The model picker and its catalog hint, in the model chip's popover. See above. */
+export function PersonaModelControl({
+  id,
+  provider,
+  value,
+  resolved,
+  runner,
+  disabled,
+  onCommit,
+}: {
+  id: string;
+  /** The provider whose catalog the picker lists, as a label a person reads. */
+  provider: string;
+  value: string;
+  resolved: ResolvedModel | undefined;
+  runner: LlmRunnerId;
+  disabled: boolean;
+  onCommit: (model: string) => void;
+}): React.JSX.Element {
+  return (
+    <div className="persona-model-field">
+      <ModelSuggestions providerLabel={provider} />
+      {/* `anchor` is null: this field is on the Library page, not in Settings, so there is
+          no settings anchor for search to jump to. */}
+      <ModelField
+        id={id}
+        anchor={null}
+        spec={WORKFLOW_PERSONA_MODEL_SPEC}
+        value={value}
+        resolved={resolved}
+        runner={runner}
+        disabled={disabled}
+        onCommit={onCommit}
+      />
+    </div>
+  );
 }
 
 export function PersonaEditorStatus({
@@ -433,54 +622,104 @@ export function PersonaEditor({
   }
 
   const readOnly = archived || builtin;
-  const saveHint = builtin
-    ? "Built-in Personas cannot be edited - use Duplicate"
-    : archived
-      ? "This Persona is archived and cannot be edited"
-      : exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes
+  const overLimit = exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes;
+  const duplicate = (): void => onDuplicate({ ...draft, name: `${draft.name} copy` });
+  /*
+   * ONE promoted verb, and on a read-only Persona it is Duplicate rather than a disabled
+   * Save. Save sat first here permanently greyed out on all four built-ins, which reads as
+   * "the thing you want, unavailable" - when the thing you want is two controls to its
+   * right and perfectly available. Nothing is hidden by this: Save is not offered because
+   * there is no revision this editor could write.
+   */
+  const primary: LibraryPrimaryAction = readOnly && persona
+    ? {
+      label: "Duplicate to edit",
+      hint: builtin
+        ? "Start an editable copy of this built-in Persona"
+        : "Start an editable copy of this archived Persona",
+      onClick: duplicate,
+    }
+    : {
+      label: saving ? "Saving…" : "Save",
+      hint: overLimit
         ? "Guidance is over the UTF-8 byte limit"
         : persona !== null && !dirty
           ? "No unsaved changes"
-          : "Save this Persona as a new revision";
+          : "Save this Persona as a new revision",
+      disabled: saving || overLimit || (persona !== null && !dirty),
+      onClick: () => void save(),
+    };
+  const overflow = personaOverflowActions({
+    persona: persona !== null,
+    builtin,
+    archived,
+    canReimport,
+    copyLabel: copy.copied ? COPY_FEEDBACK_LABEL : "Copy Markdown",
+    sourcePath: provenance?.sourcePath ?? null,
+    onCopy: copyMarkdown,
+    onDownload: downloadMarkdown,
+    onDuplicate: duplicate,
+    onReimport: () => {
+      if (persona) onReimport(persona);
+    },
+    onArchive: () => {
+      if (persona) void onArchive(persona);
+    },
+  });
   return (
     <article className={`persona-editor${archived ? " is-archived" : ""}${builtin ? " is-builtin" : ""}`}>
-      <header className="persona-editor-head">
-        <div>
-          <p className="workflow-eyebrow">
-            {persona ? (builtin ? "Built-in Persona" : `Revision ${loadedRevision}`) : "New Persona"}
-          </p>
-          <h3>{draft.name || "Untitled Persona"}</h3>
-          {provenance && <p className="persona-source mono">{personaSourceLine(provenance)}</p>}
-        </div>
-        <div className="persona-actions">
-          <Tooltip label={saveHint}>
-            <button className="btn" disabled={readOnly || saving || exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes || (persona !== null && !dirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
-          </Tooltip>
-          <Tooltip label="Copy this Persona's guidance markdown to the clipboard">
-            <button className="btn btn-ghost" onClick={copyMarkdown}>{copy.copied ? COPY_FEEDBACK_LABEL : "Copy Markdown"}</button>
-          </Tooltip>
-          <Tooltip label="Save this Persona's guidance to a markdown file">
-            <button className="btn btn-ghost" onClick={downloadMarkdown}>Download .md</button>
-          </Tooltip>
-          {persona && (
-            <Tooltip label={builtin ? "Start an editable copy of this built-in Persona" : "Copy this Persona into a new one"}>
-              <button className="btn btn-ghost" onClick={() => onDuplicate({ ...draft, name: `${draft.name} copy` })}>Duplicate</button>
-            </Tooltip>
-          )}
-          {canReimport && persona && provenance && (
-            <Tooltip label={`Re-read ${provenance.sourcePath} and save it as a new revision`}>
-              <button className="btn btn-ghost" onClick={() => onReimport(persona)}>
-                Re-import from source
-              </button>
-            </Tooltip>
-          )}
-          {persona && !archived && !builtin && (
-            <Tooltip label="Archive this Persona - workflows already published keep their copy">
-              <button className="btn btn-danger" onClick={() => void onArchive(persona)}>Archive</button>
-            </Tooltip>
-          )}
-        </div>
-      </header>
+      <LibraryWorkspaceHeader
+        className="persona-editor-head"
+        // `persona-fields` still names exactly what it holds - the Persona's own scalar
+        // fields - now that provider and model have become chips. It is also what four
+        // Playwright specs reach the Name and Description inputs through, and those
+        // accessible names are unchanged.
+        titleClassName="persona-fields"
+        title={
+          <>
+            {/* The visible title IS the Name field now, rather than a heading printing the
+                same string a labelled input three rows below also held. The document still
+                needs a heading for that, so it keeps one that only a screen reader reads. */}
+            <h2 className="sr-only">{draft.name || "Untitled Persona"}</h2>
+            <div className="lib-work-name">
+              <label className="lib-work-name-field">
+                <span className="sr-only">Name</span>
+                <input
+                  value={draft.name}
+                  readOnly={readOnly}
+                  maxLength={100}
+                  placeholder="Untitled Persona"
+                  onChange={(event) => edit({ name: event.target.value })}
+                />
+              </label>
+              {builtin && <span className="lib-tag lib-tag-builtin">built-in</span>}
+            </div>
+          </>
+        }
+        subtitle={
+          <label className="lib-work-subtitle">
+            <span className="sr-only">Description</span>
+            <input
+              value={draft.description}
+              readOnly={readOnly}
+              maxLength={500}
+              placeholder="One line on what this reviewer judges"
+              onChange={(event) => edit({ description: event.target.value })}
+            />
+          </label>
+        }
+        meta={
+          <div className="lib-work-meta">
+            <p className="workflow-eyebrow">
+              {persona ? (builtin ? "Built-in Persona" : `Revision ${loadedRevision}`) : "New Persona"}
+            </p>
+            {provenance && <p className="persona-source mono">{personaSourceLine(provenance)}</p>}
+          </div>
+        }
+        primary={primary}
+        menuLabel="More Persona actions"
+        actions={overflow}
+      />
 
       <PersonaEditorStatus
         dirty={dirty}
@@ -495,63 +734,75 @@ export function PersonaEditor({
       />
       {error && <p className="persona-error" role="alert">{error}</p>}
 
-      <section className="persona-fields">
-        <label>
-          <span>Name</span>
-          <input value={draft.name} readOnly={readOnly} maxLength={100} onChange={(event) => edit({ name: event.target.value })} />
-        </label>
-        <label>
-          <span>Description</span>
-          <input value={draft.description} readOnly={readOnly} maxLength={500} onChange={(event) => edit({ description: event.target.value })} />
-        </label>
-        <label>
-          <span>Provider override</span>
-          <Tooltip label="Which model provider runs this Persona, overriding the app default">
-            <select
-              value={draft.runner ?? ""}
-              disabled={readOnly}
-              onChange={(event) => edit({ runner: event.target.value || null, model: null })}
-            >
-            <option value="">App default</option>
-            {draft.runner !== null && selectedRunner === null && (
-              <option value={draft.runner} disabled>Unavailable: {draft.runner}</option>
-            )}
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>{provider.label}</option>
-              ))}
-            </select>
-          </Tooltip>
-        </label>
-        <div className="persona-effective" aria-label="Effective Persona model">
-          <span>{draft.runner || draft.model ? "Effective after overrides" : "Effective from app defaults"}</span>
-          <strong>{effectiveRunner ? providerLabel(providers, effectiveRunner) : "App default after save"}</strong>
-          <code>{effectiveModel?.id ?? "resolves after save"}</code>
-          {persona?.execution.runner.unknown && <small>Unknown stored provider “{persona.execution.runner.unknown}” fell back.</small>}
-        </div>
-        <div className="persona-model-field">
-          <ModelSuggestions providerLabel={providerLabel(providers, runnerForControls)} />
-          {/* `anchor` is null: this field is on the Workflows page, not in Settings, so
-              there is no settings anchor for search to jump to. */}
-          <ModelField
+      <LibraryPropertyChips>
+        <LibraryPropertyChip
+          name="provider"
+          value={effectiveRunner ? providerLabel(providers, effectiveRunner) : "App default after save"}
+          state={draft.runner === null ? "inherited" : "overridden"}
+          tooltip={draft.runner === null
+            ? "Inherited from the app default provider - open to override it for this Persona"
+            : "This Persona overrides the app default provider"}
+          controlLabel="Provider override"
+        >
+          <PersonaProviderControl
+            providers={providers}
+            value={draft.runner}
+            disabled={readOnly}
+            onChange={(runner) => edit({ runner, model: null })}
+          />
+        </LibraryPropertyChip>
+        <LibraryPropertyChip
+          name="model"
+          value={effectiveModel?.id ?? "resolves after save"}
+          mono
+          state={draft.model === null ? "inherited" : "overridden"}
+          tooltip={draft.model === null
+            ? "Inherited from the app default model - open to override it for this Persona"
+            : "This Persona overrides the app default model"}
+          controlLabel="Model override"
+        >
+          <PersonaModelControl
             id={`persona-model-${persona?.id ?? "new"}`}
-            anchor={null}
-            spec={WORKFLOW_PERSONA_MODEL_SPEC}
+            provider={providerLabel(providers, runnerForControls)}
             value={draft.model ?? ""}
             resolved={effectiveModel}
             runner={runnerForControls}
             disabled={readOnly}
             onCommit={(model) => edit({ model: model || null })}
           />
-        </div>
-      </section>
+        </LibraryPropertyChip>
+        <LibraryPropertyChip
+          name="source"
+          value={personaRoutingSource(draft, effectiveModel)}
+          tooltip="Where the provider and model above were decided"
+        />
+        <LibraryPropertyChip
+          name="utf-8 bytes"
+          value={`${exactBytes.toLocaleString()} / ${WORKFLOW_LIMITS.personaGuidanceBytes.toLocaleString()}`}
+          mono
+          align="end"
+          tone={overLimit ? "danger" : undefined}
+          tooltip={overLimit
+            ? "The guidance is over the byte limit and cannot be saved until it is shorter"
+            : "Exact UTF-8 size of the guidance markdown, against the limit a save is checked against"}
+        />
+      </LibraryPropertyChips>
+      {/* Kept on the face rather than inside the provider chip's popover: a stored provider
+          this build cannot resolve is something to act on, and a closed chip that reads
+          "Claude Code" would report the fallback as if it were the setting. */}
+      {persona?.execution.runner.unknown && (
+        <p className="lib-props-note">
+          Unknown stored provider “{persona.execution.runner.unknown}” fell back.
+        </p>
+      )}
 
       <section className="persona-guidance" aria-label="Persona guidance">
         <header className="file-toolbar persona-guidance-toolbar">
           <span className="file-path mono">{markdownPath(draft.name)}</span>
           <span className="file-language">Markdown</span>
-          <span className={`file-size${exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes ? " is-over-limit" : ""}`}>
-            {exactBytes.toLocaleString()} / {WORKFLOW_LIMITS.personaGuidanceBytes.toLocaleString()} UTF-8 bytes
-          </span>
+          {/* The byte count is a property of the asset, so it is a property chip above with
+              the other three. It was here and in no other file toolbar in the app, which is
+              what made this one 40px of chrome wider than it needed to be. */}
           <span className="file-toolbar-spacer" />
           <div className="file-mode" role="group" aria-label="Persona guidance view">
             <Tooltip label="Render the guidance as the reviewer will read it">
@@ -594,6 +845,17 @@ export function PersonaEditor({
           )}
         </div>
       </section>
+      {/*
+       * The "used by" slot. Phase 5 fills it - which workflows reference this Persona, and
+       * whether a run is gating on it right now - and until then nothing renders here.
+       *
+       * Deliberately not an empty strip with the label already in it. A person reading
+       * "used by" over blank space concludes the question was asked and the answer was
+       * "nothing", and for a Persona that is currently blocking a review that is the worst
+       * of the three things this screen could say. The reference is not derivable in the
+       * browser (a persona id lives only inside a workflow graph, which the SSE snapshot
+       * does not carry), so a half-answer here would be a guess, not a partial.
+       */}
     </article>
   );
 }

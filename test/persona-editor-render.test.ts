@@ -8,26 +8,30 @@ import { EditorState } from "@codemirror/state";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import type { PersonaView } from "../src/shared/workflow.ts";
 import type { LlmProviderView } from "../src/shared/types.ts";
-import type { LlmState } from "../src/web/useLlm.ts";
 import { WorkflowLibrary } from "../src/web/workflows/WorkflowLibrary.tsx";
 import { ExecutionPage } from "../src/web/workflows/ExecutionPage.tsx";
 import { WorkflowRuns } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   PersonaLibrary,
   driftTag,
+  groupPersonas,
   importMayReplaceEditor,
   readPersonaImport,
 } from "../src/web/workflows/PersonaLibrary.tsx";
 import {
   PersonaEditor,
   PersonaEditorStatus,
+  PersonaProviderControl,
   isPersonaSaveShortcut,
   personaLineSeparator,
+  personaOverflowActions,
+  personaRoutingSource,
   personaSourceLine,
   projectPersonaDraftExecution,
   personaUpdatePatch,
   reconcilePersonaSave,
 } from "../src/web/workflows/PersonaEditor.tsx";
+import { personaRoutingLabel } from "../src/web/library/library-model.ts";
 import { applyExactEditorChanges } from "../src/web/components/FileEditor.tsx";
 import {
   deriveImportedPersonaName,
@@ -73,14 +77,6 @@ const DEFAULTS = {
     codex: { id: "persona-env-model", source: "env" },
   },
 } as const;
-const LLM_STATE: LlmState = {
-  config: null,
-  status: null,
-  personaDefaults: DEFAULTS,
-  update: async () => {},
-  error: null,
-};
-
 const callbacks = {
   providers: PROVIDERS,
   defaults: DEFAULTS,
@@ -94,6 +90,41 @@ const callbacks = {
 
 function text(html: string): string {
   return html.replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&amp;/g, "&");
+}
+
+/**
+ * The classes on the property chip carrying `key`.
+ *
+ * The chip's STATE is the assertion worth making about it - quiet when the value is
+ * inherited, solid when this Persona overrides it - and it lives in the class rather than
+ * in any text, because the whole point is that you read it without opening anything.
+ */
+function chipClass(html: string, key: string): string {
+  const at = html.indexOf(`<span class="lib-chip-k">${key}</span>`);
+  assert.ok(at > 0, `no ${key} chip on this editor`);
+  const start = html.lastIndexOf('class="lib-chip', at) + 'class="'.length;
+  return html.slice(start, html.indexOf('"', start));
+}
+
+const OVERFLOW = {
+  copyLabel: "Copy Markdown",
+  sourcePath: "/plugins/agent-team/references/roles/reviewer.md",
+  onCopy: () => {},
+  onDownload: () => {},
+  onDuplicate: () => {},
+  onReimport: () => {},
+  onArchive: () => {},
+};
+
+function overflowLabels(over: Record<string, unknown> = {}): string[] {
+  return personaOverflowActions({
+    persona: true,
+    builtin: false,
+    archived: false,
+    canReimport: false,
+    ...OVERFLOW,
+    ...over,
+  }).map((action) => action.label);
 }
 
 test("the rail's first row is the way out, above its own heading", () => {
@@ -220,10 +251,108 @@ test("a selected Persona opens in the shared editor and offers preview as a sepa
   assert.match(html, /aria-pressed="false"[^>]*>Preview/);
   assert.match(html, /aria-pressed="true"[^>]*>Editor/);
   assert.doesNotMatch(html, /<article class="persona-markdown/, "preview is not rendered beside the editor");
-  assert.match(html, /Copy Markdown/);
-  assert.match(html, /Download \.md/);
-  assert.match(html, /Duplicate/);
-  assert.match(html, /Archive/);
+  // ONE promoted verb. The other four are behind the menu, which is shut - asserted as
+  // absent BUTTONS rather than absent text, because the trigger's tooltip names them all
+  // and matching that would pass whether they were reachable or not.
+  assert.match(html, />Save<\/button>/);
+  assert.match(html, /aria-label="More Persona actions"/);
+  for (const hidden of [/>Copy Markdown<\/button>/, />Download \.md<\/button>/, />Duplicate<\/button>/, />Archive<\/button>/]) {
+    assert.doesNotMatch(html, hidden, "a menu action is on the header rather than in the menu");
+  }
+  assert.deepEqual(overflowLabels(), ["Copy Markdown", "Download .md", "Duplicate", "Archive"]);
+});
+
+test("the menu holds exactly the verbs this Persona can take, under their own names", () => {
+  // Their placement changed and nothing else did, so this is asserted about the actions
+  // rather than the row: which verbs a built-in, an archived row and an unsaved draft each
+  // offer is behaviour, and it is the part a rearrangement can silently drop.
+  assert.deepEqual(
+    overflowLabels({ canReimport: true }),
+    ["Copy Markdown", "Download .md", "Duplicate", "Re-import from source", "Archive"],
+  );
+  // A read-only Persona promotes Duplicate, so the menu does not offer it a second time,
+  // and it has nothing to archive or re-import.
+  assert.deepEqual(overflowLabels({ builtin: true }), ["Copy Markdown", "Download .md"]);
+  assert.deepEqual(overflowLabels({ archived: true }), ["Copy Markdown", "Download .md"]);
+  // A draft that was never saved can be copied and downloaded, and is nothing else yet.
+  assert.deepEqual(overflowLabels({ persona: false }), ["Copy Markdown", "Download .md"]);
+  // Copy keeps the menu open: the confirmation IS the row's label, so closing on the click
+  // would take the only sign the control did anything.
+  const copy = personaOverflowActions({
+    persona: true,
+    builtin: false,
+    archived: false,
+    canReimport: false,
+    ...OVERFLOW,
+  }).find((action) => action.id === "copy");
+  assert.equal(copy?.keepOpen, true);
+  assert.equal(
+    personaOverflowActions({
+      persona: true,
+      builtin: false,
+      archived: false,
+      canReimport: false,
+      ...OVERFLOW,
+      copyLabel: "Copied",
+    })[0]?.label,
+    "Copied",
+  );
+});
+
+test("a property chip is quiet when it inherits and solid when this Persona overrides", () => {
+  const inherited = renderToStaticMarkup(createElement(PersonaEditor, { persona: PERSONA, ...callbacks }));
+  assert.equal(chipClass(inherited, "provider"), "lib-chip is-inherited");
+  assert.equal(chipClass(inherited, "model"), "lib-chip is-inherited");
+  // The read-only pair are readouts, not settings, and never claim to be either state.
+  assert.equal(chipClass(inherited, "source"), "lib-chip is-readonly");
+  assert.equal(chipClass(inherited, "utf-8 bytes"), "lib-chip is-readonly is-trailing");
+  assert.match(inherited, /<span class="lib-chip-v">app defaults<\/span>/);
+
+  const overridden = renderToStaticMarkup(createElement(PersonaEditor, {
+    persona: {
+      ...PERSONA,
+      runner: "codex" as const,
+      model: "gpt-explicit",
+      execution: {
+        runner: { id: "codex" as const, source: "config" as const, unknown: null },
+        model: { id: "gpt-explicit", source: "config" as const },
+      },
+    },
+    ...callbacks,
+  }));
+  assert.equal(chipClass(overridden, "provider"), "lib-chip is-overridden");
+  assert.equal(chipClass(overridden, "model"), "lib-chip is-overridden");
+  assert.match(overridden, /<span class="lib-chip-v">this Persona<\/span>/);
+
+  // Which is what the `source` chip is for: provider and model read as a resolved value
+  // either way, so without it the row cannot tell "Codex because this says so" from
+  // "Codex because that is what the app is set to".
+  const nothingOverridden = { runner: null, model: null };
+  assert.equal(personaRoutingSource(nothingOverridden, { id: "m", source: "default" }), "app defaults");
+  assert.equal(personaRoutingSource(nothingOverridden, { id: "m", source: "config" }), "app settings");
+  assert.equal(
+    personaRoutingSource(nothingOverridden, { id: "m", source: "env" }),
+    "the daemon's environment",
+  );
+  assert.equal(personaRoutingSource(nothingOverridden, undefined), "resolves after save");
+  assert.equal(personaRoutingSource({ runner: "codex", model: null }, undefined), "this Persona");
+});
+
+test("the byte count is a chip, and it still says when it is over the limit", () => {
+  const under = renderToStaticMarkup(createElement(PersonaEditor, { persona: PERSONA, ...callbacks }));
+  assert.match(under, /<span class="lib-chip-v mono">28 \/ 100,000<\/span>/);
+  assert.equal(chipClass(under, "utf-8 bytes"), "lib-chip is-readonly is-trailing");
+  // It left the file toolbar rather than being drawn in both places.
+  assert.doesNotMatch(under, /class="file-size/);
+
+  const over = renderToStaticMarkup(createElement(PersonaEditor, {
+    persona: { ...PERSONA, guidanceMarkdown: "a".repeat(WORKFLOW_LIMITS.personaGuidanceBytes + 1) },
+    ...callbacks,
+  }));
+  assert.equal(chipClass(over, "utf-8 bytes"), "lib-chip is-readonly is-danger is-trailing");
+  assert.match(over, /100,001 \/ 100,000/);
+  // And Save cannot be pressed while it is, exactly as before.
+  assert.match(over, /<button class="btn" disabled=""[^>]*>Save<\/button>/);
 });
 
 test("Persona provider labels come from the LLM provider catalog", () => {
@@ -236,9 +365,21 @@ test("Persona provider labels come from the LLM provider catalog", () => {
     ...callbacks,
     providers,
   })));
-  assert.match(html, /Batch Claude/);
-  assert.match(html, /Batch Codex/);
+  // The chip's face carries the RESOLVED provider, under the catalog's label for it.
+  assert.match(html, /<span class="lib-chip-v">Batch Claude<\/span>/);
   assert.doesNotMatch(html, /Claude Code/);
+  // Every other provider is one click away, in the control the chip opens. Rendered
+  // directly because a shut popover renders nothing and `renderToStaticMarkup` runs no
+  // effect, so there is no way to open the real one here.
+  const control = text(renderToStaticMarkup(createElement(PersonaProviderControl, {
+    providers,
+    value: null,
+    disabled: false,
+    onChange: () => {},
+  })));
+  assert.match(control, /Batch Claude/);
+  assert.match(control, /Batch Codex/);
+  assert.match(control, />App default</, "inheriting stays a choice you can go back to");
 });
 
 test("dirty, conflict, and archived states are explicit and actionable", () => {
@@ -280,9 +421,13 @@ test("a built-in Persona opens read-only, names why, and offers Duplicate instea
   assert.match(html, /Built-in Persona</, "the eyebrow reports provenance, not a revision");
   assert.doesNotMatch(html, /Revision 1/);
   assert.match(html, /readOnly=""/);
-  assert.match(html, />Duplicate<\/button>/);
+  assert.match(html, /class="lib-tag lib-tag-builtin">built-in</, "the title says so beside the name");
+  // The promoted verb is the one that does something. Save is not disabled here, it is not
+  // offered: it sat first in the row permanently greyed out on all four built-ins, which
+  // reads as "the thing you want, unavailable" when the thing you want is Duplicate.
+  assert.match(html, />Duplicate to edit<\/button>/);
+  assert.doesNotMatch(html, />Save<\/button>/);
   assert.doesNotMatch(html, />Archive<\/button>/);
-  assert.match(html, /disabled=""/, "Save is disabled: there is nothing this editor could save");
   assert.doesNotMatch(
     renderToStaticMarkup(createElement(PersonaEditor, { persona: PERSONA, ...callbacks })),
     /Built-in/,
@@ -290,17 +435,89 @@ test("a built-in Persona opens read-only, names why, and offers Duplicate instea
   );
 });
 
-test("the library flags built-ins in the list so their read-only editor is not a surprise", () => {
-  const html = renderToStaticMarkup(createElement(PersonaLibrary, {
-    personas: [PERSONA, { ...PERSONA, id: "b1", name: "Code Risk Reviewer", normalizedName: "code risk reviewer", builtin: true }],
+const SHIPPED: PersonaView = {
+  ...PERSONA,
+  id: "b1",
+  name: "Code Risk Reviewer",
+  normalizedName: "code risk reviewer",
+  builtin: true,
+};
+
+function rail(personas: PersonaView[], over: Record<string, unknown> = {}): string {
+  return renderToStaticMarkup(createElement(PersonaLibrary, {
+    personas,
     providers: PROVIDERS,
     defaults: null,
     isOverlayOpen: () => false,
     onLeave: () => {},
     onDirtyChange: () => {},
+    ...over,
   }));
-  assert.match(html, /class="persona-list-tag">Built-in</);
-  assert.equal(html.match(/persona-list-tag/g)?.length, 1, "only the built-in carries the tag");
+}
+
+function groupHead(label: string, count: number): RegExp {
+  return new RegExp(
+    `<h4 class="lib-rail-group"><span>${label}</span><span class="lib-rail-group-count">${count}</span></h4>`,
+  );
+}
+
+test("the rail separates what shipped with the build from what you wrote", () => {
+  // The fault: four shipped Personas in a flat list read as things you had written and
+  // forgotten. A tag on each row said otherwise in 9.5px; the head says it once, and also
+  // answers the question the tag never could - have I written any of these yet?
+  const html = rail([PERSONA, SHIPPED]);
+  assert.match(html, groupHead("Built-in", 1));
+  assert.match(html, groupHead("Yours", 1));
+  assert.doesNotMatch(html, /class="lib-rail-tag">Built-in</, "the head says it, so the row does not");
+
+  // Not merely present - the shipped row is UNDER the head that claims it, and Built-in
+  // leads, so the four rows a person did not write stop being the first thing they scan.
+  const order = ["Built-in", "Code Risk Reviewer", "Yours", "Code Quality"].map((needle) => {
+    const at = html.indexOf(needle);
+    assert.ok(at > 0, `${needle} is missing from the rail`);
+    return at;
+  });
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), "the rail's groups are out of order");
+});
+
+test("grouping is about where a row is drawn, never about which row wins", () => {
+  // A built-in shadowed by a same-named Persona of yours resolves to yours, and that
+  // decision belongs to `personasForDisplay` - which has already made it by the time these
+  // rows are split. The group a row lands in must not be a second opinion about it.
+  const shadowing: PersonaView = { ...PERSONA, id: "mine", name: "CODE RISK REVIEWER", normalizedName: "code risk reviewer" };
+  const html = rail([SHIPPED, shadowing]);
+  assert.equal(
+    html.match(/class="persona-list-item lib-rail-row/g)?.length,
+    1,
+    "the shadowed built-in still drew a row",
+  );
+  assert.match(html, groupHead("Yours", 1));
+  assert.doesNotMatch(html, groupHead("Built-in", 1));
+
+  assert.deepEqual(groupPersonas([SHIPPED, PERSONA]), { builtin: [SHIPPED], yours: [PERSONA] });
+  assert.deepEqual(groupPersonas([]), { builtin: [], yours: [] });
+});
+
+test("an empty Yours group says what to do about it, and only where that is true", () => {
+  const nothingYet = rail([SHIPPED]);
+  assert.match(nothingYet, groupHead("Yours", 0));
+  assert.match(nothingYet, /Duplicate a built-in to start from its standards/);
+
+  // Not under a search, where it would be a claim about the library rather than about the
+  // filter, and not with the list empty, where the line below already says it in the right
+  // words for the state.
+  assert.doesNotMatch(rail([]), /Duplicate a built-in to start from its standards/);
+  assert.match(rail([]), /No saved Personas yet/);
+});
+
+test("a rail row's sub-label is the runner and model, from the one helper that formats them", () => {
+  // The description sat here, and on the shipped four it is the title again in a longer
+  // sentence. What tells two reviewers apart is what they run as - and the palette row
+  // says the same thing about the same Persona, so both read it from the same place.
+  const html = rail([PERSONA]);
+  assert.equal(personaRoutingLabel(PERSONA), "claude · claude-sonnet-5");
+  assert.match(html, /<small class="lib-rail-row-detail mono">claude · claude-sonnet-5<\/small>/);
+  assert.doesNotMatch(html, /<small[^>]*>Review correctness</, "the description is not the sub-label");
 });
 
 const IMPORTED: PersonaView = {
@@ -327,12 +544,18 @@ test("an imported Persona names its source file, its plugin version, and when it
   // The full path, not a basename: two `reviewer.md` files under two plugins are the case this
   // has to tell apart, and it is what a re-import will read.
   assert.match(html, /Imported from \/plugins\/agent-team\/references\/roles\/reviewer\.md/);
-  assert.match(html, />Re-import from source</);
-  // A Persona with no source file offers neither.
+  // Still exactly one path, and still in a `p.persona-source` beside the revision rather
+  // than folded into it: the import spec reads the two out separately.
+  assert.match(html, /<p class="workflow-eyebrow">Revision 3<\/p>/);
+  assert.equal(html.match(/class="persona-source/g)?.length, 1);
+
+  // Re-import is now a menu row. It is offered to exactly the Personas it was offered to
+  // before - not to one with no source file, and not to a read-only one, because it writes.
+  assert.ok(overflowLabels({ canReimport: true }).includes("Re-import from source"));
+  assert.ok(!overflowLabels({ canReimport: false }).includes("Re-import from source"));
   const authored = text(renderToStaticMarkup(createElement(PersonaEditor, { persona: PERSONA, ...callbacks })));
   assert.doesNotMatch(authored, /Imported from/);
   assert.doesNotMatch(authored, /Re-import from source/);
-  // Nor does a source-bearing Persona that is read-only: re-import is a write.
   for (const readOnly of [{ ...IMPORTED, archivedAt: 100 }, { ...IMPORTED, builtin: true }]) {
     assert.doesNotMatch(
       text(renderToStaticMarkup(createElement(PersonaEditor, { persona: readOnly, ...callbacks }))),
@@ -417,22 +640,22 @@ test("the sidebar tags a drifted Persona beside the built-in tag, and only when 
   assert.equal(driftTag("changed"), "upstream changed");
   assert.equal(driftTag("missing"), "source missing");
 
-  const html = renderToStaticMarkup(createElement(PersonaLibrary, {
-    personas: [PERSONA, IMPORTED],
-    providers: PROVIDERS,
-    defaults: null,
-    upstream: new Map([[IMPORTED.id, "changed" as const]]),
-    isOverlayOpen: () => false,
-    onLeave: () => {},
-    onDirtyChange: () => {},
-  }));
-  assert.match(html, /class="persona-list-tag is-attention">upstream changed</);
-  assert.equal(html.match(/persona-list-tag/g)?.length, 1, "only the drifted row carries a tag");
-  // The import-by-path controls are present and distinct from the file picker beside them.
+  const html = rail([PERSONA, IMPORTED], { upstream: new Map([[IMPORTED.id, "changed" as const]]) });
+  assert.match(html, /class="lib-rail-tag is-attention">upstream changed</);
+  assert.equal(html.match(/lib-rail-tag/g)?.length, 1, "only the drifted row carries a tag");
+  // Import and the archived filter moved below the list, and every one of them still
+  // works: the rail footer is a relocation, not a reduction.
   assert.match(html, /placeholder="\/path\/to\/role\.md"/);
   assert.match(html, />Import from path</);
   assert.match(html, />Check upstream</);
   assert.match(html, />Import \.md</);
+  assert.match(html, /aria-pressed="false"[^>]*>Archived /);
+  const list = html.indexOf('class="persona-list"');
+  assert.ok(list > 0 && list < html.indexOf("persona-rail-foot"), "the footer must follow the list");
+  assert.ok(
+    html.indexOf('class="persona-search"') < list,
+    "the search box is the last thing above the list",
+  );
 });
 
 /**
@@ -474,8 +697,18 @@ test("an unknown stored provider is reported and survives an unrelated edit", ()
     },
   };
   const html = text(renderToStaticMarkup(createElement(PersonaEditor, { persona: unknown, ...callbacks })));
-  assert.match(html, /Unavailable: future-provider/);
+  // On the face, not inside the provider chip's popover: a shut chip reading "Claude Code"
+  // would report the fallback as though it were the setting.
   assert.match(html, /Unknown stored provider “future-provider” fell back/);
+  // And the id this build cannot resolve stays listed in the control, disabled, rather than
+  // silently vanishing from the picker that is supposed to show what is stored.
+  const control = text(renderToStaticMarkup(createElement(PersonaProviderControl, {
+    providers: PROVIDERS,
+    value: "future-provider",
+    disabled: false,
+    onChange: () => {},
+  })));
+  assert.match(control, /Unavailable: future-provider/);
   assert.deepEqual(
     personaUpdatePatch(unknown, {
       name: unknown.name,

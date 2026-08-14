@@ -33,8 +33,60 @@ npm run package
 Run one test file with the same loader as the full suite:
 
 ```sh
-node --test --import tsx test/session-contracts.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/session-contracts.test.ts
 ```
+
+`--import ./test/setup-state.mjs` is not optional decoration, and this is the one place that
+contract is written down - do not restate it in `docs/`. It gives each test worker its own
+`mission-test-state-*` directory in the temp dir before any import can resolve one, and
+removes it when the worker exits. A test file that never redirected `MISSION_HOME` is
+therefore isolated anyway, instead of quietly resolving the operator's
+`~/.mission-control/harness.db` - which is where a branch's config test once ran
+`DELETE FROM app_config` on every run. `npm test` and `npm run test:electron` already carry
+it; a hand-typed command has to say it.
+
+Without it, `openDb` refuses every open, including a file that sets a perfectly good temp
+`MISSION_HOME` of its own. That is not caution for its own sake. `MISSION_HOME` is a
+supported setting that may name anywhere, the temp dir included, so an explicit path under
+the temp dir describes a fixture home and an operator's live state dir equally well - and the
+only thing that tells them apart is reading that setting before the preload clears it. A
+worker that skipped the preload never read it, so it is refused rather than guessed at. Child
+processes a test spawns inherit the capture and keep working.
+
+Set your home the way the suite does, in the file body above the imports, rather than through
+the environment: a value arriving through the environment was there before the preload ran,
+which is exactly what an operator's configured state dir looks like, and it is recorded as
+one.
+
+**Where this stops.** `openDb` is not a sandbox. A test that spawns plain `node` and strips
+`NODE_TEST_CONTEXT`, `MISSION_TEST_STATE` and the inherited home has not disguised itself as
+something else - it has built the daemon's own launch, byte for byte, and no signal can refuse
+one without refusing the other. A test can also skip all of this and call
+`new DatabaseSync(...)` from `node:sqlite` directly, which never reaches `openDb`. Both are
+pinned in `test/db-isolation.test.ts` so the boundary is stated rather than assumed. What the
+guard closes is the accident - the missing preamble, the hoisted import, the override applied
+one line too late - which is what every incident behind this actually was. Spawn a child
+without scrubbing it and it inherits the worker's disposable home, which is why the suite's
+seventeen child-spawning files need nothing from you.
+
+The preload seeds `HARNESS_HOME` and clears any inherited `MISSION_HOME` and `FLEET_HOME`.
+That is a precedence decision, not a preference for the old name: `envVar` reads `MISSION_`
+then `FLEET_` then `HARNESS_`, so the last name in the chain is the only one a test file can
+override without ceremony - and around 130 files set `HARNESS_HOME` themselves to reach a
+hand-built fixture database. **`MISSION_HOME` is still the name to set everywhere else**, in
+a test, in a daemon, and in an operator's environment.
+
+A test that needs a particular database keeps seeding its own home above its imports, exactly
+as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test
+runner `openDb` opens only the `harness.db` named by the state home set *right now*, and only
+when that home resolves - through symlinks, not just as spelled - to somewhere inside the temp
+dir. A missing override, one applied after the path was already frozen, and one naming a real
+state dir - under any of its historical names, or wherever the daemon was configured to keep
+it - are refused before SQLite is touched at all. An override changed after a connection is
+already open is the one case where SQLite has necessarily been opened, by that first call; it
+is refused before the cached connection is handed back, so nothing is written through it under
+the new home. Outside the test runner the check returns immediately and the daemon opens the
+operator's state exactly as it always has.
 
 `--test-concurrency` is deliberately not in that command. It caps how many test *files* run
 at once, so naming a single file makes it inert, and carrying it here implied a single-file

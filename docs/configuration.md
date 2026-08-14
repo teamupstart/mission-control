@@ -172,6 +172,11 @@ deliberately does not fetch Chromium - that would tax every contributor for a su
 runs never touch - so run `npx playwright install chromium` once per machine. Without it the
 run fails with `browserType.launch: Executable doesn't exist`.
 
+Running a single test file has its own command, because the suite's state isolation rides on
+a `--import` preload that `npm test` supplies and a hand-typed `node --test` does not. The
+command and the contract behind it live in [AGENTS.md](../AGENTS.md#commands), which owns
+contributor execution mechanics; they are deliberately not restated here.
+
 `measure-inspector-prompt` prints the review prompt's byte size for the current source and
 for a pre-fix revision beside it, so a change to what the Inspector carries can be shown in
 bytes rather than asserted. It reads the older source out of git and never touches the

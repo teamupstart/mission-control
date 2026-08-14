@@ -83,8 +83,16 @@ export const LEASE_HOLDER = "mission-control";
  */
 export const LEASE_HOLDERS = [LEASE_HOLDER, "fleet-control", "ai-harness"];
 
-/** State dirs this app has used, newest first. See `stateDir` / `migrateStateDir`. */
-const STATE_DIRS = [".mission-control", ".fleet-control", ".ai-harness"];
+/**
+ * State dirs this app has used, newest first - the directory NAMES, relative to `homedir()`.
+ * See `stateDir` / `migrateStateDir`.
+ *
+ * Exported because `db.ts`'s test-runner refusal has to recognise the operator's real state
+ * dir under every name it has ever had, and a second hand-written copy of this list is a
+ * guard that silently stops covering the name added next. Append here on a rename; never
+ * remove, for the reason `LEASE_HOLDERS` gives.
+ */
+export const STATE_DIRS = [".mission-control", ".fleet-control", ".ai-harness"];
 
 /**
  * Where the daemon keeps its state (db, token, logs). `~/.mission-control` for a fresh

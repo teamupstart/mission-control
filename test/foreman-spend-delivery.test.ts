@@ -31,11 +31,21 @@ import type { LlmSpendReport } from "../src/shared/llm-spend.ts";
 // A single POST that logged its own failure would lose spend on the most ordinary event in
 // the system.
 
-// Set BEFORE the client is imported: `BASE_URL` is resolved at module load from
-// `envVar("PORT")`, which reads MISSION_/FLEET_/HARNESS_ prefixes. Getting this wrong would
-// not fail the test - it would quietly POST test rows into the REAL daemon's ledger on 7317.
-const PORT = 7391;
-process.env.MISSION_PORT = String(PORT);
+// The fake daemon's port, chosen by the KERNEL rather than written down here.
+//
+// A fixed port made this file fail for a reason that has nothing to do with what it tests:
+// this machine runs several checkouts of Mission Control, and a daemon belonging to another
+// one was already listening on the number chosen here, so `listen` threw EADDRINUSE and the
+// whole file reported as failed. Nothing about a hardcoded port is load-bearing - the client
+// is told where to look - so the collision was pure cost. An ephemeral port also means two
+// copies of this file can run at once, which a fixed one silently forbade.
+//
+// Assigned on the first listen and reused by every restart below, because `BASE_URL` is
+// resolved ONCE at module load from `envVar("PORT")` (MISSION_/FLEET_/HARNESS_ prefixes).
+// That is also why `start()` is awaited before the client is imported: getting the order
+// wrong would not fail the test, it would quietly POST test rows into the REAL daemon's
+// ledger on 7317.
+let port = 0;
 // Same reasoning for the spool: `stateDir()` honours MISSION_HOME, and without an override
 // these tests would write their outbox into the real install's state dir.
 const home = mkdtempSync(join(tmpdir(), "foreman-spend-"));
@@ -51,7 +61,7 @@ let delayedResponse: ServerResponse | null = null;
 let server: Server | null = null;
 
 function start(): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     server = createServer((req, res) => {
       let body = "";
       req.on("data", (c) => (body += c));
@@ -94,7 +104,20 @@ function start(): Promise<void> {
         res.writeHead(204).end();
       });
     });
-    server.listen(PORT, "127.0.0.1", () => resolve());
+    server.listen(port, "127.0.0.1", () => {
+      if (port === 0) {
+        const bound = server?.address();
+        // Refused rather than defaulted. An unset MISSION_PORT sends every request in this
+        // file to 7317, which is where a real daemon keeps a real spend ledger.
+        if (bound === null || bound === undefined || typeof bound === "string") {
+          reject(new Error("the fake daemon did not report a bound TCP port"));
+          return;
+        }
+        port = bound.port;
+        process.env.MISSION_PORT = String(port);
+      }
+      resolve();
+    });
   });
 }
 
@@ -274,7 +297,7 @@ function spawnReporter(role: string, runId: string): Promise<void> {
     process.execPath,
     ["--import", "tsx", "--input-type=module", "--eval", script],
     {
-      env: { ...process.env, MISSION_HOME: home, MISSION_PORT: String(PORT) },
+      env: { ...process.env, MISSION_HOME: home, MISSION_PORT: String(port) },
       stdio: ["ignore", "ignore", "pipe"],
     },
   );
@@ -301,7 +324,7 @@ function spawnAdopter(): Promise<void> {
     process.execPath,
     ["--import", "tsx", "--input-type=module", "--eval", script],
     {
-      env: { ...process.env, MISSION_HOME: home, MISSION_PORT: String(PORT) },
+      env: { ...process.env, MISSION_HOME: home, MISSION_PORT: String(port) },
       stdio: ["ignore", "ignore", "pipe"],
     },
   );

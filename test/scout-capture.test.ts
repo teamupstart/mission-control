@@ -135,16 +135,19 @@ test("a published manifest declares the kind its job was reserved with", async (
 });
 
 test("a kind with no planner is refused by name rather than published empty", async () => {
-  // The phase that introduced the discriminator deliberately left exactly one kind reachable
-  // from the write path. This is what makes that provable rather than incidental: a job
-  // carrying any other kind cannot reach a planner, so it cannot produce a bundle - a bundle
-  // with no plan behind it would be an empty archive claiming to preserve something.
+  // `ARCHIVE_KINDS` is the append-only vocabulary a manifest may DECLARE, and this build can
+  // read every member of it - a bundle from a newer Mission Control should be listed for what
+  // it is rather than refused over a name. Writing is the opposite question, and the planner
+  // registry is deliberately `Partial` so it can answer no. Both shipped kinds have planners
+  // now, so proving that still holds needs a kind from a build that does not exist yet, which
+  // is exactly the case the refusal is for: it must not publish an empty bundle claiming to
+  // preserve work it has no rule for.
   const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml() });
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
-  const outcome = await captureArchive({ ...job, kind: "plan" }, deps);
+  const outcome = await captureArchive({ ...job, kind: "retro" as typeof job.kind }, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
-  assert.deepEqual(outcome.problems, ["this build cannot capture a plan archive"]);
+  assert.deepEqual(outcome.problems, ["this build cannot capture a retro archive"]);
   assert.equal(
     existsSync(join(library, job.producerId, job.archiveId)),
     false,

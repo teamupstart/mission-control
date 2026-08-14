@@ -22,6 +22,11 @@ import type { ArchiveRepoSlot } from "../archives/capture-store.ts";
  * evidence ends up read out of the wrong checkout. The order is PRIMARY FIRST, then
  * `extraRepos` in its stored `position` order, which is the order `intentWithRepoManifest`
  * already presents them in.
+ *
+ * A plan capture reads the same slots from the same function, which is why this stayed one
+ * derivation rather than growing a per-kind copy: a plan names no checkout of its own - its
+ * directories come from the task's diff - so what it needs is exactly this list, in exactly
+ * this order, and a second implementation could only differ by being wrong.
  */
 /**
  * Slot every repository this task can produce evidence from.

@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan: Workflow runs, the Blocker Worklist</title>
+<style>
+:root{
+  color-scheme: light dark;
+  --bg:#ffffff; --fg:#16191d; --muted:#5b6470; --dim:#7b8593;
+  --border:#e0e4ea; --panel:#f6f8fa; --accent:#1f6feb; --warn:#9a6700; --good:#1a7f37;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  --sans: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d1117; --fg:#e6edf3; --muted:#9aa4b2; --dim:#7d8590;
+    --border:#262c36; --panel:#151b23; --accent:#589bff; --warn:#d29922; --good:#3fb950;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--sans);background:var(--bg);color:var(--fg);line-height:1.62;font-size:15.5px;padding:44px 24px 110px}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:30px;line-height:1.24;margin:0 0 8px;letter-spacing:-0.02em}
+h2{font-size:21px;margin:44px 0 8px;letter-spacing:-0.01em;padding-top:14px;border-top:1px solid var(--border)}
+h3{font-size:16.5px;margin:26px 0 6px}
+p{margin:0 0 13px}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:.86em;background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+ul,ol{margin:0 0 14px;padding-left:23px}
+li{margin:0 0 7px}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:14px 0}
+th,td{border:1px solid var(--border);padding:8px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel);font-weight:600}
+.scroll{overflow-x:auto}
+.eyebrow{color:var(--dim);font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 8px}
+.lede{font-size:17px;color:var(--muted);margin:0 0 6px}
+.callout{border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:10px;background:var(--panel);padding:16px 18px;margin:22px 0}
+.callout.warn{border-left-color:var(--warn)}
+.callout.good{border-left-color:var(--good)}
+.callout :last-child{margin-bottom:0}
+.adopted{color:var(--good);font-weight:600}
+figure{margin:22px 0;border:1px solid var(--border);border-radius:10px;background:var(--panel);padding:16px}
+figcaption{font-size:13px;color:var(--dim);margin-top:10px}
+svg{display:block;max-width:100%;height:auto;margin:0 auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="eyebrow">Plan &middot; Mission Control</p>
+<h1>Workflow runs: the Blocker Worklist</h1>
+<p class="lede">Replace the Reviewer verdicts wall with a list of the changes a run is actually asking for.</p>
+
+<h2>Goal</h2>
+<p>Replace the "Reviewer verdicts" section of the Workflow runs reader pane with a <b>blocker worklist</b>: a list of the changes a run is actually asking for, on the left, and the full detail of the selected one on the right. Everything that is not currently blocking moves behind a segmented control.</p>
+<p>The header, round scrubber and stage pipeline above it do not change.</p>
+
+<h2>Why</h2>
+<p>The reader pane is a chronological archive presented as a decision surface. Measured on a live run (No-Mistakes Review v8, run <code>955694c7</code>, round 10 of a 9-round budget), the two sections a person actually reads render <b>11,445 characters to convey about 480</b>:</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Section</th><th>Rendered characters</th><th>Decision-relevant content</th></tr></thead>
+<tbody>
+<tr><td>Reviewer verdicts, the 4 passing cards</td><td>1,984</td><td>None. A pass needs a count, not a card.</td></tr>
+<tr><td>Reviewer verdicts, the 2 failing cards</td><td>2,663</td><td>3 change titles, 3 paths, 2 summaries.</td></tr>
+<tr><td>Captured intent and evidence</td><td>6,798</td><td>Effectively none. The operator wrote the goal.</td></tr>
+<tr><td><b>Total on screen</b></td><td><b>11,445</b></td><td><b>~480</b></td></tr>
+</tbody>
+</table>
+</div>
+<p>Volume is the symptom. The causes are structural:</p>
+<ol>
+<li><b>Passes cost the same as failures.</b> Four of six reviewers passed; each still renders a header, a summary, an approval rationale and an evidence list.</li>
+<li><b>The decisive facts are not on the page at all.</b> <code>detail.repeatOffenders</code> arrives in the payload and says <i>Code Risk Reviewer: 10 rounds, Test Evidence Auditor: 10 rounds</i>. <code>WorkflowRunView</code> never renders it; only <code>WorkflowLadder</code> does.</li>
+<li><b>A change has no continuity.</b> Each round re-renders its verdicts from scratch, so a finding raised in round 1 and still open in round 10 looks identical to one raised moments ago. Nothing on the page says a run is stuck.</li>
+</ol>
+
+<h2>Approved design</h2>
+<p>The human reviewed six mockups in <a href="../../reports/workflow-runs-triage-mockups/report.html">the mockup comparison report</a> and selected <b>Mockup B, the Blocker Worklist</b>. That selection is a requirement of this plan, not an open question.</p>
+
+<h3>Recorded human decisions</h3>
+<div class="scroll">
+<table>
+<thead><tr><th>Decision</th><th>Selection</th></tr></thead>
+<tbody>
+<tr><td>Which direction</td><td><b>Mockup B, Blocker Worklist</b></td></tr>
+<tr><td>The stage pipeline, run header and round scrubber</td><td><b>Keep unchanged.</b> The redesign is strictly below them.</td></tr>
+<tr><td>The run rail (list of runs on the left)</td><td><b>Keep unchanged.</b></td></tr>
+<tr><td>Next step</td><td><b>Create a phased implementation plan and schedule the work.</b></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>The surface</h3>
+<figure>
+<svg viewBox="0 0 820 300" role="img" aria-label="The reader pane: unchanged header, scrubber and pipeline above; a two-column blocker worklist below.">
+  <defs>
+    <style>
+      .k{fill:none;stroke:#8b94a3;stroke-width:1.5;stroke-dasharray:5 4}
+      .n{fill:none;stroke:#589bff;stroke-width:1.8}
+      .b{fill:#589bff;fill-opacity:.10}
+      .kb{fill:#8b94a3;fill-opacity:.07}
+      .t{font:12px system-ui,sans-serif;fill:#9aa4b2}
+      .tt{font:600 12.5px system-ui,sans-serif;fill:#589bff}
+      .tk{font:600 12.5px system-ui,sans-serif;fill:#8b94a3}
+      .s{font:10.5px system-ui,sans-serif;fill:#7d8590}
+    </style>
+  </defs>
+  <rect class="kb" x="10" y="10" width="800" height="42" rx="7"/>
+  <rect class="k" x="10" y="10" width="800" height="42" rx="7"/>
+  <text class="tk" x="24" y="30">Run header + action row</text>
+  <text class="s" x="24" y="45">unchanged</text>
+
+  <rect class="kb" x="10" y="60" width="800" height="34" rx="7"/>
+  <rect class="k" x="10" y="60" width="800" height="34" rx="7"/>
+  <text class="tk" x="24" y="81">Round scrubber &nbsp;<tspan class="s">unchanged</tspan></text>
+
+  <rect class="kb" x="10" y="102" width="800" height="60" rx="7"/>
+  <rect class="k" x="10" y="102" width="800" height="60" rx="7"/>
+  <text class="tk" x="24" y="126">Stage pipeline</text>
+  <text class="s" x="24" y="142">Session &rarr; Stage 1 &rarr; reviewers &rarr; End &nbsp;&middot;&nbsp; unchanged</text>
+
+  <rect class="b" x="10" y="172" width="250" height="118" rx="7"/>
+  <rect class="n" x="10" y="172" width="250" height="118" rx="7"/>
+  <text class="tt" x="24" y="194">Worklist rail</text>
+  <text class="s" x="24" y="212">Blocking N / Passed N / Archive</text>
+  <text class="s" x="24" y="228">one row per requested change</text>
+  <text class="s" x="24" y="244">resolved rows keep a green rail</text>
+  <text class="s" x="24" y="266">stalemate card (repeatOffenders)</text>
+
+  <rect class="b" x="270" y="172" width="540" height="118" rx="7"/>
+  <rect class="n" x="270" y="172" width="540" height="118" rx="7"/>
+  <text class="tt" x="286" y="194">Selected change</text>
+  <text class="s" x="286" y="212">summary &middot; confidence &middot; runner &middot; model</text>
+  <text class="s" x="286" y="228">file &middot; first raised &middot; rounds open &middot; evidence count</text>
+  <text class="s" x="286" y="244">rationale in full, then cited evidence</text>
+  <text class="s" x="286" y="266">Copy this change &middot; Open file &middot; Feedback &middot; Disable reviewer &middot; Next</text>
+</svg>
+<figcaption>Dashed grey is kept exactly as it is. Solid blue is what this plan replaces: one section, the two-column worklist.</figcaption>
+</figure>
+
+<p><b>Left rail (the agenda)</b></p>
+<ul>
+<li>A segmented control: <code>Blocking N</code> / <code>Passed N</code> / <code>Archive</code>.</li>
+<li>Under <code>Blocking</code>, one row per open requested change: title, path, and the reviewer plus the round it was first raised in.</li>
+<li>Resolved changes stay visible with a green rail and a "Resolved in round N" line, so progress is legible rather than silently disappearing.</li>
+<li>A stalemate card at the foot of the rail when <code>detail.repeatOffenders</code> is non-empty: <i>"Code Risk and Test Evidence have failed all 10 rounds."</i></li>
+</ul>
+<p><b>Right pane (the selected change)</b></p>
+<ul>
+<li>The reviewer's own summary, its confidence, runner and model.</li>
+<li>A facts row: file, first raised, rounds open, evidence-reference count.</li>
+<li>"What the reviewer wants": the change rationale in full.</li>
+<li>Cited evidence quotes.</li>
+<li>Actions: Copy this change, Open file, Give this reviewer feedback, Disable that reviewer for this run, and previous/next to walk the list.</li>
+</ul>
+
+<h3>What this does not change</h3>
+<ul>
+<li>The stage pipeline, its stage cards, its per-node menus and the seam labels.</li>
+<li>The run header, its action row and the round scrubber.</li>
+<li>The run rail and its filters.</li>
+<li>Any server route, database schema, migration or wire contract. Everything the worklist needs is already in <code>WorkflowRunDetail</code>.</li>
+</ul>
+
+<h2>Repository findings that shape the design</h2>
+<p>These were verified against the code and override the mockup where they disagree.</p>
+
+<h3>A requested change has no identity, and none is computed anywhere</h3>
+<p><code>RequestedChange</code> (<code>src/shared/workflow.ts:2932-2938</code>) is <code>{ title, rationale, evidence, path?, line? }</code>. It has no id, no key and no fingerprint. Nothing in <code>run-model.ts</code> or on the server correlates verdict <i>content</i> across rounds; the only cross-round facts are inheritance by <code>nodeId</code> and the server-written continuation pointers.</p>
+<p>So "open since round 4" and "resolved in round 9" have to be <b>derived</b>, and the derivation is the subtle part of this work. The prior art is <code>src/server/inspector/marker.ts:140</code>, which fingerprints a PR finding over <code>path</code> plus a normalized title and <b>deliberately excludes the line number</b>, because the next push moves the line and the reviewer would re-raise every finding on every commit. The worklist adopts <b>that</b> rule for that reason, and departs from the rest of it - see the author paragraph below.</p>
+<div class="callout good">
+<p><span class="adopted">Adopted.</span> Identity is the <b>owning persona node id</b>, plus <code>path</code> (empty when absent), plus the normalized title - lowercased, stripped of backticks, quotes and emphasis, whitespace-collapsed and trailing-punctuation trimmed. It is <b>not hashed</b> - <code>marker.ts</code> uses <code>node:crypto</code>, which the browser bundle cannot take, and a UI grouping key has no need to be a digest.</p>
+<p><b>Where the <code>marker.ts</code> analogy stops: the author.</b> There is only ever one Inspector raising findings on a pull request, so <code>path</code> plus title is a sufficient identity there and no cross-author collision is possible. A workflow run has several personas reviewing at once, and two of them can independently object about the same file in words that normalize identically - "attach completed test output" is exactly the kind of sentence two reviewers write. Keyed without the author they would fold into one row, and because the row carries a single <code>nodeId</code> the losing reviewer's evidence would vanish and its objection would become un-actionable from the worklist: "Disable {persona}" and "Give this reviewer feedback" both act on the surviving node. Two reviewers wanting the same thing are two objections, separately actionable, and the identity has to say so.</p>
+<p>Including the node costs nothing for the job the key exists to do. A persona's <code>nodeId</code> is stable across rounds within a run's immutable workflow version, so cross-round matching for a single reviewer is unaffected; the node component only prevents cross-reviewer merging.</p>
+<p><b>Known failure mode, handled:</b> a reviewer that rewords a title it keeps raising produces a new key, so the old key stops appearing. <code>marker.ts</code> accepts exactly this and can afford to, because nothing sits beside it contradicting the result. This surface is different: the stalemate card at the foot of the same rail is derived from <code>repeat-offender.ts</code>, which keys on <code>nodeId</code> and pass/fail and never reads a title. Left alone, the rail would show an Archive row saying <i>"Resolved in round 5"</i> directly above a card saying <i>"Test Evidence Auditor has failed 10 rounds running"</i> - about the same reviewer. That is precisely the on-screen disagreement this plan cites to justify sharing the round-folding rule, so it does not get to be an exception.</p>
+<div class="callout good">
+<p><span class="adopted">Adopted.</span> A change has three states, not two, and the third one states what is actually known rather than guessing why.</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Situation</th><th>State</th><th>What is known</th></tr></thead>
+<tbody>
+<tr><td>Key still being raised at the viewed round</td><td><code>open</code></td><td>It is outstanding.</td></tr>
+<tr><td>Key stops appearing, its persona <b>has not re-run since</b></td><td><code>open</code></td><td>Nothing has changed. Nobody has looked.</td></tr>
+<tr><td>Key stops appearing, its persona re-ran and <b>passed</b></td><td><code>resolved</code></td><td>It is fixed. The reviewer said so.</td></tr>
+<tr><td>Key stops appearing, its persona re-ran and <b>never passed</b></td><td><code>unconfirmed</code></td><td>It looked and did not confirm. May be fixed, may be reworded.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>unconfirmed</code> deliberately does <b>not</b> claim the finding was rephrased. From the outside those two cases are indistinguishable: a reviewer that stops raising A because A is fixed, while raising unrelated C, looks exactly like a reviewer that reworded A into C. Title-based identity cannot tell them apart, so the honest label says the reviewer never passed and the change was never confirmed fixed, and leaves the reader to judge.</p>
+<p>An evidence-or-path heuristic was considered for separating the two and rejected: two genuinely different findings in one file collide under it, so it trades a known unknown for a confident wrong answer.</p>
+<p>All three states are derivable inside the worklist from data it already walks, so none of this needs <code>repeatOffenders</code> or inherits that signal's <code>rounds &gt;= 2</code> alerting threshold.</p>
+</div>
+</div>
+
+<h3>Rounds are not submissions</h3>
+<p><code>src/server/workflows/repeat-offender.ts</code> folds submissions to one entry per <b>round</b> before walking, keeping each node's newest attempt across that round's segments, because a session action can split one round into several evidence segments. Walking submissions directly "would see two rows of the same round, decide the sequence had broken, and report a reviewer that has failed five rounds running as having failed one".</p>
+<div class="callout good">
+<p><span class="adopted">Adopted.</span> The worklist derivation reuses that exact round-folding rule. If it did not, the rail's "open 7 rounds" and the stalemate card's "failed 10 rounds" would disagree on the same screen, which is worse than either being absent.</p>
+</div>
+
+<h3>Not every change has a path</h3>
+<p><code>path</code> is optional on <code>RequestedChange</code>, and the e2e fail fixture (<code>e2e/fixtures/fake-claude.mjs:259</code>) emits a change with <b>no path at all</b>. The mockup drew every row with a file under it.</p>
+<div class="callout good">
+<p><span class="adopted">Adopted.</span> A pathless change renders its row without the path line and groups under the key <code>"" + title</code>. The right pane shows "No file cited" rather than an empty monospace slot.</p>
+</div>
+
+<h3>Sub-run selection is not routed, and will not be</h3>
+<p>The selected round is <b>not</b> in the URL - <code>WorkflowRunView</code> takes <code>roundId</code> as a prop driven by local state (<code>WorkflowRuns.tsx:452</code>). There is no precedent for a sub-run selection in <code>MissionRoute</code>, and adding one means touching <code>parseMissionRoute</code>, <code>missionRouteHash</code> and the <code>onFilters</code> handler in <code>App.tsx</code>, which silently drops any route field it does not spread.</p>
+<div class="callout good">
+<p><span class="adopted">Adopted.</span> The selected blocker is local component state, exactly like the selected round. Deep-linking to an individual change is a deliberate non-goal. This removes all route work from the plan.</p>
+</div>
+
+<h3>The stalemate fact is in the payload, but latest-anchored</h3>
+<p><code>WorkflowStore.runDetail</code> emits <code>repeatOffenders</code> (<code>src/server/workflows/store.ts:5997-6024</code>) and <code>WorkflowRunView</code> ignores it, so the fact never reaches this page. No server work is needed to fix that.</p>
+<p>It cannot be rendered straight from the payload field, though. <code>repeatOffenders(submissions, attempts)</code> is called with the <b>whole run's</b> submissions and anchors on the newest one, so the value is always "as of the latest round" and the <code>asOfRound</code> window cannot re-scope it. Rendered directly, scrubbing back to round 4 of a 10-round run would leave a card reading <i>"failed 10 rounds running"</i> beneath segments correctly describing round 4 - a fact from six rounds in the reader's future, sitting in the one place this design keeps insisting must not disagree with itself.</p>
+<div class="callout good">
+<p><span class="adopted">Adopted.</span> The worklist derives its own windowed stalemate signal from the folded rounds it already walks, and the card renders that. At the default window it equals <code>detail.repeatOffenders</code> by construction, which a test pins. The payload field keeps serving the ladder and the alert engine, which genuinely do want the latest-anchored answer.</p>
+</div>
+
+<h2>Success criteria</h2>
+<ol>
+<li>Opening a run that has requested changes shows those changes as a worklist without scrolling past any passing reviewer.</li>
+<li>A change still open from an earlier round says which round it was first raised in and how many rounds it has been open.</li>
+<li>A change that stopped being raised says which round resolved it.</li>
+<li>When two reviewers have failed consecutive rounds, the page says so.</li>
+<li>A person can copy one change, open its file, give its reviewer feedback, or disable that reviewer, without leaving the worklist.</li>
+<li>A failed command gate is a blocker too, and keeps the exit code and output tail the current page shows. A run stopped only by a failed check never presents as having nothing outstanding.</li>
+<li>A change is only ever shown as resolved once its own reviewer has re-run and stopped raising it, never because a different reviewer moved the run to a new round.</li>
+<li>The worklist answers for the round the scrubber points at. Scrubbing back shows what that round was asking for, and all three segment counts move together.</li>
+<li>The pipeline, header, round scrubber and run rail are byte-for-byte unchanged in behavior. The scrubber keeps the meaning it has today and now governs the worklist as well as the pipeline; it does not grow a section that ignores it.</li>
+</ol>
+
+<h2>Non-goals</h2>
+<ul>
+<li>Deep-linking to a selected change.</li>
+<li>Any change to the pipeline diagram, the header, the scrubber or the rail.</li>
+<li>Server, schema, migration or wire-contract changes.</li>
+<li>The other five mockups. C's round matrix and F's round delta were explicitly not selected.</li>
+<li>Reworking "Captured intent and evidence". It is the other half of the measured wall and is left for separate work.</li>
+</ul>
+
+<h2>Implementation</h2>
+<p>Split into two merge units. See <a href="phased-plan.html">the phased plan</a> (<a href="phased-plan.md">markdown</a>).</p>
+
+</div>
+</body>
+</html>

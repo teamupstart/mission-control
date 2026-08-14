@@ -21,14 +21,16 @@ import { archiveReconcileMs } from "../config.ts";
 import { openFile, type OpenFileOutcome } from "../open-targets/index.ts";
 import { captureArchive, type ArchiveCaptureOutcome } from "./capture.ts";
 import { ArchiveCaptureStore, type ArchiveCaptureJob } from "./capture-store.ts";
+import { resolveRoots } from "./checkout.ts";
 import { ArchiveLibrary } from "./library.ts";
 import { ArchivePathError, archiveDir, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
 import { loadArchiveProducer, type ArchiveProducerIdentity } from "./producer.ts";
 import { ArchiveReconciler, type ArchiveReconcilePass } from "./reconciler.ts";
 import { ArchiveStore, type ArchiveRow } from "./store.ts";
+import { discoverPlanCaptureScopes } from "../plans/capture-scopes.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
-import type { ScoutSubject, ScoutTaskGateway } from "../scouts/task-gateway.ts";
+import type { ArchiveSubject, ArchiveTaskGateway } from "./task-gateway.ts";
 
 /**
  * The daemon's one owner of the archive library.
@@ -110,7 +112,7 @@ export interface ArchiveManagerOptions {
    * Phase 1 route tests use, which is why every capture entry point degrades to "nothing to
    * do" rather than throwing when it is missing.
    */
-  tasks?: ScoutTaskGateway;
+  tasks?: ArchiveTaskGateway;
   /** Raised once after a reconciliation batch changed derived state. */
   onChanged?: () => void;
   /** Recurring cadence in ms, or null for trigger-only. Defaults to the shipped cadence. */
@@ -120,7 +122,7 @@ export interface ArchiveManagerOptions {
   /** Injected so a test can prove that a failed publication leaves the archive readable. */
   rename?: (from: string, to: string) => Promise<void>;
   /** Injected so a test can pause an accepted submission before its durable record. */
-  afterSubmissionAttribution?: (subject: ScoutSubject) => Promise<void>;
+  afterSubmissionAttribution?: (subject: ArchiveSubject) => Promise<void>;
   /**
    * Injected so a test can assert WHICH path reaches a launcher without spawning one.
    *
@@ -140,11 +142,11 @@ export class ArchiveManager {
   readonly producer: ArchiveProducerIdentity;
   private readonly store: ArchiveStore;
   private readonly captureStore: ArchiveCaptureStore;
-  private readonly tasks: ScoutTaskGateway | null;
+  private readonly tasks: ArchiveTaskGateway | null;
   private readonly reconciler: ArchiveReconciler;
   private readonly renameDir: (from: string, to: string) => Promise<void>;
   private readonly afterSubmissionAttribution:
-    | ((subject: ScoutSubject) => Promise<void>)
+    | ((subject: ArchiveSubject) => Promise<void>)
     | undefined;
   private readonly handToTarget: (target: OpenTargetId, path: string) => Promise<OpenFileOutcome>;
   private readonly log: (message: string, detail: Record<string, unknown>) => void;
@@ -279,7 +281,11 @@ export class ArchiveManager {
    * do", which is what keeps ship completion byte-for-byte what it was.
    */
   async ensureReady(taskId: string): Promise<ArchiveCaptureResult> {
-    const subject = this.tasks?.subjectForTask(taskId);
+    // `"scout"` is passed rather than derived, and that is what makes "a plan task's
+    // completion never waits on its archive" a property of this line instead of a rule
+    // somebody has to remember. A plan is captured at teardown; its `done` is Foreman's
+    // ordinary boundary, exactly as a ship task's is.
+    const subject = this.tasks?.subjectForTask(taskId, "scout");
     if (!subject) return { ok: true, archive: null, replayed: false };
     const jobs = this.captureStore
       .forTask(taskId)
@@ -332,22 +338,81 @@ export class ArchiveManager {
   }
 
   /**
-   * The cleanup guard: settle this scout's capture before its checkout is destroyed.
+   * The cleanup guard: settle this task's captures before its checkout is destroyed.
    *
-   * Reclaim, remove, cancel, close-after-merge, and startup reconciliation all run
+   * Reclaim, remove, cancel, reschedule and startup reconciliation all run
    * `git worktree remove --force` or hand a pooled lease back, and every one of them would
-   * take an unarchived report with it. This is the last point at which the sources still
-   * exist, so it publishes what is there - a complete recovery when exactly one conventional
-   * report can be attributed, an honest partial otherwise - and REFUSES the cleanup when it
-   * cannot, so the resources stay tracked and the operator can retry rather than losing the
-   * evidence to a transient I/O error.
+   * take unarchived work with it. This is the last point at which the sources still exist.
+   *
+   * The kind is settled once, here, and each kind's rule is stated in its own method rather
+   * than as branches through a shared one - because the two genuinely differ on the question
+   * that matters most on this path, which is when a refusal is correct. A ship task, and any
+   * task this build does not archive, returns ok without touching the filesystem.
+   */
+  async settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const kind = this.tasks?.captureKind(taskId) ?? null;
+    if (kind === null) return { ok: true };
+    return kind === "plan" ? this.settlePlan(taskId) : this.settleScout(taskId);
+  }
+
+  /**
+   * Publish every plan this task wrote, before its checkout is destroyed.
+   *
+   * The same last-chance guarantee a scout gets, reached through the same five teardown paths,
+   * with two differences that both follow from what a plan is.
+   *
+   * **Nothing to capture is a success.** A scout cannot complete without an archive, so a
+   * scout reaching cleanup with no evidence is a real anomaly. A plan task can legitimately
+   * finish having written nothing - the human read it, said no, and stopped - and the naive
+   * generalization, reusing the scout refusal, would wedge that task's worktree permanently
+   * with no way for anyone to clear it. So an empty discovery reserves nothing and returns
+   * ok. What is refused is a capture that was reserved because artifacts WERE found and then
+   * failed, which is the case an operator can retry.
+   *
+   * **One archive per plan directory.** A bundle has exactly one primary artifact, so merging
+   * two plans into one would make one plan's page the primary for the other's files. Each
+   * touched directory gets its own job, keyed by its own scope, so the reservations are
+   * idempotent per directory across repeated settles.
+   */
+  private async settlePlan(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const subject = this.tasks!.subjectForTask(taskId, "plan");
+    if (!subject) return { ok: true };
+
+    // Existing jobs first, keyed so a re-reservation of the same directory collapses onto the
+    // row already there. A published one stays in the list for the reason a scout's does: a
+    // ledger row is not evidence that the bundle still exists and verifies, and this is the
+    // last moment the sources are around to rebuild it from.
+    const jobs = new Map<string, ArchiveCaptureJob>();
+    for (const job of this.captureStore.forTask(taskId)) {
+      if (job.kind === "plan" && job.episodeId === subject.episodeId) jobs.set(job.operationKey, job);
+    }
+    for (const job of await this.reservePlanJobs(subject)) jobs.set(job.operationKey, job);
+
+    for (const job of jobs.values()) {
+      const outcome = await this.runCapture(job.operationKey);
+      if (!outcome.ok) {
+        return {
+          ok: false,
+          error: `this plan's archive could not be published: ${outcome.problems.join("; ")}`,
+        };
+      }
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Publish this scout's capture before its checkout is destroyed.
+   *
+   * Publishes what is there - a complete recovery when exactly one conventional report can be
+   * attributed, an honest partial otherwise - and REFUSES the cleanup when it cannot, so the
+   * resources stay tracked and the operator can retry rather than losing the evidence to a
+   * transient I/O error.
    *
    * A scout that completed normally already has its bundle, so this replays a verification
    * and returns; that is the common path and it is cheap.
    */
-  async settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (!this.tasks?.isScout(taskId)) return { ok: true };
-    const subject = this.tasks.subjectForTask(taskId);
+  private async settleScout(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const subject = this.tasks!.subjectForTask(taskId, "scout");
     if (!subject) return { ok: true };
     await this.submissionClaims.get(this.submissionKey(subject))?.settled;
     const current = this.captureStore
@@ -376,7 +441,7 @@ export class ArchiveManager {
   }
 
   /**
-   * The last-chance reservation, on `Registry.onSessionExit`.
+   * The last-chance reservation for a SCOUT, on `Registry.onSessionExit`.
    *
    * SYNCHRONOUS up to the durable row and asynchronous after it, and the split is the whole
    * design. `beginEviction` gives a session a few seconds before its row disappears, and it
@@ -384,12 +449,32 @@ export class ArchiveManager {
    * the worktree paths, happens now, while they can still be derived; the capture, which needs
    * only what was just persisted, happens afterwards and cannot delay eviction or throw into
    * it.
+   *
+   * Scout-only. The body says why a plan must not be published from here; the short version is
+   * that this fires while the task is still live, and an archive cannot be rewritten.
    */
   reserveOnExit(session: Session): void {
     if (!this.tasks || !this.acceptingJobs) return;
     try {
-      const subject = this.tasks.subjectForExitingSession(session);
-      if (!subject) return;
+      const exiting = this.tasks.subjectForExitingSession(session);
+      if (!exiting) return;
+      // SCOUTS ONLY, and the exclusion is a correctness rule rather than a scope decision.
+      //
+      // This listener fires while the task is still `running` or `dispatching` - that is the
+      // condition `subjectForExitingSession` selects for. For a scout that is the end of the
+      // work by definition: the report is an untracked file, the session that would have
+      // submitted it is gone, and completion cannot happen without an archive, so capturing
+      // now loses nothing and saves evidence that is otherwise about to be unreachable.
+      //
+      // For a plan it is not the end of the work, and an archive is IMMUTABLE. Publishing
+      // here would freeze whatever the checkout held at the moment a session went away as
+      // the permanent archive of a plan that is still being written, and the teardown that
+      // follows could not replace it: it finds the published job under the same scoped key
+      // and replays the verification rather than re-capturing. A plan's files are committed
+      // and its checkout survives eviction, so there is nothing to rescue early - teardown
+      // is both the last moment and the first correct one.
+      if (exiting.kind !== "scout") return;
+      const subject = exiting.subject;
       // Already archived for THIS attempt: this is an ordinary scout finishing and its
       // session going away. A superseded episode's archive must not suppress reservation of
       // the checkout that is about to disappear.
@@ -423,6 +508,12 @@ export class ArchiveManager {
    * submission, and publishing a partial for it would burn the archive id the scout is about
    * to submit against. Once a submission is durable, startup must resume it even while the
    * scout is live; otherwise a crash after `recordSubmission` strands its accepted report.
+   *
+   * A plan job never carries a submission, so it is held back by the same rule while its task
+   * is live - which is the right answer for a different reason. A bundle is immutable, and a
+   * plan is only reserved once its work is over, so a plan job found beside a running task
+   * means a restart raced the reconciliation that ends it. Capturing then would freeze a draft
+   * as the archive of a plan still being written.
    */
   async recoverJobs(): Promise<void> {
     if (!this.tasks) return;
@@ -445,10 +536,51 @@ export class ArchiveManager {
     return this.captureStore.forTask(taskId);
   }
 
-  private reserve(subject: ScoutSubject): ArchiveCaptureJob {
+  /**
+   * One reserved job per plan directory this task's own diff touched.
+   *
+   * The discovery is what keeps the central promise of plan capture: an unrelated plan
+   * directory sitting in the same checkout is never reserved, because it is not in the diff.
+   * A checkout that cannot answer what it changed contributes NOTHING rather than a guess -
+   * capturing every `docs/plans/*` there would archive somebody else's work, and unlike a
+   * scout's untracked report a plan's own files are committed and reach the pull request
+   * regardless. That trade is recorded here as a log line rather than made silently.
+   */
+  private async reservePlanJobs(subject: ArchiveSubject): Promise<ArchiveCaptureJob[]> {
+    const roots = await resolveRoots(subject.repos);
+    const discovery = await discoverPlanCaptureScopes(roots);
+    for (const entry of discovery.unreadable) {
+      this.log("a plan task's checkout could not report what it changed, so nothing was captured from it", {
+        taskId: subject.taskId,
+        slot: entry.slot,
+        reason: entry.reason,
+      });
+    }
+    return discovery.scopes.map((scope) =>
+      this.captureStore.reserve({
+        kind: "plan",
+        taskId: subject.taskId,
+        sessionId: subject.sessionId,
+        episodeId: subject.episodeId,
+        producerId: this.producer.id,
+        // The plan names itself; the task's title is the fallback. With one job per directory
+        // the task title alone would give two bundles from one task the same name.
+        title: scope.title ?? subject.title,
+        question: subject.question,
+        origin: subject.origin,
+        repos: subject.repos,
+        scope: { slot: scope.slot, directory: scope.directory },
+      }),
+    );
+  }
+
+  private reserve(subject: ArchiveSubject): ArchiveCaptureJob {
     return this.captureStore.reserve({
-      // The only kind this manager reserves. A second kind arrives with its own entry point
-      // and its own planner; it does not arrive by widening this one.
+      // Scout-only, deliberately. A second kind arrived with its own entry point
+      // (`reservePlanJobs`) and its own planner rather than by widening this one, because the
+      // two answer different questions: a scout reserves ONE job for its episode, before it
+      // knows what will be submitted, while a plan reserves one per directory it already
+      // knows it wrote. Collapsing them would have to lose one of those properties.
       kind: "scout",
       taskId: subject.taskId,
       sessionId: subject.sessionId,
@@ -461,7 +593,7 @@ export class ArchiveManager {
     });
   }
 
-  private submissionKey(subject: Pick<ScoutSubject, "taskId" | "episodeId">): string {
+  private submissionKey(subject: Pick<ArchiveSubject, "taskId" | "episodeId">): string {
     return JSON.stringify([subject.taskId, subject.episodeId]);
   }
 
@@ -472,7 +604,7 @@ export class ArchiveManager {
    * this promise. A request that already proved which live scout it belongs to therefore gets
    * to record its submitted report before recovery can burn the episode's immutable archive.
    */
-  private claimSubmission(subject: ScoutSubject): () => void {
+  private claimSubmission(subject: ArchiveSubject): () => void {
     const key = this.submissionKey(subject);
     let claim = this.submissionClaims.get(key);
     if (!claim) {

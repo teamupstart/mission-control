@@ -76,7 +76,7 @@ export interface CheckAttemptRef {
 
 /** Test suites get the larger budget; faster check slots keep the supervisor default. */
 export function defaultCheckTimeoutMs(slot: CheckExecutionRequest["slot"]): number {
-  return slot === "test" ? 20 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
+  return slot === "test" ? 60 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
 }
 
 /** How the composed runtime is driven, and every seam a test needs to drive it without a pool. */

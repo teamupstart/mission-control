@@ -237,11 +237,11 @@ files, then `SIGKILL`. The daemon then keeps asking until the group is actually 
 returning the worktree, because a build that leaves a server running behind it is common and
 the leader exiting proves nothing about its children. A group it cannot prove is empty keeps
 its lease rather than handing back a tree something may still be writing into. Test commands
-get twenty minutes before this teardown begins; other Command slots keep the ten-minute default.
+get sixty minutes before this teardown begins; other Command slots keep the ten-minute default.
 
 **A daemon shutdown skips the grace and goes straight to `SIGKILL`**, deliberately. Stopping
 Mission Control mid-build would otherwise wait out the rest of the command's timeout - up to
-twenty minutes for one test suite - and the output a grace period buys is output nobody is left to
+sixty minutes for one test suite - and the output a grace period buys is output nobody is left to
 read, because the attempt ends as an infrastructure failure rather than a verdict either way.
 The daemon still waits for the group to be proven empty afterwards, so the worktree goes back
 to the pool on the way out; stopping a daemon with a check running takes well under a second.

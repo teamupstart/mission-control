@@ -573,7 +573,7 @@ function fixedSupervisor(outcome: CheckSpawnOutcome): typeof import("../src/serv
   };
 }
 
-test("test commands get twenty minutes while typecheck keeps ten", async () => {
+test("test commands get sixty minutes while typecheck keeps ten", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 1);
   const leases = new CheckLeaseManager(db, {
@@ -607,7 +607,7 @@ test("test commands get twenty minutes while typecheck keeps ten", async () => {
     assert.equal(outcome.kind, "exited");
   }
 
-  assert.deepEqual(timeouts, [20 * 60_000, 10 * 60_000]);
+  assert.deepEqual(timeouts, [60 * 60_000, 10 * 60_000]);
 });
 
 test("an infrastructure result is not returned until the lease is resolved", async () => {

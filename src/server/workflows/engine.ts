@@ -355,7 +355,7 @@ export class WorkflowEngine {
     this.wakeTimer = null;
     // Cancel live check groups BEFORE awaiting the attempts that own them. A check attempt is
     // a build, and `allSettled` on its own would wait out the command's whole timeout - up to
-    // twenty minutes of daemon shutdown for one test suite somebody left running.
+    // sixty minutes of daemon shutdown for one test suite somebody left running.
     //
     // This is the supervisor's own hard-exit teardown, called deliberately early rather than a
     // gentler variant of it: the same signal is going to reach these groups from the `exit`

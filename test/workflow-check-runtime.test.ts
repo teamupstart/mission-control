@@ -585,7 +585,7 @@ test("test commands get twenty minutes while typecheck keeps ten", async () => {
   const timeouts: number[] = [];
   const runtime = new CheckRuntime(leases, {
     leaseStore: leaseRows,
-    platform: () => ({ supported: true }),
+    platform: () => ({ supported: true, note: "" }),
     supervise: async (request) => {
       timeouts.push(request.timeoutMs ?? -1);
       return {

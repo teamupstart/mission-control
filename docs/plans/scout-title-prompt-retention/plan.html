@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Short scout titles with preserved prompt context</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#f3f5f4;--paper:#fff;--paper2:#f7f9f8;--ink:#18221f;--muted:#61706b;--line:#dce4e0;--accent:#17785c;--blue:#2e6fbb;--amber:#b36d12;--code:#edf4f1;--shadow:0 18px 50px rgba(21,38,32,.09);--sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    @media(prefers-color-scheme:dark){:root{--bg:#0b0f0e;--paper:#141b18;--paper2:#101613;--ink:#e5eee9;--muted:#95a69f;--line:#293730;--accent:#43c59a;--blue:#65a8f5;--amber:#f2aa4c;--code:#19241f;--shadow:0 20px 58px rgba(0,0,0,.34)}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}body{margin:0;min-width:0;background:radial-gradient(900px 500px at 90% -12%,color-mix(in srgb,var(--accent) 13%,transparent),transparent 62%),var(--bg);color:var(--ink);font:15px/1.68 var(--sans)}a{color:var(--blue);text-underline-offset:3px}.mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 90%,transparent)}.mast-inner{max-width:1320px;margin:auto;padding:40px clamp(20px,5vw,64px) 34px}.kicker{margin:0 0 8px;color:var(--accent);font:800 11px/1.2 var(--mono);letter-spacing:.14em;text-transform:uppercase}.mast h1{max-width:900px;margin:0;font-size:clamp(34px,5vw,58px);line-height:1.06;letter-spacing:-.04em}.mast-copy{max-width:880px;margin:15px 0 0;color:var(--muted);font-size:17px}.badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:20px}.badge{padding:5px 10px;border:1px solid color-mix(in srgb,var(--accent) 38%,var(--line));border-radius:999px;background:color-mix(in srgb,var(--accent) 7%,var(--paper));color:var(--accent);font:700 11px var(--mono)}.layout{display:grid;grid-template-columns:230px minmax(0,930px);gap:32px;max-width:1240px;margin:auto;padding:30px 18px 90px}nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}nav b{display:block;margin:0 0 8px;color:var(--muted);font:800 10px var(--mono);letter-spacing:.12em;text-transform:uppercase}nav a{display:block;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}article{min-width:0;padding:10px clamp(18px,4vw,50px) 58px;border:1px solid var(--line);border-radius:17px;background:var(--paper);box-shadow:var(--shadow)}article>h1:first-child{display:none}h2{margin:46px 0 13px;padding-top:7px;border-top:1px solid var(--line);font-size:24px;line-height:1.25;letter-spacing:-.02em}h2:first-of-type{margin-top:22px;border-top:0}h3{margin:29px 0 9px;font-size:18px;line-height:1.35}p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:5px 0}code{padding:2px 5px;border:1px solid var(--line);border-radius:5px;background:var(--code);color:var(--accent);font:12.5px/1.45 var(--mono);overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font-size:11px}.flow{max-width:100%;margin:22px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}.flow figcaption{margin-bottom:12px;font-weight:760}.flow svg{display:block;width:100%;height:auto;min-width:760px}.flow p{margin:11px 3px 0;color:var(--muted);font-size:12px}.flow .edges path{fill:none;stroke:var(--muted);stroke-width:1.7;marker-end:url(#flow-arrow)}.flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .node.human rect,.flow .node.planning rect{fill:color-mix(in srgb,var(--blue) 8%,var(--paper));stroke:var(--blue)}.flow .node.journal rect,.flow .node.collector rect{fill:color-mix(in srgb,var(--amber) 8%,var(--paper));stroke:var(--amber)}.flow .node.bundle rect,.flow .node.final rect{fill:color-mix(in srgb,var(--accent) 8%,var(--paper));stroke:var(--accent)}.flow .state rect{fill:var(--paper);stroke:var(--accent);stroke-dasharray:4 4}.flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:480}.flow text.label{fill:var(--muted);font:500 9px var(--mono)}footer{max-width:1240px;margin:0 auto 34px;padding:0 18px;color:var(--muted);font:11px var(--mono)}
+    @media(max-width:860px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:20px}}@media(max-width:560px){.mast-inner{padding-top:28px}.layout{padding-inline:8px}article{border-radius:13px}th,td{min-width:130px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav,footer{display:none}article{border:0}.flow svg{min-width:0}}
+  </style>
+</head>
+<body>
+  <header class="mast"><div class="mast-inner"><p class="kicker">Mission Control · product and engineering plan</p><h1>Short scout titles with preserved prompt context</h1><p class="mast-copy">Keep the model-generated session name as the scout title while preserving the original request and later human prompts as bounded, searchable archive context.</p><div class="badges"><span class="badge">ai-harness only</span><span class="badge">additive archive v1</span><span class="badge">offline render</span></div></div></header>
+  <div class="layout"><nav aria-label="Plan sections"><b>On this page</b><a href="#outcome">Outcome</a><a href="#current-behavior">Current behavior</a><a href="#adopted-product-decisions">Adopted product decisions</a><a href="#portable-prompt-contract">Portable prompt contract</a><a href="#durable-work-episode-context">Durable work-episode context</a><a href="#prompt-collection-at-capture">Prompt collection at capture</a><a href="#reader-behavior">Reader behavior</a><a href="#compatibility-and-migration">Compatibility and migration</a><a href="#success-criteria">Success criteria</a><a href="#non-goals">Non-goals</a><a href="#verification">Verification</a></nav><article><h1 id="short-scout-titles-with-preserved-prompt-context">Short scout titles with preserved prompt context</h1>
+<h2 id="outcome">Outcome</h2>
+<p>A completed scout uses the same short, model-generated name that was visible on its live session
+card as the archive title. The archive separately preserves the original task intent and every
+later human prompt that Mission Control can attribute to that scout&#x27;s work episode.</p>
+<p>The report remains the scout&#x27;s answer. Prompt history is durable context and search material, not a
+fallback report and not a copy of the whole conversation.</p>
+<h2 id="current-behavior">Current behavior</h2>
+<p>The live and archived surfaces currently answer the title question from different fields:</p>
+<ul>
+<li>The session card renders <code>session.name</code> in <code>src/web/components/session-bits.tsx</code>.</li>
+<li>Scout capture freezes <code>task.title</code> in <code>src/server/scouts/task-gateway.ts</code>. For scouts created from
+a long request, that can be the whole prompt.</li>
+<li>The same gateway stores <code>task.intent</code> as <code>archive.question</code>, but clips it to the 1,000-character
+<code>ARCHIVE_TEXT_LIMITS.question</code> bound.</li>
+<li><code>src/server/archives/capture.ts</code> writes only <code>title</code>, <code>question</code>, <code>summary</code>, tags, provenance and
+artifacts into the portable manifest.</li>
+<li><code>docs/archives.md</code> explicitly excludes the conversation, so later prompts disappear with the
+task, session and harness-owned transcript.</li>
+</ul>
+<p>The transcript layer already normalizes Claude, Codex and Pi into <code>TranscriptMessage</code>, including a
+<code>role</code>, text, timestamp and optional non-human <code>origin</code>. Two constraints prevent capture from simply
+reading a final window:</p>
+<ol>
+<li><code>TranscriptMessages.window</code> is a bounded head-and-tail view, so a long session can omit prompts
+in the middle.</li>
+<li><code>src/server/injections.ts</code> keeps non-human attribution only in memory. After a daemon restart, an
+automated Foreman, Workflow or harness instruction can look like a human turn.</li>
+</ol>
+<p>Those constraints shape the implementation below.</p>
+<h2 id="adopted-product-decisions">Adopted product decisions</h2>
+<table><thead><tr><th>Question</th><th>Decision</th></tr></thead><tbody><tr><td>What is the archived title?</td><td>The session&#x27;s visible <code>session.name</code>, clipped only to the portable title bound. Fall back to the episode&#x27;s frozen session name, then <code>task.title</code>, only when the live session is gone.</td></tr><tr><td>What prompt starts the trail?</td><td>The exact stored <code>task.intent</code>, before the existing <code>question</code> preview clipping.</td></tr><tr><td>Which later turns are retained?</td><td>Human-authored user prompts delivered during this task&#x27;s work episode, in conversation order.</td></tr><tr><td>What is excluded?</td><td>Assistant prose, tool calls and results, hidden reasoning, system text, the scout contract appendix, and user-role turns attributed to Foreman, Workflow or the harness.</td></tr><tr><td>Does prompt history replace the report?</td><td>No. <code>report/report.html</code> remains the required primary answer and completion gate.</td></tr><tr><td>Can a published archive change after a later prompt?</td><td>No. Prompt context freezes at archive reservation and follows the existing immutable publication rule.</td></tr><tr><td>What happens to older bundles?</td><td>They parse with an empty prompt trail. The version 1 manifest extension is additive and older readers ignore it.</td></tr></tbody></table>
+<p>The user explicitly selected phased planning and task scheduling for this scope. There are no open
+product choices in this plan.</p>
+<h2 id="portable-prompt-contract">Portable prompt contract</h2>
+<p>Extend the version 1 manifest&#x27;s <code>archive</code> object with an optional <code>prompts</code> value:</p>
+<pre><code class="language-json">{
+  &quot;prompts&quot;: {
+    &quot;entries&quot;: [
+      { &quot;kind&quot;: &quot;initial&quot;, &quot;text&quot;: &quot;Find why reconnect loses permissions&quot;, &quot;at&quot;: null },
+      { &quot;kind&quot;: &quot;follow_up&quot;, &quot;text&quot;: &quot;Also check whether Pi behaves the same way&quot;, &quot;at&quot;: &quot;2026-08-14T15:18:00.000Z&quot; }
+    ],
+    &quot;truncated&quot;: false
+  }
+}
+</code></pre>
+<p>The shared TypeScript model uses camel case while serialization keeps the file&#x27;s snake-case
+convention. <code>kind</code> is append-only and starts with <code>initial</code> and <code>follow_up</code>. Exactly one initial
+entry is required when <code>prompts</code> is present, and it is first.</p>
+<p>Keep <code>archive.question</code> for compatibility, list density and foreign bundles. New local captures
+derive it from the initial prompt using the existing 1,000-character bound. It is a preview, while
+<code>prompts.entries</code> is the durable context.</p>
+<p>Add bounded prompt limits beside <code>ARCHIVE_TEXT_LIMITS</code>: at most 256 entries, at most 256 KiB of
+UTF-8 text per entry, and at most 3 MiB of prompt text per manifest. Preserve text byte-for-byte
+inside those limits. If any entry or the total crosses a bound, keep the initial prompt and the
+newest follow-ups that fit, set <code>truncated: true</code>, and never present the trail as complete. The
+existing 4 MiB manifest limit remains the final publication guard.</p>
+<p>Add <code>prompt</code> at the end of <code>ARCHIVE_SEARCH_SEGMENT_KINDS</code>. Index each prompt in bounded overlapping
+segments using the same literal-search rules as report text, so a later clarification is findable
+without replacing the concise title in the rail.</p>
+<h2 id="durable-work-episode-context">Durable work-episode context</h2>
+<p>Add a scout-specific daemon-owned context store rather than making the portable archive depend on a
+live transcript:</p>
+<ul>
+<li>One <code>scout_prompt_contexts</code> row per <code>(task_id, episode_id)</code> freezes the session id, current
+<code>session.name</code>, transcript path and byte offset at the task-delivery boundary.</li>
+<li><code>scout_prompt_turns</code> records successfully delivered user-role text for that episode, its origin,
+delivery time and a stable sequence. Human text is retained exactly; non-human rows are retained
+long enough to keep transcript attribution correct across a daemon restart.</li>
+<li>Rows are local capture coordination, like <code>archive_capture_jobs</code>. They are not a read model and
+never become an alternate archive source of truth.</li>
+</ul>
+<p>Both task delivery seams must open the context after the final prompt is composed and before it is
+sent: fresh dispatch in <code>src/server/dispatcher.ts</code> and assignment in <code>src/server/tasks.ts</code>. Pi&#x27;s
+launch-time prompt records offset zero because the prompt travels in the launch message.</p>
+<p>Record a follow-up only after the runtime has accepted it:</p>
+<ul>
+<li>an immediate human <code>/inject</code> records after a successful delivery;</li>
+<li>the durable pending-turn path records after SDK acceptance or verified terminal pickup, not when
+a draft is queued;</li>
+<li>recalled, refused, failed and uncertain pending turns do not become archived prompts until their
+delivery is resolved positively;</li>
+<li>existing non-human delivery paths record their origin through the same journal boundary.</li>
+</ul>
+<p>The context&#x27;s frozen name updates when the same live session is renamed, so a normal capture and an
+exit-recovery capture agree with the last title the card showed.</p>
+<h2 id="prompt-collection-at-capture">Prompt collection at capture</h2>
+<p>At scout archive reservation, a focused collector builds one bounded trail:</p>
+<ol>
+<li>Start with <code>task.intent</code> as the initial entry.</li>
+<li>Walk normalized transcript records forward from the context&#x27;s byte offset through a new bounded,
+paged <code>TranscriptMessages.after</code> capability. Do not use <code>window</code> or an unbounded whole-file read.</li>
+<li>Match journaled origins before applying the existing in-memory attribution. Keep user-role turns
+attributed to the human, and exclude every attributed non-human turn.</li>
+<li>Remove the delivered opening turn, which contains the task intent plus the scout contract
+appendix, because the exact intent is already entry one and the appendix is product machinery.</li>
+<li>Merge delivered human journal rows that are absent from the readable transcript. This preserves
+accepted prompts when a transcript is unavailable, rotated or not yet flushed.</li>
+<li>De-duplicate by journal identity first and by normalized text plus timestamp only as a recovery
+fallback. Preserve conversation order.</li>
+<li>Apply the portable entry and byte bounds and carry the honest <code>truncated</code> flag.</li>
+</ol>
+<p>Freeze the resulting title and prompt trail onto <code>ArchiveCaptureJob</code>. Recovery reads only the job,
+never a task or transcript that may already be gone. <code>src/server/archives/capture.ts</code> copies that
+frozen value into the manifest before the existing stage, verify and atomic rename sequence.</p>
+
+<figure class="flow" aria-labelledby="capture-flow-title">
+  <figcaption id="capture-flow-title">Scout prompt context from live work to immutable archive</figcaption>
+  <svg viewBox="0 0 1160 390" role="img" aria-label="Human prompts flow through session delivery into a durable scout episode journal and a harness transcript. Task intent, journal, transcript and visible session name meet in the scout collector, which freezes an archive capture job. The immutable manifest feeds the archive index, search and Scouts reader.">
+    <defs><marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z"/></marker></defs>
+    <g class="edges">
+      <path d="M178 76H235"/><path d="M420 62H490"/><path d="M420 90H490"/>
+      <path d="M175 260H490"/><path d="M662 205H730"/><path d="M905 205H970"/>
+      <path d="M815 232V302"/><path d="M1055 232V302"/>
+    </g>
+    <g class="node human" transform="translate(20 48)"><rect width="158" height="58" rx="13"/><text x="79" y="26">Human prompt</text><text class="sub" x="79" y="44">during scout work</text></g>
+    <g class="node" transform="translate(235 48)"><rect width="185" height="58" rx="13"/><text x="92" y="26">Session delivery</text><text class="sub" x="92" y="44">accepted turn boundary</text></g>
+    <g class="node journal" transform="translate(490 18)"><rect width="190" height="58" rx="13"/><text x="95" y="26">Episode journal</text><text class="sub" x="95" y="44">durable authorship</text></g>
+    <g class="node transcript" transform="translate(490 92)"><rect width="190" height="58" rx="13"/><text x="95" y="26">Harness transcript</text><text class="sub" x="95" y="44">normalized, paged</text></g>
+    <g class="node human" transform="translate(20 232)"><rect width="155" height="58" rx="13"/><text x="77" y="26">Task intent</text><text class="sub" x="77" y="44">exact initial prompt</text></g>
+    <g class="node collector" transform="translate(490 176)"><rect width="172" height="58" rx="13"/><text x="86" y="26">Scout collector</text><text class="sub" x="86" y="44">title + human prompts</text></g>
+    <g class="node bundle" transform="translate(730 176)"><rect width="175" height="58" rx="13"/><text x="87" y="26">Capture job</text><text class="sub" x="87" y="44">frozen for recovery</text></g>
+    <g class="node bundle" transform="translate(970 176)"><rect width="170" height="58" rx="13"/><text x="85" y="26">Manifest</text><text class="sub" x="85" y="44">immutable bundle</text></g>
+    <g class="node final" transform="translate(720 302)"><rect width="190" height="58" rx="13"/><text x="95" y="26">Archive index</text><text class="sub" x="95" y="44">title + prompt search</text></g>
+    <g class="node final" transform="translate(960 302)"><rect width="190" height="58" rx="13"/><text x="95" y="26">Scouts reader</text><text class="sub" x="95" y="44">report + prompt context</text></g>
+    <text class="label" x="575" y="168">visible session name also enters here</text>
+  </svg>
+  <p>The report stays primary. The new path freezes only the concise title and attributed human prompts before the existing verified publication step.</p>
+</figure>
+<h2 id="reader-behavior">Reader behavior</h2>
+<p>The Scouts rail continues to render <code>archive.title</code>; changing the capture source makes it short
+without adding a second title rule in React. The selected reader changes its heading from the
+clipped <code>question</code> preview to <code>detail.title</code> and adds a <strong>Prompt context</strong> section before the report:</p>
+<ul>
+<li>the initial request is labelled <strong>Original request</strong>;</li>
+<li>later entries are labelled <strong>Follow-up</strong> and show a timestamp when one was recorded;</li>
+<li>prompts render as escaped plain text, not Markdown or HTML;</li>
+<li>a truncated trail says that older or oversized prompt text was omitted;</li>
+<li>an older archive with no prompt trail keeps its current question heading and report reader.</li>
+</ul>
+<p>Search snippets name their source as <code>prompt</code>. Update the search placeholder to mention prompts.
+The report preview, evidence spine, sandbox, deletion and bundle paths do not change.</p>
+<h2 id="compatibility-and-migration">Compatibility and migration</h2>
+<ul>
+<li>Add database tables and capture-job columns through <code>src/server/db.ts</code>&#x27;s existing migration path.
+Fresh and upgraded databases must both open.</li>
+<li>Existing <code>archive_capture_jobs</code> rows read with an empty prompt trail and their existing title.</li>
+<li>Existing manifests omit <code>prompts</code> and continue to parse. No published bundle is rewritten.</li>
+<li>New manifests remain format version 1 because unknown fields are already ignored by older version
+1 readers. New search vocabulary is appended, never renamed or reordered.</li>
+<li>The filesystem bundle remains canonical. SQLite prompt context is needed only until the archive
+job freezes it; the derived archive index remains rebuildable from manifests.</li>
+</ul>
+<h2 id="success-criteria">Success criteria</h2>
+<ol>
+<li>A newly archived scout&#x27;s rail title equals the name shown on its session card, not the task&#x27;s
+long prompt.</li>
+<li>The original task intent is preserved beyond the 1,000-character question preview, subject only
+to explicit archive bounds that report truncation.</li>
+<li>Human follow-up prompts from the scout&#x27;s work episode appear in chronological order and are
+searchable after the task, session, worktree and source transcript are gone.</li>
+<li>Foreman, Workflow and harness instructions never appear as human prompt context, including after
+a daemon restart between delivery and capture.</li>
+<li>Assistant prose, tools, hidden reasoning and the scout appendix are not archived.</li>
+<li>A queued then recalled or failed prompt is not archived as if the agent received it.</li>
+<li>Capture recovery publishes the exact title and prompt trail already frozen on its job.</li>
+<li>Older archives and unfinished pre-migration capture jobs continue to parse and render.</li>
+<li>The report remains required and immutable; prompt context never satisfies scout completion.</li>
+<li>The behavior works for fresh dispatch, assignment, terminal and SDK sessions, with Pi using its
+launch-time prompt boundary.</li>
+</ol>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li>Archiving assistant answers, tool traffic, system prompts, hidden reasoning or full transcripts.</li>
+<li>Reconstructing prompt trails for already-published archives.</li>
+<li>Editing a published archive when somebody messages the old session later.</li>
+<li>Replacing model-generated session naming or generating another title during capture.</li>
+<li>Importing arbitrary terminal keystrokes that never become a normalized user turn.</li>
+<li>Changing scout report authoring, evidence selection, retention, deletion or sandbox policy.</li>
+<li>Changes in <code>ai-conductor</code>; the scout task gateway, archive format, capture and Scouts UI all live in
+<code>ai-harness</code>.</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<p>Focused unit and HTTP tests must cover migrations, prompt-journal delivery semantics, transcript
+paging and attribution, manifest parse and serialization, capture-job recovery, index rebuild and
+search. UI work requires Playwright coverage using fake agents and an isolated <code>MISSION_HOME</code>.</p>
+<p>The complete feature finishes with:</p>
+<pre><code class="language-sh">npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e -- e2e/specs/scout-archive.spec.ts
+</code></pre>
+<p>The browser acceptance flow creates a scout whose task title is deliberately long, verifies the
+short live card name, sends a human follow-up, lets a non-human instruction pass through the same
+conversation, completes capture, removes the live session, then proves the Scouts rail, reader and
+search preserve the right title and only the human prompt context.</p></article></div>
+  <footer>Source of truth: plan.md · static HTML · no external requests</footer>
+</body>
+</html>

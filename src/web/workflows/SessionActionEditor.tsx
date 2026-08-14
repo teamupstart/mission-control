@@ -757,13 +757,21 @@ export function SessionActionEditor({
     (choice) => choice.kind === draft.completionKind && choice.disabled,
   );
   /*
-   * What the closed chip reads. Off the CHOICE rather than off the shared table directly, so
-   * a daemon a version ahead labels its own adapter - `completionChoices` already falls back
-   * to the shared wording when the answer has not arrived, and the selected kind is always
-   * one of the choices (offered, or retained).
+   * What the closed chip reads: the SHARED clause, by the same call the contract line beneath
+   * it makes.
+   *
+   * This read the daemon's `label` off the matching choice, which was wrong in the one way
+   * this screen cannot afford. The chip and the contract line are two views of a single value
+   * - that is the whole reason the line reads letter for letter like the chip above it - and
+   * sourcing them differently made "the completion sentence has exactly one owner" false the
+   * moment a daemon a version ahead worded its capability differently. Two strings for one
+   * stored completion, on one screen, with nothing to say which was the contract.
+   *
+   * The `select` inside the popover still lists what the DAEMON said, in the daemon's words,
+   * because it is a picker over what that daemon can prove rather than a statement of what
+   * this action promises. `completionChoices` owns that, unchanged.
    */
-  const completionValue = choices.find((choice) => choice.kind === draft.completionKind)?.label
-    ?? sessionActionCompletionLabel({ kind: draft.completionKind });
+  const completionValue = sessionActionCompletionLabel({ kind: draft.completionKind });
   const promptOverLimit = promptBytes > WORKFLOW_LIMITS.sessionActionPromptBytes;
   const promptPath = sessionActionPromptPath(draft.name);
   /*

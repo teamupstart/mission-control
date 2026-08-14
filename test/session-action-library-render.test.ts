@@ -318,6 +318,37 @@ test("the contract line states the sentence the two chips form, in the shared wo
   }
 });
 
+test("the chip and the contract line print ONE string, whatever the daemon calls it", () => {
+  /*
+   * The review finding this exists for. The chip read the matching capability's `label` off
+   * the daemon's answer while the sentence beneath it called the shared helper - so a daemon
+   * a version ahead, wording its own capability differently, put TWO contract strings for one
+   * stored completion on one screen, with nothing to say which was the promise.
+   *
+   * The kinds are append-only and the wire carries a label, so this is a state a future
+   * daemon can reach without anything here being edited. Both surfaces read the one owner.
+   */
+  const reworded: SessionActionCompletionCapability[] = [{
+    kind: "session_turn",
+    available: true,
+    label: "The turn wraps up (a newer daemon's wording)",
+    unavailableReason: null,
+  }];
+  const html = editor(action(), undefined, reworded);
+
+  const shared = SESSION_ACTION_COMPLETION_CAPABILITIES.session_turn.label;
+  assert.match(html, new RegExp(`<span class="lib-chip-v">${shared}</span>`));
+  assert.match(html, new RegExp(`<b>${shared}</b>`));
+  // Exactly one wording of the contract reaches the face of this screen.
+  assert.doesNotMatch(html, /a newer daemon's wording/);
+
+  // The picker is the one surface that still speaks the daemon's words, because it lists what
+  // THAT daemon can prove rather than what this action promises. Asserted so the fix above is
+  // read as "the contract has one owner" and not as "the capability label is ignored".
+  const offered = completionChoices(reworded, "session_turn");
+  assert.equal(offered[0]!.label, "The turn wraps up (a newer daemon's wording)");
+});
+
 test("an action already naming an unavailable adapter keeps it, marked, and says why", () => {
   const html = editor(action({ completion: { kind: "pull_request" } }));
   // Marked on the chip's FACE and readable while shut. It used to be a disabled option inside

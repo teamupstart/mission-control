@@ -160,6 +160,10 @@ decided. Everything left over is the guidance editor.
 
 ### The Action detail screen
 
+![The Action detail screen: the rail grouped Built-in and Yours with contract sub-labels, the
+required-skill and completion chips, and the contract line beneath
+them](images/action-detail.png)
+
 The same rail and workspace as Personas, because an operator moving between them should be
 moving through one surface with different contents. What is specific to an Action is that it is
 the only Library asset carrying a **machine-checked contract**: the bound session has to be able

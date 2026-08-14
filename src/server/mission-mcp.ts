@@ -10,9 +10,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import type { Task } from "@shared/types.ts";
+import type { Task, TaskKind } from "@shared/types.ts";
 import { STATE_DIR, mcpServerPath } from "./config.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
+import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { run } from "./util/exec.ts";
 
@@ -47,9 +48,9 @@ export const MISSION_MCP_SERVER_NAME = "mission-control";
  */
 export const MISSION_MCP_TOOLS = [
   "share_plan",
-  "request_plan_decisions",
+  PLAN_DECISIONS_TOOL,
   "request_review",
-  "create_task",
+  PLAN_SCHEDULING_TOOL,
   "request_input",
   "report_status",
   SUBMIT_ENSEMBLE_RESULT_TOOL,
@@ -76,26 +77,47 @@ export interface MissionMcpRequirement {
 }
 
 /**
+ * What each KIND has to be able to call, whatever its caller asked for.
+ *
+ * A scout has to be able to call `submit_scout_artifacts`, because that is the only way its
+ * task can reach `done` - a scout launched without it would work to a finished report and then
+ * have no way to hand it over, which is the same dead end an ensemble member without
+ * `submit_ensemble_result` reaches. A plan has to be able to ask its human, because
+ * `request_plan_decisions` is how the plan is shown for review AND how the phased follow-up is
+ * offered, and to file tasks, because scheduling the phases is what taking that follow-up
+ * means. In both cases the tools are named in the prompt the daemon composes, and a prompt
+ * naming a tool the launch did not pre-approve produces an agent that stops on a permission
+ * prompt - which reads as an agent that simply sat there.
+ *
+ * `Record<TaskKind, …>` rather than a chain of comparisons, matching `KIND_CONTRACT` in
+ * `task-contract.ts`: a fourth kind does not compile until it has said what its launch needs,
+ * including saying it needs nothing. `ship` is that empty case and it is not a placeholder -
+ * it is the reason every existing dispatch's argv is unchanged.
+ */
+const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
+  ship: [],
+  scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
+  plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL],
+};
+
+/**
  * The requirement a task's KIND imposes, unioned with whatever its caller asked for.
  *
- * A scout has to be able to call `submit_scout_artifacts`, because that is now the only way
- * its task can reach `done` - a scout launched without it would work to a finished report and
- * then have no way to hand it over, which is the same dead end an ensemble member without
- * `submit_ensemble_result` reaches. So the requirement is derived from the durable
- * `Task.kind` here, once, rather than left to whichever caller happened to dispatch it: the
- * backlog autopilot, the manual launch, a schedule, and a retry must all produce the same
- * launch.
+ * Derived from the durable `Task.kind` here, once, rather than left to whichever caller
+ * happened to dispatch it: the backlog autopilot, the manual launch, a schedule, and a retry
+ * must all produce the same launch.
  *
- * A ship task gets its caller's requirement back UNCHANGED, `null` included, so every
- * existing dispatch's argv stays byte-identical.
+ * A kind with no requirement of its own gets its caller's requirement back UNCHANGED - the
+ * same object, `null` included - so every existing ship dispatch's argv stays byte-identical.
  */
-export function scoutMissionMcpRequirement(
+export function kindMissionMcpRequirement(
   task: Pick<Task, "kind">,
   requested: MissionMcpRequirement | null,
 ): MissionMcpRequirement | null {
-  if (task.kind !== "scout") return requested;
+  const required = KIND_MISSION_MCP_TOOLS[task.kind];
+  if (required.length === 0) return requested;
   const tools = new Set<MissionMcpTool>(requested?.tools ?? []);
-  tools.add(SUBMIT_SCOUT_ARTIFACTS_TOOL);
+  for (const tool of required) tools.add(tool);
   return { tools: [...tools] };
 }
 

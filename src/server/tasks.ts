@@ -51,9 +51,11 @@ import {
   missionMcpDescriptor,
   verifyMissionMcpToolsForRunningSession,
 } from "./mission-mcp.ts";
-import { withScoutReportContract } from "./scouts/prompt.ts";
+import { isPlanTask } from "./plans/prompt.ts";
+import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
+import { withTaskKindContract } from "./task-contract.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -311,6 +313,14 @@ export interface AssignOptions {
   verifyMissionMcpToolsForRunningSession?: typeof verifyMissionMcpToolsForRunningSession;
   /** Publish the checkout-scoped bearer before a scout's prompt is delivered. */
   provisionScoutCredential?: typeof provisionScoutSubmissionCredential;
+  /**
+   * Which planning-skill invocations THIS SESSION could be told to run.
+   *
+   * A seam only so a test can drive the plan refusal, and the watermark-aware resolver by
+   * construction: an assignment types into a conversation that already exists, and one that
+   * has not acknowledged the current skills generation is still holding the previous set.
+   */
+  requirePlanSkills?: typeof planSkillsForSession;
 }
 
 export interface CloseMergedSessionDeps {
@@ -1485,6 +1495,13 @@ export class TaskManager {
           task: t,
         };
       }
+      // A plan whose contract cannot be honoured is turned away HERE, synchronously, rather
+      // than left to fail on the card a few seconds later. The Dispatcher refuses it too and
+      // that is not redundancy: this is the answer the operator's click and the autopilot's
+      // pass both read, and that one is the backstop for every door that does not come
+      // through here. Null for every other kind, so nothing else changes.
+      const planBlock = planDispatchBlock(t);
+      if (planBlock) return { ok: false, error: planBlock, task: t };
       // Forwarded whole: `TaskDispatchOptions` describes the launch, and the Dispatcher is
       // the layer that acts on it - including `defaultModel`, which it ranks between the
       // task's own pin and the Harnesses panel default (see `Dispatcher.dispatch`).
@@ -1988,6 +2005,23 @@ export class TaskManager {
       }
     }
 
+    // The plan equivalent of the scout probes above, and refused in the same place for the
+    // same reason: everything below this line is destructive, so a plan whose contract cannot
+    // be honoured has to be turned away with the agent's checkout still intact rather than
+    // after it has been reset for work it can provably not do.
+    //
+    // `planSkillsForSession`, NOT the launch-time resolver. This types into a conversation
+    // that already exists, and a session that has not acknowledged the current skills
+    // generation is still holding the previous set - so the launch-time answer would have this
+    // seam paste an invocation naming a skill the agent cannot load, which is exactly the
+    // silent degradation the watermark rung exists to turn into a refusal.
+    const planSkills = isPlanTask(t)
+      ? (opts.requirePlanSkills ?? planSkillsForSession)(s)
+      : null;
+    if (planSkills && !planSkills.ok) {
+      return { ok: false, error: planSkills.message, scope: "task" };
+    }
+
     // A reused agent starts the new task from origin's default branch with a cleared
     // context, not wherever the last one left it.
     //
@@ -2106,14 +2140,18 @@ export class TaskManager {
     // the agent died between the drop and here) the task must stay in the backlog,
     // droppable again, rather than sit marked `running` with nothing running it.
     //
-    // The scout contract rides on the SAME text, composed here rather than in the dispatcher,
+    // The kind's contract rides on the SAME text, composed here rather than in the dispatcher,
     // because this seam types `ready.intent` straight into a live pane and a dispatcher-only
-    // helper would leave every assigned scout with no idea it owed an HTML page. `assign`
-    // refuses a multi-repo task, so the one repository slot this resolves is the session's own
-    // checkout - which is also the tree the capture path will read.
+    // helper would leave every assigned scout with no idea it owed an HTML page and every
+    // assigned plan with no idea which skill to reach for. `assign` refuses a multi-repo task,
+    // so the one repository slot this resolves is the session's own checkout - which is also
+    // the tree the capture path will read.
     const r = await inject(
       this.registry.getSession(s.id) ?? s,
-      withScoutReportContract(ready, ready.intent, s.cwd),
+      withTaskKindContract(ready, ready.intent, {
+        fallbackRoot: s.cwd,
+        planSkills: planSkills?.ok ? planSkills.commands : null,
+      }),
       undefined,
       () => this.registry.promptResourceBlockerForSession(s.id),
     );

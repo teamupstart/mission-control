@@ -14,6 +14,8 @@ const CODEX_BIN = resolveAgentBin("codex");
 const DEFAULT_TIMEOUT_MS = Number(process.env.MISSION_CODEX_TIMEOUT_MS || 120_000);
 const FAILURE_DETAIL_MAX = 300;
 const live = new Set<ReturnType<typeof spawn>>();
+/** Schema directories whose runs have not finished, including during synchronous shutdown. */
+const liveSchemaDirs = new Set<string>();
 
 function headlessEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, MISSION_HEADLESS: "1" };
@@ -34,6 +36,11 @@ function killTree(child: ReturnType<typeof spawn>): void {
 function killLiveCodexRuns(): void {
   for (const child of live) killTree(child);
   live.clear();
+  // Foreman's SIGINT/SIGTERM path exits synchronously after killing live model runs, so a
+  // promise's `finally` is not guaranteed to run. Sweep the exact directories minted by
+  // `materializeSchema` here as well; its ordinary cleanup is idempotent with this path.
+  for (const dir of liveSchemaDirs) rmSync(dir, { recursive: true, force: true });
+  liveSchemaDirs.clear();
 }
 
 let exitHooked = false;
@@ -164,11 +171,15 @@ function materializeSchema(schema: Record<string, unknown> | undefined): Materia
     rmSync(dir, { recursive: true, force: true });
     throw err;
   }
+  liveSchemaDirs.add(dir);
   return {
     path,
     // `dir` is a unique directory minted above and contains only the file this function
     // wrote. Never broaden this to the shared temp directory or a caller-provided path.
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => {
+      liveSchemaDirs.delete(dir);
+      rmSync(dir, { recursive: true, force: true });
+    },
   };
 }
 

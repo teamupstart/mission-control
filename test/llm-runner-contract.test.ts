@@ -84,6 +84,9 @@ if [ "$RUN_CODEX_FAIL" = "1" ]; then
   printf '%s\\n' '{"type":"turn.failed","error":{"message":"schema validation failed: missing tasks"}}'
   exit 1
 fi
+if [ "$RUN_CODEX_WAIT" = "1" ]; then
+  sleep 30
+fi
 printf '%s\\n' '{"type":"thread.started","thread_id":"thread-abc"}'
 printf '%s\\n' '{"type":"turn.started"}'
 printf '%s\\n' '{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"ignore me"}}'
@@ -134,6 +137,14 @@ function flag(name: string): string | null {
 function clearRecording(): void {
   for (const f of [RUN_ARGS, RUN_CWD, RUN_ENV, RUN_SCHEMA_PATH, RUN_SCHEMA]) {
     rmSync(f, { force: true });
+  }
+}
+
+async function assertSoon(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail("condition did not become true before timeout");
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
 
@@ -358,6 +369,27 @@ test("Codex keeps a bounded JSON-stream failure reason without leaking agent tex
     assert.equal(existsSync(schemaPath), false, "a failed run kept its schema file");
   } finally {
     delete process.env.RUN_CODEX_FAIL;
+  }
+});
+
+test("Codex cleans a live schema synchronously when shutdown kills the run", async () => {
+  clearRecording();
+  process.env.RUN_CODEX_WAIT = "1";
+  const run = codexRunner.run("wait for shutdown", {
+    timeoutMs: 5000,
+    schema: { type: "object" },
+  });
+  try {
+    await assertSoon(() => existsSync(RUN_SCHEMA_PATH));
+    const schemaPath = lines(RUN_SCHEMA_PATH)[0]!;
+    assert.equal(existsSync(schemaPath), true);
+
+    codexRunner.killLiveRuns?.();
+    assert.equal(existsSync(schemaPath), false, "shutdown left the live schema directory behind");
+    await assert.rejects(run, /codex exited/);
+  } finally {
+    delete process.env.RUN_CODEX_WAIT;
+    codexRunner.killLiveRuns?.();
   }
 });
 

@@ -19,6 +19,7 @@ import {
   workflowCommandFact,
   workflowCommandStatusSentence,
   WORKFLOW_CHECK_SLOTS,
+  WORKFLOW_COMMAND_PURPOSE,
   WORKFLOW_COMMAND_UNKNOWN,
   COMMAND_AUTHORIZATION_NOTE,
   parseCheckCommand,
@@ -124,6 +125,13 @@ test("the editor states, once, that saving executes nothing", () => {
   assert.match(html, /granted the Workflows cell in Trust/);
   // ONE note, not a warning banner around every control.
   assert.equal(html.match(/class="wf-command-note"/g)?.length, 1);
+  // And it OPENS with the slot's purpose, which is the whole reason the rail was allowed to
+  // stop carrying that sentence on all four rows. Pinned as the note's first words rather
+  // than as "appears somewhere", because "somewhere" is what a reader cannot check.
+  assert.match(
+    html,
+    new RegExp(`class="wf-command-note">${WORKFLOW_COMMAND_PURPOSE.test} Saving stores an argv`),
+  );
 });
 
 test("both fields are offered, with the default named as repository-neutral", () => {

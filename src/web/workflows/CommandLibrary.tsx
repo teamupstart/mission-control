@@ -700,7 +700,15 @@ export function CommandLibrary({
           {/* The one execution note on this surface. Stated once, beside the form, rather than
               repeated around every input: what is authorized is a machine-wide choice made in
               Settings and a per-repository grant made in Trust, and repeating it here would
-              imply this box is a third gate. */}
+              imply this box is a third gate.
+
+              It OPENS with `WORKFLOW_COMMAND_PURPOSE[selectedSlot]`, and that is now the only
+              place on this screen the purpose is drawn as text - which is what let the rail
+              drop it. Four rows each carrying the same machine-independent sentence told you
+              nothing about which row you wanted; read once, for the slot you actually opened,
+              it is the sentence that says why this slot exists. The rail keeps it in each
+              row's tooltip. Anything that moves this line moves the rail's justification with
+              it, and `docs/library-and-line.md` describes the pair. */}
           <p className="wf-command-note">
             {WORKFLOW_COMMAND_PURPOSE[selectedSlot]}{" "}
             Saving stores an argv - it runs nothing. A workflow reaching the{" "}

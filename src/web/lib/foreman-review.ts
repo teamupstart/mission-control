@@ -10,6 +10,15 @@ export interface RecommendationChoice {
   detail?: string;
   /** Pane menus number their choices. Durable review decisions do not. */
   number?: number;
+  /**
+   * The question or decision this choice belongs to.
+   *
+   * One form can ask several questions, and their option lists are flattened into a single
+   * list of choices before matching. Without the grouping, two questions that both offer
+   * "Yes" are indistinguishable to a matcher reading one blob of prose. Omit it only for a
+   * form that asks exactly one question.
+   */
+  group?: string;
 }
 
 /** A live Foreman note only; answered and skipped notes belong to history. */
@@ -140,10 +149,25 @@ export function recommendedChoiceKeys(
   if (!recommendation?.trim()) return new Set();
   const prose = folded(recommendation);
 
+  // Which questions offer each label. A form can ask several questions at once and their
+  // options arrive here flattened, so the same wording can belong to two of them - two plain
+  // yes/no questions being the obvious case. Prose naming that wording once cannot say which
+  // question it meant, and marking both would claim Foreman picked an answer to a question it
+  // never addressed. Ambiguity resolves to NO mark, which is the same rule the rest of this
+  // matcher follows: the sidecar still carries the full reasoning either way.
+  const groupsForLabel = new Map<string, Set<string>>();
+  for (const choice of choices) {
+    const key = folded(choice.label);
+    const groups = groupsForLabel.get(key) ?? new Set<string>();
+    groups.add(choice.group ?? "");
+    groupsForLabel.set(key, groups);
+  }
+
   // The text that actually matched, per choice, keeping the longest when a choice offers a
   // hinted and unhinted spelling of itself.
   const hits = new Map<string, string>();
   for (const choice of choices) {
+    if ((groupsForLabel.get(folded(choice.label))?.size ?? 1) > 1) continue;
     const [longest] = labelsForMatch(choice.label)
       .filter((label) => namesLabel(prose, label))
       .sort((a, b) => b.length - a.length);

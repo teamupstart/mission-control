@@ -97,6 +97,9 @@ export function ReviewCard({
         key: decisionChoiceKey(decision.id, option.id),
         label: option.label,
         detail: option.detail,
+        // A review can carry several decisions, and two of them may offer the same wording.
+        // Naming the decision keeps a match on one from marking its twin on another.
+        group: decision.id,
       })),
     ) ?? [];
   const recommendedKeys = recommendedChoiceKeys(

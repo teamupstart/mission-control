@@ -159,6 +159,39 @@ test("a label that is a prefix of another marks only the option actually named",
   assert.deepEqual([...recommendedChoiceKeys("Just merge now.", choices)], ["now"]);
 });
 
+test("a label offered by two questions is attributed to neither", () => {
+  // One form asks several questions and their options arrive here flattened. Two plain
+  // yes/no questions are the ordinary case, and prose naming "yes" once cannot say which
+  // question it answered - so marking both would claim Foreman decided a question it never
+  // addressed. The rule is the one the rest of the matcher follows: uncertainty marks nothing.
+  const choices = [
+    { key: "deploy:yes", label: "Yes", group: "deploy" },
+    { key: "deploy:no", label: "No", group: "deploy" },
+    { key: "notify:yes", label: "Yes", group: "notify" },
+    { key: "notify:no", label: "No", group: "notify" },
+  ];
+  assert.deepEqual([...recommendedChoiceKeys("Yes, go ahead.", choices)], []);
+
+  // A label unique to one question is still attributable, even alongside the ambiguous pair.
+  const mixed = [
+    ...choices,
+    { key: "deploy:later", label: "Defer until Monday", group: "deploy" },
+  ];
+  assert.deepEqual(
+    [...recommendedChoiceKeys("Defer until Monday.", mixed)],
+    ["deploy:later"],
+  );
+
+  // A single-question form leaves `group` unset, and must keep marking as it always did.
+  assert.deepEqual(
+    [...recommendedChoiceKeys("Yes, go ahead.", [
+      { key: "yes", label: "Yes" },
+      { key: "no", label: "No" },
+    ])],
+    ["yes"],
+  );
+});
+
 test("the sidecar stops its own clicks reaching the card behind it", () => {
   // A portal moves the DOM node but not the React tree, so a click inside the sidecar still
   // bubbles to this component's JSX ancestors. PaneDialogPrompt renders it as a SIBLING of

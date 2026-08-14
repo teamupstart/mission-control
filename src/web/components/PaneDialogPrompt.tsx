@@ -546,8 +546,11 @@ function choicesForDialog(dialog: PaneDialog): RecommendationChoice[] {
         key: driverChoiceKey(question.question, option),
         label: option.label,
         detail: option.detail,
-        // Multi-question forms repeat numbers per question, so label matching is the only
-        // unambiguous route and the numbered fallback is deliberately disabled.
+        // Multi-question forms repeat numbers per question, so the numbered fallback is
+        // deliberately disabled here. The group carries which question this row belongs to,
+        // because labels repeat across questions too - two yes/no questions being the plain
+        // case - and a label offered by more than one of them is not attributable from prose.
+        group: question.question,
       })),
     );
   }

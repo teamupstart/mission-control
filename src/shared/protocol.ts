@@ -2592,6 +2592,18 @@ export const PersonaProvenanceSchema = z.object({
   sourcePath: PersonaSourcePathSchema,
   sourceRepo: z.string().min(1).max(4096).nullable(),
   pluginVersion: z.string().min(1).max(200).nullable(),
+  /**
+   * `.default(null)` on both of these is what makes them additive rather than a migration.
+   *
+   * This schema parses blobs a PREVIOUS build wrote, and those blobs have no key here at all.
+   * Without the default they would fail the shape, and the store's tolerant reader would
+   * degrade every provenance record written before this build to null - silently stripping the
+   * upstream badge off Personas an operator imported by hand and had working. A default reads
+   * the absent key as what it means: this document was imported before catalogs existed, so it
+   * belongs to no catalog.
+   */
+  sourceKey: z.string().min(1).max(4096).nullable().default(null),
+  catalogLabel: z.string().min(1).max(200).nullable().default(null),
   contentSha256: z.string().regex(/^[0-9a-f]{64}$/, "contentSha256 must be lowercase hex sha256"),
   importedAt: z.number().int().nonnegative(),
 });

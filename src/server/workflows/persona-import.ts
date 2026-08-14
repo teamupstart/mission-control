@@ -50,6 +50,30 @@ const ANCESTOR_LIMIT = 40;
 /** A plugin manifest is a small JSON file; anything larger is not one worth reading. */
 const PLUGIN_MANIFEST_MAX_BYTES = 64 * 1024;
 
+/**
+ * Which plugin catalog a document was enumerated FROM, when it was enumerated rather than named.
+ *
+ * Null at every operator-driven import, and that is what keeps this module generic: the caller
+ * that knows a catalog's name passes it in, and nothing here can tell one catalog from another.
+ * One type rather than two structural literals, so widening it cannot leave `importFromFile` and
+ * `readImportedSource` disagreeing about what a catalog is.
+ */
+export interface PersonaImportCatalog {
+  /** Version-independent identity, stored as `provenance.sourceKey`. */
+  sourceKey: string;
+  /** What the UI credits the document to, stored as `provenance.catalogLabel`. */
+  catalogLabel: string;
+  /**
+   * The version the enumerating caller already knows, used ONLY when the document's own plugin
+   * manifest cannot supply one.
+   *
+   * The manifest stays authoritative because it is a fact about where the BYTES live, which is
+   * the rule the rest of this module follows. This is the weaker second answer: an install whose
+   * record names a version is still better provenance than `null`.
+   */
+  pluginVersion?: string | null;
+}
+
 export interface PersonaSource {
   /** The path as provenance will record it: absolute, `.`/`..` resolved, links intact. */
   sourcePath: string;
@@ -282,6 +306,7 @@ export async function readSourceRepo(filePath: string): Promise<string | null> {
 export async function readImportedSource(
   requestedPath: string,
   now: number,
+  catalog: PersonaImportCatalog | null = null,
 ): Promise<{ source: PersonaSource; provenance: PersonaProvenance }> {
   const source = await readPersonaSource(requestedPath);
   // From the RESOLVED path: what owns this document is a property of where its bytes live, and a
@@ -295,7 +320,9 @@ export async function readImportedSource(
     provenance: {
       sourcePath: source.sourcePath,
       sourceRepo,
-      pluginVersion,
+      pluginVersion: pluginVersion ?? catalog?.pluginVersion ?? null,
+      sourceKey: catalog?.sourceKey ?? null,
+      catalogLabel: catalog?.catalogLabel ?? null,
       contentSha256: source.contentSha256,
       importedAt: now,
     },

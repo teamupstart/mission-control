@@ -7,6 +7,8 @@ import {
   type DiffFile,
   type DiffFileTarget,
 } from "../lib/diff.ts";
+import { chordFromEvent, useKeybindings } from "../lib/keybindings.ts";
+import { Keycap } from "./Keycap.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -131,6 +133,10 @@ function DiffViewerContent({
 
   const activeIdx = files.length > 0 ? Math.min(selected, files.length - 1) : -1;
   const active = activeIdx >= 0 ? files[activeIdx] : null;
+  const activeTarget = active && diff?.ok
+    ? diffFileOpenTarget(active, diff.repoRoot, session.cwd)
+    : null;
+  const { bindings } = useKeybindings();
 
   // Escape belongs to the Overlay in Cards (App suppresses grid keys while one is open,
   // so the overlay layer closes itself). File navigation is this reader's own: ↑/↓
@@ -139,6 +145,13 @@ function DiffViewerContent({
   // the embedded reader instead of changing the Console or Board selection.
   const onViewerKey = useCallback(
     (e: KeyboardEvent) => {
+      if (chordFromEvent(e) === bindings.openDiffFile) {
+        if (activeTarget?.path && onOpenInFiles) {
+          e.preventDefault();
+          onOpenInFiles(activeTarget.path);
+        }
+        return;
+      }
       const next = e.key === "ArrowDown" || e.key === "j";
       const previous = e.key === "ArrowUp" || e.key === "k";
       if (!next && !previous) return;
@@ -150,7 +163,7 @@ function DiffViewerContent({
         setSelected((i) => Math.max(0, i - 1));
       }
     },
-    [files.length],
+    [activeTarget?.path, bindings.openDiffFile, files.length, onOpenInFiles],
   );
   if (onViewerKeyRef) onViewerKeyRef.current = onViewerKey;
 
@@ -246,10 +259,10 @@ function DiffViewerContent({
               )}
             </nav>
             <div className="diff-detail" ref={detailRef}>
-              {active && (
+              {active && activeTarget && (
                 <FileDiff
                   file={active}
-                  target={diffFileOpenTarget(active, diff.repoRoot, session.cwd)}
+                  target={activeTarget}
                   onOpenInFiles={onOpenInFiles}
                 />
               )}
@@ -333,6 +346,7 @@ function FileDiff({
                 if (target.path) onOpenInFiles(target.path);
               }}
             >
+              <Keycap action="openDiffFile" />
               Open in Files
               <span className="diff-open-file-glyph" aria-hidden>
                 ↗

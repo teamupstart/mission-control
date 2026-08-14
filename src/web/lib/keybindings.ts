@@ -31,6 +31,7 @@ export type ActionId =
   | "findInConversation"
   | "diff"
   | "files"
+  | "openDiffFile"
   | "sessionWorkflows"
   | "filePicker"
   | "send"
@@ -173,6 +174,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Open files",
     description: "Open the file editor for the expanded or console session.",
     defaultBinding: "shift+f",
+    group: "selection",
+  },
+  {
+    id: "openDiffFile",
+    label: "Open in Files",
+    description: "Open the currently displayed diff file in the Files tab.",
+    defaultBinding: "l",
     group: "selection",
   },
   {

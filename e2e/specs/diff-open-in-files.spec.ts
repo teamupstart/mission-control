@@ -86,7 +86,7 @@ async function sessionCwd(daemon: DaemonHandle): Promise<string> {
   return sessions[0]!.cwd!;
 }
 
-test("a changed HTML file in the Diff tab opens rendered in the Files tab", async ({
+test("the default l shortcut opens the displayed HTML diff rendered in Files", async ({
   dashboard,
   daemon,
 }) => {
@@ -119,7 +119,7 @@ test("a changed HTML file in the Diff tab opens rendered in the Files tab", asyn
   const jump = dashboard.getByRole("button", { name: "Open in Files" });
   await expect(jump).toBeVisible();
   await expect(jump).toHaveAttribute("aria-disabled", "false");
-  await jump.click();
+  await dashboard.keyboard.press("l");
 
   // The tab actually moved...
   await expect(tabs.getByRole("tab", { name: /Files$/ })).toHaveAttribute("aria-selected", "true");

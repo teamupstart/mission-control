@@ -16,6 +16,7 @@ import { checkRuntimeSupport, type CheckRuntimeSupport } from "./check-identity.
 import { resolveCapturedCommit } from "./commit-id.ts";
 import {
   createCheckGroupRecovery,
+  DEFAULT_CHECK_TIMEOUT_MS,
   runSupervisedCheck,
   type CheckSpawnOutcome,
   type CheckSupervisorLookup,
@@ -73,13 +74,18 @@ export interface CheckAttemptRef {
   nodeId: string;
 }
 
+/** Test suites get the larger budget; faster check slots keep the supervisor default. */
+export function defaultCheckTimeoutMs(slot: CheckExecutionRequest["slot"]): number {
+  return slot === "test" ? 20 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
+}
+
 /** How the composed runtime is driven, and every seam a test needs to drive it without a pool. */
 export interface CheckRuntimeDeps {
   /** Defaults to the real gated supervisor. */
   supervise?: typeof runSupervisedCheck;
   /** Defaults to the platform probe. Asked once per check, before anything is leased. */
   platform?: () => CheckRuntimeSupport;
-  /** How long one check command gets. Defaults to the supervisor's own value. */
+  /** How long one check command gets. Overrides the slot-specific production defaults. */
   timeoutMs?: number;
   /** Teardown timings, for both live cancellation and startup recovery. */
   teardown?: CheckGroupTeardownOptions;
@@ -213,7 +219,7 @@ export class CheckRuntime {
           // unrelated checkout and report the answer as if it were about this submission.
           leasePath,
           workingSubpath: request.workingSubpath,
-          timeoutMs: this.timeoutMs,
+          timeoutMs: this.timeoutMs ?? defaultCheckTimeoutMs(request.slot),
         },
         {
           registry: this.leases.processes,

@@ -573,6 +573,43 @@ function fixedSupervisor(outcome: CheckSpawnOutcome): typeof import("../src/serv
   };
 }
 
+test("test commands get twenty minutes while typecheck keeps ten", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const pool = fakePool(repoRoot, 1);
+  const leases = new CheckLeaseManager(db, {
+    cli: pool.cli,
+    pin: pinLeasedWorktree,
+    verifyBase: verifyPinnedBase,
+    treehouseInstalled: TREEHOUSE_PRESENT,
+  });
+  const timeouts: number[] = [];
+  const runtime = new CheckRuntime(leases, {
+    leaseStore: leaseRows,
+    platform: () => ({ supported: true }),
+    supervise: async (request) => {
+      timeouts.push(request.timeoutMs ?? -1);
+      return {
+        result: { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 },
+        emptiness: "empty",
+        supervisor: null,
+      };
+    },
+  });
+
+  for (const slot of ["test", "typecheck"] as const) {
+    const outcome = await runtime.executorFor(attemptRef())({
+      slot,
+      command: PASSES,
+      repoRoot,
+      workingSubpath: "",
+      headSha,
+    });
+    assert.equal(outcome.kind, "exited");
+  }
+
+  assert.deepEqual(timeouts, [20 * 60_000, 10 * 60_000]);
+});
+
 test("an infrastructure result is not returned until the lease is resolved", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 2);

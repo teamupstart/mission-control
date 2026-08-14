@@ -62,18 +62,33 @@ This is the phase a person sees.
 
 ## Implementation steps
 
-### 1. Derive and partition
+### 1. Derive and partition, all at one round
 
-In `WorkflowRunView`, call `runChangeWorklist(detail)` once. Partition by `state` into
-`blocking` and `archive`. Keep the existing `reviewAttempts` derivation for checks and for the
-`Passed` segment.
+In `WorkflowRunView`, call `runChangeWorklist(detail, viewed?.round ?? null)` once. Partition by
+`state` into `blocking` and `archive`. Keep the existing `reviewAttempts` derivation for checks
+and for the `Passed` segment.
+
+**The round argument is the load-bearing part.** `reviewAttempts` is built from
+`detail.attempts.filter(a => a.submissionId === viewed?.id)` (`WorkflowRuns.tsx:563`), so the
+`Passed` segment already follows the round scrubber. Passing `viewed?.round` makes the worklist
+follow it too. Without it, scrubbing to round 3 leaves `Blocking 3` and `Archive` describing
+round 10 while `Passed 4` describes round 3, and the segmented control shows three counts from
+three different moments.
+
+The scrubber therefore keeps exactly the meaning it has today - *which round am I looking at* -
+and now governs this section as well as the pipeline above it. That is what "unchanged" means
+for the scrubber: unchanged behavior, not a control that some of the page ignores. A person who
+scrubs back to round 3 sees what round 3 was asking for, with `roundsOpen` counted up to round 3
+rather than up to today.
 
 ### 2. Selection state
 
 `const [selectedKey, setSelectedKey] = useState<string | null>(null)`, resolved to the first
 `blocking` row when null, mirroring how `roundId` is held. Reset when `detail.run.id` changes.
-If `selectedKey` no longer resolves after a refresh, fall back to the first blocking row rather
-than rendering an empty pane.
+If `selectedKey` no longer resolves - after a refresh, or after the reader scrubs to a round
+where that change had not been raised yet - fall back to the first blocking row rather than
+rendering an empty pane. Do not clear the selection on every scrub: a change present in both
+rounds should stay selected as the reader moves between them.
 
 ### 3. The rail
 
@@ -120,8 +135,15 @@ menus.
 
 Every arm the old section had must survive:
 
-- No reviewers activated yet, Inspector-only round, reviewerless workflow: keep the existing
-  sentences.
+- No reviewers activated yet, reviewerless workflow: keep the existing sentences.
+- **Inspector-only round.** The existing sentence, "This Inspector repair round ran no
+  Personas", is round-scoped and stays true of the `Passed` segment - no Persona attempted this
+  round. It is **not** true of `Blocking`, which legitimately carries the changes still open as
+  of this round, inherited from the last `full_workflow` round exactly as `inheritedPasses`
+  already models for the strip. So scope the sentence to `Passed` rather than letting it
+  describe the whole section, and let `Blocking` show the carried changes. A reader scrubbed to
+  an Inspector round should still see what the run is waiting on; that is the one thing an
+  Inspector round is about.
 - Reviewers ran and all passed: the rail opens on `Passed` with `Blocking 0`, and the detail
   pane says the run has nothing outstanding rather than rendering blank.
 - A run with checks but no personas still shows its checks - passing ones under `Passed`,
@@ -150,6 +172,12 @@ third scrollbar.
   Blocking segment, that selecting it shows its rationale, and that the Passed segment holds
   the passing reviewer. Assert by role and accessible name only. Do not assert a file path -
   the fixture emits none.
+- **Cover the scrub.** Drive a run to at least two rounds, then scrub back and assert the three
+  segment counts move together - specifically that a change first raised in the later round is
+  absent from `Blocking` when viewing the earlier one. This is the regression that the whole
+  `asOfRound` parameter exists to prevent, and it is invisible to a single-round spec.
+  `e2e/specs/workflow-round-limit-grant.spec.ts` already drives a multi-round run; borrow its
+  setup rather than building one.
 - **Cover a failing check.** Either extend that spec or add a sibling: a workflow whose command
   gate exits non-zero must show that check under `Blocking` with its exit code, not vanish from
   the pane. `e2e/specs/workflow-skipped-status.spec.ts` is the closest precedent for *driving* a
@@ -188,6 +216,9 @@ requires a Playwright spec for every UI change with no exemptions.
 - **A failed check renders under `Blocking` with its exit code and output tail**, and a run
   blocked only by a failed check does not present as having nothing outstanding. Skipped and
   unavailable checks render under `Passed` keeping their degraded chip.
+- **All three segment counts describe the round the scrubber points at.** Scrubbing to an
+  earlier round moves `Blocking`, `Archive` and `Passed` together, and `roundsOpen` is counted
+  up to that round rather than to today.
 - A change carried from an earlier round says which round raised it and how many rounds it has
   been open; a resolved one says which round resolved it.
 - `repeatOffenders` renders, using the same sentence as the ladder.
@@ -223,6 +254,14 @@ There are no later phases. Future work that touches this surface should know:
   Phase 1's test list pins it so this phase inherits a derivation that cannot crash on it.
 - **Confirmed no concurrency.** Phase 2 depends on Phase 1 and there is no third phase, so
   there is nothing to run in parallel and no merge-order ambiguity.
+- **Inspector round 2, `major`, accepted.** Step 1 called a whole-run `runChangeWorklist(detail)`
+  while keeping the round-scoped `reviewAttempts` for `Passed`, so the segmented control would
+  have shown three counts from two different moments as soon as anyone touched the scrubber. The
+  worklist is now windowed by the viewed round through Phase 1's new `asOfRound` parameter, which
+  is the earliest place that can own it - re-windowing rows here would have split one rule across
+  two phases. The Inspector-only empty state was scoped to `Passed` in the same pass: it was
+  written for a round-scoped section and is false of a `Blocking` segment that legitimately
+  carries changes forward. A new e2e case pins the scrub.
 - **Inspector round 1, `major`, accepted.** Step 3 originally routed checks to `Passed` only,
   which left a *failing* check with no segment at all: it is not a `ChangeWorklistRow` so it
   cannot enter Blocking, and it is not passing so the wording excluded it from Passed. Today

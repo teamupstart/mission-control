@@ -206,7 +206,8 @@ svg{display:block;max-width:100%;height:auto;margin:0 auto}
 <li>A person can copy one change, open its file, give its reviewer feedback, or disable that reviewer, without leaving the worklist.</li>
 <li>A failed command gate is a blocker too, and keeps the exit code and output tail the current page shows. A run stopped only by a failed check never presents as having nothing outstanding.</li>
 <li>A change is only ever shown as resolved once its own reviewer has re-run and stopped raising it, never because a different reviewer moved the run to a new round.</li>
-<li>The pipeline, header, round scrubber and run rail are byte-for-byte unchanged in behavior.</li>
+<li>The worklist answers for the round the scrubber points at. Scrubbing back shows what that round was asking for, and all three segment counts move together.</li>
+<li>The pipeline, header, round scrubber and run rail are byte-for-byte unchanged in behavior. The scrubber keeps the meaning it has today and now governs the worklist as well as the pipeline; it does not grow a section that ignores it.</li>
 </ol>
 
 <h2>Non-goals</h2>

@@ -66,9 +66,25 @@ New exported function in `src/web/workflows/run-model.ts`.
   digest. Carry a doc comment saying so, and cross-reference `marker.ts` so the next reader
   finds the prior art rather than assuming divergence is accidental.
 
-### 2. `runChangeWorklist(detail: WorkflowRunDetail): ChangeWorklistRow[]`
+### 2. `runChangeWorklist(detail, asOfRound): ChangeWorklistRow[]`
+
+```ts
+export function runChangeWorklist(
+  detail: WorkflowRunDetail,
+  /** The round the reader is looking at. Null means the newest round carrying attempt data. */
+  asOfRound: number | null,
+): ChangeWorklistRow[]
+```
 
 New exported function and type in `run-model.ts`.
+
+**The `asOfRound` parameter is not optional decoration; it is what keeps the section coherent
+with the round scrubber above it.** The rest of the reader pane is round-scoped: `reviewAttempts`
+is built from `detail.attempts.filter(a => a.submissionId === viewed?.id)`
+(`WorkflowRuns.tsx:563`), so it shows only the round the scrubber points at. A whole-run worklist
+beside it would put three counts on one segmented control that describe three different moments -
+scrub to round 3 and `Passed` follows you while `Blocking` stays on round 10. Every row this
+function returns is therefore the run **as it stood at the end of `asOfRound`**.
 
 ```ts
 export interface ChangeWorklistRow {
@@ -94,7 +110,11 @@ Derivation, in order:
    `repeat-offender.ts`**: order by `round → segment → createdAt`, then keep each node's
    newest attempt within the round (highest segment, then highest `attempt`). Extract this as
    a small local helper so the correspondence is explicit and testable.
-2. For each round, for each persona attempt whose verdict is `fail`, key every
+1b. **Truncate to the window.** Resolve `horizon` = `asOfRound ?? the newest round carrying
+   folded attempt data`, then discard every round above it. Nothing after this step may read a
+   later round: a row that knows the future is exactly the incoherence this parameter exists to
+   prevent.
+2. For each round in the window, for each persona attempt whose verdict is `fail`, key every
    `requestedChanges[]` entry with `requestedChangeKey`.
 3. Accumulate per key: `firstRound` = lowest round it appeared in; `lastRound` = highest.
    Keep the **newest** round's title, rationale, evidence, path, line, confidence and persona
@@ -116,9 +136,10 @@ Derivation, in order:
    simply absent from the result and is never reported as having recovered. Mirror that
    posture. Where it has no answer yet, say nothing rather than say "resolved".
 
-   Define `latestRound` as the newest round that actually **has folded attempt data**, matching
-   that module's `attemptsByRound.get(latest.round)` guard, and use it only for reporting - not
-   as the resolution test.
+   The comparison round is `horizon` from step 1b, never the run's newest round. Viewed as of
+   round 4, a change that its persona re-raised in round 4 is `"open"` even if that persona
+   dropped it in round 5 - because at round 4 it was open, and that is what the reader asked to
+   see. Resolution is still decided per owning `nodeId` **within the window**.
 5. `roundsOpen` counts the rounds from `firstRound` through `lastRound` **inclusive** in which
    the key appeared. Document whether it is a span or a count of appearances and make the test
    pin it; a change that lapses for a round and returns is the case that distinguishes them.
@@ -158,6 +179,12 @@ Cases:
   re-raising it, not merely because some other persona advanced the round.
 - A latest round carrying no folded attempt data at all leaves every prior change `"open"`
   rather than resolving the entire worklist at once.
+- **As-of scoping.** A change raised in rounds 1 to 4 and dropped by its persona in round 5:
+  called with `asOfRound: 4` it is `"open"` with `roundsOpen: 4`; called with `asOfRound: 5` or
+  `null` it is `"resolved"`. The same detail payload, two honest answers.
+- `asOfRound` above the newest round with data behaves exactly like `null` rather than
+  returning an empty list.
+- `asOfRound` below `firstRound` for every change returns an empty list, not a crash.
 
 Run: `node --test --import tsx test/workflow-change-worklist.test.ts`
 
@@ -194,8 +221,8 @@ no runtime surface and no UI.
 
 Phase 2 may rely on:
 
-- `runChangeWorklist(detail)` returning rows already sorted for display, so the view does no
-  sorting of its own.
+- `runChangeWorklist(detail, asOfRound)` returning rows already sorted for display, so the view
+  does no sorting of its own.
 - `ChangeWorklistRow.key` being stable across renders and usable as a React key and as the
   selected-row identity.
 - `state` partitioning the rows into the `Blocking` and `Archive` segments with no further
@@ -204,6 +231,10 @@ Phase 2 may rely on:
   re-attempted stays `"open"`. Phase 2 never has to ask whether a round finished before
   trusting the partition.
 - `roundsOpen` being a count of appearances, not a span.
+- **Every row being scoped to the round Phase 2 asked for.** Passing the viewed submission's
+  round makes the worklist describe the same moment as the round-scoped `reviewAttempts` beside
+  it, so the segmented control's three counts always agree. Phase 2 does no windowing of its
+  own.
 
 The boundary of this model, stated so Phase 2 does not wait for something that is not coming:
 it covers **requested changes only**. Check outcomes and passing reviewers are not rows here
@@ -233,6 +264,15 @@ Phase 2 must not:
   to keep this model narrow rather than widen it, and the boundary now lives in this phase's
   downstream handoff, which is the earliest place that must own it. No scope or signature here
   changed.
+- **Inspector round 2, `major`, accepted.** The function was whole-run and took only `detail`,
+  while the `reviewAttempts` derivation Phase 2 keeps for its `Passed` segment is scoped to the
+  scrubber's viewed submission. Scrubbing to round 3 would have left `Blocking` and `Archive`
+  describing round 10 while `Passed` described round 3 - three counts on one segmented control,
+  three different moments. Signature is now `runChangeWorklist(detail, asOfRound)` with a
+  truncation step, so the rows and the segment beside them always describe one round. Three
+  test cases added. This is a **breaking signature change against the version Phase 2 was
+  written on**, and Phase 2's step 1 was updated in the same commit; the alternative - widening
+  Phase 2 to re-window rows it did not compute - would have split one rule across two phases.
 - **Inspector round 1, `major`, accepted.** Step 4 originally read `state = lastRound ===
   latestRound ? "open" : "resolved"`, which marks a change resolved whenever any *other*
   persona advances the round, because Stage 3 personas do not finish together. Rewritten to

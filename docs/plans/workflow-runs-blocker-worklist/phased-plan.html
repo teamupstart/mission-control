@@ -133,6 +133,7 @@ pre{background:var(--panel);border:1px solid var(--border);border-radius:8px;pad
 
 <h2>Cross-phase contracts</h2>
 <ul>
+<li><b>The worklist is windowed by the viewed round.</b> <code>runChangeWorklist(detail, asOfRound)</code> returns the run as it stood at the end of that round, and Phase 2 passes the round scrubber's current submission. The rest of the reader pane is already round-scoped, so a whole-run worklist beside it would put three counts from two different moments on one segmented control. Phase 2 does no windowing of its own.</li>
 <li><code>ChangeWorklistRow.key</code> is stable across renders and is both the React key and the selected-row identity. Phase 2 must not key rows positionally.</li>
 <li>Rows arrive <b>pre-sorted</b> (open before resolved, then oldest first). Phase 2 does not re-sort.</li>
 <li><code>state</code> alone partitions the <code>Blocking</code> and <code>Archive</code> segments, and is <b>conservative under a partial round</b>: resolution is decided per owning persona, so a change whose reviewer has not re-attempted stays <code>open</code> rather than reading as fixed because some other reviewer advanced the round.</li>
@@ -175,7 +176,12 @@ npm run test:e2e</pre>
 <li><b>Phase 1's <code>state</code> could flip a still-blocking change to resolved mid-round.</b> Stage 3 personas do not finish together, so comparing each change's last-seen round against a global newest round archives every change owned by a reviewer that has not re-run yet. Resolution is now per owning <code>nodeId</code>, mirroring how <code>repeat-offender.ts</code> builds its candidate set.</li>
 <li><b>Phase 2 left a failing check with no segment.</b> Every check renders today regardless of outcome; as drafted, a failed command gate would have lost its exit code and output tail. Failing checks now sort into <code>Blocking</code>.</li>
 </ol>
-<p>Both fixes tighten the design without touching an approved human decision, so neither was escalated. Each phase's cross-phase audit record carries the detail.</p>
+<p>Round 2 raised one more <code>major</code>, also verified and accepted:</p>
+<ol start="3">
+<li><b>The worklist was run-wide while the segment beside it was round-scoped.</b> <code>reviewAttempts</code> filters to the scrubber's viewed submission, so scrubbing to round 3 would have left <code>Blocking</code> and <code>Archive</code> on round 10 while <code>Passed</code> followed the scrubber. <code>runChangeWorklist</code> now takes an <code>asOfRound</code> window, which changed Phase 1's signature and Phase 2's call site together. The Inspector-only empty state was scoped to <code>Passed</code> in the same pass, since it was written for a round-scoped section and is false of a <code>Blocking</code> segment that carries changes forward.</li>
+</ol>
+<p>All three fixes tighten the design without touching an approved human decision, so none was escalated. Each phase's cross-phase audit record carries the detail.</p>
+<p>Worth noting what the third one implies for the kept scrubber: "unchanged" means it keeps the meaning it has today and now governs this section too, not that some of the page ignores it.</p>
 
 </div>
 </body>

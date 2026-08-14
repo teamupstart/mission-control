@@ -158,7 +158,11 @@ from the plan.
    outstanding.
 7. A change is only ever shown as resolved once its own reviewer has re-run and stopped raising
    it, never because a different reviewer moved the run to a new round.
-8. The pipeline, header, round scrubber and run rail are byte-for-byte unchanged in behavior.
+8. The worklist answers for the round the scrubber points at. Scrubbing back shows what that
+   round was asking for, and all three segment counts move together.
+9. The pipeline, header, round scrubber and run rail are byte-for-byte unchanged in behavior.
+   The scrubber keeps the meaning it has today and now governs the worklist as well as the
+   pipeline; it does not grow a section that ignores it.
 
 ## Non-goals
 

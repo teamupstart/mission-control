@@ -66,6 +66,11 @@ foundational interface, and it leaves the tree operable and green at the merge b
 
 ## Cross-phase contracts
 
+- **The worklist is windowed by the viewed round.** `runChangeWorklist(detail, asOfRound)`
+  returns the run as it stood at the end of that round, and Phase 2 passes the round scrubber's
+  current submission. The rest of the reader pane is already round-scoped, so a whole-run
+  worklist beside it would put three counts from two different moments on one segmented
+  control. Phase 2 does no windowing of its own.
 - `ChangeWorklistRow.key` is stable across renders and is both the React key and the
   selected-row identity. Phase 2 must not key rows positionally.
 - Rows arrive **pre-sorted** (open before resolved, then oldest first). Phase 2 does not
@@ -129,5 +134,18 @@ source and both accepted:
    outcome; as drafted, a failed command gate would have lost its exit code and output tail.
    Failing checks now sort into `Blocking`.
 
-Both fixes tighten the design without touching an approved human decision, so neither was
+Round 2 raised one more `major`, also verified and accepted:
+
+3. **The worklist was run-wide while the segment beside it was round-scoped.** `reviewAttempts`
+   filters to the scrubber's viewed submission, so scrubbing to round 3 would have left
+   `Blocking` and `Archive` on round 10 while `Passed` followed the scrubber. `runChangeWorklist`
+   now takes an `asOfRound` window, which changed Phase 1's signature and Phase 2's call site
+   together. The Inspector-only empty state was scoped to `Passed` in the same pass, since it was
+   written for a round-scoped section and is false of a `Blocking` segment that carries changes
+   forward.
+
+All three fixes tighten the design without touching an approved human decision, so none was
 escalated. Each phase's cross-phase audit record carries the detail.
+
+Worth noting what the third one implies for the kept scrubber: "unchanged" means it keeps the
+meaning it has today and now governs this section too, not that some of the page ignores it.

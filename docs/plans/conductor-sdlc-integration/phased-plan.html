@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conductor SDLC integration: phased implementation plan</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2733; --muted: #5b6a7a; --border: #d8dee6;
+    --panel: #f5f7fa; --accent: #2563c4; --code-bg: #f0f3f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --fg: #e7ebf1; --muted: #939eae; --border: #232a33;
+      --panel: #14181e; --accent: #4a9eff; --code-bg: #171c23;
+    }
+  }
+  body {
+    margin: 0 auto; max-width: 880px; padding: 40px 24px 80px;
+    background: var(--bg); color: var(--fg);
+    font: 15.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 14px; }
+  h2 { font-size: 19px; margin: 40px 0 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  .tw { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); }
+  ul > li { margin: 6px 0; }
+  .figure {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin: 18px 0; overflow-x: auto;
+  }
+  .figure figcaption { color: var(--muted); font-size: 13px; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<h1>Conductor SDLC integration: phased implementation plan</h1>
+
+<p>Source plan: <a href="plan.html">plan.html</a> (source: <code>plan.md</code>). This index
+renders <code>phased-plan.md</code>: the split into merge units, each delivered by one task and
+one reviewable pull request (phase 7 excepted: it lands in the ai-conductor repository and is
+dispatched separately from the dashboard).</p>
+
+<h2>Incorporated human decisions</h2>
+<p>Recorded in full in the source plan under "Approved decisions". The ones that shaped the
+split:</p>
+<ul>
+  <li>Pipelines live inside the Runs page behind a page-level Workflows | Pipelines tab (not a
+    new topbar destination), and <strong>the existing workflow Runs surface is not
+    modified</strong>; phase 2 owns the regression spec that pins it.</li>
+  <li>The pipeline detail gets its own horizontal diagram in the workflow diagram's visual
+    grammar; the conversation window's Workflows tab renders a pipeline ladder for correlated
+    sessions.</li>
+  <li>Everything ships off; enabling is consent (phase 1 owns the consent surface).</li>
+  <li>The scout's deferred ideas (ensemble-powered DECIDE, memory unification, intake
+    bridging) are out of scope and unscheduled.</li>
+</ul>
+
+<h2>Investigated findings that shaped the split</h2>
+<ul>
+  <li>Conductor's visualizer seam is dormant, so live events need one upstream conductor PR.
+    That isolates cleanly: file-tail observation (phase 1) carries every UI phase, ingest
+    lands MC-side fully operable (phase 5), and the conductor wiring (phase 7) upgrades it to
+    live without any MC change.</li>
+  <li>The session-carding hazard (a conductor-driven <code>--print</code> claude cards with a
+    live composer) is fixed by recognition in phase 3; it depends on the phase 2 route only
+    for its deep links.</li>
+  <li>MC's contracts make most extensions compile-time-enumerable (append-only tuples,
+    exhaustive Records, the <code>ServerEvent</code> never-check), so contracts are
+    front-loaded into phase 1 and later phases are consumers.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="tw"><table>
+<thead><tr><th>Phase</th><th>File</th><th>Delivers</th><th>Direct prerequisites</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>phase-1-foundation-and-settings.md</code></td>
+  <td>Shared contracts, <code>pipeline_runs</code> projection, state parsers and tail, SSE
+  events, Settings consent panel, fixtures</td><td>none</td></tr>
+<tr><td>2</td><td><code>phase-2-runs-pipelines-tab.md</code></td>
+  <td>Runs page kind tab, pipelines rail, run detail diagram, deep links, the Workflows-tab
+  regression spec</td><td>1</td></tr>
+<tr><td>3</td><td><code>phase-3-session-recognition-and-attention.md</code></td>
+  <td>Session correlation, card badge and composer suppression, Workflows-tab ladder,
+  <code>pipeline_halt</code> attention</td><td>2</td></tr>
+<tr><td>4</td><td><code>phase-4-pipeline-controls-and-cost.md</code></td>
+  <td>Control verbs and stdout validation, hosted consoles, attention actions,
+  <code>conductor</code> usage writer</td><td>2, 3</td></tr>
+<tr><td>5</td><td><code>phase-5-live-event-ingest.md</code></td>
+  <td><code>POST /ingest/conductor</code>, <code>pipeline_events</code> ledger, the shipped
+  visualizer plugin, tail demotion</td><td>1</td></tr>
+<tr><td>6</td><td><code>phase-6-dispatch-inspector-foreman.md</code></td>
+  <td>Dispatch kind <code>pipeline</code>, Inspector <code>pipeline</code> source, opt-in
+  Foreman triage of mechanical halts</td><td>4</td></tr>
+<tr><td>7</td><td><code>phase-7-conductor-visualizer-wiring.md</code></td>
+  <td>Conductor-side visualizer lifecycle wiring (<strong>ai-conductor repository</strong>,
+  dashboard-dispatched, after 5 merges)</td><td>5 (cross-repo)</td></tr>
+</tbody>
+</table></div>
+
+<h2>Dependency graph</h2>
+<figure class="figure">
+<svg width="820" height="220" viewBox="0 0 820 220" role="img" aria-label="Phase dependency graph">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: var(--bg); stroke: var(--border); rx: 9; }
+    .box-x { fill: var(--bg); stroke: var(--muted); stroke-dasharray: 5 4; rx: 9; }
+    .t { font: 600 12.5px -apple-system, sans-serif; fill: var(--fg); }
+    .s { font: 11px -apple-system, sans-serif; fill: var(--muted); }
+    .wire { stroke: var(--muted); stroke-width: 1.4; fill: none; marker-end: url(#arr); }
+    .wire-dash { stroke-dasharray: 5 4; }
+  </style>
+  <rect class="box" x="16" y="60" width="120" height="46"/>
+  <text class="t" x="76" y="80" text-anchor="middle">1 foundation</text>
+  <text class="s" x="76" y="96" text-anchor="middle">contracts + settings</text>
+  <rect class="box" x="176" y="20" width="120" height="46"/>
+  <text class="t" x="236" y="40" text-anchor="middle">2 runs tab</text>
+  <text class="s" x="236" y="56" text-anchor="middle">+ regression spec</text>
+  <rect class="box" x="336" y="20" width="140" height="46"/>
+  <text class="t" x="406" y="40" text-anchor="middle">3 recognition</text>
+  <text class="s" x="406" y="56" text-anchor="middle">+ attention halts</text>
+  <rect class="box" x="516" y="20" width="130" height="46"/>
+  <text class="t" x="581" y="40" text-anchor="middle">4 controls</text>
+  <text class="s" x="581" y="56" text-anchor="middle">+ cost</text>
+  <rect class="box" x="686" y="20" width="118" height="46"/>
+  <text class="t" x="745" y="40" text-anchor="middle">6 weave</text>
+  <text class="s" x="745" y="56" text-anchor="middle">dispatch / triage</text>
+  <rect class="box" x="176" y="130" width="130" height="46"/>
+  <text class="t" x="241" y="150" text-anchor="middle">5 live ingest</text>
+  <text class="s" x="241" y="166" text-anchor="middle">route + plugin</text>
+  <rect class="box-x" x="516" y="130" width="180" height="46"/>
+  <text class="t" x="606" y="150" text-anchor="middle">7 conductor wiring</text>
+  <text class="s" x="606" y="166" text-anchor="middle">ai-conductor repo, dashboard</text>
+  <path class="wire" d="M 136 72 C 152 66, 158 55, 172 48"/>
+  <path class="wire" d="M 296 43 L 332 43"/>
+  <path class="wire" d="M 476 43 L 512 43"/>
+  <path class="wire" d="M 646 43 L 682 43"/>
+  <path class="wire" d="M 136 96 C 152 104, 158 138, 172 148"/>
+  <path class="wire wire-dash" d="M 306 153 L 512 153"/>
+  <text class="s" x="410" y="146" text-anchor="middle">other repo, after 5 merges</text>
+</svg>
+<figcaption>Solid boxes are phases in this repository, one task and one PR each. The dashed
+box lands in ai-conductor and is dispatched deliberately from the dashboard.</figcaption>
+</figure>
+
+<h2>Concurrency groups and merge order</h2>
+<ul>
+  <li>After phase 1 merges: phase 2 and phase 5 may run concurrently and merge in either
+    order (phase 5's <code>routes.ts</code>/<code>db.ts</code> edits are additive and disjoint
+    from every phase 2 file).</li>
+  <li>Phase 5 also runs concurrently with phases 3, 4, and 6 (disjoint or additive-only
+    files; either merge order is safe against each).</li>
+  <li>Phases 2 &rarr; 3 &rarr; 4 &rarr; 6 are serial: each mounts on the previous phase's
+    surface.</li>
+  <li>Phase 7 is dispatched from the dashboard against ai-conductor only after phase 5
+    merges.</li>
+</ul>
+
+<h2>Cross-phase contracts</h2>
+<ul>
+  <li><strong>Phase 1</strong>: <code>src/shared/pipeline.ts</code> shapes,
+    <code>PIPELINE_PROVIDER_IDS</code> (append-only), <code>Session.pipeline</code> and its
+    comparator, <code>pipeline_upsert</code>/<code>pipeline_remove</code>/
+    <code>snapshot.pipelineRuns</code>, the <code>pipeline_runs</code> key, the read-only
+    pipelines module, the e2e fixture tree and fake <code>conduct-ts</code>.</li>
+  <li><strong>Phase 2</strong>: the <code>#/runs/pipeline/:repo/:slug</code> route and hash
+    helper; the reserved header action slot; the tab visibility rule.</li>
+  <li><strong>Phase 3</strong>: the <code>pipeline_halt</code> attention kind and payload; the
+    correlation rule; the non-messageable predicate extension.</li>
+  <li><strong>Phase 4</strong>: the action-route surface; the <code>conductor</code> usage
+    writer id (append-only); the stdout-validation posture.</li>
+  <li><strong>Phase 5</strong>: the ingest envelope
+    <code>{ repo, worktree, slug, seq, event }</code> and <code>/ingest/conductor</code>; the
+    <code>pipeline_events</code> key (append-only); the plugin home
+    <code>integrations/ai-conductor/mission-control/</code>.</li>
+  <li><strong>Phase 6</strong>: the <code>pipeline</code> task kind and
+    <code>"pipeline"</code> inspector source (append-only); the mechanical-only triage
+    gate.</li>
+</ul>
+
+<h2>Final verification</h2>
+<p>After all in-repo phases merge: the full Definition of done on <code>main</code>
+(<code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+<code>npm run build</code>, <code>npm run smoke</code>, <code>npm run test:e2e</code>), the
+phase 2 regression spec still green, an upgrade test opening a phase-1-era database, and a
+manual end-to-end pass against a real conductor checkout: enable a repo, watch a
+fixture-driven run walk SETUP through SHIP, exercise one halt with its attention actions,
+dispatch one pipeline, and (once phase 7 lands upstream) observe live ingest demote the tail.
+With the integration disabled or conductor absent, the dashboard is byte-for-byte today's.</p>
+
+<h2>Audit summary</h2>
+<p>Every plan requirement maps to exactly one phase (decisions 2, 3, 4 to phase 2; decision 5
+and the carding fix to phase 3; decision 7 to phase 1; controls to phase 4; live events to
+phases 5 and 7; the weave to phase 6; decision 8 excluded by design). Each consumer follows
+its prerequisite; the two concurrent groups touch disjoint or additive-only files; no phase
+relies on an unmerged later phase to be operable.</p>
+
+</body>
+</html>

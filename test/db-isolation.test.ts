@@ -2,7 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -351,6 +351,58 @@ test("moving HOME and TMPDIR after the preload cannot launder the operator's sta
     existsSync(join(operator, "harness.db")),
     false,
     "the operator's database was created after the roots were moved",
+  );
+});
+
+test("a no-preload worker cannot move HOME to drop the real state dir from the denylist", () => {
+  // The same laundering as the case above, aimed at the half that has no captured value to
+  // fall back on. With no preload the denylist comes from `$HOME`, so the test sets `HOME` to
+  // a decoy - the real state dir drops out - and `TMPDIR` to the directory above its target,
+  // which puts it in the allowlist. Reading `$HOME` at module load only moves the deadline;
+  // the assignment simply happens before the import. Measured against the previous build in a
+  // real `node --test` worker: it opened a database inside the operator's own state dir.
+  //
+  // `userInfo().homedir` is what closes it, because it comes from the password database and
+  // ignores `$HOME` entirely.
+  //
+  // ON THE TARGET, deliberately: this is the one case that cannot be staged inside a temp
+  // jail, because the value being proven immutable is the REAL home and no test can change
+  // it. So the aim is chosen to make a regression bounded and loud rather than dangerous - a
+  // fresh subdirectory under the OLDEST state-dir name, which is the one no current install
+  // writes to. A broken guard therefore creates one empty junk database in a legacy
+  // directory, fails this assertion, and is cleaned up below; `harness.db` under the live
+  // `.mission-control` is never the path being opened.
+  const probe = join(userInfo().homedir, ".ai-harness", `guard-probe-${process.pid}`);
+  after(() => rmSync(probe, { recursive: true, force: true }));
+
+  const jail = join(home, "nopreload-roots-jail");
+  const decoy = join(home, "nopreload-roots-decoy");
+  mkdirSync(jail, { recursive: true });
+  mkdirSync(decoy, { recursive: true });
+
+  const spec = join(jail, "probe.test.mjs");
+  const dbUrl = pathToFileURL(join(REPO_ROOT, "src/server/db.ts")).href;
+  writeFileSync(
+    spec,
+    `import test from "node:test";
+     test("tries to open under the operator's state dir", async () => {
+       delete process.env.NODE_TEST_CONTEXT;
+       process.execArgv = process.execArgv.filter((f) => !f.startsWith("--test-"));
+       process.env.HOME = ${JSON.stringify(decoy)};
+       process.env.TMPDIR = ${JSON.stringify(join(userInfo().homedir, ".ai-harness"))};
+       process.env.MISSION_HOME = ${JSON.stringify(probe)};
+       const { openDb } = await import(${JSON.stringify(dbUrl)});
+       openDb();
+     });`,
+  );
+
+  const res = runChild("", { HOME: jail }, { spec });
+  assert.notEqual(res.status, 0, "a decoy HOME dropped the real state dir from the denylist");
+  assert.match(res.stdout + res.stderr, /real\s+state dir/i);
+  assert.equal(
+    existsSync(join(probe, "harness.db")),
+    false,
+    "a database was created inside the operator's own state dir",
   );
 });
 

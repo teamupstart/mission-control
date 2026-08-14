@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
 import { DB_PATH, envVar } from "./config.ts";
@@ -172,6 +172,39 @@ function physicalPath(path: string): PhysicalPath {
 }
 
 /**
+ * Every home the operator's state dir could hang off, and the reason there is more than one.
+ *
+ * `homedir()` answers `$HOME`, which a test can set - and setting it is the whole trick:
+ * point `HOME` at a decoy and the real `~/.mission-control` drops out of the denylist, then
+ * point `TMPDIR` at it and it appears in the allowlist. Without the preload there is no
+ * captured value to fall back on, so reading it at module load only moves the deadline; the
+ * test simply assigns before importing. Measured against the previous build, in a real
+ * `node --test` worker with no preload: it opened a database inside the operator's own state
+ * directory.
+ *
+ * `userInfo().homedir` is the answer to a different question. It comes from the password
+ * database - `getpwuid` - and ignores `$HOME` outright, which `test/workflow-check-env.ts`
+ * already relies on. No amount of environment editing moves it, so the real state dir cannot
+ * be dropped from this list.
+ *
+ * All of them are held rather than one, because every entry only ever ADDS a refusal. A
+ * test's own home is a `mkdtemp` directory, so widening this cannot catch an honest fixture -
+ * no test in the suite names a state dir `.mission-control`, `.fleet-control` or
+ * `.ai-harness`.
+ */
+function operatorHomes(): readonly string[] {
+  const homes = new Set<string>();
+  if (CAPTURED_HOME) homes.add(CAPTURED_HOME);
+  homes.add(HOME_AT_IMPORT);
+  try {
+    homes.add(userInfo().homedir);
+  } catch {
+    // No passwd entry (some containers). The environment-derived homes are all there is.
+  }
+  return [...homes];
+}
+
+/**
  * The operator's state dir under every name the app has shipped, in both spellings.
  *
  * The physical form matters on any machine whose home is reached through a link (a network
@@ -183,8 +216,8 @@ let operatorStateDirs: readonly string[] | undefined;
 function operatorStateRoots(): readonly string[] {
   if (operatorStateDirs) return operatorStateDirs;
   const roots = new Set<string>();
-  for (const name of STATE_DIRS) {
-    const dir = join(CAPTURED_HOME ?? HOME_AT_IMPORT, name);
+  for (const [home, name] of operatorHomes().flatMap((h) => STATE_DIRS.map((n) => [h, n] as const))) {
+    const dir = join(home, name);
     roots.add(resolve(dir));
     // An operator dir that is itself an unresolvable link contributes only its lexical form;
     // the candidate below is still refused, because a candidate that cannot resolve never

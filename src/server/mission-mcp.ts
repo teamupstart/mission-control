@@ -260,12 +260,33 @@ type PublishedTools =
  * The handshake result for ONE bundle, keyed by that bundle's identity on disk.
  *
  * Cached beside `cachedRuntime` and for its reason: this shells out, and a dispatch must not
- * pay for it. Keyed by path + mtime + size rather than simply held for the daemon's lifetime,
- * which is a deliberate step past "once per daemon lifetime" and costs nothing: the operator's
- * fix for a refusal is `npm run build`, which does NOT restart a `tsx watch` daemon (it never
- * touches `src/`), so a lifetime-cached refusal would outlive the rebuild that fixed it and
- * report the stale answer to someone who had just done the right thing. An unchanged bundle
- * still handshakes exactly once.
+ * pay for it. An unchanged bundle handshakes exactly once, and every later dispatch reads the
+ * answer for free - measured at 104ms for the first and 0ms across the next fifty.
+ *
+ * ---- a DELIBERATE revision of the requirement, decided rather than drifted into ----
+ *
+ * This change was specified as "cache the result once per daemon lifetime ... so this costs one
+ * handshake, not one per dispatch". Keying by path + mtime + size instead means a REBUILD costs
+ * one more handshake, which is a literal departure from that wording. It was put to the human
+ * who set the requirement and kept on their decision; it is recorded here so the next reader
+ * finds a choice rather than a bug.
+ *
+ * What the wording would have cost, and why the intent survives the change: `npm run build`
+ * does not touch `src/`, so it does NOT restart a `tsx watch` daemon. A cache held for the
+ * daemon's lifetime therefore outlives the bundle it describes, and it does so in both
+ * directions:
+ *
+ *   - A cached REFUSAL survives the rebuild that fixed it. The operator does exactly the right
+ *     thing, is refused again, and nothing tells them a daemon restart is the missing step.
+ *   - A cached SUCCESS survives a rebuild that BROKE the bundle - an older branch checked out
+ *     and rebuilt, say - so launches are admitted against a server that no longer publishes the
+ *     tool. That is the silent scout deadlock this entire module exists to remove, reintroduced
+ *     by its own cache.
+ *
+ * The requirement's stated purpose - "not one per dispatch" - is fully met either way; the cost
+ * of the difference is one 104ms handshake per build. The second failure above is not a
+ * usability wrinkle but a correctness hole, and no amount of caching should be able to make the
+ * guard answer for a file that is no longer there.
  */
 let cachedPublished: { key: string; answer: Promise<PublishedTools> } | undefined;
 

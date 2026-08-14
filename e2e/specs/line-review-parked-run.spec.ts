@@ -1,6 +1,9 @@
+import { mkdirSync } from "node:fs";
+
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -28,6 +31,27 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * No model tokens: the seeded runs are held by a Persona the fake agent answers
  * deterministically.
  */
+
+const EVIDENCE = artifactsDir("line-review-parked-run");
+
+/**
+ * Photograph a state this spec has already asserted on.
+ *
+ * Behind `MC_E2E_EVIDENCE` for the reason the Line strip's captures are: an ordinary run
+ * would rewrite the binaries for no added signal. Inside the regression test rather than in
+ * a staged capture spec, because the point of the picture is that the assertions around it
+ * passed on the same run.
+ */
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and the
+  // strip is six adjacent buttons.
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/line-review-parked-run/${name}.png`);
+}
 
 async function api<T>(
   daemon: DaemonHandle,
@@ -204,6 +228,7 @@ test("a parked run nothing will resume counts as yours on the strip and in the d
   const review = stage(dashboard, "Review");
   await expect(review).toHaveAttribute("aria-label", /1 needs you/);
   await expect(review).toHaveClass(/tone-attention/);
+  await shoot(dashboard, "strip-needs-you");
 
   // ---- the drawer ----
   await review.click();
@@ -223,6 +248,7 @@ test("a parked run nothing will resume counts as yours on the strip and in the d
 
   // And the row still reaches the page that can clear it.
   await expect(row.getByRole("button", { name: "Open run" })).toBeVisible();
+  await shoot(dashboard, "drawer-needs-you");
 });
 
 test("an auto, live run is the daemon's to reopen and is never called yours", async ({
@@ -250,6 +276,7 @@ test("an auto, live run is the daemon's to reopen and is never called yours", as
   await expect(panel.locator(".line-run-row")).toHaveCount(1);
   await expect(panel.locator(".line-drawer-att")).toHaveCount(0);
   await expect(panel.locator(".line-run-row").first()).not.toHaveClass(/is-waiting/);
+  await shoot(dashboard, "drawer-auto-unmarked");
 });
 
 test("the palette hoists a parked run into what is waiting on you", async ({

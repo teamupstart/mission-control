@@ -48,7 +48,21 @@ async function shoot(page: Page, name: string): Promise<void> {
   // Off every control first: `Tooltip` portals a bubble under a resting pointer, and the
   // strip is six adjacent buttons.
   await page.mouse.move(0, 0);
-  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // Clipped to the strip and the drawer beneath it, which is the whole subject. A full-page
+  // shot drags in the session card and the top bar, so the two postures this spec exists to
+  // contrast stop being the thing a reader's eye lands on.
+  const line = page.getByRole("navigation", { name: "The Line" });
+  const box = await line.boundingBox();
+  // Counted before it is measured: `boundingBox()` WAITS for its element, and this is called
+  // once with the drawer still shut. Asking for a box that will never arrive spends the whole
+  // expect timeout and then fails the test the picture was meant to illustrate.
+  const drawer = page.locator(".line-drawer").first();
+  const drawerBox = (await drawer.count()) > 0 ? await drawer.boundingBox() : null;
+  const bottom = drawerBox ? drawerBox.y + drawerBox.height : (box?.y ?? 0) + (box?.height ?? 0);
+  await page.screenshot({
+    path: `${EVIDENCE}${name}.png`,
+    ...(box ? { clip: { x: 0, y: box.y - 8, width: 1280, height: bottom - box.y + 16 } } : {}),
+  });
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-review-parked-run/${name}.png`);
 }

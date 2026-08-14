@@ -83,10 +83,17 @@ the session, because the control that clears it lives on the Runs page.
 Runs that will never resume themselves do not wait for that clock at all. A run on a
 `manual` version or a Preview binding is counted as **needing you** on the Line's Review
 strip, in the Review drawer and in the palette from the moment it parks, because nothing
-but a person moves it. An `auto` version delivering `live` is the daemon's own to reopen
-and is never called yours - the resumption observer picks it up seconds after the agent
-settles, and saying otherwise would be telling you to do by hand something already in
-hand.
+but a person moves it.
+
+![The Review stage and drawer marking a parked run that only a person can move](images/line-review-parked-needs-you.png)
+
+An `auto` version delivering `live` is the daemon's own to reopen and is never called
+yours - the resumption observer picks it up seconds after the agent settles, and saying
+otherwise would be telling you to do by hand something already in hand. The run below is
+in the identical state, down to the failed reviewer and the "Waiting for the session"
+line, and is deliberately left unmarked:
+
+![The same parked state on an auto, live run, counted but not marked](images/line-review-parked-auto.png)
 
 ### Away mode
 

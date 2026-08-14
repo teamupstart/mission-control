@@ -235,21 +235,6 @@ and then, in the background:
 A partial archive is a real, portable record - it just does not claim to hold the answer, and
 it does not satisfy a normal completion.
 
-### Cleanup asks first
-
-Reclaim, Remove, Cancel, Reschedule, and the startup pass that reclaims a worktree whose agent
-did not survive a restart all publish the task's archives **before** they destroy its checkout,
-whichever kind it produces.
-When a launched agent is still alive, cleanup stops it before capture so the archive sees the
-final bytes at the stop boundary; an agent the operator started and later assigned is never
-stopped on the task's behalf.
-If that fails, the cleanup is refused: the worktree stays, the task stays reclaimable, and you
-can retry. Losing an answer to a transient disk error is not a trade Mission Control makes on
-your behalf.
-
-Reclaiming a task that finished normally is cheap - its bundle already exists, and the guard
-re-verifies it and returns. So is reclaiming one that produced nothing to archive.
-
 ## How a plan produces one
 
 A [plan task](dispatch-and-backlog.md) writes its plan into the checkout as
@@ -309,7 +294,37 @@ scout. Durability happens at teardown instead, on every path that destroys a che
 is also offered the ordinary wrap-up, so it lands as a pull request - which is what publishes
 the paths that any scheduled phase tasks depend on.
 
-### Capture jobs are local bookkeeping
+Nor does a plan's session going away capture anything, which is the other half of the same
+rule. A scout's does, because its report is an untracked file and the session that would have
+submitted it is gone. A plan's session can exit while the task is still running, and an archive
+can never be rewritten - so publishing then would freeze a draft as the permanent record of a
+plan still being written. Teardown is the only moment a plan is captured.
+
+## Cleanup asks first
+
+Reclaim, Remove, Cancel, Reschedule, and the startup pass that reclaims a worktree whose agent
+did not survive a restart all publish the task's archives **before** they destroy its checkout,
+whichever kind it produces.
+When a launched agent is still alive, cleanup stops it before capture so the archive sees the
+final bytes at the stop boundary; an agent the operator started and later assigned is never
+stopped on the task's behalf.
+If that fails, the cleanup is refused: the worktree stays, the task stays reclaimable, and you
+can retry. Losing an answer to a transient disk error is not a trade Mission Control makes on
+your behalf.
+
+**What cleanup costs depends on the kind, because the two reach it in different states.** A
+scout that finished normally already has its bundle - it could not have been marked done
+without one - so reclaim re-verifies it and returns, which is cheap and is the common path.
+A plan arrives with no bundle at all: its completion is Foreman's ordinary boundary and waits
+on nothing, so **cleanup is where a plan is captured for the first time**, and it does the real
+work of reading the task's diff, copying the directory and verifying the bundle. Reclaiming a
+task that produced nothing to archive is cheap for either kind.
+
+That difference is the approved design rather than an inconsistency: gating a plan's completion
+on its archive would have made a plan task hold its session open over a durable-storage step it
+does not need, when the plan is already committed and on its way to a pull request.
+
+## Capture jobs are local bookkeeping
 
 `archive_capture_jobs` in the database coordinates all of this: one row per archive a task
 work episode owes - one for a scout, one per plan directory for a plan - carrying the reserved

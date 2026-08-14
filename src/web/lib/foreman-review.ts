@@ -72,6 +72,32 @@ function labelsForMatch(label: string): string[] {
   return withoutHint && withoutHint !== full ? [full, withoutHint] : [full];
 }
 
+/** Escape a label so its own punctuation cannot become regex syntax. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const ALPHANUMERIC = /[\p{L}\p{N}]/u;
+
+/**
+ * Whether the prose NAMES this label, rather than merely containing its letters.
+ *
+ * A bare substring test paints a pick out of coincidence: "Go" occurs inside "ongoing", "No"
+ * inside "nothing", "Test" inside "testing". Short option labels are common, so this is not a
+ * hypothetical - and a mark that means "Foreman chose this" must never come from a spelling
+ * accident inside an unrelated word.
+ *
+ * The boundary is asserted only on a side whose own edge character is alphanumeric. A label
+ * like "+ add a step" or "(none)" has punctuation at that edge, and demanding a non-word
+ * character beyond it would reject the very sentence that does name it.
+ */
+function namesLabel(prose: string, label: string): boolean {
+  if (!label) return false;
+  const before = ALPHANUMERIC.test(label[0]!) ? "(?<![\\p{L}\\p{N}])" : "";
+  const after = ALPHANUMERIC.test(label[label.length - 1]!) ? "(?![\\p{L}\\p{N}])" : "";
+  return new RegExp(`${before}${escapeRegExp(label)}${after}`, "u").test(prose);
+}
+
 /**
  * Which offered choices Foreman's prose actually names.
  *
@@ -89,7 +115,7 @@ export function recommendedChoiceKeys(
   const prose = folded(recommendation);
   const matched = new Set<string>();
   for (const choice of choices) {
-    if (labelsForMatch(choice.label).some((label) => label.length > 0 && prose.includes(label))) {
+    if (labelsForMatch(choice.label).some((label) => namesLabel(prose, label))) {
       matched.add(choice.key);
     }
   }

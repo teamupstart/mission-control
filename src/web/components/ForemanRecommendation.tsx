@@ -43,6 +43,42 @@ export function ForemanPickMark(): React.JSX.Element {
 }
 
 /**
+ * How many sidecars are currently mounted, so the page-wide layout reservation they share
+ * survives one of them closing. Module scope rather than context: the flag it guards is
+ * `document.body`, which is equally global, and a provider would have to be threaded through
+ * every surface that can host a review.
+ */
+let openSidecars = 0;
+
+/** The half of `document.body` this reservation touches, so a test can supply its own. */
+export interface LayoutFlagTarget {
+  classList: { add(token: string): void; remove(token: string): void };
+}
+
+/**
+ * Claim the page-wide layout reservation, returning the release for this claimant.
+ *
+ * Exported because the counting IS the behaviour: releasing while another sidecar is still
+ * open drops `.app`'s reserved column and puts that sidecar back on top of the review's
+ * Submit. That is only reachable with two sidecars mounted at once, which needs two sessions
+ * and two dispatches to stage in a browser - so it is pinned here as the small piece of state
+ * it actually is.
+ */
+export function acquireSidecarLayout(body: LayoutFlagTarget): () => void {
+  openSidecars += 1;
+  body.classList.add("foreman-sidecar-open");
+  let released = false;
+  return () => {
+    // Idempotent: React may invoke a cleanup it has already run under StrictMode, and a
+    // double decrement here would free the reservation with a sidecar still on screen.
+    if (released) return;
+    released = true;
+    openSidecars = Math.max(0, openSidecars - 1);
+    if (openSidecars === 0) body.classList.remove("foreman-sidecar-open");
+  };
+}
+
+/**
  * Optional context for an open review, portalled so card overflow can never clip it.
  *
  * It owns no answer action. The only controls are Close and the canonical form behind it;
@@ -61,8 +97,16 @@ export function ForemanRecommendationSidecar({
 }): React.JSX.Element | null {
   const closeRef = useRef<HTMLButtonElement>(null);
 
+  // Mount-only, and deliberately NOT joined with the Escape handler below. Both call sites
+  // pass an inline arrow for `onClose`, so its identity changes on every parent render -
+  // and the parent re-renders on ordinary SSE session updates. Sharing one effect meant
+  // every such tick re-ran this and snatched focus back to Close, out of the review form
+  // the operator had already tabbed into.
   useEffect(() => {
     closeRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       if (event.key !== "Escape") return;
       event.stopPropagation();
@@ -78,10 +122,12 @@ export function ForemanRecommendationSidecar({
   // instead is what makes this optional context rather than a thing in the way; it is the
   // same reflow the chosen mockup drew, and the class is the only way to reach layout that
   // lives outside this portal.
-  useEffect(() => {
-    document.body.classList.add("foreman-sidecar-open");
-    return () => document.body.classList.remove("foreman-sidecar-open");
-  }, []);
+  //
+  // Counted, because the class is one page-wide flag and sidecars are not a singleton: an
+  // ensemble draws a card per candidate, each with its own trigger, so two can be open at
+  // once. Removing the class on the first one's unmount would strip the reservation while
+  // the second is still on screen, putting it straight back to covering Submit.
+  useEffect(() => acquireSidecarLayout(document.body), []);
 
   if (typeof document === "undefined") return null;
 

@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { dialogMarker, sha1Hex } from "../src/shared/session.ts";
 import type { PaneDialog, ReviewItem, SessionNoteSummary } from "../src/shared/types.ts";
+import { acquireSidecarLayout } from "../src/web/components/ForemanRecommendation.tsx";
 import { PaneDialogPrompt } from "../src/web/components/PaneDialogPrompt.tsx";
 import { ReviewCard } from "../src/web/components/ReviewModal.tsx";
 import {
@@ -120,6 +121,69 @@ test("Foreman's exact option label becomes a pick without preselecting it", () =
     [],
     "semantic guesses never paint a false pick",
   );
+});
+
+test("a label buried inside a longer word is not Foreman naming that option", () => {
+  // Short labels are ordinary, and a bare substring test marks them from pure spelling
+  // coincidence: "Go" lives inside "ongoing", "No" inside "nothing", "Test" inside "testing".
+  // The mark asserts Foreman CHOSE this option, so a coincidence must never paint one.
+  const choices = [
+    { key: "go", label: "Go", number: 1 },
+    { key: "no", label: "No", number: 2 },
+    { key: "test", label: "Test", number: 3 },
+  ];
+  assert.deepEqual(
+    [...recommendedChoiceKeys("Work is ongoing, nothing is blocked, and testing continues.", choices)],
+    [],
+  );
+  // The same short labels still match when the prose actually names one of them.
+  assert.deepEqual([...recommendedChoiceKeys("Answer: No.", choices)], ["no"]);
+  assert.deepEqual([...recommendedChoiceKeys('Choose "Go" and move on.', choices)], ["go"]);
+});
+
+test("the layout reservation survives one of two open sidecars closing", () => {
+  // An ensemble draws a card per candidate, each with its own recommendation trigger, so two
+  // sidecars can be mounted at once. The reservation is a single page-wide class, so an
+  // uncounted removal on the first unmount would strip the column the second one still needs
+  // and put it back over the review's Submit - the exact bug this disclosure was fixed for.
+  const calls: string[] = [];
+  const body = {
+    classList: {
+      add: (t: string) => calls.push(`add:${t}`),
+      remove: (t: string) => calls.push(`remove:${t}`),
+    },
+  };
+
+  const releaseFirst = acquireSidecarLayout(body);
+  const releaseSecond = acquireSidecarLayout(body);
+  releaseFirst();
+  assert.deepEqual(
+    calls,
+    ["add:foreman-sidecar-open", "add:foreman-sidecar-open"],
+    "the second sidecar is still open, so the reservation must still stand",
+  );
+
+  releaseSecond();
+  assert.deepEqual(calls.at(-1), "remove:foreman-sidecar-open", "the last one out releases it");
+
+  // A cleanup React has already run must not decrement again, or the NEXT sidecar to open
+  // would start from a negative count and never release.
+  releaseSecond();
+  const reopen = acquireSidecarLayout(body);
+  assert.deepEqual(calls.at(-1), "add:foreman-sidecar-open");
+  reopen();
+  assert.deepEqual(calls.at(-1), "remove:foreman-sidecar-open");
+});
+
+test("a label whose own edge is punctuation still matches beside a word", () => {
+  // The boundary is asserted only where the label's edge is alphanumeric. Demanding one
+  // beyond a leading "+" or a trailing ")" would reject the sentence that does name it.
+  const choices = [
+    { key: "add", label: "+ add a step", number: 1 },
+    { key: "none", label: "(none)", number: 2 },
+  ];
+  assert.deepEqual([...recommendedChoiceKeys("Pick + add a step here.", choices)], ["add"]);
+  assert.deepEqual([...recommendedChoiceKeys("Pick (none) for now.", choices)], ["none"]);
 });
 
 test("the pane form shows the pick at a glance but keeps the reasoning closed", () => {

@@ -195,12 +195,16 @@ export function endGuidedPass(pass: GuidedPass): GuidedPass {
  * Kind's mnemonics, hand-chosen because the automatic answer is wrong here: `ship` and
  * `scout` share their first letter, so first-free-letter would give scout `c` - the letter
  * the harness step spends on Claude Code, and not a letter anyone would guess. `p` and `t`
- * are the letters that distinguish the two words, and each option prints its own.
+ * are the letters that distinguish those two words, and each option prints its own.
  *
- * A `Record` over the tuple, so a third kind does not compile until it has said which key
+ * `plan` then takes `l`, and by elimination rather than by preference: `p` is already
+ * `ship`'s, `a` is the letter every one of the three words contains, and `n` reads as
+ * "no". `l` is the one letter in `plan` that names only `plan`.
+ *
+ * A `Record` over the tuple, so a fourth kind does not compile until it has said which key
  * takes it. `test/guided-dispatch-steps.test.ts` fails if two kinds claim the same letter.
  */
-export const GUIDED_KIND_KEYS: Record<TaskKind, string> = { ship: "p", scout: "t" };
+export const GUIDED_KIND_KEYS: Record<TaskKind, string> = { ship: "p", scout: "t", plan: "l" };
 
 /**
  * The harness mnemonics, hand-chosen for the same reason: Claude Code and Codex both start

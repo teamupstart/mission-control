@@ -1,7 +1,10 @@
-import { createHash } from "node:crypto";
 import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
-import { activePaneDialog, dialogIdentity } from "@shared/session.ts";
+import { activePaneDialog, dialogMarker } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
+
+// Kept as a re-export because answer routes and tests historically import the marker from
+// this module. Its implementation is shared now so the browser can recognize the same ask.
+export { dialogMarker } from "@shared/session.ts";
 
 // Works out what a needs-you session is actually blocked on - the single pure
 // classification the worker and the triage tiers share. Kept out of worker.ts so
@@ -59,25 +62,6 @@ export interface Pending {
   reviewKind?: string;
   /** For a non-input review: its title, if any. */
   reviewTitle?: string;
-}
-
-/**
- * The marker for the ask a child is showing on screen - a stable digest of the menu.
- *
- * Digested rather than carried whole because a marker is only ever compared for equality
- * (the worker's idempotency check), and `dialogIdentity` is a JSON blob of every row's
- * number and label. Same reason, same shape, and the same 12 hex chars as
- * the other compact episode markers in this module.
- *
- * Exported because two callers now have to arrive at the SAME string from opposite ends.
- * `classifyPending` mints it when Foreman first faces the ask; the answer routes rebuild it
- * to find the note that was pinned on the ask a human has just answered themselves
- * (`retireNoteAnsweredByYou`). A second spelling of the digest would silently retire
- * nothing - the note would still be there, and the miss would look like the original bug.
- */
-export function dialogMarker(dialog: PaneDialog): string {
-  const digest = createHash("sha1").update(dialogIdentity(dialog)).digest("hex").slice(0, 12);
-  return `dialog:${digest}`;
 }
 
 /**

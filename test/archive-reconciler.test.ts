@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
-import { scoutArchiveKey } from "../src/shared/scouts.ts";
-import { validReportHtml, writeScoutBundle } from "./helpers/scout-fixture.ts";
+import { archiveKey } from "../src/shared/archives.ts";
+import { validReportHtml, writeScoutBundle } from "./helpers/archive-fixture.ts";
 
 /**
  * Discovery: the loop that makes the filesystem the library and SQLite a cache of it.
@@ -19,12 +19,12 @@ const home = mkdtempSync(join(tmpdir(), "mission-scout-recon-"));
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
-const { ScoutStore, clearScoutTables } = await import("../src/server/scouts/store.ts");
-const { ScoutReconciler } = await import("../src/server/scouts/reconciler.ts");
+const { ArchiveStore, clearArchiveTables } = await import("../src/server/archives/store.ts");
+const { ArchiveReconciler } = await import("../src/server/archives/reconciler.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
-beforeEach(() => clearScoutTables(db));
+beforeEach(() => clearArchiveTables(db));
 
 let libraries = 0;
 function newLibrary(): string {
@@ -36,17 +36,17 @@ function newLibrary(): string {
 
 interface Harness {
   root: string;
-  store: InstanceType<typeof ScoutStore>;
-  reconciler: InstanceType<typeof ScoutReconciler>;
+  store: InstanceType<typeof ArchiveStore>;
+  reconciler: InstanceType<typeof ArchiveReconciler>;
   changes: () => number;
 }
 
 function harness(overrides: { root?: string } = {}): Harness {
   const root = overrides.root ?? newLibrary();
-  const store = new ScoutStore(db);
+  const store = new ArchiveStore(db);
   let changes = 0;
-  const reconciler = new ScoutReconciler({
-    root,
+  const reconciler = new ArchiveReconciler({
+    roots: [root],
     store,
     intervalMs: null,
     watch: false,
@@ -59,10 +59,188 @@ function harness(overrides: { root?: string } = {}): Harness {
 }
 
 /** New bundles need two agreeing observations before they are believed. */
-async function settleTwice(reconciler: InstanceType<typeof ScoutReconciler>): Promise<void> {
+async function settleTwice(reconciler: InstanceType<typeof ArchiveReconciler>): Promise<void> {
   await reconciler.settle();
   await reconciler.settle();
 }
+
+test("one pass discovers every root, and a row remembers which one holds it", async () => {
+  // The compatibility window, driven end to end: bundles published before archives declared
+  // a kind stay exactly where they were written, and a pass over both roots is what keeps
+  // them in one catalog with the new ones rather than in a second, invisible library.
+  const writeRoot = newLibrary();
+  const legacyRoot = newLibrary();
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [writeRoot, legacyRoot],
+    store,
+    intervalMs: null,
+    watch: false,
+  });
+  after(() => reconciler.stop());
+
+  const fresh = writeScoutBundle(writeRoot, { title: "Written under the archives root" });
+  const legacy = writeScoutBundle(legacyRoot, { title: "Published by an older build", legacyFormat: true });
+  await settleTwice(reconciler);
+
+  assert.equal(store.get(fresh.key)?.title, "Written under the archives root");
+  assert.equal(store.get(legacy.key)?.title, "Published by an older build");
+  assert.equal(store.get(legacy.key)?.kind, "scout", "a legacy bundle indexes as the scout it is");
+  assert.equal(store.get(fresh.key)?.libraryRoot, writeRoot);
+  assert.equal(
+    store.get(legacy.key)?.libraryRoot,
+    legacyRoot,
+    "the row has to name the root that actually holds the files, not the one we write to",
+  );
+});
+
+test("a bundle copied into both roots is indexed once, from the first root", async () => {
+  const writeRoot = newLibrary();
+  const legacyRoot = newLibrary();
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [writeRoot, legacyRoot],
+    store,
+    intervalMs: null,
+    watch: false,
+  });
+  after(() => reconciler.stop());
+
+  const written = writeScoutBundle(writeRoot, {});
+  cpSync(join(writeRoot, written.producerId), join(legacyRoot, written.producerId), { recursive: true });
+  const pass = await (async () => {
+    await reconciler.settle();
+    return reconciler.settle();
+  })();
+
+  assert.equal(pass.scanned, 2, "both copies are candidates - they are the same key on disk twice");
+  assert.equal(pass.indexed, 1, "and exactly one of them becomes the row");
+  assert.equal(store.count(), 1);
+  assert.equal(
+    store.get(written.key)?.libraryRoot,
+    writeRoot,
+    "the first root wins, so the row does not flip between two identical copies each pass",
+  );
+
+  // And it stays that way: a second pass must not adopt the other copy and rewrite the row.
+  await reconciler.settle();
+  assert.equal(store.count(), 1);
+  assert.equal(store.get(written.key)?.libraryRoot, writeRoot);
+});
+
+test("a bundle only in the legacy root survives pruning driven by the write root", async () => {
+  // Pruning is "not seen by a finished pass", and a pass is now several roots. A prune that
+  // ran per root would delete every legacy row the moment the archives root was walked.
+  const writeRoot = newLibrary();
+  const legacyRoot = newLibrary();
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [writeRoot, legacyRoot],
+    store,
+    intervalMs: null,
+    watch: false,
+  });
+  after(() => reconciler.stop());
+
+  const legacy = writeScoutBundle(legacyRoot, { legacyFormat: true });
+  await settleTwice(reconciler);
+  assert.ok(store.get(legacy.key));
+
+  writeScoutBundle(writeRoot, {});
+  await settleTwice(reconciler);
+  assert.ok(store.get(legacy.key), "the legacy row is still there after a pass that indexed a new bundle");
+  assert.equal(store.count(), 2);
+});
+
+test("a root that cannot be read holds back only its own rows, and prunes the rest", async () => {
+  // The failure an operator actually produces: the legacy root is a directory the daemon no
+  // longer writes to, and it can be unmounted, chmodded, or left on a network share that goes
+  // away. None of that is a reason for an archive DELETED from the live root to keep
+  // answering queries, which is what aborting the whole pass on the first bad root caused.
+  const writeRoot = newLibrary();
+  const legacyRoot = newLibrary();
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [writeRoot, legacyRoot],
+    store,
+    intervalMs: null,
+    watch: false,
+  });
+  after(() => reconciler.stop());
+
+  const legacy = writeScoutBundle(legacyRoot, { legacyFormat: true, title: "In the legacy root" });
+  const fresh = writeScoutBundle(writeRoot, { title: "In the write root" });
+  const doomed = writeScoutBundle(writeRoot, { title: "Deleted while the legacy root is broken" });
+  await settleTwice(reconciler);
+  assert.equal(store.count(), 3);
+
+  // The legacy root becomes unreadable in a way that is not "absent": EACCES rather than
+  // ENOENT, which is the case the old code treated as fatal to the whole pass.
+  chmodSync(legacyRoot, 0o000);
+  after(() => chmodSync(legacyRoot, 0o700));
+  rmSync(join(writeRoot, doomed.producerId), { recursive: true, force: true });
+
+  const pass = await reconciler.settle();
+  assert.ok(pass.failed, "the pass still reports that a root could not be read");
+  assert.equal(store.get(doomed.key), null, "the live root's deletion is still pruned");
+  assert.ok(store.get(fresh.key), "and its surviving archive is untouched");
+  assert.ok(
+    store.get(legacy.key),
+    "while the unreadable root's rows are held back - not seeing a bundle and it being gone are the same observation from a root that cannot be read",
+  );
+
+  // And it recovers by itself: once the root is readable again, its rows reconcile normally.
+  chmodSync(legacyRoot, 0o700);
+  const after1 = await reconciler.settle();
+  assert.equal(after1.failed, null);
+  assert.ok(store.get(legacy.key), "the legacy archive is still there once its root comes back");
+});
+
+test("a root that is absent still prunes its rows, because an absent library is an empty one", async () => {
+  // The neighbour case, pinned so the exemption above cannot quietly swallow it: ENOENT is
+  // not a fault, it is an answer, and the index must stop claiming archives that are gone.
+  const writeRoot = newLibrary();
+  const legacyRoot = newLibrary();
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [writeRoot, legacyRoot],
+    store,
+    intervalMs: null,
+    watch: false,
+  });
+  after(() => reconciler.stop());
+
+  const legacy = writeScoutBundle(legacyRoot, { legacyFormat: true });
+  await settleTwice(reconciler);
+  assert.ok(store.get(legacy.key));
+
+  rmSync(legacyRoot, { recursive: true, force: true });
+  const pass = await reconciler.settle();
+  assert.equal(pass.failed, null, "a root that is not there is not a failure");
+  assert.equal(store.get(legacy.key), null, "and its rows go");
+});
+
+test("the candidate ceiling bounds a whole pass, not each root separately", async () => {
+  // With a budget per root, two roots quietly doubled the documented ceiling. The budget is
+  // shared, so the number keeps describing what one pass costs.
+  const writeRoot = newLibrary();
+  const legacyRoot = newLibrary();
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [writeRoot, legacyRoot],
+    store,
+    intervalMs: null,
+    watch: false,
+    maxCandidates: 3,
+  });
+  after(() => reconciler.stop());
+
+  for (let i = 0; i < 3; i += 1) writeScoutBundle(writeRoot, {});
+  for (let i = 0; i < 3; i += 1) writeScoutBundle(legacyRoot, { legacyFormat: true });
+
+  const pass = await reconciler.settle();
+  assert.equal(pass.scanned, 3, "the second root gets what the first left of the budget, which is nothing");
+});
 
 test("a new bundle is only indexed once two observations agree about it", async () => {
   const { root, store, reconciler, changes } = harness();
@@ -177,7 +355,7 @@ test("the same bundle copied under two producer namespaces is two archives", asy
   await settleTwice(reconciler);
   assert.equal(store.count(), 2);
   assert.notEqual(a.producerId, b.producerId);
-  assert.notEqual(scoutArchiveKey(a.producerId, a.archiveId), scoutArchiveKey(b.producerId, b.archiveId));
+  assert.notEqual(archiveKey(a.producerId, a.archiveId), archiveKey(b.producerId, b.archiveId));
 });
 
 test("a bundle that disappears is pruned after a complete pass", async () => {
@@ -203,7 +381,7 @@ test("a wiped database rebuilds itself from the bundles in the background", asyn
 
   // What deleting harness.db and restarting looks like: no rows, and a reconciler with no
   // memory of ever having seen anything.
-  clearScoutTables(db);
+  clearArchiveTables(db);
   const restarted = harness({ root });
   assert.equal(restarted.store.count(), 0);
   await settleTwice(restarted.reconciler);
@@ -216,6 +394,7 @@ test("a wiped database rebuilds itself from the bundles in the background", asyn
       producer: null,
       repo: null,
       agent: null,
+      kind: null,
       status: null,
       from: null,
       to: null,
@@ -265,8 +444,8 @@ test("a locally published bundle skips the settle wait but not verification", as
 
 test("the recurring cadence discovers a bundle with no trigger and no watcher", async () => {
   const root = newLibrary();
-  const store = new ScoutStore(db);
-  const reconciler = new ScoutReconciler({ root, store, intervalMs: 25, watch: false });
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({ roots: [root], store, intervalMs: 25, watch: false });
   after(() => reconciler.stop());
   const written = writeScoutBundle(root, {});
   reconciler.start();
@@ -302,9 +481,9 @@ test("an interrupted deletion is finished on the next start", async () => {
 });
 
 test("a pass over a library that does not exist is a complete, empty pass", async () => {
-  const store = new ScoutStore(db);
-  const reconciler = new ScoutReconciler({
-    root: join(home, "never-created"),
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [join(home, "never-created")],
     store,
     intervalMs: null,
     watch: false,

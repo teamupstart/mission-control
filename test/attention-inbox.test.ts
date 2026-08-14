@@ -371,7 +371,11 @@ test("the inbox is a registered overlay and draws the shared review card", () =>
   // Reused, never re-implemented: a second answering surface is a second thing to keep in
   // step with `api.resolveReview` and with the radio-group rule.
   assert.match(inbox, /import \{ ReviewCard \} from "\.\/ReviewModal\.tsx"/);
-  assert.match(inbox, /<ReviewCard key=\{review\.id\} review=\{review\} \/>/);
+  assert.match(inbox, /<ReviewCard\s+key=\{review\.id\}\s+review=\{review\}/);
+  // The session's note has to ride along with the review. Without it this copy of the shared
+  // card is the one surface where Foreman's recommendation silently never appears - the
+  // control simply would not render, which looks like the note was never written.
+  assert.match(inbox, /<ReviewCard[^/]*note=\{item\.session\.note\}/);
   // And the progress rendering is Phase 3's one leaf, not a second row of squares.
   assert.match(inbox, /<EnsembleProgressDots summary=\{item\.summary\} \/>/);
 });

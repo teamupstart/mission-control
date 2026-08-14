@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { STATE_DIRS } from "@shared/harness-runtime.mjs";
 import { DB_PATH, envVar } from "./config.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import type {
@@ -30,7 +32,6 @@ import type {
   SessionNote,
   SessionQueue,
   Task,
-  TaskKind,
   TaskPriority,
   TaskRepoEntry,
   TaskStatus,
@@ -39,6 +40,8 @@ import type {
   WorkItemState,
   WorktreeProvider,
 } from "@shared/types.ts";
+import { DEFAULT_TASK_KIND, TASK_KINDS } from "@shared/types.ts";
+import { readPersistedEnum } from "@shared/schedules.ts";
 import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman.ts";
@@ -55,39 +58,423 @@ import { normalizeLabels } from "@shared/task.ts";
 let db: DatabaseSync;
 
 /**
- * Refuse to open the operator's real state dir from inside the test runner.
+ * What `test/setup-state.mjs` recorded about this machine BEFORE any test module ran.
+ *
+ * `os.tmpdir()` and `os.homedir()` both re-read the environment on every call, so deriving
+ * the allowlist and the denylist from them at first `openDb()` asks the question far too
+ * late: a test can move `TMPDIR` above the operator's real state dir and `HOME` somewhere
+ * else, and that directory is then missing from the denylist and inside the allowlist at the
+ * same moment. Measured before this was captured, with the marker present and every other
+ * check passing: the open succeeded and left a `harness.db` in the operator's dir.
+ *
+ * Frozen at the preload, so these describe the machine as it was at process start. Shape is
+ * checked rather than trusted - it is a global, and a wrong shape must degrade to the
+ * fallback below rather than throw somewhere unhelpful.
+ */
+type CapturedTestState = { home?: unknown; tempRoots?: unknown; inheritedStateHomes?: unknown };
+
+/**
+ * The capture, from the frozen property when this process ran the preload itself, and from
+ * the environment when it is a CHILD of a process that did.
+ *
+ * The second is not a weaker version of the first, it answers a different need. `globalThis`
+ * does not survive a spawn, and a good number of test files spawn a child with
+ * `...process.env` to drive the daemon from the outside; those children are test workers -
+ * they inherit `NODE_TEST_CONTEXT` - with no preload of their own. Inheriting the capture is
+ * what lets them carry the same denylist instead of starting blind.
+ */
+function readCapturedTestState(): CapturedTestState | undefined {
+  const marked = (globalThis as Record<string, unknown>)["__missionControlTestState"];
+  if (marked && typeof marked === "object") return marked as CapturedTestState;
+  const inherited = process.env.MISSION_TEST_STATE;
+  if (!inherited) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(inherited);
+    return parsed && typeof parsed === "object" ? (parsed as CapturedTestState) : undefined;
+  } catch {
+    return undefined; // unparseable is the same as absent, and absent fails closed below
+  }
+}
+
+const capturedTestState = readCapturedTestState();
+
+const CAPTURED_HOME = typeof capturedTestState?.home === "string" ? capturedTestState.home : undefined;
+
+const CAPTURED_TEMP_ROOTS = Array.isArray(capturedTestState?.tempRoots)
+  ? capturedTestState.tempRoots.filter((root): root is string => typeof root === "string")
+  : undefined;
+
+/**
+ * The state dir this process was pointed at BEFORE the preload cleared the aliases.
+ *
+ * An operator is free to run the daemon with `MISSION_HOME` set anywhere, the temp dir
+ * included, and every other check here would wave that path through: explicit, resolvable,
+ * inside a temp root, and hanging off no home directory so the denylist never names it. It is
+ * still somebody's live database, and the only reason nothing else can see it is that the
+ * preload cleared the variable that named it.
+ */
+const CAPTURED_INHERITED_STATE_HOMES = Array.isArray(capturedTestState?.inheritedStateHomes)
+  ? capturedTestState.inheritedStateHomes.filter((dir): dir is string => typeof dir === "string")
+  : [];
+
+/**
+ * The fallback for a worker that never loaded the preload: the same two values, read at
+ * MODULE LOAD rather than at first `openDb()`.
+ *
+ * It cannot be as good - nothing of ours runs before the first line of a test file when the
+ * preload is absent - but it narrows the window from "any time before the first open" to
+ * "before this module is imported", and it costs a pair of string reads.
+ */
+const HOME_AT_IMPORT = homedir();
+const TMPDIR_AT_IMPORT = tmpdir();
+
+/**
+ * Where a test's state dir is allowed to live, in every spelling the platform hands out.
+ *
+ * macOS resolves `$TMPDIR` through a symlink - `/var/folders/…` and `/private/var/folders/…`
+ * name the same directory - and the suite uses both: most files take `mkdtempSync` at face
+ * value, while the ones that compare stored paths (workflow-check-lease, and the provider
+ * column fixture beside it) canonicalize with `realpathSync` first. Refusing either spelling
+ * would fail honest tests, so both roots are held.
+ *
+ * Resolved once and cached. This is the only filesystem call the refusal makes, and it must
+ * not become one per `openDb()`: the helpers below call it constantly.
+ */
+let temporaryRoots: readonly string[] | undefined;
+function testStateRoots(): readonly string[] {
+  if (temporaryRoots) return temporaryRoots;
+  if (CAPTURED_TEMP_ROOTS?.length) return (temporaryRoots = CAPTURED_TEMP_ROOTS);
+  const configured = resolve(TMPDIR_AT_IMPORT);
+  const roots = new Set([configured]);
+  try {
+    roots.add(resolve(realpathSync(configured)));
+  } catch {
+    // An unreadable temp dir just means the symlinked spelling is the only one we know.
+  }
+  return (temporaryRoots = [...roots]);
+}
+
+/**
+ * The path the filesystem will actually open, with any not-yet-created tail kept.
+ *
+ * `resolve()` is lexical, and a lexical check is not a check. A state home spelled
+ * `<temp>/looks-disposable` clears both tests below on its characters alone while being a
+ * symlink to `~/.mission-control`, and `new DatabaseSync` then follows it into the operator's
+ * database - the exact outcome this guard exists to prevent. What gets opened is the physical
+ * path, so the physical path is what has to be judged.
+ *
+ * Most test homes do not exist yet at this point - `HARNESS_HOME=<temp>/state` is the
+ * documented pattern and `openDb` is what creates it - so a bare `realpathSync` would throw on
+ * the honest case. Walking up to the nearest ancestor that DOES exist and re-attaching the
+ * tail keeps those working while still resolving every link that is already on disk, which is
+ * where a link has to be to redirect the open.
+ *
+ * The two reasons `realpathSync` can fail are not interchangeable, and conflating them is a
+ * hole. "No such component" is the honest case above. "The component is there but does not
+ * resolve" is a BROKEN SYMLINK, and re-attaching its name as though it were an ordinary
+ * missing directory hands back a path that passes every check below while naming somewhere
+ * else entirely - `<temp>/looks-disposable/nested`, where `looks-disposable` dangles into
+ * `~/.mission-control`. `lstatSync` is what tells them apart: it does not follow the link, so
+ * it answers "this name exists" for a link whose target does not.
+ *
+ * Such a path is refused rather than resolved. Where it would land is a question about a
+ * directory that does not exist yet, and a guard that cannot answer must not guess. This is
+ * deliberately not left to `mkdirSync` to trip over: today it happens to fail ENOENT through
+ * a dangling link on both macOS and Linux, which means the safety of this path currently
+ * rests on the error behaviour of a syscall nobody chose for that purpose.
+ */
+type PhysicalPath = { path: string } | { unresolvable: string };
+
+function physicalPath(path: string): PhysicalPath {
+  const absolute = resolve(path);
+  const tail: string[] = [];
+  let cursor = absolute;
+  for (;;) {
+    try {
+      return { path: join(realpathSync(cursor), ...tail) };
+    } catch {
+      let present = true;
+      try {
+        lstatSync(cursor);
+      } catch {
+        present = false; // genuinely absent - the honest not-yet-created case
+      }
+      if (present) return { unresolvable: cursor };
+      const parent = dirname(cursor);
+      if (parent === cursor) return { path: absolute }; // nothing along this path exists yet
+      tail.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+/**
+ * Every home the operator's state dir could hang off, and the reason there is more than one.
+ *
+ * `homedir()` answers `$HOME`, which a test can set - and setting it is the whole trick:
+ * point `HOME` at a decoy and the real `~/.mission-control` drops out of the denylist, then
+ * point `TMPDIR` at it and it appears in the allowlist. Without the preload there is no
+ * captured value to fall back on, so reading it at module load only moves the deadline; the
+ * test simply assigns before importing. Measured against the previous build, in a real
+ * `node --test` worker with no preload: it opened a database inside the operator's own state
+ * directory.
+ *
+ * `userInfo().homedir` is the answer to a different question. It comes from the password
+ * database - `getpwuid` - and ignores `$HOME` outright, which `test/workflow-check-env.ts`
+ * already relies on. No amount of environment editing moves it, so the real state dir cannot
+ * be dropped from this list.
+ *
+ * All of them are held rather than one, because every entry only ever ADDS a refusal. A
+ * test's own home is a `mkdtemp` directory, so widening this cannot catch an honest fixture -
+ * no test in the suite names a state dir `.mission-control`, `.fleet-control` or
+ * `.ai-harness`.
+ */
+function operatorHomes(): readonly string[] {
+  const homes = new Set<string>();
+  if (CAPTURED_HOME) homes.add(CAPTURED_HOME);
+  homes.add(HOME_AT_IMPORT);
+  try {
+    homes.add(userInfo().homedir);
+  } catch {
+    // No passwd entry (some containers). The environment-derived homes are all there is.
+  }
+  return [...homes];
+}
+
+/**
+ * The operator's state dir under every name the app has shipped, in both spellings.
+ *
+ * The physical form matters on any machine whose home is reached through a link (a network
+ * or relocated home, `/home` -> `/System/Volumes/Data/home`): comparing only the lexical
+ * `~/.mission-control` there would miss the very directory it names. Cached, like the temp
+ * roots, so the filesystem work happens once rather than per `openDb()`.
+ */
+let operatorStateDirs: readonly string[] | undefined;
+function operatorStateRoots(): readonly string[] {
+  if (operatorStateDirs) return operatorStateDirs;
+  // The pre-bootstrap home joins the list as a state dir in its own right, not as a home to
+  // hang the shipped names off: an operator's `MISSION_HOME` IS the state dir.
+  const roots = new Set<string>(CAPTURED_INHERITED_STATE_HOMES);
+  for (const [home, name] of operatorHomes().flatMap((h) => STATE_DIRS.map((n) => [h, n] as const))) {
+    const dir = join(home, name);
+    roots.add(resolve(dir));
+    // An operator dir that is itself an unresolvable link contributes only its lexical form;
+    // the candidate below is still refused, because a candidate that cannot resolve never
+    // reaches this comparison at all.
+    const physical = physicalPath(dir);
+    if ("path" in physical) roots.add(physical.path);
+  }
+  return (operatorStateDirs = [...roots]);
+}
+
+/**
+ * `child` IS `parent` or sits inside it - compared by path segment.
+ *
+ * A bare `startsWith` would read `/tmp/state-10` as living inside `/tmp/state-1`, which in a
+ * guard is the dangerous direction: sibling temp dirs are precisely what `mkdtempSync` hands
+ * out to concurrent workers.
+ */
+function isInside(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
+/** The last override that passed the checks below, so the steady state is one string compare. */
+let isolatedOverride: string | undefined;
+
+/**
+ * Whether this process is a test worker - decided ONCE, at import, and not re-asked.
+ *
+ * `NODE_TEST_CONTEXT` alone cannot answer this. It is an ordinary environment variable, so a
+ * test file that runs `delete process.env.NODE_TEST_CONTEXT` before importing this module
+ * turns the whole refusal off: it returns on its first line, and the operator's database
+ * opens with every check skipped. That is a worse hole than the ones the checks catch,
+ * because it needs no unusual path at all.
+ *
+ * Three signals, because each covers what the others cannot:
+ *
+ *   1. A marker `test/setup-state.mjs` defines non-writable and non-configurable on
+ *      `globalThis` before any test module loads. `delete` answers false and assignment is
+ *      ignored, so unlike the environment it cannot be spent.
+ *   2. `NODE_TEST_CONTEXT`, read at import, so a worker that reaches this line under the
+ *      runner is latched as one even if the variable is removed afterwards.
+ *   3. `process.execArgv`, which is how a worker launched WITHOUT the preload is still
+ *      recognised after the variable is deleted. Every `node --test` child is spawned with a
+ *      `--test-*` family - `--test-isolation=process`, `--test-timeout=0`, and others - and
+ *      that is true of a bare `node --test file.js` with no preload and no loader. Ordinary
+ *      `node` carries none of them, so the daemon is never mistaken for a worker.
+ *
+ * Signals 2 and 3 are both ordinary mutable JS, so both are read at module load, which
+ * latches a worker that reached this line under the runner. `commandLineFromOs()` is the
+ * backstop for a worker that emptied both BEFORE importing - it asks the operating system
+ * rather than the process, and that answer cannot be edited from JS.
+ *
+ * None of this makes `openDb` a sandbox, and it is not trying to be one: a test that WANTS
+ * the operator's database can import `node:sqlite` and open it directly, without coming
+ * through here at all. What these close is the accident, and every spelling of "turn the
+ * guard off first" that a confused test might reach for.
+ *
+ * The marker name is duplicated in `test/setup-state.mjs`, which cannot import from here;
+ * the db-isolation case named in that file's comment fails if the two ever drift.
+ */
+const CHEAP_TEST_SIGNAL =
+  Object.hasOwn(globalThis, "__missionControlTestState") ||
+  Boolean(process.env.NODE_TEST_CONTEXT) ||
+  process.execArgv.some(isTestRunnerFlag);
+
+function isTestRunnerFlag(flag: string): boolean {
+  return flag.startsWith("--test-");
+}
+
+/**
+ * The command line the OPERATING SYSTEM says this process was started with - not the copy JS
+ * can edit.
+ *
+ * `process.execArgv` and `process.env` are both ordinary mutable values, so a test can empty
+ * them before importing this module and the three signals above all read false. This is the
+ * one source that survives that, because it is not stored in the JS heap at all.
+ *
+ * Read once, lazily, and only when every cheap signal has already said no. That ordering is
+ * what keeps the cost off the paths that would feel it: a test worker never reaches this,
+ * because its marker or its environment answered first, and the daemon reaches it exactly
+ * once, on its first `openDb()`. Measured: 0.06ms on Linux through `/proc`, and 14ms on
+ * macOS, where `process.report` is the only route and rebuilds a whole diagnostic report to
+ * get one field. Once, against a daemon boot already measured in hundreds of milliseconds.
+ */
+let osCommandLine: readonly string[] | undefined;
+function commandLineFromOs(): readonly string[] {
+  if (osCommandLine) return osCommandLine;
+  try {
+    // Linux: the kernel's own NUL-separated copy.
+    return (osCommandLine = readFileSync("/proc/self/cmdline", "utf8").split("\0").filter(Boolean));
+  } catch {
+    try {
+      // Elsewhere: the diagnostic report regenerates this from the process, not from execArgv.
+      const report = process.report?.getReport() as { header?: { commandLine?: string[] } };
+      return (osCommandLine = report?.header?.commandLine ?? []);
+    } catch {
+      return (osCommandLine = []); // no way to ask; the signals above are all there is
+    }
+  }
+}
+
+let osVerdict: boolean | undefined;
+function underTestRunner(): boolean {
+  if (CHEAP_TEST_SIGNAL) return true;
+  if (osVerdict === undefined) osVerdict = commandLineFromOs().some(isTestRunnerFlag);
+  return osVerdict;
+}
+
+/**
+ * Refuse to open anything but a disposable test state dir from inside the test runner.
  *
  * Twice now a test has destroyed live state: the state-dir rename once moved
  * `~/.fleet-control` out from under a running daemon (see migrate-state.ts), and a
  * branch's config test ran `DELETE FROM app_config` against the real db on every
  * `npm test`, wiping every setting the operator had saved - repeatedly, since agents
- * run the suite before every PR. Both had the same shape: a test file that imports
- * server modules without redirecting the state dir first, failing silently into
- * someone's home directory.
+ * run the suite before every PR. Fixture rows from `workflow-inspector-bypass.test.ts`
+ * were later found sitting in the operator's database too. All of them had the same
+ * shape: a test file that imports server modules without redirecting the state dir
+ * first, failing silently into someone's home directory.
+ *
+ * `test/setup-state.mjs` now hands every worker a temp dir before its imports run, which
+ * removes the omission as a routine mistake. This stays as the boundary that catches what
+ * a preloader cannot: a nonstandard command that never loaded it, an override set after
+ * `config.ts` already froze the real path, and an override that names somewhere real.
  *
  * The check is here rather than in `stateDir()` because resolution has to stay
  * side-effect free and is evaluated at module load by files that never touch the db
  * (health.test.ts imports routes.ts and is rightly hermetic without any env). Opening
  * the db is the moment real damage becomes possible, so it is the moment to refuse.
  *
- * Comparing DB_PATH against the CURRENT override catches both mistakes: no override
- * at all, and an override set after `config.ts` had already resolved the real home -
- * the same wipe with an alibi.
+ * Four claims, each one a way live state has been or could be reached:
+ *
+ *   1. An override is set at all. No override means `stateDir()` resolved the home dir.
+ *   2. The frozen `DB_PATH` is exactly the `harness.db` the override names NOW. This is
+ *      the "same wipe with an alibi" case - an override applied after config.ts read the
+ *      real home - and it is path equality rather than the prefix test this used to run,
+ *      because `~/.mission-c` is a prefix of `~/.mission-control/harness.db` and a bare
+ *      `startsWith` accepted it.
+ *   3. It is not the operator's state dir under ANY name the app has used. Redundant with
+ *      (4) on a normal machine and not on one whose `$TMPDIR` sits under `$HOME`, and it
+ *      is the check that can say what is actually wrong.
+ *   4. It lives in the platform temp dir, so what it opens is disposable by construction.
+ *
+ * Production pays for none of it: outside a test worker (see `underTestRunner`) this returns
+ * on its first line, and the live daemon opens whatever `stateDir()` resolved, exactly as
+ * before.
  */
 function assertTestStateIsolation(): void {
-  if (!process.env.NODE_TEST_CONTEXT) return;
+  if (!underTestRunner()) return;
   const override = envVar("HOME");
-  if (override && DB_PATH.startsWith(override)) return;
-  throw new Error(
-    `refusing to open ${DB_PATH} under the test runner: this is the machine's real ` +
-      "state dir. Set MISSION_HOME (or HARNESS_HOME) to a fresh temp dir BEFORE " +
-      "importing anything that resolves it - see ui-config-store.test.ts for the pattern.",
-  );
+  // Same override as the last accepted call - nothing about the answer can have changed,
+  // and this is the path every helper takes.
+  if (override !== undefined && override === isolatedOverride) return;
+
+  const fix =
+    " Set MISSION_HOME to a fresh temp dir BEFORE importing anything that resolves it - see" +
+    " ui-config-store.test.ts for the pattern - or run this file the way AGENTS.md documents," +
+    " which preloads test/setup-state.mjs and gives the worker a disposable one.";
+  const refusal = (why: string): Error =>
+    new Error(`refusing to open ${DB_PATH} under the test runner: ${why}.${fix}`);
+
+  if (!override) {
+    throw refusal("no state-dir override is set, so this is the machine's real state dir");
+  }
+  const selected = resolve(override);
+  if (resolve(DB_PATH) !== join(selected, "harness.db")) {
+    throw refusal(
+      `the override now names ${selected}, so this path was frozen against a different ` +
+        "state dir - it was resolved before the override was set",
+    );
+  }
+  // Judged on BOTH spellings: the one written down, and the one the filesystem resolves it
+  // to. Checking only the first is bypassable by a symlink; checking only the second would
+  // stop naming the path the author actually set when it comes time to explain the refusal.
+  const resolved = physicalPath(selected);
+  if ("unresolvable" in resolved) {
+    throw refusal(
+      `${resolved.unresolvable} is present but does not resolve - a broken symlink - so which ` +
+        `directory ${selected} would create cannot be known`,
+    );
+  }
+  const physical = resolved.path;
+  for (const candidate of physical === selected ? [selected] : [selected, physical]) {
+    const subject = candidate === selected ? candidate : `${selected} -> ${candidate}`;
+    if (operatorStateRoots().some((dir) => isInside(candidate, dir))) {
+      throw refusal(`${subject} is the machine's real state dir, whichever alias named it`);
+    }
+    if (!testStateRoots().some((root) => isInside(candidate, root))) {
+      // Names the root actually being enforced, which is the captured one when there is a
+      // preload - saying `tmpdir()` here would print whatever the test last set it to.
+      throw refusal(
+        `${subject} is outside ${testStateRoots().join(" and ")}, so it is not a disposable test state dir`,
+      );
+    }
+  }
+
+  // Last, because every check above says something more specific and should say it. This one
+  // is about what CANNOT be known: with no capture, "an explicit path under the temp dir" is
+  // the exact description of both a fixture home and an operator who runs the daemon with
+  // `MISSION_HOME` pointing there. The preload is what tells them apart, by reading that
+  // setting before clearing it - so a worker that never loaded it, and did not inherit a
+  // capture from one that did, is refused rather than guessed at.
+  if (!capturedTestState) {
+    throw refusal(
+      `${selected} looks disposable, but this worker loaded no test/setup-state.mjs and ` +
+        "inherited no capture from one that did, so a fixture dir and the state dir the " +
+        "daemon was configured with are indistinguishable here",
+    );
+  }
+
+  isolatedOverride = override;
 }
 
 export function openDb(): DatabaseSync {
-  if (db) return db;
+  // BEFORE the singleton return, not after. A cached handle is how a late override change
+  // would otherwise keep writing to a state dir the process no longer names - the caller
+  // believes it redirected itself, and every statement still lands in the previous one.
   assertTestStateIsolation();
+  if (db) return db;
   mkdirSync(dirname(DB_PATH), { recursive: true });
   db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL;");
@@ -1551,8 +1938,8 @@ export function openDb(): DatabaseSync {
       updated_at INTEGER NOT NULL
     );
 
-    -- The scout library's DISPOSABLE index. Every row here is derived from a bundle
-    -- directory under STATE_DIR/scouts and can be thrown away: delete this database and the
+    -- The archive library's DISPOSABLE index. Every row here is derived from a bundle
+    -- directory under a library root and can be thrown away: delete this database and the
     -- background reconciler rebuilds all three tables from the filesystem, which is the
     -- source of truth. That is why there is no foreign key to tasks or sessions and no
     -- cascade - a completed archive outlives its task, its session, and its worktree, and a
@@ -1566,11 +1953,16 @@ export function openDb(): DatabaseSync {
     -- The composite is stored rather than derived so every query, cursor, and join uses one
     -- string; the pair is kept beside it so filtering by producer is an equality test on a
     -- column rather than a LIKE over the key.
-    CREATE TABLE IF NOT EXISTS scout_archives (
+    CREATE TABLE IF NOT EXISTS archives (
       key                TEXT NOT NULL PRIMARY KEY,
       producer_id        TEXT NOT NULL,
       archive_id         TEXT NOT NULL,
       producer_label     TEXT,
+      -- What the bundle preserves, from its manifest. NULLABLE on purpose: an unreadable
+      -- bundle is exactly the case where nothing about its contents is known, and a row
+      -- that guessed would be an index inventing provenance. A kind filter therefore
+      -- excludes unreadable rows, which is the honest answer rather than a side effect.
+      kind               TEXT,
       format_version     INTEGER NOT NULL DEFAULT 0,
       status             TEXT NOT NULL,
       capture_status     TEXT,
@@ -1597,6 +1989,12 @@ export function openDb(): DatabaseSync {
       -- adopted in silence; hashing the bytes means a same-key change is always seen, while
       -- an identical copy from a sync tool still reconciles as the archive it already was.
       manifest_digest    TEXT NOT NULL DEFAULT '',
+      -- Which library root this bundle was discovered under. There is more than one - new
+      -- bundles are written under the archives root, and bundles published before archives
+      -- declared a kind stay under the scouts root for ever - so the absolute directory of a
+      -- row is not derivable from the write root alone. Server-derived on every pass; never
+      -- a claim from a manifest, and re-checked before any file below it is opened.
+      library_root       TEXT NOT NULL DEFAULT '',
       relative_path      TEXT NOT NULL,
       manifest_bytes     INTEGER NOT NULL DEFAULT 0,
       manifest_mtime_ns  TEXT NOT NULL DEFAULT '',
@@ -1616,14 +2014,15 @@ export function openDb(): DatabaseSync {
       -- cannot delete the half of the library it never reached.
       last_seen_epoch    INTEGER NOT NULL DEFAULT 0
     );
-    CREATE INDEX IF NOT EXISTS idx_scout_archives_sort ON scout_archives(sort_at DESC, key DESC);
-    CREATE INDEX IF NOT EXISTS idx_scout_archives_producer ON scout_archives(producer_id);
-    CREATE INDEX IF NOT EXISTS idx_scout_archives_status ON scout_archives(status);
+    CREATE INDEX IF NOT EXISTS idx_archives_sort ON archives(sort_at DESC, key DESC);
+    CREATE INDEX IF NOT EXISTS idx_archives_producer ON archives(producer_id);
+    CREATE INDEX IF NOT EXISTS idx_archives_status ON archives(status);
+    CREATE INDEX IF NOT EXISTS idx_archives_kind ON archives(kind);
 
     -- One archived file. Identity is (archive key, generated artifact id); the browser asks
     -- for a body by that pair and never by a path, so archive_path is a verified server-side
     -- detail rather than an addressable input.
-    CREATE TABLE IF NOT EXISTS scout_artifacts (
+    CREATE TABLE IF NOT EXISTS archive_artifacts (
       key           TEXT NOT NULL,
       artifact_id   TEXT NOT NULL,
       ordinal       INTEGER NOT NULL DEFAULT 0,
@@ -1636,7 +2035,7 @@ export function openDb(): DatabaseSync {
       sha256        TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (key, artifact_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_scout_artifacts_key ON scout_artifacts(key, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_archive_artifacts_key ON archive_artifacts(key, ordinal);
 
     -- The bounded text a literal search scans. Segments rather than one blob so a hit can
     -- say WHERE it matched, and so the report body is searchable without loading a manifest
@@ -1648,7 +2047,7 @@ export function openDb(): DatabaseSync {
     -- in JavaScript and is the only thing a query matches against. SQLite's own lower() folds
     -- ASCII only, so a search for a name with an accent or a non-Latin script would silently
     -- match nothing - a search feature that is wrong rather than absent.
-    CREATE TABLE IF NOT EXISTS scout_search_segments (
+    CREATE TABLE IF NOT EXISTS archive_search_segments (
       key         TEXT NOT NULL,
       ordinal     INTEGER NOT NULL,
       source_kind TEXT NOT NULL,
@@ -1656,9 +2055,9 @@ export function openDb(): DatabaseSync {
       text_fold   TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (key, ordinal)
     );
-    CREATE INDEX IF NOT EXISTS idx_scout_segments_key ON scout_search_segments(key);
+    CREATE INDEX IF NOT EXISTS idx_archive_segments_key ON archive_search_segments(key);
 
-    -- Capture COORDINATION for scouts this daemon is archiving, and nothing a reader of a
+    -- Capture COORDINATION for archives this daemon is producing, and nothing a reader of a
     -- finished bundle ever needs. The three tables above are a projection of the library; this
     -- one is the opposite - purely local bookkeeping about work in flight, keyed by an
     -- operation key that is stable for one task work episode.
@@ -1676,17 +2075,23 @@ export function openDb(): DatabaseSync {
     -- The source locators (repos_json) are SERVER-DERIVED checkout roots recorded while the
     -- session still exists, because the whole point of reserving on exit is that they are about
     -- to stop being derivable. Nothing an agent typed reaches this table.
-    CREATE TABLE IF NOT EXISTS scout_capture_jobs (
+    CREATE TABLE IF NOT EXISTS archive_capture_jobs (
       operation_key   TEXT NOT NULL PRIMARY KEY,
       task_id         TEXT NOT NULL,
       session_id      TEXT,
       episode_id      TEXT,
+      -- What this capture will produce, frozen at reservation. NOT NULL with a 'scout'
+      -- default, which is a FACT rather than a fallback: every row that can exist without
+      -- it was written by a build in which a scout's report was the only thing this daemon
+      -- archived. The migration below carries the same value onto rows copied from the
+      -- table this one replaces.
+      kind            TEXT NOT NULL DEFAULT 'scout',
       -- reserved | submitted | published | failed. Append-only: a status this build does not
       -- know is treated as unfinished rather than as done, which is the safe direction.
       status          TEXT NOT NULL,
       producer_id     TEXT,
       archive_id      TEXT,
-      -- What the scout submitted, when it has. Null on a job reserved by an unexpected exit.
+      -- What the agent submitted, when it has. Null on a job reserved by an unexpected exit.
       report_path     TEXT,
       summary         TEXT,
       tags_json       TEXT,
@@ -1705,8 +2110,8 @@ export function openDb(): DatabaseSync {
       created_at      INTEGER NOT NULL,
       updated_at      INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_scout_capture_jobs_task ON scout_capture_jobs(task_id);
-    CREATE INDEX IF NOT EXISTS idx_scout_capture_jobs_status ON scout_capture_jobs(status);
+    CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_task ON archive_capture_jobs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_status ON archive_capture_jobs(status);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -2251,7 +2656,56 @@ function migrate(d: DatabaseSync): void {
   // migration: its provenance/pricing defaults identify every old Claude row as reported
   // rather than retroactively estimating or repricing it.
 
+  // --- the archive library's rename, and the one table it cannot rebuild ---------------
+  //
+  // The three index tables are a PROJECTION of bundle directories, and the reconciler is
+  // built to rebuild them from disk - a deleted database simply has no fingerprints, so
+  // every bundle looks new. So the disposable half is dropped rather than copied. Copying
+  // it would carry a fingerprint and a `last_seen_epoch` from a read this build never
+  // performed, and a cache that vouches for bytes nobody verified is worse than no cache:
+  // an unchanged fingerprint is exactly what makes a pass skip re-reading a bundle. The
+  // operator pays one background re-index, bounded by the existing candidate cap.
+  //
+  // `scout_capture_jobs` is the opposite kind of table and is COPIED. It is the idempotency
+  // and resume ledger, and its `repos_json` holds server-derived checkout roots recorded
+  // while the session still existed - "the whole point of reserving on exit is that they are
+  // about to stop being derivable". Dropping it would strand an in-flight capture that was
+  // reserved but not published, with no way to rebuild the paths it needed.
+  //
+  // INSERT ... SELECT names every column, so a row arriving from the old table gets
+  // `kind = 'scout'`, which is what every such row is: no other kind could be reserved by
+  // the build that wrote it.
+  if (tableExists(d, "scout_capture_jobs")) {
+    d.exec(`
+      INSERT OR IGNORE INTO archive_capture_jobs
+        (operation_key, task_id, session_id, episode_id, kind, status, producer_id, archive_id,
+         report_path, summary, tags_json, supporting_json, title, question, origin_json,
+         repos_json, relative_path, capture_status, error, attempts, last_attempt_at,
+         created_at, updated_at)
+      SELECT
+        operation_key, task_id, session_id, episode_id, 'scout', status, producer_id, archive_id,
+        report_path, summary, tags_json, supporting_json, title, question, origin_json,
+        repos_json, relative_path, capture_status, error, attempts, last_attempt_at,
+        created_at, updated_at
+      FROM scout_capture_jobs;
+      DROP TABLE scout_capture_jobs;
+    `);
+  }
+  d.exec(`
+    DROP TABLE IF EXISTS scout_search_segments;
+    DROP TABLE IF EXISTS scout_artifacts;
+    DROP TABLE IF EXISTS scout_archives;
+  `);
+
   rebuildInFlightIndexIfStale(d);
+}
+
+/** Whether a table exists in this database, for a migration that has to read the old one. */
+function tableExists(d: DatabaseSync, name: string): boolean {
+  const row = d
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+    .get(name) as { name?: string } | undefined;
+  return row?.name === name;
 }
 
 /**
@@ -3229,7 +3683,18 @@ function rowToTask(r: TaskRow, extraRepos: TaskRepoEntry[]): Task {
     id: r.id,
     title: r.title,
     intent: r.intent,
-    kind: r.kind as TaskKind,
+    // Validated, not cast. The column is unconstrained TEXT, so the value is whatever
+    // some build wrote there, and `as TaskKind` let an unknown string flow into typed
+    // code as a kind that does not exist - reaching a `Record<TaskKind, …>` lookup as an
+    // `undefined` nobody's types warned about.
+    //
+    // `ship` and not null, which is where this deliberately differs from the schedule
+    // store's identical validation (`schedules/store.ts`): a template that cannot be read
+    // can be dropped, and a task row cannot. One unreadable row must not remove a task
+    // from the backlog, so it degrades to the kind every automated writer already
+    // defaults to. The cost is stated plainly - a `plan` row read by a build that predates
+    // the kind is a `ship` row on that build, and SAVING it there writes `ship` back.
+    kind: readPersistedEnum(TASK_KINDS, r.kind) ?? DEFAULT_TASK_KIND,
     agent: r.agent as Task["agent"],
     priority: r.priority as TaskPriority | null,
     // Re-normalized on the way out, not merely parsed. The column is plain TEXT and

@@ -150,15 +150,15 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
-### A spent Foreman note retiring itself
+### One review with optional Foreman context
 
 `e2e/.artifacts/foreman-note-retires-on-your-answer/`
-holds two before/after pairs from the run that asserts answering an ask retires the Foreman
-note pinned on it - one pair for the driver form, one for the MCP review channel. The bug was
-reported as a screenshot of a stale `SUGGESTED ANSWER` banner, so the frames answer it in the
-same terms: route and registry assertions can prove the row changed, but only a capture shows
-a reader that the banner went. The directory README records the regeneration command, and is
-explicit about the two pre-existing warts the frames also happen to show.
+holds frames from the run that asserts an ask remains one decision when Foreman also has a
+recommendation. The driver form and MCP review each start with Foreman closed, open a bounded
+context sidecar, and mark the existing option Foreman named without selecting it or offering
+**Approve & send**. The after frames prove submitting through the original form retires the
+disclosure and sidecar without a second dismiss action. The directory README records the
+regeneration command.
 
 ### Persona import, provenance and upstream drift
 
@@ -197,6 +197,23 @@ No-Mistakes review is absent, Straight to PR is bounded by Workflow ownership, a
 follow-through is a separate control whose visible copy requires an existing PR.
 
 The directory README records the exact regeneration commands.
+
+### Foreman dependency-planner recovery
+
+`e2e/.artifacts/foreman-planner-health/degraded-planner.png` captures the top-bar Foreman
+popover after a leased worker reports the dependency planner degraded. The frame shows the
+effective Codex provider/model, the three-failure count, the bounded provider error, the next
+automatic retry, and the operator's **Retry planner now** path. The spec uses a synthetic
+health report and spends no model tokens.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/foreman-planner-health.spec.ts \
+  --workers=1 --reporter=list
+```
 
 ### Accepted SDK stop
 

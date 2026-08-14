@@ -47,9 +47,13 @@ import {
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { taskMergeQuorum, type QuorumVerdict } from "@shared/task-repos.ts";
-import { missionMcpDescriptor } from "./mission-mcp.ts";
+import {
+  missionMcpDescriptor,
+  verifyMissionMcpToolsForRunningSession,
+} from "./mission-mcp.ts";
 import { withScoutReportContract } from "./scouts/prompt.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
+import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -295,6 +299,16 @@ export interface AssignOptions {
    * an assignment: the target session's own launch allowlist was fixed before we arrived.
    */
   missionMcpDescriptor?: typeof missionMcpDescriptor;
+  /**
+   * Whether the bundle THIS SESSION is running publishes the scout submission tool.
+   *
+   * The companion to the seam above, and the reason it is a second one: "the bundle is on
+   * disk" and "the bundle serves `submit_scout_artifacts`" were the same question right up
+   * until a stale `dist/` made them different ones. Session-scoped rather than the plain
+   * disk check a dispatch uses, because an assignment targets an agent that is already
+   * running against a bundle it loaded earlier.
+   */
+  verifyMissionMcpToolsForRunningSession?: typeof verifyMissionMcpToolsForRunningSession;
   /** Publish the checkout-scoped bearer before a scout's prompt is delivered. */
   provisionScoutCredential?: typeof provisionScoutSubmissionCredential;
 }
@@ -1918,7 +1932,9 @@ export class TaskManager {
     // reaches the same server through `claude mcp add` if they installed the integration. The
     // agent's own submission failure is the backstop for the remaining case, and it happens
     // with the checkout intact rather than after it was reset.
-    if (t.kind === "scout" && !(await (opts.missionMcpDescriptor ?? missionMcpDescriptor)())) {
+    const mcpDescriptor =
+      t.kind === "scout" ? await (opts.missionMcpDescriptor ?? missionMcpDescriptor)() : null;
+    if (t.kind === "scout" && !mcpDescriptor) {
       return {
         ok: false,
         error:
@@ -1926,6 +1942,32 @@ export class TaskManager {
           "the agent could not submit the report the task needs to finish",
         scope: "task",
       };
+    }
+    // Present is not the same as usable. A bundle can be on disk and still not publish
+    // `submit_scout_artifacts` - `dist/mcp/server.mjs` is rebuilt only by `npm run build` and
+    // ignored by git, so it drifts behind the source that introduced the tool, and an operator
+    // who pulled the scout feature has the tool in `src/` and not in the file the agent runs.
+    // That reads to this probe exactly like a working install, and the scout it admits is one
+    // whose checkout we are about to reset for a task it can provably never finish - which is
+    // the precise outcome the guard above exists to prevent. Same question, asked of the bytes.
+    //
+    // Asked THROUGH the session, not of the file alone. This agent is already running and its
+    // MCP server is a child it spawned at launch, so the file on disk only speaks for it while
+    // the two are the same build - see `verifyMissionMcpToolsForRunningSession`. Interrogating
+    // the current file after a rebuild would report on a process this agent is not using.
+    if (t.kind === "scout") {
+      // Handed the descriptor resolved just above rather than a second resolution of it, so
+      // this reports on the very bundle the check above admitted.
+      const published = await (
+        opts.verifyMissionMcpToolsForRunningSession ?? verifyMissionMcpToolsForRunningSession
+      )([SUBMIT_SCOUT_ARTIFACTS_TOOL], s.startedAt, mcpDescriptor);
+      if (!published.ok) {
+        return {
+          ok: false,
+          error: `this is a scout, and ${published.reason}, so the agent could not submit the report the task needs to finish`,
+          scope: "task",
+        };
+      }
     }
     if (t.kind === "scout") {
       if (!s.cwd) {

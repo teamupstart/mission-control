@@ -66,6 +66,7 @@ import type { FollowupMark, FollowupPr } from "./review-followup.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
+import { BacklogPlannerCircuit } from "./planner-circuit.ts";
 import { verifyItem, verifyModel } from "./queue-verify.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { DEFAULT_LLM_RUNNER_ID, llmRunner } from "../llm/index.ts";
@@ -288,11 +289,6 @@ async function main(): Promise<void> {
       continue;
     }
 
-    if (!cfg.enabled) {
-      await sleep(IDLE_MS);
-      continue;
-    }
-
     // Foreman's own runner pick wins, and only when it HAS one. An unset `runner` is not
     // "claude" - it means the operator never chose here, so the answer is the app-wide
     // ladder (config, then `MISSION_LLM_RUNNER`, then the default), which only the daemon
@@ -308,6 +304,16 @@ async function main(): Promise<void> {
     const llmSelection = await client.llmSelection().catch(() => null);
     triageRunnerId = cfg.runner ?? llmSelection?.runner ?? triageRunnerId;
     if (llmSelection) claudeTransport = llmSelection.claudeTransport;
+    await syncBacklogPlanner(client, cfg, triageRunnerId);
+    if (isLeader) await publishBacklogPlannerHealth(client);
+
+    // Identity and retry control are observed even while disabled, above. That way a
+    // provider/model edit retires the old circuit immediately and the next enable starts
+    // with the promised probe instead of reviving stale strikes.
+    if (!cfg.enabled) {
+      await sleep(IDLE_MS);
+      continue;
+    }
 
     // A non-leader IDLES, it does not exit - so it takes over cleanly when the
     // leader's lease expires (a crash, a Ctrl-C), which is the whole point of an
@@ -355,6 +361,8 @@ async function main(): Promise<void> {
       if (await runBacklogAutopilot(client, cfg)) advanced = true;
     } catch (err) {
       log(`backlog autopilot failed (${String(err)})`);
+    } finally {
+      await publishBacklogPlannerHealth(client);
     }
 
     // Also fleet-level, and outside the "no targets" bail for the same reason: a session
@@ -431,6 +439,12 @@ const PLAN_RETRY_MS = Number(process.env.FOREMAN_BACKLOG_RETRY_MS || 10 * 60_000
 const PLAN_STORE_BACKOFF_MS = Number(process.env.FOREMAN_BACKLOG_STORE_BACKOFF_MS || 15_000);
 /** Ceiling on that doubling, so a long outage still retries at a sane rate. */
 const PLAN_STORE_BACKOFF_MAX_MS = 10 * 60_000;
+const backlogPlanner = new BacklogPlannerCircuit({
+  failureCap: PLAN_FAILURE_CAP,
+  retryMs: PLAN_RETRY_MS,
+  storeBackoffMs: PLAN_STORE_BACKOFF_MS,
+  storeBackoffMaxMs: PLAN_STORE_BACKOFF_MAX_MS,
+});
 /** Task id -> when autopilot last acted on it. Deliberately in memory: see ACTED_TTL_MS. */
 const recentlyActed = new Map<string, number>();
 /**
@@ -446,24 +460,12 @@ const recentlyActed = new Map<string, number>();
 const REFUSED_TTL_MS = 10 * 60_000;
 /** Session id -> when it last refused an assign. See `REFUSED_TTL_MS`. */
 const refusedAssign = new Map<string, number>();
-/** Consecutive backlog-planning failures. At PLAN_FAILURE_CAP the machine goes serial. */
-let backlogPlanFailures = 0;
-/** When the last planning failure landed, so PLAN_RETRY_MS can lift serial mode again. */
-let backlogPlanFailedAt = 0;
-/**
- * Consecutive failures to STORE a plan, counted apart from `backlogPlanFailures`.
- *
- * A refused write is not a broken planner, so the two keep their own counts and their
- * own recovery clocks - a daemon that was restarting must not spend the planner's
- * strikes. What they share is the DEGRADATION they cause: see `backlogSerial`.
- *
- * It also needs its own brake. The plan never lands, so the machine asks for one again
- * next tick, and without a wait that is a Sonnet call every IDLE_MS for as long as the
- * route stays broken.
- */
-let backlogStoreFailures = 0;
-/** Epoch ms before which the plan path is skipped entirely. See `backlogStoreFailures`. */
-let backlogStoreRetryAt = 0;
+/** Last operator retry signal observed from the daemon. */
+let backlogRetryGeneration = 0;
+/** Daemon instance that holds the last accepted health projection. */
+let backlogProjectionEpoch = "";
+/** Last health projection the daemon accepted, so a steady state costs no extra POSTs. */
+let publishedPlannerHealth = "";
 /**
  * The last thing the backlog said, so a steady state is logged ONCE.
  *
@@ -489,45 +491,62 @@ function refusedSessionIds(now: number): Set<string> {
   return new Set(refusedAssign.keys());
 }
 
-/**
- * Lift serial mode once the cooldown has run, so a transient outage self-heals.
- *
- * Logged unconditionally rather than through `noteBacklog`: this is a transition, and
- * it is the one an operator staring at "scheduling one at a time" needs to see end.
- */
-function rearmBacklogPlanning(now: number): void {
-  if (backlogPlanFailures < PLAN_FAILURE_CAP) return;
-  if (now - backlogPlanFailedAt < PLAN_RETRY_MS) return;
-  // One probe per cooldown, not a fresh set of three. `planBacklog` is a 90s blocking
-  // call on the loop that also drives queue drain and needs-you triage, so a planner
-  // that HANGS rather than erroring would stall everything else for four and a half
-  // minutes every cooldown. A single attempt still self-heals: it clears the count
-  // outright on success.
-  backlogPlanFailures = PLAN_FAILURE_CAP - 1;
-  lastBacklogNote = "";
-  log(
-    `backlog: retrying the dependency read after ${Math.round(PLAN_RETRY_MS / 1000)}s ` +
-      `of scheduling one at a time`,
-  );
+/** Resolve effective planner changes and process a manual retry signal once per worker. */
+async function syncBacklogPlanner(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  runner: LlmRunnerId,
+): Promise<void> {
+  const identity = { runner, model: backlogModel(cfg, runner) };
+  const changed = backlogPlanner.setIdentity(identity);
+  if (changed === "changed") {
+    lastBacklogNote = "";
+    log(`backlog: provider/model changed to ${identity.runner}/${identity.model}; probing now`);
+  }
+
+  const control = await client.plannerControl().catch(() => null);
+  if (control && control.projectionEpoch !== backlogProjectionEpoch) {
+    backlogProjectionEpoch = control.projectionEpoch;
+    publishedPlannerHealth = "";
+  }
+  if (control && control.retryGeneration !== backlogRetryGeneration) {
+    if (control.retryGeneration === 0) {
+      backlogRetryGeneration = 0;
+    } else if (control.retryClaimedBy === WORKER_ID) {
+      // Also covers a lost claim response: the daemon's assignment is the durable fact
+      // for this daemon/worker lifetime, and this process has not handled it locally yet.
+      backlogRetryGeneration = control.retryGeneration;
+      backlogPlanner.requestProbe();
+      lastBacklogNote = "";
+      log("backlog: operator requested an immediate dependency-planner retry");
+    } else if (control.retryClaimedBy) {
+      // A previous worker already consumed this generation. Remember it locally so a
+      // worker-only restart cannot replay an old click forever.
+      backlogRetryGeneration = control.retryGeneration;
+    } else if (
+      await client.claimPlannerRetry(WORKER_ID, control.retryGeneration).catch(() => false)
+    ) {
+      backlogRetryGeneration = control.retryGeneration;
+      backlogPlanner.requestProbe();
+      lastBacklogNote = "";
+      log("backlog: operator requested an immediate dependency-planner retry");
+    }
+  }
 }
 
-/**
- * Whether scheduling should degrade to serial right now.
- *
- * Two independent ways to get here, kept as separate counters because they are
- * different faults: the planner cannot answer, or the daemon will not store what it
- * answered. The DEGRADATION is shared on purpose. A refused write used to leave
- * `planExhausted` false, so the machine kept deciding `plan` and the worker kept
- * declining to act on it - a broken route silently switched the autopilot off rather
- * than slowing it down.
- *
- * The store half is scoped to its backoff window, so when the wait elapses the machine
- * asks for a plan again and the write gets one probe. Without that scoping this would
- * be the permanent latch the planner's cooldown was written to remove.
- */
-function backlogSerial(now: number): boolean {
-  if (backlogPlanFailures >= PLAN_FAILURE_CAP) return true;
-  return backlogStoreFailures >= PLAN_FAILURE_CAP && now < backlogStoreRetryAt;
+/** Publish only changes, retrying a missed projection on the next ordinary worker pass. */
+async function publishBacklogPlannerHealth(client: ForemanClient, now = Date.now()): Promise<void> {
+  const health = backlogPlanner.health(now);
+  if (!health) return;
+  const serialized = JSON.stringify(health);
+  if (serialized === publishedPlannerHealth) return;
+  try {
+    await client.reportPlannerHealth(WORKER_ID, health);
+    publishedPlannerHealth = serialized;
+  } catch {
+    // Projection only. A down daemon already stops scheduling through the normal reads,
+    // and the unchanged report is attempted again next pass.
+  }
 }
 
 /**
@@ -547,12 +566,6 @@ function taskRefused(status: number): boolean {
   return status === 404 || status === 409;
 }
 
-/** Exponential, capped: 15s, 30s, 60s ... 10m. */
-function storeBackoffMs(failures: number): number {
-  const wait = PLAN_STORE_BACKOFF_MS * 2 ** Math.max(0, failures - 1);
-  return Math.min(wait, PLAN_STORE_BACKOFF_MAX_MS);
-}
-
 /** Log a backlog outcome only when it differs from the last one. */
 function noteBacklog(msg: string): void {
   if (!msg || msg === lastBacklogNote) return;
@@ -561,7 +574,7 @@ function noteBacklog(msg: string): void {
 }
 
 /** Policy knobs from config; timings from the module constants, as the queue does. */
-function backlogConfig(cfg: ForemanConfig, now: number): BacklogConfig {
+function backlogConfig(cfg: ForemanConfig): BacklogConfig {
   return {
     enabled: cfg.autoBacklog,
     maxSessions: cfg.maxSessions,
@@ -571,7 +584,7 @@ function backlogConfig(cfg: ForemanConfig, now: number): BacklogConfig {
     mayActLive: cfg.mode === "live",
     settleMs: SETTLE_MS,
     respectOpenPrs: cfg.backlogRespectOpenPrs,
-    planExhausted: backlogSerial(now),
+    planExhausted: backlogPlanner.serial(),
   };
 }
 
@@ -601,20 +614,28 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
     client.backlogPlan().catch(() => null),
   ]).catch(() => null);
   if (!snapshot) return false;
-  const [sessions, tasks, plan] = snapshot;
+  const [sessions, tasks, storedPlan] = snapshot;
 
   const now = Date.now();
-  // Read before the re-arm clears it, so a plan that lands can say the degradation
-  // ended. Counter-based rather than `backlogSerial`, which is false during the store
-  // path's probe window and would miss exactly the recovery worth announcing.
-  const degradedBefore =
-    backlogPlanFailures >= PLAN_FAILURE_CAP || backlogStoreFailures >= PLAN_FAILURE_CAP;
-  rearmBacklogPlanning(now);
+  // Read before the re-arm starts its probe, so a plan that lands can say the degradation
+  // ended rather than letting the in-flight recovery erase the transition worth announcing.
+  const degradedBefore = backlogPlanner.health(now)?.state === "degraded";
+  if (backlogPlanner.rearm(now)) {
+    lastBacklogNote = "";
+    log(
+      `backlog: retrying the dependency read after ${Math.round(PLAN_RETRY_MS / 1000)}s ` +
+        `of scheduling one at a time`,
+    );
+  }
+  // A provider/model edit or operator retry must probe even when the old stored plan still
+  // covers every task. Feeding null through the existing stale-plan decision is the narrow
+  // way to request that read without adding a second scheduling path.
+  const plan = backlogPlanner.shouldProbe() ? null : storedPlan;
   const action = decideBacklogTick({
     tasks,
     sessions,
     plan,
-    cfg: backlogConfig(cfg, now),
+    cfg: backlogConfig(cfg),
     now,
     // The machine skips these and takes the next item it can act on. Kept here rather
     // than in the machine because it is a fact about THIS PROCESS's recent history, not
@@ -632,17 +653,19 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
   }
 
   if (action.kind === "plan") {
-    if (now < backlogStoreRetryAt) {
+    if (now < backlogPlanner.storeRetryAt()) {
       noteBacklog("waiting to retry the plan - the daemon refused the last write");
       return false;
     }
-    const result = await planBacklog(action.tasks, backlogModel(cfg), triageRunnerId);
+    const identity = backlogPlanner.health(now);
+    if (!identity) return false;
+    const result = await planBacklog(action.tasks, identity.model, identity.runner);
     if (result.kind === "failed") {
-      backlogPlanFailures++;
-      backlogPlanFailedAt = now;
+      backlogPlanner.onPlanningFailure(result.reason, Date.now());
+      const health = backlogPlanner.health(Date.now())!;
       noteBacklog(
-        `could not read the dependencies (${backlogPlanFailures}x): ${result.reason}` +
-          (backlogPlanFailures >= PLAN_FAILURE_CAP ? " - scheduling one at a time instead" : ""),
+        `could not read the dependencies (${health.failureCount}x): ${health.lastError}` +
+          (health.state === "degraded" ? " - scheduling one at a time instead" : ""),
       );
       return false;
     }
@@ -652,22 +675,23 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
       // NOT a planning failure - the model answered fine, the daemon refused the write.
       // Counted and backed off separately so a broken route does not spend the
       // planner's strikes, though at its own cap it degrades the same way.
-      backlogStoreFailures++;
-      backlogStoreRetryAt = now + storeBackoffMs(backlogStoreFailures);
+      backlogPlanner.onStoreFailure(err, Date.now());
+      const health = backlogPlanner.health(Date.now())!;
+      const retrySeconds = Math.max(
+        0,
+        Math.round((backlogPlanner.storeRetryAt() - Date.now()) / 1000),
+      );
       noteBacklog(
-        `planned the backlog but could not store it (${backlogStoreFailures}x, retrying in ` +
-          `${Math.round(storeBackoffMs(backlogStoreFailures) / 1000)}s)` +
-          (backlogStoreFailures >= PLAN_FAILURE_CAP
+        `planned the backlog but could not store it (${health.failureCount}x, retrying in ` +
+          `${retrySeconds}s)` +
+          (health.state === "degraded"
             ? " - scheduling one at a time meanwhile"
             : "") +
-          `: ${String(err)}`,
+          `: ${health.lastError}`,
       );
       return false;
     }
-    backlogStoreFailures = 0;
-    backlogStoreRetryAt = 0;
-    backlogPlanFailures = 0;
-    backlogPlanFailedAt = 0;
+    backlogPlanner.onSuccess();
     // Reset the change-only log: the next outcome is news whatever it says, because the
     // whole picture just moved.
     lastBacklogNote = "";

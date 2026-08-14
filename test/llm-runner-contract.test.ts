@@ -35,9 +35,13 @@ process.env.HARNESS_HOME = join(home, "state");
 const RUN_ARGS = join(home, "args");
 const RUN_CWD = join(home, "cwd");
 const RUN_ENV = join(home, "env");
+const RUN_SCHEMA_PATH = join(home, "schema-path");
+const RUN_SCHEMA = join(home, "schema");
 process.env.RUN_ARGS = RUN_ARGS;
 process.env.RUN_CWD = RUN_CWD;
 process.env.RUN_ENV = RUN_ENV;
+process.env.RUN_SCHEMA_PATH = RUN_SCHEMA_PATH;
+process.env.RUN_SCHEMA = RUN_SCHEMA;
 
 const fakeBin = join(home, "fake-claude.sh");
 writeFileSync(
@@ -61,9 +65,28 @@ writeFileSync(
   `#!/bin/sh
 cat > /dev/null
 : > "$RUN_ARGS"
-for a in "$@"; do printf '%s\\n' "$a" >> "$RUN_ARGS"; done
+want_schema=0
+for a in "$@"; do
+  printf '%s\\n' "$a" >> "$RUN_ARGS"
+  if [ "$want_schema" = "1" ]; then
+    printf '%s\\n' "$a" > "$RUN_SCHEMA_PATH"
+    cp "$a" "$RUN_SCHEMA"
+    want_schema=0
+  elif [ "$a" = "--output-schema" ]; then
+    want_schema=1
+  fi
+done
 pwd > "$RUN_CWD"
 printf '%s\\n%s\\n%s\\n' "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS" > "$RUN_ENV"
+if [ "$RUN_CODEX_FAIL" = "1" ]; then
+  printf '%s\\n' 'STDERR OPERATOR BRIEF MUST NOT LEAK' >&2
+  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OPERATOR BRIEF MUST NOT LEAK"}}'
+  printf '%s\\n' '{"type":"turn.failed","error":{"message":"schema validation failed: missing tasks"}}'
+  exit 1
+fi
+if [ "$RUN_CODEX_WAIT" = "1" ]; then
+  sleep 30
+fi
 printf '%s\\n' '{"type":"thread.started","thread_id":"thread-abc"}'
 printf '%s\\n' '{"type":"turn.started"}'
 printf '%s\\n' '{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"ignore me"}}'
@@ -112,7 +135,17 @@ function flag(name: string): string | null {
 }
 
 function clearRecording(): void {
-  for (const f of [RUN_ARGS, RUN_CWD, RUN_ENV]) rmSync(f, { force: true });
+  for (const f of [RUN_ARGS, RUN_CWD, RUN_ENV, RUN_SCHEMA_PATH, RUN_SCHEMA]) {
+    rmSync(f, { force: true });
+  }
+}
+
+async function assertSoon(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail("condition did not become true before timeout");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 function fakeClaudeSdk(): {
@@ -271,11 +304,17 @@ test("envelope unwrapping accepts result text but never mistakes an object resul
   assert.notEqual(unwrapEnvelope(objectResult), '{"answer":"yes"}');
 });
 
-test("Codex runs ephemerally with command tools disabled and returns its final text", async () => {
+test("Codex passes a materialized schema, cleans it up, and keeps command tools disabled", async () => {
+  const schema = {
+    type: "object",
+    properties: { tasks: { type: "array" } },
+    required: ["tasks"],
+    additionalProperties: false,
+  };
   const text = await codexRunner.run("summarise this session", {
     model: "gpt-5.6-sol",
     timeoutMs: 5000,
-    schema: { type: "object" },
+    schema,
   });
   const args = argv();
   assert.equal(text, "the codex text");
@@ -292,12 +331,70 @@ test("Codex runs ephemerally with command tools disabled and returns its final t
   // to parse around, and an `--ephemeral` run writes no rollout file, so this is the only
   // place its token usage is ever stated.
   assert.ok(args.includes("--json"));
-  assert.equal(flag("--json-schema"), null, "Codex must ignore a schema it cannot enforce");
-  assert.equal(codexRunner.structuredOutput, null);
+  const schemaPath = lines(RUN_SCHEMA_PATH)[0]!;
+  assert.equal(flag("--output-schema"), schemaPath);
+  assert.deepEqual(JSON.parse(readFileSync(RUN_SCHEMA, "utf8")), schema);
+  assert.equal(existsSync(schemaPath), false, "the per-run schema file survived the process");
+  assert.equal(
+    codexRunner.structuredOutput,
+    null,
+    "argv coverage alone must not advertise real-CLI mismatch enforcement",
+  );
   for (const forbidden of ["resume", "--dangerously-bypass-approvals-and-sandbox"]) {
     assert.equal(args.includes(forbidden), false);
   }
   assert.equal(lines(RUN_ENV)[2], "1");
+});
+
+test("Codex omits the schema flag when none was supplied", async () => {
+  clearRecording();
+  await codexRunner.run("answer as text", { timeoutMs: 5000 });
+  assert.equal(flag("--output-schema"), null);
+  assert.equal(existsSync(RUN_SCHEMA_PATH), false);
+});
+
+test("Codex keeps a bounded JSON-stream failure reason without leaking agent text", async () => {
+  clearRecording();
+  process.env.RUN_CODEX_FAIL = "1";
+  try {
+    await assert.rejects(
+      codexRunner.run("the real operator brief", {
+        timeoutMs: 5000,
+        schema: { type: "object" },
+      }),
+      (err: Error) => {
+        assert.match(err.message, /codex exited 1: schema validation failed: missing tasks/);
+        assert.doesNotMatch(err.message, /STDERR|OPERATOR BRIEF|real operator brief/);
+        assert.ok(err.message.length <= 340, "the bounded provider diagnostic grew without limit");
+        return true;
+      },
+    );
+    const schemaPath = lines(RUN_SCHEMA_PATH)[0]!;
+    assert.equal(existsSync(schemaPath), false, "a failed run kept its schema file");
+  } finally {
+    delete process.env.RUN_CODEX_FAIL;
+  }
+});
+
+test("Codex cleans a live schema synchronously when shutdown kills the run", async () => {
+  clearRecording();
+  process.env.RUN_CODEX_WAIT = "1";
+  const run = codexRunner.run("wait for shutdown", {
+    timeoutMs: 5000,
+    schema: { type: "object" },
+  });
+  try {
+    await assertSoon(() => existsSync(RUN_SCHEMA_PATH));
+    const schemaPath = lines(RUN_SCHEMA_PATH)[0]!;
+    assert.equal(existsSync(schemaPath), true);
+
+    codexRunner.killLiveRuns?.();
+    assert.equal(existsSync(schemaPath), false, "shutdown left the live schema directory behind");
+    await assert.rejects(run, /codex exited/);
+  } finally {
+    delete process.env.RUN_CODEX_WAIT;
+    codexRunner.killLiveRuns?.();
+  }
 });
 
 test("provider validation trims only the retry, never the caller's Zod parse", async () => {

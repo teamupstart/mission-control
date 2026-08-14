@@ -9,6 +9,7 @@ export const BASE_URL: string;
 export const LEASE_HOLDER: string;
 export const LEASE_HOLDERS: readonly string[];
 
+export const STATE_DIRS: readonly string[];
 export function stateDir(): string;
 export function migrateStateDir(): { from: string; to: string } | null;
 export function tokenPath(): string;

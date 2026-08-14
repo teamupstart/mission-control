@@ -26,6 +26,8 @@ Read it through one hook per preference (`useRichText`, `useGuidedDispatch`), ne
 
 MCP arguments are deliberately validated twice: in `src/shared/protocol.ts` and `src/mcp/server.ts`. Change both.
 
+A new MCP **tool** carries two more obligations, and skipping either is silent. Add its name to `MISSION_MCP_TOOLS` (`src/server/mission-mcp.ts`), or no launch can pre-approve it and calling it stops the agent on a permission prompt. Then rebuild: a dispatched agent runs the built `dist/mcp/server.mjs`, which only `npm run build` refreshes and which git ignores, so source alone never reaches a session. `npm run smoke` fails on either mistake, the daemon warns at startup, and a launch that requires an unpublished tool is refused before the agent spawns.
+
 Every mutating route requires a Zod schema in `protocol.ts` and `parseBody`. Do not hand-parse JSON.
 
 ## Database changes
@@ -109,6 +111,16 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   that no migration can reach. Add, never rename. `MEMORY_REFERENCE_MARKER` is exported
   separately from the path it currently equals so the retro's idempotence check on
   `AGENTS.md` can survive the path moving. See [Repository memory](../repository-memory.md)
+- Archive format identifiers and vocabularies (`src/shared/archives.ts`) - the `format`
+  string, the format version tuple, and the kind, capture-status, artifact-role,
+  missing-kind and search-segment vocabularies are written into `manifest.json` in every
+  bundle on every machine, including bundles this build will never open. Nothing here is in
+  this database, so a rename orphans evidence no migration can reach. This is why the rename
+  to a kind-agnostic library was ADDITIVE: `ARCHIVE_FORMAT` is what this build writes,
+  `SCOUT_ARCHIVE_FORMAT` keeps its original meaning for ever and is only ever read, and no
+  published bundle is rewritten or moved. Adding a kind means appending to `ARCHIVE_KINDS`
+  and registering a planner in `src/server/archives/planners.ts`; a kind with no planner is
+  readable and not writable, which is deliberate. See [Archives](../archives.md)
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
   editing one rewrites the graph every existing binding pinned to it. The literal node and
@@ -468,7 +480,7 @@ Extend existing registries instead of adding parallel lists:
 - Terminal backends: ID tuples and `MULTIPLEXERS` or `EMULATORS`
 - Open targets: `OPEN_TARGET_INFO` and `OPEN_TARGETS`
 - Task sources: `TASK_SOURCE_KIND_INFO` and `TASK_SOURCES`
-- Task kinds: `TASK_KINDS` (`src/shared/types.ts`) for the ids and their picker order, `TASK_KIND_INFO` (`src/shared/task.ts`) for how they are named. Anything that enumerates the SET - a `z.enum`, a check over a persisted value, an `<option>` list - reads the tuple. Comparing against one kind (`kind === "scout"`) is ordinary code and needs nothing. Two `<option>` lists are grandfathered: `TaskSourcesPanel.tsx` and `ScheduleEditor.tsx` still hand-write the pair, each with its own wording, because converging them changes what a person reads and owes an `e2e/` spec. `test/task-kinds.test.ts` names those two in `KNOWN_HAND_WRITTEN` and compares the offender set exactly, so a third copy fails and a converted one must be deleted from the list in the same change: it shrinks, never grows
+- Task kinds: `TASK_KINDS` (`src/shared/types.ts`) for the ids and their picker order, `TASK_KIND_INFO` (`src/shared/task.ts`) for how they are named and what each is for. Append, never reorder - `ship` at index 0 is what `DEFAULT_TASK_KIND` derives from, and it is the kind every automated writer takes and the one an unreadable persisted value degrades to. Anything that enumerates the SET - a `z.enum`, a check over a persisted value, an `<option>` list - reads the tuple. Comparing against one kind (`kind === "scout"`) is ordinary code and needs nothing; a rule that is really about a PROPERTY of the kind is not, and states it as a predicate over the vocabulary instead (`hasReviewableDiff`). Nothing is grandfathered any more: `TaskSourcesPanel.tsx` and `ScheduleEditor.tsx` hand-wrote their `<option>`s until adding a third kind showed what that costs - they compiled cleanly and silently kept offering two - and both now render from the registry. `test/task-kinds.test.ts` compares the offender set exactly against an empty `KNOWN_HAND_WRITTEN`, and its detector flags any TWO ids declared together, so a stale subset fails as loudly as a complete copy
 - Ensemble strategies: shared strategy info and server compiler registry
 - Shared model choice: `resolveModelChoice`
 - Shared predicates: keep one implementation in `src/shared`

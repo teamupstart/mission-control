@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import type { Hono } from "hono";
 import type { ServerEvent } from "../src/shared/types.ts";
-import { writeScoutBundle } from "./helpers/scout-fixture.ts";
+import { writeScoutBundle } from "./helpers/archive-fixture.ts";
 
 /** The loopback Host every data endpoint requires. See `hostIsLoopback` in routes.ts. */
 const LOOPBACK = { host: "127.0.0.1:7317" };
@@ -24,8 +24,8 @@ process.env.MISSION_HOME = home;
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { ScoutStore, clearScoutTables } = await import("../src/server/scouts/store.ts");
-const { ScoutArchiveManager } = await import("../src/server/scouts/manager.ts");
+const { ArchiveStore, clearArchiveTables } = await import("../src/server/archives/store.ts");
+const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { provisionScoutSubmissionCredential } = await import(
   "../src/server/scouts/submission-auth.ts"
@@ -52,7 +52,7 @@ function newLibrary(): string {
 interface Harness {
   app: Hono;
   root: string;
-  manager: InstanceType<typeof ScoutArchiveManager>;
+  manager: InstanceType<typeof ArchiveManager>;
   events: ServerEvent[];
   opened: string[];
 }
@@ -61,6 +61,11 @@ function harness(
   options: {
     rename?: (from: string, to: string) => Promise<void>;
     root?: string;
+    /**
+     * Roots that are read and never written. Absent means none, because naming `root`
+     * explicitly means "this directory is the library" - see `ArchiveLibrary`.
+     */
+    legacyRoots?: readonly string[];
     /**
      * A task gateway, for the submission route only.
      *
@@ -75,13 +80,14 @@ function harness(
   const events: ServerEvent[] = [];
   registry.subscribe((event) => events.push(event));
   const opened: string[] = [];
-  const manager = new ScoutArchiveManager({
+  const manager = new ArchiveManager({
     root,
-    store: new ScoutStore(db),
+    legacyRoots: options.legacyRoots,
+    store: new ArchiveStore(db),
     producer: { id: "00000000-0000-4000-8000-000000000000", label: null },
     intervalMs: null,
     watch: false,
-    onChanged: () => registry.emitScoutArchiveChanged(),
+    onChanged: () => registry.emitArchiveChanged(),
     rename: options.rename,
     tasks: options.tasks,
     openTarget: async (_target, path) => {
@@ -113,19 +119,120 @@ function harness(
 }
 
 /** Two passes, because a newly written bundle must settle before it is believed. */
-async function settle(manager: InstanceType<typeof ScoutArchiveManager>): Promise<void> {
+async function settle(manager: InstanceType<typeof ArchiveManager>): Promise<void> {
   await manager.reconcileNow();
   await manager.reconcileNow();
 }
 
-beforeEach(() => clearScoutTables(db));
+beforeEach(() => clearArchiveTables(db));
+
+// ---------------------------------------------------------------------------
+// The compatibility window, end to end
+// ---------------------------------------------------------------------------
+
+test("a bundle an older build published is still listed, and still readable, through the archive routes", async () => {
+  // The upgrade an operator actually performs: a library written by a build that predates
+  // the kind discriminator, opened by this one. Nothing moves, nothing is rewritten, and the
+  // whole route surface has to keep answering for it - which is what makes "the legacy ones
+  // stay readable" a property somebody can check rather than a claim in a document.
+  //
+  // Both roots are the DAEMON'S OWN, resolved from `MISSION_HOME` rather than handed in, so
+  // this also pins the wiring: `ARCHIVES_DIR` is written and `LEGACY_SCOUTS_DIR` is read.
+  const config = await import("../src/server/config.ts");
+  mkdirSync(config.ARCHIVES_DIR, { recursive: true });
+  mkdirSync(config.LEGACY_SCOUTS_DIR, { recursive: true });
+  // Realpath'd because the index stores the root it actually walked, and macOS resolves the
+  // temp dir through a symlink - the same reason `newLibrary()` above does it.
+  const ARCHIVES_DIR = realpathSync(config.ARCHIVES_DIR);
+  const LEGACY_SCOUTS_DIR = realpathSync(config.LEGACY_SCOUTS_DIR);
+  const legacy = writeScoutBundle(LEGACY_SCOUTS_DIR, {
+    legacyFormat: true,
+    title: "Published before archives declared a kind",
+    companions: { "permission-events.csv": "when,what\n1,grant missing\n" },
+  });
+  // Proof the fixture is what it claims to be: the old format string, and no kind field.
+  const onDisk = JSON.parse(readFileSync(join(legacy.dir, "manifest.json"), "utf8")) as Record<string, unknown>;
+  assert.equal(onDisk.format, "mission-control/scout-archive");
+  assert.equal("kind" in onDisk, false);
+
+  const { app, manager } = harness({ root: ARCHIVES_DIR, legacyRoots: [LEGACY_SCOUTS_DIR] });
+  await settle(manager);
+
+  const list = (await (await app.request("/api/archives", { headers: LOOPBACK })).json()) as {
+    archives: Array<{ key: string; kind: string | null; status: string; title: string }>;
+    libraryPath: string;
+  };
+  assert.equal(list.archives.length, 1);
+  assert.equal(list.archives[0]?.key, legacy.key);
+  assert.equal(list.archives[0]?.kind, "scout", "a manifest with no kind field is the scout it always was");
+  assert.equal(list.archives[0]?.status, "ready");
+  assert.equal(list.archives[0]?.title, "Published before archives declared a kind");
+  assert.equal(list.libraryPath, ARCHIVES_DIR, "new work is written to the new root, not the one this came from");
+
+  // The kind filter reaches it, and does not reach past it.
+  const scouts = (await (await app.request("/api/archives?kind=scout", { headers: LOOPBACK })).json()) as {
+    archives: unknown[];
+  };
+  assert.equal(scouts.archives.length, 1);
+  const plans = (await (await app.request("/api/archives?kind=plan", { headers: LOOPBACK })).json()) as {
+    archives: unknown[];
+  };
+  assert.equal(plans.archives.length, 0);
+
+  // The detail route names the directory that actually holds the files - the legacy root.
+  const detail = (await (await app.request(`/api/archives/${legacy.key}`, { headers: LOOPBACK })).json()) as {
+    kind: string | null;
+    bundlePath: string;
+    formatVersion: number;
+    artifacts: Array<{ id: string }>;
+  };
+  assert.equal(detail.kind, "scout");
+  assert.equal(detail.formatVersion, 1);
+  assert.equal(detail.bundlePath, legacy.dir);
+  assert.ok(detail.bundlePath.startsWith(LEGACY_SCOUTS_DIR), "nothing was moved into the new root");
+
+  // And the bytes come back: the report, and a companion beside it.
+  const report = await app.request(`/api/archives/${legacy.key}/artifacts/report`, { headers: LOOPBACK });
+  assert.equal(report.status, 200);
+  assert.equal(report.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.match(await report.text(), /Resume permission loss/);
+
+  const companion = await app.request(`/api/archives/${legacy.key}/artifacts/artifact-01`, { headers: LOOPBACK });
+  assert.equal(companion.status, 200);
+  assert.equal(await companion.text(), "when,what\n1,grant missing\n");
+});
+
+test("a bundle in each root appears in one catalog, from one pass", async () => {
+  const config = await import("../src/server/config.ts");
+  mkdirSync(config.LEGACY_SCOUTS_DIR, { recursive: true });
+  mkdirSync(config.ARCHIVES_DIR, { recursive: true });
+  const ARCHIVES_DIR = realpathSync(config.ARCHIVES_DIR);
+  const LEGACY_SCOUTS_DIR = realpathSync(config.LEGACY_SCOUTS_DIR);
+  const legacy = writeScoutBundle(LEGACY_SCOUTS_DIR, { legacyFormat: true, title: "The old one" });
+  const fresh = writeScoutBundle(ARCHIVES_DIR, { title: "The new one" });
+
+  const { app, manager } = harness({ root: ARCHIVES_DIR, legacyRoots: [LEGACY_SCOUTS_DIR] });
+  await settle(manager);
+
+  const list = (await (await app.request("/api/archives", { headers: LOOPBACK })).json()) as {
+    archives: Array<{ key: string; kind: string | null }>;
+  };
+  const keys = list.archives.map((row) => row.key);
+  // Containment rather than equality: these tests share the daemon's own roots on disk, and
+  // `clearArchiveTables` clears rows rather than directories, so a bundle an earlier test
+  // wrote is legitimately still there. What is under test is that ONE query answers for both
+  // roots, which containment says exactly.
+  assert.ok(keys.includes(legacy.key), "the bundle under the legacy root is in the catalog");
+  assert.ok(keys.includes(fresh.key), "so is the one under the write root");
+  for (const row of list.archives) assert.equal(row.kind, "scout");
+});
 
 test("the list route returns bounded summaries and the library path", async () => {
   const { app, root, manager } = harness();
   writeScoutBundle(root, { title: "Resume permission loss" });
   await settle(manager);
 
-  const res = await app.request("/api/scouts", { headers: LOOPBACK });
+  const res = await app.request("/api/archives", { headers: LOOPBACK });
   assert.equal(res.status, 200);
   const body = (await res.json()) as { archives: Array<Record<string, unknown>>; libraryPath: string };
   assert.equal(body.archives.length, 1);
@@ -145,7 +252,7 @@ test("search returns a snippet naming why the row matched", async () => {
   writeScoutBundle(root, {});
   await settle(manager);
 
-  const res = await app.request("/api/scouts?q=" + encodeURIComponent("never replayed"), { headers: LOOPBACK });
+  const res = await app.request("/api/archives?q=" + encodeURIComponent("never replayed"), { headers: LOOPBACK });
   const body = (await res.json()) as {
     archives: Array<{ snippet: { kind: string; text: string } | null }>;
   };
@@ -153,17 +260,17 @@ test("search returns a snippet naming why the row matched", async () => {
   assert.equal(body.archives[0]?.snippet?.kind, "report_text");
   assert.match(body.archives[0]?.snippet?.text ?? "", /never replayed/);
 
-  const miss = await app.request("/api/scouts?q=" + encodeURIComponent("nothing matches this"), { headers: LOOPBACK });
+  const miss = await app.request("/api/archives?q=" + encodeURIComponent("nothing matches this"), { headers: LOOPBACK });
   assert.deepEqual(((await miss.json()) as { archives: unknown[] }).archives, []);
 });
 
 test("an out-of-range limit or a forged cursor is refused, never clamped or ignored", async () => {
   const { app } = harness();
-  assert.equal((await app.request("/api/scouts?limit=5000", { headers: LOOPBACK })).status, 400);
-  assert.equal((await app.request("/api/scouts?limit=0", { headers: LOOPBACK })).status, 400);
-  assert.equal((await app.request("/api/scouts?cursor=nonsense", { headers: LOOPBACK })).status, 400);
-  assert.equal((await app.request("/api/scouts?producer=../../etc", { headers: LOOPBACK })).status, 400);
-  assert.equal((await app.request("/api/scouts?status=perfect", { headers: LOOPBACK })).status, 400);
+  assert.equal((await app.request("/api/archives?limit=5000", { headers: LOOPBACK })).status, 400);
+  assert.equal((await app.request("/api/archives?limit=0", { headers: LOOPBACK })).status, 400);
+  assert.equal((await app.request("/api/archives?cursor=nonsense", { headers: LOOPBACK })).status, 400);
+  assert.equal((await app.request("/api/archives?producer=../../etc", { headers: LOOPBACK })).status, 400);
+  assert.equal((await app.request("/api/archives?status=perfect", { headers: LOOPBACK })).status, 400);
 });
 
 test("the detail route adds provenance, artifacts, and a copyable bundle path", async () => {
@@ -174,7 +281,7 @@ test("the detail route adds provenance, artifacts, and a copyable bundle path", 
   });
   await settle(manager);
 
-  const res = await app.request(`/api/scouts/${written.key}`, { headers: LOOPBACK });
+  const res = await app.request(`/api/archives/${written.key}`, { headers: LOOPBACK });
   assert.equal(res.status, 200);
   const body = (await res.json()) as {
     bundlePath: string;
@@ -195,13 +302,13 @@ test("the detail route adds provenance, artifacts, and a copyable bundle path", 
 
 test("an unknown or malformed archive key is a 404, and never a path", async () => {
   const { app } = harness();
-  assert.equal((await app.request("/api/scouts/nope", { headers: LOOPBACK })).status, 404);
+  assert.equal((await app.request("/api/archives/nope", { headers: LOOPBACK })).status, 404);
   assert.equal(
-    (await app.request("/api/scouts/00000000-0000-4000-8000-000000000000~00000000-0000-4000-8000-000000000001", { headers: LOOPBACK }))
+    (await app.request("/api/archives/00000000-0000-4000-8000-000000000000~00000000-0000-4000-8000-000000000001", { headers: LOOPBACK }))
       .status,
     404,
   );
-  assert.equal((await app.request("/api/scouts/..%2F..%2Fetc", { headers: LOOPBACK })).status, 404);
+  assert.equal((await app.request("/api/archives/..%2F..%2Fetc", { headers: LOOPBACK })).status, 404);
 });
 
 test("an artifact body is served as an attachment with headers taken from its own path", async () => {
@@ -209,7 +316,7 @@ test("an artifact body is served as an attachment with headers taken from its ow
   const written = writeScoutBundle(root, { companions: { "permission-events.csv": "when,what\n1,lost\n" } });
   await settle(manager);
 
-  const res = await app.request(`/api/scouts/${written.key}/artifacts/artifact-01`, { headers: LOOPBACK });
+  const res = await app.request(`/api/archives/${written.key}/artifacts/artifact-01`, { headers: LOOPBACK });
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type"), "text/csv; charset=utf-8");
   assert.equal(res.headers.get("content-disposition"), 'attachment; filename="permission-events.csv"');
@@ -224,7 +331,7 @@ test("the HTML report is served as an attachment too, never inline on the daemon
   const written = writeScoutBundle(root, {});
   await settle(manager);
 
-  const res = await app.request(`/api/scouts/${written.key}/artifacts/report`, { headers: LOOPBACK });
+  const res = await app.request(`/api/archives/${written.key}/artifacts/report`, { headers: LOOPBACK });
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type"), "text/html; charset=utf-8");
   assert.match(res.headers.get("content-disposition") ?? "", /^attachment;/);
@@ -236,7 +343,7 @@ test("an artifact route accepts only generated ids, never a path", async () => {
   const written = writeScoutBundle(root, {});
   await settle(manager);
   for (const id of ["report.html", "..", "%2e%2e%2fmanifest.json", "artifact-99"]) {
-    const res = await app.request(`/api/scouts/${written.key}/artifacts/${id}`, { headers: LOOPBACK });
+    const res = await app.request(`/api/archives/${written.key}/artifacts/${id}`, { headers: LOOPBACK });
     assert.equal(res.status, 404, `${id} must not address a file`);
   }
 });
@@ -246,7 +353,7 @@ test("a deleted file under an indexed archive is a 404, not a stack trace", asyn
   const written = writeScoutBundle(root, { companions: { "a.csv": "1" } });
   await settle(manager);
   rmSync(join(written.dir, "report/a.csv"));
-  const res = await app.request(`/api/scouts/${written.key}/artifacts/artifact-01`, { headers: LOOPBACK });
+  const res = await app.request(`/api/archives/${written.key}/artifacts/artifact-01`, { headers: LOOPBACK });
   assert.equal(res.status, 404);
 });
 
@@ -255,7 +362,7 @@ test("opening an artifact hands the launcher a path inside the verified bundle",
   const written = writeScoutBundle(root, {});
   await settle(manager);
 
-  const res = await app.request(`/api/scouts/${written.key}/artifacts/report/open`, {
+  const res = await app.request(`/api/archives/${written.key}/artifacts/report/open`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify({ target: "browser" }),
@@ -263,7 +370,7 @@ test("opening an artifact hands the launcher a path inside the verified bundle",
   assert.equal(res.status, 200);
   assert.deepEqual(opened, [join(written.dir, "report/report.html")]);
 
-  const badTarget = await app.request(`/api/scouts/${written.key}/artifacts/report/open`, {
+  const badTarget = await app.request(`/api/archives/${written.key}/artifacts/report/open`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify({ target: "vim" }),
@@ -272,7 +379,7 @@ test("opening an artifact hands the launcher a path inside the verified bundle",
   assert.equal(opened.length, 1, "a target outside the closed registry never reaches a launcher");
 
   const missing = await app.request(
-    `/api/scouts/00000000-0000-4000-8000-000000000000~00000000-0000-4000-8000-000000000009/artifacts/report/open`,
+    `/api/archives/00000000-0000-4000-8000-000000000000~00000000-0000-4000-8000-000000000009/artifacts/report/open`,
     {
       method: "POST",
       headers: JSON_HEADERS,
@@ -289,10 +396,10 @@ test("deleting requires the archive key to be typed back", async () => {
   const other = writeScoutBundle(root, {});
   await settle(manager);
 
-  const noBody = await app.request(`/api/scouts/${written.key}`, { method: "DELETE", headers: LOOPBACK });
+  const noBody = await app.request(`/api/archives/${written.key}`, { method: "DELETE", headers: LOOPBACK });
   assert.equal(noBody.status, 400);
 
-  const mismatched = await app.request(`/api/scouts/${written.key}`, {
+  const mismatched = await app.request(`/api/archives/${written.key}`, {
     method: "DELETE",
     headers: JSON_HEADERS,
     body: JSON.stringify({ confirmArchiveKey: other.key }),
@@ -308,7 +415,7 @@ test("a confirmed delete removes exactly one bundle and its rows", async () => {
   await settle(manager);
   events.length = 0;
 
-  const res = await app.request(`/api/scouts/${written.key}`, {
+  const res = await app.request(`/api/archives/${written.key}`, {
     method: "DELETE",
     headers: JSON_HEADERS,
     body: JSON.stringify({ confirmArchiveKey: written.key }),
@@ -317,10 +424,10 @@ test("a confirmed delete removes exactly one bundle and its rows", async () => {
   assert.deepEqual(await res.json(), { ok: true, deletedBundle: true });
   assert.equal(existsSync(written.dir), false);
   assert.equal(existsSync(join(root, ".trash", "")), true, "the trash root is kept, its contents are not");
-  assert.equal((await app.request(`/api/scouts/${written.key}`, { headers: LOOPBACK })).status, 404);
+  assert.equal((await app.request(`/api/archives/${written.key}`, { headers: LOOPBACK })).status, 404);
 
   assert.equal(existsSync(survivor.dir), true, "a sibling archive is untouched");
-  assert.equal((await app.request(`/api/scouts/${survivor.key}`, { headers: LOOPBACK })).status, 200);
+  assert.equal((await app.request(`/api/archives/${survivor.key}`, { headers: LOOPBACK })).status, 200);
 });
 
 test("an archive whose bundle is unreadable is still deletable by its generated path", async () => {
@@ -330,11 +437,11 @@ test("an archive whose bundle is unreadable is still deletable by its generated 
   });
   await settle(manager);
   assert.equal(
-    ((await (await app.request(`/api/scouts/${written.key}`, { headers: LOOPBACK })).json()) as { status: string }).status,
+    ((await (await app.request(`/api/archives/${written.key}`, { headers: LOOPBACK })).json()) as { status: string }).status,
     "unreadable",
   );
 
-  const res = await app.request(`/api/scouts/${written.key}`, {
+  const res = await app.request(`/api/archives/${written.key}`, {
     method: "DELETE",
     headers: JSON_HEADERS,
     body: JSON.stringify({ confirmArchiveKey: written.key }),
@@ -352,7 +459,7 @@ test("a failed delete leaves the archive readable and says why", async () => {
   const written = writeScoutBundle(root, {});
   await settle(manager);
 
-  const res = await app.request(`/api/scouts/${written.key}`, {
+  const res = await app.request(`/api/archives/${written.key}`, {
     method: "DELETE",
     headers: JSON_HEADERS,
     body: JSON.stringify({ confirmArchiveKey: written.key }),
@@ -360,7 +467,7 @@ test("a failed delete leaves the archive readable and says why", async () => {
   assert.equal(res.status, 500);
   assert.match(((await res.json()) as { error: string }).error, /Permission denied/);
   assert.equal(existsSync(written.dir), true);
-  assert.equal((await app.request(`/api/scouts/${written.key}`, { headers: LOOPBACK })).status, 200, "the archive is still readable");
+  assert.equal((await app.request(`/api/archives/${written.key}`, { headers: LOOPBACK })).status, 200, "the archive is still readable");
 });
 
 test("a reconciled batch raises exactly one invalidation, and history stays out of the snapshot", async () => {
@@ -371,9 +478,9 @@ test("a reconciled batch raises exactly one invalidation, and history stays out 
   events.length = 0;
   await settle(manager);
 
-  const raised = events.filter((event) => event.type === "scout_archive_changed");
+  const raised = events.filter((event) => event.type === "archive_changed");
   assert.equal(raised.length, 1, "three bundles in one batch is one frame, not three");
-  assert.deepEqual(raised[0], { type: "scout_archive_changed" }, "the frame carries no history");
+  assert.deepEqual(raised[0], { type: "archive_changed" }, "the frame carries no history");
 
   const registry = new Registry();
   const snapshot = registry.snapshot() as unknown as Record<string, unknown>;
@@ -388,11 +495,11 @@ test("every scout route answers 503 when the daemon has no library, rather than 
   const registry = new Registry();
   const app = buildApp(registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager);
   for (const [method, path] of [
-    ["GET", "/api/scouts"],
-    ["GET", "/api/scouts/a"],
-    ["GET", "/api/scouts/a/artifacts/b"],
-    ["POST", "/api/scouts/a/artifacts/b/open"],
-    ["DELETE", "/api/scouts/a"],
+    ["GET", "/api/archives"],
+    ["GET", "/api/archives/a"],
+    ["GET", "/api/archives/a/artifacts/b"],
+    ["POST", "/api/archives/a/artifacts/b/open"],
+    ["DELETE", "/api/archives/a"],
   ] as const) {
     const res = await app.request(path, {
       method,
@@ -405,7 +512,7 @@ test("every scout route answers 503 when the daemon has no library, rather than 
 
 test("the scout routes are behind the loopback guard like every other data endpoint", async () => {
   const { app } = harness();
-  const res = await app.request("http://mission-control.example.com/api/scouts");
+  const res = await app.request("http://mission-control.example.com/api/archives");
   assert.equal(res.status, 403);
 });
 
@@ -422,9 +529,9 @@ test("a symlinked producer namespace can neither be read nor deleted through its
   symlinkSync(join(outside, written.producerId), join(root, written.producerId));
 
   await settle(manager);
-  assert.equal((await app.request(`/api/scouts/${written.key}`, { headers: LOOPBACK })).status, 404);
+  assert.equal((await app.request(`/api/archives/${written.key}`, { headers: LOOPBACK })).status, 404);
 
-  const res = await app.request(`/api/scouts/${written.key}`, {
+  const res = await app.request(`/api/archives/${written.key}`, {
     method: "DELETE",
     headers: JSON_HEADERS,
     body: JSON.stringify({ confirmArchiveKey: written.key }),
@@ -444,11 +551,11 @@ test("an artifact whose file became a symlink after indexing is refused, not ser
   writeFileSync(secret, "not yours");
   const written = writeScoutBundle(root, { companions: { "notes.txt": "public" } });
   await settle(manager);
-  assert.equal((await app.request(`/api/scouts/${written.key}/artifacts/artifact-01`, { headers: LOOPBACK })).status, 200);
+  assert.equal((await app.request(`/api/archives/${written.key}/artifacts/artifact-01`, { headers: LOOPBACK })).status, 200);
 
   rmSync(join(written.dir, "report/notes.txt"));
   symlinkSync(secret, join(written.dir, "report/notes.txt"));
-  const res = await app.request(`/api/scouts/${written.key}/artifacts/artifact-01`, { headers: LOOPBACK });
+  const res = await app.request(`/api/archives/${written.key}/artifacts/artifact-01`, { headers: LOOPBACK });
   assert.equal(res.status, 404);
   assert.equal((await res.text()).includes("not yours"), false);
 });
@@ -459,9 +566,9 @@ test("a page cursor is refused rather than read as the first page", async () => 
   await settle(manager);
   // The route schema refuses a malformed cursor, and so does the manager beneath it - two
   // layers, because silently paging the wrong window is the failure that looks like success.
-  assert.equal((await app.request("/api/scouts?cursor=1760000000000.nope", { headers: LOOPBACK })).status, 400);
+  assert.equal((await app.request("/api/archives?cursor=1760000000000.nope", { headers: LOOPBACK })).status, 400);
   assert.throws(
-    () => manager.list({ q: null, producer: null, repo: null, agent: null, status: null, from: null, to: null, cursor: "garbage", limit: 30 }),
+    () => manager.list({ q: null, producer: null, repo: null, agent: null, kind: null, status: null, from: null, to: null, cursor: "garbage", limit: 30 }),
     /cursor/,
   );
 });
@@ -472,7 +579,7 @@ test("a repository label cannot forge a filter match through the delimiter", asy
     repositories: [{ slot: "repo-01", label: "innocent|mission-control", head: null }],
   });
   await settle(manager);
-  const forged = await app.request("/api/scouts?repo=mission-control", { headers: LOOPBACK });
+  const forged = await app.request("/api/archives?repo=mission-control", { headers: LOOPBACK });
   assert.deepEqual(((await forged.json()) as { archives: unknown[] }).archives, []);
 });
 

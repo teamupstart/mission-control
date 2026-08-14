@@ -143,20 +143,30 @@ approve access/permission asks - turn it off and those escalate to you instead.
 Destructive or risky asks (force-push, secret access, prod deploy, data drops, disabling a
 safety check) are **always** escalated, never auto-approved.
 
-Everything Foreman does surfaces where you're already looking. On a **card**: a needs-you
-session it acted on shows a
-**◆ decision** flag (or **✎ draft**) in its header, the expanded card shows the decision
-brief + recommended answer with **Approve & send / Dismiss** controls, and an answered
-session carries a `✓ Foreman answered: …` audit line. An escalation also fires a browser
-**alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
-depth.
+Everything Foreman does surfaces where you're already looking. When an agent's ordinary
+review form already owns the decision, Foreman does not draw a second answer card or an
+**Approve & send** path beside it. Instead the option its recommendation names wears a
+**◆ Foreman's pick** mark, so which one it chose reads at a glance, and the form gets a
+closed **View Foreman recommendation** control for the reasoning behind that pick. Opening
+it shows Foreman's prose in a bounded sidecar. The marked option is never preselected, and
+the original form remains the only place that can send an answer. When Foreman's prose names
+no offered option, nothing is marked and only the control appears. If Foreman raised an
+unrelated decision,
+the separate note stays visible because its marker names a different ask. An escalation also
+fires a browser **alert**. The top-bar chip shows the mode, whether the worker is running, and
+the queue depth.
+
+For a draft or escalation that has no canonical review form, the card keeps the existing
+**◆ decision** or **✎ draft** flag. Its expanded note carries the brief, recommendation and
+the applicable **Approve & send / Dismiss** controls. An answered session carries a
+`✓ Foreman answered: …` audit line.
 
 Foreman's completion checks use the card's [durable Goal](sessions.md#goal), while its latest tactical
 focus remains separate.
 
 **Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
 tier, **Models** for the provider and four Foreman roles, **Launches** for the three
-per-harness backlog models, and **Safety** for the completion safeguards. Each tab shows how
+per-harness task-agent launch models, and **Safety** for the completion safeguards. Each tab shows how
 many settings it holds, and each field's explanation appears on hover or focus - as the
 control's tooltip and accessible description - rather than printing under the field. The
 current Foreman posture stays above the tabs so a stopped worker is always visible. **Live
@@ -178,13 +188,14 @@ finished work never reaches an automatic completion action:
 The safeguards are independent. A task matching either one is retired while that switch is
 on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
 
-In the [Console and Board](ui.md#layout-cards-console-or-board) detail the same decision is
-arranged differently, because a permanent conversation gives it somewhere better to sit:
-Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
-you still *owe* is a one-line strip above it - badge, disposition, purpose, **Approve &
-send** - that expands for the recommendation and **Dismiss**. It can't cover the chat,
-because the prose isn't in it. The strip unmounts once the note is answered or dismissed;
-the inline entry stays.
+In the [Console and Board](ui.md#layout-cards-console-or-board) detail, a standalone Foreman
+decision is arranged differently because a permanent conversation gives it somewhere better
+to sit: the note is rendered **in the transcript**, as a turn at the point it spoke, and what
+you still *owe* is a one-line strip above it. When the same ask already has a normal review,
+that strip and the matching live transcript entry yield to the review's optional recommendation
+control instead, so the conversation never presents two simultaneous decisions about one ask.
+The complete episode remains available in **Foreman · N** history. A standalone strip unmounts
+once its note is answered or dismissed; its inline entry stays.
 
 **Answering the question yourself retires the note.** A pinned decision is a claim on your
 attention, and answering the ask spends it: the agent is unblocked and the suggestion answers
@@ -281,6 +292,9 @@ Foreman spawns a fresh, tool-less headless call for four different jobs, and eac
 own model. **Settings → Foreman → Models** shows what each is running as and lets you change it.
 One **Provider** row above the four says which CLI they all spawn through - `claude` or
 `codex exec` - and changing it clears all four boxes, since a model id does not carry across.
+This one provider controls **Review, Verify, Triage, and Backlog** together. The separate
+**Launches** tab does not control any of those calls. It chooses the models of task agents
+Foreman starts from the backlog, which is unrelated to the model that reads dependencies.
 Claude uses one fresh Agent SDK query by default; [`MISSION_CLAUDE_TRANSPORT=print`](configuration.md)
 keeps the one-shot `claude -p` path available as an operator-pinned escape hatch.
 Left unchosen it follows the app-wide
@@ -303,6 +317,13 @@ variable set in the daemon's shell outranks the box and would otherwise be invis
 browser.
 
 Any id the selected provider's CLI accepts works - the fields are free text, not a fixed list.
+
+Codex structured calls pass the same provider-neutral JSON Schema used by Claude through
+`codex exec --output-schema`. The schema is written to a private temporary file for that one
+run and removed on success, failure, spawn error, or timeout. Codex still runs ephemeral,
+read-only, without command tools or approvals. If `codex exec` exits nonzero, Foreman keeps a
+bounded reason from Codex's JSON failure event rather than dropping stdout or exposing the
+stream's agent messages, which can contain operator task text.
 
 > Before this existed, Review and Verify passed no `--model` at all and silently inherited
 > whatever the CLI happened to be logged in as. If you relied on that, set the two fields to
@@ -408,8 +429,19 @@ lease and renews it; when nothing does, Foreman is enabled, set to whatever mode
 and nothing is executing it - a state that until now looked exactly like a quiet fleet.
 That reading outranks the mode in the posture line, because a mode nothing is running is
 not the fact you need first. The live figures beside it - sessions needing you, when the
-last decision was, the backlog autopilot's budget - are under **Right now**, and are
-deliberately a different population from the historical ledger above.
+last decision was, the backlog autopilot's budget, and the dependency planner's effective
+provider, model, health, and failure count - are under **Right now**, and are
+deliberately a different population from the historical ledger above. When backlog
+autopilot is off, the planner row says **idle (autopilot off)** instead of presenting its
+last circuit snapshot as an active degradation.
+
+The top-bar Foreman popover carries the actionable version of that planner status inside
+**Backlog**. A degraded planner names its last bounded error and the next automatic retry.
+**Retry planner now** rearms one immediate probe without restarting Mission Control. Changing
+the effective Foreman Provider or Backlog model also clears the old provider's strikes and
+forces an immediate probe, even when the stored plan still covers the backlog. A failed
+probe returns to the same serial safety fallback; recovery is reported only after a fresh
+plan is successfully stored.
 
 Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar
 Foreman control: those are the things you reach for while watching the fleet, and the

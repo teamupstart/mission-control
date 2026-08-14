@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 
 // What is at stake: which of two completely different things a dispatch launches.
 //
@@ -231,6 +232,11 @@ test("an embedded launch is handed the same MCP descriptor the terminal argv ren
       args: ["/dist/mcp/server.mjs"],
       env: {},
     }),
+    // That descriptor names a path which does not exist, because this test is about WHICH
+    // descriptor reaches the supervisor and never about what is inside it. The content guard
+    // would - correctly - refuse to launch against it, so it is answered here rather than
+    // given a bundle to interrogate. `mission-mcp.test.ts` runs the real handshake.
+    verifyMissionMcpTools: async () => ({ ok: true }),
     provisionScoutCredential: (taskId, cwd) => {
       credentialScope = { taskId, cwd };
       return "test-credential";
@@ -267,6 +273,57 @@ test("an embedded launch that cannot carry required MCP tools fails rather than 
   // completion and then be unable to say so.
   assert.equal(supervisor.starts.length, 0);
   assert.equal(registry.getTask("task-mcp")?.status, "failed");
+});
+
+test("a launch is refused when the BUILT bundle does not publish a tool it requires", async () => {
+  // The live incident, end to end, through the real guard rather than an injected verdict.
+  //
+  // Every other check in this path asks whether the bundle EXISTS, and this bundle does. It
+  // starts, it completes an MCP handshake, and it serves seven of the eight tools this build
+  // declares - which is exactly the state an operator's machine was found in, because the
+  // daemon runs from source under `tsx watch` while handing agents a `dist/mcp/server.mjs`
+  // that only `npm run build` refreshes and that git ignores. A bundle built before
+  // `submit_scout_artifacts` landed reads as a completely healthy install to `existsSync`.
+  //
+  // What the refusal buys: the scout's prompt tells it to call `submit_scout_artifacts`, and
+  // its task cannot reach `done` until it does. Launched against this bundle it works to a
+  // finished report and then has nowhere to put it - no error, no warning, nothing red. The
+  // task simply never completes. So the launch fails HERE, before the agent spawns.
+  const repo = seedRepo("stale-bundle-repo");
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-stale", status: "dispatching", repoRoot: repo, agent: "claude", kind: "scout" }),
+  );
+  const supervisor = fakeSupervisor(registry);
+  const prior = process.env.MISSION_MCP_SERVER;
+  process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "stale-bundle.mjs"), [
+    "share_plan",
+    "request_plan_decisions",
+    "request_review",
+    "create_task",
+    "request_input",
+    "report_status",
+    "submit_ensemble_result",
+    // …and NOT submit_scout_artifacts.
+  ]);
+  try {
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      provisionScoutCredential: () => "test-credential",
+    }).dispatch("task-stale", { missionMcp: { tools: ["submit_scout_artifacts"] } });
+  } finally {
+    if (prior === undefined) delete process.env.MISSION_MCP_SERVER;
+    else process.env.MISSION_MCP_SERVER = prior;
+  }
+
+  assert.equal(supervisor.starts.length, 0, "nothing may spawn against a bundle missing the tool");
+  const task = registry.getTask("task-stale");
+  assert.equal(task?.status, "failed");
+  // The operator reads this in the task card, so it has to name the tool AND the fix. "The
+  // MCP bundle is missing a tool" sends someone hunting through source that already has it.
+  assert.match(task?.error ?? "", /submit_scout_artifacts/);
+  assert.match(task?.error ?? "", /npm run build/);
 });
 
 test("a build with no supervisor refuses the runtime rather than silently using the other", async () => {

@@ -38,6 +38,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const BOOT_TIMEOUT_MS = 30_000;
 const POLL_MS = 200;
 
+/** Same budget, for the MCP bundle's cold load plus two round-trips. */
+const MCP_HANDSHAKE_MS = 30_000;
+
 /**
  * A port unlikely to collide with a developer's running daemon (7317) or anything else on
  * the box. The smoke never talks to a real daemon and must never be mistaken for one.
@@ -47,6 +50,57 @@ const PORT = 7519;
 function fail(msg) {
   console.error(`[smoke] FAIL: ${msg}`);
   process.exitCode = 1;
+}
+
+/** How long a bundle gets to honour SIGTERM before it is killed outright. */
+const KILL_GRACE_MS = 2_000;
+
+/**
+ * End a spawned bundle for good, and do not return until it is actually gone.
+ *
+ * `SIGTERM` is a request, and the bundles this script exists to catch are the ones least likely
+ * to honour it. A smoke that sends one and moves on leaves the child alive with its stdio pipes
+ * attached to us, which keeps the event loop open and means `npm run smoke` never exits. A hung
+ * build is not a red build: it burns the job's whole timeout and reports nothing useful.
+ *
+ * AWAITED, and deliberately NOT `unref`'d - which is where this differs from its counterpart in
+ * `src/server/mission-mcp.ts`, and why the two cannot share one implementation. The daemon is a
+ * long-lived process that must never be held open by a dying probe, so unref is right there.
+ * This is a short-lived CLI with the opposite hazard: on the success path nothing else is
+ * referenced by the time this returns, so an unref'd escalation timer lets node exit BEFORE the
+ * SIGKILL is ever delivered. The smoke then reports a clean run while leaving the orphan behind
+ * - exactly the malformed-bundle case the reaper exists for, silently unhandled. Observed: two
+ * such orphans survived a "successful" smoke run against a SIGTERM-trapping bundle.
+ *
+ * So the child stays referenced and this awaits its `exit` UNCONDITIONALLY. There is no
+ * give-up path on purpose: returning early while the process is still alive would be this
+ * function reporting a reap it did not perform, which is the same false assurance in a
+ * different disguise. `SIGKILL` cannot be trapped, so the only way to outlive it is a state no
+ * userland retry could fix anyway - and a build that stops with an obvious hung teardown is
+ * more honest than one that prints "ok" over a live orphan.
+ */
+async function reap(child) {
+  for (const stream of [child.stdout, child.stderr, child.stdin]) {
+    stream?.removeAllListeners("data");
+    // `destroy()` and a racing EPIPE both emit `error`, and an `error` with no listener throws.
+    stream?.on("error", () => {});
+    stream?.destroy();
+  }
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  // Attached BEFORE the signal, so a child that dies instantly cannot settle between the check
+  // above and the listener below and leave this waiting on an event that already fired.
+  const exited = new Promise((r) => child.once("exit", () => r()));
+  child.kill("SIGTERM");
+  // An interval rather than one shot: it keeps escalating for as long as the child is there,
+  // and being referenced it also keeps this process alive to deliver them.
+  const escalate = setInterval(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, KILL_GRACE_MS);
+  try {
+    await exited;
+  } finally {
+    clearInterval(escalate);
+  }
 }
 
 /**
@@ -100,41 +154,180 @@ async function smokeDaemon() {
       await new Promise((r) => setTimeout(r, POLL_MS));
     }
   } finally {
-    if (!exited) child.kill("SIGTERM");
+    await reap(child);
     await rm(home, { recursive: true, force: true });
   }
 }
 
 /**
- * Load the MCP bundle far enough to prove it resolves.
+ * Speak MCP to the bundle and prove it publishes exactly the tools this build declares.
  *
- * Only `--version`-style loading, not a session: it speaks stdio JSON-RPC to a parent that
- * is Claude Code, so there is nothing to connect to here. Import-time resolution is the
- * whole of what this file is checking anyway - it bundles the same `@shared` tree the daemon
- * does, so it grows the identical defect the moment it imports `claude-settings.ts`.
+ * This used to spawn the bundle, wait 3s, and pass if it had not exited. That is a liveness
+ * check, and liveness was never the failing property. What actually shipped: `dist/mcp/server.mjs`
+ * built six days before `submit_scout_artifacts` landed in source, serving its other seven tools
+ * perfectly - loading, running, answering, and missing the one tool a scout is REQUIRED to call
+ * to finish its task. A scout landing on it is told to call a tool it was never given, and its
+ * task deadlocks with no error and no warning anywhere. The old check passed that bundle, because
+ * the bundle was alive. It was just wrong.
+ *
+ * So it now completes a real `initialize` + `tools/list` and compares the published names against
+ * `MISSION_MCP_TOOLS` - the same list every launch pre-approves from. Both directions are failures
+ * and they are different bugs: a tool the list declares and the server does not publish is the
+ * stale-bundle deadlock above, and a tool the server publishes that the list omits is a tool no
+ * launch can ever pre-approve, so calling it stops the agent on a permission prompt.
+ *
+ * The list is read out of SOURCE while the tools are read out of the BUNDLE, and that is the
+ * point - it is the one comparison neither the unit suite (which reads only source, and says so
+ * in `mission-mcp.test.ts`) nor a bundler can make.
+ *
+ * Note what this does NOT protect. It runs after `npm run build`, where a stale bundle is
+ * impossible by construction, so it guards the artifact we ship rather than the operator's
+ * `dist/`. The daemon's own startup check and the dispatch guard in `mission-mcp.ts` cover that.
  */
 async function smokeMcp() {
   const child = spawn(process.execPath, ["dist/mcp/server.mjs"], {
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
-  let output = "";
-  child.stdout.on("data", (d) => (output += d));
-  child.stderr.on("data", (d) => (output += d));
+  let stderr = "";
+  child.stderr.on("data", (d) => (stderr += d));
 
+  const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
   const result = await new Promise((resolve) => {
-    const t = setTimeout(() => resolve({ ok: true }), 3000);
-    child.on("exit", (code) => {
-      clearTimeout(t);
-      resolve({ ok: code === 0, code });
+    let pending = "";
+    const done = (value) => {
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(
+      () => done({ error: `it did not answer initialize + tools/list within ${MCP_HANDSHAKE_MS}ms` }),
+      MCP_HANDSHAKE_MS,
+    );
+    child.on("error", (err) => done({ error: `it could not be started (${err.message})` }));
+    // EPIPE on a stream with no `error` listener is an uncaught exception, and a bundle that
+    // dies on load closes stdin under our first write. That must be reported as a failed
+    // handshake, not as a crashed smoke run.
+    child.stdin.on("error", (err) => done({ error: `its stdin closed (${err.message})` }));
+    child.on("exit", (code, signal) => {
+      done({ error: `it exited (code ${code}, signal ${signal}) during the handshake` });
+    });
+    child.stdout.on("data", (d) => {
+      pending += d;
+      for (;;) {
+        const nl = pending.indexOf("\n");
+        if (nl === -1) break;
+        const line = pending.slice(0, nl).trim();
+        pending = pending.slice(nl + 1);
+        if (!line) continue;
+        let msg;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue; // Tolerate a banner on stdout.
+        }
+        if (msg.id === 1) {
+          if (msg.error) return done({ error: `it refused initialize (${msg.error.message})` });
+          send({ jsonrpc: "2.0", method: "notifications/initialized" });
+          send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+        } else if (msg.id === 2) {
+          if (msg.error) return done({ error: `it refused tools/list (${msg.error.message})` });
+          const tools = msg.result?.tools;
+          if (!Array.isArray(tools)) return done({ error: "its tools/list answer carried no tool array" });
+          done({ tools: tools.map((t) => t.name).filter((n) => typeof n === "string") });
+        }
+      }
+    });
+    send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "mission-control-smoke", version: "1" },
+      },
     });
   });
-  child.kill("SIGTERM");
-  if (!result.ok) {
-    fail(`the MCP bundle exited (code ${result.code}) on load`);
-    console.error(output.trimEnd());
+
+  // Awaited before anything is reported, so the child is confirmed gone on every path -
+  // including the successful one, where nothing else would keep this process alive.
+  await reap(child);
+
+  if (result.error) {
+    fail(`the MCP bundle did not complete an MCP handshake: ${result.error}`);
+    if (stderr.trim()) console.error(stderr.trimEnd());
     return;
   }
-  console.log("[smoke] mcp bundle loads");
+
+  const declared = await declaredMcpTools();
+  if (!declared) return;
+  const published = new Set(result.tools);
+  const missing = declared.filter((t) => !published.has(t));
+  const extra = [...published].filter((t) => !declared.includes(t));
+  if (missing.length) {
+    fail(
+      `MISSION_MCP_TOOLS declares ${missing.join(", ")}, which the MCP bundle does not publish - ` +
+        `a launch pre-approves the name and the agent then finds no such tool, which is a task ` +
+        `that deadlocks rather than one that fails`,
+    );
+  }
+  if (extra.length) {
+    fail(
+      `the MCP bundle publishes ${extra.join(", ")}, which MISSION_MCP_TOOLS does not declare - ` +
+        `no launch can pre-approve a name that is not on that list, so calling it stops the ` +
+        `agent on a permission prompt`,
+    );
+  }
+  if (missing.length || extra.length) return;
+  console.log(`[smoke] mcp bundle publishes all ${declared.length} declared tools`);
+}
+
+/**
+ * The tool names this build DECLARES, read from `mission-mcp.ts` rather than duplicated here.
+ *
+ * A scrape rather than an import because this script is plain `node` with no TypeScript
+ * loader, and the alternative - a hand-copied list in a smoke script - is a fourth place the
+ * vocabulary can drift, which is the exact class of bug the check above exists to catch.
+ * The two constants it has to resolve live in their own single-spelling modules, so they are
+ * read from there for the same reason.
+ */
+async function declaredMcpTools() {
+  const read = async (path) => await readFile(resolve(path), "utf8");
+  const source = await read("src/server/mission-mcp.ts");
+  const block = /export const MISSION_MCP_TOOLS = \[([\s\S]*?)\] as const;/.exec(source)?.[1];
+  if (!block) {
+    fail("MISSION_MCP_TOOLS could not be read out of src/server/mission-mcp.ts - has it been renamed?");
+    return null;
+  }
+  const tools = [];
+  for (const line of block.split("\n")) {
+    const literal = /^\s*"([a-z_]+)",/.exec(line);
+    if (literal) {
+      tools.push(literal[1]);
+      continue;
+    }
+    // The two submission tools arrive as imported constants, each named in exactly one module.
+    const ref = /^\s*([A-Z_]+),/.exec(line);
+    if (!ref) continue;
+    const from = {
+      SUBMIT_ENSEMBLE_RESULT_TOOL: "src/server/ensembles/submission-tool.ts",
+      SUBMIT_SCOUT_ARTIFACTS_TOOL: "src/server/scouts/submission-tool.ts",
+    }[ref[1]];
+    if (!from) {
+      fail(`MISSION_MCP_TOOLS names ${ref[1]}, which this smoke does not know how to resolve`);
+      return null;
+    }
+    const value = new RegExp(String.raw`export const ${ref[1]} = "([a-z_]+)"`).exec(await read(from))?.[1];
+    if (!value) {
+      fail(`${ref[1]} could not be read out of ${from}`);
+      return null;
+    }
+    tools.push(value);
+  }
+  if (!tools.length) {
+    fail("MISSION_MCP_TOOLS scraped empty - has its shape changed?");
+    return null;
+  }
+  return tools;
 }
 
 /**
@@ -162,7 +355,7 @@ async function smokeSatellitePaths() {
     ["Codex hook bridge", "dist/satellites/codex-hook.mjs"],
   ];
   for (const [label, built] of expected) {
-    const m = new RegExp(String.raw`new URL\d*\("([^"]*${built.replace(/[.\/]/g, "\\$&")})", *import\.meta\.url\)`)
+    const m = new RegExp(String.raw`new URL\d*\("([^"]*${built.replace(/[./]/g, "\\$&")})", *import\.meta\.url\)`)
       .exec(source);
     if (!m) {
       fail(`the daemon bundle computes no path for the ${label} - has its resolver been renamed?`);

@@ -19,7 +19,7 @@ which comments on pull requests under your GitHub account, and
 separate - trusting an automated reviewer to comment in a repo is not the same act as
 letting it push to that repo's base branch.
 
-[Scout archives](scout-archives.md) are local files under `~/.mission-control/scouts`, and
+[Archives](archives.md) are local files under `~/.mission-control/archives`, and
 Mission Control never sends one anywhere. Three properties keep them from becoming a way in.
 A bundle copied into the library is untrusted input: its manifest is validated for version,
 generated identity, path containment, size limits, and digests before a row is written, and
@@ -28,11 +28,14 @@ key it decoded itself, and re-verifies containment on every read. An archived re
 execute or fetch: a non-executing HTML parser - run with scripting disabled, so `<noscript>`
 content is checked as the markup a JavaScript-off browser would act on - refuses scripts,
 event handlers, forms, frames, embeds, meta refresh, SVG animation that could rewrite a
-checked attribute, external and protocol-relative URLs in every URL-bearing attribute and
-inside stylesheets, and any relative link that leaves the report directory. It also refuses
-anything that would re-root relative resolution - `<base>` and `xml:base` - because a
-contained-looking reference under a moved base is a request the containment check cannot
-see.
+checked attribute, protocol-relative URLs, every URL scheme in every slot the browser fetches
+on its own (including `ping` and everything inside stylesheets), and any relative link that
+leaves the report directory. It also refuses anything that would re-root relative resolution -
+`<base>` and `xml:base` - because a contained-looking reference under a moved base is a
+request the containment check cannot see. What it does allow is an `http(s)` link a person
+CLICKS, because that is the boundary the rest of this paragraph is drawn on: opening an
+archive somebody sent you must not make a request, and a link makes none until you follow it,
+in your own browser, to an address it shows you.
 Artifact bodies are served as attachments with `nosniff` and a `default-src 'none'; sandbox`
 policy rather than rendered on the daemon's origin, streamed from the handle the containment
 check opened rather than reopened by name. And a

@@ -66,6 +66,9 @@ test("foremanStatus counts only notes belonging to currently-live sessions", () 
     r.getNote(s.id)!.updatedAt,
     "lastActionAt reflects the live note, not the gone one",
   );
+  assert.equal(status.planner.state, "healthy");
+  assert.equal(status.planner.runner, status.runner);
+  assert.equal(status.planner.model, status.models.backlog.id);
 });
 
 

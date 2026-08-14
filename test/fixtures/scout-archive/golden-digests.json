@@ -1,5 +1,6 @@
 {
-  "format": "mission-control/scout-archive",
+  "format": "mission-control/archive",
+  "legacy_format": "mission-control/scout-archive",
   "format_version": 1,
   "vectors": [
     {

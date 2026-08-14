@@ -40,9 +40,23 @@ const workflow: WorkflowDefinition = {
   builtin: false,
 };
 
+test("the builder's rail carries the same way out as the three detail screens", () => {
+  // The fourth authoring surface takes the Library's exit contract too, so one level under
+  // the card wall the four rails do not disagree about how you get back. Its editors are
+  // otherwise untouched by that work.
+  const html = renderToStaticMarkup(createElement(WorkflowLibrary, {
+    summaries: [], personas: [], hasSnapshot: true,
+    isOverlayOpen: () => false, onLeave: () => {}, onDirtyChange: () => {},
+  }));
+  const row = html.indexOf('aria-label="Back to Library"');
+  assert.ok(row > 0, "no back row in the rail");
+  assert.ok(row < html.indexOf("<h3>Workflows"), "the back row must precede the rail heading");
+});
+
 test("empty workflow library is an active Phase 2 builder, not a future-feature shell", () => {
   const html = renderToStaticMarkup(createElement(WorkflowLibrary, {
-    summaries: [], personas: [], hasSnapshot: true, onDirtyChange: () => {},
+    summaries: [], personas: [], hasSnapshot: true,
+    isOverlayOpen: () => false, onLeave: () => {}, onDirtyChange: () => {},
   }));
   assert.match(html, /Build a review workflow/);
   assert.match(html, /New workflow/);

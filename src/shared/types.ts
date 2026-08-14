@@ -1341,7 +1341,15 @@ export interface ForemanStatus {
     disabled: number;
   };
   /**
-   * What each of Foreman's four `claude -p` calls will actually spawn with, and why -
+   * The worker-owned dependency planner circuit, projected through the daemon.
+   *
+   * This is operational state, not persisted scheduler state. The worker remains the only
+   * process that decides when to plan or enter serial fallback; the daemon only bounds and
+   * exposes its latest report so the dashboard can explain a quiet backlog.
+   */
+  planner: ForemanPlannerHealth;
+  /**
+   * What each of Foreman's four model calls will actually spawn with, and why -
    * the operator's config, an env var, or the shipped default.
    *
    * RESOLVED server-side rather than re-derived in the panel, because the env layer is
@@ -1366,6 +1374,21 @@ export interface ForemanStatus {
    * operator neither chose nor is running on.
    */
   runner: LlmRunnerId;
+}
+
+/** One bounded snapshot of the backlog dependency planner's effective runtime and health. */
+export interface ForemanPlannerHealth {
+  state: "healthy" | "degraded";
+  /** Provider the worker is actually using for the dependency read. */
+  runner: LlmRunnerId;
+  /** Model the worker is actually passing to that provider. */
+  model: string;
+  /** Consecutive failures for the most recent failing planner or storage path. */
+  failureCount: number;
+  /** Safe, single-line, bounded reason from the most recent failure. */
+  lastError: string | null;
+  /** Epoch ms for the next automatic probe, or null while no retry is owed. */
+  nextRetryAt: number | null;
 }
 
 // ---- Custom skills ----
@@ -1415,17 +1438,38 @@ export type PrChecks = "passing" | "failing" | "pending";
 
 /**
  * What a dispatched task is FOR: ship = deliver a change (PR/merge);
- * scout = investigate/plan/audit and report.
+ * scout = investigate/audit and report; plan = produce a reviewed plan, which can then
+ * schedule the work it describes.
+ *
+ * `scout` used to own the word "plan" in this comment, and giving the third kind the word
+ * is the point of adding it: an investigation answers a question, where a plan proposes a
+ * route and is reviewed before anything is built.
  *
  * A tuple rather than a bare union, for the reason `AGENT_TYPES` above is one: half the
  * consumers need the ids as VALUES (a `z.enum`, a `<select>`), a union alone cannot
- * produce them, and the pair had accordingly been written out by hand in seven more
+ * produce them, and the set had accordingly been written out by hand in seven more
  * places. Array order is picker order - the order the dispatch form lists the kinds in,
  * and `test/task-kinds.test.ts` fails on a second copy of the set.
+ *
+ * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
+ * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
+
+/**
+ * The kind a task has when nobody chose one.
+ *
+ * Derived from the tuple rather than written as `"ship"`, so the "index 0 is the default"
+ * contract that the comment above states is a thing the compiler carries: reordering the
+ * tuple moves this with it instead of leaving a literal behind that silently disagrees.
+ *
+ * Two surfaces read it as a value rather than as a default they hardcode - the task pill,
+ * which draws every kind EXCEPT the one you get by not choosing, and the task row read
+ * (`server/db.ts`), which degrades a kind this build has never heard of to it.
+ */
+export const DEFAULT_TASK_KIND = TASK_KINDS[0];
 
 /**
  * Coarse lifecycle of a dispatched task. Deliberately does NOT mirror the live
@@ -2467,13 +2511,13 @@ export type ServerEvent =
    */
   | { type: "keep_awake_status"; status: KeepAwakeStatus }
   /**
-   * The local scout library changed - a reconciliation batch indexed, refused, or pruned at
-   * least one archive bundle. An invalidation signal: a surface showing scout history
-   * re-runs its own bounded query against `GET /api/scouts`.
+   * The local archive library changed - a reconciliation batch indexed, refused, or pruned
+   * at least one bundle. An invalidation signal: a surface showing archive history re-runs
+   * its own bounded query against `GET /api/archives`.
    *
-   * CONTENT-FREE, and for a stronger reason than `harnesses_config_changed` above. Scout
-   * archives are HISTORY: a library holds every scout an operator ever kept, and it is
-   * explicitly not evicted by age or count. Putting rows on this frame - or in the reconnect
+   * CONTENT-FREE, and for a stronger reason than `harnesses_config_changed` above. Archives
+   * are HISTORY: a library holds every archive an operator ever kept, and it is explicitly
+   * not evicted by age or count. Putting rows on this frame - or in the reconnect
    * snapshot - would mean every dashboard paying for the whole archive on every connect, to
    * populate a page that is bounded, filtered, and paginated anyway. So history stays out of
    * the stream entirely and only the fact that it moved crosses it.
@@ -2482,7 +2526,7 @@ export type ServerEvent =
    * single revision bump, because forty is not more informative than one to something whose
    * only response is to re-read its current page.
    */
-  | { type: "scout_archive_changed" };
+  | { type: "archive_changed" };
 
 // ---- session transcript (expanded card) ----
 

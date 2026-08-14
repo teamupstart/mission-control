@@ -39,6 +39,7 @@ import { resetWorktreeToCommit, verifyHeadIs } from "./git/ensemble-snapshot.ts"
 import {
   missionMcpDescriptor,
   scoutMissionMcpRequirement,
+  verifyMissionMcpTools,
   type MissionMcpRequirement,
 } from "./mission-mcp.ts";
 import { withScoutReportContract } from "./scouts/prompt.ts";
@@ -148,6 +149,8 @@ export class Dispatcher {
       supervisor?: SdkSupervisor;
       /** How the launch reaches our own MCP server. Injected for the same reason. */
       missionMcpDescriptor?: typeof missionMcpDescriptor;
+      /** Whether that server actually publishes the tools this launch declares. Injected so a test need not spawn one. */
+      verifyMissionMcpTools?: typeof verifyMissionMcpTools;
       /** Publish the checkout-scoped scout bearer before its agent starts. */
       provisionScoutCredential?: typeof provisionScoutSubmissionCredential;
       resolveRuntime?: typeof resolveDispatchRuntime;
@@ -376,6 +379,32 @@ export class Dispatcher {
             `session could not submit its result`,
         );
       }
+      // …and that the registration points at a server which actually PUBLISHES them.
+      //
+      // The check above proves the argv carries a registration; it cannot prove what is inside
+      // the file that registration names, and those are different questions with the same
+      // silent failure. The daemon runs from source under `tsx watch` while handing the agent
+      // a build artifact that only `npm run build` refreshes, so the bundle drifts behind
+      // source by design - observed live, with `submit_scout_artifacts` missing from a bundle
+      // six days older than the source that introduced it. The scout that lands on it is told
+      // to call a tool it has not been given, and its task can never reach `done`.
+      //
+      // One real `initialize` + `tools/list` against that exact bundle, cached per build, so
+      // the cost is one handshake per daemon rather than one per dispatch. Refusing here is
+      // the same trade the guard above already makes and for the same reason: a loud failure
+      // with the worktree torn down for a clean retry beats an agent that works to completion
+      // and then discovers it has nowhere to put the result.
+      if (missionMcp) {
+        const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
+          missionMcp.tools,
+        );
+        if (!published.ok) {
+          throw new Error(
+            `this ${task.agent} session requires the Mission MCP tools ` +
+              `${missionMcp.tools.join(", ")}, but ${published.reason}`,
+          );
+        }
+      }
 
       const homeName = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
       this.patch(taskId, { homeName });
@@ -528,6 +557,22 @@ export class Dispatcher {
           `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
           `session could not submit its result`,
       );
+    }
+    // The terminal arm's content check, applied to the same bundle for the same reason: an
+    // embedded session reaches our MCP server through the descriptor rather than an argv, but
+    // a descriptor pointing at a stale bundle publishes exactly as little. See the sibling
+    // guard in `dispatch` for what drifts and why the existence check cannot see it.
+    if (missionMcp) {
+      const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
+        missionMcp.tools,
+        mcp,
+      );
+      if (!published.ok) {
+        throw new Error(
+          `this ${task.agent} session requires the Mission MCP tools ` +
+            `${missionMcp.tools.join(", ")}, but ${published.reason}`,
+        );
+      }
     }
     const session = await supervisor.start({
       agent: task.agent,

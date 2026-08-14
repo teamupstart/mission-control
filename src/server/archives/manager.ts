@@ -5,33 +5,33 @@ import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { OpenTargetId } from "@shared/open-targets.ts";
 import {
-  SCOUT_REPORT_PATH_SHAPE,
-  decodeScoutCursor,
-  parseScoutArchiveKey,
-  scoutArchiveKey,
-  type ScoutArchiveDetail,
-  type ScoutArchivePage,
-  type ScoutArchiveSummary,
-  type ScoutArtifactView,
-  type ScoutCaptureStatus,
-  type ScoutSearchQuery,
-  type ScoutSubmissionInput,
-} from "@shared/scouts.ts";
+  archiveKey,
+  decodeArchiveCursor,
+  parseArchiveKey,
+  type ArchiveArtifactView,
+  type ArchiveCaptureStatus,
+  type ArchiveDetail,
+  type ArchivePage,
+  type ArchiveSearchQuery,
+  type ArchiveSummary,
+} from "@shared/archives.ts";
+import { SCOUT_REPORT_PATH_SHAPE, type ScoutSubmissionInput } from "@shared/scouts.ts";
 import type { Session } from "@shared/types.ts";
-import { SCOUTS_DIR, scoutReconcileMs } from "../config.ts";
+import { archiveReconcileMs } from "../config.ts";
 import { openFile, type OpenFileOutcome } from "../open-targets/index.ts";
-import { captureScoutArchive, type ScoutCaptureOutcome } from "./capture.ts";
-import { ScoutCaptureStore, type ScoutCaptureJob } from "./capture-store.ts";
-import { ScoutPathError, archiveDir, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
-import { loadScoutProducer, type ScoutProducerIdentity } from "./producer.ts";
-import { ScoutReconciler, type ScoutReconcilePass } from "./reconciler.ts";
-import { ScoutStore, type ScoutArchiveRow } from "./store.ts";
-import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./submission-tool.ts";
-import type { ScoutSubmissionAuthority } from "./submission-auth.ts";
-import type { ScoutSubject, ScoutTaskGateway } from "./task-gateway.ts";
+import { captureArchive, type ArchiveCaptureOutcome } from "./capture.ts";
+import { ArchiveCaptureStore, type ArchiveCaptureJob } from "./capture-store.ts";
+import { ArchiveLibrary } from "./library.ts";
+import { ArchivePathError, archiveDir, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
+import { loadArchiveProducer, type ArchiveProducerIdentity } from "./producer.ts";
+import { ArchiveReconciler, type ArchiveReconcilePass } from "./reconciler.ts";
+import { ArchiveStore, type ArchiveRow } from "./store.ts";
+import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
+import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
+import type { ScoutSubject, ScoutTaskGateway } from "../scouts/task-gateway.ts";
 
 /**
- * The daemon's one owner of the scout library.
+ * The daemon's one owner of the archive library.
  *
  * Routes talk to this and never to the store, the verifier, or the filesystem. That is the
  * boundary that keeps "which archive" and "which file" server-side questions: a request
@@ -40,7 +40,7 @@ import type { ScoutSubject, ScoutTaskGateway } from "./task-gateway.ts";
  * re-checking containment, never by trusting a stored or claimed path.
  */
 
-export class ScoutArchiveError extends Error {
+export class ArchiveError extends Error {
   constructor(
     message: string,
     readonly status: 400 | 403 | 404 | 409 | 500 = 400,
@@ -50,8 +50,8 @@ export class ScoutArchiveError extends Error {
 }
 
 /** One artifact, opened for streaming. The caller owns closing the handle. */
-export interface ScoutArtifactBody {
-  view: ScoutArtifactView;
+export interface ArchiveArtifactBody {
+  view: ArchiveArtifactView;
   handle: FileHandle;
   /** The size of the OPEN file, so a Content-Length cannot describe different bytes. */
   bytes: number;
@@ -59,8 +59,8 @@ export interface ScoutArtifactBody {
 }
 
 /** One artifact, resolved to a real file that may be handed to a local application. */
-export interface ScoutArtifactFile {
-  view: ScoutArtifactView;
+export interface ArchiveArtifactFile {
+  view: ArchiveArtifactView;
   /** The verified absolute path. Never leaves the daemon; the browser gets ids. */
   path: string;
   /** The size on disk right now, which is what a Content-Length must report. */
@@ -70,14 +70,14 @@ export interface ScoutArtifactFile {
 }
 
 /** What a submission, a completion gate, or a cleanup guard answers with. */
-export type ScoutCaptureResult =
+export type ArchiveCaptureResult =
   | {
       ok: true;
       /** Absent when there was nothing to capture - a ship task, or a task already gone. */
       archive: {
         key: string;
         relativePath: string;
-        captureStatus: ScoutCaptureStatus;
+        captureStatus: ArchiveCaptureStatus;
         artifactCount: number;
       } | null;
       replayed: boolean;
@@ -90,12 +90,21 @@ export type ScoutCaptureResult =
       conflict: boolean;
     };
 
-export interface ScoutArchiveManagerOptions {
+export interface ArchiveManagerOptions {
+  /** Where new bundles are published. Defaults to the daemon's archive root. */
   root?: string;
-  store?: ScoutStore;
-  producer?: ScoutProducerIdentity;
+  /**
+   * Roots that are read but never written - where earlier builds published.
+   *
+   * Defaults to the daemon's legacy scout root, and to NOTHING when `root` was named
+   * explicitly: a caller pointing at its own directory is saying "this is the library", and
+   * silently adding the machine's real one would make its reads depend on the disk.
+   */
+  legacyRoots?: readonly string[];
+  store?: ArchiveStore;
+  producer?: ArchiveProducerIdentity;
   /** The local capture-job ledger. Defaults to the daemon's database. */
-  captureStore?: ScoutCaptureStore;
+  captureStore?: ArchiveCaptureStore;
   /**
    * How this manager learns what a task is. Absent in the read-only construction the
    * Phase 1 route tests use, which is why every capture entry point degrades to "nothing to
@@ -124,13 +133,15 @@ export interface ScoutArchiveManagerOptions {
   log?: (message: string, detail: Record<string, unknown>) => void;
 }
 
-export class ScoutArchiveManager {
+export class ArchiveManager {
+  /** Where this daemon publishes. Not the only place it reads - see `library`. */
   readonly libraryPath: string;
-  readonly producer: ScoutProducerIdentity;
-  private readonly store: ScoutStore;
-  private readonly captureStore: ScoutCaptureStore;
+  private readonly library: ArchiveLibrary;
+  readonly producer: ArchiveProducerIdentity;
+  private readonly store: ArchiveStore;
+  private readonly captureStore: ArchiveCaptureStore;
   private readonly tasks: ScoutTaskGateway | null;
-  private readonly reconciler: ScoutReconciler;
+  private readonly reconciler: ArchiveReconciler;
   private readonly renameDir: (from: string, to: string) => Promise<void>;
   private readonly afterSubmissionAttribution:
     | ((subject: ScoutSubject) => Promise<void>)
@@ -146,7 +157,7 @@ export class ScoutArchiveManager {
    * re-reads the job, and publication is idempotent against the filesystem anyway, so the
    * cost of serializing is a wait rather than a wrong answer.
    */
-  private readonly captureRuns = new Map<string, Promise<ScoutCaptureOutcome>>();
+  private readonly captureRuns = new Map<string, Promise<ArchiveCaptureOutcome>>();
   /** Active submissions per work episode, so exit recovery cannot publish ahead of one. */
   private readonly submissionClaims = new Map<
     string,
@@ -154,23 +165,24 @@ export class ScoutArchiveManager {
   >();
   private acceptingJobs = true;
 
-  constructor(options: ScoutArchiveManagerOptions = {}) {
-    this.libraryPath = options.root ?? SCOUTS_DIR;
-    this.producer = options.producer ?? loadScoutProducer(undefined, this.libraryPath);
-    this.store = options.store ?? new ScoutStore();
-    this.captureStore = options.captureStore ?? new ScoutCaptureStore();
+  constructor(options: ArchiveManagerOptions = {}) {
+    this.library = new ArchiveLibrary({ writeRoot: options.root, legacyRoots: options.legacyRoots });
+    this.libraryPath = this.library.writeRoot;
+    this.producer = options.producer ?? loadArchiveProducer(undefined, this.libraryPath);
+    this.store = options.store ?? new ArchiveStore();
+    this.captureStore = options.captureStore ?? new ArchiveCaptureStore();
     this.tasks = options.tasks ?? null;
     this.renameDir = options.rename ?? ((from, to) => rename(from, to));
     this.afterSubmissionAttribution = options.afterSubmissionAttribution;
     this.handToTarget = options.openTarget ?? openFile;
     this.log =
       options.log ??
-      ((message, detail) => console.warn(`[scouts] ${message}`, JSON.stringify(detail)));
-    this.reconciler = new ScoutReconciler({
-      root: this.libraryPath,
+      ((message, detail) => console.warn(`[archives] ${message}`, JSON.stringify(detail)));
+    this.reconciler = new ArchiveReconciler({
+      roots: this.library.roots,
       store: this.store,
       onChanged: options.onChanged,
-      intervalMs: options.intervalMs === undefined ? scoutReconcileMs() : options.intervalMs,
+      intervalMs: options.intervalMs === undefined ? archiveReconcileMs() : options.intervalMs,
       watch: options.watch ?? false,
     });
   }
@@ -189,7 +201,7 @@ export class ScoutArchiveManager {
   }
 
   /** Run one pass now and wait for it. Tests and the publication path use this. */
-  reconcileNow(): Promise<ScoutReconcilePass> {
+  reconcileNow(): Promise<ArchiveReconcilePass> {
     return this.reconciler.settle();
   }
 
@@ -216,7 +228,7 @@ export class ScoutArchiveManager {
    */
   async submit(
     input: { authority: ScoutSubmissionAuthority; submission: ScoutSubmissionInput },
-  ): Promise<ScoutCaptureResult | { ok: false; status: number; problems: string[] }> {
+  ): Promise<ArchiveCaptureResult | { ok: false; status: number; problems: string[] }> {
     if (!this.tasks) {
       return { ok: false, status: 503, problems: ["this build cannot accept scout submissions"] };
     }
@@ -266,7 +278,7 @@ export class ScoutArchiveManager {
    * A non-scout, an unknown task, and a build with no task gateway all answer "nothing to
    * do", which is what keeps ship completion byte-for-byte what it was.
    */
-  async ensureReady(taskId: string): Promise<ScoutCaptureResult> {
+  async ensureReady(taskId: string): Promise<ArchiveCaptureResult> {
     const subject = this.tasks?.subjectForTask(taskId);
     if (!subject) return { ok: true, archive: null, replayed: false };
     const jobs = this.captureStore
@@ -429,12 +441,15 @@ export class ScoutArchiveManager {
   }
 
   /** The capture job for one task, for tests and diagnostics. Never a durable read path. */
-  captureJobsForTask(taskId: string): ScoutCaptureJob[] {
+  captureJobsForTask(taskId: string): ArchiveCaptureJob[] {
     return this.captureStore.forTask(taskId);
   }
 
-  private reserve(subject: ScoutSubject): ScoutCaptureJob {
+  private reserve(subject: ScoutSubject): ArchiveCaptureJob {
     return this.captureStore.reserve({
+      // The only kind this manager reserves. A second kind arrives with its own entry point
+      // and its own planner; it does not arrive by widening this one.
+      kind: "scout",
       taskId: subject.taskId,
       sessionId: subject.sessionId,
       episodeId: subject.episodeId,
@@ -480,9 +495,9 @@ export class ScoutArchiveManager {
     };
   }
 
-  private runCapture(operationKey: string): Promise<ScoutCaptureOutcome> {
+  private runCapture(operationKey: string): Promise<ArchiveCaptureOutcome> {
     const previous = this.captureRuns.get(operationKey) ?? Promise.resolve(null);
-    const run: Promise<ScoutCaptureOutcome> = previous
+    const run: Promise<ArchiveCaptureOutcome> = previous
       .catch(() => null)
       .then(() => this.captureOnce(operationKey));
     const tracked = run.finally(() => {
@@ -492,13 +507,13 @@ export class ScoutArchiveManager {
     return tracked;
   }
 
-  private async captureOnce(operationKey: string): Promise<ScoutCaptureOutcome> {
+  private async captureOnce(operationKey: string): Promise<ArchiveCaptureOutcome> {
     const job = this.captureStore.get(operationKey);
     if (!job) return { ok: false, problems: ["that capture job is no longer on this machine"] };
     this.captureStore.noteAttempt(operationKey);
-    let outcome: ScoutCaptureOutcome;
+    let outcome: ArchiveCaptureOutcome;
     try {
-      outcome = await captureScoutArchive(job, {
+      outcome = await captureArchive(job, {
         libraryRoot: this.libraryPath,
         producerLabel: this.producer.label,
         rename: this.renameDir,
@@ -518,14 +533,14 @@ export class ScoutArchiveManager {
     return outcome;
   }
 
-  private result(outcome: ScoutCaptureOutcome): ScoutCaptureResult {
+  private result(outcome: ArchiveCaptureOutcome): ArchiveCaptureResult {
     if (!outcome.ok) {
       return { ok: false, problems: outcome.problems, conflict: outcome.conflict ?? false };
     }
     return {
       ok: true,
       archive: {
-        key: scoutArchiveKey(outcome.identity.producerId, outcome.identity.archiveId),
+        key: archiveKey(outcome.identity.producerId, outcome.identity.archiveId),
         relativePath: outcome.relativePath,
         captureStatus: outcome.captureStatus,
         artifactCount: outcome.artifactCount,
@@ -535,14 +550,14 @@ export class ScoutArchiveManager {
   }
 
   /** One bounded page of archives, with a snippet per row when the query searched. */
-  list(query: ScoutSearchQuery): ScoutArchivePage {
+  list(query: ArchiveSearchQuery): ArchivePage {
     // Decoded HERE so an unusable cursor is refused rather than silently read as "start from
     // the beginning". Paging through the wrong window without noticing is worse than an
     // error the caller can see, and the store below takes a decoded cursor so there is no
     // string left for a second layer to reinterpret.
-    const cursor = query.cursor === null ? null : decodeScoutCursor(query.cursor);
+    const cursor = query.cursor === null ? null : decodeArchiveCursor(query.cursor);
     if (query.cursor !== null && cursor === null) {
-      throw new ScoutArchiveError("that page cursor is not usable", 400);
+      throw new ArchiveError("that page cursor is not usable", 400);
     }
     const { rows, nextCursor } = this.store.list({ ...query, cursor });
     return {
@@ -553,8 +568,8 @@ export class ScoutArchiveManager {
   }
 
   /** Everything about one archive except artifact bodies. */
-  detail(key: string): ScoutArchiveDetail | null {
-    const identity = parseScoutArchiveKey(key);
+  detail(key: string): ArchiveDetail | null {
+    const identity = parseArchiveKey(key);
     if (!identity) return null;
     const row = this.store.get(key);
     if (!row) return null;
@@ -562,7 +577,10 @@ export class ScoutArchiveManager {
       ...this.summary(row, null),
       formatVersion: row.formatVersion,
       contentDigest: row.contentDigest,
-      bundlePath: join(this.libraryPath, identity.producerId, identity.archiveId),
+      // The row's OWN root, not the write root: a bundle published before archives declared
+      // a kind is still in the library it was written to, and an operator following this
+      // path has to arrive at the directory that actually holds the files.
+      bundlePath: join(row.libraryRoot, identity.producerId, identity.archiveId),
       relativePath: row.relativePath,
       primaryArtifactId: row.primaryArtifactId,
       artifacts: this.store.artifacts(key),
@@ -580,15 +598,15 @@ export class ScoutArchiveManager {
    * an authority for it - a row written before a symlink was swapped in is exactly the case
    * `resolveArchiveFile` re-resolves for.
    */
-  async artifactFile(key: string, artifactId: string): Promise<ScoutArtifactFile> {
-    const identity = parseScoutArchiveKey(key);
-    if (!identity) throw new ScoutArchiveError("no such scout archive", 404);
+  async artifactFile(key: string, artifactId: string): Promise<ArchiveArtifactFile> {
+    const identity = parseArchiveKey(key);
+    if (!identity) throw new ArchiveError("no such archive", 404);
     const view = this.store.artifact(key, artifactId);
-    if (!view) throw new ScoutArchiveError("no such artifact", 404);
-    const bundleReal = await this.resolveBundleDir(identity.producerId, identity.archiveId);
-    const path = await resolveArchiveFile(bundleReal, view.archivePath);
+    if (!view) throw new ArchiveError("no such artifact", 404);
+    const bundle = await this.resolveBundleDir(identity.producerId, identity.archiveId);
+    const path = await resolveArchiveFile(bundle.dir, view.archivePath);
     const info = await stat(path).catch(() => null);
-    if (!info) throw new ScoutArchiveError("archived file is unavailable", 404);
+    if (!info) throw new ArchiveError("archived file is unavailable", 404);
     return { view, path, bytes: info.size, fileName: downloadName(view.archivePath) };
   }
 
@@ -603,14 +621,14 @@ export class ScoutArchiveManager {
    * length comes from `fstat` on the same open file, and `O_NOFOLLOW` refuses outright if
    * the final component became a link after the check.
    */
-  async artifactBody(key: string, artifactId: string): Promise<ScoutArtifactBody> {
+  async artifactBody(key: string, artifactId: string): Promise<ArchiveArtifactBody> {
     const file = await this.artifactFile(key, artifactId);
     const handle = await open(file.path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => {
-      throw new ScoutArchiveError("archived file is unavailable", 404);
+      throw new ArchiveError("archived file is unavailable", 404);
     });
     try {
       const info = await handle.stat();
-      if (!info.isFile()) throw new ScoutArchiveError("archived file is unavailable", 404);
+      if (!info.isFile()) throw new ArchiveError("archived file is unavailable", 404);
       return { view: file.view, handle, bytes: info.size, fileName: file.fileName };
     } catch (error) {
       await handle.close().catch(() => {});
@@ -640,10 +658,10 @@ export class ScoutArchiveManager {
    */
   async delete(key: string, confirmKey: string): Promise<{ ok: true; deletedBundle: boolean }> {
     if (confirmKey !== key) {
-      throw new ScoutArchiveError("the confirmed archive key does not match this archive", 409);
+      throw new ArchiveError("the confirmed archive key does not match this archive", 409);
     }
-    const identity = parseScoutArchiveKey(key);
-    if (!identity) throw new ScoutArchiveError("no such scout archive", 404);
+    const identity = parseArchiveKey(key);
+    if (!identity) throw new ArchiveError("no such archive", 404);
     const indexed = this.store.get(key) !== null;
 
     // The SAME resolution every read goes through, rather than a bare join - which is what
@@ -653,26 +671,28 @@ export class ScoutArchiveManager {
     // at. A 403 from here propagates: "this key resolves somewhere I will not touch" must
     // never be flattened into "there is nothing here", which would report success and drop
     // the rows.
-    let bundle: string | null;
+    let bundle: { root: string; dir: string } | null;
     try {
       bundle = await this.resolveBundleDir(identity.producerId, identity.archiveId);
     } catch (error) {
-      if (error instanceof ScoutArchiveError && error.status === 404) bundle = null;
+      if (error instanceof ArchiveError && error.status === 404) bundle = null;
       else throw error;
     }
-    if (!indexed && !bundle) throw new ScoutArchiveError("no such scout archive", 404);
+    if (!indexed && !bundle) throw new ArchiveError("no such archive", 404);
 
     let deletedBundle = false;
     let grave: string | null = null;
     if (bundle) {
-      const trash = trashRoot(this.libraryPath);
+      // Trashed inside the root that holds it, so the durable step stays a rename within one
+      // directory tree rather than a move that could cross a filesystem.
+      const trash = trashRoot(bundle.root);
       await mkdir(trash, { recursive: true, mode: 0o700 });
-      grave = join(trash, `${scoutArchiveKey(identity.producerId, identity.archiveId)}.${randomUUID()}`);
+      grave = join(trash, `${archiveKey(identity.producerId, identity.archiveId)}.${randomUUID()}`);
       try {
-        await this.renameDir(bundle, grave);
+        await this.renameDir(bundle.dir, grave);
         deletedBundle = true;
       } catch (error) {
-        throw new ScoutArchiveError(
+        throw new ArchiveError(
           `could not remove the archive directory: ${error instanceof Error ? error.message : String(error)}`,
           500,
         );
@@ -685,7 +705,7 @@ export class ScoutArchiveManager {
     if (grave) await rm(grave, { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
     // Tidy an emptied producer namespace. `rmdir` refuses a non-empty directory, so this can
     // never take a sibling archive with it.
-    await rmdir(join(this.libraryPath, identity.producerId)).catch(() => {});
+    if (bundle) await rmdir(join(bundle.root, identity.producerId)).catch(() => {});
     return { ok: true, deletedBundle };
   }
 
@@ -703,30 +723,46 @@ export class ScoutArchiveManager {
    * directory is this key" rather than a strict one for reads and a looser one for the
    * operation that removes files.
    */
-  private async resolveBundleDir(producerId: string, archiveId: string): Promise<string> {
-    let root: string;
-    try {
-      root = await realpath(this.libraryPath);
-    } catch {
-      throw new ScoutArchiveError("the scout library is unavailable", 404);
+  private async resolveBundleDir(
+    producerId: string,
+    archiveId: string,
+  ): Promise<{ root: string; dir: string }> {
+    let refused: ArchiveError | null = null;
+    let reachedARoot = false;
+    for (const candidate of this.library.roots) {
+      let root: string;
+      try {
+        root = await realpath(candidate);
+      } catch {
+        // A root that does not exist is an empty one, not a failure: the legacy root is
+        // absent on a machine that never ran an older build.
+        continue;
+      }
+      reachedARoot = true;
+      const dir = archiveDir(root, producerId, archiveId);
+      if (!(await statRealDirectory(dir))) continue;
+      const real = await realpath(dir).catch(() => null);
+      if (!real || real !== dir || !isInside(root, real)) {
+        // Remembered rather than thrown: a key that resolves badly under one root may be a
+        // perfectly ordinary bundle under another, and "I will not touch this" must still
+        // be the answer if no root holds a usable one.
+        refused ??= new ArchiveError("this archive does not resolve to a bundle in the library", 403);
+        continue;
+      }
+      return { root, dir: real };
     }
-    const dir = archiveDir(root, producerId, archiveId);
-    if (!(await statRealDirectory(dir))) {
-      throw new ScoutArchiveError("this archive is no longer in the library", 404);
-    }
-    const real = await realpath(dir).catch(() => null);
-    if (!real || real !== dir || !isInside(root, real)) {
-      throw new ScoutArchiveError("this archive does not resolve to a bundle in the library", 403);
-    }
-    return real;
+    if (refused) throw refused;
+    if (!reachedARoot) throw new ArchiveError("the archive library is unavailable", 404);
+    throw new ArchiveError("this archive is no longer in the library", 404);
   }
 
-  private summary(row: ScoutArchiveRow, query: string | null): ScoutArchiveSummary {
+  private summary(row: ArchiveRow, query: string | null): ArchiveSummary {
     return {
       key: row.key,
       producerId: row.producerId,
       producerLabel: row.producerLabel,
       archiveId: row.archiveId,
+      kind: row.kind,
       status: row.status,
       captureStatus: row.captureStatus,
       title: row.title,
@@ -750,10 +786,10 @@ export class ScoutArchiveManager {
   }
 }
 
-/** Map a `ScoutPathError` onto the manager's own error type so routes see one shape. */
-export function scoutErrorStatus(error: unknown): { message: string; status: 400 | 403 | 404 | 409 | 500 } {
-  if (error instanceof ScoutArchiveError) return { message: error.message, status: error.status };
-  if (error instanceof ScoutPathError) {
+/** Map a `ArchivePathError` onto the manager's own error type so routes see one shape. */
+export function archiveErrorStatus(error: unknown): { message: string; status: 400 | 403 | 404 | 409 | 500 } {
+  if (error instanceof ArchiveError) return { message: error.message, status: error.status };
+  if (error instanceof ArchivePathError) {
     const status = error.status === 403 ? 403 : error.status === 404 ? 404 : 400;
     return { message: error.message, status };
   }
@@ -764,13 +800,13 @@ export function scoutErrorStatus(error: unknown): { message: string; status: 400
   if (code === "ENOENT" || code === "ENOTDIR") {
     return { message: "archived file is unavailable", status: 404 };
   }
-  return { message: "could not read this scout archive", status: 500 };
+  return { message: "could not read this archive", status: 500 };
 }
 
 /**
  * A safe download filename.
  *
- * Built from the archive path's last segment, which `validateScoutArchivePath` has already
+ * Built from the archive path's last segment, which `validateArchivePath` has already
  * proved contains no separator, control character, or quote. Anything left that a header
  * cannot carry is replaced rather than escaped, because a `Content-Disposition` that a
  * browser parses differently from this code is a filename somebody else chose.

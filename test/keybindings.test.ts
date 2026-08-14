@@ -212,12 +212,15 @@ test("the dedicated ContextMenu key is structural while Shift+F10 remains bindab
   assert.equal(chordFromEvent(key("F10", { shift: true })), "shift+F10");
 });
 
-test("file actions own Shift+F and Shift+O and every default round-trips from a keypress", () => {
+test("file actions own Shift+F, Shift+O, and l and every default round-trips from a keypress", () => {
   const rename = ACTIONS.find((a) => a.id === "rename");
   const files = ACTIONS.find((a) => a.id === "files");
   const filePicker = ACTIONS.find((a) => a.id === "filePicker");
+  const openDiffFile = ACTIONS.find((a) => a.id === "openDiffFile");
   assert.equal(files?.defaultBinding, "shift+f");
   assert.equal(filePicker?.defaultBinding, "shift+o");
+  assert.equal(openDiffFile?.defaultBinding, "l");
+  assert.equal(openDiffFile?.group, "selection");
   assert.equal(rename?.defaultBinding, "shift+r");
   // Every default binding must be something chordFromEvent can actually produce,
   // or the action would be unreachable.
@@ -232,6 +235,7 @@ test("file actions own Shift+F and Shift+O and every default round-trips from a 
     chordFromEvent(key("d")),
     chordFromEvent(key("F", { shift: true })),
     chordFromEvent(key("O", { shift: true })),
+    chordFromEvent(key("l")),
     chordFromEvent(key("s")),
     // Shift+S (Scouts), from the same "s" that sends. Both must be producible and they
     // must not collapse into one chord - the asymmetry that makes a shift+letter binding

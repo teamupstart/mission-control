@@ -8,16 +8,15 @@ import { CLAUDE_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import {
-  SCOUT_INDEX_STATUSES,
-  SCOUT_REPORT_PATH_SHAPE,
-  SCOUT_SEARCH_LIMITS,
-  SCOUT_SUBMISSION_LIMITS,
-  SCOUT_TEXT_LIMITS,
-  decodeScoutCursor,
-  isScoutId,
-  isScoutRepoSlot,
-  scoutReportSlug,
-} from "./scouts.ts";
+  ARCHIVE_INDEX_STATUSES,
+  ARCHIVE_KINDS,
+  ARCHIVE_SEARCH_LIMITS,
+  ARCHIVE_TEXT_LIMITS,
+  decodeArchiveCursor,
+  isArchiveId,
+  isArchiveRepoSlot,
+} from "./archives.ts";
+import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } from "./scouts.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "./types.ts";
 import type { AgentType, SessionRuntime, Task } from "./types.ts";
@@ -2139,6 +2138,41 @@ export const ForemanHeartbeatSchema = z.object({
   workerId: z.string().min(1),
 });
 export type ForemanHeartbeat = z.infer<typeof ForemanHeartbeatSchema>;
+
+/**
+ * The worker's bounded projection of its process-local backlog planner circuit.
+ * The daemon keeps this in memory only; accepting the report never makes the worker a
+ * database writer or gives the daemon a second scheduler state machine.
+ */
+export const ForemanPlannerHealthReportSchema = z.object({
+  workerId: z.string().min(1).max(256),
+  state: z.enum(["healthy", "degraded"]),
+  runner: z.enum(LLM_RUNNER_IDS),
+  model: z.string().min(1).max(200),
+  failureCount: z.number().int().min(0).max(1_000_000),
+  lastError: z.string().max(400).nullable(),
+  nextRetryAt: z.number().int().nonnegative().nullable(),
+});
+export type ForemanPlannerHealthReport = z.infer<typeof ForemanPlannerHealthReportSchema>;
+
+/** A body is still schema-checked even though retry needs no operator options. */
+export const ForemanPlannerRetrySchema = z.object({}).strict();
+
+/** A live leader atomically claims one outstanding operator retry. */
+export const ForemanPlannerRetryClaimSchema = z.object({
+  workerId: z.string().min(1).max(256),
+  retryGeneration: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+}).strict();
+export type ForemanPlannerRetryClaim = z.infer<typeof ForemanPlannerRetryClaimSchema>;
+
+/** Process-local daemon signal polled by the worker; it is not scheduler state. */
+export interface ForemanPlannerControl {
+  retryGeneration: number;
+  /** Worker that consumed this generation, or null while it is waiting for a live leader. */
+  retryClaimedBy: string | null;
+  /** Changes on daemon restart so a live worker republishes its in-memory health. */
+  projectionEpoch: string;
+}
 
 /** The daemon's answer to a leased heartbeat: are you the leader, and until when. */
 export interface ForemanLeaseResult {
@@ -4505,29 +4539,31 @@ export const EnsembleMemberSubmitSchema = z.object({
 export type EnsembleMemberSubmitBody = z.infer<typeof EnsembleMemberSubmitSchema>;
 
 /**
- * The scout library's list query.
+ * The archive library's list query.
  *
  * Every field is bounded at the schema edge, and an out-of-range `limit` or an unparseable
  * `cursor` is REFUSED rather than clamped, on `ScheduleHistoryQuerySchema`'s rule: a history
  * route that reinterpreted a bad cursor would page through a different window and look like
  * it worked. `producer` is a generated UUID and `status` is a closed vocabulary, so neither
- * can carry a path fragment into a filter.
+ * can carry a path fragment into a filter. `kind` is the same closed vocabulary the manifest
+ * declares, so a filter names a kind this build understands or is refused.
  */
-export const ScoutSearchQuerySchema = z.object({
-  q: z.string().max(SCOUT_SEARCH_LIMITS.queryChars).optional(),
-  producer: z.string().refine(isScoutId, "not a producer id").optional(),
-  repo: z.string().max(SCOUT_TEXT_LIMITS.label).optional(),
-  agent: z.string().max(SCOUT_TEXT_LIMITS.label).optional(),
-  status: z.enum(SCOUT_INDEX_STATUSES).optional(),
+export const ArchiveSearchQuerySchema = z.object({
+  q: z.string().max(ARCHIVE_SEARCH_LIMITS.queryChars).optional(),
+  producer: z.string().refine(isArchiveId, "not a producer id").optional(),
+  repo: z.string().max(ARCHIVE_TEXT_LIMITS.label).optional(),
+  agent: z.string().max(ARCHIVE_TEXT_LIMITS.label).optional(),
+  kind: z.enum(ARCHIVE_KINDS).optional(),
+  status: z.enum(ARCHIVE_INDEX_STATUSES).optional(),
   from: z.coerce.number().int().nonnegative().optional(),
   to: z.coerce.number().int().nonnegative().optional(),
-  cursor: z.string().refine((value) => decodeScoutCursor(value) !== null, "not a cursor").optional(),
-  limit: z.coerce.number().int().min(1).max(SCOUT_SEARCH_LIMITS.maxLimit).optional(),
+  cursor: z.string().refine((value) => decodeArchiveCursor(value) !== null, "not a cursor").optional(),
+  limit: z.coerce.number().int().min(1).max(ARCHIVE_SEARCH_LIMITS.maxLimit).optional(),
 });
-export type ScoutSearchQueryInput = z.infer<typeof ScoutSearchQuerySchema>;
+export type ArchiveSearchQueryInput = z.infer<typeof ArchiveSearchQuerySchema>;
 
 /**
- * Deleting one scout archive.
+ * Deleting one archive.
  *
  * The body ECHOES the archive key that is already in the URL, and the daemon refuses a
  * mismatch before it resolves any path. That looks redundant and is not: a list is a live,
@@ -4535,16 +4571,16 @@ export type ScoutSearchQueryInput = z.infer<typeof ScoutSearchQuerySchema>;
  * occupant has changed. Binding the typed key to the route key means a delete can only ever
  * remove the archive the operator was actually looking at.
  */
-export const DeleteScoutArchiveSchema = z.object({
+export const DeleteArchiveSchema = z.object({
   confirmArchiveKey: z.string().min(1).max(128),
 });
-export type DeleteScoutArchiveBody = z.infer<typeof DeleteScoutArchiveSchema>;
+export type DeleteArchiveBody = z.infer<typeof DeleteArchiveSchema>;
 
 /** Handing one archived artifact to a registered "Open in" target. */
-export const OpenScoutArtifactSchema = z.object({
+export const OpenArchiveArtifactSchema = z.object({
   target: z.enum(OPEN_TARGET_IDS),
 });
-export type OpenScoutArtifactBody = z.infer<typeof OpenScoutArtifactSchema>;
+export type OpenArchiveArtifactBody = z.infer<typeof OpenArchiveArtifactSchema>;
 
 /**
  * One additional supporting file a scout asks to keep, located by a SERVER-ISSUED slot.
@@ -4555,7 +4591,7 @@ export type OpenScoutArtifactBody = z.infer<typeof OpenScoutArtifactSchema>;
  * checkout-relative path after its own containment check.
  */
 const ScoutSupportingLocatorSchema = z.object({
-  repoSlot: z.string().refine(isScoutRepoSlot, "not a repository slot issued for this task"),
+  repoSlot: z.string().refine(isArchiveRepoSlot, "not a repository slot issued for this task"),
   path: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars),
 });
 

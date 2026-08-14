@@ -1,17 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { ARCHIVE_KINDS, ARCHIVE_TEXT_LIMITS, type ArchiveCaptureStatus, type ArchiveKind } from "@shared/archives.ts";
 import {
   SCOUT_SUBMISSION_LIMITS,
-  SCOUT_TEXT_LIMITS,
-  type ScoutCaptureStatus,
   type ScoutSubmissionInput,
   type ScoutSupportingLocator,
 } from "@shared/scouts.ts";
 import { openDb } from "../db.ts";
-import type { ScoutRepoSlot } from "./repos.ts";
 
 /**
- * The local capture-job ledger: which scouts this daemon is archiving, and how far each got.
+ * The local capture-job ledger: which archives this daemon is producing, and how far each got.
  *
  * The counterpart to `store.ts`, and the opposite kind of table. That one is a projection of
  * the library and can be deleted whole; this one is bookkeeping about work in flight, and
@@ -32,26 +30,64 @@ import type { ScoutRepoSlot } from "./repos.ts";
  * recognise is treated as unfinished, because the alternative - reading an unknown value as
  * "done" - would let a newer build's row convince this one that an archive exists.
  */
-export const SCOUT_CAPTURE_JOB_STATUSES = ["reserved", "submitted", "published", "failed"] as const;
-export type ScoutCaptureJobStatus = (typeof SCOUT_CAPTURE_JOB_STATUSES)[number];
+export const ARCHIVE_CAPTURE_JOB_STATUSES = ["reserved", "submitted", "published", "failed"] as const;
+export type ArchiveCaptureJobStatus = (typeof ARCHIVE_CAPTURE_JOB_STATUSES)[number];
+
+/**
+ * One repository a capture may read from, named by a SERVER-ISSUED slot.
+ *
+ * The slot is the whole point. A task may have several checkouts attached and an agent
+ * cannot be trusted to name one by path - an absolute path is exactly what capture must
+ * never accept - so the task's repository manifest issues `repo-01`, `repo-02`, and every
+ * locator is a slot plus a path relative to the checkout that slot names.
+ *
+ * Declared here, beside the job that carries it, rather than in a kind's own module: the
+ * capture path resolves these roots for every kind, and a second definition is how one
+ * kind's ordering silently stops matching another's.
+ */
+export interface ArchiveRepoSlot {
+  slot: string;
+  /** A human name for the repository. Informational; never an identity. */
+  label: string | null;
+  /**
+   * The checkout on THIS machine, or null when the task holds none.
+   *
+   * Null is ordinary rather than exceptional: a backlog task has no worktree yet, and an
+   * ASSIGNED task never gets one - it runs in the checkout the operator's own agent was
+   * already standing in, which is why `fallbackRoot` exists on the scout side.
+   */
+  root: string | null;
+  /** The commit the task's branch was cut at, when it is known. Informational. */
+  head: string | null;
+  primary: boolean;
+}
 
 /** The identity and source locators one capture works from. All server-derived. */
-export interface ScoutCaptureJob {
+export interface ArchiveCaptureJob {
   operationKey: string;
   taskId: string;
   sessionId: string | null;
   episodeId: string | null;
-  status: ScoutCaptureJobStatus;
+  status: ArchiveCaptureJobStatus;
+  /**
+   * What this capture will produce. Frozen at reservation, never derived at publish time.
+   *
+   * A ledger row outlives its task, so re-reading the kind from the task at publication
+   * would let a task edited after its agent exited change what its own evidence claims to
+   * be. A row written before the discriminator existed reads as `scout`, which is what
+   * every such row is.
+   */
+  kind: ArchiveKind;
   producerId: string;
   archiveId: string;
   /** What the scout submitted, or null when nothing has been submitted yet. */
   submission: ScoutSubmissionInput | null;
   title: string;
   question: string | null;
-  origin: ScoutCaptureOrigin;
-  repos: ScoutRepoSlot[];
+  origin: ArchiveCaptureOrigin;
+  repos: ArchiveRepoSlot[];
   relativePath: string | null;
-  captureStatus: ScoutCaptureStatus | null;
+  captureStatus: ArchiveCaptureStatus | null;
   error: string | null;
   attempts: number;
   lastAttemptAt: number | null;
@@ -59,15 +95,16 @@ export interface ScoutCaptureJob {
   updatedAt: number;
 }
 
-/** Where the scout ran, frozen when the job was reserved. */
-export interface ScoutCaptureOrigin {
+/** Where the archived work ran, frozen when the job was reserved. */
+export interface ArchiveCaptureOrigin {
   agent: string | null;
   model: string | null;
   source: string | null;
 }
 
-/** Everything the daemon knows about a scout at the moment it reserves its capture. */
-export interface ScoutCaptureReservation {
+/** Everything the daemon knows about the work at the moment it reserves its capture. */
+export interface ArchiveCaptureReservation {
+  kind: ArchiveKind;
   taskId: string;
   sessionId: string | null;
   episodeId: string | null;
@@ -82,8 +119,8 @@ export interface ScoutCaptureReservation {
   producerId: string;
   title: string;
   question: string | null;
-  origin: ScoutCaptureOrigin;
-  repos: ScoutRepoSlot[];
+  origin: ArchiveCaptureOrigin;
+  repos: ArchiveRepoSlot[];
 }
 
 /**
@@ -96,7 +133,7 @@ export interface ScoutCaptureReservation {
  * the binding) falls back to a single per-task key, which is the conservative direction - it
  * de-duplicates rather than multiplying archives.
  */
-export function scoutOperationKey(taskId: string, episodeId: string | null): string {
+export function archiveOperationKey(taskId: string, episodeId: string | null): string {
   return `${taskId}:${episodeId ?? "-"}`;
 }
 
@@ -105,6 +142,7 @@ interface JobRowShape {
   task_id: string;
   session_id: string | null;
   episode_id: string | null;
+  kind: string;
   status: string;
   producer_id: string | null;
   archive_id: string | null;
@@ -125,7 +163,7 @@ interface JobRowShape {
   updated_at: number;
 }
 
-export class ScoutCaptureStore {
+export class ArchiveCaptureStore {
   constructor(
     private readonly db: DatabaseSync = openDb(),
     private readonly now: () => number = Date.now,
@@ -154,8 +192,8 @@ export class ScoutCaptureStore {
    * job reserved from an exit knows the checkout, and a later submission in the same episode
    * must not lose it.
    */
-  reserve(input: ScoutCaptureReservation): ScoutCaptureJob {
-    const key = scoutOperationKey(input.taskId, input.episodeId);
+  reserve(input: ArchiveCaptureReservation): ArchiveCaptureJob {
+    const key = archiveOperationKey(input.taskId, input.episodeId);
     return this.inTransaction(() => {
       const existing = this.get(key);
       if (existing) {
@@ -165,14 +203,14 @@ export class ScoutCaptureStore {
         const at = this.now();
         this.db
           .prepare(
-            `UPDATE scout_capture_jobs
+            `UPDATE archive_capture_jobs
                 SET session_id = ?, title = ?, question = ?, origin_json = ?, repos_json = ?, updated_at = ?
               WHERE operation_key = ?`,
           )
           .run(
             input.sessionId ?? existing.sessionId,
-            clip(input.title, SCOUT_TEXT_LIMITS.title) ?? existing.title,
-            clip(input.question, SCOUT_TEXT_LIMITS.question),
+            clip(input.title, ARCHIVE_TEXT_LIMITS.title) ?? existing.title,
+            clip(input.question, ARCHIVE_TEXT_LIMITS.question),
             JSON.stringify(input.origin),
             JSON.stringify(input.repos),
             at,
@@ -183,20 +221,21 @@ export class ScoutCaptureStore {
       const at = this.now();
       this.db
         .prepare(
-          `INSERT INTO scout_capture_jobs
-             (operation_key, task_id, session_id, episode_id, status, producer_id, archive_id,
+          `INSERT INTO archive_capture_jobs
+             (operation_key, task_id, session_id, episode_id, kind, status, producer_id, archive_id,
               title, question, origin_json, repos_json, attempts, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
         )
         .run(
           key,
           input.taskId,
           input.sessionId,
           input.episodeId,
+          input.kind,
           input.producerId,
           randomUUID(),
-          clip(input.title, SCOUT_TEXT_LIMITS.title) ?? "Scout",
-          clip(input.question, SCOUT_TEXT_LIMITS.question),
+          clip(input.title, ARCHIVE_TEXT_LIMITS.title) ?? "Scout",
+          clip(input.question, ARCHIVE_TEXT_LIMITS.question),
           JSON.stringify(input.origin),
           JSON.stringify(input.repos),
           at,
@@ -215,13 +254,13 @@ export class ScoutCaptureStore {
    * discovers when the old report is still there. Before publication a resubmission simply
    * supersedes, which is exactly what a scout fixing an invalid report needs.
    */
-  recordSubmission(operationKey: string, submission: ScoutSubmissionInput): ScoutCaptureJob | null {
+  recordSubmission(operationKey: string, submission: ScoutSubmissionInput): ArchiveCaptureJob | null {
     return this.inTransaction(() => {
       const job = this.get(operationKey);
       if (!job || job.status === "published") return null;
       this.db
         .prepare(
-          `UPDATE scout_capture_jobs
+          `UPDATE archive_capture_jobs
               SET status = 'submitted', report_path = ?, summary = ?, tags_json = ?,
                   supporting_json = ?, error = NULL, updated_at = ?
             WHERE operation_key = ?`,
@@ -242,7 +281,7 @@ export class ScoutCaptureStore {
   noteAttempt(operationKey: string): void {
     this.db
       .prepare(
-        `UPDATE scout_capture_jobs SET attempts = attempts + 1, last_attempt_at = ?, updated_at = ?
+        `UPDATE archive_capture_jobs SET attempts = attempts + 1, last_attempt_at = ?, updated_at = ?
           WHERE operation_key = ?`,
       )
       .run(this.now(), this.now(), operationKey);
@@ -252,11 +291,11 @@ export class ScoutCaptureStore {
   markPublished(
     operationKey: string,
     relativePath: string,
-    captureStatus: ScoutCaptureStatus,
-  ): ScoutCaptureJob | null {
+    captureStatus: ArchiveCaptureStatus,
+  ): ArchiveCaptureJob | null {
     this.db
       .prepare(
-        `UPDATE scout_capture_jobs
+        `UPDATE archive_capture_jobs
             SET status = 'published', relative_path = ?, capture_status = ?, error = NULL, updated_at = ?
           WHERE operation_key = ?`,
       )
@@ -268,15 +307,15 @@ export class ScoutCaptureStore {
   markFailed(operationKey: string, error: string): void {
     this.db
       .prepare(
-        `UPDATE scout_capture_jobs SET status = 'failed', error = ?, updated_at = ?
+        `UPDATE archive_capture_jobs SET status = 'failed', error = ?, updated_at = ?
           WHERE operation_key = ? AND status != 'published'`,
       )
-      .run(clip(error, SCOUT_TEXT_LIMITS.error), this.now(), operationKey);
+      .run(clip(error, ARCHIVE_TEXT_LIMITS.error), this.now(), operationKey);
   }
 
-  get(operationKey: string): ScoutCaptureJob | null {
+  get(operationKey: string): ArchiveCaptureJob | null {
     const row = this.db
-      .prepare(`SELECT * FROM scout_capture_jobs WHERE operation_key = ?`)
+      .prepare(`SELECT * FROM archive_capture_jobs WHERE operation_key = ?`)
       .get(operationKey) as unknown as JobRowShape | undefined;
     return row ? rowToJob(row) : null;
   }
@@ -289,24 +328,24 @@ export class ScoutCaptureStore {
    * question (cleanup asks it), and answering it from one row would miss an earlier episode's
    * evidence.
    */
-  forTask(taskId: string): ScoutCaptureJob[] {
+  forTask(taskId: string): ArchiveCaptureJob[] {
     const rows = this.db
-      .prepare(`SELECT * FROM scout_capture_jobs WHERE task_id = ? ORDER BY created_at DESC`)
+      .prepare(`SELECT * FROM archive_capture_jobs WHERE task_id = ? ORDER BY created_at DESC`)
       .all(taskId) as unknown as JobRowShape[];
     return rows.map(rowToJob);
   }
 
   /** Jobs that still have work to do, oldest first - the restart-recovery worklist. */
-  unfinished(): ScoutCaptureJob[] {
+  unfinished(): ArchiveCaptureJob[] {
     const rows = this.db
-      .prepare(`SELECT * FROM scout_capture_jobs WHERE status != 'published' ORDER BY created_at`)
+      .prepare(`SELECT * FROM archive_capture_jobs WHERE status != 'published' ORDER BY created_at`)
       .all() as unknown as JobRowShape[];
     return rows.map(rowToJob);
   }
 }
 
-function rowToJob(row: JobRowShape): ScoutCaptureJob {
-  const origin = parseJson<ScoutCaptureOrigin>(row.origin_json) ?? {
+function rowToJob(row: JobRowShape): ArchiveCaptureJob {
+  const origin = parseJson<ArchiveCaptureOrigin>(row.origin_json) ?? {
     agent: null,
     model: null,
     source: null,
@@ -316,6 +355,7 @@ function rowToJob(row: JobRowShape): ScoutCaptureJob {
     taskId: row.task_id,
     sessionId: row.session_id,
     episodeId: row.episode_id,
+    kind: readKind(row.kind),
     status: readStatus(row.status),
     // Written at reservation and never rewritten. The empty-string fallbacks cannot occur for
     // a row this build wrote; they exist so a hand-edited database degrades to "unfinished"
@@ -333,7 +373,7 @@ function rowToJob(row: JobRowShape): ScoutCaptureJob {
     title: row.title ?? "Scout",
     question: row.question,
     origin,
-    repos: parseJson<ScoutRepoSlot[]>(row.repos_json) ?? [],
+    repos: parseJson<ArchiveRepoSlot[]>(row.repos_json) ?? [],
     relativePath: row.relative_path,
     captureStatus:
       row.capture_status === "complete" || row.capture_status === "partial" ? row.capture_status : null,
@@ -345,9 +385,21 @@ function rowToJob(row: JobRowShape): ScoutCaptureJob {
   };
 }
 
-function readStatus(raw: string): ScoutCaptureJobStatus {
-  return (SCOUT_CAPTURE_JOB_STATUSES as readonly string[]).includes(raw)
-    ? (raw as ScoutCaptureJobStatus)
+/**
+ * A persisted kind this build has no name for reads as `scout`.
+ *
+ * Only reachable through a hand-edited database or a downgrade, and `scout` is the honest
+ * answer for both: every row written before the discriminator existed is a scout's, and the
+ * capture path refuses a kind it has no planner for anyway, so a wrong guess here cannot
+ * publish a bundle claiming to be something it is not.
+ */
+function readKind(raw: string | null): ArchiveKind {
+  return (ARCHIVE_KINDS as readonly string[]).includes(raw ?? "") ? (raw as ArchiveKind) : "scout";
+}
+
+function readStatus(raw: string): ArchiveCaptureJobStatus {
+  return (ARCHIVE_CAPTURE_JOB_STATUSES as readonly string[]).includes(raw)
+    ? (raw as ArchiveCaptureJobStatus)
     : "reserved";
 }
 
@@ -367,6 +419,6 @@ function clip(value: string | null | undefined, max: number): string | null {
 }
 
 /** Drop every capture job. For tests that need a clean ledger between cases. */
-export function clearScoutCaptureJobs(db: DatabaseSync): void {
-  db.exec("DELETE FROM scout_capture_jobs;");
+export function clearArchiveCaptureJobs(db: DatabaseSync): void {
+  db.exec("DELETE FROM archive_capture_jobs;");
 }

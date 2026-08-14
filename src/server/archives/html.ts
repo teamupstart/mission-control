@@ -1,8 +1,8 @@
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
-import { SCOUT_TEXT_LIMITS } from "@shared/scouts.ts";
+import { ARCHIVE_TEXT_LIMITS } from "@shared/archives.ts";
 
 /**
- * Static-HTML validation and visible-text extraction for an archived scout report.
+ * Static-HTML validation and visible-text extraction for an archived report page.
  *
  * Parsed with `parse5`, a standards-compliant HTML5 parser that builds a tree and does
  * NOTHING else: it runs no script, fetches no resource, has no DOM, no layout, and no
@@ -15,8 +15,8 @@ import { SCOUT_TEXT_LIMITS } from "@shared/scouts.ts";
  *
  * - `validateStaticReportHtml` decides whether a report may be archived and indexed at all.
  *   Version 1 allows static markup, inline CSS, inline SVG, fragment links, bounded `data:`
- *   images, and relative links that stay inside the report directory. Everything that can
- *   execute, navigate off the machine, or fetch a resource is refused.
+ *   images, relative links that stay inside the report directory, and an `http(s)` target on
+ *   an `<a href>`. Everything that can execute, or that fetches on its own, is refused.
  * - `extractVisibleText` produces the bounded text that makes a report searchable, after
  *   removing non-content and hidden nodes. It never follows a link.
  *
@@ -123,22 +123,22 @@ const MAX_DATA_URL_CHARS = 4 * 1024 * 1024;
  */
 const PARSER_OPTIONS = { scriptingEnabled: false } as const;
 
-export interface ScoutHtmlProblem {
+export interface ArchiveHtmlProblem {
   /** A short machine-readable reason, for tests and for a stable index diagnostic. */
   code: string;
   /** One sentence a human can act on. Never contains page content. */
   message: string;
 }
 
-export type ScoutHtmlValidation =
+export type ArchiveHtmlValidation =
   | { ok: true }
-  | { ok: false; problems: ScoutHtmlProblem[] };
+  | { ok: false; problems: ArchiveHtmlProblem[] };
 
 /** How many distinct problems one refusal reports before it stops counting. */
 const MAX_REPORTED_PROBLEMS = 20;
 
 /**
- * Whether `html` is a self-contained, non-executing version 1 scout report.
+ * Whether `html` is a self-contained, non-executing version 1 archive report.
  *
  * `relativeTargets` is the set of report-directory paths that a relative link is allowed to
  * name, relative to `report/report.html` itself - i.e. the report's companion files. A link
@@ -152,8 +152,8 @@ const MAX_REPORTED_PROBLEMS = 20;
 export function validateStaticReportHtml(
   html: string,
   relativeTargets: ReadonlySet<string> | null = null,
-): ScoutHtmlValidation {
-  const problems: ScoutHtmlProblem[] = [];
+): ArchiveHtmlValidation {
+  const problems: ArchiveHtmlProblem[] = [];
   const seen = new Set<string>();
   const add = (code: string, message: string): void => {
     const dedupe = `${code}:${message}`;
@@ -195,9 +195,12 @@ export function validateStaticReportHtml(
         continue;
       }
       if (!URL_ATTRIBUTES.has(name)) continue;
-      const navigational = name === "href" || name === "action" || name === "formaction" || name === "ping";
       for (const value of splitUrlAttribute(name, attr.value)) {
-        const problem = urlProblem(value, { navigational, relativeTargets });
+        const problem = urlProblem(value, {
+          linkTarget: LINK_TARGET_ATTRIBUTES.has(name),
+          clickable: isClickableDestination(tag, name),
+          relativeTargets,
+        });
         if (problem) add(problem.code, problem.message);
       }
     }
@@ -213,12 +216,12 @@ export function validateStaticReportHtml(
 /**
  * The visible text of a report, normalized and bounded, for the search index.
  *
- * Bounded at `SCOUT_TEXT_LIMITS.reportText` because the index is a local convenience and a
+ * Bounded at `ARCHIVE_TEXT_LIMITS.reportText` because the index is a local convenience and a
  * 32 MiB report must not become 32 MiB of rows. Truncation is honest: the manifest summary
  * is indexed separately, so a list result stays useful even when a huge report's tail was
  * not indexed.
  */
-export function extractVisibleText(html: string, cap: number = SCOUT_TEXT_LIMITS.reportText): string {
+export function extractVisibleText(html: string, cap: number = ARCHIVE_TEXT_LIMITS.reportText): string {
   let document: DefaultTreeAdapterTypes.Document;
   try {
     document = parse(html, PARSER_OPTIONS);
@@ -337,21 +340,74 @@ function splitUrlAttribute(name: string, raw: string): string[] {
   return [raw];
 }
 
+/**
+ * Attributes whose value is a link TARGET rather than a resource to load.
+ *
+ * Used for one thing only: refusing a `data:` URL in a slot where a browser would treat it
+ * as somewhere to GO. That rule predates the external-link allowance and is unchanged by it -
+ * a `data:` link target opens attacker-authored markup with the archive's own opener, whatever
+ * element carries it.
+ */
+const LINK_TARGET_ATTRIBUTES = new Set(["href", "action", "formaction", "ping"]);
+
+/**
+ * Whether this element+attribute pair is a destination a person must CLICK to reach.
+ *
+ * The pair, never the attribute alone, and that is the whole correctness argument. `href` is
+ * not one kind of thing: on `<a>` it is where a click goes, and on `<link>`, SVG `<use>` and
+ * SVG `<image>` it is a resource the browser fetches the moment the page opens. Keying the
+ * allowance to the attribute name would therefore have let `<link rel=stylesheet
+ * href="https://…">` and `<use href="https://…/x.svg#a">` through - a page that phones home on
+ * open, which is precisely what this validator exists to prevent. An earlier revision of this
+ * change did exactly that; `test/archive-bundle.test.ts` pins each of those elements.
+ *
+ * `<a href>` and NOTHING else, which is narrower than "every clickable destination" on
+ * purpose. `<area href>` is a genuine one - an image-map region is an anchor with a shape -
+ * and it is refused anyway, because the approved allowance names anchors and an archived
+ * report that needs an external image map does not exist. `action` and `formaction` are out
+ * for a second reason as well: `<form>` is a forbidden element, so neither can ever be
+ * submitted, and a slot no click can reach is not a destination at all.
+ *
+ * The rule to apply when this list is next questioned: an element joins it only when a person
+ * clicking is the ONLY way its URL is ever requested, and only when a real report needs it.
+ */
+function isClickableDestination(tag: string, attributeName: string): boolean {
+  return attributeName === "href" && tag === "a";
+}
+
 interface UrlContext {
-  navigational: boolean;
+  /** A link target: refuses `data:`, exactly as it always has. */
+  linkTarget: boolean;
+  /** `<a href>` or `<area href>`: the one place an external `http(s)` reference is allowed. */
+  clickable: boolean;
   relativeTargets: ReadonlySet<string> | null;
 }
 
 /**
  * Whether one URL is allowed in an archived report, and why not when it is not.
  *
- * The allowed set is small on purpose: a fragment, a bounded `data:` image in a
- * non-navigational slot, or a relative reference that stays inside the report directory.
- * Everything else - any scheme, a protocol-relative `//host`, a path that climbs out - is a
- * request this machine would make on somebody else's behalf when a human opens an archive
- * they were sent.
+ * The allowed set is small on purpose: a fragment, a bounded `data:` image in a fetching
+ * slot, a relative reference that stays inside the report directory, and an `http(s)` target
+ * on an `<a href>` - a destination a person can CLICK. Everything else - any other scheme, a
+ * protocol-relative `//host`, a path that climbs out - is refused.
+ *
+ * The line the external-link allowance is drawn on is the one this file was already
+ * defending: what this machine requests on somebody else's behalf when a human OPENS an
+ * archive they were sent. An `<img src>` fetches on open, tells a server the page was read,
+ * and does it before anyone has decided anything - so every scheme stays refused there, and
+ * in every other fetching slot: a `ping` beacon, which is sent on a click without being where
+ * the click goes, and every `href` that is not an anchor's - whether it is a RESOURCE
+ * (`<link rel=stylesheet>`, SVG `<use>`, SVG `<image>`) or merely another way to navigate
+ * (`<area>`). An `<a href="https://...">` requests
+ * nothing until a person acts, and then takes them somewhere their own browser shows them.
+ * Real pages cite their sources; refusing that made an archived report link to documentation
+ * it could only describe.
+ *
+ * `data:` is unchanged in every slot. A `data:` link target is a navigation primitive rather
+ * than a reference - it opens attacker-authored markup with the archive's own opener - and
+ * an inline image is still bounded and still limited to image and font payloads.
  */
-function urlProblem(raw: string, context: UrlContext): ScoutHtmlProblem | null {
+function urlProblem(raw: string, context: UrlContext): ArchiveHtmlProblem | null {
   const value = raw.trim();
   if (value === "") return null;
   if (value.startsWith("#")) return null;
@@ -360,10 +416,11 @@ function urlProblem(raw: string, context: UrlContext): ScoutHtmlProblem | null {
   }
   const scheme = SCHEME_RE.exec(value)?.[0]?.slice(0, -1).toLowerCase();
   if (scheme) {
+    if (context.clickable && (scheme === "http" || scheme === "https")) return null;
     if (scheme !== "data") {
       return { code: "external_url", message: `the ${scheme}: scheme is not allowed in an archived report` };
     }
-    if (context.navigational) {
+    if (context.linkTarget) {
       return { code: "data_navigation", message: "a data: URL cannot be a link target in an archived report" };
     }
     if (value.length > MAX_DATA_URL_CHARS) {
@@ -394,7 +451,7 @@ function urlProblem(raw: string, context: UrlContext): ScoutHtmlProblem | null {
  * Hand-resolved rather than via `new URL(value, base)` because a base URL forces a scheme,
  * and every scheme brings its own normalization quirks (backslashes, percent-decoding,
  * authority parsing) that a containment check must not inherit. The rules here are exactly
- * the ones `validateScoutArchivePath` enforces on the manifest side, so a link and a stored
+ * the ones `validateArchivePath` enforces on the manifest side, so a link and a stored
  * path cannot disagree about what "inside" means.
  */
 function resolveInsideReport(raw: string): string | null {
@@ -444,10 +501,13 @@ function resolveInsideReport(raw: string): string | null {
  * Comments are skipped so a commented-out `url()` is not reported, and so a `/* *\/` cannot
  * hide one either.
  */
-function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null): ScoutHtmlProblem[] {
-  const problems: ScoutHtmlProblem[] = [];
+function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null): ArchiveHtmlProblem[] {
+  const problems: ArchiveHtmlProblem[] = [];
   const check = (value: string): void => {
-    const problem = urlProblem(value, { navigational: false, relativeTargets });
+    // Every reference a stylesheet carries is fetched when the page opens, however it is
+    // spelled, so CSS is entirely a fetching slot and the navigational allowance never
+    // reaches it.
+    const problem = urlProblem(value, { linkTarget: false, clickable: false, relativeTargets });
     if (problem) problems.push(problem);
   };
 

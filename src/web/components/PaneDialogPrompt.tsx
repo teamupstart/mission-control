@@ -1,7 +1,17 @@
-import { useState } from "react";
-import type { PaneDialog, PaneOption } from "@shared/types.ts";
+import { Fragment, useEffect, useRef, useState } from "react";
+import type { PaneDialog, PaneOption, SessionNoteSummary } from "@shared/types.ts";
 import { dialogIdentity } from "@shared/session.ts";
 import { api } from "../lib/api.ts";
+import {
+  foremanNoteForDialog,
+  recommendedChoiceKeys,
+  type RecommendationChoice,
+} from "../lib/foreman-review.ts";
+import {
+  ForemanPickMark,
+  ForemanRecommendationButton,
+  ForemanRecommendationSidecar,
+} from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -33,14 +43,19 @@ import { Tooltip } from "./Tooltip.tsx";
 export function PaneDialogPrompt({
   sessionId,
   dialog,
+  note: sessionNote,
 }: {
   sessionId: string;
   dialog: PaneDialog;
+  /** Foreman's note, integrated only when its marker names this exact dialog. */
+  note?: SessionNoteSummary | null;
 }): React.JSX.Element {
   const [busy, setBusy] = useState<number | "form" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [typed, setTyped] = useState("");
+  const [foremanOpen, setForemanOpen] = useState(false);
+  const foremanTriggerRef = useRef<HTMLButtonElement>(null);
 
   // A 409 says "the screen changed" - and the screen changing is precisely what replaces
   // the question above it. Without this the failure message outlives the menu it was
@@ -62,7 +77,25 @@ export function PaneDialogPrompt({
     setError(null);
     setNote(null);
     setTyped("");
+    setForemanOpen(false);
   }
+
+  const foremanNote = foremanNoteForDialog(dialog, sessionNote);
+  const recommendationChoices = choicesForDialog(dialog);
+  const recommendedKeys = recommendedChoiceKeys(
+    foremanNote?.recommendation,
+    recommendationChoices,
+  );
+  const foremanPicks = recommendationChoices.filter((choice) => recommendedKeys.has(choice.key));
+  const foremanAvailable = Boolean(
+    foremanNote && (foremanNote.recommendation?.trim() || foremanNote.brief?.trim()),
+  );
+
+  // A note can retire over SSE without the dialog changing identity. Close immediately so
+  // optional context for a finished note never remains over the still-refreshing form.
+  useEffect(() => {
+    if (!foremanAvailable) setForemanOpen(false);
+  }, [foremanAvailable]);
 
   async function choose(option: PaneOption): Promise<void> {
     if (busy !== null) return;
@@ -141,18 +174,32 @@ export function PaneDialogPrompt({
         setBusy={setBusy}
         error={error}
         setError={setError}
+        foremanNote={foremanAvailable ? foremanNote : null}
+        foremanOpen={foremanOpen}
+        setForemanOpen={setForemanOpen}
+        foremanTriggerRef={foremanTriggerRef}
+        recommendedKeys={recommendedKeys}
+        foremanPicks={foremanPicks}
       />
     );
   }
 
   return (
-    // Stops the click from reaching the card, which would toggle it expanded underneath.
-    <section className="pane-dialog" onClick={(e) => e.stopPropagation()}>
+    <Fragment>
+      {/* Stops the click from reaching the card, which would toggle it expanded underneath. */}
+      <section className="pane-dialog" onClick={(e) => e.stopPropagation()}>
       <header className="pd-head">
         <span className="pd-badge">Waiting on you</span>
         <span className="pd-hint dim">
           {form ? "pick any number, then submit" : "answer here or in the terminal"}
         </span>
+        {foremanAvailable && (
+          <ForemanRecommendationButton
+            open={foremanOpen}
+            onToggle={() => setForemanOpen((open) => !open)}
+            buttonRef={foremanTriggerRef}
+          />
+        )}
       </header>
 
       {dialog.prompt && <p className="pd-prompt">{dialog.prompt}</p>}
@@ -166,7 +213,9 @@ export function PaneDialogPrompt({
                 type="button"
                 role="checkbox"
                 aria-checked={picked[o.number] ?? false}
-                className={`pd-option pd-check${picked[o.number] ? " pd-checked" : ""}`}
+                className={`pd-option pd-check${picked[o.number] ? " pd-checked" : ""}${
+                  recommendedKeys.has(paneChoiceKey(o)) ? " pd-foreman-pick" : ""
+                }`}
                 disabled={busy !== null}
                 onClick={() => setPicked((p) => ({ ...p, [o.number]: !p[o.number] }))}
               >
@@ -182,6 +231,7 @@ export function PaneDialogPrompt({
                   <span className="pd-label">{o.label}</span>
                   {o.detail && <span className="pd-detail">{o.detail}</span>}
                 </span>
+                {recommendedKeys.has(paneChoiceKey(o)) && <ForemanPickMark />}
               </button>
               </Tooltip>
             </li>
@@ -195,7 +245,9 @@ export function PaneDialogPrompt({
                 // two views disagreeing about the default is its own small betrayal. Not
                 // marked on a form, where the cursor is just where the last box was ticked
                 // and an Enter there would toggle rather than answer.
-                className={`pd-option${!form && o.number === dialog.highlighted ? " pd-current" : ""}`}
+                className={`pd-option${!form && o.number === dialog.highlighted ? " pd-current" : ""}${
+                  recommendedKeys.has(paneChoiceKey(o)) ? " pd-foreman-pick" : ""
+                }`}
                 disabled={busy !== null}
                 onClick={() => void choose(o)}
               >
@@ -204,6 +256,7 @@ export function PaneDialogPrompt({
                   <span className="pd-label">{o.label}</span>
                   {o.detail && <span className="pd-detail">{o.detail}</span>}
                 </span>
+                {recommendedKeys.has(paneChoiceKey(o)) && <ForemanPickMark />}
                 {busy === o.number && <span className="pd-spin dim">sending…</span>}
               </button>
               </Tooltip>
@@ -255,7 +308,16 @@ export function PaneDialogPrompt({
 
       {note && <p className="pd-note dim">{note}</p>}
       {error && <p className="pd-error">{error}</p>}
-    </section>
+      </section>
+      {foremanOpen && foremanAvailable && foremanNote && (
+        <ForemanRecommendationSidecar
+          note={foremanNote}
+          picks={foremanPicks}
+          onClose={() => setForemanOpen(false)}
+          returnFocusRef={foremanTriggerRef}
+        />
+      )}
+    </Fragment>
   );
 }
 
@@ -278,6 +340,12 @@ function DriverForm({
   setBusy,
   error,
   setError,
+  foremanNote,
+  foremanOpen,
+  setForemanOpen,
+  foremanTriggerRef,
+  recommendedKeys,
+  foremanPicks,
 }: {
   sessionId: string;
   dialog: PaneDialog;
@@ -286,6 +354,12 @@ function DriverForm({
   setBusy: (b: number | "form" | null) => void;
   error: string | null;
   setError: (e: string | null) => void;
+  foremanNote: SessionNoteSummary | null;
+  foremanOpen: boolean;
+  setForemanOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  foremanTriggerRef: React.RefObject<HTMLButtonElement | null>;
+  recommendedKeys: ReadonlySet<string>;
+  foremanPicks: RecommendationChoice[];
 }): React.JSX.Element {
   // Per question, the labels chosen. A single-select question holds at most one, which is
   // enforced where the row is clicked rather than at submit - the human should never be
@@ -344,10 +418,18 @@ function DriverForm({
   }
 
   return (
-    <section className="pane-dialog" onClick={(e) => e.stopPropagation()}>
+    <Fragment>
+      <section className="pane-dialog" onClick={(e) => e.stopPropagation()}>
       <header className="pd-head">
         <span className="pd-badge">Waiting on you</span>
         <span className="pd-hint dim">answer each, then submit</span>
+        {foremanNote && (
+          <ForemanRecommendationButton
+            open={foremanOpen}
+            onToggle={() => setForemanOpen((open) => !open)}
+            buttonRef={foremanTriggerRef}
+          />
+        )}
       </header>
 
       {dialog.prompt && questions.length > 1 && <p className="pd-prompt">{dialog.prompt}</p>}
@@ -368,7 +450,11 @@ function DriverForm({
                       type="button"
                       role={q.multiSelect ? "checkbox" : "radio"}
                       aria-checked={on}
-                      className={`pd-option pd-check${on ? " pd-checked" : ""}`}
+                      className={`pd-option pd-check${on ? " pd-checked" : ""}${
+                        recommendedKeys.has(driverChoiceKey(q.question, o))
+                          ? " pd-foreman-pick"
+                          : ""
+                      }`}
                       disabled={busy !== null}
                       onClick={() => toggle(q.question, o.label, q.multiSelect === true)}
                     >
@@ -380,6 +466,7 @@ function DriverForm({
                         <span className="pd-label">{o.label}</span>
                         {o.detail && <span className="pd-detail">{o.detail}</span>}
                       </span>
+                      {recommendedKeys.has(driverChoiceKey(q.question, o)) && <ForemanPickMark />}
                     </button>
                   </Tooltip>
                 </li>
@@ -418,7 +505,16 @@ function DriverForm({
       </div>
 
       {error && <p className="pd-error">{error}</p>}
-    </section>
+      </section>
+      {foremanOpen && foremanNote && (
+        <ForemanRecommendationSidecar
+          note={foremanNote}
+          picks={foremanPicks}
+          onClose={() => setForemanOpen(false)}
+          returnFocusRef={foremanTriggerRef}
+        />
+      )}
+    </Fragment>
   );
 }
 
@@ -432,6 +528,38 @@ function initialPicks(dialog: PaneDialog): Record<number, boolean> {
   const picks: Record<number, boolean> = {};
   for (const o of boxes(dialog)) picks[o.number] = o.checked === true;
   return picks;
+}
+
+function paneChoiceKey(option: PaneOption): string {
+  return `pane:${option.number}:${option.label}`;
+}
+
+function driverChoiceKey(question: string, option: PaneOption): string {
+  return `driver:${question}:${option.number}:${option.label}`;
+}
+
+/** Flatten both dialog shapes for recommendation matching and sidecar rendering. */
+function choicesForDialog(dialog: PaneDialog): RecommendationChoice[] {
+  if (dialog.questions?.length) {
+    return dialog.questions.flatMap((question) =>
+      question.options.map((option) => ({
+        key: driverChoiceKey(question.question, option),
+        label: option.label,
+        detail: option.detail,
+        // Multi-question forms repeat numbers per question, so the numbered fallback is
+        // deliberately disabled here. The group carries which question this row belongs to,
+        // because labels repeat across questions too - two yes/no questions being the plain
+        // case - and a label offered by more than one of them is not attributable from prose.
+        group: question.question,
+      })),
+    );
+  }
+  return dialog.options.map((option) => ({
+    key: paneChoiceKey(option),
+    label: option.label,
+    detail: option.detail,
+    number: option.number,
+  }));
 }
 
 /** Word a refusal, saying plainly that nothing was pressed. */

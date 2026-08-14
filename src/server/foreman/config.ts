@@ -1,6 +1,13 @@
-import type { ForemanStatus, Session } from "@shared/types.ts";
+import { randomUUID } from "node:crypto";
+import type { ForemanPlannerHealth, ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
-import type { ForemanConfig, ForemanConfigPatch, ForemanLeaseResult } from "@shared/protocol.ts";
+import type {
+  ForemanConfig,
+  ForemanConfigPatch,
+  ForemanLeaseResult,
+  ForemanPlannerControl,
+  ForemanPlannerHealthReport,
+} from "@shared/protocol.ts";
 import { WRAPUP_MODES } from "@shared/queue.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { readyBacklog } from "@shared/backlog.ts";
@@ -46,6 +53,15 @@ interface ForemanLease {
   workerId: string;
   expiresAt: number;
 }
+
+/** Latest leader-owned projection of the worker's process-local planner circuit. */
+let plannerHealthReport: ForemanPlannerHealthReport | null = null;
+/** Operator retry signal. Process-local by design: it is control, not durable schedule state. */
+let plannerRetryGeneration = 0;
+/** The one worker allowed to spend the current retry generation. */
+let plannerRetryClaim: { generation: number; workerId: string } | null = null;
+/** Daemon-process identity for rebuilding the projection after a restart. */
+const plannerProjectionEpoch = randomUUID();
 
 /** Normalize retired and split settings before validating a stored config. */
 function migrateStoredForemanConfig(value: unknown): unknown {
@@ -133,13 +149,66 @@ export function claimForemanLease(workerId: string, now = Date.now()): ForemanLe
  *  waiting out the TTL. Best-effort: a crash just lets the lease expire. */
 export function releaseForemanLease(workerId: string): void {
   const cur = getAppConfig<ForemanLease>(LEASE_KEY);
-  if (cur?.workerId === workerId) setAppConfig(LEASE_KEY, { workerId, expiresAt: 0 });
+  if (cur?.workerId === workerId) {
+    setAppConfig(LEASE_KEY, { workerId, expiresAt: 0 });
+    if (plannerHealthReport?.workerId === workerId) plannerHealthReport = null;
+  }
+}
+
+function liveLease(now: number): ForemanLease | null {
+  const cur = getAppConfig<ForemanLease>(LEASE_KEY);
+  return cur && cur.expiresAt > now ? cur : null;
 }
 
 /** True when some worker currently holds a live lease - i.e. a leader is alive. */
 function leaderAlive(now: number): boolean {
-  const cur = getAppConfig<ForemanLease>(LEASE_KEY);
-  return !!cur && cur.expiresAt > now;
+  return liveLease(now) !== null;
+}
+
+/**
+ * Accept a health projection only from the live leader. A standby may run the same code,
+ * but it owns no scheduler state and must never overwrite what the active worker reports.
+ */
+export function recordForemanPlannerHealth(
+  report: ForemanPlannerHealthReport,
+  now = Date.now(),
+): boolean {
+  if (liveLease(now)?.workerId !== report.workerId) return false;
+  plannerHealthReport = report;
+  return true;
+}
+
+/** Mint one process-local retry signal for the worker's next pass. */
+export function requestForemanPlannerRetry(): ForemanPlannerControl {
+  plannerRetryGeneration = plannerRetryGeneration >= Number.MAX_SAFE_INTEGER
+    ? 1
+    : plannerRetryGeneration + 1;
+  plannerRetryClaim = null;
+  return foremanPlannerControl();
+}
+
+/** Let only the live leader consume one retry generation, once across worker restarts. */
+export function claimForemanPlannerRetry(
+  workerId: string,
+  retryGeneration: number,
+  now = Date.now(),
+): boolean {
+  if (liveLease(now)?.workerId !== workerId) return false;
+  if (retryGeneration !== plannerRetryGeneration || retryGeneration === 0) return false;
+  plannerRetryClaim ??= { generation: retryGeneration, workerId };
+  return plannerRetryClaim.generation === retryGeneration
+    && plannerRetryClaim.workerId === workerId;
+}
+
+/** The worker polls this beside config; no scheduler decision is made here. */
+export function foremanPlannerControl(): ForemanPlannerControl {
+  return {
+    retryGeneration: plannerRetryGeneration,
+    retryClaimedBy: plannerRetryClaim?.generation === plannerRetryGeneration
+      ? plannerRetryClaim.workerId
+      : null,
+    projectionEpoch: plannerProjectionEpoch,
+  };
 }
 
 /** Live status: config + whether the worker heartbeated + derived queue/counts. */
@@ -181,6 +250,28 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
   // `cfg.runner` is "the operator never chose HERE", which hands the question to the
   // app-wide resolution - not to a literal "claude", which would drop the env layer.
   const runner = cfg.runner ?? llmRunnerChoice().id;
+  const models = resolveForemanModels(cfg, process.env, runner);
+  const leader = liveLease(now);
+  const reported = leader && plannerHealthReport?.workerId === leader.workerId
+    ? plannerHealthReport
+    : null;
+  const planner: ForemanPlannerHealth = reported
+    ? {
+        state: reported.state,
+        runner: reported.runner,
+        model: reported.model,
+        failureCount: reported.failureCount,
+        lastError: reported.lastError,
+        nextRetryAt: reported.nextRetryAt,
+      }
+    : {
+        state: "healthy",
+        runner,
+        model: models.backlog.id,
+        failureCount: 0,
+        lastError: null,
+        nextRetryAt: null,
+      };
 
   return {
     enabled: cfg.enabled,
@@ -199,9 +290,10 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
       blocked: backlog.length - disabled - ready,
       disabled,
     },
+    planner,
     // Resolved here, from the daemon's own env, because the browser has no `process`
     // and so cannot see the env layer at all - see `ForemanStatus.models`.
-    models: resolveForemanModels(cfg, process.env, runner),
+    models,
     runner,
   };
 }

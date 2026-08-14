@@ -1469,7 +1469,12 @@ body {
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
-.is-desktop .bl-planner-pop {
+.is-desktop .bl-planner-pop,
+/* Foreman's recommendation sidecar. It is offset by `--topbar-h`, so today it starts below
+   the bar - which is exactly the "the layout keeps it out of the rectangle" assumption the
+   entries above were each added after it failed. It is a scrollable panel whose only control
+   is a Close button, so an eaten click traps the operator behind it. */
+.is-desktop .foreman-recommendation-sidecar {
   -webkit-app-region: no-drag;
 }
 
@@ -3908,6 +3913,7 @@ a.btn {
   margin-bottom: 12px;
 }
 .review-head h3 {
+  min-width: 0;
   margin: 0;
   font-size: 14.5px;
   font-weight: 600;
@@ -4136,6 +4142,11 @@ a.btn {
   border-radius: 8px;
   cursor: pointer;
 }
+.decision-option.decision-foreman-pick {
+  border-color: color-mix(in oklab, var(--foreman) 45%, var(--border));
+  background: color-mix(in oklab, var(--foreman) 7%, var(--bg-2));
+  box-shadow: inset 3px 0 0 color-mix(in oklab, var(--foreman) 78%, transparent);
+}
 .decision-option:hover {
   border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
 }
@@ -4144,6 +4155,8 @@ a.btn {
   accent-color: var(--attention);
 }
 .decision-option-body {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -6521,6 +6534,15 @@ mark.find-hit.is-current {
   align-self: flex-start;
   max-width: 100%;
 }
+/* Deliberately ONE rule for every kind, where the backlog card's `.bl-kind-*` gives each
+   its own colour. `taskPillParts` draws `plan` here as well as `scout`, so the two chips
+   share this blue - which is legible, because this chip prints the kind's WORD in
+   uppercase and colour carries no per-kind meaning at this surface. Splitting it was
+   tried and reverted: it changes the rendered markup of the SCOUT chip, and the change
+   that added `plan` is not allowed to move what a scout renders. Worth revisiting only
+   alongside the fact that ship is green on a backlog card and blue in the roundup panel
+   today - these two surfaces already disagree about kind colour, and making one kind
+   agree across both would leave it the odd one out rather than fix anything. */
 .task-kind {
   flex: none;
   font-size: 10px;
@@ -12172,6 +12194,61 @@ select.ensemble-judge-persona {
   border-right: 1px solid var(--border-soft);
   background: var(--panel-2);
 }
+/* The way out, in all four authoring rails.
+
+   Above each rail's heading and OUTSIDE the scrolling asset list, which is the half that
+   makes it findable: a row inside the list is a control you have to already know about,
+   because it is not there once you have scrolled to the Persona you were looking for.
+
+   `flex: none` is what holds it out of each rail's flex distribution, so it keeps its own
+   height above `.persona-list` / `.wf-action-list` / `.wf-command-list` instead of being
+   sized by what is left.
+
+   It is NOT pinned to the viewport, and that is a scope line rather than an oversight. All
+   four rails are `min-height`-sized today: a list long enough to outgrow the viewport makes
+   the whole PAGE scroll rather than the list inside a bounded rail, so the row leaves the
+   screen with the rail's own heading. Holding it there means giving the rail a bounded
+   height and its list the scroll - which is the Rail rebuild the next phase owns, and doing
+   half of it here would be reverted by the other half. Measured, not assumed: with 34
+   Personas the list reports `scrollHeight === clientHeight` and the document grows to
+   2525px. */
+.lib-back-row {
+  flex: none;
+  /* 16px so the arrow lands on the same left edge as the rail heading below it, once
+     `.lib-back`'s own 8px padding and its -8px pull cancel out. The builder's rail sets its
+     heading at 12px instead, so it takes the matching inset below rather than being 4px out
+     of line with itself. */
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.workflow-library-sidebar .lib-back-row {
+  padding-inline: 12px;
+}
+.lib-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  /* Pulled back by its own padding so the arrow lines up with the rail heading below it
+     rather than sitting one hover-target's worth to its right. */
+  margin-left: -8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--working);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.lib-back:hover {
+  background: var(--panel);
+  color: var(--fg);
+}
+.lib-back:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: -2px;
+}
+
 .persona-sidebar-head,
 .wf-action-sidebar-head,
 .wf-command-sidebar-head {
@@ -17384,6 +17461,73 @@ button.sc-row:focus-visible {
   line-height: 1.5;
   color: var(--danger);
 }
+.foreman-planner-health {
+  margin-top: 8px;
+  padding: 7px 0 2px 10px;
+  border-left: 2px solid color-mix(in oklab, var(--idle) 52%, var(--border));
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.foreman-planner-health.is-degraded {
+  border-left-color: var(--attention);
+  background: linear-gradient(90deg, color-mix(in oklab, var(--attention) 8%, transparent), transparent 72%);
+}
+.foreman-planner-head,
+.foreman-planner-recovery {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.foreman-planner-head > span:last-child {
+  margin-left: auto;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 9px;
+}
+.foreman-planner-health.is-degraded .foreman-planner-head > span:last-child {
+  color: var(--attention);
+}
+.foreman-planner-pulse {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--idle);
+}
+.foreman-planner-health.is-degraded .foreman-planner-pulse {
+  background: var(--attention);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--attention) 15%, transparent);
+}
+.foreman-planner-runtime,
+.foreman-planner-error {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.foreman-planner-runtime {
+  color: var(--muted);
+}
+.foreman-planner-runtime code {
+  color: var(--fg);
+}
+.foreman-planner-error {
+  color: color-mix(in oklab, var(--attention) 78%, var(--fg));
+  max-height: 4.35em;
+  overflow: auto;
+}
+.foreman-planner-recovery {
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--muted);
+}
+.foreman-planner-recovery .btn {
+  min-height: 24px;
+  padding: 2px 7px;
+  font-size: 10px;
+}
+.sc-health-warn {
+  color: var(--attention);
+}
 
 /* ============================================================================
    THE LINE - the fleet's pipeline strip
@@ -20555,6 +20699,36 @@ span.line-run-prov {
 .bl-kind-scout {
   color: var(--working);
 }
+/* `--purple` is the token's own stated job - "neither a session state nor a warning" -
+   which is exactly what a task kind is, and the two rules above only borrow state tones
+   because they were written before there was a third kind to separate from.
+
+   Every other tone was eliminated, and by the same test: is it already on THIS card?
+   `--idle` and `--working` are the two rules directly above. `--attention` is worn by
+   `.bl-off` and `.bl-blocked`, and by `--prio-high` in the chip one row up - and amber
+   means "this needs you" everywhere else in the app, so a kind would read as an alert on
+   a task nobody has looked at yet. `--danger` is `.bl-deadblock` and `--prio-blocker`.
+   The greys are `.bl-agent`, `.bl-repos`, `.bl-added` and `--prio-low`. `--syntax-type`
+   is the one unspoken hue left and it is the code-highlighting palette's - borrowing it
+   here is how `--claude` ended up doubling as Foreman's accent.
+
+   Its cost, stated plainly the way `--held` states its own: purple is already on this
+   exact card. `.bl-next` is `--pr-merged` mixed toward `--fg`, and `--pr-merged` IS
+   `--purple`, so a plan task that Foreman's autopilot has also picked up next shows two
+   purple-toned marks a line apart, for two unrelated facts. That is a real crowding and
+   it is accepted rather than solved, because solving it means either inventing a sixth
+   brand hue for one chip - which this palette has refused to do before, `--held` included
+   - or restyling the whole `.bl-kind-*` family so colour stops being its only cue, which
+   would change what a SHIP and a SCOUT card render. Both marks print their own word, and
+   `.bl-next` appears on exactly one card in a column; the family-wide pass is the real
+   fix and is recorded as follow-up rather than smuggled in here.
+
+   Every kind needs its own rule - there is no fallback in this family, so a kind added
+   without one inherits `.bl-foot`'s `--dim` and is the only chip on the card that is not
+   coloured. */
+.bl-kind-plan {
+  color: var(--purple);
+}
 /* "N repos" on a multi-repo backlog card. Same pill as the kind/agent chips beside it -
    it is one more fact about what this task IS, not a warning - and it sits before
    `.bl-added`, whose `margin-left: auto` keeps the timestamp on the right. */
@@ -21697,6 +21871,7 @@ span.line-run-prov {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .pd-badge {
   font-size: 10px;
@@ -21811,6 +21986,7 @@ span.line-run-prov {
   color: var(--muted);
 }
 .pd-body {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -21878,9 +22054,268 @@ span.line-run-prov {
   border-color: var(--attention);
   background: var(--attention);
 }
+.pd-option.pd-foreman-pick {
+  border-color: color-mix(in oklab, var(--foreman) 45%, var(--border-soft));
+  background: color-mix(in oklab, var(--foreman) 7%, var(--bg-2));
+  box-shadow: inset 3px 0 0 color-mix(in oklab, var(--foreman) 78%, transparent);
+}
 .pd-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+/* ---------------------------------------------------------------------------
+   Foreman beside a canonical review.
+
+   The trigger lives in the review's own heading, the pick mark lives on the option
+   the user will actually submit, and the prose leaves document flow for a sidecar.
+   Those placements are the behavior: Foreman adds optional context to one decision,
+   never a second pinned card with a second send path.
+   --------------------------------------------------------------------------- */
+.foreman-recommendation-trigger {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in oklab, var(--foreman) 34%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--foreman) 7%, var(--panel));
+  color: var(--muted);
+  cursor: pointer;
+  font: 500 11.5px/1.2 var(--sans);
+  white-space: nowrap;
+}
+.foreman-recommendation-trigger:hover,
+.foreman-recommendation-trigger[aria-expanded="true"] {
+  border-color: color-mix(in oklab, var(--foreman) 62%, var(--border));
+  background: color-mix(in oklab, var(--foreman) 13%, var(--panel));
+  color: var(--fg);
+}
+.foreman-recommendation-trigger:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.frt-mark {
+  color: var(--foreman);
+  font-size: 9px;
+}
+
+.foreman-pick-mark {
+  flex: none;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in oklab, var(--foreman) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreman) 12%, var(--panel));
+  color: var(--foreman);
+  font: 600 9.5px/1 var(--mono);
+  white-space: nowrap;
+}
+.foreman-pick-mark > span {
+  font-size: 7px;
+}
+
+/* One source for the width, because the panel and the gap the layout opens for it are the
+   same measurement. Two literals here drift, and the failure mode is the panel covering the
+   Submit button of the review it exists to explain. */
+body.foreman-sidecar-open {
+  --foreman-sidecar-w: min(420px, calc(100vw - 24px));
+}
+
+/* Reserve the strip rather than paint over it. `.app` keeps `margin-left: auto`, so the
+   shell slides left by exactly the panel's width instead of sitting underneath it, and the
+   modal backdrop re-centres whatever review is open inside what is left. */
+body.foreman-sidecar-open .app {
+  margin-right: var(--foreman-sidecar-w);
+}
+
+body.foreman-sidecar-open .modal-backdrop {
+  right: var(--foreman-sidecar-w);
+}
+
+.foreman-recommendation-sidecar {
+  position: fixed;
+  z-index: 70;
+  top: var(--topbar-h, 88px);
+  right: 0;
+  bottom: 0;
+  width: var(--foreman-sidecar-w, min(420px, calc(100vw - 24px)));
+  display: flex;
+  flex-direction: column;
+  color: var(--fg);
+  background: var(--panel-2);
+  border-left: 1px solid color-mix(in oklab, var(--foreman) 38%, var(--border));
+  box-shadow: -14px 0 42px rgba(0, 0, 0, 0.46);
+}
+.frs-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 15px;
+  border-bottom: 1px solid var(--border);
+}
+.frs-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.frs-title strong {
+  font-size: 13px;
+  font-weight: 640;
+}
+.frs-title span {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.frs-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+}
+.frs-close:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--foreman) 50%, var(--border));
+}
+.frs-close:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.frs-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 18px 16px;
+}
+.frs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.frs-section h3 {
+  margin: 0;
+  color: var(--dim);
+  font: 650 10px/1 var(--mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.frs-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.frs-picks li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in oklab, var(--foreman) 42%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--foreman) 9%, var(--bg-2));
+}
+.frs-diamond {
+  flex: none;
+  padding-top: 3px;
+  color: var(--foreman);
+  font-size: 8px;
+}
+.frs-picks strong {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 640;
+  line-height: 1.4;
+}
+.frs-picks small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.frs-recommendation {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.frs-context {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.58;
+}
+.frs-context > :first-child { margin-top: 0; }
+.frs-context > :last-child { margin-bottom: 0; }
+.frs-foot {
+  flex: none;
+  padding: 11px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+@media (max-width: 720px) {
+  .foreman-recommendation-trigger {
+    margin-left: 0;
+  }
+  .review-head .foreman-recommendation-trigger {
+    width: 100%;
+    justify-content: center;
+  }
+  .foreman-pick-mark {
+    width: fit-content;
+    margin-left: 0;
+  }
+  .decision-option,
+  .pd-option {
+    flex-wrap: wrap;
+  }
+  .decision-option .foreman-pick-mark,
+  .pd-option .foreman-pick-mark {
+    margin-left: 26px;
+  }
+  .foreman-recommendation-sidecar {
+    top: auto;
+    left: 0;
+    width: 100%;
+    max-height: min(66dvh, 560px);
+    border-top: 1px solid color-mix(in oklab, var(--foreman) 38%, var(--border));
+    border-left: 0;
+    box-shadow: 0 -14px 42px rgba(0, 0, 0, 0.5);
+  }
+  /* Here the panel is a bottom sheet spanning the full width, so the desktop rule would
+     reserve a column that does not exist and squeeze the review to nothing. The sheet is
+     capped at 66dvh and the surfaces above it scroll, so the room it needs is already there. */
+  body.foreman-sidecar-open .app {
+    margin-right: 0;
+  }
+  body.foreman-sidecar-open .modal-backdrop {
+    right: 0;
+  }
 }
 .pd-submit {
   padding: 7px 14px;

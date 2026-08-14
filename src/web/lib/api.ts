@@ -1156,6 +1156,7 @@ export const api = {
 
   // --- Foreman (auto-responder) ---
   setForemanConfig: (cfg: ForemanConfigPatch) => put(`/api/foreman/config`, cfg),
+  retryForemanPlanner: () => post(`/api/foreman/planner/retry`, {}),
   setSkillsConfig: (cfg: SkillsConfigPatch) => put(`/api/skills/config`, cfg),
 
   // --- Harnesses (dispatch-time defaults) ---

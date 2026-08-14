@@ -1,13 +1,22 @@
-import { useEffect, useState } from "react";
-import type { PlanDecisionAnswer, ReviewItem, Session } from "@shared/types.ts";
+import { useEffect, useRef, useState } from "react";
+import type { PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
-import { DecisionForm } from "./PlanDecisions.tsx";
+import { DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
 import { decisionLead } from "@shared/review-item.ts";
 import { reviewDecisions, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import {
+  ForemanRecommendationButton,
+  ForemanRecommendationSidecar,
+} from "./ForemanRecommendation.tsx";
+import {
+  foremanNoteForReview,
+  recommendedChoiceKeys,
+  type RecommendationChoice,
+} from "../lib/foreman-review.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -52,7 +61,7 @@ export function ReviewModal({
       </header>
       <div className="modal-body">
         {reviews.map((r) => (
-          <ReviewCard key={r.id} review={r} />
+          <ReviewCard key={r.id} review={r} note={session.note} />
         ))}
       </div>
     </Overlay>
@@ -67,12 +76,44 @@ export function ReviewModal({
  * second answering surface that would have to be kept in step with this one. Its `namePrefix`
  * below is what makes that safe.
  */
-export function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
+export function ReviewCard({
+  review,
+  note: sessionNote,
+}: {
+  review: ReviewItem;
+  note?: SessionNoteSummary | null;
+}): React.JSX.Element {
   const [note, setNote] = useState("");
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [foremanOpen, setForemanOpen] = useState(false);
+  const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
+  const foremanNote = foremanNoteForReview(review, sessionNote);
+  const recommendationChoices: RecommendationChoice[] =
+    decisions?.flatMap((decision) =>
+      decision.options.map((option) => ({
+        key: decisionChoiceKey(decision.id, option.id),
+        label: option.label,
+        detail: option.detail,
+        // A review can carry several decisions, and two of them may offer the same wording.
+        // Naming the decision keeps a match on one from marking its twin on another.
+        group: decision.id,
+      })),
+    ) ?? [];
+  const recommendedKeys = recommendedChoiceKeys(
+    foremanNote?.recommendation,
+    recommendationChoices,
+  );
+  const foremanPicks = recommendationChoices.filter((choice) => recommendedKeys.has(choice.key));
+  const foremanAvailable = Boolean(
+    foremanNote && (foremanNote.recommendation?.trim() || foremanNote.brief?.trim()),
+  );
+
+  useEffect(() => {
+    if (!foremanAvailable) setForemanOpen(false);
+  }, [foremanAvailable]);
 
   async function resolve(
     action: "approve" | "reject" | "answer" | "dismiss",
@@ -93,6 +134,13 @@ export function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Elemen
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
         </span>
         <h3>{review.title}</h3>
+        {foremanAvailable && (
+          <ForemanRecommendationButton
+            open={foremanOpen}
+            onToggle={() => setForemanOpen((open) => !open)}
+            buttonRef={foremanTriggerRef}
+          />
+        )}
       </div>
 
       {/*
@@ -139,6 +187,7 @@ export function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Elemen
           // `namePrefix` two option-carrying `input` reviews share a radio group and answering
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
+          foremanRecommended={recommendedKeys}
           onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response, selections) => void resolve("answer", response, selections)}
         />
@@ -193,6 +242,14 @@ export function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Elemen
         </div>
       )}
       {err && <p className="review-err">{err}</p>}
+      {foremanOpen && foremanAvailable && foremanNote && (
+        <ForemanRecommendationSidecar
+          note={foremanNote}
+          picks={foremanPicks}
+          onClose={() => setForemanOpen(false)}
+          returnFocusRef={foremanTriggerRef}
+        />
+      )}
     </section>
   );
 }

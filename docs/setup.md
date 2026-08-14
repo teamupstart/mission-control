@@ -51,7 +51,7 @@ This starts the daemon and Vite dashboard. Open `http://127.0.0.1:5173`. To run 
 desktop shell too, use `npm run dev:desktop`; `npm run dev:start` also starts Foreman.
 
 The daemon's default state directory is `~/.mission-control`. It contains the SQLite
-database, token, logs, dispatch worktrees, and the [scout library](scout-archives.md). Set
+database, token, logs, dispatch worktrees, and the [archive library](archives.md). Set
 `MISSION_HOME` to use a separate state root; [configuration.md](configuration.md) documents
 that and the other runtime settings. `make db` opens the active database in a read-only
 shell.

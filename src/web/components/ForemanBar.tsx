@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { wrapupTriggerOn } from "@shared/queue.ts";
 import type { WrapupTrigger } from "@shared/queue.ts";
 import type { ForemanState } from "../useForeman.ts";
+import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
@@ -30,6 +31,13 @@ const WRAPUP_HINT: Record<"ask" | "pr", string> = {
   ask: "Show the Ship it? card and let you choose what happens next",
   pr: "When no Workflow is bound, commit, push, open a PR, then wait for green CI",
 };
+
+function plannerRetryCopy(nextRetryAt: number | null, now = Date.now()): string {
+  if (nextRetryAt === null || nextRetryAt <= now) return "Retry is ready now";
+  const seconds = Math.ceil((nextRetryAt - now) / 1000);
+  if (seconds < 60) return `Automatic retry in ${seconds}s`;
+  return `Automatic retry in ${Math.ceil(seconds / 60)}m`;
+}
 
 /**
  * Add or remove one wrap-up trigger, preserving the rest.
@@ -297,6 +305,31 @@ export function ForemanPopover({
   onOpenSettings: () => void;
 }): React.JSX.Element | null {
   const { config, status, update, error } = state;
+  const planner = status?.planner;
+  const [plannerRetry, setPlannerRetry] = useState<"idle" | "requesting" | "requested" | "failed">("idle");
+  const requestedPlannerBasis = useRef<string | null>(null);
+  const plannerBasis = planner
+    ? [planner.state, planner.runner, planner.model, planner.failureCount, planner.lastError].join("\n")
+    : "";
+
+  useEffect(() => {
+    if (
+      plannerRetry === "requested" &&
+      requestedPlannerBasis.current !== null &&
+      plannerBasis !== requestedPlannerBasis.current
+    ) {
+      requestedPlannerBasis.current = null;
+      setPlannerRetry("idle");
+    }
+  }, [plannerBasis, plannerRetry]);
+
+  async function retryPlanner(): Promise<void> {
+    setPlannerRetry("requesting");
+    const result = await api.retryForemanPlanner();
+    if (result.ok) requestedPlannerBasis.current = plannerBasis;
+    setPlannerRetry(result.ok ? "requested" : "failed");
+  }
+
   if (!config) return null;
   const { enabled, mode, wrapup } = config;
   const triggers = config.wrapupTriggers;
@@ -437,6 +470,48 @@ export function ForemanPopover({
                 that the items it can see were switched off deliberately. */}
             {status.autopilot.disabled > 0 && ` · ${status.autopilot.disabled} disabled`}
           </p>
+        )}
+        {enabled && config.autoBacklog && planner && (
+          <div
+            className={`foreman-planner-health is-${planner.state}`}
+            role="status"
+            aria-label="Backlog dependency planner health"
+          >
+            <div className="foreman-planner-head">
+              <span className="foreman-planner-pulse" aria-hidden />
+              <strong>Dependency planner</strong>
+              <span>{planner.state}</span>
+            </div>
+            <p className="foreman-planner-runtime">
+              {planner.runner} · <code>{planner.model}</code>
+              {planner.failureCount > 0 && ` · ${planner.failureCount} failures`}
+            </p>
+            {planner.lastError && (
+              <p className="foreman-planner-error">{planner.lastError}</p>
+            )}
+            {planner.state === "degraded" && (
+              <div className="foreman-planner-recovery">
+                <span>{plannerRetryCopy(planner.nextRetryAt)}</span>
+                <Tooltip label="Ask the dependency planner to try again immediately">
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={plannerRetry === "requesting" || plannerRetry === "requested"}
+                    onClick={() => void retryPlanner()}
+                  >
+                    {plannerRetry === "requesting"
+                      ? "Requesting…"
+                      : plannerRetry === "requested"
+                      ? "Retry requested"
+                      : "Retry planner now"}
+                  </button>
+                </Tooltip>
+              </div>
+            )}
+            {plannerRetry === "failed" && (
+              <p className="foreman-planner-error">Could not request a retry. Try again.</p>
+            )}
+          </div>
         )}
         {enabled && config.autoBacklog && mode !== "live" && (
           <p className="alert-hint dim">

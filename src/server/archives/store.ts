@@ -1,26 +1,28 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
-  SCOUT_SEARCH_LIMITS,
-  SCOUT_TEXT_LIMITS,
-  encodeScoutCursor,
-  scoutArchiveKey,
-  type ScoutArchiveIdentity,
-  type ScoutArtifactRole,
-  type ScoutArtifactView,
-  type ScoutIndexStatus,
-  type ScoutListCursor,
-  type ScoutManifestMissing,
-  type ScoutManifestRepository,
-  type ScoutSearchQuery,
-  type ScoutSearchSegmentKind,
-  type ScoutSearchSnippet,
-} from "@shared/scouts.ts";
+  ARCHIVE_KINDS,
+  ARCHIVE_SEARCH_LIMITS,
+  ARCHIVE_TEXT_LIMITS,
+  encodeArchiveCursor,
+  archiveKey,
+  type ArchiveIdentity,
+  type ArchiveArtifactRole,
+  type ArchiveKind,
+  type ArchiveArtifactView,
+  type ArchiveIndexStatus,
+  type ArchiveListCursor,
+  type ArchiveManifestMissing,
+  type ArchiveManifestRepository,
+  type ArchiveSearchQuery,
+  type ArchiveSearchSegmentKind,
+  type ArchiveSearchSnippet,
+} from "@shared/archives.ts";
 import { openDb } from "../db.ts";
 import { mediaTypeForArchivePath } from "./paths.ts";
-import type { ScoutBundleFingerprint, VerifiedScoutBundle } from "./bundle.ts";
+import type { ArchiveBundleFingerprint, VerifiedArchiveBundle } from "./bundle.ts";
 
 /**
- * The derived scout index: row parsing, transactions, and bounded queries.
+ * The derived archive index: row parsing, transactions, and bounded queries.
  *
  * Durable-row mechanics only, on the shape `ensembles/store.ts` set - the policy that
  * decides WHEN to write lives in the reconciler and the manager. Everything in these three
@@ -30,13 +32,15 @@ import type { ScoutBundleFingerprint, VerifiedScoutBundle } from "./bundle.ts";
  */
 
 /** One row of the index as the rest of the daemon reads it. */
-export interface ScoutArchiveRow {
+export interface ArchiveRow {
   key: string;
   producerId: string;
   archiveId: string;
   producerLabel: string | null;
+  /** What the bundle preserves, or null when its manifest could not be read. */
+  kind: ArchiveKind | null;
   formatVersion: number;
-  status: ScoutIndexStatus;
+  status: ArchiveIndexStatus;
   captureStatus: "complete" | "partial" | null;
   title: string;
   question: string | null;
@@ -45,13 +49,22 @@ export interface ScoutArchiveRow {
   agent: string | null;
   model: string | null;
   source: string | null;
-  repositories: ScoutManifestRepository[];
-  missing: ScoutManifestMissing[];
+  repositories: ArchiveManifestRepository[];
+  missing: ArchiveManifestMissing[];
   primaryArtifactId: string | null;
   contentDigest: string | null;
   manifestDigest: string;
+  /**
+   * The library root this bundle was discovered under.
+   *
+   * Stored because there is more than one: a bundle published before archives declared a
+   * kind stays where it is for ever, so "which directory is this row's bundle" is not
+   * derivable from the write root alone. Server-derived on every pass, never read from a
+   * manifest, and re-checked before any file is opened.
+   */
+  libraryRoot: string;
   relativePath: string;
-  fingerprint: ScoutBundleFingerprint;
+  fingerprint: ArchiveBundleFingerprint;
   artifactCount: number;
   bytes: number;
   error: string | null;
@@ -62,19 +75,21 @@ export interface ScoutArchiveRow {
 }
 
 /** What a pass needs to decide "unchanged" without opening anything. */
-export interface ScoutIndexedFingerprint {
+export interface IndexedArchiveFingerprint {
   key: string;
+  libraryRoot: string;
   relativePath: string;
-  fingerprint: ScoutBundleFingerprint;
+  fingerprint: ArchiveBundleFingerprint;
   manifestDigest: string;
-  status: ScoutIndexStatus;
+  status: ArchiveIndexStatus;
 }
 
 /** An unreadable bundle: everything we could learn, plus one safe sentence about why not. */
-export interface ScoutUnreadableInput {
-  identity: ScoutArchiveIdentity;
+export interface UnreadableArchiveInput {
+  identity: ArchiveIdentity;
+  libraryRoot: string;
   relativePath: string;
-  fingerprint: ScoutBundleFingerprint;
+  fingerprint: ArchiveBundleFingerprint;
   reason: string;
   formatVersion: number | null;
   /**
@@ -96,6 +111,7 @@ interface ArchiveRowShape {
   producer_id: string;
   archive_id: string;
   producer_label: string | null;
+  kind: string | null;
   format_version: number;
   status: string;
   capture_status: string | null;
@@ -112,6 +128,7 @@ interface ArchiveRowShape {
   primary_artifact_id: string | null;
   content_digest: string | null;
   manifest_digest: string;
+  library_root: string;
   relative_path: string;
   manifest_bytes: number;
   manifest_mtime_ns: string;
@@ -138,15 +155,15 @@ interface ArtifactRowShape {
   sha256: string;
 }
 
-const ARCHIVE_COLUMNS = `key, producer_id, archive_id, producer_label, format_version, status,
+const ARCHIVE_COLUMNS = `key, producer_id, archive_id, producer_label, kind, format_version, status,
   capture_status, title, question, summary, tags_json, agent, model, source, repositories_json,
-  repo_labels, missing_json, primary_artifact_id, content_digest, manifest_digest, relative_path,
-  manifest_bytes, manifest_mtime_ns, artifact_count, bytes, error, created_at, completed_at, sort_at,
-  indexed_at, last_seen_epoch`;
+  repo_labels, missing_json, primary_artifact_id, content_digest, manifest_digest, library_root,
+  relative_path, manifest_bytes, manifest_mtime_ns, artifact_count, bytes, error, created_at,
+  completed_at, sort_at, indexed_at, last_seen_epoch`;
 
 const ARCHIVE_PLACEHOLDERS = ARCHIVE_COLUMNS.split(",").map(() => "?").join(", ");
 
-export class ScoutStore {
+export class ArchiveStore {
   constructor(private readonly db: DatabaseSync = openDb()) {}
 
   /** Run `fn` in a transaction, joining one already in progress rather than nesting. */
@@ -170,7 +187,7 @@ export class ScoutStore {
    * artifact list shrank must not keep the row for a file that is no longer declared, and
    * reasoning about which of three tables to patch is how that happens.
    */
-  replaceArchive(bundle: VerifiedScoutBundle, indexedAt: number, epoch: number): void {
+  replaceArchive(bundle: VerifiedArchiveBundle, indexedAt: number, epoch: number): void {
     const manifest = bundle.manifest;
     const createdAt = instant(manifest.archive.createdAt);
     const completedAt = instant(manifest.archive.completedAt);
@@ -182,27 +199,29 @@ export class ScoutStore {
       .filter((label): label is string => Boolean(label));
     this.inTransaction(() => {
       this.clearRows(bundle.key);
-      this.db.prepare(`INSERT INTO scout_archives (${ARCHIVE_COLUMNS}) VALUES (${ARCHIVE_PLACEHOLDERS})`).run(
+      this.db.prepare(`INSERT INTO archives (${ARCHIVE_COLUMNS}) VALUES (${ARCHIVE_PLACEHOLDERS})`).run(
         bundle.key,
         bundle.identity.producerId,
         bundle.identity.archiveId,
-        clip(manifest.producer.label, SCOUT_TEXT_LIMITS.label),
+        clip(manifest.producer.label, ARCHIVE_TEXT_LIMITS.label),
+        manifest.kind,
         manifest.formatVersion,
         bundle.status,
         manifest.archive.captureStatus,
-        clip(manifest.archive.title, SCOUT_TEXT_LIMITS.title) ?? "",
-        clip(manifest.archive.question, SCOUT_TEXT_LIMITS.question),
-        clip(manifest.archive.summary, SCOUT_TEXT_LIMITS.summary),
+        clip(manifest.archive.title, ARCHIVE_TEXT_LIMITS.title) ?? "",
+        clip(manifest.archive.question, ARCHIVE_TEXT_LIMITS.question),
+        clip(manifest.archive.summary, ARCHIVE_TEXT_LIMITS.summary),
         manifest.archive.tags.length > 0 ? JSON.stringify(manifest.archive.tags) : null,
-        clip(manifest.origin.agent, SCOUT_TEXT_LIMITS.label),
-        clip(manifest.origin.model, SCOUT_TEXT_LIMITS.label),
-        clip(manifest.origin.source, SCOUT_TEXT_LIMITS.label),
+        clip(manifest.origin.agent, ARCHIVE_TEXT_LIMITS.label),
+        clip(manifest.origin.model, ARCHIVE_TEXT_LIMITS.label),
+        clip(manifest.origin.source, ARCHIVE_TEXT_LIMITS.label),
         manifest.origin.repositories.length > 0 ? JSON.stringify(manifest.origin.repositories) : null,
         repoLabels.length > 0 ? `|${repoLabels.join("|")}|` : "",
         manifest.missing.length > 0 ? JSON.stringify(manifest.missing) : null,
         manifest.primaryArtifactId,
         manifest.contentDigest,
         bundle.manifestDigest,
+        bundle.libraryRoot,
         bundle.relativePath,
         bundle.fingerprint.manifestBytes,
         bundle.fingerprint.manifestMtimeNs,
@@ -216,7 +235,7 @@ export class ScoutStore {
         epoch,
       );
       const insertArtifact = this.db.prepare(
-        `INSERT INTO scout_artifacts
+        `INSERT INTO archive_artifacts
            (key, artifact_id, ordinal, role, repo_slot, original_path, archive_path, media_type, bytes, sha256)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
@@ -245,14 +264,17 @@ export class ScoutStore {
    * showing - it might be from a newer Mission Control, or it might be damaged - and a
    * library that silently omitted it would read as evidence that never arrived.
    */
-  replaceUnreadable(input: ScoutUnreadableInput): void {
-    const key = scoutArchiveKey(input.identity.producerId, input.identity.archiveId);
+  replaceUnreadable(input: UnreadableArchiveInput): void {
+    const key = archiveKey(input.identity.producerId, input.identity.archiveId);
     this.inTransaction(() => {
       this.clearRows(key);
-      this.db.prepare(`INSERT INTO scout_archives (${ARCHIVE_COLUMNS}) VALUES (${ARCHIVE_PLACEHOLDERS})`).run(
+      this.db.prepare(`INSERT INTO archives (${ARCHIVE_COLUMNS}) VALUES (${ARCHIVE_PLACEHOLDERS})`).run(
         key,
         input.identity.producerId,
         input.identity.archiveId,
+        null,
+        // No kind: the manifest that would declare one is the thing this build refused, and
+        // a row that guessed would be an index inventing provenance for a directory.
         null,
         input.formatVersion ?? 0,
         "unreadable",
@@ -270,12 +292,13 @@ export class ScoutStore {
         null,
         null,
         input.manifestDigest ?? "",
+        input.libraryRoot,
         input.relativePath,
         input.fingerprint.manifestBytes,
         input.fingerprint.manifestMtimeNs,
         0,
         0,
-        clip(input.reason, SCOUT_TEXT_LIMITS.error),
+        clip(input.reason, ARCHIVE_TEXT_LIMITS.error),
         null,
         null,
         input.indexedAt,
@@ -287,18 +310,19 @@ export class ScoutStore {
 
   /** Mark an unchanged archive as still present in this pass. */
   markSeen(key: string, epoch: number): void {
-    this.db.prepare(`UPDATE scout_archives SET last_seen_epoch = ? WHERE key = ?`).run(epoch, key);
+    this.db.prepare(`UPDATE archives SET last_seen_epoch = ? WHERE key = ?`).run(epoch, key);
   }
 
   /** Every indexed bundle's fingerprint, for the "has anything changed?" comparison. */
-  fingerprints(): ScoutIndexedFingerprint[] {
+  fingerprints(): IndexedArchiveFingerprint[] {
     const rows = this.db
       .prepare(
-        `SELECT key, relative_path, manifest_bytes, manifest_mtime_ns, manifest_digest, status
-           FROM scout_archives`,
+        `SELECT key, library_root, relative_path, manifest_bytes, manifest_mtime_ns, manifest_digest, status
+           FROM archives`,
       )
       .all() as unknown as Array<{
       key: string;
+      library_root: string;
       relative_path: string;
       manifest_bytes: number;
       manifest_mtime_ns: string;
@@ -307,6 +331,7 @@ export class ScoutStore {
     }>;
     return rows.map((row) => ({
       key: row.key,
+      libraryRoot: row.library_root,
       relativePath: row.relative_path,
       fingerprint: {
         manifestBytes: row.manifest_bytes,
@@ -320,16 +345,24 @@ export class ScoutStore {
   /**
    * Drop every archive not observed by the pass that just finished, returning their keys.
    *
-   * Only ever called after a COMPLETE walk. A pass that threw halfway would otherwise prune
-   * the producers it never reached, and an external sync tool that had merely not finished
-   * writing would look like a deletion.
+   * Only ever called after a COMPLETE walk of the roots it prunes. A pass that threw halfway
+   * would otherwise prune the producers it never reached, and an external sync tool that had
+   * merely not finished writing would look like a deletion.
+   *
+   * `heldBackRoots` names the roots this pass could NOT walk. Their rows are exempt, because
+   * "I did not see it" and "it is not there" are the same observation from a root that could
+   * not be read - and only one of them is a reason to forget an archive. Everything else
+   * prunes exactly as it did when there was one root, including a root that resolved to
+   * nothing: an absent library is an empty one, and its rows should stop answering queries.
    */
-  pruneUnseen(epoch: number): string[] {
+  pruneUnseen(epoch: number, heldBackRoots: readonly string[] = []): string[] {
     return this.inTransaction(() => {
+      const held = [...new Set(heldBackRoots)];
+      const clause = held.length > 0 ? ` AND library_root NOT IN (${held.map(() => "?").join(", ")})` : "";
       const stale = (
-        this.db.prepare(`SELECT key FROM scout_archives WHERE last_seen_epoch < ?`).all(epoch) as unknown as Array<{
-          key: string;
-        }>
+        this.db
+          .prepare(`SELECT key FROM archives WHERE last_seen_epoch < ?${clause}`)
+          .all(epoch, ...held) as unknown as Array<{ key: string }>
       ).map((row) => row.key);
       for (const key of stale) this.clearRows(key);
       return stale;
@@ -345,29 +378,29 @@ export class ScoutStore {
     });
   }
 
-  get(key: string): ScoutArchiveRow | null {
-    const row = this.db.prepare(`SELECT * FROM scout_archives WHERE key = ?`).get(key) as unknown as
+  get(key: string): ArchiveRow | null {
+    const row = this.db.prepare(`SELECT * FROM archives WHERE key = ?`).get(key) as unknown as
       | ArchiveRowShape
       | undefined;
     return row ? rowToArchive(row) : null;
   }
 
-  artifacts(key: string): ScoutArtifactView[] {
+  artifacts(key: string): ArchiveArtifactView[] {
     const rows = this.db
-      .prepare(`SELECT * FROM scout_artifacts WHERE key = ? ORDER BY ordinal`)
+      .prepare(`SELECT * FROM archive_artifacts WHERE key = ? ORDER BY ordinal`)
       .all(key) as unknown as ArtifactRowShape[];
     return rows.map(rowToArtifact);
   }
 
-  artifact(key: string, artifactId: string): ScoutArtifactView | null {
+  artifact(key: string, artifactId: string): ArchiveArtifactView | null {
     const row = this.db
-      .prepare(`SELECT * FROM scout_artifacts WHERE key = ? AND artifact_id = ?`)
+      .prepare(`SELECT * FROM archive_artifacts WHERE key = ? AND artifact_id = ?`)
       .get(key, artifactId) as unknown as ArtifactRowShape | undefined;
     return row ? rowToArtifact(row) : null;
   }
 
   count(): number {
-    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM scout_archives`).get() as unknown as {
+    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM archives`).get() as unknown as {
       n: number;
     };
     return row.n;
@@ -386,17 +419,17 @@ export class ScoutStore {
    * index time, and a query that reopened report files would make search cost grow with the
    * whole library.
    */
-  list(query: Omit<ScoutSearchQuery, "cursor"> & { cursor: ScoutListCursor | null }): {
-    rows: ScoutArchiveRow[];
+  list(query: Omit<ArchiveSearchQuery, "cursor"> & { cursor: ArchiveListCursor | null }): {
+    rows: ArchiveRow[];
     nextCursor: string | null;
   } {
-    const limit = Math.min(Math.max(1, Math.floor(query.limit)), SCOUT_SEARCH_LIMITS.maxLimit);
+    const limit = Math.min(Math.max(1, Math.floor(query.limit)), ARCHIVE_SEARCH_LIMITS.maxLimit);
     const where: string[] = [];
     const params: Array<string | number> = [];
     const needle = foldNeedle(query.q);
     if (needle) {
       where.push(
-        `EXISTS (SELECT 1 FROM scout_search_segments s WHERE s.key = a.key AND instr(s.text_fold, ?) > 0)`,
+        `EXISTS (SELECT 1 FROM archive_search_segments s WHERE s.key = a.key AND instr(s.text_fold, ?) > 0)`,
       );
       params.push(needle);
     }
@@ -411,6 +444,12 @@ export class ScoutStore {
     if (query.agent) {
       where.push(`a.agent = ?`);
       params.push(query.agent);
+    }
+    if (query.kind) {
+      // An unreadable bundle has a null kind and is therefore excluded by this filter, which
+      // is the honest answer: nothing about what it holds was ever readable.
+      where.push(`a.kind = ?`);
+      params.push(query.kind);
     }
     if (query.status) {
       where.push(`a.status = ?`);
@@ -432,43 +471,43 @@ export class ScoutStore {
     const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.db
       .prepare(
-        `SELECT a.* FROM scout_archives a ${clause} ORDER BY a.sort_at DESC, a.key DESC LIMIT ?`,
+        `SELECT a.* FROM archives a ${clause} ORDER BY a.sort_at DESC, a.key DESC LIMIT ?`,
       )
       .all(...params, limit + 1) as unknown as ArchiveRowShape[];
     const page = rows.slice(0, limit).map(rowToArchive);
     const nextCursor =
       rows.length > limit && page.length > 0
-        ? encodeScoutCursor({ sortAt: page[page.length - 1]!.sortAt, key: page[page.length - 1]!.key })
+        ? encodeArchiveCursor({ sortAt: page[page.length - 1]!.sortAt, key: page[page.length - 1]!.key })
         : null;
     return { rows: page, nextCursor };
   }
 
   /** The first segment of one archive that contains the needle, for a result snippet. */
-  snippet(key: string, rawQuery: string | null): ScoutSearchSnippet | null {
+  snippet(key: string, rawQuery: string | null): ArchiveSearchSnippet | null {
     const needle = foldNeedle(rawQuery);
     if (!needle) return null;
     const row = this.db
       .prepare(
-        `SELECT source_kind, text FROM scout_search_segments
+        `SELECT source_kind, text FROM archive_search_segments
           WHERE key = ? AND instr(text_fold, ?) > 0 ORDER BY ordinal LIMIT 1`,
       )
       .get(key, needle) as unknown as { source_kind: string; text: string } | undefined;
     if (!row) return null;
     return {
       kind: readSegmentKind(row.source_kind),
-      text: cutSnippet(row.text, needle, SCOUT_TEXT_LIMITS.snippet),
+      text: cutSnippet(row.text, needle, ARCHIVE_TEXT_LIMITS.snippet),
     };
   }
 
   private clearRows(key: string): void {
-    this.db.prepare(`DELETE FROM scout_search_segments WHERE key = ?`).run(key);
-    this.db.prepare(`DELETE FROM scout_artifacts WHERE key = ?`).run(key);
-    this.db.prepare(`DELETE FROM scout_archives WHERE key = ?`).run(key);
+    this.db.prepare(`DELETE FROM archive_search_segments WHERE key = ?`).run(key);
+    this.db.prepare(`DELETE FROM archive_artifacts WHERE key = ?`).run(key);
+    this.db.prepare(`DELETE FROM archives WHERE key = ?`).run(key);
   }
 
-  private writeSegments(key: string, segments: Array<{ kind: ScoutSearchSegmentKind; text: string }>): void {
+  private writeSegments(key: string, segments: Array<{ kind: ArchiveSearchSegmentKind; text: string }>): void {
     const insert = this.db.prepare(
-      `INSERT INTO scout_search_segments (key, ordinal, source_kind, text, text_fold) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO archive_search_segments (key, ordinal, source_kind, text, text_fold) VALUES (?, ?, ?, ?, ?)`,
     );
     segments.forEach((segment, index) => {
       insert.run(key, index, segment.kind, segment.text, segment.text.toLowerCase());
@@ -484,13 +523,13 @@ export class ScoutStore {
  * single row dominate the table. Chunks OVERLAP by a snippet's width, which is what stops a
  * phrase that straddles a boundary from being unfindable.
  */
-function searchSegments(bundle: VerifiedScoutBundle): Array<{ kind: ScoutSearchSegmentKind; text: string }> {
+function searchSegments(bundle: VerifiedArchiveBundle): Array<{ kind: ArchiveSearchSegmentKind; text: string }> {
   const manifest = bundle.manifest;
-  const segments: Array<{ kind: ScoutSearchSegmentKind; text: string }> = [];
-  const push = (kind: ScoutSearchSegmentKind, text: string | null): void => {
+  const segments: Array<{ kind: ArchiveSearchSegmentKind; text: string }> = [];
+  const push = (kind: ArchiveSearchSegmentKind, text: string | null): void => {
     const trimmed = text?.replace(/\s+/g, " ").trim();
     if (!trimmed) return;
-    segments.push({ kind, text: trimmed.slice(0, SCOUT_TEXT_LIMITS.segment) });
+    segments.push({ kind, text: trimmed.slice(0, ARCHIVE_TEXT_LIMITS.segment) });
   };
   push("title", manifest.archive.title);
   push("question", manifest.archive.question);
@@ -505,18 +544,18 @@ function searchSegments(bundle: VerifiedScoutBundle): Array<{ kind: ScoutSearchS
     push("artifact_path", artifact.originalPath ?? artifact.archivePath);
     if (artifact.originalPath) push("artifact_path", artifact.archivePath);
   }
-  const overlap = SCOUT_TEXT_LIMITS.snippet;
-  const stride = SCOUT_TEXT_LIMITS.segment - overlap;
+  const overlap = ARCHIVE_TEXT_LIMITS.snippet;
+  const stride = ARCHIVE_TEXT_LIMITS.segment - overlap;
   for (let start = 0; start < bundle.reportText.length; start += stride) {
-    push("report_text", bundle.reportText.slice(start, start + SCOUT_TEXT_LIMITS.segment));
-    if (start + SCOUT_TEXT_LIMITS.segment >= bundle.reportText.length) break;
+    push("report_text", bundle.reportText.slice(start, start + ARCHIVE_TEXT_LIMITS.segment));
+    if (start + ARCHIVE_TEXT_LIMITS.segment >= bundle.reportText.length) break;
   }
   return segments;
 }
 
 function foldNeedle(raw: string | null): string | null {
   if (!raw) return null;
-  const trimmed = raw.trim().slice(0, SCOUT_SEARCH_LIMITS.queryChars);
+  const trimmed = raw.trim().slice(0, ARCHIVE_SEARCH_LIMITS.queryChars);
   return trimmed === "" ? null : trimmed.toLowerCase();
 }
 
@@ -529,12 +568,13 @@ function cutSnippet(text: string, needle: string, width: number): string {
   return `${lead > 0 ? "…" : ""}${slice}${lead + width < text.length ? "…" : ""}`;
 }
 
-function rowToArchive(row: ArchiveRowShape): ScoutArchiveRow {
+function rowToArchive(row: ArchiveRowShape): ArchiveRow {
   return {
     key: row.key,
     producerId: row.producer_id,
     archiveId: row.archive_id,
     producerLabel: row.producer_label,
+    kind: readKind(row.kind),
     formatVersion: row.format_version,
     status: readStatus(row.status),
     captureStatus: row.capture_status === "complete" || row.capture_status === "partial" ? row.capture_status : null,
@@ -545,11 +585,12 @@ function rowToArchive(row: ArchiveRowShape): ScoutArchiveRow {
     agent: row.agent,
     model: row.model,
     source: row.source,
-    repositories: parseJsonArray<ScoutManifestRepository>(row.repositories_json) ?? [],
-    missing: parseJsonArray<ScoutManifestMissing>(row.missing_json) ?? [],
+    repositories: parseJsonArray<ArchiveManifestRepository>(row.repositories_json) ?? [],
+    missing: parseJsonArray<ArchiveManifestMissing>(row.missing_json) ?? [],
     primaryArtifactId: row.primary_artifact_id,
     contentDigest: row.content_digest,
     manifestDigest: row.manifest_digest,
+    libraryRoot: row.library_root,
     relativePath: row.relative_path,
     fingerprint: { manifestBytes: row.manifest_bytes, manifestMtimeNs: row.manifest_mtime_ns },
     artifactCount: row.artifact_count,
@@ -562,7 +603,7 @@ function rowToArchive(row: ArchiveRowShape): ScoutArchiveRow {
   };
 }
 
-function rowToArtifact(row: ArtifactRowShape): ScoutArtifactView {
+function rowToArtifact(row: ArtifactRowShape): ArchiveArtifactView {
   return {
     id: row.artifact_id,
     role: readRole(row.role),
@@ -583,15 +624,27 @@ function rowToArtifact(row: ArtifactRowShape): ScoutArtifactView {
  * interpret; defaulting to `unreadable` says exactly what is true - this build cannot vouch
  * for the row - and the reconciler re-derives it from the bundle on its next pass anyway.
  */
-function readStatus(raw: string): ScoutIndexStatus {
+function readStatus(raw: string): ArchiveIndexStatus {
   return raw === "ready" || raw === "partial" ? raw : "unreadable";
 }
 
-function readRole(raw: string): ScoutArtifactRole {
+/**
+ * A persisted kind reads back only when this build knows it, and null otherwise.
+ *
+ * Null rather than a fallback for the reason `readStatus` refuses to default to `ready`:
+ * presenting an archive as a kind on the word of a value we cannot interpret is a claim
+ * about somebody's evidence. The reconciler re-derives the row from the bundle on its next
+ * pass anyway, and a manifest declaring an unknown kind is refused there by name.
+ */
+function readKind(raw: string | null): ArchiveKind | null {
+  return (ARCHIVE_KINDS as readonly string[]).includes(raw ?? "") ? (raw as ArchiveKind) : null;
+}
+
+function readRole(raw: string): ArchiveArtifactRole {
   return raw === "primary_report" || raw === "report_companion" ? raw : "supporting";
 }
 
-function readSegmentKind(raw: string): ScoutSearchSegmentKind {
+function readSegmentKind(raw: string): ArchiveSearchSegmentKind {
   switch (raw) {
     case "title":
     case "question":
@@ -629,7 +682,7 @@ function instant(raw: string | null): number | null {
   return Number.isNaN(at) ? null : at;
 }
 
-/** Drop every scout row. For tests that need a clean index between cases. */
-export function clearScoutTables(db: DatabaseSync): void {
-  db.exec("DELETE FROM scout_search_segments; DELETE FROM scout_artifacts; DELETE FROM scout_archives;");
+/** Drop every index row. For tests that need a clean index between cases. */
+export function clearArchiveTables(db: DatabaseSync): void {
+  db.exec("DELETE FROM archive_search_segments; DELETE FROM archive_artifacts; DELETE FROM archives;");
 }

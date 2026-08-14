@@ -1,66 +1,98 @@
-# Scout archives
+# Archives
 
-A scout answers a question. The answer outlives the agent that found it, the task card that
-asked for it, the worktree it was found in, and the database that once indexed it - because
-the answer is kept as ordinary files on your machine, not as rows.
+An archive is work that outlives the agent that did it, the task card that asked for it, the
+worktree it happened in, and the database that once indexed it - because it is kept as
+ordinary files on your machine, not as rows.
 
-This page describes the local scout library: where it lives, what a bundle contains, how a
-scout produces one, how Mission Control discovers one, and what deleting one does. It is the
-storage, capture, and API reference. The Scouts page that reads the library arrives in a later
+Every archive declares its **kind**: what the bundle preserves. Today one kind is produced,
+`scout`, and most of this page is about how a scout's answer becomes one. The container
+itself knows nothing about scouting, which is the point: the next kind of durable artifact
+reuses this library rather than growing a second one beside it.
+
+This page describes the local library: where it lives, what a bundle contains, how one is
+produced, how Mission Control discovers one, and what deleting one does. It is the storage,
+capture, and API reference. The Archives page that reads the library arrives in a later
 change; today the library is reachable through the daemon's HTTP API and through your own file
 manager.
 
 ## Where it lives
 
 ```text
-~/.mission-control/scouts/
+~/.mission-control/archives/
   .staging/                     # bundles being written, never discovered
   .trash/                       # bundles being deleted, never discovered
   <producer-id>/                # which machine made these
-    <archive-id>/               # one scout
+    <archive-id>/               # one archive
       manifest.json
       report/
-        report.html             # the answer
+        report.html             # the page a reader opens
         <files produced beside it>
       artifacts/
         <repo-slot>/path/from/the/checkout
 ```
 
 `MISSION_HOME` moves the whole thing, exactly as it moves the database. An isolated or demo
-daemon therefore keeps its scouts beside its own state instead of writing into your real
+daemon therefore keeps its archives beside its own state instead of writing into your real
 library.
 
 Both directory levels are generated UUIDs. Nothing an operator or an agent typed becomes a
 directory name: original paths live inside the manifest and are recreated only below a
 generated repository slot, after containment checks.
 
+### The compatibility window
+
+Before archives declared a kind, this library was `~/.mission-control/scouts/` and every
+manifest carried `"format": "mission-control/scout-archive"`. Both are still read, for ever:
+
+- **Nothing on disk moves.** A bundle published by an earlier build keeps its directory, its
+  path and its format string. Discovery walks the archives root and then the scouts root in
+  one pass, so both appear in one catalog. A bundle that exists under both - because you
+  copied one across - is indexed once, from the archives root.
+- **One format is written.** New bundles are written under `archives/`, carrying
+  `"format": "mission-control/archive"` and a `kind`. A manifest is never rewritten in place;
+  reading a legacy bundle does not upgrade it.
+- **A legacy manifest reads as a scout,** which is what it is - that is the only thing the old
+  format string was ever used for, and its meaning is frozen rather than reinterpreted.
+
+The cost, stated rather than mitigated: **an archive written by this build is not discovered
+by a build that predates it.** It remains an ordinary directory you can open in a file
+manager either way, and it is the same one-way property the schedule store already has.
+
 ### These files are yours
 
 The library is an ordinary directory of ordinary files. You can copy it, back it up, put it
 in a synchronised folder, open a report by double-clicking it, or `grep` it. Mission Control
-provides no network transport, account, or remote store for scouts, and never sends archive
+provides no network transport, account, or remote store for archives, and never sends archive
 data anywhere.
 
 The flip side is worth stating plainly: **Mission Control does not encrypt this directory.**
-A scout archive can hold whatever the investigation touched. If you put the library in a
-synchronised folder, its contents go wherever that folder goes.
+An archive can hold whatever the work touched. If you put the library in a synchronised
+folder, its contents go wherever that folder goes.
 
 ## What one bundle contains
 
-- `report/report.html` - one self-contained, static page: the question, the finding, and the
-  evidence. It works from `file://`, uses inline CSS and inline SVG, and makes no network
-  request. A non-executing parser checks that before the archive is indexed: scripts, event
-  handlers, forms, frames, embeds, anything that re-roots relative URLs (`<base>`,
-  `xml:base`), meta refresh, SVG animation, external and protocol-relative URLs anywhere -
-  including inside a stylesheet's `url()`, `@import`, or `image-set()` - and relative links
-  that leave the report directory are all refused.
+- `report/report.html` - one self-contained, static page: for a scout, the question, the
+  finding, and the evidence. It works from `file://`, uses inline CSS and inline SVG, and
+  **fetches nothing when it opens**. A non-executing parser checks that before the archive is
+  indexed: scripts, event handlers, forms, frames, embeds, anything that re-roots relative
+  URLs (`<base>`, `xml:base`), meta refresh, SVG animation, protocol-relative URLs, relative
+  links that leave the report directory, and any URL scheme in a slot the browser fetches on
+  its own - `src`, `srcset`, `imagesrcset`, `poster`, `cite`, `ping`, `xlink:href`, and a
+  stylesheet's `url()`, `@import` or `image-set()` - are all refused.
+
+  An `http(s)` link a person can **click** is allowed: `<a href="https://…">`. The line is
+  what this machine requests on somebody else's behalf when a human opens an archive they
+  were sent. An image fetches on open, before anyone has decided anything; a link requests
+  nothing until you click it, and then takes you somewhere your own browser shows you. A
+  `data:` link target is still refused, and a `data:` image is still bounded and still limited
+  to image and font payloads.
 - `report/` - every bounded file produced beside the report, keeping its relative path so the
   report's own links to a CSV, an image, or a log still resolve.
 - `artifacts/<repo-slot>/…` - supporting files the scout explicitly named, under a generated
   slot per repository.
-- `manifest.json` - a versioned, self-describing snapshot: the archive key, the producer, the
-  display and search metadata, timing, completeness, artifact provenance, byte sizes, and
-  SHA-256 digests.
+- `manifest.json` - a versioned, self-describing snapshot: the archive key, its **kind**, the
+  producer, the display and search metadata, timing, completeness, artifact provenance, byte
+  sizes, and SHA-256 digests.
 
 The conversation is **not** archived. Neither are hidden reasoning, system prompts, raw tool
 protocol, or vendor bookkeeping. The useful output of a scout is the finding and its
@@ -82,9 +114,10 @@ by archive path ascending, drop `manifest.json`, and write one
 encoding are committed at `test/fixtures/scout-archive/golden-digests.json`, so another
 implementation can produce a byte-compatible identity without running Mission Control's code.
 
-Format versions, capture statuses, artifact roles, and missing-evidence kinds are append-only
-identifiers. A bundle from a **newer** Mission Control is listed as unreadable rather than
-parsed as the current format.
+Format versions, kinds, capture statuses, artifact roles, and missing-evidence kinds are
+append-only identifiers - added at the end, never renamed and never reordered. A bundle from a
+**newer** Mission Control is listed as unreadable rather than parsed as the current format,
+and so is one declaring a kind this build has no name for.
 
 ### Honest completeness
 
@@ -121,9 +154,34 @@ enabled or not, and on both delivery paths - a fresh dispatch and a backlog scou
 an agent that was already running. The shipped `html-report` skill still teaches an agent how
 to write a *good* one; the requirement itself does not depend on it being installed.
 
-A scout dispatch also **requires** the `submit_scout_artifacts` tool at launch. If Mission
-Control's MCP bundle cannot be registered, the launch fails before the agent starts rather
-than producing a scout that can never hand its work over.
+A scout also **requires** the `submit_scout_artifacts` tool, and that requirement is checked
+before the agent starts rather than discovered when it tries to submit - on both delivery
+paths, because a backlog scout dropped onto a running agent has its checkout reset first, and
+an agent taken apart for a task it cannot finish is the worst version of this.
+
+Two things are established, and they are different questions:
+
+- **Can the bundle be registered at all?** If `dist/mcp/server.mjs` is not on this machine,
+  there is nothing to point the launch at.
+- **Does that bundle actually publish `submit_scout_artifacts`?** A bundle can be present,
+  start cleanly and serve every other tool while missing this one, because `dist/` is rebuilt
+  only by `npm run build` and is gitignored - so pulling the scout feature gives you the tool
+  in `src/` and not in the file the agent runs. Mission Control answers this by completing a
+  real MCP handshake against that exact bundle and reading back its published tools.
+
+Either one failing refuses the launch or the assignment, naming the tool and `npm run build`.
+The alternative is the failure this replaces: a scout that writes a finished report and then
+has nowhere to hand it over, with no error, no warning, and a task that never reaches **done**.
+
+**An assignment asks a third question, because it targets an agent that is already running.**
+That agent's MCP server is a child it spawned at launch, holding whatever the bundle contained
+at that moment - so rebuilding the bundle afterwards does not change what the agent can call.
+The file on disk therefore only speaks for that agent while the two are the same build, which
+is settled by comparing the bundle's write time against the session's start. A session that
+started **before** the current bundle was built is refused with the remedy that actually works:
+restart it, so it picks the new bundle up. Rebuilding again would not help, and admitting it
+would reset the agent's checkout for a task it still could not submit. When a session's start
+time is unknown the two cannot be ordered, and the disk check stands on its own.
 
 ### What gets captured
 
@@ -189,7 +247,7 @@ re-verifies it and returns.
 
 ### Capture jobs are local bookkeeping
 
-`scout_capture_jobs` in the database coordinates all of this: one row per task work episode,
+`archive_capture_jobs` in the database coordinates all of this: one row per task work episode,
 carrying the reserved archive identity and the checkout locators recovery needs. It is **not**
 evidence. A published bundle needs none of it to be read, and deleting the database loses the
 ability to resume an unfinished capture, never the ability to open a finished archive.
@@ -205,8 +263,9 @@ There is no import step, no reindex button, and no startup migration. SQLite hol
 1. It runs at startup - after the daemon is already serving, so a large restored library
    cannot delay the port answering - then on a filesystem hint, then on a jittered
    60-second cadence (`MISSION_SCOUT_RECONCILE_MS`).
-2. It walks exactly `scouts/<producer-id>/<archive-id>/manifest.json`, skipping `.staging`,
-   `.trash`, symlinks, and anything whose name is not a generated UUID.
+2. It walks exactly `<root>/<producer-id>/<archive-id>/manifest.json` under each library
+   root, skipping `.staging`, `.trash`, symlinks, and anything whose name is not a generated
+   UUID.
 3. It compares each manifest's size and nanosecond modification time with what it indexed
    last time. **An unchanged archive costs one `stat`** - no report is reparsed, no file is
    hashed.
@@ -215,7 +274,12 @@ There is no import step, no reindex button, and no startup migration. SQLite hol
    what stops a half-copied archive from flashing up as corrupt.
 5. Once settled, it verifies the manifest, containment, sizes, digests, limits, and the
    report's static-HTML rules, then replaces that archive's derived rows in one transaction.
-6. After a **complete** pass, archives the pass did not see are dropped from the index.
+6. After a **complete** pass, archives the pass did not see are dropped from the index. A
+   root the pass could not READ - an unmounted volume, a permission change - is skipped and
+   its archives are held back from that pruning rather than forgotten, because "I did not see
+   it" and "it is gone" are the same observation from a directory that cannot be opened. Every
+   other root still reconciles and still prunes. A root that is simply ABSENT is not a
+   failure: an absent library is an empty one, and its rows go.
 
 The watcher is a hint and the scan is the authority, because watchers drop events on network
 and synchronised directories - which is exactly where foreign bundles come from.
@@ -228,7 +292,7 @@ the background. Nothing prompts, nothing blocks, and no archive is lost.
 
 ### Copying an archive in
 
-Drop a valid bundle into `scouts/<producer-id>/<archive-id>/` with any tool. It appears
+Drop a valid bundle into `archives/<producer-id>/<archive-id>/` with any tool. It appears
 within one reconciliation cadence.
 
 Because producer ids are random per machine, two people who have never met never collide.
@@ -246,13 +310,16 @@ written, and its producer label is treated as an unverified claim rather than an
 Everything is loopback-only, behind the daemon's existing boundary.
 
 ```text
-GET    /api/scouts?q=&producer=&repo=&agent=&status=&from=&to=&cursor=&limit=
-GET    /api/scouts/:archiveKey
-GET    /api/scouts/:archiveKey/artifacts/:artifactId
-POST   /api/scouts/:archiveKey/artifacts/:artifactId/open
-DELETE /api/scouts/:archiveKey
+GET    /api/archives?q=&producer=&repo=&agent=&kind=&status=&from=&to=&cursor=&limit=
+GET    /api/archives/:archiveKey
+GET    /api/archives/:archiveKey/artifacts/:artifactId
+POST   /api/archives/:archiveKey/artifacts/:artifactId/open
+DELETE /api/archives/:archiveKey
 POST   /mcp/scouts/submit
 ```
+
+`kind` filters to one kind. An unreadable bundle has no readable kind, so a kind filter
+excludes it - which is the honest answer rather than a side effect.
 
 `/mcp/scouts/submit` is the agent-facing one. It requires both the shared harness token and a
 daemon-signed credential scoped to the current task checkout. Mission Control provisions that
@@ -293,12 +360,12 @@ origin, for the same reason checkout files are not: it is content somebody else 
 the daemon's origin is where every action route lives.
 
 Historical archives are not in the SSE snapshot and the browser does not poll. One
-content-free `scout_archive_changed` frame per reconciled batch tells whatever is on screen
-to re-run its own bounded query.
+content-free `archive_changed` frame per reconciled batch tells whatever is on screen to
+re-run its own bounded query.
 
-## Deleting a scout
+## Deleting an archive
 
-`DELETE /api/scouts/:archiveKey` requires `{"confirmArchiveKey": "<the same key>"}` in the
+`DELETE /api/archives/:archiveKey` requires `{"confirmArchiveKey": "<the same key>"}` in the
 body and refuses a mismatch before it resolves any path. Then it:
 
 1. atomically renames the bundle into `.trash`,
@@ -307,15 +374,16 @@ body and refuses a mismatch before it resolves any path. Then it:
 
 The durable step is the rename, so a crash in the middle leaves an archive that is gone from
 the library and rows the next complete pass prunes; a crash before it leaves the archive
-intact. An interrupted deletion is finished on the next start.
+intact. An interrupted deletion is finished on the next start. A bundle under the legacy root
+is trashed inside that root, so the durable step stays a rename within one directory tree.
 
 This removes **a local file and its rows**. It touches no task, no session, and no
 repository, and it makes no claim about copies elsewhere: a two-way sync tool may propagate
 the deletion, or may restore the same immutable bundle later. Mission Control publishes no
 portable tombstone and cannot promise either behaviour.
 
-Deleting a task, or reclaiming its worktree, never deletes a scout archive. There is no
-automatic retention sweep - a ready archive stays until you delete it.
+Deleting a task, or reclaiming its worktree, never deletes an archive. There is no automatic
+retention sweep - a ready archive stays until you delete it.
 
 ## Reading one: the Scouts page
 

@@ -19,14 +19,14 @@ append-only identifiers, and ledgers are [Database changes](agent-guides/change-
 [Persisted identifiers](agent-guides/change-contracts.md#persisted-identifiers), and
 [Ledger tables](agent-guides/change-contracts.md#ledger-tables).
 
-One family of tables is deliberately not durable state. `scout_archives`, `scout_artifacts`,
-and `scout_search_segments` are a derived index of the [scout library](scout-archives.md) on
+One family of tables is deliberately not durable state. `archives`, `archive_artifacts`,
+and `archive_search_segments` are a derived index of the [archive library](archives.md) on
 disk: they hold no foreign keys to tasks or sessions, no evidence bytes, and nothing that is
 not already in a bundle. Deleting them - or the whole database - costs a background rebuild
 and nothing else. A label, annotation, or ownership flag stored only in those rows would be
 lost the first time the index was rebuilt, which is why none may be added.
 
-`scout_capture_jobs` sits beside them and is a different kind of table again: local
+`archive_capture_jobs` sits beside them and is a different kind of table again: local
 coordination for archives this daemon is still WRITING, one row per task work episode, holding
 the reserved archive identity and the checkout locators a resumed capture needs. It refers to
 task and session ids as values and has no foreign key or cascade to either, because a published

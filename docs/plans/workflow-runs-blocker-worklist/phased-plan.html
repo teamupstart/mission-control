@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased plan: the Blocker Worklist</title>
+<style>
+:root{
+  color-scheme: light dark;
+  --bg:#ffffff; --fg:#16191d; --muted:#5b6470; --dim:#7b8593;
+  --border:#e0e4ea; --panel:#f6f8fa; --accent:#1f6feb; --warn:#9a6700; --good:#1a7f37;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  --sans: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d1117; --fg:#e6edf3; --muted:#9aa4b2; --dim:#7d8590;
+    --border:#262c36; --panel:#151b23; --accent:#589bff; --warn:#d29922; --good:#3fb950;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--sans);background:var(--bg);color:var(--fg);line-height:1.62;font-size:15.5px;padding:44px 24px 110px}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:30px;line-height:1.24;margin:0 0 8px;letter-spacing:-0.02em}
+h2{font-size:21px;margin:44px 0 8px;letter-spacing:-0.01em;padding-top:14px;border-top:1px solid var(--border)}
+h3{font-size:16.5px;margin:26px 0 6px}
+p{margin:0 0 13px}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:.86em;background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+ul,ol{margin:0 0 14px;padding-left:23px}
+li{margin:0 0 7px}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:14px 0}
+th,td{border:1px solid var(--border);padding:8px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel);font-weight:600}
+.scroll{overflow-x:auto}
+.eyebrow{color:var(--dim);font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 8px}
+.lede{font-size:17px;color:var(--muted);margin:0 0 6px}
+.callout{border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:10px;background:var(--panel);padding:16px 18px;margin:22px 0}
+.callout.warn{border-left-color:var(--warn)}
+.callout :last-child{margin-bottom:0}
+figure{margin:22px 0;border:1px solid var(--border);border-radius:10px;background:var(--panel);padding:16px}
+figcaption{font-size:13px;color:var(--dim);margin-top:10px}
+svg{display:block;max-width:100%;height:auto;margin:0 auto}
+pre{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="eyebrow">Phased plan &middot; Mission Control</p>
+<h1>Phased plan: the Blocker Worklist</h1>
+<p class="lede">Two merge units. The subtle part gets its own review.</p>
+
+<h2>Source</h2>
+<ul>
+<li>Approved plan: <a href="plan.html">plan.html</a> (<a href="plan.md">markdown</a>)</li>
+<li>Design comparison the selection came from: <a href="../../reports/workflow-runs-triage-mockups/report.html">the mockup report</a></li>
+</ul>
+
+<h2>Incorporated human decisions</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>Decision</th><th>Selection</th><th>Where it lands</th></tr></thead>
+<tbody>
+<tr><td>Which of six mockups</td><td><b>B, Blocker Worklist</b></td><td>Phase 2</td></tr>
+<tr><td>Stage pipeline, run header, round scrubber</td><td><b>Keep unchanged</b></td><td>Non-goal in both phases</td></tr>
+<tr><td>Run rail and filters</td><td><b>Keep unchanged</b></td><td>Non-goal in both phases</td></tr>
+<tr><td>Next step</td><td><b>Phase it and schedule the work</b></td><td>This document</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>What the investigation changed</h2>
+<p>The repository disagreed with the mockup in four places. Each is recorded in the plan with its evidence; the phases implement the adopted position, not the drawing.</p>
+<ol>
+<li><b>A requested change has no identity.</b> <code>RequestedChange</code> carries no id and nothing in the codebase correlates verdict content across rounds. "Open since round 4" has to be derived, and that derivation is the entire reason this is two phases rather than one.</li>
+<li><b>A round is not a submission.</b> A session action splits one round into several evidence segments. <code>repeat-offender.ts</code> already folds for this and documents why; the worklist reuses the rule so the rail and the stalemate card cannot disagree on one screen.</li>
+<li><b>Not every change has a path.</b> The type makes it optional and the e2e fail fixture emits none. The mockup drew a file on every row.</li>
+<li><b>Sub-run selection is not routed.</b> The selected round is local state and there is no precedent for a sub-run selection in <code>MissionRoute</code>. Selection follows that precedent, which removes all route work - and with it the <code>App.tsx</code> <code>onFilters</code> hazard that silently drops unspread route fields.</li>
+</ol>
+<p>The last of these is why there is no route phase. The first is why there is a model phase.</p>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>Phase</th><th>Name</th><th>Depends on</th><th>Delivers</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><a href="phase-1-cross-round-change-model.md">Cross-round change model</a></td><td>none</td><td><code>requestedChangeKey</code> and <code>runChangeWorklist</code> in <code>run-model.ts</code>, with unit tests</td></tr>
+<tr><td>2</td><td><a href="phase-2-blocker-worklist-reader.md">Blocker Worklist reader pane</a></td><td>Phase 1</td><td>The worklist UI, the stalemate card, styles, and e2e coverage</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Dependency graph</h2>
+<figure>
+<svg viewBox="0 0 700 120" role="img" aria-label="Phase 1 precedes Phase 2. Strictly ordered, no concurrency.">
+  <defs>
+    <style>
+      .box{fill:#589bff;fill-opacity:.10;stroke:#589bff;stroke-width:1.8}
+      .t{font:600 13px system-ui,sans-serif;fill:#589bff}
+      .s{font:11px system-ui,sans-serif;fill:#7d8590}
+      .a{stroke:#8b94a3;stroke-width:1.8;fill:none;marker-end:url(#ah)}
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b94a3"/>
+    </marker>
+  </defs>
+  <rect class="box" x="20" y="26" width="260" height="66" rx="9"/>
+  <text class="t" x="38" y="52">Phase 1</text>
+  <text class="s" x="38" y="70">Cross-round change model</text>
+  <text class="s" x="38" y="85">run-model.ts + unit tests</text>
+
+  <line class="a" x1="290" y1="59" x2="400" y2="59"/>
+  <text class="s" x="308" y="50">merges first</text>
+
+  <rect class="box" x="410" y="26" width="270" height="66" rx="9"/>
+  <text class="t" x="428" y="52">Phase 2</text>
+  <text class="s" x="428" y="70">Blocker Worklist reader pane</text>
+  <text class="s" x="428" y="85">UI + styles + e2e</text>
+</svg>
+<figcaption>Strictly ordered. Phase 2 consumes Phase 1's exports, so there is no concurrency and no merge-order ambiguity.</figcaption>
+</figure>
+
+<h2>Concurrency</h2>
+<p>None. Phase 2 consumes Phase 1's exports, so the two are strictly ordered. Merge order is Phase 1 then Phase 2.</p>
+
+<h2>Why two phases and not one</h2>
+<div class="callout">
+<p>The change-identity rule is the only genuinely subtle decision in this work: a key that includes the line number re-raises every finding on every edit, and a key over the raw title splits on a reworded sentence. It deserves review on its own, with unit tests that pin the edge cases, rather than review buried inside a several-hundred-line layout change.</p>
+<p>Phase 1 is additive and unconsumed until Phase 2 merges. That is a deliberate, bounded trade: a pure module with a full unit suite is the repository's normal shape for a foundational interface, and it leaves the tree operable and green at the merge boundary.</p>
+</div>
+
+<h2>Cross-phase contracts</h2>
+<ul>
+<li><code>ChangeWorklistRow.key</code> is stable across renders and is both the React key and the selected-row identity. Phase 2 must not key rows positionally.</li>
+<li>Rows arrive <b>pre-sorted</b> (open before resolved, then oldest first). Phase 2 does not re-sort.</li>
+<li><code>state</code> alone partitions the <code>Blocking</code> and <code>Archive</code> segments.</li>
+<li><code>roundsOpen</code> is a <b>count of appearances</b>, not a span, so it never claims a round the reviewer was silent in.</li>
+<li>The model covers <b>requested changes only</b>. Checks and passing reviewers stay on the existing <code>reviewerAttempts</code> / <code>checkOutcomeOf</code> path in Phase 2.</li>
+<li>Both phases descend from the round-folding rule in <code>src/server/workflows/repeat-offender.ts</code>. Changing one is changing both.</li>
+</ul>
+
+<h2>Final verification</h2>
+<p>After Phase 2 merges:</p>
+<pre>npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e</pre>
+<p>The acceptance check a person performs: open a run with requested changes, confirm the blockers are readable without scrolling past a single passing reviewer, confirm a carried change names the round that raised it, and confirm the pipeline above it is untouched.</p>
+
+<h2>Audit</h2>
+<p>Every requirement in the plan is owned by exactly one phase:</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Requirement</th><th>Phase</th></tr></thead>
+<tbody>
+<tr><td>Blockers readable without scrolling past passes</td><td>2</td></tr>
+<tr><td>A carried change names its first round and rounds open</td><td>1 derives, 2 renders</td></tr>
+<tr><td>A resolved change names the round that resolved it</td><td>1 derives, 2 renders</td></tr>
+<tr><td>Consecutive-failure reviewers are named</td><td>2</td></tr>
+<tr><td>Per-change actions without leaving the worklist</td><td>2</td></tr>
+<tr><td>Pipeline, header, scrubber, rail unchanged</td><td>Non-goal in both</td></tr>
+</tbody>
+</table>
+</div>
+<p>No phase depends on an unmerged later phase to repair an intermediate state.</p>
+
+</div>
+</body>
+</html>

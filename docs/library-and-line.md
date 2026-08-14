@@ -232,6 +232,8 @@ disabled until both halves are given.
 mistake becomes visible - `--grep "a b"` is one argument or two - and until it was on every row
 it was offered only for the rule you were already reading back as you typed it.
 
+![The Command detail screen: the closed rail carrying each slot's stored state, the default pinned as the first rule of the table, two saved overrides with their parsed argv, and the add row below them](images/library-commands.png)
+
 Nothing about how a Command runs is decided here. Resolution order, the machine-wide switch,
 the Trust grant and the compare-and-swap save are exactly as described above.
 

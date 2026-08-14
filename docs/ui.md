@@ -513,12 +513,14 @@ or network access. A slow stylesheet read therefore delays styling, not the docu
 
 **The Diff tab has the same door.** The bar naming the file you are reading carries an
 **Open in Files** action, on every file, which opens that file in the Files tab beside it -
-the same route, the same containment rules. Two files it will not open, and it says which
-rather than failing on the click: a **deleted** file, which has no copy left in the checkout
-to read, and a file **outside the session's working directory**. The second is possible
-because the two readers measure paths from different places - git writes them relative to
-the repository root, while the Files tab lists the working directory it was opened in - so a
-session started in a subdirectory can see changed files that its Files tab has no route to.
+the same route, the same containment rules. Press <kbd>l</kbd> while the diff reader owns
+focus to take that action without leaving the keyboard. The binding is customizable and its
+resolved key is printed on the button. Two files it will not open, and it says which rather
+than failing on the click: a **deleted** file, which has no copy left in the checkout to read,
+and a file **outside the session's working directory**. The second is possible because the
+two readers measure paths from different places - git writes them relative to the repository
+root, while the Files tab lists the working directory it was opened in - so a session started
+in a subdirectory can see changed files that its Files tab has no route to.
 The path is rebased through the repository root rather than handed over as written, which is
 what keeps a shared relative path like `src/index.ts` from opening the wrong file, and it is
 used exactly as git wrote it, so a file named `notes:12` opens as itself rather than as
@@ -654,6 +656,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
+| <kbd>l</kbd> | Open the file displayed in the Diff reader in Files | Focused Diff reader |
 | <kbd>⇧</kbd><kbd>F</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
@@ -698,8 +701,8 @@ Console and Board detail's tab strip); Send, Focus, Files, Queue, Reset, Interru
 Complete and Kill on a card; Focus, Diff, Reset, Interrupt, Complete and Kill in the Console
 footer; the Console's
 Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and the Fleet,
-Library and Runs segments in the top bar; the Board card's workflow disclosure; and the settings
-rail's search box. They
+Library and Runs segments in the top bar; the Board card's workflow disclosure; the Diff reader's
+Open in Files action; and the settings rail's search box. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.
 A narrow Console or Board detail is the one place they come off on their own: the tabs' keycaps
 are the first thing that row gives up to stay on one line, and the chords keep working.

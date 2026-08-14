@@ -14,9 +14,17 @@ import { useEffect } from "react";
  * and the page stays exactly where it was, by the mechanism Phase 1 already documented
  * rather than by a new one.
  *
- * That only holds while the keyboard is INSIDE the popover, which is why opening it moves
- * focus there. A menu you can open but not close from the keyboard is the dead end this
- * whole plan is about, one level in.
+ * That only holds while the keyboard is inside the surface, so `onKeyDown` goes on a host
+ * that wraps the TRIGGER as well as the popover: a mouse click leaves focus on the trigger,
+ * and a menu you can open but not close from the keyboard is the dead end this whole plan is
+ * about, one level in.
+ *
+ * Opening focuses the popover's own container - `tabIndex={-1}` - rather than the first
+ * control inside it. Focusing the control was the obvious thing and it was wrong twice over:
+ * every control in this app carries a `Tooltip` that fires on FOCUS, so the bubble appeared
+ * over the popover it had just opened and hid that popover's own label; and a click landing
+ * on the popover's padding would otherwise blur to `<body>`, taking Escape with it. A
+ * container that holds focus itself fixes both, and `Tab` still reaches the control it holds.
  *
  * Outside dismissal is `pointerdown` rather than `click`, matching `OpenInMenu`: a press
  * that starts outside should dismiss before whatever it lands on gets its own event, so a
@@ -34,14 +42,11 @@ export function useLibraryPopover({
   triggerRef: React.RefObject<HTMLButtonElement | null>;
 }): { onKeyDown: (event: React.KeyboardEvent) => void } {
   // Give the popover the keyboard as it appears, so it can be closed by the key that closes
-  // everything else here. The first focusable is the control the operator opened it for.
+  // everything else here - and so a press meant for it is never answered by the page behind.
   useEffect(() => {
     if (!open) return;
-    const first = popoverRef.current?.querySelector<HTMLElement>(
-      "button:not([disabled]), select:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])",
-    );
-    first?.focus({ preventScroll: true });
-  }, [open, popoverRef, triggerRef]);
+    popoverRef.current?.focus({ preventScroll: true });
+  }, [open, popoverRef]);
 
   useEffect(() => {
     if (!open) return;
@@ -58,7 +63,11 @@ export function useLibraryPopover({
 
   return {
     onKeyDown: (event) => {
-      if (event.key !== "Escape") return;
+      // Only while it is actually up. The host wraps the trigger, and Escape returns focus
+      // TO the trigger - so without this guard the next press was still being claimed by a
+      // closed popover, and the page's own Escape was dead for as long as the chip or the
+      // menu button kept focus. Phase 1's whole point, undone by a listener with no state.
+      if (!open || event.key !== "Escape") return;
       // Claimed, so Phase 1's ladder reads this press as already answered and leaves the
       // page alone. Both halves matter: without `preventDefault` the ladder would ALSO
       // leave for `#/library`, and with only `stopPropagation` a `window` listener would

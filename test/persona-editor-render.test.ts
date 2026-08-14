@@ -8,7 +8,6 @@ import { EditorState } from "@codemirror/state";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import type { PersonaView } from "../src/shared/workflow.ts";
 import type { LlmProviderView } from "../src/shared/types.ts";
-import type { LlmState } from "../src/web/useLlm.ts";
 import { WorkflowLibrary } from "../src/web/workflows/WorkflowLibrary.tsx";
 import { ExecutionPage } from "../src/web/workflows/ExecutionPage.tsx";
 import { WorkflowRuns } from "../src/web/workflows/WorkflowRuns.tsx";
@@ -78,14 +77,6 @@ const DEFAULTS = {
     codex: { id: "persona-env-model", source: "env" },
   },
 } as const;
-const LLM_STATE: LlmState = {
-  config: null,
-  status: null,
-  personaDefaults: DEFAULTS,
-  update: async () => {},
-  error: null,
-};
-
 const callbacks = {
   providers: PROVIDERS,
   defaults: DEFAULTS,

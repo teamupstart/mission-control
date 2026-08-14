@@ -203,6 +203,18 @@ test("a property chip opens its control, and the override it takes survives a sa
   await expect(chip(dashboard, "provider")).toContainText("Codex");
   await expect(readout(dashboard, "source")).toHaveText(/this Persona/);
   await shoot(dashboard, "04-provider-overridden");
+
+  /*
+   * And the chip stops claiming Escape the moment it is shut. Closing returns focus TO the
+   * chip, so a popover that answered the key whenever focus was inside it left the PAGE's
+   * Escape dead for as long as that chip kept focus - Phase 1's contract, undone by this
+   * phase's first dismissible surface. Two presses: one for the popover, one for the page.
+   */
+  await chip(dashboard, "provider").click();
+  await dashboard.keyboard.press("Escape");
+  await expect(popover).toHaveCount(0);
+  await dashboard.keyboard.press("Escape");
+  await expect.poll(() => hash(dashboard)).toBe("#/library");
 });
 
 test("a built-in promotes Duplicate and offers no Save at all", async ({ dashboard, daemon }) => {

@@ -1474,7 +1474,14 @@ body {
    the bar - which is exactly the "the layout keeps it out of the rectangle" assumption the
    entries above were each added after it failed. It is a scrollable panel whose only control
    is a Close button, so an eaten click traps the operator behind it. */
-.is-desktop .foreman-recommendation-sidecar {
+.is-desktop .foreman-recommendation-sidecar,
+/* The Library workspace header's overflow menu and its property-chip popovers. Both are
+   anchored inside a page that starts under the bar, so the same assumption every entry above
+   was added after breaking applies - and both hold the only copy of a control: the menu is
+   where Archive and Re-import live now, and the chip popover is where the provider and model
+   selects live. An eaten click there is an action with no other route to it. */
+.is-desktop .lib-menu-pop,
+.is-desktop .lib-chip-pop {
   -webkit-app-region: no-drag;
 }
 
@@ -12377,6 +12384,13 @@ select.ensemble-judge-persona {
    until phases 3 and 4 rebuild their rails. */
 .persona-library {
   height: calc(100dvh - var(--topbar-h, 88px) - 112px);
+  /* The row, not just the box. A grid with no explicit rows sizes its single implicit row to
+     the TALLEST item, so a bounded container over an auto row just clips - which is what a
+     `height` alone did here: the rail's footer and the editor's last four lines were drawn
+     below the fold and cut off by `overflow: hidden`. `minmax(0, 1fr)` makes the row take the
+     container's height and lets both panes shrink to it, so the list and the editor each get
+     their own scroll instead. */
+  grid-template-rows: minmax(0, 1fr);
 }
 .persona-sidebar,
 .wf-action-sidebar,
@@ -12559,6 +12573,10 @@ select.ensemble-judge-persona {
   border: 0;
   border-bottom: 1px solid transparent;
   border-radius: 0;
+  /* An input clips its overflow with no mark at all, so a description longer than the header
+     ended mid-word looking like a rendering fault rather than like there being more of it.
+     Only while it is not focused: typing past the edge has to scroll. */
+  text-overflow: ellipsis;
 }
 .lib-work-name-field input {
   font-size: 17px;
@@ -12591,6 +12609,12 @@ select.ensemble-judge-persona {
 }
 .lib-work-meta > p {
   margin: 0;
+}
+.lib-work-meta .workflow-eyebrow {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--dim);
 }
 /* Revision and provenance are one line reading as one sentence, but they stay two
    elements: `p.workflow-eyebrow` and `p.persona-source` are what the import spec reads
@@ -12635,6 +12659,10 @@ select.ensemble-judge-persona {
 .lib-menu-btn:focus-visible {
   outline: 2px solid var(--working);
   outline-offset: 1px;
+}
+.lib-menu-pop:focus-visible,
+.lib-chip-pop:focus-visible {
+  outline: none;
 }
 .lib-menu-pop {
   position: absolute;
@@ -12857,9 +12885,11 @@ button.lib-chip:focus-visible {
   gap: 6px;
 }
 .persona-rail-foot-row .btn {
-  flex: 1;
   justify-content: center;
   white-space: nowrap;
+}
+.persona-rail-foot-row .btn:first-child {
+  flex: 1;
 }
 /* A toggle rather than the Active/Archived select this replaced: one press instead of two,
    and it can carry the count - so "is there anything in there?" is answered without
@@ -13007,6 +13037,11 @@ button.lib-chip:focus-visible {
 .wf-command-workspace {
   min-width: 0;
   background: var(--bg-2);
+}
+/* Shrinkable, so `.persona-editor`'s `height: 100%` resolves against the bounded row above
+   rather than against whatever CodeMirror's document happens to measure. */
+.persona-workspace {
+  min-height: 0;
 }
 .persona-empty,
 .wf-action-empty {
@@ -14301,6 +14336,12 @@ button.wf-carried.is-link:focus-visible {
   .workflow-builder-main { min-height: 610px; }
 }
 
+@media (max-width: 1200px) {
+  .lib-chip-host.is-trailing,
+  .lib-chip.is-trailing {
+    margin-inline-start: 0;
+  }
+}
 @media (max-width: 1080px) {
   .wf-action-fields {
     grid-template-columns: 1fr 1fr;
@@ -14328,6 +14369,18 @@ button.wf-carried.is-link:focus-visible {
     max-height: 250px;
     border-right: 0;
     border-bottom: 1px solid var(--border-soft);
+  }
+  /* Stacked, the Persona rail's fixed chrome - back row, heading, search box and the footer
+     - is on its own taller than the 250px the three rails cap at, so capping the whole rail
+     left the asset list with no height at all and clipped the last footer row off the
+     bottom. Cap the LIST instead: it is the part that scrolls, and the point of the cap was
+     always that the rail must not eat the stacked page. */
+  .persona-sidebar {
+    max-height: none;
+  }
+  .persona-list {
+    flex: none;
+    max-height: 220px;
   }
   .wf-action-fields,
   .persona-model-field .foreman-model-row {

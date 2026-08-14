@@ -113,7 +113,8 @@ export function LibraryOverflowMenu({
   }
 
   return (
-    <div className="lib-menu">
+    // The host wraps the trigger too - see `useLibraryPopover`.
+    <div className="lib-menu" onKeyDown={onKeyDown}>
       {/* The tooltip names what is inside rather than repeating the button's own label: a
           `⋯` whose only description is "more actions" tells you nothing you could not see. */}
       <Tooltip label={actions.map((action) => action.label).join(", ")}>
@@ -135,7 +136,7 @@ export function LibraryOverflowMenu({
           className="lib-menu-pop"
           role="menu"
           aria-label={label}
-          onKeyDown={onKeyDown}
+          tabIndex={-1}
         >
           <LibraryMenuList
             actions={actions}

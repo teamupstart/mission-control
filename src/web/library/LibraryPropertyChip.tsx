@@ -107,7 +107,12 @@ export function LibraryPropertyChip({
   }
 
   return (
-    <div className={`lib-chip-host${align === "end" ? " is-trailing" : ""}`}>
+    // The host wraps the trigger too, so a mouse click - which leaves focus on the chip -
+    // still has Escape land here rather than on the page ladder behind it.
+    <div
+      className={`lib-chip-host${align === "end" ? " is-trailing" : ""}`}
+      onKeyDown={popover.onKeyDown}
+    >
       <Tooltip label={tooltip}>
         <button
           ref={triggerRef}
@@ -130,7 +135,7 @@ export function LibraryPropertyChip({
           className="lib-chip-pop"
           role="group"
           aria-label={controlLabel}
-          onKeyDown={popover.onKeyDown}
+          tabIndex={-1}
         >
           {children}
         </div>

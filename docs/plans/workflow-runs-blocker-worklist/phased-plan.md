@@ -183,6 +183,15 @@ Round 5 raised one `major`, accepted:
    and not to the card. Phase 1 now exports `runStalemates(detail, asOfRound)`, pinned against
    the payload field at the default window.
 
+Round 7 raised one `major`, accepted:
+
+9. **The two stalemate anchors did not actually match.** The default horizon was "the newest
+   round carrying attempt data", which misreads `repeat-offender.ts:64-65` as a fallback when it
+   is a bail-out returning `[]`. When a round opens before Stage 1 runs, `repeatOffenders` says
+   `[]` while `runStalemates(detail, null)` would have reported the previous round's stalemate -
+   breaking the parity criterion three files assert. The default is now the latest submission's
+   round unconditionally, bail-out included.
+
 Round 6 raised one `major` and one `minor`, both accepted:
 
 7. **The third state asserted more than the data supports.** It was called `superseded` and said
@@ -196,8 +205,13 @@ Round 6 raised one `major` and one `minor`, both accepted:
    the selection was a bare key over two unreconciled id spaces. Phase 2 now defines a
    `WorklistItem` discriminated union with namespaced keys and branches on `kind`.
 
-All eight fixes tighten the design without touching an approved human decision, so none was
+All nine fixes tighten the design without touching an approved human decision, so none was
 escalated. Each phase's cross-phase audit record carries the detail.
+
+The ninth is worth separating from the rest: every line-number citation in this plan was
+verified, twice, and the defect was in how one of those accurate citations was **read** -
+a bail-out taken for a fallback. Checking that a reference points at the right line is not the
+same as checking that the sentence about it is true.
 
 Three of the five are the same class of mistake: a rule borrowed from a neighbouring subsystem
 without checking which of its preconditions this one actually has. `marker.ts` has one author;

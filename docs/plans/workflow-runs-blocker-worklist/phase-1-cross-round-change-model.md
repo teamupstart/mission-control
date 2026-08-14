@@ -80,7 +80,7 @@ New exported function in `src/web/workflows/run-model.ts`.
 ```ts
 export function runChangeWorklist(
   detail: WorkflowRunDetail,
-  /** The round the reader is looking at. Null means the newest round carrying attempt data. */
+  /** The round the reader is looking at. Null means the latest submission's round. */
   asOfRound: number | null,
 ): ChangeWorklistRow[]
 ```
@@ -119,10 +119,21 @@ Derivation, in order:
    `repeat-offender.ts`**: order by `round → segment → createdAt`, then keep each node's
    newest attempt within the round (highest segment, then highest `attempt`). Extract this as
    a small local helper so the correspondence is explicit and testable.
-1b. **Truncate to the window.** Resolve `horizon` = `asOfRound ?? the newest round carrying
-   folded attempt data`, then discard every round above it. Nothing after this step may read a
-   later round: a row that knows the future is exactly the incoherence this parameter exists to
-   prevent.
+1b. **Truncate to the window.** Resolve `horizon` = `asOfRound ?? the latest submission's
+   round`, then discard every round above it. Nothing after this step may read a later round: a
+   row that knows the future is exactly the incoherence this parameter exists to prevent.
+
+   The default is **the latest submission's round, whether or not it has produced any attempt
+   yet** - the same `ordered[0].round` that `repeat-offender.ts` anchors on, where `ordered` is
+   submissions sorted by `round → segment → createdAt`, descending.
+
+   Do **not** define it as "the newest round that has attempt data". That reads
+   `attemptsByRound.get(latest.round)` in `repeat-offender.ts:64-65` as a fallback when it is a
+   **bail-out**: that module returns `[]` outright when the newest round has no attempts, it
+   does not step back to an older round. A fallback default would make `runStalemates(detail,
+   null)` report a stalemate for a round that is not the one being viewed, at exactly the moment
+   a new round opens and Stage 1 has not run yet - while `detail.repeatOffenders` says `[]`.
+   That breaks the parity this file, `phase-2` and `phased-plan.md` all claim.
 2. For each round in the window, for each persona attempt whose verdict is `fail`, key every
    `requestedChanges[]` entry with `requestedChangeKey(attempt.nodeId, change)`. Because the
    node is in the key, a row can only ever accumulate from one persona, and `nodeId` /
@@ -212,6 +223,17 @@ from step 1b. Same rule - candidates are the nodes failing at the horizon, walk 
 keeps failing, keep those with `rounds >= 2` - so the sentence it feeds means exactly what the
 ladder's means.
 
+**Including the bail-out.** When the horizon round carries no folded attempts, return `[]`, the
+way `repeat-offender.ts:64-65` does rather than stepping back to an older round. This is what
+makes the parity claim below true at the default window, and it is the one behaviour most likely
+to be "helpfully" improved into a fallback by someone who has not read that guard.
+
+It has a visible consequence worth stating rather than discovering: when a new round opens, the
+stalemate card disappears until that round produces its first attempt, then comes back. That
+flicker already exists on the ladder, which renders the same signal from the same anchor.
+Matching it is the point - a card that persisted here while vanishing there would be two
+surfaces disagreeing about one fact, which is the failure this whole design keeps circling.
+
 **Why this exists rather than rendering `detail.repeatOffenders`.** That field is computed by
 `store.ts` from the run's whole submission list and anchored on its newest one, so it is always
 "as of the latest round" and this window cannot re-scope it. Rendered directly under a worklist
@@ -280,6 +302,12 @@ Cases:
   re-raising it, not merely because some other persona advanced the round.
 - A latest round carrying no folded attempt data at all leaves every prior change `"open"`
   rather than resolving the entire worklist at once.
+- **The just-opened round, which is where the two anchors could drift.** The newest submission's
+  round exists but has produced no attempt yet. `runStalemates(detail, null)` returns `[]`,
+  matching `detail.repeatOffenders`, rather than stepping back to the previous round and
+  reporting a stalemate for a round nobody is viewing. `runChangeWorklist(detail, null)` still
+  reports the previous round's changes as `"open"`, because per-node resolution needs a later
+  attempt from the owning node and there is none.
 - **As-of scoping.** A change raised in rounds 1 to 4 and dropped by its persona in round 5:
   called with `asOfRound: 4` it is `"open"` with `roundsOpen: 4`; called with `asOfRound: 5` or
   `null` it is `"resolved"`. The same detail payload, two honest answers.
@@ -377,6 +405,17 @@ Phase 2 must not:
   to keep this model narrow rather than widen it, and the boundary now lives in this phase's
   downstream handoff, which is the earliest place that must own it. No scope or signature here
   changed.
+- **Inspector round 7, `major`, accepted.** Step 1b defaulted the horizon to "the newest round
+  carrying folded attempt data", which misread `repeat-offender.ts:64-65`: that line is a
+  **bail-out** returning `[]`, not a fallback stepping back to an older round. The two anchors
+  therefore diverged exactly when a new round opens before Stage 1 runs - `repeatOffenders` says
+  `[]` while `runStalemates(detail, null)` would have reported a stalemate from the previous
+  round - contradicting the parity criterion this file states and `phase-2` and `phased-plan.md`
+  repeat. Default is now the latest submission's round unconditionally, and `runStalemates`
+  carries the same bail-out. The resulting flicker when a round opens is named in step 3 rather
+  than left to be discovered and "fixed" back into a fallback. Note the shape of the error: the
+  citation was accurate and the reading of it was not, which is a failure mode that survives
+  spot-checking line numbers.
 - **Inspector round 6, `major`, accepted.** The third state was called `superseded` and asserted
   the finding had been rephrased. Step 4b decided it purely from whether the owning node failed
   again for **any** reason, so a reviewer that stops raising A *because A is fixed* while

@@ -15,8 +15,8 @@ import { ARCHIVE_TEXT_LIMITS } from "@shared/archives.ts";
  *
  * - `validateStaticReportHtml` decides whether a report may be archived and indexed at all.
  *   Version 1 allows static markup, inline CSS, inline SVG, fragment links, bounded `data:`
- *   images, relative links that stay inside the report directory, and an `http(s)` link a
- *   person can click. Everything that can execute, or that fetches on its own, is refused.
+ *   images, relative links that stay inside the report directory, and an `http(s)` target on
+ *   an `<a href>`. Everything that can execute, or that fetches on its own, is refused.
  * - `extractVisibleText` produces the bounded text that makes a report searchable, after
  *   removing non-content and hidden nodes. It never follows a link.
  *
@@ -361,12 +361,18 @@ const LINK_TARGET_ATTRIBUTES = new Set(["href", "action", "formaction", "ping"])
  * open, which is precisely what this validator exists to prevent. An earlier revision of this
  * change did exactly that; `test/archive-bundle.test.ts` pins each of those elements.
  *
- * `<area>` is here with `<a>` because an image-map region is an anchor with a shape. `action`
- * and `formaction` are deliberately NOT here: `<form>` is a forbidden element, so neither can
- * ever be submitted, and a slot that cannot be reached is not a destination a person clicks.
+ * `<a href>` and NOTHING else, which is narrower than "every clickable destination" on
+ * purpose. `<area href>` is a genuine one - an image-map region is an anchor with a shape -
+ * and it is refused anyway, because the approved allowance names anchors and an archived
+ * report that needs an external image map does not exist. `action` and `formaction` are out
+ * for a second reason as well: `<form>` is a forbidden element, so neither can ever be
+ * submitted, and a slot no click can reach is not a destination at all.
+ *
+ * The rule to apply when this list is next questioned: an element joins it only when a person
+ * clicking is the ONLY way its URL is ever requested, and only when a real report needs it.
  */
 function isClickableDestination(tag: string, attributeName: string): boolean {
-  return attributeName === "href" && (tag === "a" || tag === "area");
+  return attributeName === "href" && tag === "a";
 }
 
 interface UrlContext {
@@ -381,17 +387,18 @@ interface UrlContext {
  * Whether one URL is allowed in an archived report, and why not when it is not.
  *
  * The allowed set is small on purpose: a fragment, a bounded `data:` image in a fetching
- * slot, a relative reference that stays inside the report directory, and an `http(s)`
- * destination a person can CLICK. Everything else - any other scheme, a protocol-relative
- * `//host`, a path that climbs out - is refused.
+ * slot, a relative reference that stays inside the report directory, and an `http(s)` target
+ * on an `<a href>` - a destination a person can CLICK. Everything else - any other scheme, a
+ * protocol-relative `//host`, a path that climbs out - is refused.
  *
  * The line the external-link allowance is drawn on is the one this file was already
  * defending: what this machine requests on somebody else's behalf when a human OPENS an
  * archive they were sent. An `<img src>` fetches on open, tells a server the page was read,
  * and does it before anyone has decided anything - so every scheme stays refused there, and
  * in every other fetching slot: a `ping` beacon, which is sent on a click without being where
- * the click goes, and every `href` that is a RESOURCE rather than a destination
- * (`<link rel=stylesheet>`, SVG `<use>`, SVG `<image>`). An `<a href="https://...">` requests
+ * the click goes, and every `href` that is not an anchor's - whether it is a RESOURCE
+ * (`<link rel=stylesheet>`, SVG `<use>`, SVG `<image>`) or merely another way to navigate
+ * (`<area>`). An `<a href="https://...">` requests
  * nothing until a person acts, and then takes them somewhere their own browser shows them.
  * Real pages cite their sources; refusing that made an archived report link to documentation
  * it could only describe.

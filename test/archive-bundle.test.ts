@@ -191,7 +191,7 @@ test("version 1 allows static markup, inline CSS and SVG, fragments, and data: i
   assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result.problems));
 });
 
-test("an external link a person can click is allowed, and only where a click reaches it", () => {
+test("an external link is allowed on an anchor, and only on an anchor", () => {
   const ok = (fragment: string): void => {
     const result = validateStaticReportHtml(
       `<!doctype html><html><body>${fragment}</body></html>`,
@@ -201,18 +201,17 @@ test("an external link a person can click is allowed, and only where a click rea
   };
   ok('<a href="https://example.com/docs#anchor?q=1">the upstream documentation</a>');
   ok('<a href="http://example.com/docs">an insecure one, still only a click away</a>');
-  // An image-map region is an anchor with a shape.
-  ok('<map name="m"><area href="https://example.com/docs" shape="rect" coords="0,0,1,1"></map>');
   // An SVG anchor is still an anchor: parse5 reports its tag as `a`.
   ok('<svg><a href="https://example.com/docs"><text>x</text></a></svg>');
 });
 
-test("every slot that fetches on its own refuses http(s), one case per slot", () => {
-  // The relaxation above is confined to the element+attribute pairs a person CLICKS. This is
-  // the boundary test, and it is per-slot on purpose: a single case would pass while the
-  // allowance leaked into every other slot, and each of these fires on OPEN, before anyone
-  // has decided anything. `ping` is here because it is the other near miss - it is sent on a
-  // click, but it is not where the click goes, so nobody ever sees where it went.
+test("every slot that is not an anchor's href refuses http(s), one case per slot", () => {
+  // The relaxation above is confined to `<a href>`. This is the boundary test, and it is
+  // per-slot on purpose: a single case would pass while the allowance leaked into every other
+  // slot, and each of these fires on OPEN, before anyone has decided anything. Two cases here
+  // are not fetches at all and are refused anyway, because the allowance names anchors:
+  // `ping`, which is sent on a click without being where the click goes, and `<area href>`,
+  // which is a real clickable destination that no archived report needs.
   const fetching: Array<[string, string]> = [
     // The `href` fetching elements come FIRST because they are the near misses that matter
     // most: `href` is a click destination on `<a>` and a resource everywhere else, so an
@@ -236,6 +235,7 @@ test("every slot that fetches on its own refuses http(s), one case per slot", ()
     ["longdesc", '<img longdesc="https://example.com/x" alt="">'],
     ["manifest", '<html manifest="https://example.com/x"></html>'],
     ["ping", '<a href="report.html" ping="https://example.com/track">x</a>'],
+    ["area[href]", '<map name="m"><area href="https://example.com/docs" shape="rect" coords="0,0,1,1"></map>'],
     ["xlink:href", '<svg><image xlink:href="https://example.com/a.png"/></svg>'],
     ["css url()", '<style>.a { background: url(https://example.com/a.png); }</style>'],
     ["css url() inline", '<div style="background:url(https://example.com/a.png)">x</div>'],

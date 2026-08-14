@@ -102,6 +102,51 @@ test("attaching a second repo dispatches one session with a worktree in each", a
   expect(existsSync(join(daemon.home, "worktrees", `${primary}-1`, "README.md"))).toBe(true);
 });
 
+for (const nextAction of ["Dispatch now", "Add to backlog"] as const) {
+  test(`an attached repo is scoped to one task before ${nextAction}`, async ({
+    dashboard,
+    daemon,
+  }) => {
+    await dispatchAcross(dashboard, daemon, [daemon.secondRepo], "Change the shared contract");
+
+    // The primary repo remains the useful per-run seed. The secondary was an exceptional
+    // write grant for the task just sent, so the next draft must not silently inherit it.
+    await dashboard.getByRole("button", { name: "Dispatch" }).click();
+    const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(daemon.repo);
+    await expect(
+      dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }),
+    ).toHaveCount(0);
+
+    const intent = `Follow-up through ${nextAction}`;
+    await dialog.getByPlaceholder("What should this agent do?").fill(intent);
+    await dialog.getByLabel("Kind").selectOption("ship");
+    await dialog
+      .locator("select")
+      .filter({ hasText: "finish without a Workflow" })
+      .selectOption("__none");
+    await dialog.getByRole("button", { name: nextAction }).click();
+    await expect(dialog).toBeHidden();
+
+    // Assert the stored task, not only the absence of a pill: this is the server-visible
+    // scope that decides how many worktrees are provisioned and which write grants launch.
+    await expect
+      .poll(async () => {
+        const response = await fetch(`${daemon.baseURL}/api/tasks`);
+        expect(response.ok, "/api/tasks should answer").toBe(true);
+        const tasks = (await response.json()) as Array<{
+          intent: string;
+          extraRepos: Array<{ repoRoot: string }>;
+        }>;
+        return tasks
+          .find((task) => task.intent === intent)
+          ?.extraRepos.map((entry) => entry.repoRoot);
+      })
+      .toEqual([]);
+  });
+}
+
 test("the launched agent is granted write access to the secondary worktree", async ({
   dashboard,
   daemon,

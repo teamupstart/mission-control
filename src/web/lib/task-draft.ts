@@ -27,8 +27,8 @@ export type DispatchDraft = {
   /**
    * SECONDARY repos attached beyond `repoRoot`, in the order they were added, which is the
    * order they are provisioned and persisted in. Empty for the single-repo tasks that are
-   * nearly all of them, and only ever non-empty for a harness that can be granted write
-   * access outside its cwd.
+   * nearly all of them, never carried into a later fresh draft, and only ever non-empty for
+   * a harness that can be granted write access outside its cwd.
    */
   extraRepoRoots: string[];
   intent: string;

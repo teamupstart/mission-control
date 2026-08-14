@@ -1,22 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { isScoutId } from "@shared/scouts.ts";
-import { SCOUTS_DIR, SCOUT_PRODUCER_PATH } from "../config.ts";
+import { isArchiveId } from "@shared/archives.ts";
+import { ARCHIVES_DIR, ARCHIVE_PRODUCER_PATH } from "../config.ts";
 
 /**
  * This machine's producer namespace.
  *
- * Every archive this daemon creates lands under `scouts/<producer-id>/`, and the producer
+ * Every archive this daemon creates lands under `archives/<producer-id>/`, and the producer
  * id is a random UUID stored once in a small file OUTSIDE the library. That is the whole
  * collision story for the sharing model: two people who have never met generate archives in
  * different namespaces, so copying one library into another can never make two different
- * scouts claim one key, and copying the SAME bundle twice is idempotent.
+ * archives claim one key, and copying the SAME bundle twice is idempotent.
  *
  * The label beside it is decoration - a human-readable machine name for a UI - and is never
  * trusted as identity by anything. A foreign manifest's label is a stranger's claim.
  */
-export interface ScoutProducerIdentity {
+export interface ArchiveProducerIdentity {
   id: string;
   label: string | null;
 }
@@ -41,17 +41,17 @@ interface ProducerFile {
  * Synchronous on purpose. It runs once, at composition time, before anything can publish -
  * and an async identity would mean every writer had to await a value that never changes.
  */
-export function loadScoutProducer(
-  filePath: string = SCOUT_PRODUCER_PATH,
-  libraryRoot: string = SCOUTS_DIR,
-): ScoutProducerIdentity {
+export function loadArchiveProducer(
+  filePath: string = ARCHIVE_PRODUCER_PATH,
+  libraryRoot: string = ARCHIVES_DIR,
+): ArchiveProducerIdentity {
   mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
   mkdirSync(libraryRoot, { recursive: true, mode: 0o700 });
 
   const existing = readProducerFile(filePath);
   if (existing) return existing;
 
-  const identity: ScoutProducerIdentity = { id: randomUUID(), label: null };
+  const identity: ArchiveProducerIdentity = { id: randomUUID(), label: null };
   const temp = `${filePath}.${randomUUID()}.tmp`;
   try {
     writeFileSync(temp, `${JSON.stringify({ id: identity.id, label: identity.label }, null, 2)}\n`, {
@@ -71,7 +71,7 @@ export function loadScoutProducer(
   return readProducerFile(filePath) ?? identity;
 }
 
-function readProducerFile(filePath: string): ScoutProducerIdentity | null {
+function readProducerFile(filePath: string): ArchiveProducerIdentity | null {
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf8");
@@ -86,7 +86,7 @@ function readProducerFile(filePath: string): ScoutProducerIdentity | null {
   }
   if (typeof parsed !== "object" || parsed === null) return null;
   const file = parsed as ProducerFile;
-  if (!isScoutId(file.id)) return null;
+  if (!isArchiveId(file.id)) return null;
   const label = typeof file.label === "string" && file.label.trim() !== "" ? file.label.trim() : null;
   return { id: file.id, label };
 }

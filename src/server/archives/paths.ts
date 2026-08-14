@@ -4,16 +4,16 @@ import type { Stats } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import {
-  SCOUT_MANIFEST_FILENAME,
-  SCOUT_STAGING_DIR,
-  SCOUT_TRASH_DIR,
-  formatScoutDigest,
-  isScoutId,
-  validateScoutArchivePath,
-} from "@shared/scouts.ts";
+  ARCHIVE_MANIFEST_FILENAME,
+  ARCHIVE_STAGING_DIR,
+  ARCHIVE_TRASH_DIR,
+  formatArchiveDigest,
+  isArchiveId,
+  validateArchivePath,
+} from "@shared/archives.ts";
 
 /**
- * The one place a scout archive path is turned into a real file on disk.
+ * The one place an archive path is turned into a real file on disk.
  *
  * `session-files.ts` does the same job for a session checkout and its defences are the
  * model here - realpath the root, refuse symlinks, refuse anything that resolves outside,
@@ -30,7 +30,7 @@ import {
  * through here.
  */
 
-export class ScoutPathError extends Error {
+export class ArchivePathError extends Error {
   constructor(
     message: string,
     readonly status = 400,
@@ -46,23 +46,23 @@ export function archiveRelativePath(producerId: string, archiveId: string): stri
 
 /** The absolute directory of one archive, from generated identity components only. */
 export function archiveDir(root: string, producerId: string, archiveId: string): string {
-  if (!isScoutId(producerId) || !isScoutId(archiveId)) {
-    throw new ScoutPathError("archive identity is not generated", 400);
+  if (!isArchiveId(producerId) || !isArchiveId(archiveId)) {
+    throw new ArchivePathError("archive identity is not generated", 400);
   }
   return path.join(root, producerId, archiveId);
 }
 
 /** The absolute `manifest.json` of one archive. */
 export function manifestPath(bundleDir: string): string {
-  return path.join(bundleDir, SCOUT_MANIFEST_FILENAME);
+  return path.join(bundleDir, ARCHIVE_MANIFEST_FILENAME);
 }
 
 /** The reserved staging and trash roots. Never discovered as bundles. */
 export function stagingRoot(root: string): string {
-  return path.join(root, SCOUT_STAGING_DIR);
+  return path.join(root, ARCHIVE_STAGING_DIR);
 }
 export function trashRoot(root: string): string {
-  return path.join(root, SCOUT_TRASH_DIR);
+  return path.join(root, ARCHIVE_TRASH_DIR);
 }
 
 /**
@@ -99,7 +99,7 @@ export async function statRealDirectory(target: string): Promise<Stats | null> {
  *
  * Three separate refusals, and all three are needed:
  *
- * 1. the path must be a legal archive path at all (`validateScoutArchivePath`), which is
+ * 1. the path must be a legal archive path at all (`validateArchivePath`), which is
  *    what stops `..`, an absolute path, a NUL, and a Windows separator before any I/O;
  * 2. the JOINED path must still be under the root, which catches a normalization
  *    disagreement between this process and the string that was validated;
@@ -115,19 +115,19 @@ export async function resolveArchiveFile(
   bundleRealDir: string,
   archivePath: string,
 ): Promise<string> {
-  const relative = validateScoutArchivePath(archivePath);
-  if (!relative) throw new ScoutPathError("archive path is not usable", 400);
+  const relative = validateArchivePath(archivePath);
+  if (!relative) throw new ArchivePathError("archive path is not usable", 400);
   const joined = path.resolve(bundleRealDir, relative);
   if (!isInside(bundleRealDir, joined)) {
-    throw new ScoutPathError("archive path leaves the bundle", 403);
+    throw new ArchivePathError("archive path leaves the bundle", 403);
   }
   const info = await statRegularFile(joined);
-  if (!info) throw new ScoutPathError("archived file is unavailable", 404);
+  if (!info) throw new ArchivePathError("archived file is unavailable", 404);
   const real = await realpath(joined).catch(() => {
-    throw new ScoutPathError("archived file is unavailable", 404);
+    throw new ArchivePathError("archived file is unavailable", 404);
   });
   if (!isInside(bundleRealDir, real)) {
-    throw new ScoutPathError("archived file resolves outside the bundle", 403);
+    throw new ArchivePathError("archived file resolves outside the bundle", 403);
   }
   return real;
 }
@@ -175,7 +175,7 @@ export async function digestFile(
       if (bytes > cap) return { error: "file exceeds its size limit" };
       hash.update(buffer.subarray(0, bytesRead));
     }
-    const digest = formatScoutDigest(hash.digest("hex"));
+    const digest = formatArchiveDigest(hash.digest("hex"));
     if (!digest) return { error: "could not digest the file" };
     return { sha256: digest, bytes };
   } finally {
@@ -214,11 +214,11 @@ const MEDIA_TYPES: Record<string, string> = {
   ".pdf": "application/pdf",
 };
 
-export const SCOUT_DEFAULT_MEDIA_TYPE = "application/octet-stream";
+export const ARCHIVE_DEFAULT_MEDIA_TYPE = "application/octet-stream";
 
 export function mediaTypeForArchivePath(archivePath: string): string {
   const ext = path.extname(archivePath).toLowerCase();
-  return MEDIA_TYPES[ext] ?? SCOUT_DEFAULT_MEDIA_TYPE;
+  return MEDIA_TYPES[ext] ?? ARCHIVE_DEFAULT_MEDIA_TYPE;
 }
 
 /** Whether an archived file is HTML by its own name - the only thing allowed to decide that. */

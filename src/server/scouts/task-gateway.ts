@@ -1,9 +1,9 @@
 import type { Registry } from "../registry.ts";
-import { SCOUT_TEXT_LIMITS } from "@shared/scouts.ts";
+import { ARCHIVE_TEXT_LIMITS } from "@shared/archives.ts";
 import type { Session, Task } from "@shared/types.ts";
-import type { ScoutCaptureOrigin } from "./capture-store.ts";
+import type { ArchiveCaptureOrigin, ArchiveRepoSlot } from "../archives/capture-store.ts";
 import { isScoutTask } from "./prompt.ts";
-import { scoutRepoSlots, type ScoutRepoSlot } from "./repos.ts";
+import { scoutRepoSlots } from "./repos.ts";
 import type { ScoutSubmissionAuthority } from "./submission-auth.ts";
 
 /**
@@ -35,8 +35,8 @@ export interface ScoutSubject {
   episodeId: string | null;
   title: string;
   question: string | null;
-  origin: ScoutCaptureOrigin;
-  repos: ScoutRepoSlot[];
+  origin: ArchiveCaptureOrigin;
+  repos: ArchiveRepoSlot[];
 }
 
 /** Why a session's submission cannot be attributed to a scout. */
@@ -170,20 +170,20 @@ export class RegistryScoutTaskGateway implements ScoutTaskGateway {
       taskId: task.id,
       sessionId: session?.id ?? task.sessionId,
       episodeId: this.registry.workEpisodeForTask(task.id)?.episodeId ?? null,
-      title: clip(task.title, SCOUT_TEXT_LIMITS.title) ?? "Scout",
-      question: clip(task.intent, SCOUT_TEXT_LIMITS.question),
+      title: clip(task.title, ARCHIVE_TEXT_LIMITS.title) ?? "Scout",
+      question: clip(task.intent, ARCHIVE_TEXT_LIMITS.question),
       origin: {
         agent: task.agent,
         // The model the harness actually reported, when it did; the task's pin is what was
         // asked for and is the honest fallback rather than a guess.
-        model: clip(session?.meta?.modelId ?? session?.meta?.model ?? task.model, SCOUT_TEXT_LIMITS.label),
+        model: clip(session?.meta?.modelId ?? session?.meta?.model ?? task.model, ARCHIVE_TEXT_LIMITS.label),
         // How the task got here, as one searchable word: the sweeping source's configured id
         // when a task source filed it, "schedule" when a recurring mission did, else "manual".
         // Never the external URL - a manifest is portable, and a link into somebody's issue
         // tracker is provenance about a machine the archive may never reach again.
         source: clip(
           task.source?.sourceId ?? (task.scheduleId ? "schedule" : "manual"),
-          SCOUT_TEXT_LIMITS.label,
+          ARCHIVE_TEXT_LIMITS.label,
         ),
       },
       repos: scoutRepoSlots(task, session?.cwd ?? null),

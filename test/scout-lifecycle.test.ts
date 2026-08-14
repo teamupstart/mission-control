@@ -4,9 +4,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
-import { SCOUT_PRIMARY_REPORT_PATH, SCOUT_REPORT_PATH_SHAPE } from "../src/shared/scouts.ts";
+import {
+  ARCHIVE_PRIMARY_REPORT_PATH,
+} from "../src/shared/archives.ts";
+import {
+  SCOUT_REPORT_PATH_SHAPE,
+} from "../src/shared/scouts.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
-import { validReportHtml } from "./helpers/scout-fixture.ts";
+import { validReportHtml } from "./helpers/archive-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ScoutArchiveGate } from "../src/server/tasks.ts";
@@ -34,17 +39,17 @@ process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");
-const { ScoutArchiveManager } = await import("../src/server/scouts/manager.ts");
+const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { RegistryScoutTaskGateway } = await import("../src/server/scouts/task-gateway.ts");
-const { ScoutCaptureStore, clearScoutCaptureJobs } = await import("../src/server/scouts/capture-store.ts");
-const { clearScoutTables } = await import("../src/server/scouts/store.ts");
+const { ArchiveCaptureStore, clearArchiveCaptureJobs } = await import("../src/server/archives/capture-store.ts");
+const { clearArchiveTables } = await import("../src/server/archives/store.ts");
 const { openDb } = await import("../src/server/db.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
 beforeEach(() => {
-  clearScoutCaptureJobs(db);
-  clearScoutTables(db);
+  clearArchiveCaptureJobs(db);
+  clearArchiveTables(db);
 });
 
 let seq = 0;
@@ -87,14 +92,14 @@ function makeWorktree(files: Record<string, string> = {}): { repoRoot: string; w
 interface Harness {
   registry: InstanceType<typeof Registry>;
   tasks: InstanceType<typeof TaskManager>;
-  scouts: InstanceType<typeof ScoutArchiveManager>;
+  scouts: InstanceType<typeof ArchiveManager>;
   library: string;
 }
 
 function harness(options: { afterSubmissionAttribution?: (subject: ScoutSubject) => Promise<void> } = {}): Harness {
   const registry = new Registry();
   const library = mkdirp(join(home, `library-${++seq}`));
-  const scouts = new ScoutArchiveManager({
+  const scouts = new ArchiveManager({
     root: library,
     tasks: new RegistryScoutTaskGateway(registry),
     intervalMs: null,
@@ -279,7 +284,7 @@ test("a scout becomes done once its archive is published and verified", async ()
   // rather than assumed to have happened.
   await h.scouts.reconcileNow();
   const page = h.scouts.list({
-    q: null, producer: null, repo: null, agent: null, status: null,
+    q: null, producer: null, repo: null, agent: null, kind: null, status: null,
     from: null, to: null, cursor: null, limit: 10,
   });
   assert.equal(page.archives.length, 1);
@@ -307,7 +312,7 @@ test("completion rebuilds a deleted bundle instead of trusting its cached ready 
   assert.equal((await h.tasks.complete(task.id, "found it"))?.status, "done");
   assert.ok(h.scouts.captureJobsForTask(task.id)[0]!.attempts > attempts);
   assert.equal(
-    readFileSync(join(h.library, job.producerId, job.archiveId, SCOUT_PRIMARY_REPORT_PATH), "utf8"),
+    readFileSync(join(h.library, job.producerId, job.archiveId, ARCHIVE_PRIMARY_REPORT_PATH), "utf8"),
     report,
   );
 });
@@ -326,7 +331,7 @@ test("completion refuses a corrupt bundle even when its cached index row is read
   await h.scouts.reconcileNow();
   const job = h.scouts.captureJobsForTask(task.id)[0]!;
   writeFileSync(
-    join(h.library, job.producerId, job.archiveId, SCOUT_PRIMARY_REPORT_PATH),
+    join(h.library, job.producerId, job.archiveId, ARCHIVE_PRIMARY_REPORT_PATH),
     "tampered after indexing",
   );
 
@@ -526,7 +531,7 @@ test("cancelling a scout that wrote nothing publishes an honest partial, never a
   assert.equal(jobs[0]!.captureStatus, "partial");
   await h.scouts.reconcileNow();
   const page = h.scouts.list({
-    q: null, producer: null, repo: null, agent: null, status: null,
+    q: null, producer: null, repo: null, agent: null, kind: null, status: null,
     from: null, to: null, cursor: null, limit: 10,
   });
   assert.equal(page.archives[0]!.status, "partial", "never presented as complete");
@@ -616,7 +621,7 @@ test("a capture failure refuses the cleanup and keeps the resources tracked", as
   const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null, status: "failed" });
   h.registry.upsertTask(task);
   // The one failure a retry can actually clear: the rename into the library.
-  const failing = new ScoutArchiveManager({
+  const failing = new ArchiveManager({
     root: h.library,
     tasks: new RegistryScoutTaskGateway(h.registry),
     intervalMs: null,
@@ -703,6 +708,7 @@ test("cleanup rebuilds a deleted current archive before releasing the checkout",
       producer: null,
       repo: null,
       agent: null,
+      kind: null,
       status: null,
       from: null,
       to: null,
@@ -726,7 +732,7 @@ test("cleanup refuses a corrupt current archive and keeps the source checkout", 
   );
   const job = h.scouts.captureJobsForTask(task.id)[0]!;
   writeFileSync(
-    join(h.library, job.producerId, job.archiveId, SCOUT_PRIMARY_REPORT_PATH),
+    join(h.library, job.producerId, job.archiveId, ARCHIVE_PRIMARY_REPORT_PATH),
     "tampered after publication",
   );
   const current = h.registry.getTask(task.id)!;
@@ -753,7 +759,7 @@ test("removing a task never removes its archive", async () => {
 
   await h.scouts.reconcileNow();
   const page = h.scouts.list({
-    q: null, producer: null, repo: null, agent: null, status: null,
+    q: null, producer: null, repo: null, agent: null, kind: null, status: null,
     from: null, to: null, cursor: null, limit: 10,
   });
   assert.equal(page.archives.length, 1, "the answer outlives the card that asked for it");
@@ -1024,14 +1030,14 @@ test("the daemon derives the archive's identity - a submission carries none of i
 
 test("restart recovery waits only for a live scout with no durable submission", async () => {
   const h = harness();
-  const store = new ScoutCaptureStore(db);
+  const store = new ArchiveCaptureStore(db);
   const gateway = new RegistryScoutTaskGateway(h.registry);
   const reserve = (task: Task, cwd: string, live: boolean) => {
     h.registry.upsertTask(task);
     if (live) bindSession(h, task, cwd);
     const subject = gateway.subjectForTask(task.id);
     assert.ok(subject);
-    return store.reserve({ ...subject, producerId: h.scouts.producer.id });
+    return store.reserve({ ...subject, kind: "scout", producerId: h.scouts.producer.id });
   };
 
   // A scout still running: the daemon died between reserving and recording a submission, and

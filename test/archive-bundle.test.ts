@@ -4,11 +4,11 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { verifyScoutBundle } from "../src/server/scouts/bundle.ts";
-import { extractVisibleText, validateStaticReportHtml } from "../src/server/scouts/html.ts";
-import { loadScoutProducer } from "../src/server/scouts/producer.ts";
-import { mediaTypeForArchivePath, resolveArchiveFile, ScoutPathError } from "../src/server/scouts/paths.ts";
-import { writeScoutBundle } from "./helpers/scout-fixture.ts";
+import { verifyArchiveBundle } from "../src/server/archives/bundle.ts";
+import { extractVisibleText, validateStaticReportHtml } from "../src/server/archives/html.ts";
+import { loadArchiveProducer } from "../src/server/archives/producer.ts";
+import { mediaTypeForArchivePath, resolveArchiveFile, ArchivePathError } from "../src/server/archives/paths.ts";
+import { writeScoutBundle } from "./helpers/archive-fixture.ts";
 
 /**
  * Verification: what turns a manifest's CLAIMS into facts, and what it refuses.
@@ -33,7 +33,7 @@ test("a well-formed bundle verifies, and reports what it contains", async () => 
     companions: { "permission-events.csv": "when,what\n1,grant lost\n" },
     supporting: { "repo-01/evidence/resume-debug.log": "reset() ran without a grant replay\n" },
   });
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "verified");
   if (read.kind !== "verified") return;
   assert.equal(read.bundle.status, "ready");
@@ -52,7 +52,7 @@ test("a well-formed bundle verifies, and reports what it contains", async () => 
 test("a partial bundle verifies as partial and keeps its missing entries", async () => {
   const root = library("partial");
   const written = writeScoutBundle(root, { reportHtml: null });
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "verified");
   if (read.kind !== "verified") return;
   assert.equal(read.bundle.status, "partial");
@@ -67,7 +67,7 @@ test("a bundle whose payload has not arrived is incomplete, never unreadable", a
     companions: { "chart.png": "not really a png" },
     omitFiles: ["report/chart.png"],
   });
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "incomplete", "a missing payload file must be retried, not condemned");
   if (read.kind !== "incomplete") return;
   assert.match(read.reason, /report\/chart\.png/);
@@ -77,7 +77,7 @@ test("a file whose bytes do not match the manifest is incomplete", async () => {
   const root = library("mismatch");
   const written = writeScoutBundle(root, { companions: { "notes.txt": "before" } });
   writeFileSync(join(written.dir, "report/notes.txt"), "after-and-longer");
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "incomplete");
   if (read.kind !== "incomplete") return;
   assert.match(read.reason, /report\/notes\.txt/);
@@ -87,7 +87,7 @@ test("a file of the right size with the wrong bytes is incomplete", async () => 
   const root = library("digest");
   const written = writeScoutBundle(root, { companions: { "notes.txt": "abcdef" } });
   writeFileSync(join(written.dir, "report/notes.txt"), "fedcba");
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "incomplete");
   if (read.kind !== "incomplete") return;
   assert.match(read.reason, /digest/);
@@ -101,7 +101,7 @@ test("a manifest that does not match the directory it sits in is unreadable", as
       producer: { ...(manifest.producer as object), id: "11111111-2222-3333-4444-555555555555" },
     }),
   });
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "unreadable");
   if (read.kind !== "unreadable") return;
   assert.match(read.reason, /does not match the directory/);
@@ -112,7 +112,7 @@ test("a manifest whose content digest does not describe its own contents is unre
   const written = writeScoutBundle(root, {
     manifestJson: (manifest) => ({ ...manifest, content_digest: `sha256:${"0".repeat(64)}` }),
   });
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "unreadable");
   if (read.kind !== "unreadable") return;
   assert.match(read.reason, /content digest/);
@@ -129,7 +129,7 @@ test("a manifest claiming a path outside the bundle is unreadable, and nothing i
       return manifest;
     },
   });
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "unreadable");
 });
 
@@ -138,7 +138,7 @@ test("a symlinked artifact is refused even when it points inside the bundle", as
   const written = writeScoutBundle(root, { companions: { "notes.txt": "real" } });
   rmSync(join(written.dir, "report/notes.txt"));
   symlinkSync(join(written.dir, "report/report.html"), join(written.dir, "report/notes.txt"));
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.notEqual(read.kind, "verified", "a symlink is never an archived file");
 });
 
@@ -147,7 +147,7 @@ test("a bundle from a newer format version is unreadable and says so", async () 
   const written = writeScoutBundle(root, {
     manifestJson: (manifest) => ({ ...manifest, format_version: 99 }),
   });
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "unreadable");
   if (read.kind !== "unreadable") return;
   assert.equal(read.formatVersion, 99);
@@ -158,7 +158,7 @@ test("a report that could execute or fetch is unreadable however valid its diges
   const written = writeScoutBundle(root, {
     reportHtml: `<!doctype html><html><body><h1>Findings</h1><script>fetch("https://x")</script></body></html>`,
   });
-  const read = await verifyScoutBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
+  const read = await verifyArchiveBundle(root, { producerId: written.producerId, archiveId: written.archiveId });
   assert.equal(read.kind, "unreadable");
   if (read.kind !== "unreadable") return;
   assert.match(read.reason, /not a static report/);
@@ -169,7 +169,7 @@ test("a directory with no manifest is absent, not an error", async () => {
   const producerId = "7aa704fd-d2ab-48b3-a726-0c2643ed91d2";
   const archiveId = "9f5db6c8-79f5-4f9e-84aa-8b5dc15362f8";
   mkdirSync(join(root, producerId, archiveId), { recursive: true });
-  const read = await verifyScoutBundle(root, { producerId, archiveId });
+  const read = await verifyArchiveBundle(root, { producerId, archiveId });
   assert.equal(read.kind, "absent");
 });
 
@@ -191,6 +191,94 @@ test("version 1 allows static markup, inline CSS and SVG, fragments, and data: i
   assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result.problems));
 });
 
+test("an external link is allowed on an anchor, and only on an anchor", () => {
+  const ok = (fragment: string): void => {
+    const result = validateStaticReportHtml(
+      `<!doctype html><html><body>${fragment}</body></html>`,
+      new Set(["report.html"]),
+    );
+    assert.equal(result.ok, true, result.ok ? "" : `${fragment}: ${JSON.stringify(result.problems)}`);
+  };
+  ok('<a href="https://example.com/docs#anchor?q=1">the upstream documentation</a>');
+  ok('<a href="http://example.com/docs">an insecure one, still only a click away</a>');
+  // An SVG anchor is still an anchor: parse5 reports its tag as `a`.
+  ok('<svg><a href="https://example.com/docs"><text>x</text></a></svg>');
+});
+
+test("every slot that is not an anchor's href refuses http(s), one case per slot", () => {
+  // The relaxation above is confined to `<a href>`. This is the boundary test, and it is
+  // per-slot on purpose: a single case would pass while the allowance leaked into every other
+  // slot, and each of these fires on OPEN, before anyone has decided anything. Two cases here
+  // are not fetches at all and are refused anyway, because the allowance names anchors:
+  // `ping`, which is sent on a click without being where the click goes, and `<area href>`,
+  // which is a real clickable destination that no archived report needs.
+  const fetching: Array<[string, string]> = [
+    // The `href` fetching elements come FIRST because they are the near misses that matter
+    // most: `href` is a click destination on `<a>` and a resource everywhere else, so an
+    // allowance keyed to the attribute name rather than the element+attribute PAIR admits a
+    // page that phones home the moment it opens. A revision of this validator did exactly
+    // that, and these four are what caught it.
+    ["link[href] stylesheet", '<link rel="stylesheet" href="https://example.com/a.css">'],
+    ["link[href] icon", '<link rel="icon" href="https://example.com/f.ico">'],
+    ["svg use[href]", '<svg><use href="https://example.com/x.svg#a"/></svg>'],
+    ["svg image[href]", '<svg><image href="https://example.com/a.png"/></svg>'],
+    // `<form>` is a forbidden element, so neither of these can ever be submitted - and a slot
+    // no click can reach is not a destination, so it gets no allowance either.
+    ["formaction", '<button formaction="https://example.com/x">x</button>'],
+    ["action", '<div action="https://example.com/x">x</div>'],
+    ["src", '<img src="https://example.com/pixel.png" alt="">'],
+    ["srcset", '<img srcset="https://example.com/a.png 2x" alt="">'],
+    ["imagesrcset", '<link rel="preload" as="image" imagesrcset="https://example.com/a.png 2x">'],
+    ["poster", '<video poster="https://example.com/p.jpg"></video>'],
+    ["data", '<div data="https://example.com/x"></div>'],
+    ["cite", '<blockquote cite="https://example.com/x">q</blockquote>'],
+    ["longdesc", '<img longdesc="https://example.com/x" alt="">'],
+    ["manifest", '<html manifest="https://example.com/x"></html>'],
+    ["ping", '<a href="report.html" ping="https://example.com/track">x</a>'],
+    ["area[href]", '<map name="m"><area href="https://example.com/docs" shape="rect" coords="0,0,1,1"></map>'],
+    ["xlink:href", '<svg><image xlink:href="https://example.com/a.png"/></svg>'],
+    ["css url()", '<style>.a { background: url(https://example.com/a.png); }</style>'],
+    ["css url() inline", '<div style="background:url(https://example.com/a.png)">x</div>'],
+    ["css @import", '<style>@import url(https://example.com/x.css);</style>'],
+    ["css image-set()", '<style>.a { background: image-set("https://example.com/a.png" 1x); }</style>'],
+  ];
+  for (const [slot, fragment] of fetching) {
+    const result = validateStaticReportHtml(
+      `<!doctype html><html><body>${fragment}</body></html>`,
+      new Set(["report.html"]),
+    );
+    assert.equal(result.ok, false, `${slot} must still refuse an external URL`);
+    if (result.ok) continue;
+    assert.ok(
+      result.problems.some((problem) => problem.code === "external_url"),
+      `${slot} should report external_url, got ${result.problems.map((p) => p.code).join(",")}`,
+    );
+  }
+});
+
+test("the navigational allowance is exactly http(s), and data: is unchanged everywhere", () => {
+  const refuse = (fragment: string, code: string): void => {
+    const result = validateStaticReportHtml(`<!doctype html><html><body>${fragment}</body></html>`);
+    assert.equal(result.ok, false, `${fragment} must be refused`);
+    if (result.ok) return;
+    assert.ok(
+      result.problems.some((problem) => problem.code === code),
+      `${fragment} should report ${code}, got ${result.problems.map((p) => p.code).join(",")}`,
+    );
+  };
+  // Not "any scheme in a link": these navigate somewhere that is not the web, and two of
+  // them execute.
+  refuse('<a href="javascript:go()">x</a>', "external_url");
+  refuse('<a href="file:///etc/passwd">x</a>', "external_url");
+  refuse('<a href="mailto:someone@example.com">x</a>', "external_url");
+  refuse('<a href="vbscript:go()">x</a>', "external_url");
+  refuse('<a href="//example.com">x</a>', "protocol_relative_url");
+  // A data: link target opens attacker-authored markup with the archive's own opener, so it
+  // stays refused exactly as before - the relaxation moved nothing here.
+  refuse('<a href="data:text/html,<b>x">x</a>', "data_navigation");
+  refuse('<a href="report.html" ping="data:text/plain,x">x</a>', "data_navigation");
+});
+
 test("each executing, navigating, or fetching construct is refused by name", () => {
   const cases: Array<[string, string]> = [
     ["<script>alert(1)</script>", "forbidden_element"],
@@ -201,7 +289,6 @@ test("each executing, navigating, or fetching construct is refused by name", () 
     ["<base href=\"https://example.com/\">", "forbidden_element"],
     ["<meta http-equiv=\"refresh\" content=\"0;url=b.html\">", "meta_refresh"],
     ["<img srcdoc=\"x\">", "forbidden_attribute"],
-    ["<a href=\"https://example.com\">out</a>", "external_url"],
     ["<a href=\"//example.com\">out</a>", "protocol_relative_url"],
     ["<a href=\"javascript:go()\">out</a>", "external_url"],
     ["<a href=\"data:text/html,<b>x\">out</a>", "data_navigation"],
@@ -267,15 +354,15 @@ test("an artifact path is resolved against the bundle, never joined blindly", as
   assert.ok(resolved.endsWith("report/report.html"));
   await assert.rejects(
     () => resolveArchiveFile(written.dir, "../../../etc/passwd"),
-    (error: unknown) => error instanceof ScoutPathError,
+    (error: unknown) => error instanceof ArchivePathError,
   );
   await assert.rejects(
     () => resolveArchiveFile(written.dir, "/etc/passwd"),
-    (error: unknown) => error instanceof ScoutPathError,
+    (error: unknown) => error instanceof ArchivePathError,
   );
   await assert.rejects(
     () => resolveArchiveFile(written.dir, "report/nothing-here.txt"),
-    (error: unknown) => error instanceof ScoutPathError && error.status === 404,
+    (error: unknown) => error instanceof ArchivePathError && error.status === 404,
   );
 });
 
@@ -293,12 +380,12 @@ test("the producer identity is created once and reread, and losing it opens a ne
   const dir = join(home, "producer");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "scout-producer.json");
-  const first = loadScoutProducer(file, join(dir, "scouts"));
-  const again = loadScoutProducer(file, join(dir, "scouts"));
+  const first = loadArchiveProducer(file, join(dir, "scouts"));
+  const again = loadArchiveProducer(file, join(dir, "scouts"));
   assert.equal(first.id, again.id, "a second read must not open a second namespace");
 
   rmSync(file);
-  const replaced = loadScoutProducer(file, join(dir, "scouts"));
+  const replaced = loadArchiveProducer(file, join(dir, "scouts"));
   assert.notEqual(replaced.id, first.id, "a lost identity opens a NEW namespace rather than reusing one");
 });
 
@@ -307,11 +394,11 @@ test("a corrupt producer identity is replaced rather than trusted", () => {
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "scout-producer.json");
   writeFileSync(file, "{ not json");
-  const identity = loadScoutProducer(file, join(dir, "scouts"));
+  const identity = loadArchiveProducer(file, join(dir, "scouts"));
   assert.match(identity.id, /^[0-9a-f-]{36}$/);
 
   writeFileSync(file, JSON.stringify({ id: "../../elsewhere", label: "x" }));
-  const rejected = loadScoutProducer(file, join(dir, "scouts"));
+  const rejected = loadArchiveProducer(file, join(dir, "scouts"));
   assert.notEqual(rejected.id, "../../elsewhere", "an ungenerated id must never become a directory name");
 });
 

@@ -4,7 +4,8 @@ import {
   SCOUT_REPORT_ROOT,
 } from "@shared/scouts.ts";
 import type { Task } from "@shared/types.ts";
-import { scoutRepoSlots, type ScoutRepoSlot } from "./repos.ts";
+import type { ArchiveRepoSlot } from "../archives/capture-store.ts";
+import { scoutRepoSlots } from "./repos.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./submission-tool.ts";
 
 /**
@@ -66,7 +67,7 @@ export function withScoutReportContract(
  * of rules is read like a page of none - so each line is a thing the archive will actually
  * refuse or lose if it is not done.
  */
-export function scoutReportAppendix(slots: readonly ScoutRepoSlot[]): string {
+export function scoutReportAppendix(slots: readonly ArchiveRepoSlot[]): string {
   const lines = [
     SCOUT_APPENDIX_MARKER,
     "This is a scout task. The deliverable is the answer, written as one page - not a change,",
@@ -109,7 +110,7 @@ export function scoutReportAppendix(slots: readonly ScoutRepoSlot[]): string {
  * other way to say WHICH checkout a path is relative to - and a locator whose slot is guessed
  * reaches nothing at all.
  */
-function supportingLines(slots: readonly ScoutRepoSlot[]): string[] {
+function supportingLines(slots: readonly ArchiveRepoSlot[]): string[] {
   if (slots.length === 0) return [];
   if (slots.length === 1) {
     const only = slots[0]!;

@@ -111,6 +111,16 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   that no migration can reach. Add, never rename. `MEMORY_REFERENCE_MARKER` is exported
   separately from the path it currently equals so the retro's idempotence check on
   `AGENTS.md` can survive the path moving. See [Repository memory](../repository-memory.md)
+- Archive format identifiers and vocabularies (`src/shared/archives.ts`) - the `format`
+  string, the format version tuple, and the kind, capture-status, artifact-role,
+  missing-kind and search-segment vocabularies are written into `manifest.json` in every
+  bundle on every machine, including bundles this build will never open. Nothing here is in
+  this database, so a rename orphans evidence no migration can reach. This is why the rename
+  to a kind-agnostic library was ADDITIVE: `ARCHIVE_FORMAT` is what this build writes,
+  `SCOUT_ARCHIVE_FORMAT` keeps its original meaning for ever and is only ever read, and no
+  published bundle is rewritten or moved. Adding a kind means appending to `ARCHIVE_KINDS`
+  and registering a planner in `src/server/archives/planners.ts`; a kind with no planner is
+  readable and not writable, which is deliberate. See [Archives](../archives.md)
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
   editing one rewrites the graph every existing binding pinned to it. The literal node and

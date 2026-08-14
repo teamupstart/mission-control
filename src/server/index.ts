@@ -43,7 +43,7 @@ import { startAwayWatcher } from "./away/watcher.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
 import { reportMissionMcpDrift } from "./mission-mcp.ts";
-import { ScoutArchiveManager } from "./scouts/manager.ts";
+import { ArchiveManager } from "./archives/manager.ts";
 import { RegistryScoutTaskGateway } from "./scouts/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
 import { warnIfSessionAttributionDisabled } from "./cost.ts";
@@ -97,7 +97,7 @@ const reviews = new ReviewManager(registry);
 // ordering against `startPoller` is the contract - see the comment there.
 const sdkSessions = new SdkSupervisor(registry);
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
-// The portable scout library and its disposable index. CONSTRUCTED here, above `TaskManager`,
+// The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
 // and that ordering is load-bearing rather than tidy: the TaskManager constructor's startup
 // reconciliation reclaims the worktree of every task whose agent did not survive the restart,
 // and a scout's report is an untracked file in exactly that tree. Building the archive owner
@@ -107,22 +107,22 @@ const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // Deliberately not STARTED here: discovery is scheduled below, after this process has won the
 // port and is answering requests. An installation whose database was deleted, or whose library
 // was restored from a backup, reindexes everything on its first pass, and a daemon that held
-// its own startup for that would 503 for as long as hashing somebody's whole scout history
+// its own startup for that would 503 for as long as hashing somebody's whole archive history
 // takes.
 //
 // The watcher is a latency hint; the recurring scan is the authority. Both live inside the
 // manager, and the Registry is how a finished batch reaches open dashboards - one invalidation
 // per batch, no history in the snapshot, no browser polling.
-const scouts = new ScoutArchiveManager({
-  onChanged: () => registry.emitScoutArchiveChanged(),
+const archives = new ArchiveManager({
+  onChanged: () => registry.emitArchiveChanged(),
   watch: true,
   tasks: new RegistryScoutTaskGateway(registry),
 });
 // The last-chance reservation. `onSessionExit` fires inside `beginEviction`, while the session
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
-registry.onSessionExit((session) => scouts.reserveOnExit(session));
-const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns, scouts);
+registry.onSessionExit((session) => archives.reserveOnExit(session));
+const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns, archives);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
@@ -387,7 +387,7 @@ const app = buildApp(
   pendingTurns,
   undefined,
   keepAwake,
-  scouts,
+  archives,
   workflowCommands,
 );
 
@@ -419,13 +419,13 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // long, and it must not be able to delay the port answering. It is fire-and-forget by
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
-  scouts.start();
+  archives.start();
   // And the captures this daemon already owed when it stopped. Separate from discovery
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips
   // any scout still waiting on a live agent - that one settles through the ordinary paths.
-  void scouts.recoverJobs().catch((error: unknown) => {
-    console.warn("[mission-control] could not resume scout captures:", error);
+  void archives.recoverJobs().catch((error: unknown) => {
+    console.warn("[mission-control] could not resume archive captures:", error);
   });
   // Say at BOOT whether the MCP bundle this daemon would hand a dispatched agent still serves
   // the tools this build knows about. The dispatch guards refuse a launch that needs a missing
@@ -485,7 +485,7 @@ async function shutdown(): Promise<void> {
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
-  scouts.stop();
+  archives.stop();
   // Release the idle-sleep assertion while we can still do it gracefully. `caffeinate`'s
   // own `-w <daemon PID>` covers every exit that never reaches this line, so this is the
   // orderly half of a two-part cleanup, not the only one.

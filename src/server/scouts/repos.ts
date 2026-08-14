@@ -1,9 +1,14 @@
 import { basename } from "node:path";
-import { scoutRepoSlot } from "@shared/scouts.ts";
+import { archiveRepoSlot } from "@shared/archives.ts";
 import type { Task } from "@shared/types.ts";
+import type { ArchiveRepoSlot } from "../archives/capture-store.ts";
 
 /**
  * The generated repository slots one scout task works across.
+ *
+ * `ArchiveRepoSlot` itself is the capture path's, beside the job that carries it. What is
+ * scout-shaped is only the DERIVATION below: which of a task's checkouts a scout may produce
+ * evidence from, and in what order.
  *
  * A slot is the ONLY name a scout may use for a checkout. The alternative - letting a
  * submission carry a path and working out which tree it belongs to - is the same mistake as
@@ -18,23 +23,6 @@ import type { Task } from "@shared/types.ts";
  * `extraRepos` in its stored `position` order, which is the order `intentWithRepoManifest`
  * already presents them in.
  */
-export interface ScoutRepoSlot {
-  slot: string;
-  /** A human name for the repository. Informational; never an identity. */
-  label: string | null;
-  /**
-   * The checkout on THIS machine, or null when the task holds none.
-   *
-   * Null is ordinary rather than exceptional: a backlog task has no worktree yet, and an
-   * ASSIGNED scout never gets one - it runs in the checkout the operator's own agent was
-   * already standing in, which is why `fallbackRoot` exists.
-   */
-  root: string | null;
-  /** The commit the task's branch was cut at, when it is known. Informational. */
-  head: string | null;
-  primary: boolean;
-}
-
 /**
  * Slot every repository this task can produce evidence from.
  *
@@ -43,10 +31,10 @@ export interface ScoutRepoSlot {
  * multi-repo task, so an assignment always resolves to exactly one slot, and using the live
  * session's checkout is the only reading that can be true there.
  */
-export function scoutRepoSlots(task: Task, fallbackRoot: string | null = null): ScoutRepoSlot[] {
-  const slots: ScoutRepoSlot[] = [
+export function scoutRepoSlots(task: Task, fallbackRoot: string | null = null): ArchiveRepoSlot[] {
+  const slots: ArchiveRepoSlot[] = [
     {
-      slot: scoutRepoSlot(1),
+      slot: archiveRepoSlot(1),
       label: repoLabel(task.repoRoot),
       root: task.worktreePath ?? fallbackRoot,
       head: task.baseSha,
@@ -55,7 +43,7 @@ export function scoutRepoSlots(task: Task, fallbackRoot: string | null = null): 
   ];
   task.extraRepos.forEach((entry, index) => {
     slots.push({
-      slot: scoutRepoSlot(index + 2),
+      slot: archiveRepoSlot(index + 2),
       label: repoLabel(entry.repoRoot),
       root: entry.worktreePath,
       head: entry.baseSha ?? null,
@@ -66,7 +54,7 @@ export function scoutRepoSlots(task: Task, fallbackRoot: string | null = null): 
 }
 
 /** The slot a locator names, or null when the task never issued it. */
-export function findScoutRepoSlot(slots: readonly ScoutRepoSlot[], slot: string): ScoutRepoSlot | null {
+export function findScoutRepoSlot(slots: readonly ArchiveRepoSlot[], slot: string): ArchiveRepoSlot | null {
   return slots.find((entry) => entry.slot === slot) ?? null;
 }
 

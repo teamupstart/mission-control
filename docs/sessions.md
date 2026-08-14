@@ -1347,7 +1347,7 @@ would be reported as such rather than silently skipped.)
 This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It exposes
 six review-channel tools, plus two submission tools a session is given only when its task needs
 one - [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an ensemble member and
-[`submit_scout_artifacts`](scout-archives.md) for a scout:
+[`submit_scout_artifacts`](archives.md) for a scout:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable

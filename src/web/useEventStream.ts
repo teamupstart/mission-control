@@ -114,17 +114,17 @@ export interface MissionState {
    */
   harnessesRevision: number;
   /**
-   * How many times the local scout library has changed since this stream opened, plus one
-   * per (re)connect. A COUNTER, for `harnessesRevision`'s reason and one more: scout history
-   * is deliberately absent from the snapshot, so there is nothing for a reconnect to restore
-   * and the only honest response to regaining the stream is to re-run whatever bounded query
-   * is on screen.
+   * How many times the local archive library has changed since this stream opened, plus one
+   * per (re)connect. A COUNTER, for `harnessesRevision`'s reason and one more: archive
+   * history is deliberately absent from the snapshot, so there is nothing for a reconnect to
+   * restore and the only honest response to regaining the stream is to re-run whatever
+   * bounded query is on screen.
    *
-   * Unused until the Scouts page exists. It is here now because `ServerEvent` is exhaustive
+   * Unused until the Archives page exists. It is here now because `ServerEvent` is exhaustive
    * across the daemon and this hook, and a wire contract that only half-lands is a version
    * skew waiting to happen; carrying the number costs nothing and starts no polling.
    */
-  scoutsRevision: number;
+  archivesRevision: number;
   connected: boolean;
   /** True once the initial `snapshot` has populated state (distinct from the SSE
    * connection opening). Alerting keys off this so opening the dashboard doesn't
@@ -157,7 +157,7 @@ export function useEventStream(): MissionState {
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
   const [harnessesRevision, setHarnessesRevision] = useState(0);
-  const [scoutsRevision, setScoutsRevision] = useState(0);
+  const [archivesRevision, setArchivesRevision] = useState(0);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const esRef = useRef<EventSource | null>(null);
@@ -171,10 +171,10 @@ export function useEventStream(): MissionState {
       // A change announced while the channel was down reached nobody, and this config is not
       // part of the reconnect snapshot - so treat regaining the stream as a reason to re-read.
       setHarnessesRevision((n) => n + 1);
-      // Same rule for the scout library, which rides no snapshot at all: bundles can be
-      // reconciled, refused, or pruned while the channel is down, and a mounted Scouts page
+      // Same rule for the archive library, which rides no snapshot at all: bundles can be
+      // reconciled, refused, or pruned while the channel is down, and a mounted Archives page
       // would otherwise go on showing the page it had before the gap.
-      setScoutsRevision((n) => n + 1);
+      setArchivesRevision((n) => n + 1);
     };
     es.onerror = () => {
       setConnected(false);
@@ -384,8 +384,8 @@ export function useEventStream(): MissionState {
         // Counted for the same reason, and one batch of reconciled bundles is one bump: the
         // page's response is to re-run its own bounded, filtered query, and forty frames
         // would not tell it anything one does not.
-        case "scout_archive_changed":
-          setScoutsRevision((n) => n + 1);
+        case "archive_changed":
+          setArchivesRevision((n) => n + 1);
           break;
         default: {
           // Exhaustiveness: this assignment fails to compile the moment `ServerEvent`
@@ -430,7 +430,7 @@ export function useEventStream(): MissionState {
     settingsStatus,
     keepAwakeStatus,
     harnessesRevision,
-    scoutsRevision,
+    archivesRevision,
     connected,
     hasSnapshot,
   };

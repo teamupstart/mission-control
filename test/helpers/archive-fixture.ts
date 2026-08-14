@@ -2,18 +2,20 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
-  SCOUT_ARCHIVE_FORMAT_VERSION,
-  SCOUT_PRIMARY_ARTIFACT_ID,
-  SCOUT_PRIMARY_REPORT_PATH,
-  canonicalScoutContentPayload,
-  scoutArchiveKey,
-  scoutArtifactId,
-  serializeScoutManifest,
-  type ScoutManifest,
-  type ScoutManifestArtifact,
-  type ScoutManifestMissing,
-  type ScoutManifestRepository,
-} from "../../src/shared/scouts.ts";
+  ARCHIVE_FORMAT_VERSION,
+  SCOUT_ARCHIVE_FORMAT,
+  ARCHIVE_PRIMARY_ARTIFACT_ID,
+  ARCHIVE_PRIMARY_REPORT_PATH,
+  canonicalArchiveContentPayload,
+  archiveKey,
+  archiveArtifactId,
+  serializeArchiveManifest,
+  type ArchiveKind,
+  type ArchiveManifest,
+  type ArchiveManifestArtifact,
+  type ArchiveManifestMissing,
+  type ArchiveManifestRepository,
+} from "../../src/shared/archives.ts";
 
 /**
  * Build real version 1 scout bundles on disk.
@@ -40,6 +42,14 @@ export function validReportHtml(body = "The resume path never replayed the repos
 }
 
 export interface ScoutBundleSpec {
+  kind?: ArchiveKind;
+  /**
+   * Write the bundle in the LEGACY format string, with no kind field.
+   *
+   * What every bundle on every machine that predates the kind discriminator looks like, and
+   * the only way to prove the read path still accepts one. Never produced by the daemon.
+   */
+  legacyFormat?: boolean;
   producerId?: string;
   archiveId?: string;
   title?: string;
@@ -53,14 +63,14 @@ export interface ScoutBundleSpec {
   agent?: string | null;
   model?: string | null;
   source?: string | null;
-  repositories?: ScoutManifestRepository[];
+  repositories?: ArchiveManifestRepository[];
   /** `null` writes no report at all - a partial archive. */
   reportHtml?: string | null;
   /** Extra files beside the report, keyed by their path within `report/`. */
   companions?: Record<string, string>;
   /** Explicit supporting files, keyed by their path within `artifacts/`. */
   supporting?: Record<string, string>;
-  missing?: ScoutManifestMissing[];
+  missing?: ArchiveManifestMissing[];
   /** Rewrite the manifest before it is written, to forge or damage one. */
   manifestJson?: (manifest: Record<string, unknown>) => unknown;
   /** Skip writing named archive paths, leaving the manifest claiming them. */
@@ -72,7 +82,20 @@ export interface WrittenScoutBundle {
   archiveId: string;
   key: string;
   dir: string;
-  manifest: ScoutManifest;
+  manifest: ArchiveManifest;
+}
+
+/**
+ * The same manifest as an older build would have written it: the legacy `format` string and
+ * no `kind` field at all. Deliberately built by REWRITING the current serializer's output
+ * rather than by keeping a second serializer, so a field added inside version 1 shows up in
+ * both and the legacy vector cannot quietly drift into a shape nothing ever wrote.
+ */
+function legacyManifestJson(manifest: ArchiveManifest): string {
+  const body = JSON.parse(serializeArchiveManifest(manifest)) as Record<string, unknown>;
+  body.format = SCOUT_ARCHIVE_FORMAT;
+  delete body.kind;
+  return `${JSON.stringify(body, null, 2)}\n`;
 }
 
 function sha256(bytes: Buffer): string {
@@ -95,18 +118,18 @@ export function writeScoutBundle(libraryRoot: string, spec: ScoutBundleSpec = {}
   mkdirSync(dir, { recursive: true });
   const omit = new Set(spec.omitFiles ?? []);
 
-  const artifacts: ScoutManifestArtifact[] = [];
+  const artifacts: ArchiveManifestArtifact[] = [];
   const reportHtml = spec.reportHtml === undefined ? validReportHtml() : spec.reportHtml;
   if (reportHtml !== null) {
-    const bytes = omit.has(SCOUT_PRIMARY_REPORT_PATH)
+    const bytes = omit.has(ARCHIVE_PRIMARY_REPORT_PATH)
       ? Buffer.from(reportHtml, "utf8")
-      : write(dir, SCOUT_PRIMARY_REPORT_PATH, reportHtml);
+      : write(dir, ARCHIVE_PRIMARY_REPORT_PATH, reportHtml);
     artifacts.push({
-      id: SCOUT_PRIMARY_ARTIFACT_ID,
+      id: ARCHIVE_PRIMARY_ARTIFACT_ID,
       role: "primary_report",
       repoSlot: spec.repositories?.[0]?.slot ?? null,
       originalPath: "docs/reports/resume-permissions/report.html",
-      archivePath: SCOUT_PRIMARY_REPORT_PATH,
+      archivePath: ARCHIVE_PRIMARY_REPORT_PATH,
       mediaType: "text/html",
       bytes: bytes.length,
       sha256: sha256(bytes),
@@ -121,7 +144,7 @@ export function writeScoutBundle(libraryRoot: string, spec: ScoutBundleSpec = {}
       ? Buffer.from(contents, "utf8")
       : write(dir, archivePath, contents);
     artifacts.push({
-      id: scoutArtifactId(ordinal),
+      id: archiveArtifactId(ordinal),
       role: "report_companion",
       repoSlot: spec.repositories?.[0]?.slot ?? null,
       originalPath: `docs/reports/resume-permissions/${relative}`,
@@ -138,7 +161,7 @@ export function writeScoutBundle(libraryRoot: string, spec: ScoutBundleSpec = {}
       ? Buffer.from(contents, "utf8")
       : write(dir, archivePath, contents);
     artifacts.push({
-      id: scoutArtifactId(ordinal),
+      id: archiveArtifactId(ordinal),
       role: "supporting",
       repoSlot: relative.split("/")[0] ?? null,
       originalPath: relative.split("/").slice(1).join("/"),
@@ -149,8 +172,9 @@ export function writeScoutBundle(libraryRoot: string, spec: ScoutBundleSpec = {}
     });
   }
 
-  const manifest: ScoutManifest = {
-    formatVersion: SCOUT_ARCHIVE_FORMAT_VERSION,
+  const manifest: ArchiveManifest = {
+    formatVersion: ARCHIVE_FORMAT_VERSION,
+    kind: spec.kind ?? "scout",
     producer: { id: producerId, label: spec.producerLabel ?? "a test machine" },
     archive: {
       id: archiveId,
@@ -171,7 +195,7 @@ export function writeScoutBundle(libraryRoot: string, spec: ScoutBundleSpec = {}
         { slot: "repo-01", label: "mission-control", head: "4cc55a1d69bb7f843881001643c76185f5c7db1a" },
       ],
     },
-    primaryArtifactId: reportHtml === null ? null : SCOUT_PRIMARY_ARTIFACT_ID,
+    primaryArtifactId: reportHtml === null ? null : ARCHIVE_PRIMARY_ARTIFACT_ID,
     artifacts,
     missing:
       spec.missing ??
@@ -184,14 +208,16 @@ export function writeScoutBundle(libraryRoot: string, spec: ScoutBundleSpec = {}
             },
           ]
         : []),
-    contentDigest: `sha256:${createHash("sha256").update(canonicalScoutContentPayload(artifacts)).digest("hex")}`,
+    contentDigest: `sha256:${createHash("sha256").update(canonicalArchiveContentPayload(artifacts)).digest("hex")}`,
   };
 
-  const serialized = serializeScoutManifest(manifest);
+  const serialized = spec.legacyFormat
+    ? legacyManifestJson(manifest)
+    : serializeArchiveManifest(manifest);
   const body = spec.manifestJson
     ? `${JSON.stringify(spec.manifestJson(JSON.parse(serialized) as Record<string, unknown>), null, 2)}\n`
     : serialized;
   writeFileSync(join(dir, "manifest.json"), body, "utf8");
 
-  return { producerId, archiveId, key: scoutArchiveKey(producerId, archiveId), dir, manifest };
+  return { producerId, archiveId, key: archiveKey(producerId, archiveId), dir, manifest };
 }

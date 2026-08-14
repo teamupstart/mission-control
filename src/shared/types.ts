@@ -2467,13 +2467,13 @@ export type ServerEvent =
    */
   | { type: "keep_awake_status"; status: KeepAwakeStatus }
   /**
-   * The local scout library changed - a reconciliation batch indexed, refused, or pruned at
-   * least one archive bundle. An invalidation signal: a surface showing scout history
-   * re-runs its own bounded query against `GET /api/scouts`.
+   * The local archive library changed - a reconciliation batch indexed, refused, or pruned
+   * at least one bundle. An invalidation signal: a surface showing archive history re-runs
+   * its own bounded query against `GET /api/archives`.
    *
-   * CONTENT-FREE, and for a stronger reason than `harnesses_config_changed` above. Scout
-   * archives are HISTORY: a library holds every scout an operator ever kept, and it is
-   * explicitly not evicted by age or count. Putting rows on this frame - or in the reconnect
+   * CONTENT-FREE, and for a stronger reason than `harnesses_config_changed` above. Archives
+   * are HISTORY: a library holds every archive an operator ever kept, and it is explicitly
+   * not evicted by age or count. Putting rows on this frame - or in the reconnect
    * snapshot - would mean every dashboard paying for the whole archive on every connect, to
    * populate a page that is bounded, filtered, and paginated anyway. So history stays out of
    * the stream entirely and only the fact that it moved crosses it.
@@ -2482,7 +2482,7 @@ export type ServerEvent =
    * single revision bump, because forty is not more informative than one to something whose
    * only response is to re-read its current page.
    */
-  | { type: "scout_archive_changed" };
+  | { type: "archive_changed" };
 
 // ---- session transcript (expanded card) ----
 

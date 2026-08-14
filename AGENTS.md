@@ -63,10 +63,13 @@ A test that needs a particular database keeps seeding its own home above its imp
 as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test
 runner `openDb` opens only the `harness.db` named by the state home set *right now*, and only
 when that home resolves - through symlinks, not just as spelled - to somewhere inside the temp
-dir. A missing override, one applied after the path was already frozen, one naming a real
-state dir under any of its historical names, and one changed after the connection was opened
-are all refused before SQLite is touched. Outside the test runner the check returns
-immediately and the daemon opens the operator's state exactly as it always has.
+dir. A missing override, one applied after the path was already frozen, and one naming a real
+state dir - under any of its historical names, or wherever the daemon was configured to keep
+it - are refused before SQLite is touched at all. An override changed after a connection is
+already open is the one case where SQLite has necessarily been opened, by that first call; it
+is refused before the cached connection is handed back, so nothing is written through it under
+the new home. Outside the test runner the check returns immediately and the daemon opens the
+operator's state exactly as it always has.
 
 `--test-concurrency` is deliberately not in that command. It caps how many test *files* run
 at once, so naming a single file makes it inert, and carrying it here implied a single-file

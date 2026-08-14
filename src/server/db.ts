@@ -71,7 +71,7 @@ let db: DatabaseSync;
  * fallback below rather than throw somewhere unhelpful.
  */
 const capturedTestState = (globalThis as Record<string, unknown>)["__missionControlTestState"] as
-  | { home?: unknown; tempRoots?: unknown }
+  | { home?: unknown; tempRoots?: unknown; inheritedStateHomes?: unknown }
   | undefined;
 
 const CAPTURED_HOME = typeof capturedTestState?.home === "string" ? capturedTestState.home : undefined;
@@ -79,6 +79,19 @@ const CAPTURED_HOME = typeof capturedTestState?.home === "string" ? capturedTest
 const CAPTURED_TEMP_ROOTS = Array.isArray(capturedTestState?.tempRoots)
   ? capturedTestState.tempRoots.filter((root): root is string => typeof root === "string")
   : undefined;
+
+/**
+ * The state dir this process was pointed at BEFORE the preload cleared the aliases.
+ *
+ * An operator is free to run the daemon with `MISSION_HOME` set anywhere, the temp dir
+ * included, and every other check here would wave that path through: explicit, resolvable,
+ * inside a temp root, and hanging off no home directory so the denylist never names it. It is
+ * still somebody's live database, and the only reason nothing else can see it is that the
+ * preload cleared the variable that named it.
+ */
+const CAPTURED_INHERITED_STATE_HOMES = Array.isArray(capturedTestState?.inheritedStateHomes)
+  ? capturedTestState.inheritedStateHomes.filter((dir): dir is string => typeof dir === "string")
+  : [];
 
 /**
  * The fallback for a worker that never loaded the preload: the same two values, read at
@@ -215,7 +228,9 @@ function operatorHomes(): readonly string[] {
 let operatorStateDirs: readonly string[] | undefined;
 function operatorStateRoots(): readonly string[] {
   if (operatorStateDirs) return operatorStateDirs;
-  const roots = new Set<string>();
+  // The pre-bootstrap home joins the list as a state dir in its own right, not as a home to
+  // hang the shipped names off: an operator's `MISSION_HOME` IS the state dir.
+  const roots = new Set<string>(CAPTURED_INHERITED_STATE_HOMES);
   for (const [home, name] of operatorHomes().flatMap((h) => STATE_DIRS.map((n) => [h, n] as const))) {
     const dir = join(home, name);
     roots.add(resolve(dir));

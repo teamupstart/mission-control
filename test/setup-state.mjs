@@ -66,11 +66,33 @@ if (process.env.NODE_TEST_CONTEXT) {
     // An unreadable temp dir just means the symlinked spelling is the only one we know.
   }
 
+  // The state dir this process was ALREADY pointed at, read before the aliases below are
+  // cleared, because clearing them is the only reason nothing downstream can see it.
+  //
+  // An operator may run the daemon with `MISSION_HOME` set anywhere, including inside the
+  // temp dir. Every check `db.ts` makes would then wave that path through: it is explicit, it
+  // resolves, it is under a temp root, and it hangs off no home directory so the denylist
+  // never names it. It is nevertheless somebody's live database. Read in `envVar`'s
+  // precedence order, so the value captured is the one that WAS in effect.
+  const inherited =
+    process.env.MISSION_HOME ?? process.env.FLEET_HOME ?? process.env.HARNESS_HOME;
+  const inheritedStateHomes = new Set();
+  if (inherited) {
+    const absolute = resolve(inherited);
+    inheritedStateHomes.add(absolute);
+    try {
+      inheritedStateHomes.add(resolve(realpathSync(absolute)));
+    } catch {
+      // Not created yet, or unreadable - the spelling is still worth refusing.
+    }
+  }
+
   Object.defineProperty(globalThis, "__missionControlTestState", {
     value: Object.freeze({
       root,
       home: homedir(),
       tempRoots: Object.freeze([...tempRoots]),
+      inheritedStateHomes: Object.freeze([...inheritedStateHomes]),
     }),
     writable: false,
     configurable: false,

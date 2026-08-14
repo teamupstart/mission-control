@@ -406,6 +406,33 @@ test("a no-preload worker cannot move HOME to drop the real state dir from the d
   );
 });
 
+test("a production state home configured inside the temp dir is still refused", () => {
+  // The operator database is not always under a home directory. `MISSION_HOME` is a supported
+  // setting and it can name anywhere, the temp dir included - and such a path defeats every
+  // other check in this file on its merits: explicit, resolvable, inside a temp root, and
+  // hanging off no home so the denylist never names it. Nothing downstream can tell it apart
+  // from a fixture, because the preload cleared the one variable that identified it.
+  //
+  // So the preload reads it before clearing it. Here the worker inherits the setting exactly
+  // as it would from an operator's shell, and the test then names that same path.
+  const operatorState = join(home, "configured-production-state");
+  mkdirSync(operatorState, { recursive: true });
+
+  const res = runChild(
+    `process.env.MISSION_HOME = ${JSON.stringify(operatorState)};\n${OPEN_AND_REPORT}`,
+    { MISSION_HOME: operatorState },
+    { bootstrap: true },
+  );
+
+  assert.notEqual(res.status, 0, "the operator's configured state dir was opened");
+  assert.match(res.stderr, /real\s+state dir/i);
+  assert.equal(
+    existsSync(join(operatorState, "harness.db")),
+    false,
+    "a database was created in the state dir the daemon was configured with",
+  );
+});
+
 test("an override outside the temp dir is refused even though it is explicit", () => {
   // A throwaway `$TMPDIR` is what makes this honest: the refused path is a perfectly
   // ordinary directory, not an operator-looking one, and it fails purely because it is

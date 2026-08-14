@@ -264,3 +264,146 @@ async function taskId(daemon: DaemonHandle): Promise<string> {
   if (!scout) throw new Error(`no scout task on this daemon: ${JSON.stringify(tasks)}`);
   return scout.id;
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * The Scouts page.
+ *
+ * Everything above proves an archive EXISTS. These prove an operator can find it, read it
+ * and remove it - which is the whole point of keeping it. They ride the same real dispatch,
+ * so the archive under test was produced by a real agent process calling the real submission
+ * route, and no model tokens are spent.
+ * ---------------------------------------------------------------------------
+ */
+
+/** The Scouts page's own rail, once it is on screen. */
+function rail(page: Page) {
+  return page.getByRole("complementary", { name: "Scout archives" });
+}
+
+test("Scouts is reachable from the topbar, its shortcut, and the command palette", async ({
+  dashboard,
+}) => {
+  const scoutsRail = rail(dashboard);
+
+  // 1. The topbar segment. Named, not a bare glyph.
+  await dashboard.getByRole("button", { name: /^Scouts/ }).click();
+  await expect(scoutsRail).toBeVisible();
+  await expect(dashboard).toHaveURL(/#\/scouts/);
+
+  // 2. The global shortcut, from another page, with nothing focused.
+  await dashboard.getByRole("button", { name: /^Fleet/ }).click();
+  await expect(scoutsRail).toBeHidden();
+  await dashboard.keyboard.press("Shift+S");
+  await expect(scoutsRail).toBeVisible();
+
+  // 3. The command palette, by a word that is NOT in the page's title - the row exists to be
+  //    found by what the page is about.
+  await dashboard.getByRole("button", { name: /^Fleet/ }).click();
+  await expect(scoutsRail).toBeHidden();
+  // `Meta+k`, not `ControlOrMeta`: the chord grammar derives `cmd` from `e.metaKey` alone
+  // (`chordFromEvent`), so on Linux CI `ControlOrMeta` sends Control, no chord matches, and
+  // the palette never opens. Passed on macOS and failed on CI for exactly that reason. The
+  // three other specs that open the palette all press `Meta+k`.
+  await dashboard.keyboard.press("Meta+k");
+  const palette = dashboard.getByRole("dialog", { name: "Search everything" });
+  await expect(palette).toBeVisible();
+  // "investigation" is in the row's keywords and in NO page title, so a hit here proves the
+  // row is findable by what Scouts is about rather than by what it is called.
+  await dashboard.keyboard.type("investigation");
+  const row = palette.getByRole("option", { name: /Scouts/ }).first();
+  await expect(row).toBeVisible();
+  await row.click();
+  await expect(scoutsRail).toBeVisible();
+});
+
+test("a finished scout is found by its own words and reads in the sandbox", async ({
+  dashboard,
+  daemon,
+}) => {
+  await disableSkills(daemon);
+  await dispatchScout(dashboard, daemon, SCOUT_TASK);
+  await expect(await scoutCard(dashboard)).toContainText("Submitted the scout report", {
+    timeout: 30_000,
+  });
+  await expect.poll(() => archives(daemon).then((r) => r.length), { timeout: 20_000 }).toBe(1);
+
+  await dashboard.getByRole("button", { name: /^Scouts/ }).click();
+  const scoutsRail = rail(dashboard);
+  await expect(scoutsRail).toBeVisible();
+
+  // The newest archive opens by itself, and the address bar names it - so the thing on
+  // screen is always a link someone else can be sent.
+  await expect(dashboard).toHaveURL(/#\/scouts\/[0-9a-f-]+~[0-9a-f-]+/);
+  const deepLink = dashboard.url();
+
+  // The report renders INSIDE the sandbox, not as its own source. `FINDING` exists only in
+  // report.html, so reading it here proves the bytes came out of the archive and through the
+  // preview rather than out of any summary the daemon indexed.
+  const report = dashboard.frameLocator('iframe[title^="Report"]');
+  await expect(report.getByText(FINDING, { exact: false })).toBeVisible({ timeout: 15_000 });
+
+  // Nothing the report brought with it can execute: the preview grants `allow-scripts` only
+  // so its two hashed bridges run, and the CSP allows no other script and no network at all.
+  const frame = dashboard.locator('iframe[title^="Report"]');
+  await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+  await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
+
+  // Search over text that lives only in the report body.
+  const search = scoutsRail.getByPlaceholder("Search questions, findings, reports, files...");
+  await search.fill("resume");
+  await expect(scoutsRail.getByRole("button", { name: /Resume|resume/ }).first()).toBeVisible({
+    timeout: 10_000,
+  });
+
+  // A word in no archive empties the list HONESTLY - "no match", never "no scouts yet".
+  await search.fill("zzz-not-in-any-archive");
+  await expect(scoutsRail.getByText("No scout matches")).toBeVisible({ timeout: 10_000 });
+  await expect(scoutsRail.getByText("No scouts archived yet")).toBeHidden();
+
+  // The deep link survives a reload, filters and all.
+  await dashboard.goto(deepLink);
+  await expect(rail(dashboard)).toBeVisible();
+  await expect(
+    dashboard.frameLocator('iframe[title^="Report"]').getByText(FINDING, { exact: false }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  // The bundle directory is on screen and copyable, so the files are reachable without the app.
+  await expect(dashboard.getByRole("button", { name: "Copy path" })).toBeVisible();
+});
+
+test("deleting a scout needs the word typed, and takes only that archive", async ({
+  dashboard,
+  daemon,
+}) => {
+  await disableSkills(daemon);
+  await dispatchScout(dashboard, daemon, SCOUT_TASK);
+  await expect(await scoutCard(dashboard)).toContainText("Submitted the scout report", {
+    timeout: 30_000,
+  });
+  await expect.poll(() => archives(daemon).then((r) => r.length), { timeout: 20_000 }).toBe(1);
+
+  await dashboard.getByRole("button", { name: /^Scouts/ }).click();
+  await expect(rail(dashboard)).toBeVisible();
+
+  await dashboard.getByRole("button", { name: "Delete scout" }).first().click();
+  const dialog = dashboard.getByRole("dialog", { name: /Delete the scout archive/ });
+  await expect(dialog).toBeVisible();
+
+  // Armed only by the literal word. The consequence is stated before it can be taken.
+  await expect(dialog).toContainText("The task, its session, the repository");
+  const confirm = dialog.getByRole("button", { name: "Delete scout" });
+  await expect(confirm).toBeDisabled();
+  await dialog.getByRole("textbox").fill("delete");
+  await expect(confirm, "the confirmation is the exact word, not a near miss").toBeDisabled();
+  await dialog.getByRole("textbox").fill("DELETE");
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+
+  await expect(dialog).toBeHidden({ timeout: 10_000 });
+  // Gone from the daemon, not merely from the list.
+  await expect.poll(() => archives(daemon).then((r) => r.length), { timeout: 15_000 }).toBe(0);
+  await expect(rail(dashboard).getByText("No scouts archived yet")).toBeVisible({
+    timeout: 10_000,
+  });
+});

@@ -81,6 +81,11 @@ import type {
 } from "@shared/schedules.ts";
 import type { SweepReport, TaskSourceRef, TaskSourcesView } from "@shared/task-source.ts";
 import type { Attachment } from "@shared/attachments.ts";
+import type {
+  ArchiveDetail,
+  ArchivePage,
+  ArchiveSearchQuery,
+} from "@shared/archives.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
 import type { PersonaDefaultsView } from "@shared/workflow.ts";
@@ -851,6 +856,76 @@ export interface DispatchInput {
   backlog?: boolean;
 }
 
+// ---- Archives ----
+//
+// The archive read model. Everything here is BOUNDED and on demand: the catalog is unbounded
+// history that is deliberately absent from the SSE snapshot, so the page asks for one window
+// at a time and the daemon's `scout_archive_changed` invalidation tells it when to ask again.
+//
+// These do not use `fetchJson`, and that is the whole point of the section. `fetchJson`
+// answers every failure with `null`, which the Scouts page cannot tell apart from a library
+// that genuinely holds nothing - and "no scouts yet" drawn over a daemon that refused the
+// request is the one wrong answer this page must never give. Every read below returns its
+// failure instead.
+
+/** A bounded read that distinguishes "nothing there" from "could not ask". */
+export type ArchiveRead<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; status?: number };
+
+/**
+ * GET a scout endpoint, preserving the daemon's own refusal.
+ *
+ * `AbortError` is reported as a normal failure with `aborted: true` filtered out by the
+ * caller: a superseded keystroke is not a fault, and the page drops it rather than drawing
+ * an error for a request it cancelled itself.
+ */
+async function archiveJson<T>(path: string, signal?: AbortSignal): Promise<ArchiveRead<T>> {
+  try {
+    const res = await fetch(path, { ...(signal ? { signal } : {}) });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      return { ok: false, error: body.error ?? `HTTP ${res.status}`, status: res.status };
+    }
+    return { ok: true, value: (await res.json()) as T };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** True when a rejected read was this page cancelling itself, not a failure worth showing. */
+export function isArchiveAbort(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
+}
+
+/**
+ * Serializes the page's filters into the query the daemon validates.
+ *
+ * Built HERE rather than in the component so there is one place that knows an out-of-range
+ * `limit` or a malformed `cursor` is REFUSED by the route rather than clamped, and one place
+ * that spells each parameter. The names match `ArchiveSearchQuerySchema` exactly.
+ */
+export function archiveSearchPath(query: Partial<ArchiveSearchQuery>): string {
+  const params = new URLSearchParams();
+  if (query.q) params.set("q", query.q);
+  if (query.producer) params.set("producer", query.producer);
+  if (query.repo) params.set("repo", query.repo);
+  if (query.agent) params.set("agent", query.agent);
+  if (query.status) params.set("status", query.status);
+  if (query.from !== undefined && query.from !== null) params.set("from", String(query.from));
+  if (query.to !== undefined && query.to !== null) params.set("to", String(query.to));
+  if (query.cursor) params.set("cursor", query.cursor);
+  if (query.limit !== undefined && query.limit !== null) params.set("limit", String(query.limit));
+  const search = params.toString();
+  return search ? `/api/archives?${search}` : "/api/archives";
+}
+
+/** One artifact's bytes, plus what the daemon said they are. */
+export interface ArchiveArtifactBody {
+  blob: Blob;
+  mediaType: string;
+}
+
 export const api = {
   listFiles: fetchSessionFiles,
   readFile: fetchSessionFile,
@@ -1192,4 +1267,74 @@ export const api = {
   /** Deliver a whole multi-line prompt as one bracketed-paste submission. */
   injectPrompt: (id: string, text: string, buffer = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text, buffer }),
+
+  // ---- Archives ----
+
+  /** One bounded, cursor-paged window of the archive catalog, newest first. */
+  listArchives: (query: Partial<ArchiveSearchQuery>, signal?: AbortSignal) =>
+    archiveJson<ArchivePage>(archiveSearchPath(query), signal),
+
+  /**
+   * One archive in full: provenance, completeness, and artifact metadata, but no bodies.
+   *
+   * Fetched even for a key absent from the current window, which is what makes a deep link
+   * to a filtered-out archive open the archive instead of an empty reader.
+   */
+  archiveDetail: (archiveKey: string, signal?: AbortSignal) =>
+    archiveJson<ArchiveDetail>(`/api/archives/${encodeURIComponent(archiveKey)}`, signal),
+
+  /**
+   * One artifact's bytes, addressed by its GENERATED id.
+   *
+   * The caller never builds a path: the daemon resolves the stored relative path beneath the
+   * verified archive root and refuses anything that escapes it, so an artifact id is the only
+   * thing that crosses this boundary. The route always answers as an attachment with
+   * `default-src 'none'; sandbox`, so these bytes are inert wherever they land - a blob URL
+   * made from one cannot execute, and the caller is expected to revoke it.
+   */
+  archiveArtifact: async (
+    archiveKey: string,
+    artifactId: string,
+    signal?: AbortSignal,
+  ): Promise<ArchiveRead<ArchiveArtifactBody>> => {
+    try {
+      const res = await fetch(
+        `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}`,
+        { ...(signal ? { signal } : {}) },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        return { ok: false, error: body.error ?? `HTTP ${res.status}`, status: res.status };
+      }
+      const blob = await res.blob();
+      // The daemon's own content type wins over the blob's, which is empty for anything it
+      // served with `nosniff` and a generic type.
+      const mediaType = res.headers.get("content-type")?.split(";")[0]?.trim() || blob.type;
+      return { ok: true, value: { blob, mediaType: mediaType || "application/octet-stream" } };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+
+  /** Hand one archived artifact to an application outside Mission Control. */
+  openArchiveArtifact: (archiveKey: string, artifactId: string, target: OpenTargetId) =>
+    post<OpenFileResult & ActionResult>(
+      `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}/open`,
+      { target },
+    ),
+
+  /**
+   * Delete one archive from THIS machine's library.
+   *
+   * `confirmArchiveKey` is echoed and must equal the route's key or the daemon refuses with
+   * a 409. That is not belt-and-braces: it binds the deletion to the record the operator was
+   * looking at, so a list that reordered under a stale browser cannot turn a confirmed
+   * delete into a delete of whatever now occupies that position.
+   */
+  deleteArchive: (archiveKey: string) =>
+    request<{ deletedBundle?: boolean } & ActionResult>(
+      "DELETE",
+      `/api/archives/${encodeURIComponent(archiveKey)}`,
+      { confirmArchiveKey: archiveKey },
+    ),
 };

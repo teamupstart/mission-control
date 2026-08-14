@@ -72,7 +72,10 @@ Where the two overlap, run one of them and not both:
   button uploads conversation content to an external site.
 - **Orchestration.** Do not run Claw's `agent-team` inside a Mission-Control-dispatched
   session. Two orchestrators means nested worktrees and conflicting PR rules; choose one per
-  task and never nest them.
+  task and never nest them. Reading that plugin's role *documents* is a different thing and is
+  supported - see [Personas from Claw's catalog](#personas-from-claws-catalog). Adopting a role
+  as a reviewer runs none of Claw's orchestration: it takes the Markdown that describes the role
+  and nothing else.
 - **Skills.** Claw is the org's channel for *domain* skills; Mission Control's
   [skills catalog](skills-and-settings.md#skills-every-session-mixed-reload-behavior) is app-owned skills that make
   sessions cooperate with Mission Control. Claw's catalog is deliberately never copied into
@@ -82,6 +85,41 @@ Where the two overlap, run one of them and not both:
   to keep rendering while Mission Control reads model/context/cost off the same line. That is
   what the installer does by construction; confirm it on your own machine after installing
   both, since only your machine has both halves.
+
+### Personas from Claw's catalog
+
+Claw's `agent-team` plugin ships eleven role documents - Manager, Product Manager, Implementer,
+Tester, Reviewer, PR Orchestrator, Deployment Manager, Cleanup Specialist, Data Extractor, Memory
+Keeper, Communications Gatekeeper - as Markdown under `references/roles/`. They describe review
+remits in prose, which is exactly what a Mission Control
+[Persona](workflows.md) is, so the daemon adopts them into the Persona library
+automatically.
+
+**It only happens if you installed that plugin.** Run `/plugin install agent-team@upstartclaw`.
+Having the marketplace added is not enough and deliberately so: the marketplace checkout contains
+every plugin in the catalogue, and treating its presence as an install would give personas to
+people who never asked for them.
+
+What to expect:
+
+- The sync runs at daemon start, after the port answers, and never blocks a boot. What it
+  imported - or skipped, and why - is on the daemon's log.
+- Imported roles wear an **UpstartClaw** tag in the Persona library and sort after the built-ins
+  and before your own Personas.
+- They are ordinary Personas from then on: editable, duplicable, pickable as workflow reviewers.
+  Your edits are never overwritten.
+- **Archive one and it stays archived.** That is the way to decline a role you do not want; the
+  next boot will not bring it back.
+- When the plugin upgrades and a role document changes, the Persona shows the ordinary
+  `upstream changed` badge and waits for you to adopt it. A boot never rewrites a reviewer's
+  authority on its own.
+- A role whose name you already use is skipped rather than renamed, and the log says which. Your
+  Persona wins. These roles carry plain titles like `Reviewer`, so this is a normal outcome
+  rather than an error.
+
+Nothing from Claw's catalogue is copied into this repository - the documents are read from the
+installed plugin on the operator's own machine, which is what lets the upstream badge mean
+anything.
 
 Claw's guard hooks (no-send/no-delete, read-only Databricks, publish gates) are worth keeping
 exactly as they are for unattended work - they are the reason a fleet running against internal

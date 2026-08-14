@@ -176,6 +176,31 @@ test("scope filters by who said it, and `all` is the identity", () => {
   assert.equal(hitsInScope(hits, "tool").length, 1);
 });
 
+test("the You scope means the human, not everything wearing the user role", () => {
+  // The defect this pins: the scope was set from `role` alone on the line right after
+  // `turnWho` had already read `origin` for the byline, so one hit could carry
+  // who: "foreman" and scope: "user" at once. Filtering to "You" then returned rows
+  // whose own byline said foreman - the pill claiming the human asked for work that
+  // Foreman delivered.
+  const rows = [
+    turn("mine", { role: "user", text: "pane" }),
+    turn("f", { role: "user", origin: "foreman", text: "pane" }),
+    turn("h", { role: "user", origin: "harness", text: "pane" }),
+  ];
+  const hits = collectHits(rows, "pane", { caseSensitive: false }, "claude");
+
+  const you = hitsInScope(hits, "user");
+  assert.deepEqual(you.map((h) => h.rowId), ["mine"]);
+  // The property that failed before, stated directly: no hit may say one thing on its
+  // byline and another in its scope.
+  for (const h of you) assert.equal(h.who, "you");
+
+  // Nothing became unfindable - the machine-typed turns moved to their own scope and
+  // are still reachable under `all`, which is the default.
+  assert.deepEqual(hitsInScope(hits, "injected").map((h) => h.rowId), ["f", "h"]);
+  assert.equal(hitsInScope(hits, "all").length, 3);
+});
+
 test("hits arrive in document order", () => {
   // The rail lists them and Enter walks them; both are only coherent if the order is
   // the order the reader would scroll past.

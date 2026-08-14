@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { htmlPreviewSource, inlinePreviewStyles } from "../src/web/components/FileWorkspace.tsx";
+// The preview boundary moved out of the Files component into one shared module when Scouts
+// became a second surface rendering untrusted HTML. These assertions are unchanged: they are
+// the contract BOTH surfaces now inherit, so they must keep passing from their new home.
+import { htmlPreviewSource, inlinePreviewStyles } from "../src/web/lib/htmlPreview.ts";
 
 test("HTML preview prefixes a restrictive CSP before an existing head", () => {
   const source = htmlPreviewSource("<!doctype html><html><head><title>x</title></head><body>ok</body></html>");

@@ -13,124 +13,16 @@ import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
+// The sandboxed HTML preview boundary is SHARED with Scouts and lives in one module, so
+// neither surface can quietly weaken the CSP or the sandbox for its own documents.
+import {
+  HTML_PREVIEW_LINK_MESSAGE,
+  HTML_PREVIEW_SANDBOX,
+  HTML_PREVIEW_SCROLL_MESSAGE,
+  htmlPreviewSource,
+  inlinePreviewStyles,
+} from "../lib/htmlPreview.ts";
 import { Tooltip } from "./Tooltip.tsx";
-
-const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
-const PREVIEW_SCROLL_SCRIPT = `addEventListener("message",event=>{if(event.source===parent&&event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number")scrollBy({top:event.data.top})})`;
-const PREVIEW_SCROLL_SCRIPT_HASH = "boIuepZJzJEM7sUoJjNJy7i6nq6MHE3t38Bfnj4GnvM=";
-/**
- * Every anchor click leaves the document through the parent, or not at all.
- *
- * A srcdoc document resolves relative hrefs against the DASHBOARD's URL, so letting one
- * navigate turns `<a href="b.html">` into a request the daemon answers with the SPA
- * fallback - a second dashboard shell inside the sandbox, whose assets the opaque origin
- * then CORS-blocks into a white pane. The `navigate-to` CSP directive that was meant to
- * stop this never shipped in any browser. So navigation is claimed here instead: every
- * non-fragment click is cancelled and its href posted up, and the parent decides whether
- * it names a checkout file worth selecting. Fragment links stay native - same-document
- * scrolling is the one navigation the sandbox does correctly.
- *
- * `composedPath` rather than `target.closest`, because a click inside an open shadow root
- * retargets to the host and a missed anchor here is not a dead link - it is the default
- * navigation going through, which is the white pane again.
- */
-const PREVIEW_LINK_MESSAGE = "mission:file-preview-link";
-const PREVIEW_LINK_SCRIPT = `document.addEventListener("click",event=>{const origin=event.composedPath()[0];const anchor=origin instanceof Element?origin.closest("a[href]"):null;if(!anchor)return;const href=anchor.getAttribute("href");if(!href||href.startsWith("#"))return;event.preventDefault();parent.postMessage({type:"${PREVIEW_LINK_MESSAGE}",href},"*")},true)`;
-const PREVIEW_LINK_SCRIPT_HASH = "ADNimZ0/NOY6W/JTdVdn5R5DYWseUUp14To0zvMfzF4=";
-const PREVIEW_CSP =
-  `default-src 'none'; connect-src 'none'; script-src 'sha256-${PREVIEW_SCROLL_SCRIPT_HASH}' 'sha256-${PREVIEW_LINK_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data: blob:; ` +
-  "font-src data:; form-action 'none'; navigate-to 'none'";
-
-export function htmlPreviewSource(source: string): string {
-  const headContent = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><script>${PREVIEW_SCROLL_SCRIPT}</script><script>${PREVIEW_LINK_SCRIPT}</script>`;
-  // This prefix must be parsed before a single checkout-controlled byte. Searching
-  // for <head> is unsafe: a match inside an HTML comment can absorb the CSP and bridge,
-  // after which `allow-scripts` would run the document's own JavaScript unrestricted.
-  // The HTML parser supplies the implicit html/head elements here; a later doctype or
-  // explicit head in a complete source document is harmless and cannot precede this CSP.
-  return `<!doctype html>${headContent}${source}`;
-}
-
-interface StylesheetLink {
-  index: number;
-  length: number;
-  path: string;
-}
-
-const MAX_PREVIEW_STYLESHEETS = 32;
-const PREVIEW_STYLESHEET_CONCURRENCY = 4;
-
-function htmlAttribute(tag: string, name: string): string | null {
-  const match = tag.match(new RegExp(
-    `\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\u0060]+))`,
-    "i",
-  ));
-  return match ? (match[1] ?? match[2] ?? match[3] ?? "") : null;
-}
-
-function escapeHtmlAttribute(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
-}
-
-/** Find checkout-local stylesheet links without treating remote CSS as readable workspace data. */
-function localStylesheets(source: string, documentPath: string): StylesheetLink[] {
-  const found: StylesheetLink[] = [];
-  for (const match of source.matchAll(/<link\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
-    if (match.index == null) continue;
-    const tag = match[0];
-    const rel = htmlAttribute(tag, "rel") ?? "";
-    if (!rel.split(/\s+/).some((part) => part.toLowerCase() === "stylesheet")) continue;
-    const href = htmlAttribute(tag, "href");
-    const path = href ? workspaceAssetPath(href, documentPath) : null;
-    if (path) found.push({ index: match.index, length: tag.length, path });
-  }
-  return found;
-}
-
-/**
- * Inline local CSS before an HTML document enters its opaque sandbox.
- *
- * A srcDoc document otherwise resolves `theme.css` against the dashboard URL, which is
- * neither the checkout nor a file-serving endpoint. Keeping style-src inline-only is the
- * useful security boundary, so local CSS is read through the same contained session-file
- * API as the document and embedded rather than granting the iframe network access.
- */
-export async function inlinePreviewStyles(
-  source: string,
-  documentPath: string,
-  read: (path: string) => Promise<string | null>,
-  signal?: AbortSignal,
-): Promise<string> {
-  const links = localStylesheets(source, documentPath);
-  if (links.length === 0) return source;
-  const paths = [...new Set(links.map((link) => link.path))].slice(0, MAX_PREVIEW_STYLESHEETS);
-  const css = new Map<string, string | null>();
-  let cursor = 0;
-  await Promise.all(Array.from(
-    { length: Math.min(PREVIEW_STYLESHEET_CONCURRENCY, paths.length) },
-    async () => {
-      while (!signal?.aborted) {
-        const path = paths[cursor++];
-        if (!path) return;
-        css.set(path, await read(path));
-      }
-    },
-  ));
-  if (signal?.aborted) return source;
-  let output = "";
-  cursor = 0;
-  for (let i = 0; i < links.length; i++) {
-    const link = links[i]!;
-    output += source.slice(cursor, link.index);
-    const text = css.get(link.path);
-    if (text != null) {
-      const safe = text.replace(/<\/style/gi, "<\\/style");
-      output += `<style data-mission-source="${escapeHtmlAttribute(link.path)}">\n${safe}\n</style>`;
-    }
-    cursor = link.index + link.length;
-  }
-  return output + source.slice(cursor);
-}
 
 function SaveStatus({ buffer }: { buffer: FileBuffer }): React.JSX.Element {
   const labels: Record<FileBuffer["saveState"], string> = {
@@ -160,7 +52,7 @@ export function scrollActiveFileReader(root: ParentNode, direction: -1 | 1): boo
   const preview = root.querySelector<HTMLIFrameElement>(".file-content .html-preview");
   if (preview?.contentWindow) {
     preview.contentWindow.postMessage({
-      type: PREVIEW_SCROLL_MESSAGE,
+      type: HTML_PREVIEW_SCROLL_MESSAGE,
       top: direction * Math.max(80, preview.clientHeight * 0.18),
     }, "*");
     return true;
@@ -287,7 +179,7 @@ export function FileWorkspace({
     if (!previewPath) return;
     const onMessage = (event: MessageEvent): void => {
       const data = event.data as { type?: unknown; href?: unknown } | null;
-      if (data?.type !== PREVIEW_LINK_MESSAGE || typeof data.href !== "string") return;
+      if (data?.type !== HTML_PREVIEW_LINK_MESSAGE || typeof data.href !== "string") return;
       const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
         ".file-content .html-preview",
       );
@@ -459,7 +351,7 @@ export function FileWorkspace({
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
           {buffer && buffer.document.text == null && <p className="file-empty">{buffer.document.error ?? "This file cannot be opened."}</p>}
           {buffer?.document.text != null && buffer.document.kind === "html" && mode === "preview" && (
-            <iframe className="html-preview" title={`Preview of ${buffer.document.path}`} sandbox="allow-scripts" srcDoc={htmlPreviewSource(previewText)} />
+            <iframe className="html-preview" title={`Preview of ${buffer.document.path}`} sandbox={HTML_PREVIEW_SANDBOX} srcDoc={htmlPreviewSource(previewText)} />
           )}
           {buffer?.document.text != null && buffer.document.kind === "markdown" && mode === "preview" && (
             <article className="file-markdown-preview markdown">

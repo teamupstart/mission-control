@@ -848,6 +848,15 @@ when they happened, so an agent that blocked on a question for an hour shows you
 after the hour of work, not before it. The original pull request includes a runtime capture of
 how the four read against each other.
 
+What the CLI writes into the conversation on its own behalf is not one of those voices and
+never reaches the dashboard: the note it leaves in place of a pasted image, the payload it
+attaches when a skill loads, its own resume nudge. The CLI marks those records as its own
+in the transcript file, and the daemon's transcript reader drops them on that marker as it
+parses - so they are gone before the conversation is sent, and no browser has to decide
+anything about their wording. They had no author the daemon could attribute, so they used
+to arrive wearing your byline, which made the conversation claim you had typed
+`[Image: original 2360x12932…]` or *Continue from where you left off.*
+
 Scroll to the top of the log and the page above loads automatically, then the page above
 that, back to the session's first turn. **Load older messages** does the same on click,
 for when you would rather not scroll. Nothing appears once you reach the beginning: a
@@ -894,7 +903,7 @@ it. The row disappears entirely if you have turned keyboard hints off, since tea
 chords is all it does.
 
 Everything else is unchanged, because it is the same panel: the same box replies, the same
-attachments drop onto it, find works the same way, the Observed activity rail is still
+attachments drop onto it, find works the same way, the Activity and Yours rail is still
 beside it, [the step the current turn is on](#the-step-the-current-turn-is-on) is still the
 last thing in the log - drawn as the stream's own last entry, spine and all - and Foreman's
 decisions and your review answers still appear in place. Only the drawing differs.
@@ -945,14 +954,22 @@ rather than chrome above a conversation - a collapsed card has no log for a tail
 in. Expanding one shows both: the card's line near the top, and the in-progress row at the
 tail of the panel the expansion just opened.
 
-### Observed activity beside the conversation
+### The rail beside the conversation
+
+A rail sits to the right of the transcript under two tabs: **Activity**, which lists the
+tool calls recorded in the conversation, and **Yours**, which indexes the messages you
+sent. It shares its column with find - while find is open its results own the space
+([below](#find-in-a-conversation)), and closing find gives the rail back on the tab you
+left it on.
+
+#### Activity
 
 Not to be confused with the row above, which is a different feature with a different
-source: **Observed activity** is derived from the transcript and claims nothing about what
+source: **Activity** is derived from the transcript and claims nothing about what
 is running, while the in-progress row is the session's live self-report about exactly that.
 One says what was recorded, the other says what is happening.
 
-An **Observed activity** rail sits to the right of the transcript and lists the tool
+The **Activity** tab lists the tool
 invocations recorded in it - the time each appeared, the tool, and what it was invoked on
 (`bash ls`, `read styles.css`), through the same projection the inline tool chips use, so
 the two can never disagree. It answers "what actions has this agent attempted?" at a
@@ -967,11 +984,37 @@ so the rail does not say it. Its window is the transcript's too: what you have l
 what it lists, so scrolling back through older turns adds their invocations, and a session
 whose transcript cannot be resolved shows none rather than inventing any.
 
-The rail shares its column with find: while find is open its results own the space
-([below](#find-in-a-conversation)), and closing find brings Observed activity back. On a
-narrow conversation the rail collapses to a single **Observed activity** row under the
-log - the transcript keeps its reading width and height - and opens on a click when you
-want the list.
+On a narrow conversation the rail collapses to a single row under the log - the transcript
+keeps its reading width and height - and opens on a click when you want the list. The tabs
+stay on that row while it is shut, so choosing one is never blocked behind opening it
+first, and choosing one opens it.
+
+#### Yours
+
+**Yours** answers a different question: *what did I actually ask for?* It lists the
+messages you sent, newest last, with the time and the first two lines of each. Clicking one
+takes the transcript to that turn, which flashes where it landed. The row you picked stays
+marked in the rail; the flash on the turn fades, because it answers "you were taken here"
+rather than saying the message is in some state.
+
+It is an **index, not a filter**. Nothing is removed from the conversation - the agent's
+replies, its tool runs and everything else stay exactly where they were, which is the
+point: in a supervised session your messages are a few percent of the turns, so what sits
+*between* two of them is most of what happened. Jumping to one of your messages lands you
+in that context rather than replacing it.
+
+**Turns you did not type are listed too, dimmed and below yours, each naming its author.**
+Much of the `user` side of a supervised session is not the operator: Foreman delivers work
+items, Mission Control injects on your behalf, and workflow repair sends fix rounds. All
+three arrive as ordinary user turns, indistinguishable in shape from something you typed,
+so a list built on the turn's role would hand them back to you as your own words under a
+tab called "Yours". The grouping is on authorship instead - the same rule the byline in the
+log uses - and the rail says so at its foot.
+
+One limit worth knowing, because it is the same one the byline has: authorship is recorded
+in memory at the moment of delivery, so a turn delivered before the daemon last restarted
+has no author left to read and falls back to reading as yours. The rail is never more wrong
+than the transcript beside it, and never differently wrong.
 
 ### Find in a conversation
 
@@ -994,6 +1037,11 @@ rather than disappearing. Closed, find costs a conversation nothing at all.
 |---|---|
 | **Aa** | match case. Off by default, so `ghostty` finds `Ghostty` |
 | **All / You / Agent / Tools** | which side of the conversation to search. A transcript is mostly folded tool output by volume, so **You** and **Agent** are how you find what was actually *said* - and **Tools** is how you find a file path |
+
+**You** means the messages you typed, on the same authorship rule the Yours rail and the
+bylines use - not every turn wearing the `user` role. Turns delivered by Foreman, Mission
+Control or workflow repair are not under it; they remain under **All**, where their byline
+names who sent them.
 
 The query is literal, not a pattern: `foo(bar)` finds those seven characters.
 

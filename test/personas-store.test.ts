@@ -118,6 +118,8 @@ const PROVENANCE = {
   sourcePath: "/plugins/agent-team/references/roles/reviewer.md",
   sourceRepo: "/plugins",
   pluginVersion: "0.1.1",
+  sourceKey: null,
+  catalogLabel: null,
   contentSha256: "b".repeat(64),
   importedAt: 150,
 };

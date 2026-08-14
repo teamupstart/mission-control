@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Scouts mockup D - Research Log</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  /* ==========================================================================
+     D - The Research Log. Time is the index. One chronological spine carries
+     every scout ever run; the report opens in a drawer over the right side
+     while the log underneath stays laid out, legible and scrollable.
+
+     One layout constant: the spine sits 108px in from the log's content edge.
+     The gutter to its left holds the clock time, right-aligned. Entry titles
+     land at 22 + 108 + 24 = 154px, and so do the day headings, so the two
+     ramps share a single left edge down the whole page.
+     ========================================================================== */
+
+  .page { position: relative; min-height: 0; overflow: hidden; background: var(--bg); }
+
+  /* ---- The log ------------------------------------------------------------ */
+
+  .log {
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    background: var(--bg);
+    /* The log's sticky toolbar and day headers carry their own z-indexes. Without a
+       stacking context of its own they compete with the drawer, which is a sibling,
+       and the day rules paint straight across it. */
+    isolation: isolate;
+  }
+
+  .toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 52px;
+    padding: 0 22px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .toolbar .search-wrap { flex: 0 1 300px; }
+  .toolbar .range {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    padding-left: 14px;
+    border-left: 1px solid var(--border-soft);
+  }
+  .toolbar .presets { display: flex; align-items: center; gap: 1px; }
+  .toolbar .presets .btn[aria-pressed="true"] {
+    color: var(--fg);
+    background: var(--panel-2);
+    border-color: var(--border);
+  }
+  .toolbar .total { font: 10.5px var(--mono); color: var(--dim); }
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* ---- The spine ---------------------------------------------------------- */
+
+  .log-body { position: relative; margin: 0; padding: 4px 22px 0; list-style: none; }
+  /* The one continuous line. Everything else is drawn over it or beside it. */
+  .log-body::before {
+    content: "";
+    position: absolute;
+    left: 130px; /* 22px page padding + 108px gutter */
+    top: 0; bottom: 0;
+    width: 1px;
+    background: var(--border);
+  }
+
+  /* ---- Day header --------------------------------------------------------- */
+
+  .day {
+    position: sticky;
+    top: 52px;
+    z-index: 3;
+    display: grid;
+    grid-template-columns: 108px 1fr;
+    align-items: center;
+    padding: 18px 0 9px;
+    background: var(--bg);
+  }
+  /* Redraw the spine through the opaque sticky header so the line never breaks. */
+  .day::before {
+    content: "";
+    position: absolute;
+    left: 108px;
+    top: 0; bottom: 0;
+    width: 1px;
+    background: var(--border);
+  }
+  .day .heading {
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    padding-left: 24px; /* aligns with entry titles */
+  }
+  .day h2 { margin: 0; font-weight: inherit; }
+  .day .rule { flex: 1; height: 1px; background: var(--border-soft); }
+  .day .count { font: 10.5px var(--mono); color: var(--dim); }
+
+  /* ---- Entries ------------------------------------------------------------ */
+
+  .entry {
+    position: relative;
+    display: grid;
+    grid-template-columns: 108px 1fr;
+    margin-bottom: 4px;
+  }
+  .entry .time {
+    padding: 10px 14px 0 0;
+    font: 10.5px var(--mono);
+    line-height: 19px;
+    color: var(--dim);
+    text-align: right;
+  }
+  /* The node rides the spine, optically centred on both the title line and the
+     time in the gutter. Its halo masks the line so the ring reads as a node. */
+  .entry .node {
+    position: absolute;
+    left: 108px;
+    top: 15.5px;
+    width: 8px; height: 8px;
+    margin-left: -4px;
+    border-radius: 50%;
+    background: var(--neutral);
+    box-shadow: 0 0 0 3px var(--bg);
+  }
+  .entry .node.ready { background: var(--idle); }
+  .entry .node.partial { background: var(--attention); }
+  .entry .node.unreadable { background: var(--danger); }
+
+  .entry .body {
+    min-width: 0;
+    margin-left: 10px; /* clears the node halo, so the accent sits just right of the spine */
+    padding: 9px 16px 11px 12px;
+    border-left: 2px solid transparent;
+    border-radius: 10px;
+  }
+  .entry.selected .body { background: var(--panel); border-left-color: var(--select); }
+
+  .entry .line-1 { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .entry .title {
+    font-size: 13.5px;
+    font-weight: 620;
+    letter-spacing: -0.01em;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .entry .more { margin-left: auto; color: var(--dim); line-height: 1; }
+  .entry .question { margin: 5px 0 0; font-size: 12px; color: var(--muted); }
+  .entry .finding {
+    margin: 6px 0 0;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: color-mix(in oklab, var(--fg) 82%, var(--muted));
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  /* Never colour alone: each of these reads as a sentence before it reads amber or red. */
+  .entry .finding.warn { color: color-mix(in oklab, var(--attention) 74%, var(--muted)); }
+  .entry .finding.bad { color: color-mix(in oklab, var(--danger) 72%, var(--muted)); }
+  .entry .finding .dot { display: inline-block; margin-right: 7px; vertical-align: middle; }
+
+  .chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 9px; }
+
+  .log-foot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 9px;
+    /* Centred in the strip the drawer leaves, not in the full log, so the end of
+       the log stays readable while a report is open. */
+    padding: 26px 22px 34px;
+    padding-right: calc(22px + min(760px, 62%));
+  }
+  .log-foot .in-range { font: 10.5px var(--mono); color: var(--dim); }
+  .log-foot .library { font: 10.5px var(--mono); color: var(--muted); opacity: 0.72; }
+
+  /* ---- The drawer ---------------------------------------------------------
+     No veil over the log: reading one scout beside the week around it is the
+     whole claim of this direction, so the separation is border and shadow. */
+
+  .drawer {
+    position: absolute;
+    /* Below the toolbar, not over it. Search, the filters and the date range belong to
+       the page and stay reachable while a report is open. */
+    top: 52px; right: 0; bottom: 0;
+    z-index: 6;
+    width: min(760px, 62%);
+    overflow-y: auto;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    box-shadow: -24px 0 64px rgba(0, 0, 0, 0.5);
+  }
+  .drawer-head {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    padding: 12px 24px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .drawer-head .row-1 { display: flex; align-items: center; gap: 8px; }
+  .drawer-head .row-1 .spacer { flex: 1; }
+  .drawer-head h1 { margin: 12px 0 5px; font-size: 16px; font-weight: 640; letter-spacing: -0.015em; }
+  .drawer-head .question { margin: 0; font-size: 12.5px; color: var(--muted); }
+  .drawer-head .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
+  .tabs { display: inline-flex; margin-top: 13px; }
+
+  .drawer-body { padding: 18px 24px 30px; }
+  .report-frame {
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    background: var(--bg-2);
+    padding: 28px 32px;
+  }
+
+  /* ---- Evidence ----------------------------------------------------------- */
+
+  .evidence { margin-top: 30px; }
+  .evidence > .eyebrow { display: block; margin-bottom: 10px; }
+  .artifacts { margin: 0; padding: 0; list-style: none; }
+  .artifact {
+    display: grid;
+    grid-template-columns: 7px minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 2px 11px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .artifact .name {
+    font: 11.5px var(--mono);
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .artifact .sub { margin-top: 3px; font-size: 11px; color: var(--dim); }
+  .artifact .sha { font: 10.5px var(--mono); color: var(--dim); }
+  .artifact .actions { display: flex; gap: 2px; }
+
+  .bundle {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    margin-top: 16px;
+    padding: 13px 15px;
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    background: var(--bg-2);
+  }
+  .bundle .path {
+    flex: 1;
+    min-width: 0;
+    font: 10.5px var(--mono);
+    line-height: 1.7;
+    color: var(--muted);
+    word-break: break-all;
+  }
+  .bundle .btn { flex: none; }
+</style>
+</head>
+<body>
+<div class="app">
+<header class="topbar">
+  <span class="brand"><span class="mark"></span>Mission Control</span>
+  <nav class="segments" aria-label="Pages">
+    <button><span class="glyph">▦</span>Fleet</button>
+    <button><span class="glyph">⌗</span>Library</button>
+    <button><span class="glyph">▷</span>Runs</button>
+    <button aria-current="page"><span class="glyph">⌖</span>Scouts</button>
+  </nav>
+  <span class="spacer"></span>
+  <span class="topbar-meta">8 archives · 24.1 MB</span>
+</header>
+
+<div class="page">
+
+  <main class="log" aria-label="Scout research log">
+    <div class="toolbar">
+      <div class="search-wrap">
+        <label class="sr-only" for="q">Search the scout archive</label>
+        <input class="search-input" id="q" type="search" placeholder="Search questions, findings, reports, files..." />
+      </div>
+      <button class="filter" type="button">Source</button>
+      <button class="filter" type="button">Repo</button>
+      <button class="filter" type="button">Agent</button>
+      <button class="filter" type="button">State</button>
+      <div class="range">
+        <button class="filter on" type="button">Jul 29 - Aug 12</button>
+        <span class="presets">
+          <button class="btn btn-sm btn-ghost" type="button" aria-pressed="false">7d</button>
+          <button class="btn btn-sm btn-ghost" type="button" aria-pressed="false">30d</button>
+          <button class="btn btn-sm btn-ghost" type="button" aria-pressed="true">All</button>
+        </span>
+        <span class="total">8 archives</span>
+      </div>
+    </div>
+
+    <ul class="log-body">
+
+      <li class="day">
+        <div class="heading"><h2 class="eyebrow">Wednesday, Aug 12</h2><span class="rule"></span><span class="count">2 scouts</span></div>
+      </li>
+
+      <li class="entry selected">
+        <span class="time">18:50</span><span class="node ready"></span>
+        <div class="body">
+          <div class="line-1"><span class="title">Resume permission loss</span><span class="pill ready"><span class="dot ready"></span>ready</span><button class="btn btn-ghost btn-sm more" type="button" aria-label="More actions for Resume permission loss">⋯</button></div>
+          <p class="question">Why did a resumed agent lose repository permissions?</p>
+          <p class="finding">Resume rebuilds a session from its stored configuration but never replays the repository grant, so the relaunched session starts with an empty allowlist. Every resumed session loses repository writes at its first tool call.</p>
+          <div class="chips"><span class="chip agent agent-codex">codex</span><span class="chip">gpt-5.6</span><span class="chip">mission-control</span><span class="chip">report.html + 3 files</span><span class="chip">1.2 MB</span><span class="chip">manual</span></div>
+        </div>
+      </li>
+
+      <li class="entry">
+        <span class="time">11:07</span><span class="node partial"></span>
+        <div class="body">
+          <div class="line-1"><span class="title">Topbar density at 1344px</span><span class="pill partial"><span class="dot partial"></span>partial</span><button class="btn btn-ghost btn-sm more" type="button" aria-label="More actions for Topbar density at 1344px">⋯</button></div>
+          <p class="question">Where does the busy topbar overflow at the pinned container width?</p>
+          <p class="finding warn"><span class="dot partial"></span>No report was submitted. The session exited before it called submit_scout_artifacts. 2 supporting files were recovered from the retained checkout.</p>
+          <div class="chips"><span class="chip agent agent-claude">claude</span><span class="chip">opus</span><span class="chip">mission-control</span><span class="chip">2 files</span><span class="chip">318 KB</span><span class="chip">manual</span></div>
+        </div>
+      </li>
+
+      <li class="day">
+        <div class="heading"><h2 class="eyebrow">Tuesday, Aug 11</h2><span class="rule"></span><span class="count">1 scout</span></div>
+      </li>
+
+      <li class="entry">
+        <span class="time">22:31</span><span class="node ready"></span>
+        <div class="body">
+          <div class="line-1"><span class="title">Concurrency flake census</span><span class="pill ready"><span class="dot ready"></span>ready</span><button class="btn btn-ghost btn-sm more" type="button" aria-label="More actions for Concurrency flake census">⋯</button></div>
+          <p class="question">Which tests flake under 6-way concurrency?</p>
+          <p class="finding">Three files share one tmux pane namespace, so a sibling worktree's pane satisfies the capture. Only pane-capture is a real flake; the other two are environment collisions.</p>
+          <div class="chips"><span class="chip agent agent-claude">claude</span><span class="chip">sonnet</span><span class="chip">mission-control</span><span class="chip">report.html + 8 files</span><span class="chip">6.4 MB</span><span class="chip">schedule</span></div>
+        </div>
+      </li>
+
+      <li class="day">
+        <div class="heading"><h2 class="eyebrow">Sunday, Aug 09</h2><span class="rule"></span><span class="count">2 scouts</span></div>
+      </li>
+
+      <li class="entry">
+        <span class="time">16:44</span><span class="node ready"></span>
+        <div class="body">
+          <div class="line-1"><span class="title">Rollout byte composition</span><span class="pill ready"><span class="dot ready"></span>ready</span><button class="btn btn-ghost btn-sm more" type="button" aria-label="More actions for Rollout byte composition">⋯</button></div>
+          <p class="question">How much of a Codex rollout file is tool output?</p>
+          <p class="finding">99.7 percent by bytes. A turn-count window is the wrong unit for a transcript read, and a byte-sized window silently drops whole conversations.</p>
+          <div class="chips"><span class="chip agent agent-codex">codex</span><span class="chip">gpt-5.6</span><span class="chip">mission-control</span><span class="chip">report.html + 2 files</span><span class="chip">812 KB</span><span class="chip">manual</span></div>
+        </div>
+      </li>
+
+      <li class="entry">
+        <span class="time">09:12</span><span class="node ready"></span>
+        <div class="body">
+          <div class="line-1"><span class="title">Pool reap collisions</span><span class="pill ready"><span class="dot ready"></span>ready</span><button class="btn btn-ghost btn-sm more" type="button" aria-label="More actions for Pool reap collisions">⋯</button></div>
+          <p class="question">What breaks if the shared pool reaper runs during an isolated E2E daemon?</p>
+          <p class="finding">The reaper is home-agnostic and walks the shared pool regardless of MISSION_HOME. MISSION_POOL_REAP_MS=0 is the only guard.</p>
+          <div class="chips"><span class="chip agent agent-pi">pi</span><span class="chip">pi-2</span><span class="chip">mission-control</span><span class="chip">report.html + 1 file</span><span class="chip">96 KB</span><span class="chip">schedule</span></div>
+        </div>
+      </li>
+
+      <li class="day">
+        <div class="heading"><h2 class="eyebrow">Friday, Aug 07</h2><span class="rule"></span><span class="count">1 scout</span></div>
+      </li>
+
+      <li class="entry">
+        <span class="time">indexed</span><span class="node unreadable"></span>
+        <div class="body">
+          <div class="line-1"><span class="title">Ensemble ref retention</span><span class="pill unreadable"><span class="dot unreadable"></span>unreadable</span><button class="btn btn-ghost btn-sm more" type="button" aria-label="More actions for Ensemble ref retention">⋯</button></div>
+          <p class="question">Are ensemble refs safe to prune after merge?</p>
+          <p class="finding bad"><span class="dot unreadable"></span>Two bundles claim this archive key with different content digests. Mission Control will not choose between them.</p>
+          <div class="chips"><span class="chip">producer "Avery's laptop" (unverified)</span><span class="chip">no readable manifest</span></div>
+        </div>
+      </li>
+
+      <li class="day">
+        <div class="heading"><h2 class="eyebrow">Monday, Aug 04</h2><span class="rule"></span><span class="count">1 scout</span></div>
+      </li>
+
+      <li class="entry">
+        <span class="time">14:02</span><span class="node ready"></span>
+        <div class="body">
+          <div class="line-1"><span class="title">Migration idempotency audit</span><span class="pill ready"><span class="dot ready"></span>ready</span><button class="btn btn-ghost btn-sm more" type="button" aria-label="More actions for Migration idempotency audit">⋯</button></div>
+          <p class="question">Which SQLite migrations are not idempotent?</p>
+          <p class="finding">Two CREATE INDEX statements run before migrate(), so they fail on any database that predates their table. Both belong beside their upgrade path.</p>
+          <div class="chips"><span class="chip agent agent-claude">claude</span><span class="chip">opus</span><span class="chip">mission-control</span><span class="chip">report.html + 4 files</span><span class="chip">2.1 MB</span><span class="chip">Avery's laptop (unverified)</span></div>
+        </div>
+      </li>
+
+      <li class="day">
+        <div class="heading"><h2 class="eyebrow">Tuesday, Jul 29</h2><span class="rule"></span><span class="count">1 scout</span></div>
+      </li>
+
+      <li class="entry">
+        <span class="time">19:55</span><span class="node ready"></span>
+        <div class="body">
+          <div class="line-1"><span class="title">Auto-mode trust dialog</span><span class="pill ready"><span class="dot ready"></span>ready</span><button class="btn btn-ghost btn-sm more" type="button" aria-label="More actions for Auto-mode trust dialog">⋯</button></div>
+          <p class="question">Why did dispatched Claude stop entering auto mode?</p>
+          <p class="finding">The folder-trust dialog hides the mode-line footer that the post-launch Shift+Tab walk reads, so the walk never confirms the mode. The --permission-mode launch flag removes the walk entirely.</p>
+          <div class="chips"><span class="chip agent agent-claude">claude</span><span class="chip">opus</span><span class="chip">mission-control</span><span class="chip">report.html + 5 files</span><span class="chip">13.1 MB</span><span class="chip">manual</span></div>
+        </div>
+      </li>
+
+    </ul>
+
+    <div class="log-foot">
+      <button class="btn" type="button">Load more</button>
+      <span class="in-range">8 of 8 in range</span>
+      <span class="library">~/.mission-control/scouts</span>
+    </div>
+  </main>
+
+  <aside class="drawer" aria-label="Resume permission loss">
+    <div class="drawer-head">
+      <div class="row-1">
+        <button class="btn btn-sm btn-ghost" type="button">✕ Close</button>
+        <kbd>Esc</kbd>
+        <span class="spacer"></span>
+        <span class="pill ready"><span class="dot ready"></span>Complete</span>
+        <button class="btn btn-sm btn-danger-ghost" type="button">Delete scout</button>
+      </div>
+      <h1>Resume permission loss</h1>
+      <p class="question">Why did a resumed agent lose repository permissions?</p>
+      <div class="meta">
+        <span class="chip agent agent-codex">codex</span>
+        <span class="chip">gpt-5.6</span>
+        <span class="chip">mission-control @ 4cc55a1d</span>
+        <span class="chip">source manual</span>
+        <span class="chip">completed Aug 12 18:50</span>
+        <span class="chip">1.2 MB</span>
+      </div>
+      <nav class="segments tabs" aria-label="Scout sections">
+        <button aria-current="page">Report</button>
+        <button>Evidence (4)</button>
+        <button>Bundle</button>
+      </nav>
+    </div>
+
+    <div class="drawer-body">
+      <p class="sandbox-note">sandboxed report.html · scripts and network blocked</p>
+
+      <div class="report-frame">
+        <article class="report-doc">
+          <h1>Resume permission loss</h1>
+          <p class="q">Why did a resumed agent lose repository permissions?</p>
+          <div class="finding">Resume rebuilds a session from its stored configuration but never replays the repository grant, so the relaunched session starts with an empty allowlist. Every resumed session loses repository writes at its first tool call.</div>
+
+          <h2>Evidence</h2>
+          <table>
+            <thead>
+              <tr><th scope="col">Step</th><th scope="col">Grant present</th><th scope="col">Source</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Initial launch</td><td>yes</td><td class="num"><code>dispatcher.ts:214</code></td></tr>
+              <tr><td>Stored config</td><td>yes</td><td class="num"><code>harness.db tasks.grants</code></td></tr>
+              <tr><td>Resume</td><td>no</td><td class="num"><code>registry.ts:412</code></td></tr>
+            </tbody>
+          </table>
+
+          <h2>What we ruled out</h2>
+          <ul>
+            <li>Grant expiry. The stored record carries no TTL and the row is unchanged across the resume.</li>
+            <li>Harness differences. Codex, Claude and pi sessions all lose the grant at the same point.</li>
+            <li>Filesystem permissions. The checkout stays writable throughout; the refusal is the allowlist check.</li>
+          </ul>
+
+          <h2>Limits</h2>
+          <p>Only resumes through the dispatcher were exercised. A resume triggered from the Fleet page shares the registry path and is very likely affected, but that was not reproduced here.</p>
+        </article>
+      </div>
+
+      <section class="evidence">
+        <span class="eyebrow">Evidence</span>
+        <ul class="artifacts">
+          <li class="artifact">
+            <span class="dot ready"></span>
+            <div><div class="name">report/report.html</div><div class="sub">primary report · text/html · 12.4 KB</div></div>
+            <span class="sha">sha256:4cc55a1d69bb…</span>
+            <span class="actions"><button class="btn btn-sm btn-ghost" type="button">Preview</button><button class="btn btn-sm btn-ghost" type="button">Download</button><button class="btn btn-sm btn-ghost" type="button">Open</button></span>
+          </li>
+          <li class="artifact">
+            <span class="dot ready"></span>
+            <div><div class="name">report/permission-events.csv</div><div class="sub">report companion · text/csv · 4.7 KB</div></div>
+            <span class="sha">sha256:9f5db6c879f5…</span>
+            <span class="actions"><button class="btn btn-sm btn-ghost" type="button">Preview</button><button class="btn btn-sm btn-ghost" type="button">Download</button><button class="btn btn-sm btn-ghost" type="button">Open</button></span>
+          </li>
+          <li class="artifact">
+            <span class="dot ready"></span>
+            <div><div class="name">report/grant-timeline.png</div><div class="sub">report companion · image/png · 1.1 MB</div></div>
+            <span class="sha">sha256:2a17e0cc41bd…</span>
+            <span class="actions"><button class="btn btn-sm btn-ghost" type="button">Preview</button><button class="btn btn-sm btn-ghost" type="button">Download</button><button class="btn btn-sm btn-ghost" type="button">Open</button></span>
+          </li>
+          <li class="artifact">
+            <span class="dot ready"></span>
+            <div><div class="name">artifacts/repo-01/evidence/resume-debug.log</div><div class="sub">supporting · text/plain · 2.8 KB</div></div>
+            <span class="sha">sha256:b3d9017fa5e2…</span>
+            <span class="actions"><button class="btn btn-sm btn-ghost" type="button">Preview</button><button class="btn btn-sm btn-ghost" type="button">Download</button><button class="btn btn-sm btn-ghost" type="button">Open</button></span>
+          </li>
+        </ul>
+
+        <div class="bundle">
+          <span class="path">~/.mission-control/scouts/7aa704fd-d2ab-48b3-a726-0c2643ed91d2/9f5db6c8-79f5-4f9e-84aa-8b5dc15362f8</span>
+          <button class="btn btn-sm" type="button">Copy path</button>
+        </div>
+      </section>
+    </div>
+  </aside>
+
+</div>
+</div>
+
+<nav class="mock-nav">
+  <span>Scouts</span>
+  <a href="index.html">index</a>
+  <a href="a-dossier.html">A · Dossier</a>
+  <a href="b-reading-room.html">B · Reading Room</a>
+  <a href="c-findings-board.html">C · Findings Board</a>
+  <a class="on" href="d-research-log.html">D · Research Log</a>
+  <span class="keys">static mockup · nothing is wired to the daemon</span>
+</nav>
+</body>
+</html>

@@ -62,6 +62,27 @@ export interface ArchiveRepoSlot {
   primary: boolean;
 }
 
+/**
+ * WHICH unit of work inside a task's checkouts one job captures.
+ *
+ * Null for every scout: a scout episode produces exactly one report and therefore exactly one
+ * archive, so "the episode" is the whole answer and the operation key alone says it. A kind
+ * that can produce several archives from one episode - a plan task that touched two plan
+ * directories - names the one this job covers here, and carries the same value in its
+ * operation key so the two cannot drift apart.
+ *
+ * SERVER-DERIVED like everything else on a job. The directory comes from the task's own diff,
+ * which the agent cannot write to, and the slot is one the task's repository manifest issued.
+ * Frozen at reservation for the reason `kind` is frozen: a capture resumed after a restart
+ * must archive what was reserved, not whatever the checkout holds by then.
+ */
+export interface ArchiveCaptureScope {
+  /** The repository slot the directory below lives in. */
+  slot: string;
+  /** The checkout-relative directory this job captures. */
+  directory: string;
+}
+
 /** The identity and source locators one capture works from. All server-derived. */
 export interface ArchiveCaptureJob {
   operationKey: string;
@@ -86,6 +107,8 @@ export interface ArchiveCaptureJob {
   question: string | null;
   origin: ArchiveCaptureOrigin;
   repos: ArchiveRepoSlot[];
+  /** Which unit of work in those checkouts this job covers, or null for a whole episode. */
+  scope: ArchiveCaptureScope | null;
   relativePath: string | null;
   captureStatus: ArchiveCaptureStatus | null;
   error: string | null;
@@ -121,10 +144,12 @@ export interface ArchiveCaptureReservation {
   question: string | null;
   origin: ArchiveCaptureOrigin;
   repos: ArchiveRepoSlot[];
+  /** The unit of work this job covers, or null when the whole episode is one archive. */
+  scope?: ArchiveCaptureScope | null;
 }
 
 /**
- * The operation key for one task work episode.
+ * The operation key for one task work episode, and optionally for one unit of work inside it.
  *
  * Task plus episode rather than task alone, because a task can be re-dispatched or reassigned
  * after a failure: that is genuinely new work by a new agent in a new checkout, and it must be
@@ -132,9 +157,20 @@ export interface ArchiveCaptureReservation {
  * episode (an assignment whose binding has not landed, a job reserved from an exit that raced
  * the binding) falls back to a single per-task key, which is the conservative direction - it
  * de-duplicates rather than multiplying archives.
+ *
+ * A `scope` extends the key rather than replacing part of it, so a scout's key is byte-for-byte
+ * the one it has always been and an existing row is still found by it. Scoping is what makes
+ * idempotency hold for a kind that reserves several jobs per episode: two settles over the same
+ * checkout converge on the same job PER DIRECTORY, rather than on one job for whichever
+ * directory happened to be discovered first.
  */
-export function archiveOperationKey(taskId: string, episodeId: string | null): string {
-  return `${taskId}:${episodeId ?? "-"}`;
+export function archiveOperationKey(
+  taskId: string,
+  episodeId: string | null,
+  scope: ArchiveCaptureScope | null = null,
+): string {
+  const episode = `${taskId}:${episodeId ?? "-"}`;
+  return scope ? `${episode}:${scope.slot}:${scope.directory}` : episode;
 }
 
 interface JobRowShape {
@@ -154,6 +190,7 @@ interface JobRowShape {
   question: string | null;
   origin_json: string | null;
   repos_json: string | null;
+  scope_json: string | null;
   relative_path: string | null;
   capture_status: string | null;
   error: string | null;
@@ -193,7 +230,7 @@ export class ArchiveCaptureStore {
    * must not lose it.
    */
   reserve(input: ArchiveCaptureReservation): ArchiveCaptureJob {
-    const key = archiveOperationKey(input.taskId, input.episodeId);
+    const key = archiveOperationKey(input.taskId, input.episodeId, input.scope ?? null);
     return this.inTransaction(() => {
       const existing = this.get(key);
       if (existing) {
@@ -223,8 +260,8 @@ export class ArchiveCaptureStore {
         .prepare(
           `INSERT INTO archive_capture_jobs
              (operation_key, task_id, session_id, episode_id, kind, status, producer_id, archive_id,
-              title, question, origin_json, repos_json, attempts, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+              title, question, origin_json, repos_json, scope_json, attempts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
         )
         .run(
           key,
@@ -234,10 +271,11 @@ export class ArchiveCaptureStore {
           input.kind,
           input.producerId,
           randomUUID(),
-          clip(input.title, ARCHIVE_TEXT_LIMITS.title) ?? "Scout",
+          clip(input.title, ARCHIVE_TEXT_LIMITS.title) ?? untitled(input.kind),
           clip(input.question, ARCHIVE_TEXT_LIMITS.question),
           JSON.stringify(input.origin),
           JSON.stringify(input.repos),
+          input.scope ? JSON.stringify(input.scope) : null,
           at,
           at,
         );
@@ -350,12 +388,13 @@ function rowToJob(row: JobRowShape): ArchiveCaptureJob {
     model: null,
     source: null,
   };
+  const kind = readKind(row.kind);
   return {
     operationKey: row.operation_key,
     taskId: row.task_id,
     sessionId: row.session_id,
     episodeId: row.episode_id,
-    kind: readKind(row.kind),
+    kind,
     status: readStatus(row.status),
     // Written at reservation and never rewritten. The empty-string fallbacks cannot occur for
     // a row this build wrote; they exist so a hand-edited database degrades to "unfinished"
@@ -370,10 +409,11 @@ function rowToJob(row: JobRowShape): ArchiveCaptureJob {
           supporting: parseJson<ScoutSupportingLocator[]>(row.supporting_json) ?? [],
         }
       : null,
-    title: row.title ?? "Scout",
+    title: row.title ?? untitled(kind),
     question: row.question,
     origin,
     repos: parseJson<ArchiveRepoSlot[]>(row.repos_json) ?? [],
+    scope: readScope(row.scope_json),
     relativePath: row.relative_path,
     captureStatus:
       row.capture_status === "complete" || row.capture_status === "partial" ? row.capture_status : null,
@@ -395,6 +435,26 @@ function rowToJob(row: JobRowShape): ArchiveCaptureJob {
  */
 function readKind(raw: string | null): ArchiveKind {
   return (ARCHIVE_KINDS as readonly string[]).includes(raw ?? "") ? (raw as ArchiveKind) : "scout";
+}
+
+/**
+ * The scope a row names, or null when it covers its whole episode.
+ *
+ * Validated rather than cast, because a scope selects the directory a capture READS. A row
+ * carrying a shape this build does not recognise reads as unscoped, which the plan planner
+ * refuses by name - the safe direction, since the alternative is a capture pointed at a
+ * directory nobody derived.
+ */
+function readScope(raw: string | null): ArchiveCaptureScope | null {
+  const parsed = parseJson<Partial<ArchiveCaptureScope>>(raw);
+  if (!parsed || typeof parsed.slot !== "string" || typeof parsed.directory !== "string") return null;
+  if (parsed.slot === "" || parsed.directory === "") return null;
+  return { slot: parsed.slot, directory: parsed.directory };
+}
+
+/** The display name a job falls back to when the task it froze had no usable title. */
+function untitled(kind: ArchiveKind): string {
+  return kind === "plan" ? "Plan" : "Scout";
 }
 
 function readStatus(raw: string): ArchiveCaptureJobStatus {

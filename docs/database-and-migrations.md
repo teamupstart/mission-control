@@ -27,8 +27,10 @@ and nothing else. A label, annotation, or ownership flag stored only in those ro
 lost the first time the index was rebuilt, which is why none may be added.
 
 `archive_capture_jobs` sits beside them and is a different kind of table again: local
-coordination for archives this daemon is still WRITING, one row per task work episode, holding
-the reserved archive identity and the checkout locators a resumed capture needs. It refers to
+coordination for archives this daemon is still WRITING, one row per archive a task work episode
+owes, holding the reserved archive identity, the directory that row covers, and the checkout
+locators a resumed capture needs. A scout episode owes exactly one, so its row covers the
+episode; a plan task owes one per plan directory it wrote. It refers to
 task and session ids as values and has no foreign key or cascade to either, because a published
 archive has to outlive both. Losing it loses the ability to resume an unfinished capture, never
 the ability to read a finished one.

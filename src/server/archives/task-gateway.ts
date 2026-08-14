@@ -1,28 +1,31 @@
+import { ARCHIVE_TEXT_LIMITS, type ArchiveKind } from "@shared/archives.ts";
+import type { Session, Task, TaskKind } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
-import { ARCHIVE_TEXT_LIMITS } from "@shared/archives.ts";
-import type { Session, Task } from "@shared/types.ts";
-import type { ArchiveCaptureOrigin, ArchiveRepoSlot } from "../archives/capture-store.ts";
-import { isScoutTask } from "./prompt.ts";
-import { scoutRepoSlots } from "./repos.ts";
-import type { ScoutSubmissionAuthority } from "./submission-auth.ts";
+import { isScoutTask } from "../scouts/prompt.ts";
+import { scoutRepoSlots } from "../scouts/repos.ts";
+import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
+import type { ArchiveCaptureOrigin, ArchiveRepoSlot } from "./capture-store.ts";
 
 /**
  * What the capture path is allowed to know about a task, and who answers.
  *
  * A PORT rather than a direct Registry dependency, and the direction is the reason: the
  * archive owner is injected into `TaskManager` so completion can wait on it, so the archive
- * owner cannot in turn own tasks without a cycle. More usefully, it draws the line the plan
- * asks for - `src/server/scouts/` never learns about task status, dispatch, or teardown. It
- * asks one question ("what is this scout, and where are its checkouts?") and gets a frozen
- * answer it can persist.
+ * owner cannot in turn own tasks without a cycle. More usefully, it draws a line - a kind's
+ * own module never learns about task status, dispatch, or teardown. This asks one question
+ * ("what is this task, and where are its checkouts?") and gets a frozen answer it can persist.
  *
- * Everything in a `ScoutSubject` is SERVER-DERIVED. Nothing an agent typed reaches it: the
+ * It lives here rather than beside one kind because the question is kind-agnostic: the subject
+ * a plan capture needs is the same projection a scout capture needs, off the same row. What is
+ * kind-shaped is only which tasks answer, and that is the `captureKind` lookup below.
+ *
+ * Everything in an `ArchiveSubject` is SERVER-DERIVED. Nothing an agent typed reaches it: the
  * title and question come from the task row, the provenance from the session, and the source
  * roots from the provisioned worktrees.
  */
 
-/** One scout, as the capture path sees it. */
-export interface ScoutSubject {
+/** One task's work, as the capture path sees it. */
+export interface ArchiveSubject {
   taskId: string;
   sessionId: string | null;
   /**
@@ -40,31 +43,50 @@ export interface ScoutSubject {
 }
 
 /** Why a session's submission cannot be attributed to a scout. */
-export type ScoutSubjectRefusal =
+export type ArchiveSubjectRefusal =
   | { reason: "no_session"; status: 404; detail: string }
   | { reason: "no_task"; status: 404; detail: string }
   | { reason: "not_a_scout"; status: 409; detail: string }
   | { reason: "not_running"; status: 409; detail: string };
 
-export type ScoutSubjectLookup =
-  | { ok: true; subject: ScoutSubject }
-  | ({ ok: false } & ScoutSubjectRefusal);
+export type ArchiveSubjectLookup =
+  | { ok: true; subject: ArchiveSubject }
+  | ({ ok: false } & ArchiveSubjectRefusal);
 
-export interface ScoutTaskGateway {
+/** One task's work and the kind of archive it would be captured as. */
+export interface ArchiveSubjectForKind {
+  kind: ArchiveKind;
+  subject: ArchiveSubject;
+}
+
+export interface ArchiveTaskGateway {
   /** The scout named by a verified checkout credential, after its live binding is confirmed. */
-  subjectForSubmission(authority: ScoutSubmissionAuthority): ScoutSubjectLookup;
-  /** The scout subject for a task id, or null when it is gone or was never a scout. */
-  subjectForTask(taskId: string): ScoutSubject | null;
+  subjectForSubmission(authority: ScoutSubmissionAuthority): ArchiveSubjectLookup;
   /**
-   * The scout an evicting session was running, or null.
+   * The subject for a task, but only when that task is captured as `kind`.
+   *
+   * Kind is a REQUIRED argument rather than something the caller reads off the answer, and
+   * that is a safety property rather than a style. The completion gate asks this with
+   * `"scout"`, so a plan task can never reach it however the gate is later edited - which is
+   * exactly the approved difference between the two kinds: a plan completes on Foreman's
+   * ordinary boundary and must never wait on an archive.
+   */
+  subjectForTask(taskId: string, kind: ArchiveKind): ArchiveSubject | null;
+  /**
+   * The work an evicting session was doing, and what it would be archived as, or null.
    *
    * Separate from `subjectForSubmission` because the question is different: this one is asked
    * with the session in hand, from inside `beginEviction`, and it must NOT refuse a session
    * that is already `exited` - being exited is precisely the condition it exists to catch.
    */
-  subjectForExitingSession(session: Session): ScoutSubject | null;
-  /** Whether a task is a scout at all. Cheap; every completion and cleanup gate asks it. */
-  isScout(taskId: string): boolean;
+  subjectForExitingSession(session: Session): ArchiveSubjectForKind | null;
+  /**
+   * What this task's work would be archived as, or null when it is not archived at all.
+   *
+   * Cheap; every cleanup gate asks it before it reads anything from disk. A ship task answers
+   * null, which is what keeps ship teardown byte-for-byte what it was.
+   */
+  captureKind(taskId: string): ArchiveKind | null;
   /**
    * Whether a task is still expecting its agent to report.
    *
@@ -82,10 +104,10 @@ export interface ScoutTaskGateway {
  * The one judgement it makes is which checkout a slot names, and it delegates even that to
  * `scoutRepoSlots` so the prompt an agent read and the roots capture reads agree.
  */
-export class RegistryScoutTaskGateway implements ScoutTaskGateway {
+export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
   constructor(private readonly registry: Registry) {}
 
-  subjectForSubmission(authority: ScoutSubmissionAuthority): ScoutSubjectLookup {
+  subjectForSubmission(authority: ScoutSubmissionAuthority): ArchiveSubjectLookup {
     const task = this.registry.getTask(authority.taskId);
     if (!task) {
       return {
@@ -129,27 +151,28 @@ export class RegistryScoutTaskGateway implements ScoutTaskGateway {
     return { ok: true, subject: this.subject(task, session) };
   }
 
-  subjectForTask(taskId: string): ScoutSubject | null {
+  subjectForTask(taskId: string, kind: ArchiveKind): ArchiveSubject | null {
     const task = this.registry.getTask(taskId);
-    if (!task || !isScoutTask(task)) return null;
+    if (!task || captureKindOf(task) !== kind) return null;
     const session = task.sessionId ? this.registry.getSession(task.sessionId) : undefined;
     return this.subject(task, session ?? null);
   }
 
-  subjectForExitingSession(session: Session): ScoutSubject | null {
+  subjectForExitingSession(session: Session): ArchiveSubjectForKind | null {
     // `activeTaskFor` behind this still answers during eviction: the row is deleted after
     // `EXIT_LINGER_MS`, and this runs inside `beginEviction`, before the timer fires.
     const task = this.registry.taskForSession(session.id, session.cwd);
-    if (!task || !isScoutTask(task)) return null;
-    // Only work that was actually under way. A backlog scout bound to nothing, and a scout
+    const kind = task ? captureKindOf(task) : null;
+    if (!task || !kind) return null;
+    // Only work that was actually under way. A backlog task bound to nothing, and a task
     // already settled by hand, have no evidence an eviction could take with it.
     if (task.status !== "running" && task.status !== "dispatching") return null;
-    return this.subject(task, session);
+    return { kind, subject: this.subject(task, session) };
   }
 
-  isScout(taskId: string): boolean {
+  captureKind(taskId: string): ArchiveKind | null {
     const task = this.registry.getTask(taskId);
-    return task ? isScoutTask(task) : false;
+    return task ? captureKindOf(task) : null;
   }
 
   awaitsAgent(taskId: string): boolean {
@@ -165,7 +188,7 @@ export class RegistryScoutTaskGateway implements ScoutTaskGateway {
    * which episode this task's work belongs to, while the session's current one may already
    * have rotated onto whatever the agent did next.
    */
-  private subject(task: Task, session: Session | null): ScoutSubject {
+  private subject(task: Task, session: Session | null): ArchiveSubject {
     return {
       taskId: task.id,
       sessionId: session?.id ?? task.sessionId,
@@ -189,6 +212,38 @@ export class RegistryScoutTaskGateway implements ScoutTaskGateway {
       repos: scoutRepoSlots(task, session?.cwd ?? null),
     };
   }
+}
+
+/**
+ * The archive kind each task kind's work is captured as, or null when it is not captured.
+ *
+ * The one place a durable task kind becomes an archive kind, and a total `Record<TaskKind, …>`
+ * rather than a chain of predicates so a FOURTH task kind cannot compile until it has said
+ * whether it is archived. That is the failure this shape exists to prevent: a predicate chain
+ * answers `null` for a kind nobody added to it, so a new kind would silently never be
+ * captured and no test would notice - the same silent degradation `TASK_KIND_INFO` and
+ * `KIND_CONTRACT` are `Record`s to prevent, one subsystem over.
+ *
+ * The two vocabularies stay separable even though two of their names coincide. `TaskKind` is
+ * what an agent was asked for; `ArchiveKind` is what a bundle preserves, and it is an
+ * append-only portable format contract with no `ship` in it. This mapping is where they meet
+ * and it is deliberately the ONLY place they do.
+ */
+const CAPTURE_KIND: Record<TaskKind, ArchiveKind | null> = {
+  ship: null,
+  scout: "scout",
+  plan: "plan",
+};
+
+/**
+ * The archive kind a task's work is captured as, or null when it is not captured.
+ *
+ * `?? null` rather than a bare lookup: a row written by a newer build can carry a kind this
+ * one has no entry for, and "not archived" is the only safe reading of a kind whose capture
+ * rule does not exist here yet.
+ */
+function captureKindOf(task: Task): ArchiveKind | null {
+  return CAPTURE_KIND[task.kind] ?? null;
 }
 
 function clip(value: string | null | undefined, max: number): string | null {

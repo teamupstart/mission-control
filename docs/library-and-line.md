@@ -206,24 +206,10 @@ again - the option is there to be read, disabled.
 **The mark waits for the daemon's answer.** Which completions a build can prove is read over
 HTTP, so for one round trip after the screen opens nothing is known - and a screen that marked
 the chip then would be accusing every action of naming something unprovable, including the
-ordinary default this daemon runs perfectly well. Until the read lands, the chip states the
-stored completion and claims nothing about it:
-
-![The contract region while the capability read is still in flight: the completes-when chip
-states Pull request is opened and verified in the ordinary tone, with no mark and no sentence
-beneath it](images/action-completion-pending.png)
-
-Once the answer is in and it is a refusal, the same region marks and says whose refusal it is.
-The two figures are one screen under two answers, and the difference between them is one HTTP
-response:
-
-![The same region after the daemon reports the adapter unavailable: the completes-when chip
-draws amber and This build cannot verify a pull request yet. is printed beneath
-it](images/action-completion-unprovable.png)
-
-Save stands down for as long as the read is in flight and says which fact it is waiting for,
-because a pending read is not a refusal but it is a reason not to write. Everything left over is
-the instruction editor, whose Markdown reaches the session byte for byte.
+ordinary default this daemon runs perfectly well. Until that read lands nothing on the screen
+claims anything about it. Save stands down in the meantime and says which fact it is waiting
+for, because a pending read is not a refusal but it is a reason not to write. Everything left
+over is the instruction editor, whose Markdown reaches the session byte for byte.
 
 ### The Ship log
 

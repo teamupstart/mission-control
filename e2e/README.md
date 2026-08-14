@@ -195,6 +195,35 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### The Action detail screen on the Rail direction
+
+`e2e/.artifacts/action-rail/` holds seven frames from the run that asserts the rebuilt Action
+screen. `01-rail-groups.png` is the rail split into Built-in and Yours, each row sub-labelled
+with its contract rather than with a description that restates the title;
+`02-contract-line.png` is the chip pair with the sentence they form written beneath them;
+`03-completion-chip-open.png` is the completion chip's popover holding the `select` that used
+to sit fourth in a row of four fields; `04-completion-changed.png` is the same screen after the
+condition changed, saved and reloaded, with the contract line following it;
+`05-unprovable-completion.png` is a completion this build cannot prove, kept and marked amber
+with its reason beside it - the state that was previously a disabled option inside a closed
+dropdown; `06-overflow-menu.png` is the `⋯` menu holding Duplicate and Archive; and
+`07-builtin-promotes-duplicate.png` is a built-in promoting **Duplicate to edit**, with neither
+a Save nor a menu, because both would be empty gestures.
+
+The marked chip and the contract line are the two things an assertion can only approximate:
+one is a colour and a weight, and the other is a sentence a person has to read to judge.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/action-rail.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### Per-harness dispatch defaults propagating
 
 `e2e/.artifacts/harness-defaults-propagate/`

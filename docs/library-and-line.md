@@ -158,6 +158,40 @@ defaults draws quiet, and one this Persona overrides draws solid - so what this 
 actually changes is legible without opening anything, and `source` names where the routing was
 decided. Everything left over is the guidance editor.
 
+### The Action detail screen
+
+The same rail and workspace as Personas, because an operator moving between them should be
+moving through one surface with different contents. What is specific to an Action is that it is
+the only Library asset carrying a **machine-checked contract**: the bound session has to be able
+to invoke a named skill, and something observable has to happen before a workflow stage may call
+it done.
+
+**The rail** groups **Built-in** and **Yours** with counts, and each row's sub-label is that
+contract - `Skill · pull-request · Pull request is opened and verified`. The description is not
+repeated there, because on the shipped pair it restates the title, and the contract is the thing
+that tells two actions apart. Search sits above the list; the **Archived** toggle, carrying its
+count, sits in a footer below it.
+
+**The workspace header** carries the name and description as the fields they are, with the
+revision and when it was last written on one dim line beneath. **Save** is promoted on an action
+you can edit and **Duplicate to edit** on a built-in or an archived one, where there is no
+revision the editor could write. Duplicate and Archive live behind the `⋯` menu, which is absent
+on a read-only action because both of its entries are.
+
+**Two property chips carry the contract** - `requires skill` and `completes when` - and each
+opens the control that sets it. **The contract line beneath them is the sentence those two values
+form**: what the stage sends, what the session must be able to invoke, and what Mission Control
+has to observe before the stages below this one may read the evidence. That completion clause is
+the same string the chip shows and the same one the pipeline card, the graph rail and the version
+history print, from the one shared table that owns it - there is no second wording of what an
+adapter proves anywhere in the browser.
+
+A completion this build cannot prove is **kept, marked and readable while the control is shut**:
+the chip draws amber and a sentence beside it says why. It stays selected, because rewriting it
+would silently change the proof contract the action was authored with, and it cannot be chosen
+again - the option is there to be read, disabled. Everything left over is the instruction editor,
+whose Markdown reaches the session byte for byte.
+
 ### The Ship log
 
 `#/shipped` is the cross-repo record of what the fleet landed: the Inspector's adoption

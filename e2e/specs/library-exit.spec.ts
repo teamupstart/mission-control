@@ -293,3 +293,67 @@ test("the builder rail carries the same exit, so the four surfaces do not disagr
   await dashboard.keyboard.press("Escape");
   await expect.poll(() => hash(dashboard)).toBe("#/library");
 });
+
+test("Escape on a focused graph node is the canvas's, not the page's", async ({
+  dashboard,
+  daemon,
+}) => {
+  // React Flow binds Escape to unselect (`elementSelectionKeys` in `NodeWrapper.onKeyDown`)
+  // and does NOT `preventDefault` it - only its arrow-key branch does. So the builder is the
+  // one surface whose nested Escape does not announce itself through the ladder's first
+  // stand-down rung, and a press meant as "deselect this node" would otherwise take the whole
+  // page with it. `WorkflowCanvas`'s `onFocusCapture` selects whatever receives focus, so
+  // simply tabbing into the canvas puts an operator in this state.
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "Canvas workflow",
+    description: "One reviewer, for the canvas rung.",
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/library/workflows/${workflow.workflow.id}`);
+  await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
+  const node = dashboard.locator(".react-flow__node").first();
+  await expect(node).toBeVisible();
+  await node.focus();
+  await expect(node).toHaveClass(/selected/);
+
+  // One press: the canvas deselects and keeps the page. Two rungs of one ladder, exactly as
+  // the guidance editor behaves.
+  await dashboard.keyboard.press("Escape");
+  await expect(node).not.toHaveClass(/selected/);
+  expect(await hash(dashboard)).toBe(`#/library/workflows/${workflow.workflow.id}`);
+
+  // The next press is the page's.
+  await dashboard.keyboard.press("Escape");
+  await expect.poll(() => hash(dashboard)).toBe("#/library");
+});
+
+test("a focused graph EDGE peels too, rather than swallowing every press", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The dead end this whole PR exists to remove, reappearing one level in. React Flow renders
+  // an edge as a focusable `<g tabindex="0">` inside the `<svg>` - `edgesFocusable` defaults
+  // to true and nothing here turns it off - and an `SVGElement` is not an `HTMLElement`. A
+  // blur guarded on `instanceof HTMLElement` therefore skipped it while `preventDefault()`
+  // still fired, so the press was spent doing nothing, focus stayed on the edge, and EVERY
+  // following Escape repeated the no-op. Keyboard-only, Escape could never reach the page.
+  await dashboard.goto(`${daemon.baseURL}/#/library/workflows`);
+  await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
+  await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
+
+  const edge = dashboard.locator(".react-flow__edge").first();
+  await expect(edge).toBeVisible();
+  await edge.evaluate((el: SVGElement) => el.focus());
+  await expect.poll(() => dashboard.evaluate(() =>
+    document.activeElement?.classList.contains("react-flow__edge") ?? false)).toBe(true);
+
+  // One press leaves the canvas rather than being swallowed by it.
+  await dashboard.keyboard.press("Escape");
+  await expect.poll(() => dashboard.evaluate(() =>
+    document.activeElement?.closest(".react-flow") !== null && document.activeElement !== null))
+    .toBe(false);
+  await expect.poll(() => hash(dashboard)).toContain("#/library/workflows/");
+
+  // And the next one leaves the page, which is the rung an unblurred edge never reached.
+  await dashboard.keyboard.press("Escape");
+  await expect.poll(() => hash(dashboard)).toBe("#/library");
+});

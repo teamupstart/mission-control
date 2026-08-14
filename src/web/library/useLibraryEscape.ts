@@ -71,19 +71,63 @@ export function libraryEscapeStep(state: {
 }
 
 /**
- * Everything that edits text and so has a prior claim on Escape.
+ * Every focused region that answers Escape ITSELF, and so has a prior claim on the press.
  *
- * `.cm-editor` FIRST because it is the case a bail-on-contenteditable handler gets wrong,
- * and the rest of the list is `SettingsPage`'s verbatim: this is the same rule about the
- * same elements, not a second one. Matched with `closest` against the focused element
- * rather than the event target, because CodeMirror's focus sits on `.cm-content` while
- * plenty of its own presses report a target further in.
+ * The rule is about regions, not about text: a surface the keyboard is inside owns the first
+ * press, and only a page with the keyboard outside all of them is free to leave. Three kinds
+ * qualify, and the last two are why this is not simply `SettingsPage`'s list:
+ *
+ * - **Form fields** - `input, textarea, select, [contenteditable='true']`, `SettingsPage`'s
+ *   list verbatim, because this is the same rule about the same elements rather than a
+ *   second one. It SPENDS the press blurring rather than dropping it, which is the whole
+ *   difference: a page whose Escape is dead in its fields is the bug this fixes.
+ * - **`.cm-editor`** - CodeMirror's content host is `contenteditable`, so a handler that
+ *   bailed on that list alone would be dead in the pane that fills the Persona and Action
+ *   screens.
+ * - **`.react-flow`** - the workflow builder's canvas. React Flow binds Escape to unselect
+ *   (`elementSelectionKeys` in `NodeWrapper.onKeyDown` / `EdgeWrapper.onKeyDown`) and does
+ *   NOT `preventDefault` it - only its arrow-key branch does - so unlike every other nested
+ *   Escape in these surfaces it does not announce itself through the `ignore` rung. Without
+ *   this entry, one press meant as "deselect this node" ALSO took the whole page, and
+ *   `WorkflowCanvas`'s `onFocusCapture` selects whatever receives focus, so merely tabbing
+ *   into the canvas reached that state. Matched on the container rather than on
+ *   `.react-flow__node`, so an edge, the pane and the controls are covered without this file
+ *   having to track React Flow's internals.
+ *
+ * Matched with `closest` against the live focus AND the event's target, because neither alone
+ * answers "where was the keyboard when this was pressed" on every surface:
+ *
+ * - The **focus** is what CodeMirror and the form fields report honestly, and it is the only
+ *   one that is right when a press is retargeted on its way out.
+ * - The **target** is what survives a re-render. React Flow's unselect replaces the focused
+ *   edge - it is an `SVGElement`, and a fresh one - so by the time this listener runs on
+ *   `window`, `document.activeElement` has already fallen back to `<body>` and the live focus
+ *   says "nothing", while the target still names the edge. Reading focus alone meant one
+ *   press on a focused edge left the whole page.
+ *
+ * Either one being inside a layer is enough, so a surface has to be outside all of them
+ * before a press is read as "leave the page".
  */
 export const LIBRARY_EDITOR_SELECTOR =
-  ".cm-editor, input, textarea, select, [contenteditable='true']";
+  ".cm-editor, .react-flow, input, textarea, select, [contenteditable='true']";
 
 export function isInsideEditor(element: Element | null): boolean {
   return element !== null && element.closest(LIBRARY_EDITOR_SELECTOR) !== null;
+}
+
+/**
+ * Give up focus, whatever kind of element is holding it.
+ *
+ * Duck-typed rather than `instanceof HTMLElement`, because `blur` is on the
+ * `HTMLOrForeignElement` mixin and the graph's focusable elements are not HTML: React Flow
+ * renders an edge as `<g tabindex="0">` inside the `<svg>` (`edgesFocusable` defaults to true
+ * and nothing here turns it off), which is an `SVGElement`. An `instanceof HTMLElement` guard
+ * skipped the blur for those while `preventDefault()` still fired, so the press was spent
+ * doing nothing - the same dead end this hook exists to remove, one level in.
+ */
+function blurElement(element: Element | null): void {
+  const focusable = element as (Element & { blur?: () => void }) | null;
+  if (typeof focusable?.blur === "function") focusable.blur();
 }
 
 /**
@@ -115,18 +159,21 @@ export function useLibraryEscape({
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       const focused = document.activeElement;
+      const pressedOn = event.target instanceof Element ? event.target : null;
       const step = libraryEscapeStep({
         key: event.key,
         defaultPrevented: event.defaultPrevented,
         overlayOpen: overlayRef.current(),
-        focusInEditor: isInsideEditor(focused),
+        focusInEditor: isInsideEditor(focused) || isInsideEditor(pressedOn),
       });
       if (step === "ignore" || step === "stand-down") return;
       // Claimed either way, so a press spent on the editor is not ALSO read as a page
       // exit by anything listening above us.
       event.preventDefault();
       if (step === "leave-editor") {
-        if (focused instanceof HTMLElement) focused.blur();
+        // The live focus, not the target: the target may already be detached, and blurring
+        // it would leave the real focus where it is and stall the ladder on the next press.
+        blurElement(focused);
         return;
       }
       leaveRef.current();

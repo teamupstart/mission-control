@@ -291,9 +291,11 @@ export function WorkflowLibrary({
   );
   // The fourth authoring surface takes the same ladder as the three detail screens, so the
   // Library does not disagree with itself about what Escape means one level under its card
-  // wall. Its own nested Escapes - the graph's connect dialog, the pipeline's insert picker -
-  // are React handlers that `preventDefault`, which is the ladder's first stand-down rung, so
-  // they keep taking their press first and none of its editors change.
+  // wall. Two of its nested Escapes - the graph's connect dialog, the pipeline's insert
+  // picker - are React handlers that `preventDefault`, so the ladder's first stand-down rung
+  // leaves their press alone. The canvas is the exception and is handled by name: React Flow
+  // unselects on Escape WITHOUT preventing the default, so `.react-flow` is an inner layer
+  // the ladder peels rather than navigates over. See `LIBRARY_EDITOR_SELECTOR`.
   useLibraryEscape({ isOverlayOpen, onLeave });
 
   const selectedWorkflowRemoved = removalTarget !== undefined;

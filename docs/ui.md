@@ -703,7 +703,8 @@ Complete and Kill on a card; Focus, Diff, Reset, Interrupt, Complete and Kill in
 footer; the Console's
 Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board card's workflow disclosure; the Diff reader's
-Open in Files action; and the settings rail's search box. They
+Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
+settings rail's search box. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.
 A narrow Console or Board detail is the one place they come off on their own: the tabs' keycaps
 are the first thing that row gives up to stay on one line, and the chords keep working.

@@ -12205,8 +12205,15 @@ select.ensemble-judge-persona {
    2525px. */
 .lib-back-row {
   flex: none;
-  padding: 8px 12px;
+  /* 16px so the arrow lands on the same left edge as the rail heading below it, once
+     `.lib-back`'s own 8px padding and its -8px pull cancel out. The builder's rail sets its
+     heading at 12px instead, so it takes the matching inset below rather than being 4px out
+     of line with itself. */
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border-soft);
+}
+.workflow-library-sidebar .lib-back-row {
+  padding-inline: 12px;
 }
 .lib-back {
   display: inline-flex;

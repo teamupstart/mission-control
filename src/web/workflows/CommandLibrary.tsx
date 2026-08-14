@@ -18,6 +18,12 @@ import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { RepositoryName } from "../components/RepositoryName.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
+import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
+import {
+  LibraryPropertyChip,
+  LibraryPropertyChips,
+} from "../library/LibraryPropertyChip.tsx";
+import { LibraryWorkspaceHeader } from "../library/LibraryWorkspaceHeader.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { workflowRequest, WorkflowApiError } from "./workflowApi.ts";
 import {
@@ -31,9 +37,20 @@ import {
  *
  * Structurally the Persona and SessionAction libraries - fixed rail on the left, one editor
  * on the right, a local draft, a discard guard and a compare-and-swap save - because an
- * operator who has navigated one should not have to learn a third shape. What is different
- * is that the rail is CLOSED: four built-in slots ship with the product, so there is no New,
- * no duplicate, no archive, and no empty state. A slot nobody has configured is still a row.
+ * operator who has navigated one should not have to learn a third shape. It draws the rail
+ * out of the SHARED primitives under `src/web/library/` rather than a fourth copy of them.
+ * What is different is that the rail is CLOSED: four built-in slots ship with the product,
+ * so there is no New, no duplicate, no archive, and no empty state. A slot nobody has
+ * configured is still a row.
+ *
+ * The body is one TABLE OF RULES, and that is this screen's whole argument. A slot holds one
+ * repository-neutral default plus a list of exceptions, and the longest matching path wins -
+ * but the screen used to draw the default as its own titled section above an unrelated list,
+ * so the one structure an operator has to hold in their head (these are rules, and they are
+ * ordered) was the one thing the layout denied. The default is now the first row of the same
+ * table, labelled as the rule it actually is; the add row is visibly an add row rather than a
+ * third entry indistinguishable from the two saved ones; and every rule carries its parsed
+ * argv, which is where a quoting mistake becomes visible.
  *
  * It reads the catalog off the SSE stream through `MissionState` and writes through the
  * dedicated `/api/workflow-commands/:slot` route. There is no second fetch of the catalog
@@ -210,7 +227,8 @@ export function commandRepoOptions(
 }
 
 /**
- * What the Overrides section says when there are none - which of THREE states the draft is in.
+ * What the table says between the default rule and the add row when there are no exceptions -
+ * which of THREE states the draft is in.
  *
  * The row exists to tell an operator what "no exceptions" means for this slot, and that
  * depends entirely on whether there is a default to fall back to. Three states, because
@@ -251,13 +269,33 @@ export function commandRevisionLine(view: WorkflowCommandView | null): string {
   return `Revision ${view.revision} · updated ${new Date(view.updatedAt).toLocaleString()}`;
 }
 
-/** The typed line, split the way the daemon will split it - or the refusal, said early. */
-function argvPreview(line: string): string {
+/**
+ * An argv, numbered, as the one readout every rule in the table carries.
+ *
+ * There is no shell anywhere in this path, so the split is OURS and an operator has to be
+ * able to SEE it rather than trust it - `npm run test -- --grep "a b"` is four arguments or
+ * six depending on a rule nobody can read off the box they typed into. Until this phase the
+ * readout was offered for the default alone, so the two rules most likely to carry a quoting
+ * mistake - the exceptions somebody wrote once and never re-read - were the two it did not
+ * cover.
+ *
+ * One helper rather than three copies, because a rule that numbers its arguments differently
+ * from the rule above it is a table you cannot compare down a column.
+ */
+export function argvReadout(argv: readonly string[]): string {
+  return `Runs as: ${argv.map((arg, index) => `${index + 1}. ${arg}`).join("   ")}`;
+}
+
+/**
+ * The typed line, split the way the daemon will split it - or the refusal, said early.
+ *
+ * Exported and pure because a static render cannot type into the box, so the refusal - the
+ * state a half-quoted line leaves the default rule in - is unreachable any other way.
+ */
+export function argvPreview(line: string): string {
   if (line.trim() === "") return "Leave this empty for no machine-wide default.";
   const parsed = parseCheckCommand(line);
-  return parsed.ok
-    ? `Runs as: ${parsed.argv.map((arg, index) => `${index + 1}. ${arg}`).join("   ")}`
-    : parsed.error;
+  return parsed.ok ? argvReadout(parsed.argv) : parsed.error;
 }
 
 function isSlot(value: string | null): value is WorkflowCheckSlot {
@@ -329,6 +367,8 @@ export function CommandLibrary({
   const [overrideCommand, setOverrideCommand] = useState("");
   const [repos, setRepos] = useState<string[]>([]);
   const [allowlist, setAllowlist] = useState<string[]>([]);
+  /** The add row's repository box, so a swallowed Escape can hand the caret back. */
+  const overrideRepoRef = useRef<HTMLInputElement>(null);
 
   const dirty = commandDraftDirty(draft, baseline);
 
@@ -557,66 +597,105 @@ export function CommandLibrary({
         <div className="wf-command-sidebar-head">
           <div>
             <h3>Commands</h3>
-            <p>Four built-in slots</p>
+            <p>4 slots</p>
           </div>
         </div>
         <div className="wf-command-list">
-          {WORKFLOW_CHECK_SLOTS.map((slot) => {
-            const view = bySlot.get(slot) ?? null;
-            return (
-              <Tooltip key={slot} label={`Set what the ${slot} Command runs on this machine`}>
-                <button
-                  className={`wf-command-list-item${selectedSlot === slot ? " active" : ""}`}
-                  aria-current={selectedSlot === slot ? "true" : undefined}
-                  onClick={() => select(slot)}
-                >
-                  <span className="wf-command-list-name">
-                    <span>{slot}</span>
-                    <em className="wf-command-list-tag">Built-in</em>
-                  </span>
-                  <small>{WORKFLOW_COMMAND_PURPOSE[slot]}</small>
-                  <small className="wf-command-list-meta">
-                    {workflowCommandFact(view, hasSnapshot)}
-                  </small>
-                </button>
-              </Tooltip>
-            );
-          })}
+          {/* One group, not Built-in versus Yours: there is no second kind of slot and there
+              never will be. The head still earns its place - it carries the count, and it is
+              where `Built-in` is said ONCE for four rows instead of as a tag on each. */}
+          <LibraryRailGroup label="Built-in slots" count={WORKFLOW_CHECK_SLOTS.length}>
+            {WORKFLOW_CHECK_SLOTS.map((slot) => (
+              <LibraryRailRow
+                key={slot}
+                className="wf-command-list-item"
+                name={slot}
+                /*
+                 * The durable state of the slot, through the SAME helper the shelf card and
+                 * the workflow palette read. Which of the four has exceptions is the fact
+                 * that tells these rows apart, and it was previously below the slot's
+                 * purpose - a sentence identical for every machine, and so worth nothing in
+                 * a list whose job is to distinguish. The purpose moved to the tooltip and
+                 * to the workspace's own note, where it is read once.
+                 */
+                detail={workflowCommandFact(bySlot.get(slot) ?? null, hasSnapshot)}
+                selected={selectedSlot === slot}
+                tooltip={`${WORKFLOW_COMMAND_PURPOSE[slot]} Set what it runs on this machine.`}
+                onSelect={() => select(slot)}
+              />
+            ))}
+          </LibraryRailGroup>
         </div>
+        {/* Why there is no New here, said where the missing control would have been. The
+            other two rails end in controls; this one ends in the reason it has none. */}
+        <p className="wf-command-rail-foot">
+          Four slots ship with Mission Control and there is no fifth to author. A workflow
+          names a slot, never a command.
+        </p>
       </aside>
 
       <div className="wf-command-workspace">
         <article className="wf-command-editor">
-          <header className="wf-command-editor-head">
-            <div>
-              <p className="workflow-eyebrow">Built-in Command slot</p>
-              <h3>{selectedSlot}</h3>
-              {/* While a conflict is held, this says which revision the DRAFT is against.
-                  `commandRevisionLine` describes the stored slot, and a slot nobody had
-                  configured before the other window saved would otherwise read "Never
-                  configured on this machine" directly under a banner announcing r2. */}
-              <p className="wf-command-revision">
-                {conflict
-                  ? `Editing revision ${baseline?.revision ?? 1}`
-                  : commandRevisionLine(baseline)}
-              </p>
-            </div>
-            <div className="wf-command-actions">
-              <Tooltip
-                label={dirty
-                  ? "Replace this slot's default and overrides together"
-                  : "No unsaved changes"}
-              >
-                <button
-                  className="btn"
-                  disabled={!baseline || saving || !dirty}
-                  onClick={() => void save()}
-                >
-                  {saving ? "Saving…" : "Save Command"}
-                </button>
-              </Tooltip>
-            </div>
-          </header>
+          <LibraryWorkspaceHeader
+            className="wf-command-editor-head"
+            title={
+              <div className="lib-work-name">
+                {/* Bare, and it stays bare: the slot IS the accessible name three Playwright
+                    specs open this screen by, so the built-in tag is its sibling rather than
+                    a second word inside it. */}
+                <h3>{selectedSlot}</h3>
+                <span className="lib-tag lib-tag-builtin">built-in slot</span>
+              </div>
+            }
+            meta={
+              <div className="lib-work-meta">
+                {/* While a conflict is held, this says which revision the DRAFT is against.
+                    `commandRevisionLine` describes the stored slot, and a slot nobody had
+                    configured before the other window saved would otherwise read "Never
+                    configured on this machine" directly under a banner announcing r2. */}
+                <p className="wf-command-revision">
+                  {conflict
+                    ? `Editing revision ${baseline?.revision ?? 1}`
+                    : commandRevisionLine(baseline)}
+                </p>
+              </div>
+            }
+            primary={{
+              label: saving ? "Saving…" : "Save Command",
+              hint: dirty
+                ? "Replace this slot's default and overrides together"
+                : "No unsaved changes",
+              disabled: !baseline || saving || !dirty,
+              onClick: () => void save(),
+            }}
+            /* No overflow menu, and that is the fixed catalog again rather than an omission:
+               there is no Copy, Download, Duplicate or Archive for a slot that ships with the
+               product. `LibraryOverflowMenu` draws nothing for an empty action list, so the
+               header renders one promoted verb and stops. */
+            menuLabel="More Command actions"
+          />
+
+          {/* Two facts about the open slot, read-only because neither is a setting: how many
+              exceptions it carries, and the shape of the execution the table below configures.
+              The count is the DRAFT's, so it agrees with the rows underneath it rather than
+              with the rail - which carries the stored slot, and is deliberately the one place
+              on this screen that still says what the daemon holds while you are typing. */}
+          <LibraryPropertyChips>
+            <LibraryPropertyChip
+              name="overrides"
+              value={String(draft.overrides.length)}
+              mono
+              tooltip={draft.overrides.length === 0
+                ? "No exceptions in this slot - every repository resolves to the default"
+                : "Repository exceptions in this slot. Where two match, the longest path wins."}
+            />
+            <LibraryPropertyChip
+              name="runs"
+              value="no shell, commit-pinned checkout"
+              align="end"
+              tooltip="A Command is executed without a shell, in a commit-pinned checkout, and only in a repository granted the Workflows cell in Trust"
+            />
+          </LibraryPropertyChips>
 
           {/* The one execution note on this surface. Stated once, beside the form, rather than
               repeated around every input: what is authorized is a machine-wide choice made in
@@ -647,120 +726,178 @@ export function CommandLibrary({
           )}
           {error && <p className="wf-error" role="alert">{error}</p>}
 
-          <section className="wf-command-section">
-            <h4>Default command</h4>
-            <p className="wf-command-hint">
-              Repository-neutral: this is what the <code>{selectedSlot}</code> Command runs
-              wherever no override below matches, at the root of the checkout. Leave it empty
-              and the slot passes with a note instead of running.
-            </p>
-            <div className="wf-command-default-row">
-              <label className="sr-only" htmlFor="workflow-command-default">
-                Default command
-              </label>
-              <input
-                id="workflow-command-default"
-                className="field-input"
-                value={draft.defaultText}
-                placeholder="npm test"
-                spellCheck={false}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  defaultText: event.target.value,
-                }))}
-              />
-              <Tooltip label="Remove the machine-wide default for this Command">
-                <button
-                  className="btn btn-ghost"
-                  disabled={draft.defaultText === ""}
-                  onClick={() => setDraft((current) => ({ ...current, defaultText: "" }))}
-                >
-                  Clear
-                </button>
-              </Tooltip>
-            </div>
-            {/* The parsed argv, shown back. There is no shell anywhere in this path, so the
-                split is ours and an operator has to be able to SEE it rather than trust it -
-                `npm run test -- --grep "a b"` is four arguments or six depending on a rule
-                nobody can read off the box they typed into. */}
-            <p className="wf-command-preview">{preview}</p>
-          </section>
+          {/* The precedence, said once, above the table that draws it. Everything here used
+              to be split across two section hints that never mentioned each other - one
+              calling the default repository-neutral, the other saying the longest match wins -
+              so the rule connecting them had to be assembled by the reader. */}
+          <p className="wf-command-hint">
+            <strong>The longest matching path wins.</strong> The default is
+            repository-neutral - it is what the <code>{selectedSlot}</code> Command runs
+            wherever no override matches, at the root of the checkout - and leaving it empty
+            means this slot passes with a note instead of running. Give a{" "}
+            <strong>subdirectory</strong> to override one package of a monorepo, and the
+            command runs in that directory.
+          </p>
 
-          <section className="wf-command-section">
-            <h4>Overrides</h4>
-            <p className="wf-command-hint">
-              Exceptions, and they should stay rare. A repository listed here runs its own
-              command instead of the default; give a <strong>subdirectory</strong> to override
-              one package of a monorepo, and the command runs in that directory. The longest
-              matching path wins.
-            </p>
-            {draft.overrides.length === 0 ? (
-              <p className="wf-command-empty">{overridesEmptyMessage(draft.defaultText)}</p>
-            ) : (
-              <ul className="wf-command-override-list">
-                {draft.overrides.map((entry) => (
-                  <li key={entry.repoRoot}>
-                    <code className="wf-command-override-root">
-                      <RepositoryName path={entry.repoRoot} />
-                    </code>
-                    <code className="wf-command-override-path">{entry.repoRoot}</code>
-                    <code className="wf-command-override-argv">
-                      {formatCheckCommand(entry.command)}
-                    </code>
-                    <Tooltip label={`Stop overriding the ${selectedSlot} Command in ${entry.repoRoot}`}>
+          <div className="wf-command-rules">
+            <table>
+              <caption className="sr-only">
+                Command rules for {selectedSlot}: the default first, then each repository
+                override. Where two match, the longest path wins.
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Scope</th>
+                  <th scope="col">Command</th>
+                  <th scope="col"><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {/* The default, as the first ROW rather than as its own titled section above
+                    an unrelated list. It is a rule - the one that applies where nothing more
+                    specific matches - and the layout now says so instead of leaving an
+                    operator to infer it from two headings. */}
+                <tr className="wf-command-rule is-default">
+                  <th scope="row" className="wf-command-rule-scope">
+                    <strong>Every repository</strong>
+                    <span className="wf-command-rule-note">
+                      the default, where no override matches
+                    </span>
+                  </th>
+                  <td className="wf-command-rule-command">
+                    <label className="sr-only" htmlFor="workflow-command-default">
+                      Default command
+                    </label>
+                    <input
+                      id="workflow-command-default"
+                      className="field-input"
+                      value={draft.defaultText}
+                      placeholder="npm test"
+                      spellCheck={false}
+                      onChange={(event) => setDraft((current) => ({
+                        ...current,
+                        defaultText: event.target.value,
+                      }))}
+                    />
+                    <p className="wf-command-preview">{preview}</p>
+                  </td>
+                  <td className="wf-command-rule-action">
+                    <Tooltip label="Remove the machine-wide default for this Command">
                       <button
                         className="btn btn-ghost"
-                        disabled={saving}
-                        onClick={() => removeOverride(entry.repoRoot)}
+                        disabled={draft.defaultText === ""}
+                        onClick={() => setDraft((current) => ({ ...current, defaultText: "" }))}
                       >
-                        Remove
+                        Clear
                       </button>
                     </Tooltip>
-                  </li>
+                  </td>
+                </tr>
+
+                {draft.overrides.length === 0 && (
+                  <tr className="wf-command-rule is-empty">
+                    <td colSpan={3}>
+                      <p className="wf-command-empty">{overridesEmptyMessage(draft.defaultText)}</p>
+                    </td>
+                  </tr>
+                )}
+
+                {/* Sorted by path, which is also increasing specificity: a root always sorts
+                    before the packages under it, so reading down the table is reading the
+                    resolution order the daemon applies. */}
+                {draft.overrides.map((entry) => (
+                  <tr className="wf-command-rule" key={entry.repoRoot}>
+                    <th scope="row" className="wf-command-rule-scope">
+                      <RepositoryName path={entry.repoRoot} className="wf-command-rule-name" />
+                      <span className="wf-command-rule-path">{entry.repoRoot}</span>
+                    </th>
+                    <td className="wf-command-rule-command">
+                      <code className="wf-command-rule-argv">
+                        {formatCheckCommand(entry.command)}
+                      </code>
+                      {/* The readout the default has always had, now on the rules most likely
+                          to be carrying a quoting mistake: the ones somebody wrote once. */}
+                      <p className="wf-command-preview">{argvReadout(entry.command)}</p>
+                    </td>
+                    <td className="wf-command-rule-action">
+                      <Tooltip label={`Stop overriding the ${selectedSlot} Command in ${entry.repoRoot}`}>
+                        <button
+                          className="btn btn-ghost"
+                          disabled={saving}
+                          onClick={() => removeOverride(entry.repoRoot)}
+                        >
+                          Remove
+                        </button>
+                      </Tooltip>
+                    </td>
+                  </tr>
                 ))}
-              </ul>
-            )}
-            <div className="wf-command-override-add">
-              <label className="sr-only" htmlFor="workflow-command-override-path">
-                Repository path
-              </label>
-              <RepoCombobox
-                id="workflow-command-override-path"
-                repos={commandRepoOptions(repos, allowlist)}
-                value={overridePath}
-                onChange={setOverridePath}
-                disabled={saving}
-                placeholder="/path/to/repository (or a subdirectory)"
-              />
-              <label className="sr-only" htmlFor="workflow-command-override-command">
-                Override command
-              </label>
-              <input
-                id="workflow-command-override-command"
-                className="field-input"
-                value={overrideCommand}
-                placeholder="pnpm -C . test"
-                spellCheck={false}
-                onChange={(event) => setOverrideCommand(event.target.value)}
-              />
-              <Tooltip label="Add this exception to the draft - Save writes it">
-                <button
-                  className="btn"
-                  disabled={saving || !overridePath.trim() || !overrideCommand.trim()}
-                  onClick={() => void addOverride()}
-                >
-                  Add override
-                </button>
-              </Tooltip>
-            </div>
-            {parsedOverride && (
-              <p className="wf-command-preview">
-                {parsedOverride.ok
-                  ? `Runs as: ${parsedOverride.argv.map((arg, index) => `${index + 1}. ${arg}`).join("   ")}`
-                  : parsedOverride.error}
-              </p>
-            )}
-          </section>
+
+                {/* Visibly an add row. It sat flush against the saved exceptions before, in
+                    the same list, so the two empty boxes read as a third override somebody
+                    had half-configured rather than as the way to write a fourth. */}
+                <tr className="wf-command-rule is-add">
+                  <td className="wf-command-rule-scope">
+                    <label className="sr-only" htmlFor="workflow-command-override-path">
+                      Repository path
+                    </label>
+                    <RepoCombobox
+                      id="workflow-command-override-path"
+                      inputRef={overrideRepoRef}
+                      repos={commandRepoOptions(repos, allowlist)}
+                      value={overridePath}
+                      onChange={setOverridePath}
+                      /*
+                       * The press this widget SWALLOWS, handed back to the ladder as the rung
+                       * it belongs to. Escape closes the list here and stops - it does not
+                       * reach the page, which is right, and before Phase 1 that was the end of
+                       * it. It cannot be the end of it now: focusing this box REOPENS the list,
+                       * so "focused with the list shut" is a state only an Escape produces, and
+                       * leaving the caret in it spent the next press blurring a field with no
+                       * visible sign anything happened. Giving the caret up on the same press
+                       * makes this box behave exactly like the two plain inputs beside it - one
+                       * press leaves the field, the next leaves the page.
+                       */
+                      onEscape={() => overrideRepoRef.current?.blur()}
+                      disabled={saving}
+                      placeholder="/path/to/repository (or a subdirectory)"
+                    />
+                  </td>
+                  <td className="wf-command-rule-command">
+                    <label className="sr-only" htmlFor="workflow-command-override-command">
+                      Override command
+                    </label>
+                    <input
+                      id="workflow-command-override-command"
+                      className="field-input"
+                      value={overrideCommand}
+                      placeholder="pnpm -C . test"
+                      spellCheck={false}
+                      onChange={(event) => setOverrideCommand(event.target.value)}
+                    />
+                    {parsedOverride && (
+                      <p className="wf-command-preview">
+                        {parsedOverride.ok
+                          ? argvReadout(parsedOverride.argv)
+                          : parsedOverride.error}
+                      </p>
+                    )}
+                  </td>
+                  <td className="wf-command-rule-action">
+                    <Tooltip label="Add this exception to the draft - Save writes it">
+                      <button
+                        className="btn"
+                        disabled={saving || !overridePath.trim() || !overrideCommand.trim()}
+                        onClick={() => void addOverride()}
+                      >
+                        Add override
+                      </button>
+                    </Tooltip>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
 
           <p className="wf-command-hint wf-command-save-note">
             Save replaces this slot's default and its whole override list together, so the two

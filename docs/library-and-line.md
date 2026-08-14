@@ -67,7 +67,7 @@ Saving replaces a slot's default and its complete override list in one compare-a
 the two halves can never be stored apart, and a second window's save is refused rather than
 silently overwriting your unsaved typing. Commands are stored as argv and executed without a
 shell: there are no pipes, no redirection, no environment interpolation and no shell-mode
-toggle, and the editor shows the exact split before you save.
+toggle, and the editor shows the exact split under every rule before you save.
 
 Whether a Command may run at all is policy, and it stays in
 [Settings › Workflows](skills-and-settings.md#settings): **Allow workflow Commands** is the
@@ -198,6 +198,40 @@ completions a build can prove is read over HTTP, and until that read lands nothi
 claims anything about it. Save stands down in the meantime and says so, because a pending read is
 not a refusal. Everything left over is the instruction editor, whose Markdown reaches the session
 byte for byte.
+
+### The Command detail screen
+
+Behind a Command card is the same rail and workspace, arranged around the thing this screen
+actually decides: which argv a repository resolves to.
+
+**The rail** is one group, **Built-in slots**, with its count - there are four slots and there
+will never be a fifth, so there is no New, no search and no state filter. Each row's sub-label
+is the slot's stored state (`Global default · 2 overrides`, `Not configured`), which is the one
+fact that tells four rows apart; it is the same sentence the Library card and the workflow
+palette use, so the three cannot disagree. The slot's purpose is in the row's tooltip and again
+in the workspace, rather than repeated identically on all four rows. A note below the list says
+why the catalog is closed.
+
+**The workspace header** carries the slot name and a `built-in slot` tag with the revision line
+beneath, and promotes exactly one verb: **Save Command**. There is no `⋯` menu, because a slot
+that cannot be copied, duplicated or archived has nothing to put in one. Two read-only property
+chips sit under it: the number of overrides in the open draft, and `runs` - a reminder that
+execution is shell-free and commit-pinned.
+
+**The default and its overrides are one table**, with a header row. The default is the first
+rule, labelled *Every repository - the default, where no override matches*, because that is
+what it is; drawn as a separately titled section above an unrelated list, the precedence the
+screen exists to configure was the one thing it never showed. Each override follows, named by
+repository with its full path underneath, in the order they resolve. The add row is last and is
+drawn as an add row - its own fill, a dashed rule above it, and its **Add override** control
+disabled until both halves are given.
+
+**Every rule shows its parsed argv**, not just the default. That readout is where a quoting
+mistake becomes visible - `--grep "a b"` is one argument or two - and until it was on every row
+it was offered only for the rule you were already reading back as you typed it.
+
+Nothing about how a Command runs is decided here. Resolution order, the machine-wide switch,
+the Trust grant and the compare-and-swap save are exactly as described above.
 
 ### The Ship log
 

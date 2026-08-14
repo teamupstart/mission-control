@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  argvPreview,
+  argvReadout,
   CommandLibrary,
   commandSync,
   commandDraftFrom,
@@ -19,6 +21,7 @@ import {
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_COMMAND_UNKNOWN,
   COMMAND_AUTHORIZATION_NOTE,
+  parseCheckCommand,
 } from "../src/shared/workflow.ts";
 import type { WorkflowCommandView } from "../src/shared/workflow.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
@@ -70,16 +73,38 @@ test("the rail is the four built-in slots, in registry order, configured or not"
   for (const slot of WORKFLOW_CHECK_SLOTS) {
     assert.ok(html.includes(`>${slot}</span>`), `${slot} is missing from the rail`);
   }
-  // Four rows, and every one of them tagged built-in: there is no fifth slot to author, so
-  // this surface offers no New, no duplicate and no archive.
+  // Registry order, asserted as order rather than as presence: the four slots are a fixed
+  // vocabulary and a rail that sorted them would be inventing a hierarchy they do not have.
+  const at = WORKFLOW_CHECK_SLOTS.map((slot) => html.indexOf(`>${slot}</span>`));
+  assert.deepEqual([...at].sort((a, b) => a - b), at);
+  // Four rows, under ONE group head that says built-in once for all of them. The per-row
+  // tag is gone with the flat list it apologised for - a rail whose every row carries the
+  // same tag is a rail whose tag distinguishes nothing.
   assert.equal(html.match(/class="wf-command-list-item/g)?.length, 4);
-  assert.equal(html.match(/wf-command-list-tag">Built-in</g)?.length, 4);
+  assert.match(html, /<h4 class="lib-rail-group"><span>Built-in slots<\/span>/);
+  assert.match(html, /<span class="lib-rail-group-count">4<\/span>/);
+  assert.equal(html.match(/lib-rail-tag/g)?.length, undefined);
   for (const absent of ["New", "Duplicate", "Archive"]) {
     assert.ok(
       !new RegExp(`>${absent}<`).test(html),
       `a fixed catalog must not offer ${absent}`,
     );
   }
+});
+
+test("each rail row carries the slot's stored state, through the shared fact", () => {
+  // What tells four rows apart is which of them has exceptions, and that is one vocabulary
+  // shared with the Library shelf card and the workflow palette rather than a second string
+  // formatted here. The purpose sentence that used to sit on every row is identical on every
+  // machine, so as a distinguishing fact it was worth nothing.
+  const html = markup([
+    view({ defaultCommand: ["npm", "test"], overrides: [{ repoRoot: "/a", command: ["a"] }] }),
+    view({ slot: "lint" }),
+  ]);
+  assert.ok(html.includes(">Global default · 1 override</small>"));
+  assert.ok(html.includes(">Not configured</small>"));
+  // And the slot's purpose is still on the row - in the tooltip, where a sentence belongs.
+  assert.ok(html.includes("The automated test suite this repository gates on."));
 });
 
 test("the route's slot is what opens, and an unknown one falls back to the first", () => {
@@ -103,12 +128,17 @@ test("the editor states, once, that saving executes nothing", () => {
 
 test("both fields are offered, with the default named as repository-neutral", () => {
   const html = markup([view()]);
-  assert.match(html, /<h4>Default command<\/h4>/);
-  assert.match(html, /<h4>Overrides<\/h4>/);
-  assert.match(html, /Repository-neutral/);
+  // No more Default-command and Overrides headings: one table, one header row, and the two
+  // things that used to be separately titled sections are rows of it.
+  assert.doesNotMatch(html, /<h4>Default command<\/h4>/);
+  assert.doesNotMatch(html, /<h4>Overrides<\/h4>/);
+  assert.match(html, /<th scope="col">Scope<\/th><th scope="col">Command<\/th>/);
+  assert.match(html, /default is repository-neutral/);
   // The blank-is-fine sentence, said where the empty box is - an unconfigured slot passes
   // with a note rather than failing, and that has to read as a choice, not a gap.
   assert.match(html, /passes with a note instead of running/);
+  // The precedence, stated on the screen that draws it rather than left to be inferred.
+  assert.match(html, /The longest matching path wins/);
   // The fixture has no default, so the empty row must say so rather than pointing at one.
   assert.match(html, /No exceptions, and no default - this Command resolves to nothing/);
   assert.doesNotMatch(html, /uses the default above/);
@@ -117,6 +147,46 @@ test("both fields are offered, with the default named as repository-neutral", ()
   assert.match(html, /id="workflow-command-default"/);
   assert.match(html, /<label class="sr-only" for="workflow-command-override-path">/);
   assert.match(html, /<div class="combobox">/, "the repo box is the shared RepoCombobox");
+});
+
+test("the default is the first rule of the table, and says which rule it is", () => {
+  // The fault this phase exists for: a default drawn as its own titled section above an
+  // unrelated list, so the one structure an operator has to hold - these are rules, and they
+  // are ordered - was the thing the layout denied.
+  const html = markup([view({
+    defaultCommand: ["npm", "test"],
+    overrides: [{ repoRoot: "/src/app", command: ["pnpm", "test"] }],
+  })]);
+  const head = html.indexOf('<th scope="col">Scope</th>');
+  const fallback = html.indexOf('class="wf-command-rule is-default"');
+  const override = html.indexOf("wf-command-rule-path");
+  const add = html.indexOf('class="wf-command-rule is-add"');
+  assert.ok(head > 0 && fallback > head, "the default must sit under the table's header row");
+  assert.ok(override > fallback, "the default is the FIRST rule, above every exception");
+  assert.ok(add > override, "the add row is last");
+  // Labelled as the rule it actually is, rather than as a section that happens to be above.
+  assert.match(html, /<strong>Every repository<\/strong>/);
+  assert.match(html, /the default, where no override matches/);
+});
+
+test("the add row is drawn as an add row, not as a third saved rule", () => {
+  const html = markup([view({
+    defaultCommand: ["npm", "test"],
+    overrides: [
+      { repoRoot: "/src/a", command: ["a"] },
+      { repoRoot: "/src/b", command: ["b"] },
+    ],
+  })]);
+  // Exactly one, and the two saved exceptions do not share its class - which is the whole
+  // claim: two empty boxes used to sit in the same list as the saved rules and read as a
+  // third override somebody had half-configured.
+  assert.equal(html.match(/class="wf-command-rule is-add"/g)?.length, 1);
+  assert.equal(html.match(/class="wf-command-rule"/g)?.length, 2);
+  // Its own control, disabled until both halves are given, as before the table existed.
+  assert.match(html, /<button class="btn" disabled="" [^>]*>Add override<\/button>/);
+  assert.ok(
+    html.indexOf('class="wf-command-rule is-add"') < html.indexOf(">Add override</button>"),
+  );
 });
 
 test("the empty overrides row names which empty state it is in", () => {
@@ -163,10 +233,57 @@ test("a stored slot renders its default and every override, argv included", () =
   // Printed the way the parser reads it, so what is listed re-parses to what runs.
   assert.ok(html.includes("npm test &quot;--filter=a b&quot;"));
   // Enough path to tell a nested package override from the repository-wide one above it.
-  assert.match(html, /wf-command-override-path">\/src\/mission-control<\//);
-  assert.match(html, /wf-command-override-path">\/src\/mission-control\/packages\/web<\//);
-  assert.equal(html.match(/wf-command-override-list"|<li>/g)?.length, 3);
+  assert.match(html, /wf-command-rule-path">\/src\/mission-control<\//);
+  assert.match(html, /wf-command-rule-path">\/src\/mission-control\/packages\/web<\//);
+  // Three rules and the add row: the default, two exceptions, and the way to write a third.
+  assert.equal(html.match(/class="wf-command-rule[ "]/g)?.length, 4);
   assert.match(html, /Revision 4/);
+});
+
+test("every rule shows its parsed argv, not only the default", () => {
+  // Where a quoting mistake becomes visible - and until this phase it was offered for one of
+  // the three rules on screen, which is precisely the wrong one: the default is the line
+  // being typed and read back, while the exceptions are the ones somebody wrote once and
+  // never looked at again.
+  const long = [
+    "/opt/homebrew/bin/node",
+    "-e",
+    "const v = require('node:fs').readFileSync(process.argv[1], 'utf8')",
+    "/var/folders/check marker.txt",
+  ];
+  const html = markup([view({
+    defaultCommand: ["make", "test"],
+    overrides: [
+      { repoRoot: "/src/mission-control", command: ["npm", "test", "--filter=a b"] },
+      { repoRoot: "/src/mission-control/packages/web", command: long },
+    ],
+  })]);
+  const readouts = [...html.matchAll(/class="wf-command-preview">([^<]*)</g)].map((m) => m[1]);
+  assert.equal(readouts.length, 3, "the default and both exceptions each carry one readout");
+  assert.ok(readouts[0]?.startsWith("Runs as: 1. make   2. test"));
+  // Numbered, so a quoted pair is visibly ONE argument rather than two.
+  assert.ok(readouts[1]?.includes("3. --filter=a b"));
+  // The long one is not truncated: an argv you cannot read to the end is an argv you cannot
+  // check, and the mockup's own worked example is a four-argument `node -e`.
+  assert.ok(readouts[2]?.includes("4. /var/folders/check marker.txt"), readouts[2]);
+  // Every rule's readout uses one helper, so the numbering cannot drift between rows.
+  assert.equal(argvReadout(["make", "test"]), "Runs as: 1. make   2. test");
+});
+
+test("a rule whose command cannot be split says so where its argv would be", () => {
+  // Only a TYPED rule can fail to parse - a stored override is already argv - so this is the
+  // default line mid-keystroke and the add row's command box, and both render the parser's
+  // own sentence in place of the numbered split rather than a generic complaint.
+  const broken = argvPreview('npm "unclosed');
+  assert.doesNotMatch(broken, /Runs as:/);
+  assert.ok(broken.length > 0);
+  assert.equal(broken, (parseCheckCommand('npm "unclosed') as { error: string }).error);
+  // The two states either side of it are unchanged: a finished line splits, and an empty one
+  // is the honest "there is no machine-wide default" rather than an error.
+  assert.equal(argvPreview('npm run test -- --grep "a b"'), argvReadout([
+    "npm", "run", "test", "--", "--grep", "a b",
+  ]));
+  assert.match(argvPreview("   "), /Leave this empty for no machine-wide default/);
 });
 
 test("blank means no default, and one save carries a slot's whole state", () => {

@@ -445,14 +445,16 @@ exportable published version machine-neutral and free of argv. The execution con
 an **argv**, not a shell string, so `&&`, `|` and `$HOME` are ordinary arguments. The editor
 splits a typed line quote-aware (`'…'` literal, `"…"` honouring `\"` and `\\`, a backslash
 escaping the next character outside quotes, adjacent runs joining into one token) and **shows
-the parsed argv back**, so you see what the execution runtime will receive.
+the parsed argv back under every rule**, so you see what the execution runtime will receive.
 
-Each slot carries:
+Each slot carries, as rows of one table:
 
-- one optional **global default**, which is repository-neutral and runs at the checkout root;
+- one optional **global default**, which is repository-neutral and runs at the checkout root.
+  It is the table's first row, because it is the rule that applies where nothing more specific
+  matches;
 - zero or more **overrides**, each keyed by a repository root or by a subdirectory inside one.
 
-The repository box beside an override is the same picker the dispatch form uses. It offers the
+The repository box in the table's add row is the same picker the dispatch form uses. It offers the
 repositories granted the Workflows cell first - a Command only runs in one of those - then
 every git repository under the workspace roots, filtered as you type. It starts empty and
 still takes a typed path, which is how a subdirectory override is entered: the list holds

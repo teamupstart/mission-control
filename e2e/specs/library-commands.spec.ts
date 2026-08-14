@@ -85,6 +85,27 @@ const card = (page: Page, slot: string) =>
   page.getByRole("region", { name: "What does each standard gate run?" })
     .getByRole("button", { name: new RegExp(`^${slot}\\b`) });
 
+/**
+ * The slot's resolution table: one table, whose rows are the rules.
+ *
+ * Reached by role rather than by class, and that is the assertion doing work rather than a
+ * style preference - `getByRole("table")` only resolves if the markup really is a table with
+ * a header row and row headers, which is the whole claim this screen now makes. Two `<div>`s
+ * with a border between them would satisfy every text assertion below and none of these.
+ */
+const rulesTable = (page: Page) => page.getByRole("table", { name: /^Command rules for/ });
+
+/**
+ * The saved rules, in resolution order: the default first, then each override.
+ *
+ * Filtered on having a row header, which is exactly what tells a rule from the add row -
+ * the add row names no scope because it does not have one yet.
+ */
+const ruleRows = (page: Page) =>
+  rulesTable(page).getByRole("row").filter({ has: page.getByRole("rowheader") });
+
+const hash = (page: Page) => page.evaluate(() => location.hash);
+
 test("the Commands shelf is the sixth question, with four built-in cards and no New", async ({
   dashboard,
   daemon,
@@ -249,10 +270,12 @@ test("an override, a nested override, and a removal all survive a reload", async
     await dashboard.getByRole("button", { name: "Add override" }).click();
   }
 
-  const rows = dashboard.locator(".wf-command-override-list li");
-  await expect(rows).toHaveCount(2);
-  await expect(rows.first()).toContainText(basename(daemon.repo));
-  await expect(rows.nth(1)).toContainText(nested);
+  // Three rules now: the default, then the two exceptions, in the order they resolve.
+  const rows = ruleRows(dashboard);
+  await expect(rows).toHaveCount(3);
+  await expect(rows.first()).toContainText("Every repository");
+  await expect(rows.nth(1)).toContainText(basename(daemon.repo));
+  await expect(rows.nth(2)).toContainText(nested);
 
   // Nothing is stored until Save: one compare-and-swap carries the default and the whole
   // override list together, so the two halves can never be committed apart.
@@ -280,7 +303,7 @@ test("an override, a nested override, and a removal all survive a reload", async
   await dashboard.reload();
   await expect(dashboard.getByRole("heading", { name: "test", exact: true })).toBeVisible();
   await expect(dashboard.getByLabel("Default command")).toHaveValue("npm test");
-  await expect(dashboard.locator(".wf-command-override-list li")).toHaveCount(2);
+  await expect(ruleRows(dashboard)).toHaveCount(3);
 
   // Navigating to another slot and back keeps the surface honest about which one is open.
   await dashboard.getByRole("button", { name: /^lint/ }).click();
@@ -292,9 +315,8 @@ test("an override, a nested override, and a removal all survive a reload", async
 
   // Removing an exception is the other half of the atomic write: the daemon has to read a
   // SHORTER list as a deletion rather than merging it.
-  await dashboard.locator(".wf-command-override-list li").nth(1)
-    .getByRole("button", { name: "Remove" }).click();
-  await expect(dashboard.locator(".wf-command-override-list li")).toHaveCount(1);
+  await ruleRows(dashboard).nth(2).getByRole("button", { name: "Remove" }).click();
+  await expect(ruleRows(dashboard)).toHaveCount(2);
   await dashboard.getByRole("button", { name: "Save Command" }).click();
   await expect(dashboard.getByRole("button", { name: "Save Command" })).toBeDisabled();
   await expect
@@ -304,6 +326,124 @@ test("an override, a nested override, and a removal all survive a reload", async
   // The shelf card reads both facts at once, over the live stream.
   await dashboard.goto(`${daemon.baseURL}/#/library`);
   await expect(card(dashboard, "test")).toContainText("Global default · 1 override");
+});
+
+test("the default and its exceptions are rows of one table, each showing its own argv", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The fault this phase exists for, asserted where it is actually visible.
+   *
+   * A slot holds one repository-neutral default plus a list of exceptions, and the longest
+   * matching path wins - but the screen drew the default as its own titled section above an
+   * unrelated list, so the one structure an operator has to hold in their head (these are
+   * rules, and they are ordered) was the thing the layout denied. And it offered the parsed
+   * argv for exactly one of the three rules on screen: the one being typed and read back,
+   * rather than the two somebody wrote once and never looked at again.
+   *
+   * Both are properties of the rendered page, and the table is asserted through `role=table`
+   * rather than by class - two bordered `<div>`s would satisfy every text assertion here and
+   * none of the structural ones.
+   */
+  const nested = join(daemon.repo, "packages", "api");
+  mkdirSync(nested, { recursive: true });
+
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/test`);
+  await dashboard.getByLabel("Default command").fill("make test");
+  for (const [path, command] of [
+    [daemon.repo, "npm run test:ci"],
+    [nested, 'pnpm -C . test --grep "a b"'],
+  ] as const) {
+    await dashboard.getByRole("combobox", { name: "Repository path" }).fill(path);
+    await dashboard.getByLabel("Override command").fill(command);
+    await dashboard.getByRole("button", { name: "Add override" }).click();
+  }
+
+  // ONE table, with a header row over both kinds of rule.
+  const table = rulesTable(dashboard);
+  await expect(table).toBeVisible();
+  await expect(dashboard.getByRole("table")).toHaveCount(1);
+  await expect(table.getByRole("columnheader", { name: "Scope" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "Command" })).toBeVisible();
+
+  // The default is the FIRST rule and says which rule it is, rather than being a section
+  // heading the reader has to convert into a claim about precedence.
+  const rows = ruleRows(dashboard);
+  await expect(rows).toHaveCount(3);
+  await expect(rows.first()).toContainText("Every repository");
+  await expect(rows.first()).toContainText("the default, where no override matches");
+  await expect(rows.first()).toContainText("Runs as: 1. make   2. test");
+  await expect(rows.first().getByRole("button", { name: "Clear" })).toBeVisible();
+
+  // Every rule carries its own split, including the quoted pair the readout exists for:
+  // `--grep "a b"` is one argument or two, and only the numbers say which.
+  await expect(rows.nth(1)).toContainText("Runs as: 1. npm   2. run   3. test:ci");
+  await expect(rows.nth(2)).toContainText("6. a b");
+  await expect(rows.nth(2)).not.toContainText("7.");
+  await expect(rows.nth(2).getByRole("button", { name: "Remove" })).toBeVisible();
+
+  // The add row is a row of the same table and is visibly not one of the rules: it names no
+  // scope, so it is not among them, it offers no Remove, and it carries its own fill.
+  const add = table.getByRole("row")
+    .filter({ has: dashboard.getByRole("button", { name: "Add override" }) });
+  await expect(add).toHaveCount(1);
+  await expect(add).toHaveClass(/is-add/);
+  await expect(add.getByRole("button", { name: "Remove" })).toHaveCount(0);
+
+  // The precedence the table draws, stated on the screen that draws it.
+  await expect(dashboard.getByRole("main")).toContainText("The longest matching path wins");
+
+  await shoot(dashboard, "rules-table");
+
+  // Saved and re-read, which is the claim the render alone cannot make: an override's argv
+  // readout has to come off the STORED argv, not off the line that was typed to create it.
+  await dashboard.getByRole("button", { name: "Save Command" }).click();
+  await expect(dashboard.getByRole("button", { name: "Save Command" })).toBeDisabled();
+  await expect
+    .poll(async () => slotOf(await catalog(daemon), "test").overrides.map((o) => o.command))
+    .toEqual([
+      ["npm", "run", "test:ci"],
+      ["pnpm", "-C", ".", "test", "--grep", "a b"],
+    ]);
+  await dashboard.reload();
+  await expect(ruleRows(dashboard)).toHaveCount(3);
+  await expect(ruleRows(dashboard).nth(2)).toContainText("6. a b");
+});
+
+test("Escape closes the repository list first, and leaves the page on the next press", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * `RepoCombobox` swallows Escape while its list is open. That is deliberate and predates
+   * any Library ladder - an open list over half a form must not let one press close the whole
+   * thing - and once this page took Escape it became load-bearing in a second way: one press
+   * must not both dismiss the list and leave the screen the list was opened on.
+   *
+   * The second press is the half that needed wiring. Focusing this box REOPENS the list, so
+   * "focused with the list shut" is a state only an Escape produces, and leaving the caret
+   * there spent the next press blurring a field with nothing on screen to show for it - three
+   * presses to leave a page whose entire point is that leaving takes one keystroke.
+   */
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/test`);
+  await expect(dashboard.getByRole("heading", { name: "test", exact: true })).toBeVisible();
+
+  await dashboard.getByRole("combobox", { name: "Repository path" }).click();
+  const list = dashboard.getByRole("listbox");
+  await expect(list).toBeVisible();
+
+  // One: the list, and only the list.
+  await dashboard.keyboard.press("Escape");
+  await expect(list).toHaveCount(0);
+  await expect(dashboard.getByRole("heading", { name: "test", exact: true })).toBeVisible();
+  await expect.poll(() => hash(dashboard)).toBe("#/library/commands/test");
+
+  // Two: the page, by the same route the back row uses.
+  await dashboard.keyboard.press("Escape");
+  await expect.poll(() => hash(dashboard)).toBe("#/library");
+  await expect(dashboard.getByRole("complementary", { name: "Command library" }))
+    .toHaveCount(0);
 });
 
 test("a hash naming another slot moves the editor, whether typed, followed or stepped to", async ({

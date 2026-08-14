@@ -15,15 +15,25 @@ const EVIDENCE = artifactsDir("plan-kind");
  * rather than as something bolted on, and that the chip is coloured rather than merely
  * present.
  */
-async function shoot(page: Page, name: string, target?: Locator): Promise<void> {
+async function shoot(
+  page: Page,
+  name: string,
+  target?: Locator,
+  viewport: { width: number; height: number } = { width: 1280, height: 1100 },
+): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   // The backlog column is taller than the 720px default viewport and the COLUMN is what
   // scrolls, so an element screenshot at that size crops the last card away - and the last
   // card is the one these frames exist to show. Grown for the capture and put straight
   // back, so the assertions around it keep running at the size every other spec uses.
+  //
+  // Sized per frame rather than one size for all: a frame is read at whatever width it was
+  // taken, so dead space around the subject is not neutral - it shrinks the subject when
+  // the frame is scaled to fit a page, which is how a legible dialog becomes an unreadable
+  // one. Each caller passes the box its subject actually occupies.
   const restore = page.viewportSize();
-  await page.setViewportSize({ width: 1280, height: 1100 });
+  await page.setViewportSize(viewport);
   // Off every control first: `Tooltip` portals a bubble under a resting pointer.
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
@@ -203,6 +213,40 @@ test("the Kind picker offers plan, after ship and scout", async ({ dashboard }) 
     ["plan", "plan"],
   ]);
   await expect(kind).toHaveValue("ship");
+});
+
+test("the guided pass offers plan as a listed option, with its blurb", async ({ dashboard }) => {
+  // The `<select>` test above proves the values; this proves what a person actually READS
+  // when choosing. The guided pass renders the kinds as a listbox with each option's blurb
+  // beside it, so it is the one surface where `plan`'s copy - the half that says a plan
+  // schedules the work it describes - is on screen rather than behind a collapsed control.
+  const { dialog, kind } = await openDispatch(dashboard);
+  await dialog.getByRole("switch", { name: "Guided" }).click();
+  await expect(dialog.getByRole("navigation", { name: "Guided dispatch" })).toBeVisible();
+  // Repo is the first question and takes the highlighted row on Enter.
+  await dashboard.keyboard.press("Enter");
+
+  const picker = dialog.getByRole("listbox", { name: "What kind of run is this?" });
+  await expect(picker).toBeVisible();
+  await expect(picker.getByRole("option")).toHaveCount(3);
+  const planOption = picker.getByRole("option", { name: /^plan/ });
+  await expect(planOption).toBeVisible();
+  // The blurb, not just the word - this is the copy `TASK_KIND_INFO` exists to carry, and
+  // the thing that tells a person what choosing `plan` will get them.
+  await expect(planOption).toContainText("Produce a reviewed plan");
+  await expect(planOption).toContainText("no after-work");
+  // And its mnemonic, which is the letter the pass prints and a keyboard user presses.
+  await expect(planOption).toContainText("l");
+
+  // The whole viewport, not the dialog element: this picker is a portaled popover that
+  // overflows the dialog's own box, so an element-scoped frame clips the third option -
+  // which is the one the frame exists to show. Sized just past what the dialog and its
+  // popover occupy, so the subject fills the frame instead of floating in dead space.
+  await shoot(dashboard, "03-guided-kind-picker", undefined, { width: 1000, height: 800 });
+
+  // Pressing it commits, so the frame above is of a live control rather than a decoration.
+  await dashboard.keyboard.press("l");
+  await expect(kind).toHaveValue("plan");
 });
 
 test("choosing plan defaults the after-work Workflow to None", async ({ dashboard }) => {

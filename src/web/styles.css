@@ -1469,7 +1469,12 @@ body {
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
-.is-desktop .bl-planner-pop {
+.is-desktop .bl-planner-pop,
+/* Foreman's recommendation sidecar. It is offset by `--topbar-h`, so today it starts below
+   the bar - which is exactly the "the layout keeps it out of the rectangle" assumption the
+   entries above were each added after it failed. It is a scrollable panel whose only control
+   is a Close button, so an eaten click traps the operator behind it. */
+.is-desktop .foreman-recommendation-sidecar {
   -webkit-app-region: no-drag;
 }
 
@@ -3908,6 +3913,7 @@ a.btn {
   margin-bottom: 12px;
 }
 .review-head h3 {
+  min-width: 0;
   margin: 0;
   font-size: 14.5px;
   font-weight: 600;
@@ -4136,6 +4142,11 @@ a.btn {
   border-radius: 8px;
   cursor: pointer;
 }
+.decision-option.decision-foreman-pick {
+  border-color: color-mix(in oklab, var(--foreman) 45%, var(--border));
+  background: color-mix(in oklab, var(--foreman) 7%, var(--bg-2));
+  box-shadow: inset 3px 0 0 color-mix(in oklab, var(--foreman) 78%, transparent);
+}
 .decision-option:hover {
   border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
 }
@@ -4144,6 +4155,8 @@ a.btn {
   accent-color: var(--attention);
 }
 .decision-option-body {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -21697,6 +21710,7 @@ span.line-run-prov {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .pd-badge {
   font-size: 10px;
@@ -21811,6 +21825,7 @@ span.line-run-prov {
   color: var(--muted);
 }
 .pd-body {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -21878,9 +21893,268 @@ span.line-run-prov {
   border-color: var(--attention);
   background: var(--attention);
 }
+.pd-option.pd-foreman-pick {
+  border-color: color-mix(in oklab, var(--foreman) 45%, var(--border-soft));
+  background: color-mix(in oklab, var(--foreman) 7%, var(--bg-2));
+  box-shadow: inset 3px 0 0 color-mix(in oklab, var(--foreman) 78%, transparent);
+}
 .pd-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+/* ---------------------------------------------------------------------------
+   Foreman beside a canonical review.
+
+   The trigger lives in the review's own heading, the pick mark lives on the option
+   the user will actually submit, and the prose leaves document flow for a sidecar.
+   Those placements are the behavior: Foreman adds optional context to one decision,
+   never a second pinned card with a second send path.
+   --------------------------------------------------------------------------- */
+.foreman-recommendation-trigger {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in oklab, var(--foreman) 34%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--foreman) 7%, var(--panel));
+  color: var(--muted);
+  cursor: pointer;
+  font: 500 11.5px/1.2 var(--sans);
+  white-space: nowrap;
+}
+.foreman-recommendation-trigger:hover,
+.foreman-recommendation-trigger[aria-expanded="true"] {
+  border-color: color-mix(in oklab, var(--foreman) 62%, var(--border));
+  background: color-mix(in oklab, var(--foreman) 13%, var(--panel));
+  color: var(--fg);
+}
+.foreman-recommendation-trigger:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.frt-mark {
+  color: var(--foreman);
+  font-size: 9px;
+}
+
+.foreman-pick-mark {
+  flex: none;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in oklab, var(--foreman) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreman) 12%, var(--panel));
+  color: var(--foreman);
+  font: 600 9.5px/1 var(--mono);
+  white-space: nowrap;
+}
+.foreman-pick-mark > span {
+  font-size: 7px;
+}
+
+/* One source for the width, because the panel and the gap the layout opens for it are the
+   same measurement. Two literals here drift, and the failure mode is the panel covering the
+   Submit button of the review it exists to explain. */
+body.foreman-sidecar-open {
+  --foreman-sidecar-w: min(420px, calc(100vw - 24px));
+}
+
+/* Reserve the strip rather than paint over it. `.app` keeps `margin-left: auto`, so the
+   shell slides left by exactly the panel's width instead of sitting underneath it, and the
+   modal backdrop re-centres whatever review is open inside what is left. */
+body.foreman-sidecar-open .app {
+  margin-right: var(--foreman-sidecar-w);
+}
+
+body.foreman-sidecar-open .modal-backdrop {
+  right: var(--foreman-sidecar-w);
+}
+
+.foreman-recommendation-sidecar {
+  position: fixed;
+  z-index: 70;
+  top: var(--topbar-h, 88px);
+  right: 0;
+  bottom: 0;
+  width: var(--foreman-sidecar-w, min(420px, calc(100vw - 24px)));
+  display: flex;
+  flex-direction: column;
+  color: var(--fg);
+  background: var(--panel-2);
+  border-left: 1px solid color-mix(in oklab, var(--foreman) 38%, var(--border));
+  box-shadow: -14px 0 42px rgba(0, 0, 0, 0.46);
+}
+.frs-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 15px;
+  border-bottom: 1px solid var(--border);
+}
+.frs-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.frs-title strong {
+  font-size: 13px;
+  font-weight: 640;
+}
+.frs-title span {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.frs-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+}
+.frs-close:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--foreman) 50%, var(--border));
+}
+.frs-close:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.frs-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 18px 16px;
+}
+.frs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.frs-section h3 {
+  margin: 0;
+  color: var(--dim);
+  font: 650 10px/1 var(--mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.frs-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.frs-picks li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in oklab, var(--foreman) 42%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--foreman) 9%, var(--bg-2));
+}
+.frs-diamond {
+  flex: none;
+  padding-top: 3px;
+  color: var(--foreman);
+  font-size: 8px;
+}
+.frs-picks strong {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 640;
+  line-height: 1.4;
+}
+.frs-picks small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.frs-recommendation {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.frs-context {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.58;
+}
+.frs-context > :first-child { margin-top: 0; }
+.frs-context > :last-child { margin-bottom: 0; }
+.frs-foot {
+  flex: none;
+  padding: 11px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+@media (max-width: 720px) {
+  .foreman-recommendation-trigger {
+    margin-left: 0;
+  }
+  .review-head .foreman-recommendation-trigger {
+    width: 100%;
+    justify-content: center;
+  }
+  .foreman-pick-mark {
+    width: fit-content;
+    margin-left: 0;
+  }
+  .decision-option,
+  .pd-option {
+    flex-wrap: wrap;
+  }
+  .decision-option .foreman-pick-mark,
+  .pd-option .foreman-pick-mark {
+    margin-left: 26px;
+  }
+  .foreman-recommendation-sidecar {
+    top: auto;
+    left: 0;
+    width: 100%;
+    max-height: min(66dvh, 560px);
+    border-top: 1px solid color-mix(in oklab, var(--foreman) 38%, var(--border));
+    border-left: 0;
+    box-shadow: 0 -14px 42px rgba(0, 0, 0, 0.5);
+  }
+  /* Here the panel is a bottom sheet spanning the full width, so the desktop rule would
+     reserve a column that does not exist and squeeze the review to nothing. The sheet is
+     capped at 66dvh and the surfaces above it scroll, so the room it needs is already there. */
+  body.foreman-sidecar-open .app {
+    margin-right: 0;
+  }
+  body.foreman-sidecar-open .modal-backdrop {
+    right: 0;
+  }
 }
 .pd-submit {
   padding: 7px 14px;

@@ -1,0 +1,1168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Foreman recommendation disclosure · three options</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0a0c0f;
+        --bg-2: #0e1116;
+        --panel: #14181e;
+        --panel-2: #171c23;
+        --border: #232a33;
+        --border-soft: #1b2129;
+        --fg: #e7ebf1;
+        --muted: #939eae;
+        --dim: #7c8798;
+        --working: #4a9eff;
+        --idle: #35c08a;
+        --attention: #f6a733;
+        --danger: #f85149;
+        --purple: #a371f7;
+        --foreman: var(--purple);
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        --shadow: 0 18px 60px rgba(0, 0, 0, 0.58), 0 2px 8px rgba(0, 0, 0, 0.36);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(900px 500px at 85% -10%, #132030 0%, transparent 58%),
+          var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button { font: inherit; }
+
+      button:focus-visible {
+        outline: 2px solid var(--working);
+        outline-offset: 2px;
+      }
+
+      .mockup-page {
+        max-width: 1480px;
+        margin: 0 auto;
+        padding: 40px 32px 120px;
+      }
+
+      .mockup-masthead {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 430px);
+        gap: 40px;
+        align-items: end;
+        padding-bottom: 26px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 36px;
+      }
+
+      .mockup-eyebrow {
+        margin: 0 0 9px;
+        color: var(--foreman);
+        font: 650 10.5px/1 var(--mono);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .mockup-masthead h1 {
+        margin: 0 0 12px;
+        font-size: clamp(26px, 3vw, 38px);
+        font-weight: 660;
+        letter-spacing: -0.025em;
+        line-height: 1.12;
+      }
+
+      .mockup-lede,
+      .mockup-principle {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.65;
+      }
+
+      .mockup-lede { max-width: 72ch; }
+
+      .mockup-principle {
+        padding: 12px 14px;
+        border: 1px solid color-mix(in oklab, var(--foreman) 30%, var(--border));
+        border-radius: 10px;
+        background: color-mix(in oklab, var(--foreman) 7%, var(--panel));
+        font-size: 12.5px;
+      }
+
+      .mockup-principle strong { color: var(--fg); }
+
+      .concept {
+        margin: 0 0 56px;
+        scroll-margin-top: 20px;
+      }
+
+      .concept-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 24px;
+        align-items: end;
+        margin-bottom: 14px;
+      }
+
+      .concept-kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--dim);
+        font: 600 10.5px/1 var(--mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .concept-kicker b {
+        color: var(--foreman);
+        font-weight: 700;
+      }
+
+      .concept h2 {
+        margin: 7px 0 4px;
+        font-size: 20px;
+        font-weight: 640;
+        letter-spacing: -0.012em;
+      }
+
+      .concept-summary {
+        margin: 0;
+        max-width: 84ch;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .concept-tradeoff {
+        max-width: 300px;
+        color: var(--dim);
+        font-size: 11.5px;
+        text-align: right;
+      }
+
+      .concept-tradeoff strong { color: var(--fg); font-weight: 600; }
+
+      .app-frame {
+        position: relative;
+        min-height: 600px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--bg);
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+        isolation: isolate;
+      }
+
+      .topline {
+        display: flex;
+        gap: 22px;
+        align-items: center;
+        height: 32px;
+        padding: 0 22px;
+        border-bottom: 1px solid var(--border-soft);
+        color: var(--dim);
+        font: 10.5px/1 var(--mono);
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      .topline strong {
+        color: var(--idle);
+        font-weight: 520;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+
+      .app-tabs {
+        display: flex;
+        align-items: center;
+        height: 52px;
+        padding: 0 26px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .app-tab {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        align-self: stretch;
+        padding: 0 17px;
+        color: var(--muted);
+        font-weight: 580;
+      }
+
+      .app-tab.active { color: var(--fg); }
+
+      .app-tab.active::after {
+        content: "";
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: -1px;
+        height: 2px;
+        border-radius: 2px 2px 0 0;
+        background: var(--working);
+      }
+
+      .keycap {
+        display: inline-grid;
+        min-width: 17px;
+        height: 17px;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg-2);
+        color: var(--dim);
+        font: 10px/1 var(--mono);
+      }
+
+      .tab-tools {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-left: auto;
+      }
+
+      .tool-chip {
+        padding: 7px 11px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 11.5px;
+      }
+
+      .tool-chip.active {
+        border-color: color-mix(in oklab, var(--working) 48%, var(--border));
+        background: color-mix(in oklab, var(--working) 13%, var(--panel));
+        color: var(--fg);
+      }
+
+      .review-zone {
+        position: relative;
+        padding: 34px 28px 42px;
+      }
+
+      .review-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 13px 15px 15px;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--attention);
+        border-radius: 11px;
+        background: var(--panel-2);
+      }
+
+      .review-head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 24px;
+      }
+
+      .waiting-badge,
+      .foreman-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 8px;
+        border-radius: 999px;
+        color: var(--bg);
+        font: 720 10px/1 var(--sans);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .waiting-badge { background: var(--attention); }
+      .foreman-badge { background: color-mix(in oklab, var(--idle) 78%, var(--fg)); }
+
+      .review-hint {
+        color: var(--dim);
+        font-size: 11px;
+      }
+
+      .foreman-trigger {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin-left: auto;
+        padding: 5px 9px;
+        border: 1px solid color-mix(in oklab, var(--foreman) 32%, var(--border));
+        border-radius: 7px;
+        background: color-mix(in oklab, var(--foreman) 7%, var(--panel));
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 11.5px;
+        transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+      }
+
+      .foreman-trigger:hover,
+      .foreman-trigger[aria-expanded="true"] {
+        border-color: color-mix(in oklab, var(--foreman) 62%, var(--border));
+        background: color-mix(in oklab, var(--foreman) 12%, var(--panel));
+        color: var(--fg);
+      }
+
+      .foreman-glyph {
+        color: var(--foreman);
+        font-size: 10px;
+      }
+
+      .review-prompt {
+        margin: 0;
+        color: var(--fg);
+        font-size: 13.5px;
+      }
+
+      .question-text {
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        margin: 2px 0 0;
+        color: var(--fg);
+        font-size: 13px;
+      }
+
+      .question-tag {
+        flex: none;
+        padding: 1px 6px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--bg-2);
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 650;
+      }
+
+      .options {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .option-wrap { position: relative; }
+
+      .option {
+        width: 100%;
+        display: grid;
+        grid-template-columns: 18px 16px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+        padding: 9px 11px;
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        background: var(--bg-2);
+        color: var(--fg);
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .option:hover { border-color: color-mix(in oklab, var(--attention) 60%, var(--border)); }
+
+      .option[aria-checked="true"] {
+        border-color: color-mix(in oklab, var(--attention) 50%, var(--border));
+        background: color-mix(in oklab, var(--attention) 7%, var(--bg-2));
+      }
+
+      .option-num {
+        padding-top: 1px;
+        color: var(--muted);
+        font: 11px/1.4 var(--mono);
+      }
+
+      .option-radio {
+        display: grid;
+        width: 15px;
+        height: 15px;
+        margin-top: 1px;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 50%;
+        background: var(--panel-2);
+      }
+
+      .option[aria-checked="true"] .option-radio {
+        border-color: var(--attention);
+        box-shadow: inset 0 0 0 4px var(--attention);
+      }
+
+      .option-copy {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .option-label {
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .option-detail {
+        color: var(--muted);
+        font-size: 11.5px;
+        line-height: 1.45;
+      }
+
+      .recommend-mark {
+        display: none;
+        align-items: center;
+        gap: 5px;
+        margin-top: 1px;
+        padding: 3px 7px;
+        border: 1px solid color-mix(in oklab, var(--foreman) 44%, var(--border));
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--foreman) 12%, var(--panel));
+        color: var(--foreman);
+        font: 600 9.5px/1 var(--mono);
+        white-space: nowrap;
+      }
+
+      .recommend-mark::before { content: "◆"; font-size: 7px; }
+
+      .review-card.lens-open .option-wrap.recommended .recommend-mark { display: inline-flex; }
+
+      .review-card.lens-open .option-wrap.recommended .option {
+        border-color: color-mix(in oklab, var(--foreman) 38%, var(--border-soft));
+        box-shadow: inset 3px 0 0 color-mix(in oklab, var(--foreman) 75%, transparent);
+      }
+
+      .answer-row {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+
+      .custom-answer {
+        flex: 1;
+        min-width: 0;
+        padding: 8px 10px;
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        background: var(--bg-2);
+        color: var(--fg);
+      }
+
+      .submit {
+        padding: 8px 12px;
+        border: 1px solid var(--attention);
+        border-radius: 8px;
+        background: var(--attention);
+        color: var(--bg);
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      .submit:disabled { cursor: default; opacity: 0.45; }
+
+      .transcript-ghost {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin: 24px 10px 0;
+        padding-top: 16px;
+        border-top: 1px solid var(--border-soft);
+      }
+
+      .ghost-line {
+        height: 8px;
+        border-radius: 999px;
+        background: var(--panel);
+      }
+
+      .ghost-line:nth-child(1) { width: 42%; }
+      .ghost-line:nth-child(2) { width: 68%; }
+      .ghost-line:nth-child(3) { width: 54%; }
+
+      .close-recommendation {
+        display: grid;
+        width: 24px;
+        height: 24px;
+        margin-left: auto;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      /* Concept B: a compact popover anchored to the trigger, floating over the console. */
+      .foreman-popover {
+        position: absolute;
+        z-index: 12;
+        top: calc(100% + 8px);
+        right: 0;
+        width: min(384px, 90vw);
+        border: 1px solid color-mix(in oklab, var(--foreman) 40%, var(--border));
+        border-radius: 11px;
+        background: var(--panel-2);
+        box-shadow: var(--shadow);
+        opacity: 0;
+        transform: translateY(-4px) scale(0.985);
+        transform-origin: top right;
+        visibility: hidden;
+        transition: opacity 130ms ease, transform 130ms ease, visibility 130ms;
+      }
+
+      .popover-anchor { position: relative; margin-left: auto; }
+      .popover-anchor .foreman-trigger { margin-left: 0; }
+
+      .app-frame.popover-open .foreman-popover {
+        opacity: 1;
+        transform: none;
+        visibility: visible;
+      }
+
+      /* The pointer that ties the card back to the button that opened it. */
+      .foreman-popover::before {
+        content: "";
+        position: absolute;
+        top: -5px;
+        right: 22px;
+        width: 8px;
+        height: 8px;
+        border-top: 1px solid color-mix(in oklab, var(--foreman) 40%, var(--border));
+        border-left: 1px solid color-mix(in oklab, var(--foreman) 40%, var(--border));
+        background: var(--panel-2);
+        transform: rotate(45deg);
+      }
+
+      .popover-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 11px 12px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .popover-head strong { font-size: 12.5px; font-weight: 640; }
+
+      .popover-close {
+        margin-left: auto;
+        padding: 0;
+        width: 20px;
+        height: 20px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--dim);
+        cursor: pointer;
+        font-size: 15px;
+        line-height: 1;
+      }
+
+      .popover-close:hover { background: var(--panel); color: var(--fg); }
+
+      .popover-body { padding: 12px; }
+
+      .popover-pick {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin-bottom: 10px;
+        padding: 9px 10px;
+        border: 1px solid color-mix(in oklab, var(--foreman) 42%, var(--border));
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--foreman) 9%, var(--bg-2));
+      }
+
+      .popover-pick strong {
+        display: block;
+        margin-bottom: 2px;
+        font-size: 12px;
+        font-weight: 640;
+      }
+
+      .popover-why {
+        margin: 0;
+        color: var(--muted);
+        font-size: 11.5px;
+        line-height: 1.6;
+      }
+
+      .popover-foot {
+        margin-top: 11px;
+        padding-top: 9px;
+        border-top: 1px solid var(--border-soft);
+        color: var(--dim);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+
+      /* Concept C: a temporary sidecar, outside the review card's flow. */
+      [data-concept="drawer"] .review-zone {
+        transition: margin-right 170ms ease;
+      }
+
+      .foreman-sidecar {
+        position: absolute;
+        z-index: 11;
+        top: 84px;
+        right: 0;
+        bottom: 0;
+        width: min(410px, 88vw);
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid color-mix(in oklab, var(--foreman) 36%, var(--border));
+        background: var(--panel-2);
+        box-shadow: -12px 0 34px rgba(0, 0, 0, 0.36);
+        transform: translateX(102%);
+        visibility: hidden;
+        transition: transform 170ms ease, visibility 170ms;
+      }
+
+      .app-frame.drawer-open .review-zone {
+        margin-right: 410px;
+      }
+
+      .app-frame.drawer-open .foreman-sidecar {
+        transform: none;
+        visibility: visible;
+      }
+
+      .sidecar-head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 15px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .sidecar-title {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .sidecar-title strong { font-size: 13px; font-weight: 640; }
+      .sidecar-title span { color: var(--dim); font-size: 10.5px; }
+
+      .sidecar-body {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 18px 16px;
+      }
+
+      .sidecar-label {
+        margin: 0 0 8px;
+        color: var(--dim);
+        font: 650 10px/1 var(--mono);
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+
+      .sidecar-pick {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        margin-bottom: 14px;
+        padding: 11px 12px;
+        border: 1px solid color-mix(in oklab, var(--foreman) 42%, var(--border));
+        border-radius: 9px;
+        background: color-mix(in oklab, var(--foreman) 9%, var(--bg-2));
+      }
+
+      .sidecar-diamond {
+        padding-top: 2px;
+        color: var(--foreman);
+        font-size: 9px;
+      }
+
+      .sidecar-pick strong {
+        display: block;
+        margin-bottom: 3px;
+        font-size: 12.5px;
+        font-weight: 640;
+      }
+
+      .sidecar-pick span {
+        color: var(--muted);
+        font-size: 11.5px;
+        line-height: 1.45;
+      }
+
+      .sidecar-body > p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.62;
+      }
+
+      .sidecar-note {
+        margin-top: 18px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border-soft);
+        color: var(--dim);
+        font-size: 10.5px;
+        line-height: 1.55;
+      }
+
+      .sidecar-foot {
+        padding: 12px 16px;
+        border-top: 1px solid var(--border);
+        color: var(--dim);
+        font-size: 10.5px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+      }
+
+      @media (max-width: 850px) {
+        .mockup-page { padding: 24px 14px 80px; }
+        .mockup-masthead { grid-template-columns: 1fr; gap: 18px; }
+        .concept-head { grid-template-columns: 1fr; gap: 8px; }
+        .concept-tradeoff { max-width: none; text-align: left; }
+        .topline { display: none; }
+        .app-tabs { height: 48px; padding: 0 8px; }
+        .app-tab { padding: 0 9px; }
+        .app-tab:nth-child(n + 3) { display: none; }
+        .tool-chip:not(.active) { display: none; }
+        .review-zone { padding: 18px 10px 28px; }
+        .review-head { align-items: flex-start; flex-wrap: wrap; }
+        .foreman-trigger { margin-left: 0; }
+        .option { grid-template-columns: 16px 15px minmax(0, 1fr); }
+        .recommend-mark { grid-column: 3; justify-self: start; }
+        .answer-row { align-items: stretch; flex-direction: column; }
+        .foreman-sidecar { top: 48px; }
+        .app-frame.drawer-open .review-zone { margin-right: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="mockup-page">
+      <header class="mockup-masthead">
+        <div>
+          <p class="mockup-eyebrow">To Review · Foreman recommendation</p>
+          <h1>One decision, with Foreman available on demand.</h1>
+          <p class="mockup-lede">
+            All three options keep the agent’s review as the only decision surface. Foreman no
+            longer supplies a second “Approve &amp; send” path. Its <em>reasoning</em> is closed by
+            default and appears only after you ask for it. They differ only in where that
+            reasoning goes once asked for, so each is drawn here already opened.
+          </p>
+        </div>
+        <p class="mockup-principle">
+          <strong>Chosen: A + C.</strong> The sidecar carries the reasoning, and the pick mark from
+          A rides along on the option so the choice reads at a glance. B was not taken.
+          <br /><br />
+          <strong>Shared behavior:</strong> if Foreman is confident enough to answer, it answers
+          automatically before this card reaches the user. If it escalates, the normal review owns
+          the response and Foreman becomes optional context only.
+        </p>
+      </header>
+
+      <section class="concept" id="lens">
+        <header class="concept-head">
+          <div>
+            <span class="concept-kicker"><b>A</b> Recommendation lens · chosen</span>
+            <h2>Reveal Foreman on the existing choice</h2>
+            <p class="concept-summary">
+              A compact button adds a purple recommendation mark directly to option 1. Foreman’s
+              pick is expressed on the canonical choice, with no second card or action path.
+            </p>
+          </div>
+          <div class="concept-tradeoff">
+            <strong>Best for:</strong> the fastest, quietest nudge. It deliberately favors the
+            recommended option over exposing Foreman’s full reasoning.
+          </div>
+        </header>
+
+        <div class="app-frame" data-concept="lens">
+          <div class="topline">
+            <span>Path <strong>~/mission-control/worktrees/00/ai-harness</strong></span>
+            <span>Branch <strong>c harness/fix-sdk-resume</strong></span>
+          </div>
+          <nav class="app-tabs" aria-label="Session views">
+            <span class="app-tab active"><span class="keycap">g</span>Conversation</span>
+            <span class="app-tab"><span class="keycap">q</span>Work queue</span>
+            <span class="app-tab"><span class="keycap">y</span>Workflows</span>
+            <span class="app-tab"><span class="keycap">d</span>Diff</span>
+            <span class="tab-tools">
+              <span class="tool-chip active">▤ Terminal view</span>
+              <span class="tool-chip">⌁ Terminal</span>
+              <span class="tool-chip">◆ Claude Code</span>
+            </span>
+          </nav>
+          <div class="review-zone">
+            <section class="review-card">
+              <div class="review-head">
+                <span class="waiting-badge">Waiting on you</span>
+                <span class="review-hint">answer each, then submit</span>
+                <button class="foreman-trigger lens-trigger" type="button" aria-expanded="false">
+                  <span class="foreman-glyph">◆</span>
+                  View Foreman recommendation
+                </button>
+              </div>
+              <p class="review-prompt">Claude has a question.</p>
+              <p class="question-text">
+                <span class="question-tag">Fix scope</span>
+                How much of this do you want me to implement?
+              </p>
+              <ul class="options">
+                <li class="option-wrap recommended">
+                  <button class="option" type="button" role="radio" aria-checked="false">
+                    <span class="option-num">1</span><span class="option-radio" aria-hidden="true"></span>
+                    <span class="option-copy">
+                      <span class="option-label">State fix + orphan backstop (Recommended)</span>
+                      <span class="option-detail">Fix resume state and add recovery for queued rows that cannot currently be delivered.</span>
+                    </span>
+                    <span class="recommend-mark">Foreman’s pick</span>
+                  </button>
+                </li>
+                <li class="option-wrap">
+                  <button class="option" type="button" role="radio" aria-checked="false">
+                    <span class="option-num">2</span><span class="option-radio" aria-hidden="true"></span>
+                    <span class="option-copy">
+                      <span class="option-label">State fix only</span>
+                      <span class="option-detail">Smallest correct code change. Existing orphaned rows would still need manual cleanup.</span>
+                    </span>
+                  </button>
+                </li>
+                <li class="option-wrap">
+                  <button class="option" type="button" role="radio" aria-checked="false">
+                    <span class="option-num">3</span><span class="option-radio" aria-hidden="true"></span>
+                    <span class="option-copy">
+                      <span class="option-label">No, leave it alone</span>
+                      <span class="option-detail">Do not change live state or add a recovery path in this task.</span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+              <div class="answer-row">
+                <input class="custom-answer" aria-label="Custom answer" placeholder="Or type a custom answer" />
+                <button class="submit" type="button" disabled>Submit answers</button>
+              </div>
+
+            </section>
+            <div class="transcript-ghost" aria-hidden="true">
+              <span class="ghost-line"></span><span class="ghost-line"></span><span class="ghost-line"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="concept" id="popover">
+        <header class="concept-head">
+          <div>
+            <span class="concept-kicker"><b>B</b> Anchored popover · not taken</span>
+            <h2>Float Foreman above the console</h2>
+            <p class="concept-summary">
+              The same compact button opens a small card pinned to it. It carries the pick and a
+              short rationale, closes on Escape or outside click, and never reflows the review or
+              displaces the transcript.
+            </p>
+          </div>
+          <div class="concept-tradeoff">
+            <strong>Best for:</strong> the middle ground. It shows Foreman's reasoning without
+            surrendering console width, but it caps how much rationale can be read at once.
+          </div>
+        </header>
+
+        <div class="app-frame" data-concept="popover">
+          <div class="topline">
+            <span>Path <strong>~/mission-control/worktrees/00/ai-harness</strong></span>
+            <span>Branch <strong>c harness/fix-sdk-resume</strong></span>
+          </div>
+          <nav class="app-tabs" aria-label="Session views">
+            <span class="app-tab active"><span class="keycap">g</span>Conversation</span>
+            <span class="app-tab"><span class="keycap">q</span>Work queue</span>
+            <span class="app-tab"><span class="keycap">y</span>Workflows</span>
+            <span class="app-tab"><span class="keycap">d</span>Diff</span>
+            <span class="tab-tools">
+              <span class="tool-chip active">▤ Terminal view</span>
+              <span class="tool-chip">⌁ Terminal</span>
+              <span class="tool-chip">◆ Claude Code</span>
+            </span>
+          </nav>
+          <div class="review-zone">
+            <section class="review-card">
+              <div class="review-head">
+                <span class="waiting-badge">Waiting on you</span>
+                <span class="review-hint">answer each, then submit</span>
+                <span class="popover-anchor">
+                  <button class="foreman-trigger popover-trigger" type="button" aria-expanded="false">
+                    <span class="foreman-glyph">◆</span>
+                    View Foreman recommendation
+                  </button>
+                  <div class="foreman-popover" role="dialog" aria-label="Foreman recommendation" aria-hidden="true">
+                    <header class="popover-head">
+                      <span class="foreman-badge">Foreman</span>
+                      <strong>Recommendation</strong>
+                      <button class="popover-close" type="button" aria-label="Close Foreman recommendation">×</button>
+                    </header>
+                    <div class="popover-body">
+                      <div class="popover-pick">
+                        <span class="sidecar-diamond">◆</span>
+                        <div>
+                          <strong>1 · State fix + orphan backstop</strong>
+                          <span class="popover-why">Fix the state transition and recover rows already left behind.</span>
+                        </div>
+                      </div>
+                      <p class="popover-why">
+                        Handles both the immediate state bug and the queue records already stranded
+                        by it. The state-only change would leave existing rows for manual cleanup.
+                      </p>
+                      <p class="popover-foot">
+                        Context only. Choose and submit through the review below.
+                      </p>
+                    </div>
+                  </div>
+                </span>
+              </div>
+              <p class="review-prompt">Claude has a question.</p>
+              <p class="question-text">
+                <span class="question-tag">Fix scope</span>
+                How much of this do you want me to implement?
+              </p>
+              <ul class="options">
+                <li class="option-wrap recommended">
+                  <button class="option" type="button" role="radio" aria-checked="false">
+                    <span class="option-num">1</span><span class="option-radio" aria-hidden="true"></span>
+                    <span class="option-copy">
+                      <span class="option-label">State fix + orphan backstop (Recommended)</span>
+                      <span class="option-detail">Fix resume state and add recovery for queued rows that cannot currently be delivered.</span>
+                    </span>
+                  </button>
+                </li>
+                <li class="option-wrap">
+                  <button class="option" type="button" role="radio" aria-checked="false">
+                    <span class="option-num">2</span><span class="option-radio" aria-hidden="true"></span>
+                    <span class="option-copy">
+                      <span class="option-label">State fix only</span>
+                      <span class="option-detail">Smallest correct code change. Existing orphaned rows would still need manual cleanup.</span>
+                    </span>
+                  </button>
+                </li>
+                <li class="option-wrap">
+                  <button class="option" type="button" role="radio" aria-checked="false">
+                    <span class="option-num">3</span><span class="option-radio" aria-hidden="true"></span>
+                    <span class="option-copy">
+                      <span class="option-label">No, leave it alone</span>
+                      <span class="option-detail">Do not change live state or add a recovery path in this task.</span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+              <div class="answer-row">
+                <input class="custom-answer" aria-label="Custom answer" placeholder="Or type a custom answer" />
+                <button class="submit" type="button" disabled>Submit answers</button>
+              </div>
+            </section>
+            <div class="transcript-ghost" aria-hidden="true">
+              <span class="ghost-line"></span><span class="ghost-line"></span><span class="ghost-line"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="concept" id="sidecar">
+        <header class="concept-head">
+          <div>
+            <span class="concept-kicker"><b>C</b> Sidecar · chosen</span>
+            <h2>Open Foreman beside the review</h2>
+            <p class="concept-summary">
+              The same compact button opens a temporary right-hand overlay. The review does not
+              reflow, and the sidecar has no approval action, only rationale and a close control.
+            </p>
+          </div>
+          <div class="concept-tradeoff">
+            <strong>Best for:</strong> longer or more nuanced recommendations. It separates the two
+            voices most clearly, at the cost of covering part of the console while open.
+          </div>
+        </header>
+
+        <div class="app-frame" data-concept="drawer">
+          <div class="topline">
+            <span>Path <strong>~/mission-control/worktrees/00/ai-harness</strong></span>
+            <span>Branch <strong>c harness/fix-sdk-resume</strong></span>
+          </div>
+          <nav class="app-tabs" aria-label="Session views">
+            <span class="app-tab active"><span class="keycap">g</span>Conversation</span>
+            <span class="app-tab"><span class="keycap">q</span>Work queue</span>
+            <span class="app-tab"><span class="keycap">y</span>Workflows</span>
+            <span class="app-tab"><span class="keycap">d</span>Diff</span>
+            <span class="tab-tools">
+              <span class="tool-chip active">▤ Terminal view</span>
+              <span class="tool-chip">⌁ Terminal</span>
+              <span class="tool-chip">◆ Claude Code</span>
+            </span>
+          </nav>
+          <div class="review-zone">
+            <section class="review-card">
+              <div class="review-head">
+                <span class="waiting-badge">Waiting on you</span>
+                <span class="review-hint">answer each, then submit</span>
+                <button class="foreman-trigger drawer-trigger" type="button" aria-expanded="false">
+                  <span class="foreman-glyph">◆</span>
+                  View Foreman recommendation
+                </button>
+              </div>
+              <p class="review-prompt">Claude has a question.</p>
+              <p class="question-text">
+                <span class="question-tag">Fix scope</span>
+                How much of this do you want me to implement?
+              </p>
+              <ul class="options">
+                <li class="option-wrap recommended">
+                  <button class="option" type="button" role="radio" aria-checked="false">
+                    <span class="option-num">1</span><span class="option-radio" aria-hidden="true"></span>
+                    <span class="option-copy">
+                      <span class="option-label">State fix + orphan backstop (Recommended)</span>
+                      <span class="option-detail">Fix resume state and add recovery for queued rows that cannot currently be delivered.</span>
+                    </span>
+                  </button>
+                </li>
+                <li class="option-wrap">
+                  <button class="option" type="button" role="radio" aria-checked="false">
+                    <span class="option-num">2</span><span class="option-radio" aria-hidden="true"></span>
+                    <span class="option-copy">
+                      <span class="option-label">State fix only</span>
+                      <span class="option-detail">Smallest correct code change. Existing orphaned rows would still need manual cleanup.</span>
+                    </span>
+                  </button>
+                </li>
+                <li class="option-wrap">
+                  <button class="option" type="button" role="radio" aria-checked="false">
+                    <span class="option-num">3</span><span class="option-radio" aria-hidden="true"></span>
+                    <span class="option-copy">
+                      <span class="option-label">No, leave it alone</span>
+                      <span class="option-detail">Do not change live state or add a recovery path in this task.</span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+              <div class="answer-row">
+                <input class="custom-answer" aria-label="Custom answer" placeholder="Or type a custom answer" />
+                <button class="submit" type="button" disabled>Submit answers</button>
+              </div>
+            </section>
+            <div class="transcript-ghost" aria-hidden="true">
+              <span class="ghost-line"></span><span class="ghost-line"></span><span class="ghost-line"></span>
+            </div>
+          </div>
+
+          <aside class="foreman-sidecar" aria-hidden="true" aria-label="Foreman recommendation">
+            <header class="sidecar-head">
+              <span class="foreman-badge">Foreman</span>
+              <span class="sidecar-title">
+                <strong>Recommendation</strong>
+                <span>Optional context for the open review</span>
+              </span>
+              <button class="close-recommendation drawer-close" type="button" aria-label="Close Foreman recommendation">×</button>
+            </header>
+            <div class="sidecar-body">
+              <p class="sidecar-label">Foreman’s pick</p>
+              <div class="sidecar-pick">
+                <span class="sidecar-diamond">◆</span>
+                <div>
+                  <strong>1 · State fix + orphan backstop</strong>
+                  <span>Fix the state transition and recover rows already left behind.</span>
+                </div>
+              </div>
+              <p class="sidecar-label">Why</p>
+              <p>
+                This is the most maintainable repair because it handles both the immediate state bug
+                and the queue records already stranded by it. The smaller state-only change would let
+                future work drain but leave existing rows for manual cleanup. Avoid changing the live
+                session while other sessions are running.
+              </p>
+              <div class="sidecar-note">
+                Foreman cannot submit this review. Close this sidecar, select one of Claude’s three
+                options, and submit through the original review card.
+              </div>
+            </div>
+            <footer class="sidecar-foot">No action is taken by viewing this recommendation.</footer>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const choose = (frame, option) => {
+        frame.querySelectorAll('.option').forEach((candidate) => {
+          candidate.setAttribute('aria-checked', String(candidate === option));
+        });
+        frame.querySelector('.submit').disabled = false;
+      };
+
+      document.querySelectorAll('.app-frame').forEach((frame) => {
+        frame.querySelectorAll('.option').forEach((option) => {
+          option.addEventListener('click', () => choose(frame, option));
+        });
+      });
+
+      const lensFrame = document.querySelector('[data-concept="lens"]');
+      const lensCard = lensFrame.querySelector('.review-card');
+      const lensTrigger = lensFrame.querySelector('.lens-trigger');
+      const setLens = (open) => {
+        lensCard.classList.toggle('lens-open', open);
+        lensTrigger.setAttribute('aria-expanded', String(open));
+        lensTrigger.childNodes[lensTrigger.childNodes.length - 1].textContent = open
+          ? ' Hide Foreman recommendation'
+          : ' View Foreman recommendation';
+      };
+      lensTrigger.addEventListener('click', () => setLens(!lensCard.classList.contains('lens-open')));
+
+      const drawerFrame = document.querySelector('[data-concept="drawer"]');
+      const drawerTrigger = drawerFrame.querySelector('.drawer-trigger');
+      const setDrawer = (open) => {
+        drawerFrame.classList.toggle('drawer-open', open);
+        drawerTrigger.setAttribute('aria-expanded', String(open));
+        drawerFrame.querySelector('.foreman-sidecar').setAttribute('aria-hidden', String(!open));
+        drawerTrigger.childNodes[drawerTrigger.childNodes.length - 1].textContent = open
+          ? ' Hide Foreman recommendation'
+          : ' View Foreman recommendation';
+      };
+      drawerTrigger.addEventListener('click', () => setDrawer(!drawerFrame.classList.contains('drawer-open')));
+      drawerFrame.querySelector('.drawer-close').addEventListener('click', () => setDrawer(false));
+
+      const popFrame = document.querySelector('[data-concept="popover"]');
+      const popTrigger = popFrame.querySelector('.popover-trigger');
+      const popCard = popFrame.querySelector('.foreman-popover');
+      const setPopover = (open) => {
+        popFrame.classList.toggle('popover-open', open);
+        popTrigger.setAttribute('aria-expanded', String(open));
+        popCard.setAttribute('aria-hidden', String(!open));
+        popTrigger.childNodes[popTrigger.childNodes.length - 1].textContent = open
+          ? ' Hide Foreman recommendation'
+          : ' View Foreman recommendation';
+      };
+      popTrigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        setPopover(!popFrame.classList.contains('popover-open'));
+      });
+      popFrame.querySelector('.popover-close').addEventListener('click', () => setPopover(false));
+      popCard.addEventListener('click', (event) => event.stopPropagation());
+      document.addEventListener('click', () => setPopover(false));
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        setLens(false);
+        setDrawer(false);
+        setPopover(false);
+      });
+
+      // Each concept opens on load so the three can be compared without clicking.
+      setLens(true);
+      setDrawer(true);
+      setPopover(true);
+    </script>
+  </body>
+</html>

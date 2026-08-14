@@ -45,6 +45,7 @@ import {
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import { useTimelineReviews } from "../../lib/timelineReviews.ts";
+import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/foreman-review.ts";
 import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
@@ -205,6 +206,15 @@ export function ConsoleDetail({
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
   const intent = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
+  const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
+    dialog: activePaneDialog(session),
+    note: session.note,
+    pendingReviewIds: view.pendingReviewIds,
+  });
+  const visibleEpisodes = visibleForemanEpisodes(episodes, {
+    companionsOpenAsk: noteCompanionsOpenAsk,
+    handledMarker: session.note?.handledMarker,
+  });
   // Set when the send shortcut arrives on another tab: the reply box exists, it's just
   // not mounted yet, so the focus has to wait for the conversation to come back.
   const focusPending = useRef(false);
@@ -641,8 +651,8 @@ export function ConsoleDetail({
                 described the present at the top of a pane whose present is at the bottom.
                 Nothing may be added back above `.pane-dialog` here without checking the
                 child combinators that select through this container. */}
-            {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} />}
-            {session.note && (
+            {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
+            {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip
                 session={session}
                 note={session.note}
@@ -659,7 +669,7 @@ export function ConsoleDetail({
               session={session}
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
-              episodes={episodes}
+              episodes={visibleEpisodes}
               reviews={timelineReviews}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}

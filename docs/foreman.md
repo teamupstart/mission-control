@@ -143,13 +143,23 @@ approve access/permission asks - turn it off and those escalate to you instead.
 Destructive or risky asks (force-push, secret access, prod deploy, data drops, disabling a
 safety check) are **always** escalated, never auto-approved.
 
-Everything Foreman does surfaces where you're already looking. On a **card**: a needs-you
-session it acted on shows a
-**◆ decision** flag (or **✎ draft**) in its header, the expanded card shows the decision
-brief + recommended answer with **Approve & send / Dismiss** controls, and an answered
-session carries a `✓ Foreman answered: …` audit line. An escalation also fires a browser
-**alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
-depth.
+Everything Foreman does surfaces where you're already looking. When an agent's ordinary
+review form already owns the decision, Foreman does not draw a second answer card or an
+**Approve & send** path beside it. Instead the option its recommendation names wears a
+**◆ Foreman's pick** mark, so which one it chose reads at a glance, and the form gets a
+closed **View Foreman recommendation** control for the reasoning behind that pick. Opening
+it shows Foreman's prose in a bounded sidecar. The marked option is never preselected, and
+the original form remains the only place that can send an answer. When Foreman's prose names
+no offered option, nothing is marked and only the control appears. If Foreman raised an
+unrelated decision,
+the separate note stays visible because its marker names a different ask. An escalation also
+fires a browser **alert**. The top-bar chip shows the mode, whether the worker is running, and
+the queue depth.
+
+For a draft or escalation that has no canonical review form, the card keeps the existing
+**◆ decision** or **✎ draft** flag. Its expanded note carries the brief, recommendation and
+the applicable **Approve & send / Dismiss** controls. An answered session carries a
+`✓ Foreman answered: …` audit line.
 
 Foreman's completion checks use the card's [durable Goal](sessions.md#goal), while its latest tactical
 focus remains separate.
@@ -178,13 +188,14 @@ finished work never reaches an automatic completion action:
 The safeguards are independent. A task matching either one is retired while that switch is
 on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
 
-In the [Console and Board](ui.md#layout-cards-console-or-board) detail the same decision is
-arranged differently, because a permanent conversation gives it somewhere better to sit:
-Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
-you still *owe* is a one-line strip above it - badge, disposition, purpose, **Approve &
-send** - that expands for the recommendation and **Dismiss**. It can't cover the chat,
-because the prose isn't in it. The strip unmounts once the note is answered or dismissed;
-the inline entry stays.
+In the [Console and Board](ui.md#layout-cards-console-or-board) detail, a standalone Foreman
+decision is arranged differently because a permanent conversation gives it somewhere better
+to sit: the note is rendered **in the transcript**, as a turn at the point it spoke, and what
+you still *owe* is a one-line strip above it. When the same ask already has a normal review,
+that strip and the matching live transcript entry yield to the review's optional recommendation
+control instead, so the conversation never presents two simultaneous decisions about one ask.
+The complete episode remains available in **Foreman · N** history. A standalone strip unmounts
+once its note is answered or dismissed; its inline entry stays.
 
 **Answering the question yourself retires the note.** A pinned decision is a claim on your
 attention, and answering the ask spends it: the agent is unblocked and the suggestion answers

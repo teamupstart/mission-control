@@ -125,10 +125,21 @@ test("only the Overlay primitive renders a backdrop", () => {
  * it should not have. Its share of the gap matches SpendChip's shape too: the one control
  * inside it acts on HOST POWER, not on the session behind it, so a stray shortcut
  * reaching through hits the same card it would have hit with no popover open.
+ *
+ * `ForemanRecommendation.tsx` is the sidecar holding Foreman's reasoning about a review that
+ * is open right now, and it is the one entry here whose posture is the POINT rather than a
+ * concession. It is `aria-modal="false"` on purpose: the review behind it must stay fully
+ * interactive, because the whole fix is that Foreman supplies context to one decision instead
+ * of becoming a second one. Routing it through `<Overlay>` would give it a backdrop over the
+ * question it is explaining and take the answer surface away while explaining how to answer.
+ * It owns its own Escape and returns focus to the trigger, and it carries NO action - the
+ * only controls are Close and the form behind it - so a shortcut reaching through it reaches
+ * the review it is already about.
  */
 const UNREGISTERED_DIALOGS = [
   "components/AlertBar.tsx",
   "components/ForemanBar.tsx",
+  "components/ForemanRecommendation.tsx",
   "components/KeepAwakeControl.tsx",
   "components/SpendChip.tsx",
   "components/line/NextUpPlanner.tsx",

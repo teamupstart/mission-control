@@ -4,6 +4,7 @@ import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflo
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
+import { foremanNoteCompanionsOpenAsk } from "../lib/foreman-review.ts";
 import { canMessage } from "@shared/pane.ts";
 import { taskPillParts } from "@shared/task.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
@@ -229,6 +230,11 @@ export function SessionCard({
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
+  const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
+    dialog,
+    note: session.note,
+    pendingReviewIds,
+  });
   // The shared reduction, so this pill and the console detail's cannot drift on what a
   // kind badge or a repeated title is worth.
   const pill = taskPillParts(session);
@@ -521,9 +527,9 @@ export function SessionCard({
       {/* Not gated on `expanded`, unlike the note below it: a session parked on a menu is
           blocked until someone answers, which is the one thing a collapsed card most needs
           to say. Burying it behind a click is how it gets missed. */}
-      {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} />}
+      {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
 
-      {expanded && session.note && (
+      {expanded && session.note && !noteCompanionsOpenAsk && (
         <ForemanNote
           session={session}
           note={session.note}

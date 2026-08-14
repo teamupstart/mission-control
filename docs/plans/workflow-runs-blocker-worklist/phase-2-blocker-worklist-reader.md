@@ -13,7 +13,8 @@ This is the phase a person sees.
 
 - **Direct phase dependencies:** Phase 1.
 - Requires `runChangeWorklist` and `ChangeWorklistRow` exported from `run-model.ts`, with rows
-  pre-sorted and `state` partitioning open from resolved.
+  pre-sorted and `state` partitioning `open` from `resolved` and `unconfirmed`. Also requires
+  `runStalemates` for the windowed stalemate card.
 
 ## Scope
 
@@ -82,10 +83,26 @@ for the scrubber: unchanged behavior, not a control that some of the page ignore
 scrubs back to round 3 sees what round 3 was asking for, with `roundsOpen` counted up to round 3
 rather than up to today.
 
-### 2. Selection state
+### 2. Selection state, over a discriminated union
+
+`Blocking` holds two kinds of thing - open changes and failing checks - so the selection cannot
+be a bare `ChangeWorklistRow.key`. Those two id spaces are unrelated (`ChangeWorklistRow.key` is
+`nodeId + path + title`; a check is identified by `attempt.id`) and nothing stops them colliding
+as raw strings. Model the item explicitly:
+
+```ts
+type WorklistItem =
+  | { kind: "change"; key: string; row: ChangeWorklistRow }
+  | { kind: "check"; key: string; attempt: WorkflowNodeAttempt; outcome: WorkflowCheckOutcome };
+```
+
+Namespace the keys when building the list - `` `change:${row.key}` `` and
+`` `check:${attempt.id}` `` - so one `selectedKey` string can address either without ambiguity,
+and build `blocking` as `WorklistItem[]` with the failing checks first. Every consumer below
+branches on `kind` rather than sniffing the shape.
 
 `const [selectedKey, setSelectedKey] = useState<string | null>(null)`, resolved to the first
-`blocking` row when null, mirroring how `roundId` is held. Reset when `detail.run.id` changes.
+`blocking` item when null, mirroring how `roundId` is held. Reset when `detail.run.id` changes.
 If `selectedKey` no longer resolves - after a refresh, or after the reader scrubs to a round
 where that change had not been raised yet - fall back to the first blocking row rather than
 rendering an empty pane. Do not clear the selection on every scrub: a change present in both
@@ -110,11 +127,16 @@ rounds should stay selected as the reader moves between them.
 - Blocking rows, failing checks: the existing `CheckCard`, unchanged, so the command, exit code,
   output tail and truncated-byte count survive the redesign intact.
 - Archive rows, `state: "resolved"`: green rail, `Resolved in round {lastRound}`.
-- Archive rows, `state: "superseded"`: **amber rail, not green**, and worded so it cannot be read
-  as satisfaction - `Rephrased after round {lastRound}` with a second line naming the reviewer as
-  still requesting changes. Green here would tell the operator a reviewer is happy while the
-  stalemate card at the foot of the same rail says it has failed every round. The colour is
-  carrying the claim, so it has to be the honest one.
+- Archive rows, `state: "unconfirmed"`: **amber rail, not green**, worded to claim neither
+  outcome - `Last raised in round {lastRound}` with a second line reading *"{persona} has not
+  passed since, so this was never confirmed fixed."*
+
+  Both halves of that are load-bearing. Green would tell the operator a reviewer is satisfied
+  while the stalemate card at the foot of the same rail says it has failed every round. But
+  wording it as *rephrased* is the opposite error and just as wrong: a reviewer that stops
+  raising this change **because it is fixed** while separately raising something unrelated lands
+  in this same state, and telling that operator their fix was merely reworded is a false claim
+  about their own work. The state means *not known*, so the row has to say not known.
 - Passed segment: one line per passing reviewer, plus checks whose outcome is `passed`,
   `skipped` or `unavailable`. The latter two are **degraded passes**, not failures
   (`CHECK_OUTCOME_STATUSES` marks them `degraded: true`); they keep their amber chip in
@@ -136,18 +158,30 @@ Blocking, everything else to Passed. Nothing about checks flows through `runChan
 
 ### 4. The detail pane
 
-For the selected row: the reviewer's verdict summary, a `chip` for its state, confidence,
-runner and model from `verdictMeta`. Facts row: file (or "No file cited"), first raised,
-rounds open, evidence count. The rationale in full. Evidence quotes. Then the action row:
+Branch on the selected `WorklistItem`'s `kind` first. The two arms share only the previous/next
+control; everything else differs, and the check arm is not a degraded version of the change arm.
+
+**`kind: "check"`** - render the existing `CheckCard` for `attempt` and `outcome`, unchanged, so
+the command, exit code, retained output tail and truncated-byte count are all preserved. None of
+the per-change actions apply to a command gate: **withhold** Copy this change, Open file, Give
+this reviewer feedback and Disable, rather than rendering them disabled. A check has no persona
+to give feedback to, and a disabled-looking button that could never become enabled is a worse
+answer than no button.
+
+**`kind: "change"`** - the reviewer's verdict summary, a `chip` for its state, confidence, runner
+and model from `verdictMeta`. Facts row: file (or "No file cited"), first raised, rounds open,
+evidence count. The rationale in full. Evidence quotes. Then the action row:
 
 - **Copy this change** - title, path, rationale to the clipboard.
 - **Open file** - only when `path` is present.
-- **Give this reviewer feedback** - opens `PersonaDirectiveEditor` for that `nodeId`.
-- **Disable {personaName}** - the existing `set-nodes-disabled` call for that `nodeId`.
-- Previous / Next to walk the partition.
+- **Give this reviewer feedback** - opens `PersonaDirectiveEditor` for that `row.nodeId`.
+- **Disable {personaName}** - the existing `set-nodes-disabled` call for that `row.nodeId`.
 
 Withhold the two mutating actions when the run is terminal, matching the existing per-node
 menus.
+
+Previous / Next walk the current segment across both kinds, so the reader can page from a failed
+check straight into the persona objections underneath it without changing segment.
 
 ### 5. Empty and degenerate states
 
@@ -169,9 +203,9 @@ Every arm the old section had must survive:
 - A run blocked **only** by a failed check, with every persona passing, still opens on
   `Blocking` with that check selected. This is the case the original draft of this phase
   dropped entirely.
-- Selecting a failing check shows the `CheckCard` in the detail pane. The per-change actions
-  (copy, open file, reviewer feedback, disable reviewer) do not apply to a check and are
-  withheld rather than rendered disabled.
+- A change whose persona stops raising it while raising something unrelated lands in
+  `unconfirmed`, and its row must not claim the finding was rephrased. See step 3 for the
+  wording; this is the degenerate case that wording exists for.
 
 ### 6. Styles
 
@@ -239,8 +273,9 @@ requires a Playwright spec for every UI change with no exemptions.
   together, and `roundsOpen` is counted up to that round rather than to today. Nothing in this
   section states a fact from a round later than the one being viewed.
 - **No Archive row claims a reviewer is satisfied while the stalemate card says otherwise.** A
-  `"superseded"` row reads as rephrased, not resolved, and does not take the green rail. Verify
-  by eye on a run that has both a superseded row and a `repeatOffenders` entry for the same
+  `"unconfirmed"` row claims neither outcome - not resolved, and not rephrased either - and does
+  not take the green rail. Verify
+  by eye on a run that has both an unconfirmed row and a `repeatOffenders` entry for the same
   persona; this is a two-elements-agreeing assertion that markup shape alone cannot make.
 - A change carried from an earlier round says which round raised it and how many rounds it has
   been open; a resolved one says which round resolved it.
@@ -278,6 +313,20 @@ There are no later phases. Future work that touches this surface should know:
   Phase 1's test list pins it so this phase inherits a derivation that cannot crash on it.
 - **Confirmed no concurrency.** Phase 2 depends on Phase 1 and there is no third phase, so
   there is nothing to run in parallel and no merge-order ambiguity.
+- **Inspector round 6, `minor`, accepted.** Step 4 described the detail pane purely as a
+  `ChangeWorklistRow`, while step 3 had already put failing checks into the same `Blocking` list
+  and step 2 held the selection as a bare key - with no rule for telling the two id spaces apart
+  (`ChangeWorklistRow.key` versus `attempt.id`, never reconciled). Step 2 now defines a
+  `WorklistItem` discriminated union with namespaced keys, and step 4 branches on `kind` up
+  front instead of leaving the check case to a retroactive sentence in step 5. That sentence is
+  gone; step 5 keeps only the degenerate cases.
+- **Inspector round 6, `major`, accepted, resolved in Phase 1.** The third state asserted the
+  finding had been *rephrased*, which is unknowable and sometimes false - a reviewer that stops
+  raising a change because it is fixed, while raising something unrelated, landed in the same
+  state. The row would have told that operator their fix was merely reworded. Phase 1 renamed the
+  state `unconfirmed`; this phase's wording changed with it, from "Rephrased after round N" to
+  "Last raised in round N" plus "{persona} has not passed since, so this was never confirmed
+  fixed". The amber rail stays: the claim being avoided is satisfaction, in both directions.
 - **Inspector round 5, `major`, accepted.** This phase rendered the stalemate card straight from
   `detail.repeatOffenders` while claiming in its own exit criteria that the rail describes the
   viewed round. That field is latest-anchored and cannot be re-scoped, so scrubbing back would
@@ -287,9 +336,10 @@ There are no later phases. Future work that touches this surface should know:
 - **Inspector round 4, `minor`, accepted, derived in Phase 1.** A reworded finding marked its old
   key resolved, so Archive could read "Resolved in round 5" for the same persona the stalemate
   card at the foot of the rail calls a repeat offender. Phase 1 now emits a third `state`,
-  `"superseded"`. This phase owns the wording and the colour: superseded rows take an amber rail
+  `"unconfirmed"`. This phase owns the wording and the colour: unconfirmed rows take an amber rail
   and read as rephrased, because green would be the element making the false claim. Added to the
-  exit criteria.
+  exit criteria. **Superseded by round 6**, which found that "rephrased" was itself a false claim
+  in the other direction; the amber rail survived, the wording did not.
 - **Inspector round 3, `major`, accepted, resolved in Phase 1.** The change key carried no
   author, so two personas raising identically-normalizing titles on one file would have merged
   into a single row with one `nodeId` - and this phase wires "Disable {persona}" and the

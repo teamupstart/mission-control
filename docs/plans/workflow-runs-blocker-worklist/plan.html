@@ -177,8 +177,20 @@ svg{display:block;max-width:100%;height:auto;margin:0 auto}
 <p>Including the node costs nothing for the job the key exists to do. A persona's <code>nodeId</code> is stable across rounds within a run's immutable workflow version, so cross-round matching for a single reviewer is unaffected; the node component only prevents cross-reviewer merging.</p>
 <p><b>Known failure mode, handled:</b> a reviewer that rewords a title it keeps raising produces a new key, so the old key stops appearing. <code>marker.ts</code> accepts exactly this and can afford to, because nothing sits beside it contradicting the result. This surface is different: the stalemate card at the foot of the same rail is derived from <code>repeat-offender.ts</code>, which keys on <code>nodeId</code> and pass/fail and never reads a title. Left alone, the rail would show an Archive row saying <i>"Resolved in round 5"</i> directly above a card saying <i>"Test Evidence Auditor has failed 10 rounds running"</i> - about the same reviewer. That is precisely the on-screen disagreement this plan cites to justify sharing the round-folding rule, so it does not get to be an exception.</p>
 <div class="callout good">
-<p><span class="adopted">Adopted.</span> A change has three states, not two. A key that stops appearing while its owning persona <b>keeps failing</b> is <code>superseded</code> - the objection did not go away, it got rephrased. A key that stops appearing because its persona stopped objecting is <code>resolved</code>. Both live in Archive and are labelled differently, so no row ever claims a reviewer is satisfied while another part of the same rail says it is not.</p>
-<p>This is derivable inside the worklist from data it already walks, so it needs no reference to <code>repeatOffenders</code> and does not inherit that signal's <code>rounds &gt;= 2</code> threshold - which exists for alerting and has nothing to do with this question.</p>
+<p><span class="adopted">Adopted.</span> A change has three states, not two, and the third one states what is actually known rather than guessing why.</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Situation</th><th>State</th><th>What is known</th></tr></thead>
+<tbody>
+<tr><td>Key stops appearing, its persona <b>passed</b> afterwards</td><td><code>resolved</code></td><td>It is fixed. The reviewer said so.</td></tr>
+<tr><td>Key stops appearing, its persona <b>never passed</b> afterwards</td><td><code>unconfirmed</code></td><td>Nothing. It may be fixed, or reworded.</td></tr>
+<tr><td>Key still being raised at the viewed round</td><td><code>open</code></td><td>It is outstanding.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>unconfirmed</code> deliberately does <b>not</b> claim the finding was rephrased. From the outside those two cases are indistinguishable: a reviewer that stops raising A because A is fixed, while raising unrelated C, looks exactly like a reviewer that reworded A into C. Title-based identity cannot tell them apart, so the honest label says the reviewer never passed and the change was never confirmed fixed, and leaves the reader to judge.</p>
+<p>An evidence-or-path heuristic was considered for separating the two and rejected: two genuinely different findings in one file collide under it, so it trades a known unknown for a confident wrong answer.</p>
+<p>All three states are derivable inside the worklist from data it already walks, so none of this needs <code>repeatOffenders</code> or inherits that signal's <code>rounds &gt;= 2</code> alerting threshold.</p>
 </div>
 </div>
 

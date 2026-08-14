@@ -109,7 +109,7 @@ export interface ChangeWorklistRow {
   firstRound: number;
   lastRound: number;
   roundsOpen: number;
-  state: "open" | "resolved" | "superseded";
+  state: "open" | "resolved" | "unconfirmed";
 }
 ```
 
@@ -155,10 +155,21 @@ Derivation, in order:
 4b. **Split "stopped appearing" into two outcomes.** For a key that is no longer being raised,
    look at what its owning node did in the rounds after `lastRound`, inside the window:
 
-   - the node **passed**, or stopped returning a `fail` verdict, in a later round: `"resolved"`;
-   - the node **kept failing** in a later round: `"superseded"`. The reviewer did not become
-     satisfied, it rephrased. Almost always this is an LLM reviewer rewording a title it keeps
-     raising, which `requestedChangeKey` correctly reads as a different change.
+   - the node **passed** in a later round: `"resolved"`. The reviewer said so.
+   - the node **never passed** in a later round: `"unconfirmed"`. Nothing is known.
+
+   `"unconfirmed"` asserts only what the data supports. It is tempting to call this case
+   "unconfirmed" and say the reviewer rephrased, and that is wrong: a reviewer that stops raising
+   A **because A is fixed** while separately raising unrelated C is indistinguishable, from the
+   outside, from one that reworded A into C. Both leave key A absent and the node still failing.
+   Title-based identity cannot separate them, so the state says the reviewer never passed and
+   the change was never confirmed fixed, and Phase 2 words it that way.
+
+   An evidence-or-path heuristic - mark it rephrased only if the later failure shares a path or
+   evidence with the dropped key - was considered and rejected. Two genuinely different findings
+   in one file collide under it, so it converts a known unknown into a confident wrong answer,
+   which is worse than the honest label on a surface whose whole purpose is telling an operator
+   what is actually true.
 
    Without this split the rail contradicts itself. The stalemate card at its foot comes from
    `repeat-offender.ts`, which keys on `nodeId` and pass/fail and never reads a title, so a
@@ -177,8 +188,8 @@ Derivation, in order:
    pin it; a change that lapses for a round and returns is the case that distinguishes them.
    Adopt **count of appearances**, so the number never claims a round the reviewer stayed
    silent in.
-6. Sort: `open`, then `superseded`, then `resolved` - descending by how much the reader still
-   has to care, which puts the rephrased ones at the top of Archive rather than buried under
+6. Sort: `open`, then `unconfirmed`, then `resolved` - descending by how much the reader still
+   has to care, which puts the unconfirmed ones at the top of Archive rather than buried under
    things that genuinely went away. Then `firstRound` ascending (oldest grievance first); then
    `nodeId`; then title. Stable and independent of map iteration order.
 
@@ -206,7 +217,7 @@ ladder's means.
 "as of the latest round" and this window cannot re-scope it. Rendered directly under a worklist
 scrubbed to round 4, it would say "failed 10 rounds running" - a fact six rounds in the reader's
 future, on the one rail this design keeps insisting must not contradict itself. Step 4b already
-records that anchor as the reason `superseded` is derived here; this is the same reason reaching
+records that anchor as the reason `unconfirmed` is derived here; this is the same reason reaching
 the same conclusion for the card.
 
 The duplication is deliberate and bounded, on the same grounds as the fold rule: the server
@@ -225,11 +236,16 @@ Cases:
 - A change raised in rounds 1 and 2, absent in round 3, whose persona **passed** in round 3, is
   `state: "resolved"`, `lastRound: 2`.
 - **Reworded finding.** A persona raises title A in rounds 1 to 5, then raises title B in rounds
-  6 to 10 and never passes. Key A is `"superseded"`, not `"resolved"`; key B is `"open"`. This is
+  6 to 10 and never passes. Key A is `"unconfirmed"`, not `"resolved"`; key B is `"open"`. This is
   the case that would otherwise put "Resolved in round 5" on the same rail as "failed 10 rounds
   running" for one reviewer.
-- A superseded row and the `repeatOffenders` entry for its node never disagree: any node still
-  reported as a repeat offender has every one of its stopped keys marked `"superseded"`, never
+- **A persona that fixes one thing and raises another.** It raises key A in rounds 1 and 2, then
+  in round 3 stops raising A and raises unrelated key C. Key A is `"unconfirmed"` - correct,
+  because nothing here proves A was fixed - and the row must not be worded as though A was
+  rephrased into C. This is the case that makes the state name a claim about knowledge rather
+  than a claim about the reviewer's intent.
+- An unconfirmed row and the `repeatOffenders` entry for its node never disagree: any node still
+  reported as a repeat offender has every one of its stopped keys marked `"unconfirmed"`, never
   `"resolved"`. Assert this against a fixture that also produces a `repeatOffenders` entry, so
   the two derivations are pinned against each other rather than separately.
 - Title differing only by case, backticks, trailing period or collapsed whitespace is the
@@ -316,9 +332,9 @@ Phase 2 may rely on:
   `personaName` always name the reviewer that actually raised it, and two reviewers raising
   colliding titles produce two rows rather than one. Phase 2 can wire "Disable {persona}" and
   the directive editor straight off the row.
-- `state` partitioning the rows: `"open"` is `Blocking`, `"resolved"` and `"superseded"` are
+- `state` partitioning the rows: `"open"` is `Blocking`, `"resolved"` and `"unconfirmed"` are
   both `Archive`, with no further filtering. The two Archive states are distinguished only so
-  Phase 2 can label them honestly - a `"superseded"` row must never be worded as though its
+  Phase 2 can label them honestly - a `"unconfirmed"` row must never be worded as though its
   reviewer became satisfied.
 - `state` being **conservative under a partial round**: a change whose persona has not
   re-attempted stays `"open"`. Phase 2 never has to ask whether a round finished before
@@ -361,10 +377,20 @@ Phase 2 must not:
   to keep this model narrow rather than widen it, and the boundary now lives in this phase's
   downstream handoff, which is the earliest place that must own it. No scope or signature here
   changed.
+- **Inspector round 6, `major`, accepted.** The third state was called `superseded` and asserted
+  the finding had been rephrased. Step 4b decided it purely from whether the owning node failed
+  again for **any** reason, so a reviewer that stops raising A *because A is fixed* while
+  separately raising unrelated C landed in it - and Phase 2 then told that operator their fix had
+  merely been reworded. Renamed `unconfirmed`, and the semantics narrowed to what the data
+  supports: the reviewer never passed, so nothing is known. The two cases are genuinely
+  indistinguishable under title-based identity, and an evidence-or-path heuristic to separate
+  them was considered and rejected - two different findings in one file collide under it, trading
+  a known unknown for a confident wrong answer. New test case: a persona that resolves one
+  finding while raising an unrelated new one in the same round.
 - **Inspector round 5, `major`, accepted.** The round-4 entry below records that
   `repeatOffenders`' latest-submission anchor is wrong for a windowed question and that
   `asOfRound` cannot re-scope it - and then that observation was used only to justify deriving
-  `superseded` here, never applied to the stalemate card, which Phase 2 still rendered straight
+  `unconfirmed` here, never applied to the stalemate card, which Phase 2 still rendered straight
   from the unscoped field. Scrubbed to round 4 of a 10-round run, the card would have read
   "failed 10 rounds running" under segments describing round 4. Adds `runStalemates(detail,
   asOfRound)`, the windowed twin of `repeat-offender.ts`, sharing this file's fold helper and
@@ -376,7 +402,7 @@ Phase 2 must not:
   card saying that reviewer has failed every round - the exact on-screen disagreement this file
   cites to justify sharing the round-folding rule, left as an exception to it. Dismissing it as
   "the same trade-off `marker.ts` makes" did not hold either: `marker.ts` has no adjacent
-  title-independent signal to contradict. `state` gains a third value, `"superseded"`, derived
+  title-independent signal to contradict. `state` gains a third value, `"unconfirmed"`, derived
   in step 4b from the folded rounds this function already walks. Deliberately **not** read from
   `detail.repeatOffenders`, whose latest-submission anchor and `rounds >= 2` alerting threshold
   are both wrong for a per-key, per-window question, and which the `asOfRound` window cannot

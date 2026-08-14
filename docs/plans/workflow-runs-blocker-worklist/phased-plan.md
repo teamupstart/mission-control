@@ -79,15 +79,17 @@ foundational interface, and it leaves the tree operable and green at the merge b
 - **The key includes the owning persona node.** A row's `nodeId` and `personaName` always name
   the reviewer that raised it, so two reviewers asking for the same thing produce two rows.
   Phase 2 wires the per-row actions off that node and must not dedupe the rows in the view.
-- Rows arrive **pre-sorted** (`open`, then `superseded`, then `resolved`, then oldest first).
+- Rows arrive **pre-sorted** (`open`, then `unconfirmed`, then `resolved`, then oldest first).
   Phase 2 does not re-sort.
-- `state` alone partitions the segments - `open` is `Blocking`, `resolved` and `superseded` are
+- `state` alone partitions the segments - `open` is `Blocking`, `resolved` and `unconfirmed` are
   both `Archive` - and is **conservative under a partial round**: resolution is decided per
   owning persona, so a change whose reviewer has not re-attempted stays `open` rather than
   reading as fixed because some other reviewer advanced the round.
-- **A key that stops appearing while its persona keeps failing is `superseded`, not `resolved`.**
-  Phase 2 must label and colour the two differently: a superseded row cannot read as satisfaction
-  while the stalemate card on the same rail calls that reviewer a repeat offender.
+- **A key that stops appearing while its persona never passes is `unconfirmed`, not `resolved`.**
+  The state is a claim about knowledge, not about intent: it says the reviewer never passed, so
+  nothing is known. Phase 2 must label and colour the two differently, and must not word
+  `unconfirmed` as *rephrased* - a reviewer that stops raising a change because it is fixed while
+  raising something unrelated lands here too, and calling that a rewording is false.
 - `roundsOpen` is a **count of appearances**, not a span, so it never claims a round the
   reviewer was silent in.
 - The model covers **requested changes only**. Checks never flow through it. Phase 2 keeps the
@@ -167,7 +169,7 @@ Round 4 raised one `minor`, accepted:
 5. **A reworded finding could make the rail contradict itself.** An LLM reviewer that rephrases
    a title it keeps raising retires the old key, which read as `resolved` - on the same rail as a
    stalemate card, derived title-independently from `repeat-offender.ts`, calling that reviewer a
-   repeat offender. `state` gains a third value, `superseded`, derived from the rounds the
+   repeat offender. `state` gains a third value, `unconfirmed`, derived from the rounds the
    worklist already walks rather than by reading `repeatOffenders`, whose latest-submission
    anchor and `rounds >= 2` threshold are wrong for a per-key, per-window question.
 
@@ -177,11 +179,24 @@ Round 5 raised one `major`, accepted:
    computed over the run's whole submission list and anchored on its newest one, so scrubbing to
    round 4 of a 10-round run would have left the card reading "failed 10 rounds running" beneath
    segments correctly describing round 4. Phase 1's own round-4 audit record already named that
-   anchor as unusable for a windowed question; the observation had been applied to `superseded`
+   anchor as unusable for a windowed question; the observation had been applied to `unconfirmed`
    and not to the card. Phase 1 now exports `runStalemates(detail, asOfRound)`, pinned against
    the payload field at the default window.
 
-All six fixes tighten the design without touching an approved human decision, so none was
+Round 6 raised one `major` and one `minor`, both accepted:
+
+7. **The third state asserted more than the data supports.** It was called `superseded` and said
+   the finding had been rephrased, decided purely from whether the owning node failed again for
+   any reason. A reviewer that stops raising A *because A is fixed* while raising unrelated C
+   landed in it, so the row told an operator their fix had merely been reworded. Renamed
+   `unconfirmed` and narrowed to what is knowable: the reviewer never passed, so nothing is
+   known. An evidence-or-path heuristic to separate the two was rejected as trading a known
+   unknown for a confident wrong answer.
+8. **The detail pane was specified only for changes.** `Blocking` holds failing checks too, and
+   the selection was a bare key over two unreconciled id spaces. Phase 2 now defines a
+   `WorklistItem` discriminated union with namespaced keys and branches on `kind`.
+
+All eight fixes tighten the design without touching an approved human decision, so none was
 escalated. Each phase's cross-phase audit record carries the detail.
 
 Three of the five are the same class of mistake: a rule borrowed from a neighbouring subsystem

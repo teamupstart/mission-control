@@ -128,15 +128,27 @@ pass/fail and never reads a title. Left alone, the rail would show an Archive ro
 rounds running"* - about the same reviewer. That is precisely the on-screen disagreement this
 plan cites to justify sharing the round-folding rule, so it does not get to be an exception.
 
-**Adopted:** a change has three states, not two. A key that stops appearing while its owning
-persona **keeps failing** is `superseded` - the objection did not go away, it got rephrased. A
-key that stops appearing because its persona stopped objecting is `resolved`. Both live in
-Archive and are labelled differently, so no row ever claims a reviewer is satisfied while
-another part of the same rail says it is not.
+**Adopted:** a change has three states, not two, and the third one states what is actually
+known rather than guessing why.
 
-This is derivable inside the worklist from data it already walks, so it needs no reference to
-`repeatOffenders` and does not inherit that signal's `rounds >= 2` threshold - which exists for
-alerting and has nothing to do with this question.
+| Situation | State | What is known |
+| --- | --- | --- |
+| Key stops appearing, its persona **passed** afterwards | `resolved` | It is fixed. The reviewer said so. |
+| Key stops appearing, its persona **never passed** afterwards | `unconfirmed` | Nothing. It may be fixed, or reworded. |
+| Key still being raised at the viewed round | `open` | It is outstanding. |
+
+`unconfirmed` deliberately does **not** claim the finding was rephrased. From the outside those
+two cases are indistinguishable: a reviewer that stops raising A because A is fixed, while
+raising unrelated C, looks exactly like a reviewer that reworded A into C. Title-based identity
+cannot tell them apart, so the honest label says the reviewer never passed and the change was
+never confirmed fixed, and leaves the reader to judge.
+
+An evidence-or-path heuristic was considered for separating the two and rejected: two genuinely
+different findings in one file collide under it, so it trades a known unknown for a confident
+wrong answer.
+
+All three states are derivable inside the worklist from data it already walks, so none of this
+needs `repeatOffenders` or inherits that signal's `rounds >= 2` alerting threshold.
 
 ### Rounds are not submissions
 

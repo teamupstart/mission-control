@@ -1415,17 +1415,38 @@ export type PrChecks = "passing" | "failing" | "pending";
 
 /**
  * What a dispatched task is FOR: ship = deliver a change (PR/merge);
- * scout = investigate/plan/audit and report.
+ * scout = investigate/audit and report; plan = produce a reviewed plan, which can then
+ * schedule the work it describes.
+ *
+ * `scout` used to own the word "plan" in this comment, and giving the third kind the word
+ * is the point of adding it: an investigation answers a question, where a plan proposes a
+ * route and is reviewed before anything is built.
  *
  * A tuple rather than a bare union, for the reason `AGENT_TYPES` above is one: half the
  * consumers need the ids as VALUES (a `z.enum`, a `<select>`), a union alone cannot
- * produce them, and the pair had accordingly been written out by hand in seven more
+ * produce them, and the set had accordingly been written out by hand in seven more
  * places. Array order is picker order - the order the dispatch form lists the kinds in,
  * and `test/task-kinds.test.ts` fails on a second copy of the set.
+ *
+ * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
+ * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
+
+/**
+ * The kind a task has when nobody chose one.
+ *
+ * Derived from the tuple rather than written as `"ship"`, so the "index 0 is the default"
+ * contract that the comment above states is a thing the compiler carries: reordering the
+ * tuple moves this with it instead of leaving a literal behind that silently disagrees.
+ *
+ * Two surfaces read it as a value rather than as a default they hardcode - the task pill,
+ * which draws every kind EXCEPT the one you get by not choosing, and the task row read
+ * (`server/db.ts`), which degrades a kind this build has never heard of to it.
+ */
+export const DEFAULT_TASK_KIND = TASK_KINDS[0];
 
 /**
  * Coarse lifecycle of a dispatched task. Deliberately does NOT mirror the live

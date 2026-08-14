@@ -572,7 +572,9 @@ test("a position digit takes the option at that position", async ({ dashboard })
   await dashboard.keyboard.press("2");
   await expect(kindSelect(dialog)).toHaveValue("scout");
 
-  // Third of three, so the digit is not quietly capped at the pair the Kind step offered.
+  // Third of three, on a step whose list is built from a different registry than the one
+  // above it - so the digit is indexing THIS question's options rather than a length it
+  // carried over from the last.
   await expect(picker(dialog, "Which harness runs it?")).toBeVisible();
   await dashboard.keyboard.press("3");
   await expect(agentSelect(dialog)).toHaveValue("pi");

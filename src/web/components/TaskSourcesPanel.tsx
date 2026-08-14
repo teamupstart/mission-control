@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { AGENT_TYPES, type AgentType, type TaskKind, type TaskPriority } from "@shared/types.ts";
+import {
+  AGENT_TYPES,
+  TASK_KINDS,
+  type AgentType,
+  type TaskKind,
+  type TaskPriority,
+} from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
+import { PRIORITY_LABELS, TASK_KIND_INFO, TASK_PRIORITIES } from "@shared/task.ts";
 import {
   DEFAULT_SWEEP_INTERVAL_MS,
   DEFAULT_MAX_PER_SWEEP,
@@ -596,7 +602,7 @@ function SourceCard({
 
           <label className="ts-field">
             <span className="ts-field-label">Kind</span>
-            <Tooltip label="Whether a swept task asks for a delivered change or an investigation">
+            <Tooltip label="What a swept task is asked to produce">
               <select
                 className="harnesses-select"
                 value={src.defaults.kind}
@@ -607,8 +613,16 @@ function SourceCard({
                   })
                 }
               >
-                <option value="ship">Ship - deliver a change</option>
-                <option value="scout">Scout - investigate and report</option>
+                {/* Off the tuple, for the reason the Recurring Mission editor's twin is:
+                    these two hand-wrote their options, in two different wordings, and a
+                    hand-written list silently stops offering a kind rather than failing
+                    to compile when one is added. Sentence case is gone with them - the
+                    labels are the lowercase words the task itself carries. */}
+                {TASK_KINDS.map((kind) => (
+                  <option key={kind} value={kind}>
+                    {`${TASK_KIND_INFO[kind].label} - ${TASK_KIND_INFO[kind].purpose}`}
+                  </option>
+                ))}
               </select>
             </Tooltip>
           </label>

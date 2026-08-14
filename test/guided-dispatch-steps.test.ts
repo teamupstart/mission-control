@@ -208,6 +208,22 @@ test("no two options in a closed-set step claim the same mnemonic", () => {
   assert.equal(Object.keys(GUIDED_HARNESS_KEYS).length, AGENT_TYPES.length);
 });
 
+test("each kind's mnemonic is a letter of its own name", () => {
+  // The uniqueness check above is satisfied by any three distinct letters, including three
+  // that no operator could guess. These are the letters a person would reach for, so the
+  // rule they were chosen under is written down rather than left to the comment.
+  for (const kind of TASK_KINDS) {
+    assert.ok(
+      kind.includes(GUIDED_KIND_KEYS[kind]),
+      `${kind}'s mnemonic ${GUIDED_KIND_KEYS[kind]} is not a letter of the word`,
+    );
+  }
+  // And the specific assignments, because "a letter of its own name" does not pick between
+  // `p` and `s` for ship. `plan` takes `l` by elimination: `p` is ship's, `a` is in all
+  // three words, and `n` reads as "no".
+  assert.deepEqual(GUIDED_KIND_KEYS, { ship: "p", scout: "t", plan: "l" });
+});
+
 test("a fetched option takes the first letter of its name that is still free", () => {
   const taken = new Set(["d", "n"]);
   // "Docs Sweep" cannot have `d` - that belongs to the Dispatch default option above it -

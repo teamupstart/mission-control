@@ -32,7 +32,6 @@ import type {
   SessionNote,
   SessionQueue,
   Task,
-  TaskKind,
   TaskPriority,
   TaskRepoEntry,
   TaskStatus,
@@ -41,6 +40,8 @@ import type {
   WorkItemState,
   WorktreeProvider,
 } from "@shared/types.ts";
+import { DEFAULT_TASK_KIND, TASK_KINDS } from "@shared/types.ts";
+import { readPersistedEnum } from "@shared/schedules.ts";
 import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman.ts";
@@ -3682,7 +3683,18 @@ function rowToTask(r: TaskRow, extraRepos: TaskRepoEntry[]): Task {
     id: r.id,
     title: r.title,
     intent: r.intent,
-    kind: r.kind as TaskKind,
+    // Validated, not cast. The column is unconstrained TEXT, so the value is whatever
+    // some build wrote there, and `as TaskKind` let an unknown string flow into typed
+    // code as a kind that does not exist - reaching a `Record<TaskKind, …>` lookup as an
+    // `undefined` nobody's types warned about.
+    //
+    // `ship` and not null, which is where this deliberately differs from the schedule
+    // store's identical validation (`schedules/store.ts`): a template that cannot be read
+    // can be dropped, and a task row cannot. One unreadable row must not remove a task
+    // from the backlog, so it degrades to the kind every automated writer already
+    // defaults to. The cost is stated plainly - a `plan` row read by a build that predates
+    // the kind is a `ship` row on that build, and SAVING it there writes `ship` back.
+    kind: readPersistedEnum(TASK_KINDS, r.kind) ?? DEFAULT_TASK_KIND,
     agent: r.agent as Task["agent"],
     priority: r.priority as TaskPriority | null,
     // Re-normalized on the way out, not merely parsed. The column is plain TEXT and

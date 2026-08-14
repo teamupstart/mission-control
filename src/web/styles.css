@@ -13091,14 +13091,6 @@ button.lib-chip:focus-visible {
   justify-content: space-between;
   gap: 18px;
 }
-.persona-actions,
-.wf-command-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 7px;
-}
 /* One boxed read-only sentence. `.wf-state` is the workflow builder's own name for the same
    shape, for `.persona-error` / `.wf-error`'s reason: sharing the Persona class outright would
    make a retune of the Persona editor silently restyle a surface that is not about Personas. */
@@ -13267,9 +13259,6 @@ button.lib-chip:focus-visible {
 /* What the SessionActions library carries that the Persona library does not. Everything
    above is a shape the two share; these are its own. */
 
-.wf-command-list-meta {
-  color: var(--muted);
-}
 /* When the open row was last written, beside its revision on the header's dim line. */
 .lib-work-meta .wf-action-updated {
   font-size: 10.5px;

@@ -10,7 +10,7 @@ import { providerModelDefault } from "../src/shared/model.ts";
 import type { ForemanModelRole } from "../src/shared/foreman-models.ts";
 import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 import { DEFAULT_TRIAGE_MODEL } from "../src/server/foreman/triage.ts";
-import { DEFAULT_BACKLOG_MODEL } from "../src/server/foreman/backlog-plan.ts";
+import { backlogModel, DEFAULT_BACKLOG_MODEL } from "../src/server/foreman/backlog-plan.ts";
 import { DEFAULT_REVIEW_MODEL } from "../src/server/foreman/review.ts";
 import { DEFAULT_VERIFY_MODEL } from "../src/server/foreman/queue-verify.ts";
 import { modelSourceNote } from "../src/web/components/ModelField.tsx";
@@ -62,6 +62,11 @@ test("Codex resolves provider-compatible defaults for every Foreman role", () =>
   assert.equal(all.verify.id, "gpt-5.6-sol");
   assert.equal(all.triage.id, "gpt-5.6-luna");
   assert.equal(all.backlog.id, "gpt-5.6-terra");
+});
+
+test("the worker resolves an inherited Codex backlog model through the effective provider", () => {
+  assert.equal(backlogModel({}, "codex"), "gpt-5.6-terra");
+  assert.equal(backlogModel({ backlogModel: "gpt-5.6-sol" }, "codex"), "gpt-5.6-sol");
 });
 
 test("a typed id is trimmed, so a stray space can't become a different model", () => {

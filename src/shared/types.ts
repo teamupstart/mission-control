@@ -1341,7 +1341,15 @@ export interface ForemanStatus {
     disabled: number;
   };
   /**
-   * What each of Foreman's four `claude -p` calls will actually spawn with, and why -
+   * The worker-owned dependency planner circuit, projected through the daemon.
+   *
+   * This is operational state, not persisted scheduler state. The worker remains the only
+   * process that decides when to plan or enter serial fallback; the daemon only bounds and
+   * exposes its latest report so the dashboard can explain a quiet backlog.
+   */
+  planner: ForemanPlannerHealth;
+  /**
+   * What each of Foreman's four model calls will actually spawn with, and why -
    * the operator's config, an env var, or the shipped default.
    *
    * RESOLVED server-side rather than re-derived in the panel, because the env layer is
@@ -1366,6 +1374,21 @@ export interface ForemanStatus {
    * operator neither chose nor is running on.
    */
   runner: LlmRunnerId;
+}
+
+/** One bounded snapshot of the backlog dependency planner's effective runtime and health. */
+export interface ForemanPlannerHealth {
+  state: "healthy" | "degraded";
+  /** Provider the worker is actually using for the dependency read. */
+  runner: LlmRunnerId;
+  /** Model the worker is actually passing to that provider. */
+  model: string;
+  /** Consecutive failures for the most recent failing planner or storage path. */
+  failureCount: number;
+  /** Safe, single-line, bounded reason from the most recent failure. */
+  lastError: string | null;
+  /** Epoch ms for the next automatic probe, or null while no retry is owed. */
+  nextRetryAt: number | null;
 }
 
 // ---- Custom skills ----

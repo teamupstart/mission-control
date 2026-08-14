@@ -608,6 +608,10 @@ export function ForemanSettingsPanel({
             hidden={tab !== "models"}
           >
             <ConsoleCard title="Models">
+              <p className="settings-hint">
+                Foreman Provider controls all four model roles: Review, Verify, Triage, and
+                the Backlog dependency planner.
+              </p>
               <div className="sc-field" data-anchor="foreman/provider">
                 <label className="sc-field-label" htmlFor="foreman-provider">
                   Provider
@@ -676,7 +680,8 @@ export function ForemanSettingsPanel({
               <p className="settings-hint">
                 When Foreman starts a fresh backlog task, this selects its model unless the
                 task already names one. Handing work to an existing session leaves that
-                session's model unchanged.
+                session's model unchanged. These launch models are unrelated to the Backlog
+                dependency planner.
               </p>
               {AGENT_TYPES.map((agent) => (
                 <ModelField
@@ -800,6 +805,18 @@ export function ForemanSettingsPanel({
                     : "off"}
                 </span>
               </p>
+              {status.planner && (
+                <p className="sc-health-row">
+                  <span>Dependency planner</span>
+                  <span className={`sc-health-value${status.autopilot.on && status.planner.state === "degraded" ? " sc-health-warn" : ""}`}>
+                    {status.autopilot.on
+                      ? `${status.planner.state} · ${status.planner.runner}/${status.planner.model}`
+                      : `idle (autopilot off) · ${status.planner.runner}/${status.planner.model}`}
+                    {status.autopilot.on && status.planner.failureCount > 0
+                      && ` · ${status.planner.failureCount} failures`}
+                  </span>
+                </p>
+              )}
             </ConsoleCard>
           )}
         </div>

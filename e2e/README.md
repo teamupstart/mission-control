@@ -198,6 +198,23 @@ follow-through is a separate control whose visible copy requires an existing PR.
 
 The directory README records the exact regeneration commands.
 
+### Foreman dependency-planner recovery
+
+`e2e/.artifacts/foreman-planner-health/degraded-planner.png` captures the top-bar Foreman
+popover after a leased worker reports the dependency planner degraded. The frame shows the
+effective Codex provider/model, the three-failure count, the bounded provider error, the next
+automatic retry, and the operator's **Retry planner now** path. The spec uses a synthetic
+health report and spends no model tokens.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/foreman-planner-health.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Accepted SDK stop
 
 The focused Complete case keeps its fake SDK subprocess alive for four seconds after stop is

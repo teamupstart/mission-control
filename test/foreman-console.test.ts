@@ -65,6 +65,14 @@ function status(over: Partial<ForemanStatus> = {}): ForemanStatus {
     counts: { answered: 0, escalated: 0, pending: 0, skipped: 0 },
     lastActionAt: null,
     autopilot: { on: false, active: 0, max: 5, ready: 0, blocked: 0, disabled: 0 },
+    planner: {
+      state: "healthy",
+      runner: "claude",
+      model: "claude-sonnet-5",
+      failureCount: 0,
+      lastError: null,
+      nextRetryAt: null,
+    },
     ...over,
   } as ForemanStatus;
 }

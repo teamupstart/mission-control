@@ -23,6 +23,7 @@ import type {
   BacklogPlanInput,
   ForemanConfig,
   ForemanLeaseResult,
+  ForemanPlannerControl,
   RecordEpisode,
   SetNote,
   SetWorkItemState,
@@ -32,6 +33,7 @@ import type {
 import type {
   AssignRefusalScope,
   BacklogPlan,
+  ForemanPlannerHealth,
   ReviewItem,
   Session,
   SessionDiff,
@@ -955,6 +957,27 @@ export class ForemanClient implements ForemanActions {
     } catch {
       return null;
     }
+  }
+
+  /** Process-local retry signal from the daemon; it carries no plan or scheduler state. */
+  plannerControl(): Promise<ForemanPlannerControl> {
+    return get<ForemanPlannerControl>("/api/foreman/planner/control");
+  }
+
+  /** Atomically consume a pending operator retry while this worker holds the lease. */
+  async claimPlannerRetry(workerId: string, retryGeneration: number): Promise<boolean> {
+    const res = await send("POST", "/api/foreman/planner/control/claim", {
+      workerId,
+      retryGeneration,
+    });
+    if (!res.ok) return false;
+    return ((await res.json()) as { claimed?: unknown }).claimed === true;
+  }
+
+  /** Project the leader's bounded circuit state for status/UI without touching SQLite. */
+  async reportPlannerHealth(workerId: string, health: ForemanPlannerHealth): Promise<void> {
+    const res = await send("POST", "/api/foreman/planner/health", { workerId, ...health });
+    if (!res.ok) throw new Error(`reportPlannerHealth -> ${res.status}`);
   }
 
   /** Hand the lease back on a clean shutdown, so a standby takes over at once. */

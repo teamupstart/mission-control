@@ -6,6 +6,7 @@ import {
 } from "@shared/workflow.ts";
 import type {
   SessionAction,
+  SessionActionCompletion,
   SessionActionCompletionCapability,
   SessionActionCompletionKind,
 } from "@shared/workflow.ts";
@@ -13,6 +14,15 @@ import type { SkillCatalogEntry } from "@shared/types.ts";
 import { FileEditor } from "../components/FileEditor.tsx";
 import { Markdown } from "../components/Markdown.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import {
+  LibraryPropertyChip,
+  LibraryPropertyChips,
+} from "../library/LibraryPropertyChip.tsx";
+import {
+  LibraryWorkspaceHeader,
+  type LibraryMenuAction,
+  type LibraryPrimaryAction,
+} from "../library/LibraryWorkspaceHeader.tsx";
 import { sessionActionConflict, sessionActionRequest } from "./sessionActionApi.ts";
 
 /**
@@ -326,7 +336,11 @@ export function isSessionActionSaveShortcut(
  *
  * The retained arm is what stops opening the built-in Pull Request action - whose adapter is
  * unavailable until Phase 4 - from silently rewriting it to `session_turn` on the next save.
- * It renders disabled, so it can be read and never chosen.
+ * Once the daemon has answered it renders disabled, so it can be read and never chosen.
+ *
+ * `disabled` on that arm therefore means REFUSED, and it is the one fact the editor's chip
+ * marks itself from. It is deliberately not "absent from what was offered", which would also
+ * be true of every action while nothing has been offered yet.
  */
 export function completionChoices(
   capabilities: readonly SessionActionCompletionCapability[],
@@ -336,7 +350,8 @@ export function completionChoices(
    *
    * Without it the retained arm below fires for the ~one round trip before the daemon
    * answers, and every freshly opened action briefly accuses itself of naming a completion
-   * this build cannot prove. Loading is not a refusal, so it says nothing.
+   * this build cannot prove. Loading is not a refusal, so the arm says nothing, is not
+   * struck out, and does not mark the chip that reads it.
    */
   loading = false,
 ): Array<{ kind: SessionActionCompletionKind; label: string; disabled: boolean; note: string | null }> {
@@ -358,7 +373,12 @@ export function completionChoices(
       // response - it is the difference between an operator reading "Pull request is opened
       // and verified" and reading the wire spelling `pull_request`.
       label: retained?.label ?? sessionActionCompletionLabel({ kind: selected }),
-      disabled: true,
+      // `disabled` on this arm means REFUSED - the daemon was asked and cannot prove this
+      // one - which is why it also drives the chip's mark. A read still in flight has
+      // refused nothing, so the arm holds the value without greying it out: an operator who
+      // opened the picker mid-fetch was shown a single option, struck through, which is the
+      // same false claim the chip used to make with a colour.
+      disabled: !loading,
       note: loading
         ? null
         : capabilities.length === 0
@@ -370,6 +390,183 @@ export function completionChoices(
     },
     ...offered,
   ];
+}
+
+/**
+ * When the row behind this editor was last written, as the dim line under its name.
+ *
+ * Null for a draft, which has no history to state, and null for a built-in: the eyebrow above
+ * it already says `Built-in session action` and the status line below says what that means, so
+ * a third sentence about the same fact is three places to read the same thing. This replaces
+ * the rail's fourth `small` per row - a revision and a timestamp on every row was provenance
+ * about four actions at once, none of which was the one open.
+ */
+export function sessionActionUpdatedLine(action: SessionAction | null): string | null {
+  if (action === null || action.builtin) return null;
+  return `Updated ${new Date(action.updatedAt).toLocaleString()}`;
+}
+
+/**
+ * Everything the header does NOT promote, as data.
+ *
+ * A list rather than markup, for `personaOverflowActions`'s reason: which verbs a built-in, an
+ * archived row and an unsaved draft each offer is behaviour, and asserting it about the
+ * buttons rather than about the row they sit in is what survives a rearrangement of the
+ * header. Their labels are unchanged - a menu is where they live now, not what they are
+ * called.
+ *
+ * A read-only action returns an EMPTY list, and the menu renders nothing at all rather than a
+ * `⋯` with nothing behind it: Duplicate is the promoted verb there, and Archive is a write a
+ * built-in cannot take.
+ */
+export function sessionActionOverflowActions({
+  action,
+  builtin,
+  archived,
+  onDuplicate,
+  onArchive,
+}: {
+  action: boolean;
+  builtin: boolean;
+  archived: boolean;
+  onDuplicate: () => void;
+  onArchive: () => void;
+}): LibraryMenuAction[] {
+  const actions: LibraryMenuAction[] = [];
+  // Not on a read-only action, where Duplicate is the promoted verb: offering it twice makes
+  // the more prominent one the one nobody can find again later.
+  if (action && !archived && !builtin) {
+    actions.push({
+      id: "duplicate",
+      label: "Duplicate",
+      hint: "Copy this session action into a new one",
+      onSelect: onDuplicate,
+    });
+    actions.push({
+      id: "archive",
+      label: "Archive",
+      hint: "Archive this session action - published versions keep their snapshot",
+      danger: true,
+      onSelect: onArchive,
+    });
+  }
+  return actions;
+}
+
+/**
+ * The required-skill `select`, lifted out of the four-across field row into the chip's
+ * popover.
+ *
+ * Exported because a closed popover renders nothing and `renderToStaticMarkup` cannot open
+ * one - so the rule worth asserting (a stored id this build's catalog no longer carries stays
+ * selectable rather than vanishing) would otherwise have no test at all. The same split, for
+ * the same reason, as `PersonaProviderControl`.
+ */
+export function SessionActionSkillControl({
+  skills,
+  value,
+  unlisted,
+  disabled,
+  onChange,
+}: {
+  skills: readonly SkillCatalogEntry[];
+  value: string | null;
+  /** The stored id is not in this build's catalog - or the catalog has not been read yet. */
+  unlisted: boolean;
+  disabled: boolean;
+  onChange: (skillId: string | null) => void;
+}): React.JSX.Element {
+  return (
+    <label className="wf-action-chip-field">
+      <span>Required skill</span>
+      <Tooltip label="A skill the bound session must have loaded before this instruction is sent. Optional.">
+        <select
+          value={value ?? ""}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value || null)}
+        >
+          <option value="">No required skill</option>
+          {/* A stored id this build's catalog no longer carries stays selectable so opening
+              the action cannot silently drop the requirement it was saved with. */}
+          {unlisted && value !== null && <option value={value}>Unavailable: {value}</option>}
+          {skills.map((skill) => (
+            <option key={skill.id} value={skill.id}>{skill.name}</option>
+          ))}
+        </select>
+      </Tooltip>
+    </label>
+  );
+}
+
+/** The completion `select` and its options, in the completion chip's popover. See above. */
+export function SessionActionCompletionControl({
+  choices,
+  value,
+  disabled,
+  onChange,
+}: {
+  choices: ReturnType<typeof completionChoices>;
+  value: SessionActionCompletionKind;
+  disabled: boolean;
+  onChange: (kind: SessionActionCompletionKind) => void;
+}): React.JSX.Element {
+  return (
+    <label className="wf-action-chip-field">
+      <span>Completes when</span>
+      <Tooltip label="What Mission Control must observe before the stages after this action run">
+        <select
+          value={value}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value as SessionActionCompletionKind)}
+        >
+          {choices.map((choice) => (
+            <option key={choice.kind} value={choice.kind} disabled={choice.disabled}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+      </Tooltip>
+    </label>
+  );
+}
+
+/**
+ * The contract, as the one sentence the two chips above it form.
+ *
+ * An Action is the only Library asset carrying a machine-checked contract - a skill that has
+ * to be present on the bound session, and something OBSERVABLE that has to happen before a
+ * stage may call it done - and the screen had never stated it. Two unlabelled selects sitting
+ * third and fourth in a row of four fields do not say "requires `pull-request`, completes on a
+ * verified pull request" to anybody; written out, "requires `retro`, completes when a commit
+ * lands" is obviously coherent and "requires `pull-request`, completes when the turn finishes"
+ * is obviously suspicious.
+ *
+ * The completion clause is the SHARED string, printed rather than paraphrased.
+ * `test/session-action-completion-copy.test.ts` pins that no browser surface re-derives this
+ * sentence from a two-armed test on the kind, and the reason is stronger here than anywhere
+ * else it applies: this line's whole job is to state the guarantee, so a confident wrong one
+ * is worse than none. It also makes the chip and the sentence agree letter for letter, which
+ * is what tells a reader they are two views of one value rather than two claims.
+ */
+export function SessionActionContractLine({
+  requiredSkillId,
+  completion,
+}: {
+  requiredSkillId: string | null;
+  completion: SessionActionCompletion;
+}): React.JSX.Element {
+  return (
+    <p className="wf-action-contract">
+      The stage sends this instruction to the bound session,{" "}
+      {requiredSkillId === null
+        ? "whatever skills that session has loaded."
+        : <>which must be able to invoke the <code>{requiredSkillId}</code> skill.</>}
+      {" "}Mission Control calls it done when it observes{" "}
+      <b>{sessionActionCompletionLabel(completion)}</b>, never because the session said so.
+      Whatever changed while it worked, fresh evidence is captured afterwards and only the
+      stages below this one read it.
+    </p>
+  );
 }
 
 export function SessionActionEditorStatus({
@@ -566,10 +763,51 @@ export function SessionActionEditor({
     }),
   });
   const choices = completionChoices(capabilities, draft.completionKind, capabilitiesLoading);
+  /*
+   * The stored completion this build cannot prove, and the single fact behind the chip's mark,
+   * its tooltip and the note beneath the chips.
+   *
+   * It reads `disabled`, which `completionChoices` defines as REFUSED - the daemon was asked
+   * and cannot prove this one - rather than as "not offered". The difference is the review
+   * finding: "not offered" is true of every action for the round trip before the answer lands,
+   * because nothing has been offered yet, so this drew amber and claimed "This build cannot
+   * prove the completion this action names" about `session_turn`, on a daemon that plainly
+   * runs it. That is a false statement on the one surface whose whole job is to state a
+   * guarantee, not a cosmetic flash.
+   *
+   * Loading is not a refusal, so there is nothing to mark until the answer is in. The honest
+   * signal for a pending read is Save standing down with `sessionActionCapabilityBlock`'s
+   * "Waiting for this daemon to report which completions it can prove", which is unchanged.
+   * An empty answer once the read has FINISHED does mark, because "the daemon never said" is a
+   * state to act on where "the daemon has not said yet" is one to wait through.
+   */
   const retainedCompletion = choices.find(
     (choice) => choice.kind === draft.completionKind && choice.disabled,
   );
+  /*
+   * What the closed chip reads: the SHARED clause, by the same call the contract line beneath
+   * it makes.
+   *
+   * This read the daemon's `label` off the matching choice, which was wrong in the one way
+   * this screen cannot afford. The chip and the contract line are two views of a single value
+   * - that is the whole reason the line reads letter for letter like the chip above it - and
+   * sourcing them differently made "the completion sentence has exactly one owner" false the
+   * moment a daemon a version ahead worded its capability differently. Two strings for one
+   * stored completion, on one screen, with nothing to say which was the contract.
+   *
+   * The `select` inside the popover still lists what the DAEMON said, in the daemon's words,
+   * because it is a picker over what that daemon can prove rather than a statement of what
+   * this action promises. `completionChoices` owns that, unchanged.
+   */
+  const completionValue = sessionActionCompletionLabel({ kind: draft.completionKind });
+  const promptOverLimit = promptBytes > WORKFLOW_LIMITS.sessionActionPromptBytes;
   const promptPath = sessionActionPromptPath(draft.name);
+  /*
+   * True for a stored id this build's catalog does not carry - and also for the ~one round
+   * trip before the catalog is read at all, which is why it only keeps the option selectable
+   * and never marks the chip. Loading is not a refusal; the completion capability code
+   * upstream learned the same lesson the harder way.
+   */
   const skillUnlisted = draft.requiredSkillId !== null
     && !skills.some((skill) => skill.id === draft.requiredSkillId);
 
@@ -716,68 +954,109 @@ export function SessionActionEditor({
     if (conflict) adopt(conflict);
   }
 
-  const saveHint = builtin
-    ? "Built-in session actions cannot be edited - use Duplicate"
-    : archived
-      ? "This session action is archived and cannot be edited"
-      : problem
-        ? problem
-        : capabilityBlock
-          ? capabilityBlock
-        : action !== null && !dirty
-          ? "No unsaved changes"
-          : "Save this session action as a new revision";
+  const saveHint = problem
+    ? problem
+    : capabilityBlock
+      ? capabilityBlock
+      : action !== null && !dirty
+        ? "No unsaved changes"
+        : "Save this session action as a new revision";
+  const duplicate = (): void => onDuplicate({ ...draft, name: `${draft.name} copy` });
+  /*
+   * ONE promoted verb, and on a read-only action it is Duplicate rather than a disabled Save.
+   * Save sat first in the row permanently greyed out on both shipped actions, which reads as
+   * "the thing you want, unavailable" - when the thing you want was one control to its right
+   * and perfectly available. Nothing is hidden by this: Save is not offered because there is
+   * no revision this editor could write.
+   */
+  const primary: LibraryPrimaryAction = readOnly && action
+    ? {
+      label: "Duplicate to edit",
+      hint: builtin
+        ? "Start an editable copy of this built-in session action"
+        : "Start an editable copy of this archived session action",
+      onClick: duplicate,
+    }
+    : {
+      label: saving ? "Saving…" : "Save",
+      hint: saveHint,
+      disabled: readOnly
+        || saving
+        || problem !== null
+        || capabilityBlock !== null
+        || (action !== null && !dirty),
+      onClick: () => void save(),
+    };
+  const overflow = sessionActionOverflowActions({
+    action: action !== null,
+    builtin,
+    archived,
+    onDuplicate: duplicate,
+    onArchive: () => {
+      if (action) void onArchive(action);
+    },
+  });
+  const updated = sessionActionUpdatedLine(action);
 
   return (
     <article
       className={`wf-action-editor${archived ? " is-archived" : ""}${builtin ? " is-builtin" : ""}`}
     >
-      <header className="wf-action-editor-head">
-        <div>
-          <p className="workflow-eyebrow">
-            {action
-              ? (builtin ? "Built-in session action" : `Revision ${loadedRevision}`)
-              : "New session action"}
-          </p>
-          <h3>{draft.name || "Untitled session action"}</h3>
-        </div>
-        <div className="wf-action-actions">
-          <Tooltip label={saveHint}>
-            <button
-              className="btn"
-              disabled={readOnly
-                || saving
-                || problem !== null
-                || capabilityBlock !== null
-                || (action !== null && !dirty)}
-              onClick={() => void save()}
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-          </Tooltip>
-          {action && (
-            <Tooltip
-              label={builtin
-                ? "Start an editable copy of this built-in session action"
-                : "Copy this session action into a new one"}
-            >
-              <button
-                className="btn btn-ghost"
-                onClick={() => onDuplicate({ ...draft, name: `${draft.name} copy` })}
-              >
-                Duplicate
-              </button>
-            </Tooltip>
-          )}
-          {action && !archived && !builtin && (
-            <Tooltip label="Archive this session action - published versions keep their snapshot">
-              <button className="btn btn-danger" onClick={() => void onArchive(action)}>
-                Archive
-              </button>
-            </Tooltip>
-          )}
-        </div>
-      </header>
+      <LibraryWorkspaceHeader
+        className="wf-action-editor-head"
+        // `wf-action-fields` no longer names a grid of four. It names the header's identity
+        // block - this action's own scalar fields, name and description - now that the
+        // required skill and the completion have become chips. The class stays because it
+        // still names exactly that, and because three Playwright specs reach the Name and
+        // Description inputs through it.
+        titleClassName="wf-action-fields"
+        title={
+          <>
+            {/* The visible title IS the Name field now, rather than a heading printing the
+                same string a labelled input three rows below also held. The document still
+                needs a heading, so it keeps one only a screen reader reads. */}
+            <h2 className="sr-only">{draft.name || "Untitled session action"}</h2>
+            <div className="lib-work-name">
+              <label className="lib-work-name-field">
+                <span className="sr-only">Name</span>
+                <input
+                  value={draft.name}
+                  readOnly={readOnly}
+                  maxLength={WORKFLOW_LIMITS.sessionActionName}
+                  placeholder="Untitled session action"
+                  onChange={(event) => edit({ name: event.target.value })}
+                />
+              </label>
+              {builtin && <span className="lib-tag lib-tag-builtin">built-in</span>}
+            </div>
+          </>
+        }
+        subtitle={
+          <label className="lib-work-subtitle">
+            <span className="sr-only">Description</span>
+            <input
+              value={draft.description}
+              readOnly={readOnly}
+              maxLength={WORKFLOW_LIMITS.sessionActionDescription}
+              placeholder="One line on what this instruction does"
+              onChange={(event) => edit({ description: event.target.value })}
+            />
+          </label>
+        }
+        meta={
+          <div className="lib-work-meta">
+            <p className="workflow-eyebrow">
+              {action
+                ? (builtin ? "Built-in session action" : `Revision ${loadedRevision}`)
+                : "New session action"}
+            </p>
+            {updated && <p className="wf-action-updated">{updated}</p>}
+          </div>
+        }
+        primary={primary}
+        menuLabel="More session action options"
+        actions={overflow}
+      />
 
       <SessionActionEditorStatus
         dirty={dirty}
@@ -796,82 +1075,82 @@ export function SessionActionEditor({
         </p>
       )}
 
-      <section className="wf-action-fields">
-        <label>
-          <span>Name</span>
-          <input
-            value={draft.name}
-            readOnly={readOnly}
-            maxLength={WORKFLOW_LIMITS.sessionActionName}
-            onChange={(event) => edit({ name: event.target.value })}
+      <LibraryPropertyChips>
+        <LibraryPropertyChip
+          name="requires skill"
+          value={draft.requiredSkillId ?? "none"}
+          mono={draft.requiredSkillId !== null}
+          // Quiet when this action asks for nothing, solid when it does: an action with no
+          // required skill is not inheriting a default, it is asserting nothing, and the row
+          // reads the same way either way - solid means "this asset says something".
+          state={draft.requiredSkillId === null ? "inherited" : "overridden"}
+          tooltip={draft.requiredSkillId === null
+            ? "This action requires no skill - open to require one before it is sent"
+            : "The bound session must be able to invoke this skill before the instruction is sent"}
+          controlLabel="Required skill"
+        >
+          <SessionActionSkillControl
+            skills={skills}
+            value={draft.requiredSkillId}
+            unlisted={skillUnlisted}
+            disabled={readOnly}
+            onChange={(requiredSkillId) => edit({ requiredSkillId })}
           />
-        </label>
-        <label>
-          <span>Description</span>
-          <input
-            value={draft.description}
-            readOnly={readOnly}
-            maxLength={WORKFLOW_LIMITS.sessionActionDescription}
-            onChange={(event) => edit({ description: event.target.value })}
+        </LibraryPropertyChip>
+        <LibraryPropertyChip
+          name="completes when"
+          value={completionValue}
+          // Always solid: every action names a completion, and none of them inherits one.
+          state="overridden"
+          // Marked, and readable while shut, rather than a disabled option inside a closed
+          // dropdown. A stored completion this build cannot prove is the one fact on this row
+          // that is waiting on somebody, and it was previously invisible until you opened the
+          // select that could not offer it.
+          tone={retainedCompletion ? "attention" : undefined}
+          tooltip={retainedCompletion
+            ? "This build cannot prove the completion this action names - it is kept, not offered"
+            : "What Mission Control must observe before the stages after this action run"}
+          controlLabel="Completes when"
+        >
+          <SessionActionCompletionControl
+            choices={choices}
+            value={draft.completionKind}
+            disabled={readOnly}
+            onChange={(completionKind) => edit({ completionKind })}
           />
-        </label>
-        <label>
-          <span>Required skill</span>
-          <Tooltip label="A skill the bound session must have loaded before this instruction is sent. Optional.">
-            <select
-              value={draft.requiredSkillId ?? ""}
-              disabled={readOnly}
-              onChange={(event) => edit({ requiredSkillId: event.target.value || null })}
-            >
-              <option value="">No required skill</option>
-              {/* A stored id this build's catalog no longer carries stays selectable so
-                  opening the action cannot silently drop the requirement it was saved with. */}
-              {skillUnlisted && (
-                <option value={draft.requiredSkillId!}>
-                  Unavailable: {draft.requiredSkillId}
-                </option>
-              )}
-              {skills.map((skill) => (
-                <option key={skill.id} value={skill.id}>{skill.name}</option>
-              ))}
-            </select>
-          </Tooltip>
-        </label>
-        <label>
-          <span>Completes when</span>
-          <Tooltip label="What Mission Control must observe before the stages after this action run">
-            <select
-              value={draft.completionKind}
-              disabled={readOnly}
-              onChange={(event) =>
-                edit({ completionKind: event.target.value as SessionActionCompletionKind })}
-            >
-              {choices.map((choice) => (
-                <option key={choice.kind} value={choice.kind} disabled={choice.disabled}>
-                  {choice.label}
-                </option>
-              ))}
-            </select>
-          </Tooltip>
-        </label>
-        <p className="wf-action-note">
-          {retainedCompletion
-            ? retainedCompletion.note
-            : "Whatever the session changes while it works, Mission Control captures fresh"
-              + " evidence afterwards and only the stages below this one review it."}
-        </p>
-      </section>
+        </LibraryPropertyChip>
+        {/* The instruction's exact size, as a property of the asset rather than a span in the
+            file toolbar - where it was the one toolbar in the app carrying one. */}
+        <LibraryPropertyChip
+          name="utf-8 bytes"
+          value={`${promptBytes.toLocaleString()} / ${WORKFLOW_LIMITS.sessionActionPromptBytes.toLocaleString()}`}
+          mono
+          align="end"
+          tone={promptOverLimit ? "danger" : undefined}
+          tooltip={promptOverLimit
+            ? "The instruction is over the byte limit and cannot be saved until it is shorter"
+            : "Exact UTF-8 size of the instruction, against the ceiling a delivery packet can carry"}
+        />
+      </LibraryPropertyChips>
+      {/* Kept on the face rather than inside the chip's popover: a completion this build
+          cannot prove is something to act on, and a closed chip that read as an ordinary
+          choice would report a guarantee nothing here can keep. */}
+      {retainedCompletion?.note && (
+        <p className="lib-props-note">{retainedCompletion.note}</p>
+      )}
+
+      <SessionActionContractLine
+        requiredSkillId={draft.requiredSkillId}
+        completion={{ kind: draft.completionKind }}
+      />
 
       <section className="wf-action-prompt" aria-label="Session action instruction">
         <header className="file-toolbar wf-action-prompt-toolbar">
           <span className="file-path mono">{promptPath}</span>
           <span className="file-language">Markdown</span>
-          <span
-            className={`file-size${
-              promptBytes > WORKFLOW_LIMITS.sessionActionPromptBytes ? " is-over-limit" : ""}`}
-          >
-            {promptBytes.toLocaleString()} / {WORKFLOW_LIMITS.sessionActionPromptBytes.toLocaleString()} UTF-8 bytes
-          </span>
+          {/* The byte count is a property of the asset, so it is a property chip above with
+              the contract it belongs to. It was here and in no other file toolbar in the app,
+              which is what made this one wider than it needed to be. */}
           <span className="file-toolbar-spacer" />
           <div className="file-mode" role="group" aria-label="Session action instruction view">
             <Tooltip label="Render the instruction as the session will read it">
@@ -916,6 +1195,17 @@ export function SessionActionEditor({
           )}
         </div>
       </section>
+      {/*
+       * The "used by" slot. Phase 5 fills it - which workflows send this action, and whether
+       * a run is waiting on it right now - and until then nothing renders here.
+       *
+       * Deliberately not an empty strip with the label already in it. A person reading
+       * "used by" over blank space concludes the question was asked and the answer was
+       * "nothing", and for an action a published workflow sends that is the worst of the
+       * three things this screen could say. The reference is not derivable in the browser -
+       * an action id lives only inside a workflow graph, which the SSE snapshot does not
+       * carry - so a half-answer here would be a guess rather than a partial.
+       */}
     </article>
   );
 }

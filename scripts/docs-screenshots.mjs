@@ -58,6 +58,15 @@ const SCREENSHOTS = [
     ready: (page) => page.getByRole("heading", { name: "Workflows", exact: true }),
   },
   {
+    // The Action detail screen, which `docs/library-and-line.md` describes in prose and which
+    // is the one Library surface whose subject is a CONTRACT rather than a document: the two
+    // property chips and the sentence they form are what the figure is of. It opens on the
+    // shipped Pull Request action, so the frame needs no seeding of its own.
+    name: "action-detail",
+    route: "#/library/actions",
+    ready: (page) => page.locator("p.wf-action-contract"),
+  },
+  {
     name: "foreman",
     route: "#/settings/foreman",
     ready: (page) => page.getByText("Foreman", { exact: true }).first(),

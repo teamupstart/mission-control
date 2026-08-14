@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  sessionActionCompletionLabel,
-  sessionActionSkillLabel,
-  sessionActionsForDisplay,
-} from "@shared/workflow.ts";
+import { sessionActionsForDisplay } from "@shared/workflow.ts";
 import type { SessionAction } from "@shared/workflow.ts";
 import type { SkillCatalogEntry } from "@shared/types.ts";
 import { fetchSkills } from "../lib/api.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
+import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
+import { sessionActionContractLabel } from "../library/library-model.ts";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import {
   EMPTY_SESSION_ACTION_SEED,
@@ -50,23 +48,22 @@ export function filterSessionActions(
 }
 
 /**
- * The one line a row carries under its name: what it needs, and what proves it finished.
+ * The rail's two groups: what shipped with the build, and what the operator wrote.
  *
- * An archived row says so instead, the way the Persona list does - a row an operator can no
- * longer add is more usefully described by why than by a skill it will not be asked for.
+ * `groupPersonas`'s rule, restated for this catalog rather than shared with it - the two
+ * libraries hold different records and neither should be able to reshape the other's rail by
+ * retuning its own. Order inside a group is the order that arrived, which is
+ * `normalizedName` from the caller: `sessionActionsForDisplay` has already decided which of a
+ * shadowed pair survives, and a second opinion here would be a second source of truth about
+ * it.
  */
-export function sessionActionRowSummary(action: SessionAction): string {
-  if (action.archivedAt !== null) return "Archived";
-  return [
-    sessionActionSkillLabel(action.requiredSkillId),
-    sessionActionCompletionLabel(action.completion),
-  ].join(" · ");
-}
-
-/** `Revision 3 · updated <date>`, or the honest answer for something that ships with the build. */
-export function sessionActionRevisionLine(action: SessionAction): string {
-  if (action.builtin) return "Built-in · ships with this build";
-  return `Revision ${action.revision} · updated ${new Date(action.updatedAt).toLocaleString()}`;
+export function groupSessionActions(
+  listed: readonly SessionAction[],
+): { builtin: SessionAction[]; yours: SessionAction[] } {
+  return {
+    builtin: listed.filter((action) => action.builtin),
+    yours: listed.filter((action) => !action.builtin),
+  };
 }
 
 export function SessionActionLibrary({
@@ -143,6 +140,20 @@ export function SessionActionLibrary({
     () => filterSessionActions(ordered, actionState, search),
     [actionState, ordered, search],
   );
+  const groups = useMemo(() => groupSessionActions(listed), [listed]);
+  const archivedCount = useMemo(
+    () => ordered.filter((action) => action.archivedAt !== null).length,
+    [ordered],
+  );
+  /*
+   * "Nothing yet" is said only where it is true AND useful - `PersonaLibrary` carries the
+   * reasoning. Under a search it would be a claim about the catalog rather than about the
+   * filter, and with nothing listed at all the empty line below already says it in the right
+   * words for the state.
+   */
+  const yoursIsEmptyAndSaidSo = listed.length > 0
+    && groups.yours.length === 0
+    && search.trim().length === 0;
   const streamed = ordered.find((action) => action.id === selectedId) ?? null;
   // The route response can beat its SSE event. Keep the acknowledged revision visible until
   // the stream catches up, especially for archive, where falling back would briefly re-enable
@@ -223,6 +234,34 @@ export function SessionActionLibrary({
     );
   }
 
+  /**
+   * One rail row.
+   *
+   * No `Built-in` or `Yours` tag any more: the group head above says it once for every row
+   * beneath it, and repeating it on each was the flat list apologising for being flat. The
+   * sub-label is the CONTRACT - what this action needs and what proves it finished - because
+   * that is the only thing that tells two actions apart. The description sat here and, on the
+   * two that ship, it is the title again in a longer sentence.
+   */
+  function actionRow(action: SessionAction): React.JSX.Element {
+    return (
+      <LibraryRailRow
+        key={action.id}
+        className="wf-action-list-item"
+        name={action.name}
+        detail={sessionActionContractLabel(action)}
+        // The contract is two facts and a clause, not a runner and a model: on one line the
+        // completion half fell off every row.
+        detailLines={2}
+        selected={selectedId === action.id}
+        tooltip={action.builtin
+          ? `Open the built-in ${action.name} - read-only, Duplicate to customize`
+          : `Open ${action.name} in the editor`}
+        onSelect={() => select(action.id)}
+      />
+    );
+  }
+
   async function archive(action: SessionAction): Promise<void> {
     try {
       const archived = await sessionActionRequest<SessionAction>(
@@ -250,20 +289,6 @@ export function SessionActionLibrary({
             <button className="btn" onClick={() => start(EMPTY_SESSION_ACTION_SEED, false)}>New</button>
           </Tooltip>
         </div>
-        <div className="wf-action-filter-row">
-          <label>
-            State
-            <Tooltip label="Choose whether to browse active or archived session actions">
-              <select
-                value={actionState}
-                onChange={(event) => setActionState(event.target.value as "active" | "archived")}
-              >
-                <option value="active">Active</option>
-                <option value="archived">Archived</option>
-              </select>
-            </Tooltip>
-          </label>
-        </div>
         <label className="wf-action-search">
           <span className="sr-only">Search session actions by name or description</span>
           <input
@@ -285,29 +310,42 @@ export function SessionActionLibrary({
                     : "No session actions yet. New authors the first one."}
             </p>
           )}
-          {listed.map((action) => (
-            <Tooltip
-              key={action.id}
-              label={action.builtin
-                ? `Open the built-in ${action.name} - read-only, Duplicate to customize`
-                : `Open ${action.name} in the editor`}
+          {groups.builtin.length > 0 && (
+            <LibraryRailGroup label="Built-in" count={groups.builtin.length}>
+              {groups.builtin.map(actionRow)}
+            </LibraryRailGroup>
+          )}
+          {(groups.yours.length > 0 || yoursIsEmptyAndSaidSo) && (
+            <LibraryRailGroup label="Yours" count={groups.yours.length}>
+              {groups.yours.map(actionRow)}
+              {yoursIsEmptyAndSaidSo && (
+                <p className="lib-rail-group-empty">
+                  Nothing yet. An action is exact Markdown plus the contract it is checked
+                  against - duplicate a built-in to see the shape.
+                </p>
+              )}
+            </LibraryRailGroup>
+          )}
+        </div>
+        {/* The archived filter lives BELOW the list rather than between the heading and it,
+            where it was a row of chrome an operator crossed on the way to the action they
+            came for. A toggle rather than the Active/Archived select it replaces: one press
+            instead of two, and it carries the count - so "is there anything in there?" is
+            answered without pressing it at all. */}
+        <div className="wf-action-rail-foot">
+          <Tooltip
+            label={actionState === "archived"
+              ? "Back to the active session actions"
+              : "Browse the session actions you have archived"}
+          >
+            <button
+              className={`btn btn-ghost wf-action-archived-toggle${actionState === "archived" ? " on" : ""}`}
+              aria-pressed={actionState === "archived"}
+              onClick={() => setActionState((state) => (state === "archived" ? "active" : "archived"))}
             >
-              <button
-                className={`wf-action-list-item${selectedId === action.id ? " active" : ""}`}
-                onClick={() => select(action.id)}
-              >
-                <span className="wf-action-list-name">
-                  <span>{action.name}</span>
-                  {action.builtin
-                    ? <em className="wf-action-list-tag">Built-in</em>
-                    : <em className="wf-action-list-tag is-owned">Yours</em>}
-                </span>
-                <small>{action.description || "No description"}</small>
-                <small className="wf-action-list-meta">{sessionActionRowSummary(action)}</small>
-                <small className="wf-action-list-meta">{sessionActionRevisionLine(action)}</small>
-              </button>
-            </Tooltip>
-          ))}
+              Archived <span className="wf-action-archived-count mono">{archivedCount}</span>
+            </button>
+          </Tooltip>
         </div>
       </aside>
 

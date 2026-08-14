@@ -2647,6 +2647,13 @@ body {
   color: var(--exited);
   background: color-mix(in oklab, var(--exited) 12%, transparent);
 }
+/* Unreadable: a bundle the daemon could not parse. Red, because it is the one archive
+   state that needs an operator, and every other mark for it on the Scouts page uses
+   `--danger` - a gray badge here made the reader disagree with its own rail. */
+.badge-danger {
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 14%, transparent);
+}
 
 /* ---- meta ---- */
 .card-meta {

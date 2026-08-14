@@ -89,3 +89,33 @@ test("a continuation's rows are appended once, in order, with repeats dropped", 
   assert.deepEqual(appendArchives(page1, []).map((archive) => archive.key), ["a", "b"]);
   assert.deepEqual(appendArchives([], page2).map((archive) => archive.key), ["c", "d"]);
 });
+
+test("a refresh restores the depth the operator paged to, not page one", () => {
+  // The rule the Inspector caught this hook breaking: `revision` ticks on every reconciled
+  // batch and every SSE reconnect, and `refresh()` fires after every delete. Refetching only
+  // the first page there threw away every "Load more" an operator had pressed - scroll deep,
+  // have an unrelated scout complete, and the rail silently collapsed to one window.
+  //
+  // The depth is a page COUNT walked back over the cursor, so this asserts the arithmetic
+  // that count is used for: three pages of thirty is ninety rows, and re-walking them
+  // reassembles the same list in the same order.
+  const page = (start: number) =>
+    Array.from({ length: 30 }, (_, i) => summary(`k${start + i}`));
+
+  let window: ArchiveSummary[] = [];
+  for (const start of [0, 30, 60]) window = appendArchives(window, page(start));
+  assert.equal(window.length, 90, "three pages of thirty are ninety rows");
+  assert.equal(window[0]!.key, "k0");
+  assert.equal(window.at(-1)!.key, "k89");
+
+  // Re-walking the same three pages after a refresh must land on the same window, and the
+  // dedupe must not eat rows just because they arrive again in the same order.
+  let rewalked: ArchiveSummary[] = [];
+  for (const start of [0, 30, 60]) rewalked = appendArchives(rewalked, page(start));
+  assert.deepEqual(rewalked.map((a) => a.key), window.map((a) => a.key));
+
+  // A library that shrank below the loaded depth stops early rather than inventing rows.
+  let shrunk: ArchiveSummary[] = [];
+  for (const start of [0, 30]) shrunk = appendArchives(shrunk, page(start));
+  assert.equal(shrunk.length, 60);
+});

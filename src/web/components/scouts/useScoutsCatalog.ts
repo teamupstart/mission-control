@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ArchiveDetail,
+  ArchivePage,
   ArchiveSearchQuery,
   ArchiveSummary,
 } from "@shared/archives.ts";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
-import { api } from "../../lib/api.ts";
+import { api, type ArchiveRead } from "../../lib/api.ts";
 import type { ScoutFilters } from "../../workflows/useWorkflowRoute.ts";
 
 /**
@@ -18,7 +19,8 @@ import type { ScoutFilters } from "../../workflows/useWorkflowRoute.ts";
  *    would tell an operator their evidence is gone when the daemon merely refused.
  * 2. **The browser never polls.** One `archivesRevision` counter arrives from the existing
  *    event stream - incremented once per reconciled batch and once per reconnect - and a
- *    change refetches the CURRENT window. There is no interval anywhere in this file.
+ *    change refetches the CURRENT window, to the depth the operator has paged it, not just
+ *    its first page. There is no interval anywhere in this file.
  * 3. **Requests are superseded, not raced.** Every fetch carries an abort signal owned by
  *    this hook, so a keystroke, a filter change or a revision tick cancels the read it
  *    replaces instead of letting two answers land out of order.
@@ -150,6 +152,20 @@ export function useScoutsCatalog({
    */
   const moreAbort = useRef<AbortController | null>(null);
   const windowGeneration = useRef(0);
+  /**
+   * How many pages deep the operator has paged, and the filter set that depth belongs to.
+   *
+   * A refresh must restore the window they are LOOKING AT, not the first page of it. The
+   * list effect re-runs on `revision` - which ticks on every reconciled batch and every SSE
+   * reconnect - and on `refresh()` after a delete. Refetching only page one there silently
+   * threw away every "Load more" an operator had pressed: scroll deep into the archive,
+   * have an unrelated scout complete somewhere, and the rail collapses to 30 rows with no
+   * warning and no way to tell it happened.
+   *
+   * Reset only when the QUERY changes, because that genuinely is a new window.
+   */
+  const pagesLoaded = useRef(1);
+  const depthKey = useRef(key);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -165,19 +181,48 @@ export function useScoutsCatalog({
     // "first" only while nothing is on screen. Once a window has landed, a refetch is a
     // background refresh and must not blank the rail an operator is reading.
     setListState((prev) => (prev === "ready" || prev === "refreshing" ? "refreshing" : "first"));
-    void api.listArchives(toQuery(filters), controller.signal).then((result) => {
-      if (controller.signal.aborted) return;
-      if (!result.ok) {
-        setListState("error");
-        setListError(result.error);
-        return;
+    // A changed query is a new window and starts at page one; a revision tick or a delete
+    // is the SAME window seen again, and keeps the depth already on screen.
+    if (depthKey.current !== key) {
+      pagesLoaded.current = 1;
+      depthKey.current = key;
+    }
+    const wanted = pagesLoaded.current;
+    void (async () => {
+      // Re-walk the cursor exactly as far as the operator had, then commit once - so the
+      // rail never flickers through a shallower intermediate window on its way back.
+      let collected: ArchiveSummary[] = [];
+      let nextCursor: string | null = null;
+      let libraryPathSeen: string | null = null;
+      for (let page = 0; page < wanted; page++) {
+        const result: ArchiveRead<ArchivePage> = await api.listArchives(
+          { ...toQuery(filters), ...(page === 0 ? {} : { cursor: nextCursor ?? undefined }) },
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        if (!result.ok) {
+          // A failed re-walk leaves whatever is on screen alone rather than replacing a
+          // deep window with a partial one.
+          setListState("error");
+          setListError(result.error);
+          return;
+        }
+        collected = appendArchives(collected, result.value.archives);
+        libraryPathSeen = result.value.libraryPath;
+        nextCursor = result.value.nextCursor;
+        // The library shrank below the depth we had - stop rather than asking for a page
+        // that no longer exists.
+        if (!nextCursor) {
+          pagesLoaded.current = page + 1;
+          break;
+        }
       }
-      setArchives(result.value.archives);
-      setLibraryPath(result.value.libraryPath);
-      setCursor(result.value.nextCursor);
+      setArchives(collected);
+      setLibraryPath(libraryPathSeen);
+      setCursor(nextCursor);
       setListError(null);
       setListState("ready");
-    });
+    })();
     return () => {
       controller.abort();
       moreAbort.current?.abort();
@@ -242,6 +287,9 @@ export function useScoutsCatalog({
         }
         setArchives((prev) => appendArchives(prev, result.value.archives));
         setCursor(result.value.nextCursor);
+        // Remembered so a revision tick or a post-delete refresh restores this depth
+        // instead of dropping the operator back to page one.
+        pagesLoaded.current += 1;
       });
   }, [cursor, filters, loadingMore]);
 

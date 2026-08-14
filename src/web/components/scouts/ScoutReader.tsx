@@ -87,11 +87,20 @@ export function ScoutReader({
   const [openError, setOpenError] = useState<string | null>(null);
   /** The object URL currently on screen, revoked whenever it is replaced or unmounted. */
   const objectUrl = useRef<string | null>(null);
+  /**
+   * The artifact on screen, readable from the message listener.
+   *
+   * A ref rather than a dependency: the listener is registered per archive, and re-binding
+   * it on every artifact selection would be churn for a value it only ever reads at the
+   * moment a link is clicked.
+   */
+  const activeIdRef = useRef<string | null>(null);
 
   const artifacts = useMemo(() => detail?.artifacts ?? [], [detail]);
   // The primary report opens by default; a scout's answer is the point of the page.
   const activeId = selectedArtifactId ?? detail?.primaryArtifactId ?? artifacts[0]?.id ?? null;
   const active = artifacts.find((artifact) => artifact.id === activeId) ?? null;
+  activeIdRef.current = activeId;
 
   useEffect(() => setSelectedArtifactId(null), [detail?.key]);
 
@@ -160,9 +169,13 @@ export function ScoutReader({
     const onMessage = (event: MessageEvent): void => {
       const data = event.data as { type?: string; href?: string } | null;
       if (data?.type !== HTML_PREVIEW_LINK_MESSAGE || typeof data.href !== "string") return;
-      const primary = artifacts.find((a) => a.id === detail.primaryArtifactId);
-      if (!primary) return;
-      const base = primary.archivePath.slice(0, primary.archivePath.lastIndexOf("/") + 1);
+      // Against the document the link was clicked IN, not the primary report. A companion
+      // HTML artifact sits in its own directory, so resolving its relative links against
+      // the primary's would miss every artifact and leave the link silently inert.
+      const from = artifacts.find((a) => a.id === activeIdRef.current)
+        ?? artifacts.find((a) => a.id === detail.primaryArtifactId);
+      if (!from) return;
+      const base = from.archivePath.slice(0, from.archivePath.lastIndexOf("/") + 1);
       // Normalized against the report directory, then matched against a captured artifact's
       // own archive path. A miss is simply not claimed.
       let resolved: string;
@@ -230,9 +243,15 @@ export function ScoutReader({
           <p className="scouts-eyebrow">{scoutLabel(detail)}</p>
           <h1 className="scouts-question">{detail.question ?? scoutLabel(detail)}</h1>
           <div className="scouts-provenance">
+            {/*
+              `danger`, not `exited`. Everywhere else this page marks unreadable it uses
+              `--danger`; `--exited` is the muted gray of a finished session, so the reader
+              header was showing the one state that most needs to stand out as merely
+              idle-adjacent, while the rail row beside it showed red.
+            */}
             <span className={`badge badge-${detail.status === "ready"
               ? "idle"
-              : detail.status === "partial" ? "attention" : "exited"}`}
+              : detail.status === "partial" ? "attention" : "danger"}`}
             >
               <span className="badge-dot" />
               {SCOUT_STATUS_WORD[detail.status]}

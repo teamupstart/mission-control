@@ -147,11 +147,23 @@ export function ScoutsPage({
       const next = remaining[index] ?? remaining[index - 1] ?? null;
       setDeleting(null);
       setStatus("Scout deleted");
-      select(next ? next.key : null);
+      // ONLY when the archive that was deleted is the one being read. Every row carries its
+      // own delete, so an operator can remove a row while reading a different scout - and
+      // navigating then would yank them out of the report they are reading to whatever now
+      // sits near the deleted row's old position, which they never asked for.
+      if (key === selectedKey) select(next ? next.key : null);
       catalog.refresh();
-      invoker.current?.focus();
+      // Focus must land somewhere that OUTLIVES the refresh. A row's own "…" button is gone
+      // the moment the list re-renders, so restoring focus to it leaves a keyboard or screen
+      // reader user on <body> with no landing point a second later. The reader header's
+      // Delete button does persist, so it is still the right target when it was the invoker.
+      const invokedFrom = invoker.current;
+      const durable = invokedFrom && railRef.current?.contains(invokedFrom)
+        ? railRef.current?.querySelector<HTMLElement>(".scouts-row-open") ?? railRef.current
+        : invokedFrom;
+      durable?.focus();
     },
-    [catalog, select],
+    [catalog, select, selectedKey],
   );
 
   const detail = catalog.detail;
@@ -160,7 +172,15 @@ export function ScoutsPage({
 
   return (
     <main className="scouts-page" aria-label="Scouts">
-      <aside className="scouts-rail" aria-label="Scout archives" ref={railRef}>
+      <aside
+        className="scouts-rail"
+        aria-label="Scout archives"
+        ref={railRef}
+        /* -1 so it can RECEIVE focus programmatically after a row-triggered delete
+           without joining the tab order. It is the last-resort landing point when the
+           rail has no rows left to focus. */
+        tabIndex={-1}
+      >
         <div className="scouts-search">
           <label className="scouts-search-label" htmlFor="scouts-search-input">
             Search archive

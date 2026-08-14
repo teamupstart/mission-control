@@ -4,10 +4,10 @@ An archive is work that outlives the agent that did it, the task card that asked
 worktree it happened in, and the database that once indexed it - because it is kept as
 ordinary files on your machine, not as rows.
 
-Every archive declares its **kind**: what the bundle preserves. Today one kind is produced,
-`scout`, and most of this page is about how a scout's answer becomes one. The container
-itself knows nothing about scouting, which is the point: the next kind of durable artifact
-reuses this library rather than growing a second one beside it.
+Every archive declares its **kind**: what the bundle preserves. Two kinds are produced -
+`scout`, an answer to a question, and `plan`, a plan a task wrote - and the container itself
+knows nothing about either, which is the point: a third kind of durable artifact reuses this
+library rather than growing a second one beside it.
 
 This page describes the local library: where it lives, what a bundle contains, how one is
 produced, how Mission Control discovers one, and what deleting one does. It is the storage,
@@ -72,7 +72,11 @@ folder, its contents go wherever that folder goes.
 ## What one bundle contains
 
 - `report/report.html` - one self-contained, static page: for a scout, the question, the
-  finding, and the evidence. It works from `file://`, uses inline CSS and inline SVG, and
+  finding, and the evidence; for a plan, the plan. The name is the format's, not the
+  checkout's - a plan's `plan.html` is stored here, with its original path recorded in the
+  manifest - so a link written *to* `plan.html` from one of its companions points at a name
+  the bundle does not use. Links *from* the page resolve normally, which is the direction a
+  reader travels. It works from `file://`, uses inline CSS and inline SVG, and
   **fetches nothing when it opens**. A non-executing parser checks that before the archive is
   indexed: scripts, event handlers, forms, frames, embeds, anything that re-roots relative
   URLs (`<base>`, `xml:base`), meta refresh, SVG animation, protocol-relative URLs, relative
@@ -231,10 +235,91 @@ and then, in the background:
 A partial archive is a real, portable record - it just does not claim to hold the answer, and
 it does not satisfy a normal completion.
 
-### Cleanup asks first
+## How a plan produces one
+
+A [plan task](dispatch-and-backlog.md) writes its plan into the checkout as
+`docs/plans/<name>/plan.md` with a rendered `plan.html` beside it, and once it has been phased,
+one document per phase in the same directory. When anything is about to destroy that checkout,
+Mission Control captures what the task wrote:
+
+| In the checkout | Captured as |
+|---|---|
+| `docs/plans/<name>/plan.html` | `report/report.html` - the page a reader opens |
+| everything else in that directory, recursively | `report/…`, keeping its relative layout so the plan's links to its phase documents still resolve |
+
+A plan bundle has no `artifacts/` half. There is no submission tool, no summary and no tags: a
+plan names itself in its own first heading, which becomes the archive's title, and the rest of
+the search index is the page's visible text. Nothing an agent typed chooses what is archived.
+
+### Finding the right plan
+
+This is the whole difficulty, and it is the opposite of a scout's. A scout's report is at one
+known path. A plan's directory is named by whoever wrote it, in a repository that routinely
+holds dozens of unrelated plan directories - this one holds 76 - so capturing "every plan in
+the checkout" would archive other people's work on every plan task.
+
+**The task's own diff decides.** Mission Control asks git what this checkout changed since its
+source branch, keeps the paths under `docs/plans/<name>/`, and archives those directories and
+no others. That answer is derived from the repository rather than from anything an agent said,
+so a plan task cannot aim capture at a file it did not write.
+
+It also means the checkout has to belong to this task alone. A diff is only a statement about
+one task's work while nothing else is happening in that tree, so a plan is captured **only from
+a worktree the task owns**. A plan task an operator assigned to their own running session has
+no worktree of its own, and is not archived: reading that shared checkout's diff would attribute
+whatever else was in progress there - including a colleague's half-written plan - to this task.
+Nothing reclaims that checkout either, so the plan stays where its author left it.
+
+Three consequences worth stating:
+
+- **A task that touched two plan directories produces two archives**, one per plan, never one
+  merged bundle. A bundle has exactly one page at its centre, and merging would make one plan's
+  page the front of another plan's files.
+- **A directory too big for a bundle is trimmed, not dropped.** The plan's page is kept and as
+  many of its companions as the archive limits allow follow it; every file that did not fit is
+  named in the manifest's missing list. Losing a readable plan because the diagrams beside it
+  crossed a size limit would be the exact failure this capture exists to prevent.
+- **A checkout that cannot answer the question contributes nothing.** If git cannot report what
+  changed, no archive is written for that checkout and the cleanup proceeds. Guessing would mean
+  archiving a stranger's plan, which is worse than a missing archive.
+
+  What that costs depends on how far the task got. A plan that reached its ordinary finish is
+  committed and on its way to a pull request, so the archive was the convenience and not the
+  copy. A plan **cancelled before it committed anything** has neither, and in that one case an
+  unreadable checkout does lose it. The trade is deliberate and it is not free.
+
+### Nothing to archive is a normal ending
+
+A plan task that wrote no plan - the human read where it was going, said no, and stopped -
+tears its checkout down cleanly. This is the one place plan capture deliberately parts from
+scout capture, which cannot happen: a scout has to submit a report before it can finish, so a
+scout arriving at cleanup with nothing is an anomaly worth holding a worktree over. A plan is
+not, and treating it the same way would strand that worktree with nothing anyone could do
+about it.
+
+For the same reason, a plan page that **is** there but cannot lead a bundle - it fetches
+something on open, or it crossed a size limit - produces an honest `partial` that keeps the
+page under its own name and says why it is not the front of the bundle. What still refuses a
+cleanup is a capture that failed for a reason a retry can fix, exactly as for a scout.
+
+### Completion does not wait
+
+A plan task reaches **done** on Foreman's ordinary boundary, like a ship task and unlike a
+scout. Durability happens at teardown instead, on every path that destroys a checkout. A plan
+is also offered the ordinary wrap-up, so it lands as a pull request - which is what publishes
+the paths that any scheduled phase tasks depend on.
+
+Nor does a plan's session going away capture anything, which is the other half of the same
+rule. A scout's does, because its report is an untracked file and the session that would have
+submitted it is gone. A plan's session can exit while the task is still running, and an archive
+can never be rewritten - so publishing then would freeze a draft as the permanent record of a
+plan still being written. Teardown is the only moment a plan is captured.
+
+## Cleanup asks first
 
 Reclaim, Remove, Cancel, Reschedule, and the startup pass that reclaims a worktree whose agent
-did not survive a restart all publish the scout's archive **before** they destroy its checkout.
+did not survive a restart all publish the task's archives **before** they destroy its checkout,
+whichever kind it produces.
 When a launched agent is still alive, cleanup stops it before capture so the archive sees the
 final bytes at the stop boundary; an agent the operator started and later assigned is never
 stopped on the task's behalf.
@@ -242,13 +327,25 @@ If that fails, the cleanup is refused: the worktree stays, the task stays reclai
 can retry. Losing an answer to a transient disk error is not a trade Mission Control makes on
 your behalf.
 
-Reclaiming a scout that finished normally is cheap - its bundle already exists, and the guard
-re-verifies it and returns.
+**What cleanup costs depends on the kind, because the two reach it in different states.** A
+scout that finished normally already has its bundle - it could not have been marked done
+without one - so reclaim re-verifies it and returns, which is cheap and is the common path.
+A plan arrives with no bundle at all: its completion is Foreman's ordinary boundary and waits
+on nothing, so **cleanup is where a plan is captured for the first time**, and it does the real
+work of reading the task's diff, copying the directory and verifying the bundle. Reclaiming a
+task that produced nothing to archive is cheap for either kind.
 
-### Capture jobs are local bookkeeping
+That difference is the approved design rather than an inconsistency: gating a plan's completion
+on its archive would have made a plan task hold its session open over a durable-storage step it
+does not need, when the plan is already committed and on its way to a pull request.
 
-`archive_capture_jobs` in the database coordinates all of this: one row per task work episode,
-carrying the reserved archive identity and the checkout locators recovery needs. It is **not**
+## Capture jobs are local bookkeeping
+
+`archive_capture_jobs` in the database coordinates all of this: one row per archive a task
+work episode owes - one for a scout, one per plan directory for a plan - carrying the reserved
+archive identity, the directory it covers, and the checkout locators recovery needs. What a row
+covers is frozen when it is reserved, so a capture resumed after a restart writes the archive
+that was reserved rather than whatever the checkout holds by then. It is **not**
 evidence. A published bundle needs none of it to be read, and deleting the database loses the
 ability to resume an unfinished capture, never the ability to open a finished archive.
 On startup, a job with a recorded submission resumes even if its scout is still running. Only

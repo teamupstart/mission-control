@@ -219,17 +219,23 @@ interface ScoutCompletionSnapshot {
 }
 
 /**
- * What `TaskManager` needs from the scout archive owner, and nothing else.
+ * What `TaskManager` needs from the archive owner, and nothing else.
  *
  * A narrow port rather than the class, for two reasons. The archive manager is injected into
  * this class so completion can wait on it, so it cannot in turn depend on this class; and the
  * many focused tests that construct a bare `TaskManager` keep compiling and keep behaving
- * exactly as they did, because an absent gate means "there are no scouts here".
+ * exactly as they did, because an absent gate means "nothing here is archived".
+ *
+ * The two methods are asymmetric on purpose, and the asymmetry is an approved product
+ * decision rather than an accident of growth. Cleanup settles for EVERY archived kind, so a
+ * plan's directories and a scout's report both leave through `settleBeforeCleanup`. Completion
+ * waits only for a scout: `scoutGateFor` hands this over for a `scout` task and nothing else,
+ * so a plan finishes on Foreman's ordinary boundary exactly as a ship task does.
  */
-export interface ScoutArchiveGate {
+export interface TaskArchiveGate {
   /** Resolve once the task's verified COMPLETE bundle exists, or say what is wrong. */
   ensureReady(taskId: string): Promise<{ ok: true } | { ok: false; problems: string[] }>;
-  /** Publish whatever this scout produced before its checkout is destroyed. */
+  /** Publish whatever this task produced before its checkout is destroyed. */
   settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
@@ -409,14 +415,14 @@ export class TaskManager {
     /** Coordinates claimed message delivery with every task-assignment reset. */
     private pendingTurns?: PendingTurnResetBoundary,
     /**
-     * The scout archive owner, when the daemon built one.
+     * The archive owner, when the daemon built one.
      *
      * Optional for the same reason `supervisor` is - the focused tests that construct a bare
-     * TaskManager exercise no scouts and must keep behaving identically. Absent means every
+     * TaskManager exercise no archives and must keep behaving identically. Absent means every
      * completion is a ship completion and every cleanup is unguarded, which is exactly what
-     * this file did before scouts had archives.
+     * this file did before any kind had archives.
      */
-    private scouts?: ScoutArchiveGate,
+    private archives?: TaskArchiveGate,
   ) {
     this.dispatcher = new Dispatcher(registry, undefined, { supervisor });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
@@ -2280,29 +2286,35 @@ export class TaskManager {
   }
 
   /**
-   * Publish a scout's archive before anything destroys the checkout it lives in.
+   * Publish this task's archives before anything destroys the checkout they live in.
    *
    * Every destructive path in this class runs `teardownWorktree`, which is
-   * `git worktree remove --force` or a pooled lease handed back, and a scout's report is an
-   * ordinary untracked file in that tree. So the last moment at which the evidence can be
-   * saved is right here, before the teardown, on every one of those paths rather than on the
-   * visible Reclaim button alone.
+   * `git worktree remove --force` or a pooled lease handed back, and it takes the checkout
+   * with it. So the last moment at which durable work can be saved is right here, before the
+   * teardown, on every one of those paths rather than on the visible Reclaim button alone.
+   *
+   * Kind-neutral by name because it is now kind-neutral in fact: a scout's report and a plan
+   * task's plan directories both reach the archive library through this one line, and which
+   * of them applies is settled inside the gate rather than here. That keeps the five call
+   * sites below identical and stops a sixth teardown path being added that remembered only
+   * one kind.
    *
    * A refusal is returned rather than swallowed, and the caller must stop: the resources stay
    * tracked and the operator can retry, which is strictly better than freeing a worktree and
-   * discovering afterwards that the report went with it. A ship task, a task with no scout
-   * gate, and a scout whose bundle is already published all return `ok` without touching the
-   * filesystem.
+   * discovering afterwards that the work went with it. A ship task, a task with no archive
+   * gate, and a task whose bundles are already published all return `ok` without touching the
+   * filesystem - as does a plan task that produced no plan at all, which is a real and
+   * allowed outcome rather than an anomaly, and must not hold a worktree for ever.
    */
-  private async settleScoutArchive(id: string): Promise<Ok> {
-    if (!this.scouts) return { ok: true };
+  private async settleArchivesBeforeTeardown(id: string): Promise<Ok> {
+    if (!this.archives) return { ok: true };
     try {
-      const settled = await this.scouts.settleBeforeCleanup(id);
+      const settled = await this.archives.settleBeforeCleanup(id);
       return settled.ok ? { ok: true } : { ok: false, error: settled.error };
     } catch (error) {
       return {
         ok: false,
-        error: `this scout's archive could not be published: ${error instanceof Error ? error.message : String(error)}`,
+        error: `this task's archive could not be published: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }
@@ -2338,7 +2350,7 @@ export class TaskManager {
 
     // The agent is now quiescent and the checkout still exists. A report that was complete at
     // the stop boundary is captured; a failure keeps every resource tracked for a retry.
-    const archived = await this.settleScoutArchive(id);
+    const archived = await this.settleArchivesBeforeTeardown(id);
     this.autoCompleted.delete(id);
     if (!archived.ok) {
       const current = this.registry.getTask(id) ?? t;
@@ -2351,7 +2363,7 @@ export class TaskManager {
       });
       return {
         ok: false,
-        error: `task cancelled, but its resources remain tracked: ${archived.error ?? "the scout archive could not be published"}`,
+        error: `task cancelled, but its resources remain tracked: ${archived.error ?? "this task's archive could not be published"}`,
       };
     }
 
@@ -2458,9 +2470,9 @@ export class TaskManager {
   }
 
   /** The archive gate for this task, or null when there is nothing durable to wait for. */
-  private scoutGateFor(id: string): ScoutArchiveGate | null {
-    if (!this.scouts) return null;
-    return this.registry.getTask(id)?.kind === "scout" ? this.scouts : null;
+  private scoutGateFor(id: string): TaskArchiveGate | null {
+    if (!this.archives) return null;
+    return this.registry.getTask(id)?.kind === "scout" ? this.archives : null;
   }
 
   /**
@@ -2480,7 +2492,7 @@ export class TaskManager {
   private async completeScout(
     id: string,
     input: CompletionInput,
-    gate: ScoutArchiveGate,
+    gate: TaskArchiveGate,
   ): Promise<Task | null> {
     const before = this.scoutCompletionSnapshot(id, input.requireStopped);
     if (!before) return null;
@@ -2707,7 +2719,7 @@ export class TaskManager {
       // whatever the first attempt found is archived here or lost. The new attempt gets its
       // own work episode and therefore its own archive, which is why this cannot simply be
       // left to the relaunch.
-      const archived = await this.settleScoutArchive(id);
+      const archived = await this.settleArchivesBeforeTeardown(id);
       if (!archived.ok) return archived;
       this.autoCompleted.delete(id);
       if (t.worktreePath || t.homeName) {
@@ -2776,7 +2788,7 @@ export class TaskManager {
     // A normally completed scout already has its verified bundle, so this is a cheap replay.
     // A scout that was never archived - one whose agent went away, or that failed - gets its
     // last chance here, because after this line its report is gone.
-    const archived = await this.settleScoutArchive(id);
+    const archived = await this.settleArchivesBeforeTeardown(id);
     if (!archived.ok) return archived;
     this.autoCompleted.delete(id);
     try {
@@ -2826,7 +2838,7 @@ export class TaskManager {
     // Removing the task must not remove its evidence: an archive is deliberately independent
     // of the task that produced it, so the bundle is published first and then outlives the row
     // entirely. This is also the only place a `remove` could silently discard a report.
-    const archived = await this.settleScoutArchive(id);
+    const archived = await this.settleArchivesBeforeTeardown(id);
     if (!archived.ok) return archived;
     this.autoCompleted.delete(id);
     // A terminal task may still hold a tree (e.g. a failed-but-alive dispatch);
@@ -2933,7 +2945,7 @@ export class TaskManager {
     // ever reserved. A scout's report is sitting untracked in the tree about to be removed,
     // so it is archived first. A refusal keeps the tree - the row already reads as
     // resource-holding, so the operator gets the ordinary Clean up affordance and a retry.
-    const archived = await this.settleScoutArchive(t.id);
+    const archived = await this.settleArchivesBeforeTeardown(t.id);
     if (!archived.ok) {
       this.registry.upsertTask({
         ...t,

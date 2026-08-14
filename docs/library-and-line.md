@@ -166,15 +166,20 @@ them](images/action-detail.png)
 
 The same rail and workspace as Personas, because an operator moving between them should be
 moving through one surface with different contents. What is specific to an Action is that it is
-the only Library asset carrying a **machine-checked contract**: the bound session has to be able
-to invoke a named skill, and something observable has to happen before a workflow stage may call
-it done.
+the only Library asset carrying a **machine-checked contract**: something observable has to
+happen before a workflow stage may call it done, and - where the action names one - the bound
+session has to be able to invoke a named skill before the instruction is sent at all.
+
+The two halves are not equally optional. Every action names a completion; the **required skill
+is a choice**, and an action that requires none is not inheriting a default but asserting
+nothing, so it is sent to whatever skills the bound session has already loaded.
 
 **The rail** groups **Built-in** and **Yours** with counts, and each row's sub-label is that
-contract - `Skill · pull-request · Pull request is opened and verified`. The description is not
-repeated there, because on the shipped pair it restates the title, and the contract is the thing
-that tells two actions apart. Search sits above the list; the **Archived** toggle, carrying its
-count, sits in a footer below it.
+contract - `Skill · pull-request · Pull request is opened and verified`, or
+`No required skill · Session turn finishes` where the action asks for none. The description is
+not repeated there, because on the shipped pair it restates the title, and the contract is the
+thing that tells two actions apart. Search sits above the list; the **Archived** toggle, carrying
+its count, sits in a footer below it.
 
 **The workspace header** carries the name and description as the fields they are, with the
 revision and when it was last written on one dim line beneath. **Save** is promoted on an action
@@ -183,21 +188,42 @@ revision the editor could write. Duplicate and Archive live behind the `⋯` men
 on a read-only action because both of its entries are.
 
 **Two property chips carry the contract** - `requires skill` and `completes when` - and each
-opens the control that sets it. **The contract line beneath them is the sentence those two values
-form**: what the stage sends, what the session must be able to invoke, and what Mission Control
-has to observe before the stages below this one may read the evidence. That completion clause is
-the same string the chip shows and the same one the pipeline card, the graph rail and the version
-history print, from the one shared table that owns it - there is no second wording of what an
-adapter proves anywhere in the browser.
+opens the control that sets it. `requires skill` draws quiet when the action requires none and
+solid when it names one, so what this action actually demands is legible without opening
+anything. **The contract line beneath them is the sentence those two values form**: what the
+stage sends, what the session must be able to invoke, and what Mission Control has to observe
+before the stages below this one may read the evidence. An action requiring no skill says so in
+that sentence rather than leaving the clause out, which would read as though the requirement had
+been forgotten. That completion clause is the same string the chip shows and the same one the
+pipeline card, the graph rail and the version history print, from the one shared table that owns
+it - there is no second wording of what an adapter proves anywhere in the browser.
 
 A completion this build cannot prove is **kept, marked and readable while the control is shut**:
 the chip draws amber and a sentence beside it says why. It stays selected, because rewriting it
 would silently change the proof contract the action was authored with, and it cannot be chosen
-again - the option is there to be read, disabled. The mark waits for the daemon's answer: which
-completions a build can prove is read over HTTP, and until that read lands nothing on the screen
-claims anything about it. Save stands down in the meantime and says so, because a pending read is
-not a refusal. Everything left over is the instruction editor, whose Markdown reaches the session
-byte for byte.
+again - the option is there to be read, disabled.
+
+**The mark waits for the daemon's answer.** Which completions a build can prove is read over
+HTTP, so for one round trip after the screen opens nothing is known - and a screen that marked
+the chip then would be accusing every action of naming something unprovable, including the
+ordinary default this daemon runs perfectly well. Until the read lands, the chip states the
+stored completion and claims nothing about it:
+
+![The contract region while the capability read is still in flight: the completes-when chip
+states Pull request is opened and verified in the ordinary tone, with no mark and no sentence
+beneath it](images/action-completion-pending.png)
+
+Once the answer is in and it is a refusal, the same region marks and says whose refusal it is.
+The two figures are one screen under two answers, and the difference between them is one HTTP
+response:
+
+![The same region after the daemon reports the adapter unavailable: the completes-when chip
+draws amber and This build cannot verify a pull request yet. is printed beneath
+it](images/action-completion-unprovable.png)
+
+Save stands down for as long as the read is in flight and says which fact it is waiting for,
+because a pending read is not a refusal but it is a reason not to write. Everything left over is
+the instruction editor, whose Markdown reaches the session byte for byte.
 
 ### The Ship log
 

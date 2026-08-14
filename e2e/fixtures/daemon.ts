@@ -330,19 +330,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       await new Promise((r) => setTimeout(r, 200));
       if (!exited) child.kill("SIGKILL");
     }
-    /*
-     * Retried, because the daemon is not the only writer under `home`.
-     *
-     * A dispatch leaves `git` processes of its own working inside the leased pool, and they do
-     * not die with the daemon that spawned them: SIGKILL above returns as soon as the daemon is
-     * gone, so a recursive delete can walk a directory a grandchild is still creating files in
-     * and fail the TEST with `ENOTEMPTY` after its every assertion passed. Observed once in a
-     * full-suite run on `multi-repo-dispatch`, which is the spec that spawns the most of them.
-     * `maxRetries` is exactly what Node documents this for - it backs off on `ENOTEMPTY`,
-     * `EBUSY` and `EPERM` - and a teardown that cannot clean up after five attempts over ~1.5s
-     * is a real leak worth failing on rather than a race.
-     */
-    rmSync(home, { force: true, recursive: true, maxRetries: 5, retryDelay: 300 });
+    rmSync(home, { force: true, recursive: true });
   };
 
   const awaitBoot = async (): Promise<void> => {

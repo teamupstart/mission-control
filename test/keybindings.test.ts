@@ -237,6 +237,10 @@ test("file actions own Shift+F, Shift+O, and l and every default round-trips fro
     chordFromEvent(key("O", { shift: true })),
     chordFromEvent(key("l")),
     chordFromEvent(key("s")),
+    // Shift+S (Scouts), from the same "s" that sends. Both must be producible and they
+    // must not collapse into one chord - the asymmetry that makes a shift+letter binding
+    // expressible at all is exactly what this round trip is here to prove.
+    chordFromEvent(key("S", { shift: true })),
     chordFromEvent(key("t")),
     chordFromEvent(key("a")),
     chordFromEvent(key("f")),

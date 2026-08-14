@@ -214,6 +214,32 @@ export interface PersonaProvenance {
    * installed plugin still belongs to that plugin's version.
    */
   pluginVersion: string | null;
+  /**
+   * A version-INDEPENDENT identity for a document imported from an installed plugin catalog.
+   *
+   * `<marketplace>/<plugin>/<path within the plugin>`, and null for every Persona an operator
+   * imported by naming a path. It exists because `sourcePath` cannot answer the question the
+   * boot-time catalog sync has to ask. An installed plugin lives at
+   * `…/cache/<marketplace>/<plugin>/<version>/…`, so the path of a role document CHANGES on
+   * every plugin upgrade: keyed on `sourcePath`, the sync would find no match after an upgrade
+   * and import all eleven roles a second time under conflicting names. Keyed on this, an
+   * upgrade is recognised as the same document at a new revision of its plugin - which is
+   * exactly what the drift badge is for.
+   *
+   * Never a containment or trust claim. It is a name for "the same document as last boot", and
+   * the reads that follow are validated on their own terms like every other import.
+   */
+  sourceKey: string | null;
+  /**
+   * The catalog to credit in the UI - `"UpstartClaw"` - or null for an operator's own import.
+   *
+   * STORED rather than derived from `sourceKey`'s marketplace segment, so that no part of the
+   * product has to map a marketplace's directory name onto a human name. The registry that
+   * names the plugin also names the catalog, once; every reader downstream renders this string
+   * and knows nothing about who supplied it. That is what keeps the Persona library, the sort
+   * order and the sidebar tag generic while still being able to say `UpstartClaw` out loud.
+   */
+  catalogLabel: string | null;
   /** sha256 of the exact bytes read, hex. The one thing a drift check compares. */
   contentSha256: string;
   importedAt: number;
@@ -385,6 +411,112 @@ export function personaDescriptionFromMarkdown(
   const cut = collapsed.slice(0, maxLength - 1);
   const lastSpace = cut.lastIndexOf(" ");
   return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/**
+ * The keys a Persona document may carry in YAML frontmatter, if it carries any at all.
+ *
+ * Deliberately TWO keys and no YAML parser. Plugin-authored role documents lead with a
+ * frontmatter block that states the role's title and its one-line function, and those two
+ * facts are better than what the Markdown rules below can infer from the same file: a role
+ * whose heading reads `# The Reviewer` and whose first paragraph is `**Speech pattern:**
+ * Terse, declarative, verdict first…` yields a name nobody chose and a description that
+ * describes prose style rather than the role.
+ *
+ * The subset understood here is the subset those documents use: a block fenced by `---` at the
+ * very start of the file, `key: value` at column zero, and a value that may continue onto
+ * following MORE-INDENTED lines. Anything else in the block is skipped rather than rejected -
+ * this is a reader of two fields, not a validator of somebody else's file, and a document it
+ * cannot understand falls through to the heading rules unchanged.
+ */
+const PERSONA_FRONTMATTER_KEYS = ["role-title", "function"] as const;
+
+type PersonaFrontmatterKey = (typeof PERSONA_FRONTMATTER_KEYS)[number];
+
+/**
+ * The frontmatter fields a document declares, or an empty record when it declares none.
+ *
+ * Exported for its tests. Values arrive whitespace-collapsed because a folded YAML scalar is a
+ * single logical string that happens to be wrapped, and every consumer here wants the string.
+ */
+export function personaFrontmatter(
+  markdown: string,
+): Partial<Record<PersonaFrontmatterKey, string>> {
+  // The block has to open on the very first line, which is what makes this unambiguous: a
+  // `---` further down a document is a horizontal rule or a section break, never frontmatter.
+  const opened = /^---[^\S\r\n]*\r?\n/.exec(markdown);
+  if (!opened) return {};
+  const rest = markdown.slice(opened[0].length);
+  const closed = /^---[^\S\r\n]*(?:\r?$|\r?\n)/m.exec(rest);
+  if (!closed) return {};
+  const lines = rest.slice(0, closed.index).split(/\r?\n/);
+  const out: Partial<Record<PersonaFrontmatterKey, string>> = {};
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^([A-Za-z][\w-]*):[^\S\r\n]*(.*)$/.exec(lines[index] ?? "");
+    if (!match) continue;
+    const key = match[1] as PersonaFrontmatterKey;
+    const parts = [match[2] ?? ""];
+    // A value continues while the following lines are indented further than the key, which is
+    // how the plain multi-line scalars in these documents wrap. Stopping at the first
+    // unindented line is what keeps the NEXT key out of this value.
+    while (index + 1 < lines.length && /^[^\S\r\n]+\S/.test(lines[index + 1] ?? "")) {
+      index += 1;
+      parts.push(lines[index] ?? "");
+    }
+    if (!PERSONA_FRONTMATTER_KEYS.includes(key)) continue;
+    const value = parts.join(" ").replace(/\s+/gu, " ").trim();
+    // First declaration wins, and an empty value is not a declaration: both keep a malformed
+    // block from erasing a name the heading rule could still have supplied.
+    if (value.length > 0 && out[key] === undefined) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * The name a Persona document carries, preferring its frontmatter over its heading.
+ *
+ * The single rule every reader of an authored document uses, so a role file imported by hand
+ * and the same file adopted by the plugin catalog sync arrive under ONE name. That mattered
+ * enough to widen `personaNameFromMarkdown`'s remit rather than add a second rule beside it:
+ * two derivations would meet at the unique index and present as a name conflict nobody caused.
+ */
+export function personaNameFromDocument(markdown: string, fallback: string): string {
+  return personaFrontmatter(markdown)["role-title"]
+    ?? personaNameFromMarkdown(markdown, fallback);
+}
+
+/** The one-line summary a Persona document carries, preferring frontmatter `function`. */
+export function personaDescriptionFromDocument(
+  markdown: string,
+  maxLength: number = WORKFLOW_LIMITS.personaDescription,
+): string {
+  const declared = personaFrontmatter(markdown).function;
+  if (declared === undefined) return personaDescriptionFromMarkdown(markdown, maxLength);
+  // Truncated by the same rule as a derived description rather than a bare slice, so one
+  // ceiling and one ellipsis serve both spellings.
+  return declared.length <= maxLength
+    ? declared
+    : personaDescriptionFromMarkdown(`# x\n\n${declared}`, maxLength);
+}
+
+/**
+ * Where a Persona sits in the library's ordering, before names are compared.
+ *
+ * Three tiers, because the catalog now has three ORIGINS and a flat alphabetical list buries
+ * the distinction: the reviewers shipped with the build, the reviewers an installed plugin
+ * catalog supplied, and the operator's own. Shipped first as the product's own foundation,
+ * the supplied catalog next, and the operator's own last - where they stay in one predictable
+ * place instead of being scattered through eleven role names they did not write.
+ *
+ * Ranked in the STORE rather than the sidebar so every surface that lists Personas - the
+ * library, the pickers, a workflow's reviewer choices - agrees about order without each one
+ * re-deriving it.
+ */
+export function personaOriginRank(
+  persona: Pick<Persona, "builtin" | "provenance">,
+): number {
+  if (persona.builtin) return 0;
+  return persona.provenance?.catalogLabel != null ? 1 : 2;
 }
 
 /**

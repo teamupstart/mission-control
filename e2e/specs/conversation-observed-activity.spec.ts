@@ -69,7 +69,7 @@ async function openConversationWithActivity(
 
   // Before any tool call exists, the rail says so instead of showing nothing: the
   // dispatch's opening exchange is prose only.
-  const activity = card.getByRole("region", { name: "Observed activity" });
+  const activity = card.getByRole("region", { name: "Conversation rail" });
   await expect(activity).toBeVisible();
   await expect(activity.getByText("No observed tool activity yet")).toBeVisible();
 
@@ -86,10 +86,11 @@ test("observed tool activity appears beside the conversation, honestly labelled"
   daemon,
 }) => {
   const card = await openConversationWithActivity(dashboard, daemon);
-  const activity = card.getByRole("region", { name: "Observed activity" });
+  const activity = card.getByRole("region", { name: "Conversation rail" });
 
-  // The surface names itself with a real heading, and states its window.
-  await expect(card.getByRole("heading", { name: "Observed activity", exact: true })).toBeVisible();
+  // The surface names itself - now as the selected tab of a two-tab rail rather than a
+  // lone heading - and states its window.
+  await expect(activity.getByRole("tab", { name: "Activity" })).toHaveAttribute("aria-selected", "true");
   await expect(activity.getByText("Tool calls observed in the loaded transcript.")).toBeVisible();
 
   // Both invocations arrived, through the shared chip projection: the read that rode a
@@ -119,7 +120,7 @@ test("Find borrows the secondary rail and closing it restores Observed activity"
   daemon,
 }) => {
   const card = await openConversationWithActivity(dashboard, daemon);
-  const activity = card.getByRole("region", { name: "Observed activity" });
+  const activity = card.getByRole("region", { name: "Conversation rail" });
   await expect(activity.getByText("bash", { exact: true })).toBeVisible();
 
   // Select the card (the expand button deliberately does not), then open find with
@@ -131,7 +132,7 @@ test("Find borrows the secondary rail and closing it restores Observed activity"
   // Find owns the column now - whole, not shared: its rail is visible, activity is gone.
   await expect(card.getByRole("searchbox", { name: "Find in conversation" })).toBeVisible();
   await expect(card.getByRole("complementary", { name: "Search results" })).toBeVisible();
-  await expect(card.getByRole("region", { name: "Observed activity" })).toHaveCount(0);
+  await expect(card.getByRole("region", { name: "Conversation rail" })).toHaveCount(0);
 
   await shoot(dashboard, card, "02-find-owns-rail");
 
@@ -153,7 +154,7 @@ test("a narrow conversation collapses activity to a disclosure the reader can op
   // width, so shrinking the window is exactly how a person reaches this state.
   await dashboard.setViewportSize({ width: 600, height: 900 });
 
-  const activity = card.getByRole("region", { name: "Observed activity" });
+  const activity = card.getByRole("region", { name: "Conversation rail" });
   const toggle = activity.getByRole("button", { name: /Observed activity/ });
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");

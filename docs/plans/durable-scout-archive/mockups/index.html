@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Scouts UI - mockups</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  body { min-height: 100%; }
+  main { max-width: 980px; margin: 0 auto; padding: 56px 24px 96px; }
+  h1 { font-size: 26px; font-weight: 640; letter-spacing: -0.025em; margin: 0 0 8px; }
+  .eyebrow-top { font: 700 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--working); margin: 0 0 6px; }
+  .lede { font-size: 13.5px; line-height: 1.7; color: var(--muted); max-width: 68ch; margin: 0 0 14px; }
+  .lede b { color: var(--fg); font-weight: 600; }
+  .cards { display: grid; gap: 14px; }
+  a.card {
+    display: grid; grid-template-columns: 42px 1fr auto; gap: 16px; align-items: start;
+    text-decoration: none; color: inherit;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--panel); padding: 18px 20px;
+    transition: border-color .14s ease, background .14s ease;
+  }
+  a.card:hover {
+    border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+    background: color-mix(in oklab, var(--working) 5%, var(--panel));
+  }
+  .badge {
+    display: grid; place-items: center; width: 34px; height: 34px;
+    border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border);
+    font: 600 14px var(--mono); color: var(--muted);
+  }
+  .card h2 { margin: 0 0 4px; font-size: 16px; font-weight: 620; letter-spacing: -0.01em; }
+  .card .claim { margin: 0 0 9px; font-size: 12px; color: var(--dim); font-style: italic; }
+  .card p { margin: 0 0 11px; font-size: 12.5px; line-height: 1.65; color: var(--muted); }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .fact { font: 10.5px var(--mono); color: var(--dim); border: 1px solid var(--border-soft); border-radius: 999px; padding: 3px 8px; }
+  .fact.good { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 30%, var(--border)); }
+  .fact.cost { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 30%, var(--border)); }
+  .go { font-size: 11.5px; color: var(--dim); align-self: center; }
+  .sub-h { margin: 34px 0 12px; font: 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+  .shared { border: 1px solid var(--border-soft); border-radius: var(--radius); background: color-mix(in oklab, var(--bg-2) 60%, transparent); padding: 16px 20px; }
+  .shared ul { margin: 0; padding-left: 17px; }
+  .shared li { font-size: 12.5px; line-height: 1.7; color: var(--muted); margin-bottom: 5px; }
+  .shared code { font: 11px var(--mono); color: var(--fg); background: var(--panel); border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 5px; }
+  .note { margin-top: 30px; font-size: 12px; line-height: 1.75; color: var(--dim); border-top: 1px solid var(--border-soft); padding-top: 18px; }
+  .note code { font: 11px var(--mono); }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow-top">Durable scout archive · phase 3</p>
+  <h1>Scouts</h1>
+  <p class="lede">Phases 1 and 2 shipped. Every completed scout already publishes an immutable
+  bundle under <code style="font:11.5px var(--mono)">~/.mission-control/scouts</code>, the daemon
+  already indexes and searches them, and <code style="font:11.5px var(--mono)">scoutsRevision</code>
+  already ticks in the browser. <b>Nothing renders it.</b> These are four takes on the page that
+  should, each driving the same eight fixture archives so they can be compared directly.</p>
+  <p class="lede">They differ on one question: <b>what is the operator actually doing when they
+  come here?</b> Looking something up, reading an answer, browsing what has been learned, or
+  reconstructing a week.</p>
+
+  <div class="cards">
+    <a class="card" href="a-dossier.html">
+      <span class="badge">A</span>
+      <span>
+        <h2>Dossier</h2>
+        <p class="claim">"I know roughly what I am looking for."</p>
+        <p>Three panes that never move: a search rail on the left, the report in the middle,
+        and an evidence spine on the right whose stops say at a glance whether an old archive
+        is complete enough to trust. This is the shape the approved plan already describes.</p>
+        <span class="facts"><span class="fact good">densest</span><span class="fact good">everything on one screen</span><span class="fact good">matches the plan</span><span class="fact cost">narrowest report column</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+
+    <a class="card" href="b-reading-room.html">
+      <span class="badge">B</span>
+      <span>
+        <h2>Reading Room</h2>
+        <p class="claim">"Just give me the answer, full width."</p>
+        <p>The archive is a document, so the page is a reading surface. No permanent list at
+        all: search is a ⌘K overlay that opens over the report and closes back into it, and
+        evidence is a filmstrip under the header. The report gets the whole page.</p>
+        <span class="facts"><span class="fact good">best reading</span><span class="fact good">cheapest topbar cost</span><span class="fact cost">history is invisible until you search</span><span class="fact cost">two layers to learn</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+
+    <a class="card" href="c-findings-board.html">
+      <span class="badge">C</span>
+      <span>
+        <h2>Findings Board</h2>
+        <p class="claim">"I do not remember the title. I remember the answer."</p>
+        <p>Not a list, a board. The largest text on every card is the finding itself, so the
+        page reads as what has been learned rather than what was filed. Browsing beats
+        searching. The report opens as its own full-bleed route.</p>
+        <span class="facts"><span class="fact good">most legible at rest</span><span class="fact good">best for rediscovery</span><span class="fact cost">fewest rows per screen</span><span class="fact cost">needs a good summary</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+
+    <a class="card" href="d-research-log.html">
+      <span class="badge">D</span>
+      <span>
+        <h2>Research Log</h2>
+        <p class="claim">"The one from right after the topbar broke."</p>
+        <p>Time is the index. One chronological spine with day headers, and the report opens
+        in a drawer over the right side while the log stays readable underneath. The only
+        direction where a scout is visible in the context of what surrounded it.</p>
+        <span class="facts"><span class="fact good">recall by when</span><span class="fact good">shows context</span><span class="fact good">reads scheduled scouts well</span><span class="fact cost">weakest for targeted lookup</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+  </div>
+
+  <p class="sub-h">what all four hold constant</p>
+  <div class="shared">
+    <ul>
+      <li>The same eight fixture archives, including one <b style="color:var(--attention)">partial</b>
+      (the session exited before it submitted a report) and one
+      <b style="color:var(--danger)">unreadable</b> (two bundles claim one archive key with
+      different digests). Neither is ever dressed up as complete.</li>
+      <li>The three real index states, <code>ready</code> / <code>partial</code> /
+      <code>unreadable</code>, always paired with a word so colour is never the only carrier.</li>
+      <li>The primary <code>report/report.html</code> rendered in the same sandbox as the Files
+      tab: no scripts, no network, citations as <code>path:line</code> text with no href.</li>
+      <li>Evidence carrying its real vocabulary: role, repo slot, original checkout path, media
+      type, bytes and SHA-256.</li>
+      <li>The absolute bundle directory, copyable, plus <b>Delete scout</b> in
+      <code>btn-danger-ghost</code> from two places.</li>
+      <li>A foreign bundle copied in from another machine, its producer label marked
+      <b>unverified</b> because a manifest claim is not an identity.</li>
+    </ul>
+  </div>
+
+  <p class="note">Static mockups beside the plan. Nothing here is wired to the daemon and nothing
+  here ships. Colours, radii, type scale, pill and button shapes are lifted from
+  <code>src/web/styles.css</code> into <code>tokens.css</code>; the data shapes follow
+  <code>ScoutArchiveSummary</code> and <code>ScoutArchiveDetail</code> in
+  <code>src/shared/scouts.ts</code>. The page-level contract they are all trying to satisfy is
+  <code>docs/plans/durable-scout-archive/phase-3-scouts-history-ui.md</code>.</p>
+</main>
+</body>
+</html>

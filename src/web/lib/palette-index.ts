@@ -224,6 +224,33 @@ const pageProvider: PaletteProvider = {
       glyph: "⚑",
       target: { kind: "route", route: { page: "shipped" } },
     },
+    {
+      id: "page:scouts",
+      kind: "page",
+      title: "Scouts",
+      detail: "Every investigation the fleet finished, and the evidence it kept.",
+      // Same rule as the Ship log's row: the words someone would reach for describe what
+      // the page is ABOUT, and almost none of them is in its title. "Scout" is the task
+      // kind that fills it, so it is here too, but nobody hunting an old answer types it.
+      keywords: [
+        "scout",
+        "investigation",
+        "findings",
+        "report",
+        "research",
+        "evidence",
+        "history",
+        "archive",
+        "audit",
+      ],
+      glyph: "⌖",
+      // ONE static page row, and deliberately no archive provider beside it. Providers
+      // derive from client stores and never fetch, and the archive catalog is unbounded
+      // history that is deliberately kept out of the SSE snapshot - indexing it here would
+      // either mean a fetch from the palette or loading every scout ever run into memory to
+      // answer a keystroke. Archive search stays inside the page that owns the catalog.
+      target: { kind: "route", route: { page: "scouts" } },
+    },
   ],
 };
 
@@ -603,6 +630,8 @@ function routeDestination(route: MissionRoute): string {
       return "Ensembles";
     case "shipped":
       return "the Ship log";
+    case "scouts":
+      return "Scouts";
     case "settings":
       return `${settingsCategory(route.category).label} settings`;
     case "fleet":

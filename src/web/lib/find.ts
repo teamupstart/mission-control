@@ -21,8 +21,15 @@ export interface FindOptions {
   caseSensitive: boolean;
 }
 
-/** Who said the thing that matched. The rail filters on this. */
-export type FindScope = "all" | "user" | "assistant" | "tool";
+/**
+ * Who said the thing that matched. The rail filters on this.
+ *
+ * `user` is the HUMAN's own turns, not every turn wearing the `user` role - see
+ * `turnAuthor`. The turns a machine typed are `injected`, which no pill selects: they
+ * are reachable under `all`, and separating them is what stops the "You" pill returning
+ * rows whose own byline says foreman.
+ */
+export type FindScope = "all" | "user" | "assistant" | "tool" | "injected";
 
 /** One occurrence, addressed precisely enough to highlight and to jump to. */
 export interface FindHit {
@@ -54,6 +61,38 @@ const ORIGIN_LABEL: Record<TurnOrigin, string> = {
   workflow: "workflow",
 };
 
+/** Who a turn belongs to, once. Every other authorship answer here is derived from it. */
+export type TurnAuthor = "operator" | "agent" | TurnOrigin;
+
+/**
+ * Who typed a turn - the ONE rule, expressed once.
+ *
+ * `role` cannot answer this and never could: Foreman delivering work, the daemon
+ * broadcasting `/reload-skills`, and workflow repair delivery all land as `user` turns
+ * byte-identical to a person's, so anything keying on the role alone reads those back as
+ * the human and makes the log claim they asked for work they never asked for. `origin` is
+ * the only field that separates them, which is why the byline, the find scope and the
+ * rail's "Yours" tab all come through here rather than each re-deciding it.
+ *
+ * "operator" rather than "user" deliberately: the word `user` is already spent on the
+ * ROLE, and the whole defect this guards against is the two being treated as synonyms.
+ *
+ * Note what this CANNOT know: attribution is recorded in memory at the moment of delivery
+ * (`server/injections.ts`), so a turn the daemon has forgotten - anything delivered before
+ * a restart - answers "operator" here. That is the honest answer rather than a wrong one:
+ * it is what the byline says too, so the rail is never more wrong than the transcript it
+ * indexes, and never differently wrong.
+ */
+export function turnAuthor(m: TranscriptMessage): TurnAuthor {
+  if (m.role === "assistant") return "agent";
+  return m.origin ?? "operator";
+}
+
+/** What to call a machine-typed turn's author, on a byline or a rail row. */
+export function originLabel(origin: TurnOrigin): string {
+  return ORIGIN_LABEL[origin];
+}
+
 /**
  * The byline a turn wears, and the ONE place that rule lives - the transcript's
  * `Turn` reads it from here too. A turn the human did not type says who did:
@@ -62,8 +101,9 @@ const ORIGIN_LABEL: Record<TurnOrigin, string> = {
  * never asked for.
  */
 export function turnWho(m: TranscriptMessage, agentLabel: string): string {
-  if (m.role === "assistant") return agentLabel;
-  return m.origin ? ORIGIN_LABEL[m.origin] : "you";
+  const author = turnAuthor(m);
+  if (author === "agent") return agentLabel;
+  return author === "operator" ? "you" : ORIGIN_LABEL[author];
 }
 
 /**
@@ -198,7 +238,14 @@ export function collectHits(
 
     if (row.kind === "turn") {
       const who = turnWho(row.message, agentLabel);
-      const scope: Exclude<FindScope, "all"> = row.message.role === "assistant" ? "assistant" : "user";
+      // Both of these read the SAME authorship rule, which is the point. They used to
+      // disagree: `who` came from `turnWho` (which reads origin) while the scope came
+      // from the role alone on the very next line, so one hit could carry
+      // `who: "foreman"` and `scope: "user"` at once and the "You" pill returned rows
+      // whose own byline said foreman.
+      const author = turnAuthor(row.message);
+      const scope: Exclude<FindScope, "all"> =
+        author === "agent" ? "assistant" : author === "operator" ? "user" : "injected";
       for (const { start, end } of matchesIn(row.message.text, re)) {
         hits.push({
           key: `${row.id}:t:${start}`,

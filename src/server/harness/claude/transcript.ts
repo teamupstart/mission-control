@@ -96,6 +96,14 @@ export function toMessage(o: unknown): TranscriptMessage | null {
   if (!o || typeof o !== "object") return null;
   const rec = o as Record<string, unknown>;
   if (rec.isSidechain) return null;
+  // Records the CLI injects on its own behalf, marked as such by the CLI. Read here for
+  // the same reason `computeSessionActivity` reads it (see `meta.ts`): they are not
+  // conversation. They carry no `origin` - the daemon never delivered them, so
+  // `injections.ts` has nothing to attribute - which meant they reached the log wearing
+  // the human's byline. Across the transcripts on one machine that was 282 image notes,
+  // 103 skill payload attachments and 62 copies of "Continue from where you left off.",
+  // every one of them rendered as something the operator had said.
+  if (rec.isMeta === true) return null;
   if (rec.type !== "user" && rec.type !== "assistant") return null;
   const m = rec.message as Record<string, unknown> | undefined;
   if (!m || typeof m !== "object") return null;

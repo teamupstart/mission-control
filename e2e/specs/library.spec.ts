@@ -197,18 +197,23 @@ test("each shelf's cross-link sits beside its question rather than in the page's
   await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/ensembles");
 });
 
-test("the topbar segment directly opens Fleet, Library and Runs, while Shift+P opens Sitrep", async ({
+test("the topbar segments directly open Fleet, Library, Runs and Scouts, while Shift+P opens Sitrep", async ({
   dashboard,
 }) => {
   const pages = dashboard.getByRole("navigation", { name: "Pages" });
   const fleet = pages.getByRole("button", { name: /Fleet/ });
   const library = pages.getByRole("button", { name: /Library/ });
   const runs = pages.getByRole("button", { name: /Runs/ });
-  await expect(pages.getByRole("button")).toHaveCount(3);
+  const scouts = pages.getByRole("button", { name: /Scouts/ });
+  // FOUR since Scouts became a top-level page. This count is the guard that a page added to
+  // the bar is a deliberate act - the bar is the densest strip in the app, and every segment
+  // is width the responsive ladder has to find somewhere.
+  await expect(pages.getByRole("button")).toHaveCount(4);
   await expect(fleet).toHaveAttribute("aria-current", "page");
   await expect(fleet.locator("kbd")).toHaveText("f");
   await expect(library.locator("kbd")).toHaveText("w");
   await expect(runs.locator("kbd")).toHaveText("r");
+  await expect(scouts.locator("kbd")).toHaveText("⇧S");
   // Sitrep left the title bar to make room for the third page segment.
   await expect(dashboard.locator("header.topbar").getByRole("button", { name: "Sitrep" }))
     .toHaveCount(0);

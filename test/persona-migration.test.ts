@@ -128,6 +128,8 @@ test("an upgraded database still takes ordinary writes, including a provenance-b
       sourcePath: "/plugins/agent-team/references/roles/reviewer.md",
       sourceRepo: "/plugins",
       pluginVersion: "0.1.1",
+      sourceKey: null,
+      catalogLabel: null,
       contentSha256: "a".repeat(64),
       importedAt: 300,
     },

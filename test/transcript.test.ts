@@ -81,6 +81,38 @@ test("parseLines keeps prompts + assistant turns, drops sidechains/tool-results/
   );
 });
 
+test("toMessage drops the records the CLI injects on its own behalf", () => {
+  // `isMeta` is the CLI's own marker for text IT wrote into the conversation: the
+  // image note, the skill payload attachment, the local-command caveat, the
+  // "Continue from where you left off." resume nudge. None of it came from the daemon,
+  // so `injections.ts` has nothing to attribute and no `origin` is ever set - which
+  // meant every one of these reached the log wearing the human's byline and read as
+  // something they had typed. `computeSessionActivity` has always skipped them
+  // (see meta.ts); the transcript builder now does too, on the same marker.
+  const imageNote = JSON.stringify({
+    type: "user",
+    uuid: "im1",
+    isMeta: true,
+    timestamp: "2026-07-11T02:00:03.000Z",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "[Image: original 2360x12932, displayed at 365x2000.]" }],
+    },
+  });
+  const resumeNudge = JSON.stringify({
+    type: "user",
+    uuid: "im2",
+    isMeta: true,
+    timestamp: "2026-07-11T02:00:04.000Z",
+    message: { role: "user", content: "Continue from where you left off." },
+  });
+  assert.equal(toMessage(JSON.parse(imageNote)), null);
+  assert.equal(toMessage(JSON.parse(resumeNudge)), null);
+  // The human's own prompt is untouched - the marker is what separates them, not the
+  // role and not the content.
+  assert.equal(toMessage(JSON.parse(userPrompt))!.text, "run the tests");
+});
+
 test("toMessage extracts text, tools, role, and timestamp", () => {
   const t = toMessage(JSON.parse(asstText));
   assert.deepEqual(t, {

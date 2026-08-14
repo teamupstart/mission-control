@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Scouts mockup B - Reading Room</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  /* ==========================================================================
+     B - The Reading Room. Two layers in one frame: the document reader below,
+     the transient search palette above it. Nothing here is a permanent list.
+     ========================================================================== */
+
+  .page {
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  /* ---- Layer 1: the reader ------------------------------------------------ */
+
+  .reader {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-rows: 52px auto 1fr;
+    min-height: 0;
+    /* Pushed behind the palette so the overlay reads as the active layer. */
+    opacity: 0.4;
+    filter: blur(1.5px);
+  }
+
+  .doc-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border-soft);
+    min-width: 0;
+  }
+  .doc-head h1 {
+    margin: 0 4px 0 0;
+    font-size: 13.5px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+  }
+  .doc-head .spacer { flex: 1; min-width: 8px; }
+  .doc-head .btn { display: inline-flex; align-items: center; gap: 6px; }
+  .doc-head kbd { position: relative; top: -0.5px; }
+
+  /* ---- Evidence filmstrip ------------------------------------------------- */
+
+  .filmstrip {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    padding: 11px 16px 12px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--border-soft);
+    overflow-x: auto;
+  }
+  .tile {
+    flex: none;
+    /* Sized so the longest label row and filename both fit without truncating. */
+    width: 172px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 9px 10px 10px;
+    text-align: left;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .tile:hover { border-color: color-mix(in oklab, var(--fg) 18%, var(--border)); }
+  .tile[aria-pressed="true"] {
+    border-color: color-mix(in oklab, var(--select) 55%, var(--border));
+    background: color-mix(in oklab, var(--select) 7%, var(--bg-2));
+  }
+  .tile-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .tile .eyebrow { line-height: 1; }
+  .tile[aria-pressed="true"] .eyebrow { color: var(--select); }
+  /* The dot never carries state alone - it is always followed by the word. */
+  .tile .state {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: 10px var(--mono);
+    color: var(--muted);
+  }
+  .tile .name {
+    font: 11px var(--mono);
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tile .meta { font: 10px var(--mono); color: var(--dim); white-space: nowrap; }
+
+  /* ---- The document ------------------------------------------------------- */
+
+  .doc-scroll { overflow: hidden; padding: 24px 16px 0; }
+  .doc-col {
+    max-width: 74ch;
+    margin: 0 auto;
+  }
+  .paper {
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    padding: 34px 40px;
+  }
+  .doc-foot {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 2px 24px;
+  }
+  .doc-foot .path {
+    font: 10.5px var(--mono);
+    line-height: 1.5;
+    color: var(--dim);
+    word-break: break-all;
+    min-width: 0;
+  }
+  .doc-foot .btn { flex: none; }
+
+  /* ---- Layer 2: the search overlay ---------------------------------------- */
+
+  .scrim {
+    position: absolute;
+    inset: 0;
+    background: rgba(4, 6, 9, 0.55);
+  }
+
+  .palette {
+    position: absolute;
+    top: 72px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(720px, 92%);
+    max-height: calc(100% - 112px);
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+  }
+
+  .palette-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px 10px;
+  }
+  .palette-head .count { font: 10.5px var(--mono); color: var(--dim); flex: none; }
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .palette-filters {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 14px 12px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+  }
+
+  .results {
+    list-style: none;
+    margin: 0;
+    padding: 6px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .result {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: start;
+    column-gap: 14px;
+    row-gap: 4px;
+    padding: 10px 12px 11px 13px;
+    border-left: 2px solid transparent;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .result + .result { margin-top: 1px; }
+  .result:hover { background: color-mix(in oklab, var(--panel-2) 70%, transparent); }
+  .result[aria-selected="true"] {
+    background: color-mix(in oklab, var(--panel-2) 92%, var(--fg) 3%);
+    border-left-color: var(--select);
+    border-radius: 3px 8px 8px 3px;
+  }
+  .result .title {
+    grid-column: 1;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+  }
+  .result .pill { grid-column: 2; grid-row: 1; justify-self: end; }
+  .result .why {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--muted);
+    min-width: 0;
+  }
+  .result .kind {
+    flex: none;
+    font: 10px var(--mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dim);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .result .why .snippet { min-width: 0; word-break: break-word; }
+  .result .meta {
+    grid-column: 1 / -1;
+    font: 10px var(--mono);
+    color: var(--dim);
+  }
+
+  .palette-foot {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 9px 14px;
+    border-top: 1px solid var(--border-soft);
+    background: var(--panel-2);
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  .palette-foot .hint { display: inline-flex; align-items: center; gap: 5px; }
+  .palette-foot .home { margin-left: auto; font: 10.5px var(--mono); color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="app">
+<header class="topbar">
+  <span class="brand"><span class="mark"></span>Mission Control</span>
+  <nav class="segments" aria-label="Pages">
+    <button><span class="glyph">▦</span>Fleet</button>
+    <button><span class="glyph">⌗</span>Library</button>
+    <button><span class="glyph">▷</span>Runs</button>
+    <button aria-current="page"><span class="glyph">⌖</span>Scouts</button>
+  </nav>
+  <span class="spacer"></span>
+  <span class="topbar-meta">8 archives · 24.1 MB</span>
+</header>
+
+<main class="page">
+
+  <!-- Layer 1: the reader, inert behind the open palette. -->
+  <div class="reader" aria-hidden="true">
+
+    <div class="doc-head">
+      <h1>Resume permission loss</h1>
+      <span class="pill ready"><span class="dot ready"></span>Complete</span>
+      <span class="chip agent agent-codex">codex</span>
+      <span class="chip">gpt-5.6</span>
+      <span class="chip">mission-control @ 4cc55a1d</span>
+      <span class="chip">Aug 12 18:50</span>
+      <span class="spacer"></span>
+      <button class="btn">Search <kbd>⌘</kbd><kbd>K</kbd></button>
+      <button class="btn">Evidence</button>
+      <button class="btn-danger-ghost btn">Delete scout</button>
+    </div>
+
+    <section class="filmstrip" aria-label="Evidence">
+      <button class="tile" aria-pressed="true">
+        <span class="tile-top">
+          <span class="eyebrow">Primary report</span>
+          <span class="state"><span class="dot ready"></span>ready</span>
+        </span>
+        <span class="name">report.html</span>
+        <span class="meta">text/html · 12.4 KB</span>
+      </button>
+      <button class="tile" aria-pressed="false">
+        <span class="tile-top">
+          <span class="eyebrow">Artifact</span>
+          <span class="state"><span class="dot ready"></span>ready</span>
+        </span>
+        <span class="name">permission-events.csv</span>
+        <span class="meta">text/csv · 4.7 KB</span>
+      </button>
+      <button class="tile" aria-pressed="false">
+        <span class="tile-top">
+          <span class="eyebrow">Artifact</span>
+          <span class="state"><span class="dot ready"></span>ready</span>
+        </span>
+        <span class="name">grant-timeline.png</span>
+        <span class="meta">image/png · 1.1 MB</span>
+      </button>
+      <button class="tile" aria-pressed="false">
+        <span class="tile-top">
+          <span class="eyebrow">Artifact</span>
+          <span class="state"><span class="dot ready"></span>ready</span>
+        </span>
+        <span class="name">resume-debug.log</span>
+        <span class="meta">text/plain · 2.8 KB</span>
+      </button>
+    </section>
+
+    <div class="doc-scroll">
+      <div class="doc-col">
+        <p class="sandbox-note">sandboxed report.html · scripts and network blocked</p>
+
+        <article class="paper">
+          <div class="report-doc">
+            <h1>Resume permission loss</h1>
+            <p class="q">Why did a resumed agent lose repository permissions?</p>
+
+            <div class="finding">
+              Resume rebuilds a session from its stored configuration but never replays the
+              repository grant, so the relaunched session starts with an empty permission
+              allowlist. Every resumed session loses repository writes at its first tool call,
+              and the failure surfaces as a generic refusal rather than a missing grant.
+            </div>
+
+            <h2>Evidence</h2>
+            <table>
+              <thead>
+                <tr><th scope="col">Step</th><th scope="col">Grant present</th><th scope="col">Source</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Initial launch</td>
+                  <td class="num">yes</td>
+                  <td class="num"><code>dispatcher.ts:214</code></td>
+                </tr>
+                <tr>
+                  <td>Stored config</td>
+                  <td class="num">yes</td>
+                  <td class="num"><code>harness.db tasks.grants</code></td>
+                </tr>
+                <tr>
+                  <td>Resume</td>
+                  <td class="num">no</td>
+                  <td class="num"><code>registry.ts:412</code></td>
+                </tr>
+              </tbody>
+            </table>
+            <p>
+              The grant survives the write and the read. It is dropped at the point where the
+              rebuilt session is handed to the harness, which constructs a fresh permission set
+              from defaults instead of the stored one.
+            </p>
+
+            <h2>What we ruled out</h2>
+            <ul>
+              <li>Grant expiry - the stored record carries no TTL and the row is unchanged after resume.</li>
+              <li>A harness-specific bug - the same loss reproduces on claude, codex, and pi.</li>
+              <li>Worktree identity drift - the repository path and digest match across both launches.</li>
+            </ul>
+
+            <h2>Limits</h2>
+            <p>
+              Only single-repository sessions were traced. A session attaching more than one
+              repository may lose the grants in a different order, and that path is untested here.
+            </p>
+          </div>
+        </article>
+
+        <div class="doc-foot">
+          <span class="path">~/.mission-control/scouts/7aa704fd-d2ab-48b3-a726-0c2643ed91d2/9f5db6c8-79f5-4f9e-84aa-8b5dc15362f8</span>
+          <button class="btn btn-sm">Copy path</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Layer 2: the transient search overlay. Opens over the reader, closes back into it. -->
+  <div class="scrim"></div>
+
+  <section class="palette" aria-label="Search archived scouts">
+    <div class="palette-head">
+      <span class="search-wrap">
+        <label class="sr-only" for="scout-search">Search archived scouts</label>
+        <input
+          id="scout-search"
+          class="search-input"
+          type="search"
+          value="permission"
+          placeholder="Search questions, findings, reports, files..."
+        />
+      </span>
+      <span class="count">3 results</span>
+    </div>
+
+    <div class="palette-filters">
+      <button class="filter">Source</button>
+      <button class="filter">Repo</button>
+      <button class="filter">Agent</button>
+      <button class="filter on">Repo: mission-control</button>
+      <button class="filter">When</button>
+    </div>
+
+    <ul class="results" role="listbox" aria-label="Search results">
+      <li class="result" role="option" aria-selected="true">
+        <span class="title">Resume permission loss</span>
+        <span class="pill ready"><span class="dot ready"></span>Complete</span>
+        <span class="why">
+          <span class="kind">report text</span>
+          <span class="snippet">…the relaunched session starts with an empty <mark>permission</mark> allowlist…</span>
+        </span>
+        <span class="meta">codex · mission-control · Aug 12 · 4 files · 1.2 MB</span>
+      </li>
+
+      <li class="result" role="option" aria-selected="false">
+        <span class="title">Auto-mode trust dialog</span>
+        <span class="pill ready"><span class="dot ready"></span>Complete</span>
+        <span class="why">
+          <span class="kind">question</span>
+          <span class="snippet">Why did dispatched Claude stop entering auto mode after the <mark>permission</mark> prompt?</span>
+        </span>
+        <span class="meta">claude · mission-control · Jul 29 · 6 files · 13.1 MB</span>
+      </li>
+
+      <li class="result" role="option" aria-selected="false">
+        <span class="title">Topbar density at 1344px</span>
+        <span class="pill partial"><span class="dot partial"></span>Partial - report missing</span>
+        <span class="why">
+          <span class="kind">artifact path</span>
+          <span class="snippet">docs/reports/topbar-density/<mark>permission</mark>-trace.txt</span>
+        </span>
+        <span class="meta">claude · mission-control · Aug 12 · 2 files · 318 KB</span>
+      </li>
+    </ul>
+
+    <div class="palette-foot">
+      <span class="hint"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span class="hint"><kbd>↵</kbd> open</span>
+      <span class="hint"><kbd>esc</kbd> close</span>
+      <span class="home">~/.mission-control/scouts</span>
+    </div>
+  </section>
+
+</main>
+</div>
+
+<nav class="mock-nav">
+  <span>Scouts</span>
+  <a href="index.html">index</a>
+  <a href="a-dossier.html">A · Dossier</a>
+  <a class="on" href="b-reading-room.html">B · Reading Room</a>
+  <a href="c-findings-board.html">C · Findings Board</a>
+  <a href="d-research-log.html">D · Research Log</a>
+  <span class="keys">static mockup · nothing is wired to the daemon</span>
+</nav>
+</body>
+</html>

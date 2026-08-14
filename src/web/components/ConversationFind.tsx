@@ -21,7 +21,10 @@ import { Tooltip } from "./Tooltip.tsx";
 
 const SCOPES: { id: FindScope; label: string; hint: string }[] = [
   { id: "all", label: "All", hint: "Match anywhere in this conversation" },
-  { id: "user", label: "You", hint: "Match only turns sent to the agent" },
+  // Worded around the defect until this pill was fixed: it used to select on the role
+  // alone, so "turns sent to the agent" was the honest description of what it returned -
+  // Foreman's and the daemon's messages included. It now means what it says.
+  { id: "user", label: "You", hint: "Match only the messages you typed" },
   { id: "assistant", label: "Agent", hint: "Match only the agent's replies" },
   { id: "tool", label: "Tools", hint: "Match only tool calls - where the file paths are" },
 ];

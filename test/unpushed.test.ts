@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,13 @@ import { gitIn, mkCloneOnBranch, mkOriginAndClone } from "./helpers/git-fixture.
 // detached HEAD, a branch pushed under another name - and none of them survive being mocked.
 // The exec seam is used only for the two failures real git will not perform on demand: a
 // child that dies without answering, and a count that comes back unparsable.
+
+/** A repo with an identity, so a commit here does not depend on the operator's git config. */
+function gitInit(dir: string): void {
+  execFileSync("git", ["init", "-q", "-b", "main", dir], { stdio: "pipe" });
+  gitIn(dir, "config", "user.email", "t@test");
+  gitIn(dir, "config", "user.name", "t");
+}
 
 /** Commit a change in `dir` and return nothing - the shape "the agent fixed the findings". */
 function commitWork(dir: string, text: string): void {
@@ -108,6 +116,40 @@ test("work pushed under a DIFFERENT branch name is not reported as unpushed", as
 
   assert.equal(obs.state, "pushed", "commits reachable from any origin ref are pushed");
   assert.equal(unpushedClause(obs), null);
+});
+
+test("a clone whose remote is not named `origin` is not accused of its whole history", async () => {
+  // Regression. Scoping the count to `--remotes=origin` reported every commit in a fully
+  // pushed fork as unpushed, because a clone whose remote is called `upstream` has no
+  // `origin/*` refs for the count to find. The reader compares against EVERY remote-tracking
+  // ref for exactly this reason.
+  const root = mkdtempSync(join(tmpdir(), "harness-unpushed-fork-"));
+  const origin = join(root, "origin");
+  gitInit(origin);
+  writeFileSync(join(origin, "keep.txt"), "base\n");
+  gitIn(origin, "add", "-A");
+  gitIn(origin, "commit", "-qm", "base");
+  commitWork(origin, "more history");
+
+  // `--origin upstream` is what a fork's clone looks like: a real tracking ref, named
+  // anything but origin.
+  const fork = join(root, "fork");
+  execFileSync("git", ["clone", "-q", "--origin", "upstream", origin, fork], { stdio: "pipe" });
+
+  const clean = await readUnpushedCommits(fork);
+  assert.deepEqual(
+    clean,
+    { state: "pushed", branch: "main", upstream: "upstream/main" },
+    "a fully pushed fork must claim nothing, whatever its remote is called",
+  );
+
+  // And it still SEES genuinely local work on that same fork.
+  gitIn(fork, "config", "user.email", "t@test");
+  gitIn(fork, "config", "user.name", "t");
+  commitWork(fork, "local only");
+  const ahead = await readUnpushedCommits(fork);
+  assert.equal(ahead.state, "ahead");
+  assert.equal(ahead.state === "ahead" && ahead.commits, 1);
 });
 
 test("a branch that tracks nothing is UNKNOWN, never an accusation", async () => {

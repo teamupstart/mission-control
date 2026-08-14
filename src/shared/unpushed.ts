@@ -54,7 +54,7 @@ export type UnpushedUnknownReason =
 export type UnpushedCommits =
   | {
     state: "ahead";
-    /** How many commits HEAD holds that NO origin ref holds. Always 1 or more. */
+    /** How many commits HEAD holds that NO remote-tracking ref holds. Always 1 or more. */
     commits: number;
     /** The branch HEAD is on, for a sentence that can name it. */
     branch: string;
@@ -64,8 +64,9 @@ export type UnpushedCommits =
      * The GATE that allowed a claim to be made, and not the thing the count was measured
      * against - those are two different refs on purpose, and the reader
      * (`src/server/git/unpushed.ts`) explains why at length. In short: a branch tracking
-     * nothing must stay silent, but a session that pushed its work under another name has
-     * still pushed it, so the count spans every `origin/*` ref while the gate does not.
+     * nothing must stay silent, but a session that pushed its work under another name, or to
+     * a remote not called `origin`, has still pushed it - so the count spans every
+     * remote-tracking ref while the gate does not.
      */
     upstream: string;
   }

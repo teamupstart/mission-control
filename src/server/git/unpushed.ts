@@ -51,15 +51,15 @@ function unknown(why: UnpushedUnknownReason): UnpushedCommits {
  *     matters most. A branch with no upstream is the ordinary state of work that was never
  *     meant to be pushed yet, and calling that "unpushed commits" would accuse a person of
  *     forgetting a step they never owed.
- *  4. How many commits does HEAD hold that no `origin/*` ref does?
+ *  4. How many commits does HEAD hold that no remote-tracking ref does?
  *
- * Step 4 compares against EVERY origin remote-tracking ref rather than against `@{upstream}`
- * alone, while step 3 still insists an upstream exists. That split is deliberate and it is
- * the difference between a useful sentence and a wrong one. The gate has to be `@{upstream}`
+ * Step 4 compares against EVERY remote-tracking ref rather than against `@{upstream}` alone,
+ * while step 3 still insists an upstream exists. That split is deliberate and it is the
+ * difference between a useful sentence and a wrong one. The gate has to be `@{upstream}`
  * because "this branch tracks nothing" is exactly the case that must stay silent. The COUNT
- * must not be, because a session that pushed its work to a differently-named branch has
- * genuinely pushed it, and `@{upstream}..HEAD` would still report those commits as missing
- * and tell a person to push something that is already on the remote.
+ * must not be, because a session that pushed its work to a differently-named branch, or to a
+ * remote that is not called `origin`, has genuinely pushed it - and a narrower comparison
+ * would report those commits as missing and tell a person to push what is already there.
  *
  * Every failure mode returns `unknown`, never a zero and never a count. "We could not look"
  * and "there is nothing there" are different facts, and only one of them may be spoken.
@@ -98,9 +98,18 @@ export async function readUnpushedCommits(
   if (tracking.code !== 0 || !tracking.stdout.trim()) return unknown("no_upstream");
   const upstream = tracking.stdout.trim();
 
-  // 4. Commits no origin ref holds. A branch that was pushed reads 0 here whether its pull
-  //    request is open or merged, because its commits stay reachable from `origin/<branch>`.
-  const counted = await git(root, ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"]);
+  // 4. Commits NO remote-tracking ref holds. A branch that was pushed reads 0 here whether
+  //    its pull request is open or merged, because its commits stay reachable from
+  //    `<remote>/<branch>`.
+  //
+  //    Every remote rather than `--remotes=origin`, which is what `resetWouldDestroyWork`
+  //    uses. That refusal can afford to assume origin because being wrong there costs a
+  //    worktree; being wrong HERE costs a person a hunt for a mistake they did not make. A
+  //    clone whose remote is named anything else - `upstream` on a fork is the ordinary case
+  //    - has no `origin/*` refs at all, so scoping the count to origin reports its entire
+  //    history as unpushed. Widening to every remote can only ever make the count smaller,
+  //    which is the direction this function is allowed to be wrong in.
+  const counted = await git(root, ["rev-list", "--count", "HEAD", "--not", "--remotes"]);
   if (counted.outcomeUnknown) return unknown("git_failed");
   if (counted.code !== 0) return unknown("git_failed");
 

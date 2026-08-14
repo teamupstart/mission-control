@@ -58,6 +58,8 @@ interface ForemanLease {
 let plannerHealthReport: ForemanPlannerHealthReport | null = null;
 /** Operator retry signal. Process-local by design: it is control, not durable schedule state. */
 let plannerRetryGeneration = 0;
+/** The one worker allowed to spend the current retry generation. */
+let plannerRetryClaim: { generation: number; workerId: string } | null = null;
 /** Daemon-process identity for rebuilding the projection after a restart. */
 const plannerProjectionEpoch = randomUUID();
 
@@ -181,12 +183,32 @@ export function requestForemanPlannerRetry(): ForemanPlannerControl {
   plannerRetryGeneration = plannerRetryGeneration >= Number.MAX_SAFE_INTEGER
     ? 1
     : plannerRetryGeneration + 1;
-  return { retryGeneration: plannerRetryGeneration, projectionEpoch: plannerProjectionEpoch };
+  plannerRetryClaim = null;
+  return foremanPlannerControl();
+}
+
+/** Let only the live leader consume one retry generation, once across worker restarts. */
+export function claimForemanPlannerRetry(
+  workerId: string,
+  retryGeneration: number,
+  now = Date.now(),
+): boolean {
+  if (liveLease(now)?.workerId !== workerId) return false;
+  if (retryGeneration !== plannerRetryGeneration || retryGeneration === 0) return false;
+  plannerRetryClaim ??= { generation: retryGeneration, workerId };
+  return plannerRetryClaim.generation === retryGeneration
+    && plannerRetryClaim.workerId === workerId;
 }
 
 /** The worker polls this beside config; no scheduler decision is made here. */
 export function foremanPlannerControl(): ForemanPlannerControl {
-  return { retryGeneration: plannerRetryGeneration, projectionEpoch: plannerProjectionEpoch };
+  return {
+    retryGeneration: plannerRetryGeneration,
+    retryClaimedBy: plannerRetryClaim?.generation === plannerRetryGeneration
+      ? plannerRetryClaim.workerId
+      : null,
+    projectionEpoch: plannerProjectionEpoch,
+  };
 }
 
 /** Live status: config + whether the worker heartbeated + derived queue/counts. */

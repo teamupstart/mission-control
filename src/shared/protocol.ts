@@ -2158,9 +2158,18 @@ export type ForemanPlannerHealthReport = z.infer<typeof ForemanPlannerHealthRepo
 /** A body is still schema-checked even though retry needs no operator options. */
 export const ForemanPlannerRetrySchema = z.object({}).strict();
 
+/** A live leader atomically claims one outstanding operator retry. */
+export const ForemanPlannerRetryClaimSchema = z.object({
+  workerId: z.string().min(1).max(256),
+  retryGeneration: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+}).strict();
+export type ForemanPlannerRetryClaim = z.infer<typeof ForemanPlannerRetryClaimSchema>;
+
 /** Process-local daemon signal polled by the worker; it is not scheduler state. */
 export interface ForemanPlannerControl {
   retryGeneration: number;
+  /** Worker that consumed this generation, or null while it is waiting for a live leader. */
+  retryClaimedBy: string | null;
   /** Changes on daemon restart so a live worker republishes its in-memory health. */
   projectionEpoch: string;
 }

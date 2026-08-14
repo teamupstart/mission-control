@@ -25,6 +25,7 @@ import {
   ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
   ForemanPlannerHealthReportSchema,
+  ForemanPlannerRetryClaimSchema,
   ForemanPlannerRetrySchema,
   HarnessesConfigPatchSchema,
   UiConfigPatchSchema,
@@ -150,6 +151,7 @@ import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
 import {
   claimForemanLease,
+  claimForemanPlannerRetry,
   foremanPlannerControl,
   foremanStatus,
   getForemanConfig,
@@ -3425,6 +3427,16 @@ export function buildApp(
   // The worker owns this circuit. These routes only project its bounded report and carry
   // an operator's retry signal across the daemon/worker process boundary.
   app.get("/api/foreman/planner/control", (c) => c.json(foremanPlannerControl()));
+  app.post("/api/foreman/planner/control/claim", async (c) => {
+    const parsed = await parseBody(c, ForemanPlannerRetryClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json({
+      claimed: claimForemanPlannerRetry(
+        parsed.data.workerId,
+        parsed.data.retryGeneration,
+      ),
+    });
+  });
   app.post("/api/foreman/planner/health", async (c) => {
     const parsed = await parseBody(c, ForemanPlannerHealthReportSchema);
     if (!parsed.ok) return parsed.res;

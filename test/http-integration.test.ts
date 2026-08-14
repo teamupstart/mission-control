@@ -1282,13 +1282,85 @@ test("Foreman status exposes only the leader's bounded planner health and a retr
     body: JSON.stringify({}),
   });
   assert.equal(retry.status, 200);
-  const requested = (await retry.json()) as { retryGeneration: number };
+  const requested = (await retry.json()) as {
+    retryGeneration: number;
+    retryClaimedBy: string | null;
+    projectionEpoch: string;
+  };
   assert.ok(requested.retryGeneration > 0);
+  assert.equal(requested.retryClaimedBy, null);
   const control = await app.request("/api/foreman/planner/control", { headers: LOOPBACK });
+  assert.deepEqual(await control.json(), requested);
+
+  const standbyClaim = await app.request("/api/foreman/planner/control/claim", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      workerId: "standby",
+      retryGeneration: requested.retryGeneration,
+    }),
+  });
+  assert.deepEqual(await standbyClaim.json(), { claimed: false });
+
+  const leaderClaim = await app.request("/api/foreman/planner/control/claim", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      workerId: "worker-c",
+      retryGeneration: requested.retryGeneration,
+    }),
+  });
+  assert.deepEqual(await leaderClaim.json(), { claimed: true });
+  const claimedControl = await app.request("/api/foreman/planner/control", {
+    headers: LOOPBACK,
+  });
   assert.equal(
-    ((await control.json()) as { retryGeneration: number }).retryGeneration,
-    requested.retryGeneration,
+    ((await claimedControl.json()) as { retryClaimedBy: string | null }).retryClaimedBy,
+    "worker-c",
   );
+
+  // A worker-only restart must not replay a generation the previous worker consumed.
+  await app.request("/api/foreman/heartbeat/release", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ workerId: "worker-c" }),
+  });
+  await app.request("/api/foreman/heartbeat", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ workerId: "worker-d" }),
+  });
+  const replay = await app.request("/api/foreman/planner/control/claim", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      workerId: "worker-d",
+      retryGeneration: requested.retryGeneration,
+    }),
+  });
+  assert.deepEqual(await replay.json(), { claimed: false });
+
+  // A new click is a new generation and belongs to the new live leader exactly once.
+  const nextRetry = await app.request("/api/foreman/planner/retry", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
+  const nextRequested = (await nextRetry.json()) as {
+    retryGeneration: number;
+    retryClaimedBy: string | null;
+  };
+  assert.ok(nextRequested.retryGeneration > requested.retryGeneration);
+  assert.equal(nextRequested.retryClaimedBy, null);
+  const nextClaim = await app.request("/api/foreman/planner/control/claim", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      workerId: "worker-d",
+      retryGeneration: nextRequested.retryGeneration,
+    }),
+  });
+  assert.deepEqual(await nextClaim.json(), { claimed: true });
 });
 
 test("the queue endpoints 404 for an unknown session", async () => {

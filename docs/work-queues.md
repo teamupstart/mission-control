@@ -317,7 +317,9 @@ The Foreman popover makes that circuit visible. **Dependency planner** reports
 count, the last bounded error, and when the next automatic retry is due. While degraded,
 **Retry planner now** spends one immediate probe. It does not disable the serial fallback:
 if the provider or plan store is still unavailable, Foreman returns to one-at-a-time
-scheduling and waits through the bounded cooldown again.
+scheduling and waits through the bounded cooldown again. The live worker claims each retry
+signal once, so restarting only the worker does not replay an old click as a new model call;
+a retry requested while no leader is live waits for the next leader to claim it.
 
 Changing the effective **Foreman Provider** or **Backlog** model retires the previous pair's
 failure state and forces an immediate dependency read, even if an older stored plan still

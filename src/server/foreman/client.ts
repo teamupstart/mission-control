@@ -964,6 +964,16 @@ export class ForemanClient implements ForemanActions {
     return get<ForemanPlannerControl>("/api/foreman/planner/control");
   }
 
+  /** Atomically consume a pending operator retry while this worker holds the lease. */
+  async claimPlannerRetry(workerId: string, retryGeneration: number): Promise<boolean> {
+    const res = await send("POST", "/api/foreman/planner/control/claim", {
+      workerId,
+      retryGeneration,
+    });
+    if (!res.ok) return false;
+    return ((await res.json()) as { claimed?: unknown }).claimed === true;
+  }
+
   /** Project the leader's bounded circuit state for status/UI without touching SQLite. */
   async reportPlannerHealth(workerId: string, health: ForemanPlannerHealth): Promise<void> {
     const res = await send("POST", "/api/foreman/planner/health", { workerId, ...health });

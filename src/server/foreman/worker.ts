@@ -510,8 +510,23 @@ async function syncBacklogPlanner(
     publishedPlannerHealth = "";
   }
   if (control && control.retryGeneration !== backlogRetryGeneration) {
-    backlogRetryGeneration = control.retryGeneration;
-    if (control.retryGeneration > 0) {
+    if (control.retryGeneration === 0) {
+      backlogRetryGeneration = 0;
+    } else if (control.retryClaimedBy === WORKER_ID) {
+      // Also covers a lost claim response: the daemon's assignment is the durable fact
+      // for this daemon/worker lifetime, and this process has not handled it locally yet.
+      backlogRetryGeneration = control.retryGeneration;
+      backlogPlanner.requestProbe();
+      lastBacklogNote = "";
+      log("backlog: operator requested an immediate dependency-planner retry");
+    } else if (control.retryClaimedBy) {
+      // A previous worker already consumed this generation. Remember it locally so a
+      // worker-only restart cannot replay an old click forever.
+      backlogRetryGeneration = control.retryGeneration;
+    } else if (
+      await client.claimPlannerRetry(WORKER_ID, control.retryGeneration).catch(() => false)
+    ) {
+      backlogRetryGeneration = control.retryGeneration;
       backlogPlanner.requestProbe();
       lastBacklogNote = "";
       log("backlog: operator requested an immediate dependency-planner retry");

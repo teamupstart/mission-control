@@ -73,8 +73,10 @@ export function ScoutsPage({
    * announcement is a genuine addition for the live region to read.
    */
   const [status, setStatus] = useState<{ text: string; n: number } | null>(null);
-  /** The control that opened the modal, so focus can go back to it. */
+  /** The control that opened the modal, so focus can go back to it when it is DISMISSED. */
   const invoker = useRef<HTMLElement | null>(null);
+  /** Set after a delete: focus belongs back in the rail once the render lands. */
+  const [pendingFocus, setPendingFocus] = useState(false);
   const railRef = useRef<HTMLElement | null>(null);
 
   // The search box is LOCAL while it is being typed and the route is updated behind it, so
@@ -135,6 +137,24 @@ export function ScoutsPage({
     });
   }, [selectedKey, catalog.listState, catalog.archives, filters, replace]);
 
+  // Applied after the rail has re-rendered without the deleted row, so the element focused
+  // is one that is actually on screen. Depending on the archives list is what makes this
+  // fire on the render that matters rather than on the state change that requested it.
+  useEffect(() => {
+    if (!pendingFocus) return;
+    // The RAIL, not a row inside it.
+    //
+    // A delete re-renders the rail twice - once locally, once when the refetch lands - and
+    // the second render replaces the row elements, so any row focused after the first is
+    // torn out from under the operator and focus falls to `<body>`. Two earlier attempts
+    // chased that with a frame callback and then with a settle condition, and both were
+    // beaten by the same second render. The `<aside>` keeps its identity across both, so
+    // it is the one landing point that survives - and it is a labelled region, so a screen
+    // reader announces "Scout archives" and Tab walks straight into the search and rows.
+    railRef.current?.focus();
+    setPendingFocus(false);
+  }, [pendingFocus, catalog.archives]);
+
   const groups = useMemo(() => {
     const out: { day: string; rows: ArchiveSummary[] }[] = [];
     for (const archive of catalog.archives) {
@@ -161,23 +181,23 @@ export function ScoutsPage({
       // sits near the deleted row's old position, which they never asked for.
       if (key === selectedKey) select(next ? next.key : null);
       catalog.refresh();
-      // Focus must land somewhere that OUTLIVES the refresh. A row's own "…" button is gone
-      // the moment the list re-renders, so restoring focus to it leaves a keyboard or screen
-      // reader user on <body> with no landing point a second later. The reader header's
-      // Delete button does persist, so it is still the right target when it was the invoker.
-      const invokedFrom = invoker.current;
-      if (!invokedFrom || !railRef.current?.contains(invokedFrom)) {
-        invokedFrom?.focus();
-        return;
-      }
-      // The row that took the deleted one's place - the same row the selection rule above
-      // chose - rather than jumping to the top of the rail. After the commit, so the removed
-      // row is already gone and the index lines up with what is on screen.
-      const landing = Math.max(0, Math.min(index, remaining.length - 1));
-      requestAnimationFrame(() => {
-        const rows = railRef.current?.querySelectorAll<HTMLElement>(".scouts-row-open");
-        (rows?.[landing] ?? railRef.current)?.focus();
-      });
+      // Focus lands in the RAIL, whichever control started the delete, because neither
+      // invoker survives its own deletion:
+      //
+      //   - a row's "…" button is unmounted with its row;
+      //   - the reader header's "Delete scout" button only ever deletes the archive being
+      //     read, and that navigates - which clears `detail` and swaps the whole header out
+      //     for the loading branch, taking the button with it. It looks durable and is not.
+      //
+      // The rail row that took the deleted archive's place is the one the selection rule
+      // above already chose, so focus follows the same reasoning the reader does. After the
+      // commit, so the removed row is gone and the index lines up with what is on screen.
+      // Handed to an EFFECT rather than focused here or in a rAF. Deleting also navigates
+      // and refetches, so at this point React has not yet committed the new rail - a focus
+      // call now (or on the next frame) lands on a node the very next render replaces, and
+      // the operator ends up on `<body>` anyway. That is exactly what the first attempt at
+      // this fix did.
+      setPendingFocus(true);
     },
     [catalog, select, selectedKey],
   );

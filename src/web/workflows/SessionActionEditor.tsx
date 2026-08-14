@@ -753,9 +753,30 @@ export function SessionActionEditor({
     }),
   });
   const choices = completionChoices(capabilities, draft.completionKind, capabilitiesLoading);
-  const retainedCompletion = choices.find(
-    (choice) => choice.kind === draft.completionKind && choice.disabled,
-  );
+  /*
+   * The stored completion this build cannot prove - or NOTHING at all while the answer is still
+   * in flight.
+   *
+   * The `capabilitiesLoading` arm is the review finding, and it is the same lesson
+   * `completionChoices` learned one level down. The retained arm is "selected and not among
+   * what was offered", which is true of every action for the round trip before the daemon
+   * answers, because nothing has been offered yet. Reading it ungated made the chip draw amber
+   * and state "This build cannot prove the completion this action names" about `session_turn`,
+   * on a daemon that plainly runs it - a false claim on the one surface whose job is to state a
+   * guarantee, not a cosmetic flash.
+   *
+   * So the mark is gated here, once, rather than at each of the three places that read it: the
+   * tone, the tooltip and the note beneath the chips are three views of one fact, and a fact
+   * nobody has established yet has no views. Loading is not a refusal; the honest signal for a
+   * pending read is Save standing down with `sessionActionCapabilityBlock`'s "Waiting for this
+   * daemon to report which completions it can prove" on it, which is unchanged.
+   *
+   * An empty answer once the read has FINISHED still marks, because "the daemon never said" is
+   * a state to act on where "the daemon has not said yet" is one to wait through.
+   */
+  const retainedCompletion = capabilitiesLoading
+    ? undefined
+    : choices.find((choice) => choice.kind === draft.completionKind && choice.disabled);
   /*
    * What the closed chip reads: the SHARED clause, by the same call the contract line beneath
    * it makes.

@@ -254,6 +254,76 @@ test("a completion this build cannot prove stays visible and marked, not hidden 
   await expect(retained).toHaveAttribute("disabled", "");
 });
 
+test("while the capability answer is in flight, the chip claims nothing", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The inverse of the test above, and the reason it needs a browser: the mark is correct only
+   * once there is an ANSWER to be marked by. Every editor opens before the capabilities request
+   * lands - `useSessionActionCapabilities` starts empty and loading - and the retained arm is
+   * "selected, and not among what has been offered", which is true of every action for that
+   * whole window. Reading it ungated drew the chip amber and stated "This build cannot prove
+   * the completion this action names" about actions this daemon proves perfectly well.
+   *
+   * The window is HELD open rather than raced against, so the two states are asserted on one
+   * page with one variable between them: the answer arrived.
+   */
+  const action = await api<ActionRow>(daemon, "/api/session-actions", {
+    name: "Ships it later",
+    promptMarkdown: "# Ships it later\n\nOpen the pull request.\n",
+    completion: { kind: "pull_request" },
+  });
+
+  let answer = (): void => {};
+  const held = new Promise<void>((resolve) => { answer = resolve; });
+  await dashboard.route("**/api/session-actions/capabilities", async (route) => {
+    await held;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        completions: [
+          { kind: "session_turn", available: true, label: "Session turn finishes", unavailableReason: null },
+          {
+            kind: "pull_request",
+            available: false,
+            label: "Pull request is opened and verified",
+            unavailableReason: "This build cannot verify a pull request yet.",
+          },
+        ],
+      }),
+    });
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/library/actions/${action.id}`);
+  await expect(nameField(dashboard)).toHaveValue("Ships it later");
+
+  // Present first, so the absences beneath it are facts about the state and not about a chip
+  // that had not drawn yet. The value is the stored completion, in the shared words - the one
+  // string this screen owns, which needs no daemon to print.
+  await expect(chip(dashboard, "completes when")).toContainText("Pull request is opened and verified");
+  await expect(dashboard.locator(".lib-chip.is-attention")).toHaveCount(0);
+  await expect(dashboard.locator("p.lib-props-note")).toHaveCount(0);
+  // Its description is the ordinary one - what the field IS, rather than a verdict on it. The
+  // positive half is what stops the negative from passing on a page with no tooltips at all.
+  await expect(dashboard.locator("span.tt-desc", {
+    hasText: "What Mission Control must observe before the stages after this action run",
+  })).toHaveCount(1);
+  await expect(dashboard.locator("span.tt-desc", {
+    hasText: "This build cannot prove the completion this action names",
+  })).toHaveCount(0);
+  // And the sentence beneath states the action's own contract throughout, unqualified.
+  await expect(contract(dashboard)).toContainText("Pull request is opened and verified");
+
+  answer();
+
+  // The answer lands, and it is a real no: now the chip marks and says whose refusal it is.
+  await expect(dashboard.locator(".lib-chip.is-attention"))
+    .toContainText("Pull request is opened and verified");
+  await expect(dashboard.locator("p.lib-props-note"))
+    .toHaveText("This build cannot verify a pull request yet.");
+});
+
 test("the overflow menu holds Archive, and Escape closes it without leaving the page", async ({
   dashboard,
   daemon,

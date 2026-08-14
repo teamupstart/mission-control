@@ -101,11 +101,13 @@ const editor = (
   target: SessionAction | null,
   seed?: SessionActionDraftSeed,
   capabilities: SessionActionCompletionCapability[] = CAPABILITIES,
+  capabilitiesLoading = false,
 ): string =>
   renderToStaticMarkup(createElement(SessionActionEditor, {
     action: target,
     ...(seed ? { seed } : {}),
     capabilities,
+    capabilitiesLoading,
     skills: [
       { id: "pull-request", name: "pull-request", description: "", category: "git", enforcement: "triggered" },
     ],
@@ -396,6 +398,57 @@ test("a capability read still in flight accuses the action of nothing", () => {
     completionChoices(CAPABILITIES, "pull_request", false)[0]!.note,
     "This build cannot verify a pull request yet.",
   );
+});
+
+test("the completion chip's FACE says nothing either, while the read is in flight", () => {
+  /*
+   * The same rule as the test above, asserted where an operator actually reads it. The note was
+   * gated on `loading` and the chip was not, so for the round trip after every open the chip
+   * drew amber and its tooltip stated "This build cannot prove the completion this action
+   * names" - about `session_turn`, on a daemon that plainly runs it. The mark is the whole
+   * point of the chip: it is what tells an operator this action is waiting on somebody.
+   *
+   * Every editor passes through this state, because `useSessionActionCapabilities` starts
+   * `loading: true` with an empty list and the retained arm is selected-but-not-yet-offered for
+   * exactly as long as that is true.
+   */
+  const pending = editor(action(), undefined, [], true);
+  assert.doesNotMatch(pending, /is-attention/, "the chip accused the action mid-fetch");
+  assert.doesNotMatch(pending, /This build cannot prove the completion this action names/);
+  assert.doesNotMatch(pending, /class="lib-props-note"/);
+  // The stored completion still reads as itself, in the shared words - held, not repainted.
+  assert.match(pending, /<span class="lib-chip-v">Session turn finishes<\/span>/);
+  assert.match(pending, /<b>Session turn finishes<\/b>/);
+  // The chip's tooltip is the ordinary one: what the field is, rather than a verdict on it.
+  assert.match(
+    pending,
+    /What Mission Control must observe before the stages after this action run/,
+  );
+
+  // The signal that IS honest mid-fetch, on the surface that owns it. A draft choosing a
+  // completion has to prove it can be run, so Save stands down and names the fact it is
+  // waiting for - and it still says nothing about what this build can prove.
+  const drafting = editor(null, {
+    name: "Tidy the workspace",
+    description: "",
+    promptMarkdown: "# Tidy\n",
+    requiredSkillId: null,
+    completionKind: "session_turn",
+  }, [], true);
+  assert.match(drafting, /<button class="btn" disabled=""[^>]*>Save<\/button>/);
+  assert.match(drafting, /Waiting for this daemon to report which completions it can prove/);
+  assert.doesNotMatch(drafting, /is-attention/);
+
+  // The two controls that make the negative mean something. Answered, and the answer is no:
+  // the chip is marked again...
+  const refused = editor(action({ completion: { kind: "pull_request" } }), undefined, CAPABILITIES);
+  assert.match(refused, /class="lib-chip is-overridden is-attention[^"]*"/);
+  assert.match(refused, /This build cannot prove the completion this action names/);
+  // ...and no answer at all, once the read has FINISHED, is marked too - "the daemon never
+  // said" is a state to act on, where "the daemon has not said yet" is one to wait through.
+  const unanswered = editor(action(), undefined, []);
+  assert.match(unanswered, /class="lib-chip is-overridden is-attention[^"]*"/);
+  assert.match(unanswered, /This daemon has not said which completions it can prove yet\./);
 });
 
 test("a built-in and an archived action are read-only, and say which and why", () => {

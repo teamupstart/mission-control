@@ -288,10 +288,13 @@ the items in, and the plan is stored in dependency order. The read re-runs only 
 planning head **gains an uncovered item**, so a steady backlog costs nothing.
 
 Claude enforces the planner's JSON Schema through its structured-output contract. Codex
-enforces the same schema through `codex exec --output-schema`, using a per-run temporary
-schema file that is always removed. Both paths remain fresh, read-only, and tool-less. A
-failed Codex JSON stream contributes only its bounded failure-event message to planner
-health; agent-message output and task briefs are never copied into the error.
+receives the same schema through `codex exec --output-schema`, using a per-run temporary
+schema file that is always removed. The local Zod parse and its one repair attempt stay in
+place for Codex until a real CLI conformance test proves every shape mismatch exits nonzero;
+the fake CLI argument contract alone does not advertise that stronger guarantee. Both paths
+remain fresh, read-only, and tool-less. A failed Codex JSON stream contributes only its
+bounded failure-event message to planner health; agent-message output and task briefs are
+never copied into the error.
 
 Operator-selected dependencies from the dispatch form are separate, persisted facts. The
 planner sees them, cannot reverse or remove them, and its inferred graph is sanitized

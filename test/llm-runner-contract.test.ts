@@ -304,7 +304,7 @@ test("envelope unwrapping accepts result text but never mistakes an object resul
   assert.notEqual(unwrapEnvelope(objectResult), '{"answer":"yes"}');
 });
 
-test("Codex enforces a materialized schema, cleans it up, and keeps command tools disabled", async () => {
+test("Codex passes a materialized schema, cleans it up, and keeps command tools disabled", async () => {
   const schema = {
     type: "object",
     properties: { tasks: { type: "array" } },
@@ -335,7 +335,11 @@ test("Codex enforces a materialized schema, cleans it up, and keeps command tool
   assert.equal(flag("--output-schema"), schemaPath);
   assert.deepEqual(JSON.parse(readFileSync(RUN_SCHEMA, "utf8")), schema);
   assert.equal(existsSync(schemaPath), false, "the per-run schema file survived the process");
-  assert.deepEqual(codexRunner.structuredOutput, { guaranteesInputShape: true });
+  assert.equal(
+    codexRunner.structuredOutput,
+    null,
+    "argv coverage alone must not advertise real-CLI mismatch enforcement",
+  );
   for (const forbidden of ["resume", "--dangerously-bypass-approvals-and-sandbox"]) {
     assert.equal(args.includes(forbidden), false);
   }

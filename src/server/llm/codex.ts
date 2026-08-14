@@ -340,7 +340,11 @@ export const codexRunner: LlmRunner = {
   },
 
   runInThread: null,
-  structuredOutput: { guaranteesInputShape: true },
+  // `--output-schema` gives Codex the schema, but the fake CLI contract proves only the
+  // argv and file lifecycle, not that every real CLI version exits nonzero on a mismatch.
+  // Keep the provider-neutral parse retry until a real conformance test proves that stronger
+  // promise; advertising it early would make malformed successful output less recoverable.
+  structuredOutput: null,
   sandbox: null,
   litter: null,
   killLiveRuns: killLiveCodexRuns,

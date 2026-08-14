@@ -39,7 +39,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | Step | Choices | Keys |
 |---|---|---|
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
-| **Kind** | ship, scout | <kbd>p</kbd>, <kbd>t</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
+| **Kind** | ship, scout, plan | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
@@ -83,8 +83,9 @@ successful **Dispatch now** or **Add to backlog** starts the next task with a fr
 **It is a different way to fill the form, never a second opinion about what a dispatch
 means.** Every answer is written through the same control the form offers, so the rules below
 still apply exactly as they are written - including the kind-to-after-work rule, which is why
-Kind is asked before After work: by the time that question is on screen a scout has already
-moved the selection to **None**, and the question says so rather than silently landing there.
+Kind is asked before After work: by the time that question is on screen a scout or a plan has
+already moved the selection to **None**, and the question says so - naming the kind you just
+chose - rather than silently landing there.
 
 Two dispatches never run it: editing a task already in the backlog, whose answers exist
 already, and **Ensemble**, whose body replaces Crew and After work outright. The switch is not
@@ -201,18 +202,28 @@ each new binding takes the newest immutable version shipped at the time (see
 form can override that choice for one task, including an explicit **None** that finishes
 without a Workflow.
 
-Choosing **scout** under **Kind** moves that selection to **None** for you, because a scout
-investigates and reports rather than delivering a change and so has no diff for a review
-Workflow to run over. It also changes what "finished" means for that task: a scout is asked,
-in its own prompt, to write one self-contained static page at `docs/reports/<slug>/report.html`
+Choosing **scout** or **plan** under **Kind** moves that selection to **None** for you,
+because neither sets out to deliver a change and so neither has a diff for a review Workflow
+to run over. Switching back to **ship** hands back the exact choice the switch put aside, so
+the reversal loses nothing - including through both diffless kinds in a row, where the
+selection you started with is what comes back. It is a default rather than a lock: pick a
+Workflow after choosing scout or plan and it sticks, and a choice you make by hand is never
+reverted by a later kind switch. This is a behavior of the dispatch form, so it applies to
+the kind you pick there and not to the inheriting paths below.
+
+**scout** also changes what "finished" means for that task: a scout is asked, in its own
+prompt, to write one self-contained static page at `docs/reports/<slug>/report.html`
 and submit it, and it cannot be marked done until Mission Control has captured and verified
 that page into a durable [scout archive](scout-archives.md). Its worktree is not reclaimed
 until that archive exists either, so the answer survives the checkout. No pull request is
-expected, and the conversation is not archived. Switching back to **ship** hands back the exact
-choice scout put aside, so the reversal loses nothing. It is a default rather than a lock: pick a Workflow
-after choosing scout and it sticks, and a choice you make by hand is never reverted by a
-later kind switch. This is a behavior of the dispatch form, so it applies to the kind you
-pick there and not to the inheriting paths below.
+expected, and the conversation is not archived.
+
+**plan** records that the work is to produce a reviewed plan rather than a change, and the
+backlog, the Sitrep report and Foreman's backlog planner all read it as such. It does not yet
+change what the agent is told: a plan task is delivered its intent exactly as you wrote it,
+the way a ship task is. The delivered planning contract and the durable capture of the plan
+it produces are separate changes, tracked in
+[`docs/plans/plan-kind/`](plans/plan-kind/phased-plan.md).
 
 Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
@@ -251,14 +262,15 @@ it yet.
 That chip states only what the session's own name does not. A dispatch names the session
 after its task, so the title is usually already the heading above the chip and is not
 repeated inside it; you see it there when the two differ, which is what an agent that has
-finished one task and taken another looks like. The **kind** is drawn only for a
-**scout** - `ship` is the default every dispatch, sweep, Recurring Mission and MCP call
-takes, so a badge on every card said nothing, and no badge now means `ship`.
+finished one task and taken another looks like. The **kind** is drawn for every kind except
+**ship** - `ship` is the default every dispatch, sweep, Recurring Mission and MCP call
+takes, so a badge on every card said nothing, and no badge now means `ship`. A kind you
+chose on purpose - **scout** or **plan** - is worth reading, so it is drawn.
 
 Which means the chip is often not drawn at all, and that is the point rather than an
 omission: an ordinary running ship task on the session it named has nothing to add to the
 name above it, and an empty tinted bar says less than no bar. It appears as soon as it is
-carrying something - a scout's kind, a title the session's name does not hold, the
+carrying something - a chosen kind, a title the session's name does not hold, the
 [recurring-mission](recurring-missions.md) origin mark, the merge outcome, or (on Cards)
 a `dispatching…` or `failed` word - and it carries the task's status as its colour
 whenever it is there.

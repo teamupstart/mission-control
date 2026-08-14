@@ -8,9 +8,9 @@ import type {
 } from "@shared/schedules.ts";
 import { SCHEDULE_CATCHUP_CREATE_CAP } from "@shared/schedules.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { AGENT_TYPES } from "@shared/types.ts";
+import { AGENT_TYPES, TASK_KINDS } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
+import { MAX_LABELS, PRIORITY_LABELS, TASK_KIND_INFO, TASK_PRIORITIES } from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import {
   createSchedule,
@@ -361,14 +361,25 @@ export function ScheduleEditor({
               </Tooltip>
             </Field>
             <Field label="Task kind">
-              <Tooltip label="Whether each run asks for a delivered change or an investigation">
+              <Tooltip label="What each run is asked to produce">
                 <select
                   className="field-input"
                   value={draft.kind}
                   onChange={(event) => update({ kind: event.target.value as TaskKind })}
                 >
-                  <option value="ship">ship - deliver a change</option>
-                  <option value="scout">scout - investigate / report</option>
+                  {/* Driven off the tuple, like the harness select above it. These options
+                      were hand-written until a third kind was added, which is the failure
+                      worth naming: a hand-written list does not fail to compile when the
+                      vocabulary grows, so this control simply stopped offering a kind the
+                      dispatch form beside it offered. `label - purpose` because this
+                      select is the only thing on this row that says what a kind IS - the
+                      dispatch form can afford the blurb beside the option, and this
+                      cannot. */}
+                  {TASK_KINDS.map((kind) => (
+                    <option key={kind} value={kind}>
+                      {`${TASK_KIND_INFO[kind].label} - ${TASK_KIND_INFO[kind].purpose}`}
+                    </option>
+                  ))}
                 </select>
               </Tooltip>
             </Field>

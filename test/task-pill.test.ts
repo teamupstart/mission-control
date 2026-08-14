@@ -6,6 +6,7 @@ import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { ScheduleOriginChip } from "../src/web/components/session-bits.tsx";
 import { taskPillParts } from "../src/shared/task.ts";
+import { DEFAULT_TASK_KIND, TASK_KINDS } from "../src/shared/types.ts";
 import type { Session, TaskSummary } from "../src/shared/types.ts";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 import { mkSessionView } from "./helpers/session-view.ts";
@@ -14,11 +15,16 @@ import { containsMarkup } from "./helpers/markup.ts";
 /**
  * The task pill, reduced to what it can actually tell a reader.
  *
- * Two of its three parts were usually saying nothing. `TaskKind` has two values, every
- * automated writer defaults to `ship`, and the MCP `create_task` tool cannot produce a
- * `scout` at all - so the badge read `SHIP` in almost every session, uncoloured and frozen
- * from the moment the task left the backlog. The title was a duplicate of the `h2` two rows
- * above it, because a dispatched session is named after its task.
+ * Two of its three parts were usually saying nothing. Every automated writer defaults to
+ * `ship` and the MCP `create_task` tool cannot produce anything else - so the badge read
+ * `SHIP` in almost every session, uncoloured and frozen from the moment the task left the
+ * backlog. The title was a duplicate of the `h2` two rows above it, because a dispatched
+ * session is named after its task.
+ *
+ * The rule the reduction settled on is "draw every kind except the default", not "draw
+ * scout", which is why `plan` arrived already drawn and this file gained a case rather
+ * than a change. `ship` is silent because it is what you get by NOT choosing; a kind
+ * somebody picked on purpose is worth a badge whatever it is called.
  *
  * Both reductions live in ONE shared predicate rather than in each component, because a
  * session is drawn by four of them and only one is `SessionCard`. That is the same rule
@@ -49,6 +55,18 @@ function dispatched(task: Partial<TaskSummary> = {}): Session {
 test("the predicate keeps only the kind that says something", () => {
   assert.equal(taskPillParts(dispatched({ kind: "ship" })).kind, null);
   assert.equal(taskPillParts(dispatched({ kind: "scout" })).kind, "scout");
+  // Deliberately chosen, therefore worth drawing - the same reasoning that draws `scout`,
+  // applied by a rule that reads the default rather than naming the kinds.
+  assert.equal(taskPillParts(dispatched({ kind: "plan" })).kind, "plan");
+  // Stated as the rule, so a fourth kind is covered by this file the day it is added and
+  // a change that made `ship` loud would fail here rather than in a screenshot.
+  for (const kind of TASK_KINDS) {
+    assert.equal(
+      taskPillParts(dispatched({ kind })).kind,
+      kind === DEFAULT_TASK_KIND ? null : kind,
+      `${kind} should be drawn exactly when it is not the default`,
+    );
+  }
 });
 
 test("the predicate keeps the title only when the session's name does not carry it", () => {
@@ -202,6 +220,21 @@ test("a scout task draws its kind badge on both layouts", () => {
     // its text rather than an exact tag.
     assert.match(html, /class="task-kind"[^>]*>scout</, `${name} should draw the scout badge`);
     assert.ok(html.includes("scout task"), `${name} should keep the badge's tooltip`);
+  }
+});
+
+test("a plan task draws its kind badge on both layouts", () => {
+  // Reaching the rendered markup, not just the predicate: the badge and its tooltip are
+  // both built from the kind, and a rule that widened only in `taskPillParts` would still
+  // leave a person with no way to tell a plan session from a ship one at a glance.
+  //
+  // The same class as `scout`, asserted rather than glossed over: this chip has ONE colour
+  // rule for every kind, so the two drawn kinds are told apart by the word. The backlog
+  // card is where they differ by colour (`.bl-kind-plan`).
+  const session = dispatched({ kind: "plan" });
+  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
+    assert.match(html, /class="task-kind"[^>]*>plan</, `${name} should draw the plan badge`);
+    assert.ok(html.includes("plan task"), `${name} should keep the badge's tooltip`);
   }
 });
 

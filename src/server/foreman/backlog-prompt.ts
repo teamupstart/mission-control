@@ -1,3 +1,4 @@
+import { TASK_KIND_INFO } from "@shared/task.ts";
 import type { Task } from "@shared/types.ts";
 
 // The backlog planner's prompt, handed to a fresh tool-less `claude -p`. Unlike the
@@ -65,7 +66,13 @@ export function buildBacklogPrompt(tasks: Task[]): string {
   for (const t of tasks) {
     lines.push(`### id: ${t.id}`);
     lines.push(`title: ${t.title}`);
-    lines.push(`kind: ${t.kind} (${t.kind === "ship" ? "deliver a change" : "investigate and report"})`);
+    // Looked up, not branched on. This was `kind === "ship" ? … : …`, which is not a
+    // missing case but a WRONG one: every kind that was not `ship` was described to the
+    // model as "investigate and report", so a third kind would have been actively
+    // mislabelled rather than merely unmentioned - and a mislabelled kind is worse here
+    // than an absent one, since the planner orders the backlog by what it believes each
+    // task is for. `purpose` rather than `blurb`: see `TaskKindInfo`.
+    lines.push(`kind: ${t.kind} (${TASK_KIND_INFO[t.kind].purpose})`);
     lines.push(`repo: ${t.repoRoot}`);
     const declared = t.dependencies.filter((dependency) => dependency.satisfiedAt === null);
     if (declared.length > 0) {

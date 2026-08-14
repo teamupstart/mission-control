@@ -30,17 +30,19 @@ test("a fresh dispatch leads with the task and folds the backlog details", () =>
   assert.doesNotMatch(html, /placeholder="e\.g\. bug, infra"/);
 });
 
-test("the Kind control offers both kinds, in the registry's order", () => {
-  // The options moved from two hand-written `<option>`s onto `TASK_KINDS`, and the point
-  // of pinning it here is that the move was a REFACTOR: same two options, same values,
-  // same order, same text. Order is the contract - the tuple's order is picker order.
+test("the Kind control offers every kind, in the registry's order", () => {
+  // The options moved from two hand-written `<option>`s onto `TASK_KINDS`, which is what
+  // made adding `plan` reach this control for free - the two `<select>`s that had NOT
+  // moved compiled cleanly and silently kept offering two. Order is the contract: the
+  // tuple's order is picker order, and `ship` leads because it is the default.
   const html = fresh();
-  const options = [...html.matchAll(/<option value="(ship|scout)"[^>]*>([^<]*)<\/option>/g)];
+  const options = [...html.matchAll(/<option value="(ship|scout|plan)"[^>]*>([^<]*)<\/option>/g)];
   assert.deepEqual(
     options.map((m) => [m[1], m[2]]),
     [
       ["ship", "ship"],
       ["scout", "scout"],
+      ["plan", "plan"],
     ],
   );
   // Selected by the draft, not by document order, so a scout draft still opens on scout.

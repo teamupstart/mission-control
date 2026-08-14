@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
+import { TASK_KINDS } from "../src/shared/types.ts";
 import type { Task } from "../src/shared/types.ts";
 import type { TaskSourceInstance } from "../src/shared/task-source.ts";
 import { hasTooltip } from "./helpers/markup.ts";
@@ -83,6 +84,25 @@ test("the editor opens holding the task, not an empty form", () => {
   // (ship / claude) - a scout silently re-armed as a ship is a different job.
   assert.match(html, /<option value="scout" selected=""/);
   assert.match(html, /<option value="codex" selected=""/);
+});
+
+test("the editor reopens a task on whichever kind it was stored with", () => {
+  // The whole vocabulary through the round trip a person actually performs: a task is
+  // persisted with a kind, the row comes back, and the editor has to open on it.
+  //
+  // Every kind rather than just the new one, because the failure mode here is not "plan is
+  // missing" - it is a control that offers a subset. A `plan` row landing on a form whose
+  // Kind select has no `plan` option opens SILENTLY on `ship`, and saving that form writes
+  // the wrong kind back over a task nobody meant to change. That is what a hand-written
+  // option list did to this form's two siblings until they were folded onto the registry.
+  for (const kind of TASK_KINDS) {
+    const html = editor(mkTask({ kind }));
+    assert.match(
+      html,
+      new RegExp(`<option value="${kind}" selected=""`),
+      `the editor should reopen a ${kind} task on ${kind}`,
+    );
+  }
 });
 
 test("effort is selectable immediately after model for both harnesses", () => {

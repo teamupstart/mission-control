@@ -6,27 +6,28 @@
 // Priority and labels are OPTIONAL and default to nothing: `priority: null` and
 // `labels: []`. Nothing in the product infers either one - a task carries a priority
 // because a human or a task source said so, never because we guessed from its text.
-// Kind is not optional; every task is a ship or a scout, and `ship` is the default.
+// Kind is not optional; every task is a ship, a scout or a plan, and `ship` is the default.
 
+import { DEFAULT_TASK_KIND } from "./types.ts";
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
 
 /**
  * How each kind PRESENTS itself. Where a surface offers the choice, its copy comes from
- * here - with two exceptions that predate this record and are not yet converted, because
- * converging them changes what a person reads: `TaskSourcesPanel` and `ScheduleEditor`
- * still spell their own `<option>`s, and each spells them differently. They are named in
- * `KNOWN_HAND_WRITTEN` (`test/task-kinds.test.ts`), which lets that list shrink and never
- * grow, so this is the home a third surface must use rather than a fourth wording.
+ * here - every one of them, now that `TaskSourcesPanel` and `ScheduleEditor` render from
+ * this record too. They used to spell their own `<option>`s, each differently, and were
+ * named in `KNOWN_HAND_WRITTEN` (`test/task-kinds.test.ts`) as a list allowed to shrink
+ * and never grow; adding a third kind is what emptied it, because a hand-written pair
+ * does not fail to compile when a kind is added - it just quietly stops offering it.
  *
  * The ids themselves live in `TASK_KINDS` (`types.ts`), which the server validates
  * against; this is the copy half, kept out of `types.ts` for the reason `AGENT_IDENTITY`
  * is kept out of it - what a thing is called is not what a thing is.
  *
- * `Record<TaskKind, …>` is the enforcement: a third kind does not compile until it has
- * said how it is offered. One record of two fields rather than two parallel records over
- * the same domain, matching `AGENT_IDENTITY` - the registry the select directly above the
- * Kind select renders from - because label and blurb are one question ("what is this
- * choice, to a human?") asked at one surface.
+ * `Record<TaskKind, …>` is the enforcement: a fourth kind does not compile until it has
+ * said how it is offered. One record rather than parallel records over the same domain,
+ * matching `AGENT_IDENTITY` - the registry the select directly above the Kind select
+ * renders from - because these are one question ("what is this choice?") asked of one
+ * kind at one surface each.
  *
  * `label` is lowercase because it is the option's own text and these are jargon, not
  * proper nouns; it reads as the word the task carries, not as a heading.
@@ -36,12 +37,75 @@ export interface TaskKindInfo {
   label: string;
   /** One line saying what choosing it means, for a picker that has room to say so. */
   blurb: string;
+  /**
+   * What the kind is for, as one short verb phrase and no sentence - for the readers that
+   * have room for a clause but not for a line.
+   *
+   * Two of them, which is why this is a field and not a local: Foreman's backlog planner
+   * (`server/foreman/backlog-prompt.ts`) glosses each task's kind for the model, and the
+   * two `<select>`s that are the ONLY control offering the choice on their screen (the
+   * Recurring Mission editor, task-source defaults) suffix it to the label, where the
+   * dispatch form can afford to show `blurb` beside the option instead.
+   *
+   * Not `blurb`, for both readers and for the same reason: `blurb` explains consequences
+   * inside the dispatch form ("no diff, so no after-work" is about a control on that
+   * screen), which a planner ordering a backlog and a schedule editor with no after-work
+   * field both read as noise. This is the half that survives leaving that screen.
+   *
+   * Kept parallel across the kinds - verb, then object - because these are read as a list.
+   */
+  purpose: string;
 }
 
 export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
-  ship: { label: "ship", blurb: "Deliver a change, as a pull request." },
-  scout: { label: "scout", blurb: "Investigate and report. No diff, so no after-work." },
+  ship: {
+    label: "ship",
+    blurb: "Deliver a change, as a pull request.",
+    purpose: "deliver a change",
+  },
+  scout: {
+    label: "scout",
+    blurb: "Investigate and report. No diff, so no after-work.",
+    purpose: "investigate and report",
+  },
+  plan: {
+    label: "plan",
+    blurb: "Produce a reviewed plan, and optionally schedule the work. No diff, so no after-work.",
+    purpose: "produce a reviewed plan",
+  },
 };
+
+/**
+ * Whether a kind sets out to produce a diff worth reviewing.
+ *
+ * Its own record rather than a field on `TaskKindInfo`, which is scoped by its own comment
+ * to one question asked of a human at one surface. This is not copy - it is a fact about
+ * what the work produces, and the dispatch form reads it to decide a DIFFERENT control's
+ * value. Mixing them would put "what is this choice?" and "what follows from it?" in one
+ * record and lose the reason either is written down.
+ *
+ * A `Record` and not `kind !== "ship"`: those happen to agree today and are not the same
+ * claim. `ship` is the default kind, which is why the pill stays silent for it; having a
+ * diff is why an after-work Workflow can run over it. A fourth kind that produced a diff
+ * without being the default would have to answer these two questions differently, and the
+ * record is what makes it answer this one at all.
+ */
+const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
+  ship: true,
+  scout: false,
+  plan: false,
+};
+
+/**
+ * Does a task of this kind end in something an after-work Workflow could review?
+ *
+ * The dispatch form's after-work rule (`DispatchModal.tsx`) is the caller: a kind with no
+ * diff preselects None, because arming a change-review over a task that never set out to
+ * produce a change reviews an empty diff and reports on nothing.
+ */
+export function hasReviewableDiff(kind: TaskKind): boolean {
+  return KIND_PRODUCES_A_DIFF[kind];
+}
 
 /**
  * The priorities, in ascending urgency. Array order is picker order, sort order, and
@@ -160,12 +224,16 @@ const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
 /**
  * What the task pill should draw for a session.
  *
- * Both parts are usually silent, and for different reasons. `TaskKind` has two values and
- * every automated writer defaults to `ship` - the MCP `create_task` tool cannot even
- * produce a `scout` - so a badge rendered unconditionally reads `SHIP` in almost every
- * session, is not colour-differentiated in the console header, is frozen once the task
- * leaves `backlog`, and repeats the chip on the card you clicked through. Only `scout`
- * says anything, so only `scout` is drawn.
+ * Both parts are usually silent, and for different reasons. Every automated writer
+ * defaults to `ship` - the MCP `create_task` tool cannot produce anything else - so a
+ * badge rendered unconditionally reads `SHIP` in almost every session, is not
+ * colour-differentiated in the console header, is frozen once the task leaves `backlog`,
+ * and repeats the chip on the card you clicked through. Only a kind somebody deliberately
+ * chose says anything, so `ship` is the silent one and every other kind is drawn.
+ *
+ * Written as "not the default" rather than as a list of the kinds that are drawn, so a
+ * fourth kind is offered on the same reasoning without an edit here. The reasoning is
+ * about `ship` being what you get by not choosing, which is a property of `ship`.
  *
  * The title is a duplicate because `dispatcher.ts` names a dispatched session after its
  * task, so the pill usually repeats the `h2` two rows above it. It is NOT always a
@@ -180,7 +248,7 @@ const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
 export function taskPillParts(session: Pick<Session, "name" | "task">): TaskPillParts {
   const task = session.task;
   if (!task) return NO_PILL;
-  const kind = task.kind === "scout" ? task.kind : null;
+  const kind = task.kind === DEFAULT_TASK_KIND ? null : task.kind;
   const title = task.title === session.name ? null : task.title;
   return {
     kind,

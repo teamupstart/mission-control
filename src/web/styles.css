@@ -6521,6 +6521,15 @@ mark.find-hit.is-current {
   align-self: flex-start;
   max-width: 100%;
 }
+/* Deliberately ONE rule for every kind, where the backlog card's `.bl-kind-*` gives each
+   its own colour. `taskPillParts` draws `plan` here as well as `scout`, so the two chips
+   share this blue - which is legible, because this chip prints the kind's WORD in
+   uppercase and colour carries no per-kind meaning at this surface. Splitting it was
+   tried and reverted: it changes the rendered markup of the SCOUT chip, and the change
+   that added `plan` is not allowed to move what a scout renders. Worth revisiting only
+   alongside the fact that ship is green on a backlog card and blue in the roundup panel
+   today - these two surfaces already disagree about kind colour, and making one kind
+   agree across both would leave it the odd one out rather than fix anything. */
 .task-kind {
   flex: none;
   font-size: 10px;
@@ -20554,6 +20563,17 @@ span.line-run-prov {
 }
 .bl-kind-scout {
   color: var(--working);
+}
+/* `--purple` is the token's own stated job - "neither a session state nor a warning" -
+   which is exactly what a task kind is, and the two rules above only borrow state tones
+   because they were written before there was a third kind to separate from.
+   `--attention` was the other candidate and is wrong: amber means "this session needs
+   you" on every card, badge and rail mark in the app, and a kind chip wearing it would
+   read as an alert on a task nobody has looked at yet. Every kind needs its own rule -
+   there is no fallback here, so a kind added without one inherits body text colour and
+   is the only chip on the card that is not coloured. */
+.bl-kind-plan {
+  color: var(--purple);
 }
 /* "N repos" on a multi-repo backlog card. Same pill as the kind/agent chips beside it -
    it is one more fact about what this task IS, not a warning - and it sits before

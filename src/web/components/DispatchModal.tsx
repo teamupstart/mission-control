@@ -13,7 +13,13 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { HarnessesConfig, TaskDependencyInput } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
-import { MAX_LABELS, PRIORITY_LABELS, TASK_KIND_INFO, TASK_PRIORITIES } from "@shared/task.ts";
+import {
+  MAX_LABELS,
+  PRIORITY_LABELS,
+  TASK_KIND_INFO,
+  TASK_PRIORITIES,
+  hasReviewableDiff,
+} from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
@@ -283,7 +289,7 @@ function defaultEffortOptionLabel(
 const AGENT_FIELD_TIP =
   "Which harness this task is dispatched to - switching resets the model and effort overrides";
 const KIND_FIELD_TIP =
-  "Whether this task asks for a delivered change or an investigation - scout also clears the after-work Workflow";
+  "What this task is asked to produce - a kind with no diff also clears the after-work Workflow";
 const AFTER_WORK_FIELD_TIP =
   "Run a published Workflow when Foreman confirms this agent's work is complete";
 
@@ -1030,11 +1036,11 @@ function DispatchModal({
    *
    * Kind carries this the same way switching harness carries model and effort: the
    * dependent choice belongs to the kind now selected, not the one it replaced. A scout
-   * investigates and reports - there is no delivered change to hand off - so choosing it
-   * moves the selection to None, which would otherwise run a review Workflow over a task
-   * that never set out to produce a diff.
+   * investigates and reports and a plan proposes a route - neither sets out to produce a
+   * delivered change to hand off - so choosing either moves the selection to None, which
+   * would otherwise run a review Workflow over a task that has no diff to review.
    *
-   * Switching back HANDS BACK the exact choice scout put aside, rather than recomputing
+   * Switching back HANDS BACK the exact choice that was put aside, rather than recomputing
    * the machine default. That is what keeps the reversal lossless, and it is deliberately
    * a pure function of what was already on screen: recomputing would need
    * `workflowConfig`, which lands on its own fetch, so a scout-then-ship inside that
@@ -1045,10 +1051,20 @@ function DispatchModal({
    * Still only a default, in both directions: the stash is dropped the moment the operator
    * picks an after-work Workflow by hand, so their choice is never reverted underneath
    * them by a later kind switch.
+   *
+   * One stash and not one per kind, which is what makes a scout-to-plan switch safe. Both
+   * sides of that switch want None, and the naive version stashes on every entry - so it
+   * would put aside the `null` scout had just set, overwriting the operator's real
+   * ship-time selection, and then hand that `null` back as an explicit "no handoff" on the
+   * way out to ship. Between two diffless kinds nothing has been decided, so nothing moves.
    */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
-    if (kind === "scout") {
+    if (!hasReviewableDiff(kind)) {
+      // Whatever is selected right now is either the None the first diffless kind set or a
+      // pick made by hand after it. Both are already right for this kind, and both survive
+      // by leaving the field and the stash exactly as they stand.
+      if (!hasReviewableDiff(draft.kind)) return {};
       stashedWorkflowId.current = draft.workflowId;
       return { workflowId: null };
     }
@@ -1188,7 +1204,8 @@ function DispatchModal({
       sub: TASK_KIND_INFO[k].blurb,
       hotkey: GUIDED_KIND_KEYS[k],
       // Byte-identical to the Kind `<select>`'s own handler, `afterWorkForKind` and all.
-      // The scout-clears-after-work rule has one implementation and the pass calls it.
+      // The diffless-kind-clears-after-work rule has one implementation and the pass
+      // calls it - which is why adding `plan` needed no edit on this side at all.
       commit: () => update({ kind: k, ...afterWorkForKind(k) }),
     })),
     harness: AGENT_TYPES.map((a) => ({
@@ -2445,11 +2462,15 @@ function DispatchModal({
           {/* The one question that says something the others do not have to: the row it
               opens on was moved by the answer before it, and a preselection nobody
               explained reads as the form having lost the operator's place.
+              Named per kind rather than said generically, because the sentence is only
+              worth reading if it names the kind the operator just chose - "a scout has no
+              diff" answers "why did this move?" where "this kind has no diff" restates it.
               Opens UPWARD - this rail is the last field before the fold and the footer, and
               a list of every published Workflow hung below it leaves the panel entirely. */}
           {guidedPickerFor("afterWork", AFTER_WORK_FIELD_TIP, {
-            hint:
-              draft.kind === "scout" ? "A scout has no diff, so None is preselected." : null,
+            hint: hasReviewableDiff(draft.kind)
+              ? null
+              : `A ${TASK_KIND_INFO[draft.kind].label} has no diff, so None is preselected.`,
             place: "above",
           })}
         </div>

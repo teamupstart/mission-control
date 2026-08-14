@@ -242,7 +242,7 @@ test("the row is the session's live report, and the Observed activity rail is no
   const row = detail.locator(".transcript-log .turn-progress");
   await expect(row).toContainText("running Bash", { timeout: 15_000 });
 
-  const rail = detail.getByRole("region", { name: "Observed activity" });
+  const rail = detail.getByRole("region", { name: "Conversation rail" });
   await expect(rail).toBeVisible();
   await expect(rail.getByText("Tool calls observed in the loaded transcript.")).toBeVisible();
   // The rail keeps its contract with the row inches away from it: it is not where the

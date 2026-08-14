@@ -4988,6 +4988,28 @@ kbd {
   background: color-mix(in oklab, var(--working) 10%, var(--bg-2));
   border-color: color-mix(in oklab, var(--working) 22%, var(--border-soft));
 }
+/* The turn the "Yours" rail jumped to. Wears find's hue rather than a new one: this is
+   the same act as landing on a match - the reader asked to be taken somewhere, and the
+   ring says "here". `scroll-margin` for the same reason `mark.find-hit` carries it, so a
+   jump never parks the turn under the floating find bar.
+   Held while the row stays selected instead of fading: the rail row and the turn are two
+   ends of one selection, and a mark that timed out would leave a selected row in the
+   rail pointing at nothing in the log. */
+.turn.is-marked .turn-text,
+.turn.is-marked .turn-tools {
+  border-color: color-mix(in oklab, var(--find) 55%, var(--border-soft));
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--find) 16%, transparent);
+}
+.turn.is-marked,
+.pty-entry.is-marked {
+  scroll-margin: 60px 0;
+}
+/* The terminal rendering has no bubble to ring, so the mark goes on the entry itself. */
+.pty-entry.is-marked {
+  border-radius: 6px;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--find) 22%, transparent);
+  background: color-mix(in oklab, var(--find) 7%, transparent);
+}
 .pending-turn {
   border-left: 2px dashed color-mix(in oklab, var(--working) 48%, var(--border));
   padding-left: 9px;
@@ -5468,6 +5490,14 @@ mark.find-hit.is-current {
 .find-result.r-tool .find-result-who {
   color: var(--neutral);
 }
+/* A turn a machine typed. Explicitly NOT `--working`, which is the operator's own
+   colour: these rows used to carry `r-user` and wear it, so a Foreman delivery looked
+   exactly like something the human had sent. That was the visual half of the same defect
+   the "You" scope fix corrected, and leaving this to fall through to the default would
+   fix it by accident rather than on purpose. */
+.find-result.r-injected .find-result-who {
+  color: var(--muted);
+}
 .find-result-snip {
   font: 11.5px/1.45 var(--sans);
   color: var(--muted);
@@ -5515,12 +5545,13 @@ mark.find-hit.is-current {
   cursor: pointer;
 }
 
-/* ---- observed activity (the secondary rail while find is closed) ----
-   A transcript-derived list of tool invocations, and nothing stronger: each row says a
-   call was OBSERVED in the loaded transcript at about a time - no running/ok/failed,
-   no durations, no process claims, because the normalized transcript cannot prove any
-   of that. Same 244px column as the find rail so the two owners of this slot swap
-   without reflowing the conversation between them. */
+/* ---- the secondary rail while find is closed: Activity, and Yours ----
+   Activity is a transcript-derived list of tool invocations, and nothing stronger: each
+   row says a call was OBSERVED in the loaded transcript at about a time - no
+   running/ok/failed, no durations, no process claims, because the normalized transcript
+   cannot prove any of that. Yours is an index of the operator's own messages, where a
+   row jumps the log to its turn. Same 244px column as the find rail so the two owners of
+   this slot swap without reflowing the conversation between them. */
 .activity-rail {
   flex: none;
   width: 244px;
@@ -5542,12 +5573,37 @@ mark.find-hit.is-current {
   padding: 7px 9px;
   border-bottom: 1px solid var(--border-soft);
 }
-.activity-title {
-  margin: 0;
+/* The two tabs, wearing the head the single title used to own. Deliberately NOT the
+   find rail's pill treatment: those pills are a filter over one list and several can
+   read as live at once, while these select which list the column IS. */
+.activity-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.activity-tab {
+  padding: 3px 7px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
   font: 600 10px/1 var(--sans);
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.activity-tab:hover {
+  color: var(--fg);
+}
+.activity-tab[aria-selected="true"] {
+  color: var(--fg);
+  background: var(--panel-2);
+}
+.activity-tab:focus-visible {
+  outline: 2px solid var(--find);
+  outline-offset: -2px;
 }
 .activity-count {
   margin-left: auto;
@@ -5555,13 +5611,21 @@ mark.find-hit.is-current {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-/* The narrow layout's disclosure row. Hidden here at rail widths - the list simply
-   shows - and swapped in for the head by the container query below. */
+/* Whichever of the two ends up last holds the head's right edge: the count when there is
+   one, the caret when the tab is empty and the count is not drawn at all. */
+.activity-toggle {
+  margin-left: auto;
+}
+.activity-count + .activity-toggle {
+  margin-left: 0;
+}
+/* The narrow layout's disclosure. Hidden here at rail widths - the list simply shows -
+   and added to the head by the container query below. */
 .activity-toggle {
   display: none;
   align-items: center;
   gap: 6px;
-  padding: 7px 9px;
+  padding: 0 0 0 4px;
   border: none;
   background: transparent;
   font: 600 10px/1 var(--sans);
@@ -5608,6 +5672,17 @@ mark.find-hit.is-current {
   padding: 14px 8px;
   text-align: center;
   font-size: 12px;
+  color: var(--dim);
+}
+/* The Yours tab's caption. Outside `.activity-body` on purpose: it explains the dimmed
+   rows, so it has to survive scrolling past them. `flex: none` keeps the list, not the
+   caption, as the part that gives up height when the rail is short. */
+.activity-foot {
+  flex: none;
+  margin: 0;
+  padding: 6px 9px 8px;
+  border-top: 1px solid var(--border-soft);
+  font: 10.5px/1.4 var(--sans);
   color: var(--dim);
 }
 .activity-list {
@@ -5657,6 +5732,82 @@ mark.find-hit.is-current {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- the Yours tab's rows ----
+   An index of the operator's own messages. Each row is a button because clicking it
+   moves the log; the two-line clamp is what lets a 244px column hold a scannable list of
+   long prompts without any of them being truncated in the data. */
+.yours-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.yours-row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 7px;
+  border: none;
+  /* The selected row's marker lives on the left edge, so the border box is reserved at
+     every state and selecting one cannot shift the text of the whole list sideways. */
+  border-left: 2px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.yours-row:hover {
+  background: var(--panel-2);
+}
+.yours-row:focus-visible {
+  outline: 2px solid var(--find);
+  outline-offset: -2px;
+}
+.yours-row.is-selected {
+  background: var(--panel-2);
+  border-left-color: var(--working);
+}
+.yours-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+.yours-time {
+  flex: none;
+  font: 500 9.5px/1 var(--mono);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+/* Who typed it, when it was not the operator. Carried as WORDS beside the timestamp
+   rather than left to the dimming alone: colour is not a label, and "this was sent on
+   your behalf" is precisely the fact a reader must not have to infer from a shade. */
+.yours-who {
+  flex: none;
+  font: 500 9.5px/1 var(--mono);
+  color: var(--dim);
+  text-transform: lowercase;
+}
+.yours-who::before {
+  content: "· ";
+}
+.yours-text {
+  font: 12px/1.35 var(--sans);
+  color: var(--fg);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.yours-row.is-injected .yours-text {
+  color: var(--muted);
+}
+
 /* Below this panel width a 244px column would leave too little conversation to read,
    so the rail RELOCATES under the log and takes its space from the log's height
    instead of its width. It is still visible whenever find is open - that is the
@@ -5688,9 +5839,11 @@ mark.find-hit.is-current {
     align-self: stretch;
     flex: none;
   }
-  .find-split .activity-rail .activity-head {
-    display: none;
-  }
+  /* The head stays, and the caret joins it. Collapsed, the rail costs exactly one row,
+     as it always has - the tabs ride the row the disclosure was already spending, so
+     nothing here takes height the transcript used to have. Dropping the head outright
+     would have been the smaller change and would have stranded the Yours tab: at this
+     width there would have been no way left to reach it. */
   .find-split .activity-rail .activity-toggle {
     display: flex;
   }
@@ -6114,7 +6267,7 @@ mark.find-hit.is-current {
   border-color: var(--border);
   background: color-mix(in oklab, var(--panel) 60%, var(--bg-2));
 }
-.transcript[data-view="terminal"] .activity-rail .activity-title,
+.transcript[data-view="terminal"] .activity-rail .activity-tab,
 .transcript[data-view="terminal"] .activity-rail .activity-tool {
   font-family: var(--mono);
 }

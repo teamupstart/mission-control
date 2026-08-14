@@ -48,7 +48,7 @@ import {
   type FindHit,
   type FindScope,
 } from "../lib/find.ts";
-import { ConversationActivity } from "./ConversationActivity.tsx";
+import { ConversationActivity, type ActivityTab } from "./ConversationActivity.tsx";
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { TerminalStatusLine, TerminalTitlebar } from "./ConversationTerminal.tsx";
@@ -280,6 +280,22 @@ export function TranscriptPanel({
    * stylesheet shows the list and hides the toggle above the container breakpoint.
    */
   const [activityOpen, setActivityOpen] = useState(false);
+  /**
+   * Which of the secondary rail's two tabs is up. Held HERE rather than in the rail so
+   * it survives find: find unmounts the rail entirely while it owns the column, and a
+   * reader who was working through their own messages should get that list back when
+   * they close it, not be silently returned to Activity.
+   */
+  const [railTab, setRailTab] = useState<ActivityTab>("activity");
+  /**
+   * The turn the "Yours" rail last jumped to, marked in the log until another is chosen.
+   *
+   * Persistent rather than a timed flash: the rail row and the turn are two ends of ONE
+   * selection, so the mark answers "which row am I looking at?" for as long as that is
+   * still the question. A flash that faded would leave the rail showing a selected row
+   * pointing at nothing, and would be unassertable in a browser test without racing it.
+   */
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -373,6 +389,25 @@ export function TranscriptPanel({
     const el = logRef.current?.querySelector(`[data-find-key="${CSS.escape(currentKey)}"]`);
     el?.scrollIntoView({ block: "center" });
   }, [currentKey]);
+
+  /**
+   * Bring a turn the rail selected into view.
+   *
+   * Queried out of the DOM rather than held in a ref map, for the reason the episode
+   * jump already gives: the target may not be mounted. Both conversation renderings tag
+   * their turn roots with `data-turn-id`, so this one effect serves the chat log and the
+   * terminal rendering without knowing which is up.
+   *
+   * `block: "center"` and instant, matching find's jump: the reader asked to land on a
+   * message and read what surrounds it, which is the entire point of indexing rather
+   * than filtering. A passive effect, not a layout one, so it runs AFTER the tail-follow
+   * layout effect and wins the tick they both fire on - the same ordering find relies on.
+   */
+  useEffect(() => {
+    if (!selectedTurnId) return;
+    const el = logRef.current?.querySelector(`[data-turn-id="${CSS.escape(selectedTurnId)}"]`);
+    el?.scrollIntoView({ block: "center" });
+  }, [selectedTurnId, terminal]);
 
   // Registered the same way the launchers are: App holds a per-session map and reaches
   // the mounted panel through it. Deregistering on unmount is what stops the chord from
@@ -849,6 +884,7 @@ export function TranscriptPanel({
                   onOpenFile={linkHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                  marked={row.id === selectedTurnId}
                 />
               ) : (
                 <Turn
@@ -858,6 +894,7 @@ export function TranscriptPanel({
                   onOpenFile={linkHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                  marked={row.id === selectedTurnId}
                 />
               ),
         )}
@@ -903,6 +940,17 @@ export function TranscriptPanel({
             messages={messages}
             open={activityOpen}
             onToggle={() => setActivityOpen((v) => !v)}
+            tab={railTab}
+            onTab={(next) => {
+              setRailTab(next);
+              // Picking a tab reveals it. At rail widths the list is already showing and
+              // this changes nothing; at narrow widths the list is behind the disclosure,
+              // and choosing a tab whose contents stay hidden is a dead end - the reader
+              // asked to see that list, which is the same request the caret makes.
+              setActivityOpen(true);
+            }}
+            selectedTurnId={selectedTurnId}
+            onSelectTurn={setSelectedTurnId}
           />
         )}
       </div>
@@ -1299,12 +1347,15 @@ function Turn({
   onOpenFile,
   filePaths,
   find,
+  marked,
 }: {
   m: TranscriptMessage;
   agentLabel: string;
   onOpenFile?: WorkspaceLinkHandler;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
+  /** This is the turn the "Yours" rail jumped to. */
+  marked?: boolean;
 }): React.JSX.Element {
   const [richText] = useRichText();
   const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
@@ -1327,7 +1378,9 @@ function Turn({
    */
   const highlight = textHits.length > 0;
   return (
-    <div className={`turn turn-${m.origin ?? m.role}`}>
+    // `data-turn-id` is what the rail's jump effect queries, so a click on a row lands on
+    // the turn itself rather than on the nearest thing that happens to carry an id.
+    <div className={`turn turn-${m.origin ?? m.role}${marked ? " is-marked" : ""}`} data-turn-id={m.id}>
       {/* Not searched: a byline is chrome, not conversation. Were it included,
           "you" would match the label above every message the human ever sent. */}
       <div className="turn-role">
@@ -1435,6 +1488,7 @@ function TerminalTurn({
   onOpenFile,
   filePaths,
   find,
+  marked,
 }: {
   m: TranscriptMessage;
   agentLabel: string;
@@ -1445,14 +1499,19 @@ function TerminalTurn({
   onOpenFile?: WorkspaceLinkHandler;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
+  /** This is the turn the "Yours" rail jumped to. */
+  marked?: boolean;
 }): React.JSX.Element {
   const [richText] = useRichText();
   const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
   const who = turnWho(m, agentLabel);
   const currentKey = find?.currentKey ?? null;
+  // Tagged in BOTH renderings, and with the same attribute: the terminal view is the
+  // shipped default, so a rail that could only jump in chat mode would not work for most
+  // readers most of the time.
   if (m.role === "user") {
     return (
-      <article className="pty-entry pty-user">
+      <article className={`pty-entry pty-user${marked ? " is-marked" : ""}`} data-turn-id={m.id}>
         <p className="pty-commandline">
           {/* A shell host is one token, so a two-word author becomes one: "mission
               control" is `mission-control@mission`, the same name the titlebar uses. */}
@@ -1485,7 +1544,7 @@ function TerminalTurn({
   }
   const highlight = textHits.length > 0;
   return (
-    <article className="pty-entry pty-agent">
+    <article className={`pty-entry pty-agent${marked ? " is-marked" : ""}`} data-turn-id={m.id}>
       <header className="pty-speaker">
         {who} / stdout
         <ConversationTimestamp at={m.ts} className="pty-time" />

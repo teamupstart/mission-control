@@ -1937,8 +1937,8 @@ export function openDb(): DatabaseSync {
       updated_at INTEGER NOT NULL
     );
 
-    -- The scout library's DISPOSABLE index. Every row here is derived from a bundle
-    -- directory under STATE_DIR/scouts and can be thrown away: delete this database and the
+    -- The archive library's DISPOSABLE index. Every row here is derived from a bundle
+    -- directory under a library root and can be thrown away: delete this database and the
     -- background reconciler rebuilds all three tables from the filesystem, which is the
     -- source of truth. That is why there is no foreign key to tasks or sessions and no
     -- cascade - a completed archive outlives its task, its session, and its worktree, and a
@@ -1952,11 +1952,16 @@ export function openDb(): DatabaseSync {
     -- The composite is stored rather than derived so every query, cursor, and join uses one
     -- string; the pair is kept beside it so filtering by producer is an equality test on a
     -- column rather than a LIKE over the key.
-    CREATE TABLE IF NOT EXISTS scout_archives (
+    CREATE TABLE IF NOT EXISTS archives (
       key                TEXT NOT NULL PRIMARY KEY,
       producer_id        TEXT NOT NULL,
       archive_id         TEXT NOT NULL,
       producer_label     TEXT,
+      -- What the bundle preserves, from its manifest. NULLABLE on purpose: an unreadable
+      -- bundle is exactly the case where nothing about its contents is known, and a row
+      -- that guessed would be an index inventing provenance. A kind filter therefore
+      -- excludes unreadable rows, which is the honest answer rather than a side effect.
+      kind               TEXT,
       format_version     INTEGER NOT NULL DEFAULT 0,
       status             TEXT NOT NULL,
       capture_status     TEXT,
@@ -1983,6 +1988,12 @@ export function openDb(): DatabaseSync {
       -- adopted in silence; hashing the bytes means a same-key change is always seen, while
       -- an identical copy from a sync tool still reconciles as the archive it already was.
       manifest_digest    TEXT NOT NULL DEFAULT '',
+      -- Which library root this bundle was discovered under. There is more than one - new
+      -- bundles are written under the archives root, and bundles published before archives
+      -- declared a kind stay under the scouts root for ever - so the absolute directory of a
+      -- row is not derivable from the write root alone. Server-derived on every pass; never
+      -- a claim from a manifest, and re-checked before any file below it is opened.
+      library_root       TEXT NOT NULL DEFAULT '',
       relative_path      TEXT NOT NULL,
       manifest_bytes     INTEGER NOT NULL DEFAULT 0,
       manifest_mtime_ns  TEXT NOT NULL DEFAULT '',
@@ -2002,14 +2013,15 @@ export function openDb(): DatabaseSync {
       -- cannot delete the half of the library it never reached.
       last_seen_epoch    INTEGER NOT NULL DEFAULT 0
     );
-    CREATE INDEX IF NOT EXISTS idx_scout_archives_sort ON scout_archives(sort_at DESC, key DESC);
-    CREATE INDEX IF NOT EXISTS idx_scout_archives_producer ON scout_archives(producer_id);
-    CREATE INDEX IF NOT EXISTS idx_scout_archives_status ON scout_archives(status);
+    CREATE INDEX IF NOT EXISTS idx_archives_sort ON archives(sort_at DESC, key DESC);
+    CREATE INDEX IF NOT EXISTS idx_archives_producer ON archives(producer_id);
+    CREATE INDEX IF NOT EXISTS idx_archives_status ON archives(status);
+    CREATE INDEX IF NOT EXISTS idx_archives_kind ON archives(kind);
 
     -- One archived file. Identity is (archive key, generated artifact id); the browser asks
     -- for a body by that pair and never by a path, so archive_path is a verified server-side
     -- detail rather than an addressable input.
-    CREATE TABLE IF NOT EXISTS scout_artifacts (
+    CREATE TABLE IF NOT EXISTS archive_artifacts (
       key           TEXT NOT NULL,
       artifact_id   TEXT NOT NULL,
       ordinal       INTEGER NOT NULL DEFAULT 0,
@@ -2022,7 +2034,7 @@ export function openDb(): DatabaseSync {
       sha256        TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (key, artifact_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_scout_artifacts_key ON scout_artifacts(key, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_archive_artifacts_key ON archive_artifacts(key, ordinal);
 
     -- The bounded text a literal search scans. Segments rather than one blob so a hit can
     -- say WHERE it matched, and so the report body is searchable without loading a manifest
@@ -2034,7 +2046,7 @@ export function openDb(): DatabaseSync {
     -- in JavaScript and is the only thing a query matches against. SQLite's own lower() folds
     -- ASCII only, so a search for a name with an accent or a non-Latin script would silently
     -- match nothing - a search feature that is wrong rather than absent.
-    CREATE TABLE IF NOT EXISTS scout_search_segments (
+    CREATE TABLE IF NOT EXISTS archive_search_segments (
       key         TEXT NOT NULL,
       ordinal     INTEGER NOT NULL,
       source_kind TEXT NOT NULL,
@@ -2042,9 +2054,9 @@ export function openDb(): DatabaseSync {
       text_fold   TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (key, ordinal)
     );
-    CREATE INDEX IF NOT EXISTS idx_scout_segments_key ON scout_search_segments(key);
+    CREATE INDEX IF NOT EXISTS idx_archive_segments_key ON archive_search_segments(key);
 
-    -- Capture COORDINATION for scouts this daemon is archiving, and nothing a reader of a
+    -- Capture COORDINATION for archives this daemon is producing, and nothing a reader of a
     -- finished bundle ever needs. The three tables above are a projection of the library; this
     -- one is the opposite - purely local bookkeeping about work in flight, keyed by an
     -- operation key that is stable for one task work episode.
@@ -2062,17 +2074,23 @@ export function openDb(): DatabaseSync {
     -- The source locators (repos_json) are SERVER-DERIVED checkout roots recorded while the
     -- session still exists, because the whole point of reserving on exit is that they are about
     -- to stop being derivable. Nothing an agent typed reaches this table.
-    CREATE TABLE IF NOT EXISTS scout_capture_jobs (
+    CREATE TABLE IF NOT EXISTS archive_capture_jobs (
       operation_key   TEXT NOT NULL PRIMARY KEY,
       task_id         TEXT NOT NULL,
       session_id      TEXT,
       episode_id      TEXT,
+      -- What this capture will produce, frozen at reservation. NOT NULL with a 'scout'
+      -- default, which is a FACT rather than a fallback: every row that can exist without
+      -- it was written by a build in which a scout's report was the only thing this daemon
+      -- archived. The migration below carries the same value onto rows copied from the
+      -- table this one replaces.
+      kind            TEXT NOT NULL DEFAULT 'scout',
       -- reserved | submitted | published | failed. Append-only: a status this build does not
       -- know is treated as unfinished rather than as done, which is the safe direction.
       status          TEXT NOT NULL,
       producer_id     TEXT,
       archive_id      TEXT,
-      -- What the scout submitted, when it has. Null on a job reserved by an unexpected exit.
+      -- What the agent submitted, when it has. Null on a job reserved by an unexpected exit.
       report_path     TEXT,
       summary         TEXT,
       tags_json       TEXT,
@@ -2091,8 +2109,8 @@ export function openDb(): DatabaseSync {
       created_at      INTEGER NOT NULL,
       updated_at      INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_scout_capture_jobs_task ON scout_capture_jobs(task_id);
-    CREATE INDEX IF NOT EXISTS idx_scout_capture_jobs_status ON scout_capture_jobs(status);
+    CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_task ON archive_capture_jobs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_status ON archive_capture_jobs(status);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -2637,7 +2655,56 @@ function migrate(d: DatabaseSync): void {
   // migration: its provenance/pricing defaults identify every old Claude row as reported
   // rather than retroactively estimating or repricing it.
 
+  // --- the archive library's rename, and the one table it cannot rebuild ---------------
+  //
+  // The three index tables are a PROJECTION of bundle directories, and the reconciler is
+  // built to rebuild them from disk - a deleted database simply has no fingerprints, so
+  // every bundle looks new. So the disposable half is dropped rather than copied. Copying
+  // it would carry a fingerprint and a `last_seen_epoch` from a read this build never
+  // performed, and a cache that vouches for bytes nobody verified is worse than no cache:
+  // an unchanged fingerprint is exactly what makes a pass skip re-reading a bundle. The
+  // operator pays one background re-index, bounded by the existing candidate cap.
+  //
+  // `scout_capture_jobs` is the opposite kind of table and is COPIED. It is the idempotency
+  // and resume ledger, and its `repos_json` holds server-derived checkout roots recorded
+  // while the session still existed - "the whole point of reserving on exit is that they are
+  // about to stop being derivable". Dropping it would strand an in-flight capture that was
+  // reserved but not published, with no way to rebuild the paths it needed.
+  //
+  // INSERT ... SELECT names every column, so a row arriving from the old table gets
+  // `kind = 'scout'`, which is what every such row is: no other kind could be reserved by
+  // the build that wrote it.
+  if (tableExists(d, "scout_capture_jobs")) {
+    d.exec(`
+      INSERT OR IGNORE INTO archive_capture_jobs
+        (operation_key, task_id, session_id, episode_id, kind, status, producer_id, archive_id,
+         report_path, summary, tags_json, supporting_json, title, question, origin_json,
+         repos_json, relative_path, capture_status, error, attempts, last_attempt_at,
+         created_at, updated_at)
+      SELECT
+        operation_key, task_id, session_id, episode_id, 'scout', status, producer_id, archive_id,
+        report_path, summary, tags_json, supporting_json, title, question, origin_json,
+        repos_json, relative_path, capture_status, error, attempts, last_attempt_at,
+        created_at, updated_at
+      FROM scout_capture_jobs;
+      DROP TABLE scout_capture_jobs;
+    `);
+  }
+  d.exec(`
+    DROP TABLE IF EXISTS scout_search_segments;
+    DROP TABLE IF EXISTS scout_artifacts;
+    DROP TABLE IF EXISTS scout_archives;
+  `);
+
   rebuildInFlightIndexIfStale(d);
+}
+
+/** Whether a table exists in this database, for a migration that has to read the old one. */
+function tableExists(d: DatabaseSync, name: string): boolean {
+  const row = d
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+    .get(name) as { name?: string } | undefined;
+  return row?.name === name;
 }
 
 /**

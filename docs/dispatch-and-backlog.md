@@ -206,7 +206,7 @@ investigates and reports rather than delivering a change and so has no diff for 
 Workflow to run over. It also changes what "finished" means for that task: a scout is asked,
 in its own prompt, to write one self-contained static page at `docs/reports/<slug>/report.html`
 and submit it, and it cannot be marked done until Mission Control has captured and verified
-that page into a durable [scout archive](scout-archives.md). Its worktree is not reclaimed
+that page into a durable [scout archive](archives.md). Its worktree is not reclaimed
 until that archive exists either, so the answer survives the checkout. No pull request is
 expected, and the conversation is not archived. Switching back to **ship** hands back the exact
 choice scout put aside, so the reversal loses nothing. It is a default rather than a lock: pick a Workflow

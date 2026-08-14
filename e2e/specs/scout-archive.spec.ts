@@ -31,7 +31,7 @@ const NO_SUBMIT = "E2E_SCOUT_NO_SUBMIT";
 /** Turns the fake into a scout whose page the daemon must refuse. */
 const INVALID = "E2E_SCOUT_INVALID_REPORT";
 
-interface ScoutArchiveRow {
+interface ArchiveRow {
   key: string;
   status: string;
   title: string;
@@ -43,10 +43,10 @@ interface ScoutArchiveRow {
 }
 
 /** One bounded page of the library, straight off the daemon's own API. */
-async function archives(daemon: DaemonHandle, query = ""): Promise<ScoutArchiveRow[]> {
-  const res = await fetch(`${daemon.baseURL}/api/scouts${query}`);
-  if (!res.ok) throw new Error(`GET /api/scouts -> ${res.status}`);
-  return ((await res.json()) as { archives: ScoutArchiveRow[] }).archives;
+async function archives(daemon: DaemonHandle, query = ""): Promise<ArchiveRow[]> {
+  const res = await fetch(`${daemon.baseURL}/api/archives${query}`);
+  if (!res.ok) throw new Error(`GET /api/archives -> ${res.status}`);
+  return ((await res.json()) as { archives: ArchiveRow[] }).archives;
 }
 
 /** Switch the shipped skills off, so the scout contract is provably not coming from one. */
@@ -218,7 +218,7 @@ test("completing a submitted scout closes it, and the archive survives its task"
   const [after] = await archives(daemon);
   expect(after.key).toBe(before.key);
   expect(after.status).toBe("ready");
-  const detail = await fetch(`${daemon.baseURL}/api/scouts/${encodeURIComponent(after.key)}`);
+  const detail = await fetch(`${daemon.baseURL}/api/archives/${encodeURIComponent(after.key)}`);
   expect(detail.ok).toBeTruthy();
   const body = (await detail.json()) as { bundlePath: string; artifacts: Array<{ id: string }> };
   expect(existsSync(join(body.bundlePath, "report", "report.html"))).toBe(true);
@@ -226,7 +226,7 @@ test("completing a submitted scout closes it, and the archive survives its task"
 
   // And the report's bytes are served through the archive's own route, by generated id.
   const report = await fetch(
-    `${daemon.baseURL}/api/scouts/${encodeURIComponent(after.key)}/artifacts/report`,
+    `${daemon.baseURL}/api/archives/${encodeURIComponent(after.key)}/artifacts/report`,
   );
   expect(report.ok).toBeTruthy();
   expect(await report.text()).toContain(FINDING);

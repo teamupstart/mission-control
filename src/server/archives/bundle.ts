@@ -2,23 +2,23 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import {
-  SCOUT_LIMITS,
-  SCOUT_PRIMARY_REPORT_PATH,
-  SCOUT_REPORT_DIR,
-  SCOUT_TEXT_LIMITS,
-  canonicalScoutContentPayload,
-  formatScoutDigest,
-  isScoutReportPath,
-  parseScoutManifest,
-  scoutArchiveKey,
-  type ScoutArchiveIdentity,
-  type ScoutIndexStatus,
-  type ScoutManifest,
-} from "@shared/scouts.ts";
+  ARCHIVE_LIMITS,
+  ARCHIVE_PRIMARY_REPORT_PATH,
+  ARCHIVE_REPORT_DIR,
+  ARCHIVE_TEXT_LIMITS,
+  canonicalArchiveContentPayload,
+  formatArchiveDigest,
+  isArchiveReportPath,
+  parseArchiveManifest,
+  archiveKey,
+  type ArchiveIdentity,
+  type ArchiveIndexStatus,
+  type ArchiveManifest,
+} from "@shared/archives.ts";
 import { readFileWithinCap } from "../session-files.ts";
 import { extractVisibleText, validateStaticReportHtml } from "./html.ts";
 import {
-  ScoutPathError,
+  ArchivePathError,
   archiveDir,
   archiveRelativePath,
   digestFile,
@@ -53,21 +53,23 @@ import {
  * The mtime is decimal nanoseconds as a string because it comes from a `bigint` stat and has
  * to survive a SQLite TEXT column and a JSON round trip without losing its low digits.
  */
-export interface ScoutBundleFingerprint {
+export interface ArchiveBundleFingerprint {
   manifestBytes: number;
   manifestMtimeNs: string;
 }
 
 /** A bundle that passed every check, ready to become index rows. */
-export interface VerifiedScoutBundle {
-  identity: ScoutArchiveIdentity;
+export interface VerifiedArchiveBundle {
+  identity: ArchiveIdentity;
   key: string;
-  /** Under the library root, so the whole library can move and still reconcile. */
+  /** Which library root it was found under - there is more than one, and only one is written. */
+  libraryRoot: string;
+  /** Under that root, so the whole library can move and still reconcile. */
   relativePath: string;
   /** The realpath'd directory on THIS machine. */
   bundleDir: string;
-  manifest: ScoutManifest;
-  fingerprint: ScoutBundleFingerprint;
+  manifest: ArchiveManifest;
+  fingerprint: ArchiveBundleFingerprint;
   /**
    * SHA-256 of the manifest FILE, which is what immutability is judged on.
    *
@@ -82,10 +84,10 @@ export interface VerifiedScoutBundle {
   contentBytes: number;
   /** Bounded visible text of the primary report, or "" when there is none. */
   reportText: string;
-  status: ScoutIndexStatus;
+  status: ArchiveIndexStatus;
 }
 
-export type ScoutBundleRead =
+export type ArchiveBundleRead =
   /** There is no directory, or no manifest in it, at this key. */
   | { kind: "absent" }
   /**
@@ -96,12 +98,12 @@ export type ScoutBundleRead =
   | { kind: "incomplete"; reason: string }
   /** This build refuses the bundle, and will go on refusing it until the bytes change. */
   | { kind: "unreadable"; reason: string; formatVersion: number | null }
-  | { kind: "verified"; bundle: VerifiedScoutBundle };
+  | { kind: "verified"; bundle: VerifiedArchiveBundle };
 
 /** The manifest's size and mtime, or null when there is no manifest to fingerprint. */
 export async function readBundleFingerprint(
   bundleDir: string,
-): Promise<ScoutBundleFingerprint | null> {
+): Promise<ArchiveBundleFingerprint | null> {
   const info = await lstat(manifestPath(bundleDir), { bigint: true }).catch(
     (error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
@@ -114,8 +116,8 @@ export async function readBundleFingerprint(
 }
 
 export function sameFingerprint(
-  a: ScoutBundleFingerprint | null,
-  b: ScoutBundleFingerprint | null,
+  a: ArchiveBundleFingerprint | null,
+  b: ArchiveBundleFingerprint | null,
 ): boolean {
   if (!a || !b) return false;
   return a.manifestBytes === b.manifestBytes && a.manifestMtimeNs === b.manifestMtimeNs;
@@ -134,8 +136,8 @@ export function sameFingerprint(
  */
 export async function settleSignature(
   bundleDir: string,
-  fingerprint: ScoutBundleFingerprint,
-  manifest: ScoutManifest | null,
+  fingerprint: ArchiveBundleFingerprint,
+  manifest: ArchiveManifest | null,
 ): Promise<string> {
   const parts = [`m:${fingerprint.manifestBytes}:${fingerprint.manifestMtimeNs}`];
   for (const artifact of manifest?.artifacts ?? []) {
@@ -156,13 +158,13 @@ export async function settleSignature(
 export async function readBundleManifest(
   bundleDir: string,
 ): Promise<
-  | { kind: "manifest"; manifest: ScoutManifest; digest: string }
+  | { kind: "manifest"; manifest: ArchiveManifest; digest: string }
   | { kind: "absent" }
   | { kind: "unreadable"; reason: string; formatVersion: number | null }
 > {
   const info = await statRegularFile(manifestPath(bundleDir));
   if (!info) return { kind: "absent" };
-  if (info.size > SCOUT_LIMITS.manifestBytes) {
+  if (info.size > ARCHIVE_LIMITS.manifestBytes) {
     return { kind: "unreadable", reason: "manifest.json exceeds its size limit", formatVersion: null };
   }
   const handle = await open(manifestPath(bundleDir), constants.O_RDONLY).catch(() => null);
@@ -170,7 +172,7 @@ export async function readBundleManifest(
   let text: string;
   let digest: string;
   try {
-    const bounded = await readFileWithinCap(handle, SCOUT_LIMITS.manifestBytes);
+    const bounded = await readFileWithinCap(handle, ARCHIVE_LIMITS.manifestBytes);
     if (bounded.exceeded) {
       return { kind: "unreadable", reason: "manifest.json exceeds its size limit", formatVersion: null };
     }
@@ -189,7 +191,7 @@ export async function readBundleManifest(
   } catch {
     return { kind: "unreadable", reason: "manifest.json is not valid JSON", formatVersion: null };
   }
-  const parsed = parseScoutManifest(value);
+  const parsed = parseArchiveManifest(value);
   if (!parsed.ok) {
     return { kind: "unreadable", reason: parsed.reason, formatVersion: parsed.formatVersion };
   }
@@ -203,10 +205,10 @@ export async function readBundleManifest(
  * a stat and a small read; digesting - the only expensive step - runs last and only for a
  * bundle whose every claim already agreed with its own manifest.
  */
-export async function verifyScoutBundle(
+export async function verifyArchiveBundle(
   libraryRealRoot: string,
-  identity: ScoutArchiveIdentity,
-): Promise<ScoutBundleRead> {
+  identity: ArchiveIdentity,
+): Promise<ArchiveBundleRead> {
   let dir: string;
   try {
     dir = archiveDir(libraryRealRoot, identity.producerId, identity.archiveId);
@@ -215,7 +217,7 @@ export async function verifyScoutBundle(
   }
   const dirInfo = await statRealDirectory(dir);
   if (!dirInfo) return { kind: "absent" };
-  // EQUALITY against the generated path, matching `ScoutArchiveManager.resolveBundleDir`.
+  // EQUALITY against the generated path, matching `ArchiveManager.resolveBundleDir`.
   // Containment alone would accept a symlinked producer namespace pointing at another archive
   // in the same library, so one key could be verified from another key's bytes. Discovery
   // already skips symlinked entries, so this is the second lock on the same door - and the
@@ -252,10 +254,10 @@ export async function verifyScoutBundle(
     try {
       target = await resolveArchiveFile(realDir, artifact.archivePath);
     } catch (error) {
-      if (error instanceof ScoutPathError && error.status === 404) {
+      if (error instanceof ArchivePathError && error.status === 404) {
         return { kind: "incomplete", reason: `${artifact.archivePath} is not in the bundle yet` };
       }
-      const reason = error instanceof ScoutPathError ? error.message : "an archived path is unusable";
+      const reason = error instanceof ArchivePathError ? error.message : "an archived path is unusable";
       return { kind: "unreadable", reason: `${artifact.archivePath}: ${reason}`, formatVersion: manifest.formatVersion };
     }
     const cap = capFor(artifact.archivePath, artifact.role === "primary_report");
@@ -273,12 +275,12 @@ export async function verifyScoutBundle(
       return { kind: "incomplete", reason: `${artifact.archivePath} does not match its recorded digest` };
     }
     contentBytes += digested.bytes;
-    if (isScoutReportPath(artifact.archivePath)) {
+    if (isArchiveReportPath(artifact.archivePath)) {
       reportBytes += digested.bytes;
       reportEntries += 1;
-      reportTargets.add(artifact.archivePath.slice(SCOUT_REPORT_DIR.length + 1));
+      reportTargets.add(artifact.archivePath.slice(ARCHIVE_REPORT_DIR.length + 1));
     }
-    if (artifact.archivePath === SCOUT_PRIMARY_REPORT_PATH) primaryFile = target;
+    if (artifact.archivePath === ARCHIVE_PRIMARY_REPORT_PATH) primaryFile = target;
   }
 
   const limit = limitProblem({
@@ -289,8 +291,8 @@ export async function verifyScoutBundle(
   });
   if (limit) return { kind: "unreadable", reason: limit, formatVersion: manifest.formatVersion };
 
-  const digest = formatScoutDigest(
-    createHash("sha256").update(canonicalScoutContentPayload(manifest.artifacts)).digest("hex"),
+  const digest = formatArchiveDigest(
+    createHash("sha256").update(canonicalArchiveContentPayload(manifest.artifacts)).digest("hex"),
   );
   if (digest !== manifest.contentDigest) {
     return {
@@ -302,7 +304,7 @@ export async function verifyScoutBundle(
 
   let reportText = "";
   if (manifest.primaryArtifactId && primaryFile) {
-    const html = await readTextWithinCap(primaryFile, SCOUT_LIMITS.primaryReportBytes);
+    const html = await readTextWithinCap(primaryFile, ARCHIVE_LIMITS.primaryReportBytes);
     if (html === null) {
       return { kind: "unreadable", reason: "report.html is not valid UTF-8", formatVersion: manifest.formatVersion };
     }
@@ -315,14 +317,15 @@ export async function verifyScoutBundle(
         formatVersion: manifest.formatVersion,
       };
     }
-    reportText = extractVisibleText(html, SCOUT_TEXT_LIMITS.reportText);
+    reportText = extractVisibleText(html, ARCHIVE_TEXT_LIMITS.reportText);
   }
 
   return {
     kind: "verified",
     bundle: {
       identity,
-      key: scoutArchiveKey(identity.producerId, identity.archiveId),
+      key: archiveKey(identity.producerId, identity.archiveId),
+      libraryRoot: libraryRealRoot,
       relativePath: archiveRelativePath(identity.producerId, identity.archiveId),
       bundleDir: realDir,
       manifest,
@@ -336,9 +339,9 @@ export async function verifyScoutBundle(
 }
 
 function capFor(archivePath: string, primary: boolean): number {
-  if (primary || archivePath === SCOUT_PRIMARY_REPORT_PATH) return SCOUT_LIMITS.primaryReportBytes;
-  if (isScoutReportPath(archivePath)) return SCOUT_LIMITS.reportDirectoryBytes;
-  return SCOUT_LIMITS.supportingFileBytes;
+  if (primary || archivePath === ARCHIVE_PRIMARY_REPORT_PATH) return ARCHIVE_LIMITS.primaryReportBytes;
+  if (isArchiveReportPath(archivePath)) return ARCHIVE_LIMITS.reportDirectoryBytes;
+  return ARCHIVE_LIMITS.supportingFileBytes;
 }
 
 function limitProblem(totals: {
@@ -347,14 +350,14 @@ function limitProblem(totals: {
   reportBytes: number;
   reportEntries: number;
 }): string | null {
-  if (totals.entries > SCOUT_LIMITS.entries) return "the bundle declares too many files";
-  if (totals.reportEntries > SCOUT_LIMITS.reportDirectoryEntries) {
+  if (totals.entries > ARCHIVE_LIMITS.entries) return "the bundle declares too many files";
+  if (totals.reportEntries > ARCHIVE_LIMITS.reportDirectoryEntries) {
     return "the report directory holds too many files";
   }
-  if (totals.reportBytes > SCOUT_LIMITS.reportDirectoryBytes) {
+  if (totals.reportBytes > ARCHIVE_LIMITS.reportDirectoryBytes) {
     return "the report directory exceeds its size limit";
   }
-  if (totals.contentBytes > SCOUT_LIMITS.bundleBytes) return "the bundle exceeds its size limit";
+  if (totals.contentBytes > ARCHIVE_LIMITS.bundleBytes) return "the bundle exceeds its size limit";
   return null;
 }
 

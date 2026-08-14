@@ -103,7 +103,7 @@ This row is opt-in and a **scout task does not depend on it**. A scout is told t
 submit its page by its own prompt, composed by the daemon at the moment the task is delivered,
 so the requirement arrives with the global toggle off and with no skills installed at all. The
 skill is how to write a good report; the scout contract is whether one exists, and it is
-enforced by [scout archives](scout-archives.md) rather than by a setting.
+enforced by [archives](archives.md) rather than by a setting.
 
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`

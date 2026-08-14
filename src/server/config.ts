@@ -26,47 +26,66 @@ export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
 export const CHECK_WORKTREES_DIR = join(STATE_DIR, "check-worktrees");
 
 /**
- * The portable scout library: `scouts/<producer-id>/<archive-id>/` bundles.
+ * The portable archive library: `archives/<producer-id>/<archive-id>/` bundles.
  *
  * Under `STATE_DIR` rather than beside a repository or in a second home resolver, so an
- * isolated or demo daemon keeps its scouts beside its own database instead of writing into
- * the operator's real library - the same rule the db already lives by. Nothing else in the
- * daemon may resolve a library root; a second one would silently split the catalog.
+ * isolated or demo daemon keeps its archives beside its own database instead of writing into
+ * the operator's real library - the same rule the db already lives by. These two constants
+ * are the only library roots in the daemon and `ArchiveLibrary` is the only thing allowed to
+ * read them; a second resolver would silently split the catalog.
  *
  * Ordinary directories, so an operator can copy, sync, back up, or hand-inspect a bundle
  * with any filesystem tool. Mission Control provides no network transport for them.
  */
-export const SCOUTS_DIR = join(STATE_DIR, "scouts");
+export const ARCHIVES_DIR = join(STATE_DIR, "archives");
 
 /**
- * This machine's opaque producer identity, deliberately OUTSIDE `SCOUTS_DIR`.
+ * Where this daemon published archives before they declared a kind. READ, NEVER WRITTEN.
  *
- * If it lived in the library it would be copied along with the bundles by exactly the sync
+ * Every bundle already on disk stays exactly where it is, under the name it was written
+ * with, and goes on being discovered from here for ever. Moving them would rewrite paths
+ * that a manifest, a note, or another machine's copy already refers to, for the sake of a
+ * tidier directory listing.
+ */
+export const LEGACY_SCOUTS_DIR = join(STATE_DIR, "scouts");
+
+/**
+ * This machine's opaque producer identity, deliberately OUTSIDE every library root.
+ *
+ * If it lived in a library it would be copied along with the bundles by exactly the sync
  * tools the format exists to support, and two machines would then generate archives into
  * one producer namespace - which is the only way this design produces a key collision.
  * Losing the file costs nothing durable: existing bundles carry their producer in their own
  * path and manifest, and future archives simply open a new namespace.
+ *
+ * The FILENAME keeps its original spelling on purpose. This id appears inside every manifest
+ * this machine has ever written, so a relocation that failed to find the old file would mint
+ * a new identity and present this machine's own bundles as a stranger's. There is nothing to
+ * gain here that is worth that risk.
  */
-export const SCOUT_PRODUCER_PATH = join(STATE_DIR, "scout-producer.json");
+export const ARCHIVE_PRODUCER_PATH = join(STATE_DIR, "scout-producer.json");
 
 /** The shipped reconciliation cadence: filesystem watchers drop events, so a scan is the authority. */
-const DEFAULT_SCOUT_RECONCILE_MS = 60_000;
+const DEFAULT_ARCHIVE_RECONCILE_MS = 60_000;
 
 /**
- * How often the scout library is rescanned, or null when recurring reconciliation is OFF.
+ * How often the archive library is rescanned, or null when recurring reconciliation is OFF.
  *
  * `MISSION_SCOUT_RECONCILE_MS=0` disables the loop, on `pollIntervalMs`'s convention and for
  * its reason: handed to `setTimeout`, 0 is a ~1ms tick, which turns an off switch into a
  * directory walk in a hot loop. An unparseable value is a typo rather than an instruction and
  * falls back to the shipped cadence.
  *
+ * The environment variable keeps its `SCOUT_` spelling because an operator may already have
+ * it set; a renamed variable would silently stop being honoured on the machines that used it.
+ *
  * Read per call rather than at import so the value is whatever the daemon was started with,
  * and so a focused test can drive the loop at its own speed without a module-load race.
  */
-export function scoutReconcileMs(raw = envVar("SCOUT_RECONCILE_MS")): number | null {
-  if (raw === undefined || raw.trim() === "") return DEFAULT_SCOUT_RECONCILE_MS;
+export function archiveReconcileMs(raw = envVar("SCOUT_RECONCILE_MS")): number | null {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_ARCHIVE_RECONCILE_MS;
   const ms = Number(raw);
-  if (!Number.isFinite(ms)) return DEFAULT_SCOUT_RECONCILE_MS;
+  if (!Number.isFinite(ms)) return DEFAULT_ARCHIVE_RECONCILE_MS;
   if (ms <= 0) return null;
   return ms;
 }

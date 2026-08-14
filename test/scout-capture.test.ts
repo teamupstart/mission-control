@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,12 +15,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import {
-  SCOUT_PRIMARY_REPORT_PATH,
+  ARCHIVE_PRIMARY_REPORT_PATH,
+  parseArchiveManifest,
+} from "../src/shared/archives.ts";
+import {
   SCOUT_REPORT_PATH_SHAPE,
-  parseScoutManifest,
   scoutReportSlug,
 } from "../src/shared/scouts.ts";
-import { validReportHtml } from "./helpers/scout-fixture.ts";
+import { validReportHtml } from "./helpers/archive-fixture.ts";
 
 /**
  * The capture mechanism: what reaches a bundle, what is refused by name, and what a
@@ -34,19 +37,19 @@ import { validReportHtml } from "./helpers/scout-fixture.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-scout-capture-"));
 process.env.MISSION_HOME = home;
 
-const { captureScoutArchive } = await import("../src/server/scouts/capture.ts");
-const { ScoutCaptureStore, clearScoutCaptureJobs, scoutOperationKey } = await import(
-  "../src/server/scouts/capture-store.ts"
+const { captureArchive } = await import("../src/server/archives/capture.ts");
+const { ArchiveCaptureStore, clearArchiveCaptureJobs, archiveOperationKey } = await import(
+  "../src/server/archives/capture-store.ts"
 );
 const { openDb } = await import("../src/server/db.ts");
-const { verifyScoutBundle } = await import("../src/server/scouts/bundle.ts");
+const { verifyArchiveBundle } = await import("../src/server/archives/bundle.ts");
 
 const db = openDb();
 const library = realpathSync(mkdirp(join(home, "scouts")));
 const PRODUCER = "11111111-2222-4333-8444-555555555555";
 
 after(() => rmSync(home, { recursive: true, force: true }));
-beforeEach(() => clearScoutCaptureJobs(db));
+beforeEach(() => clearArchiveCaptureJobs(db));
 
 function mkdirp(dir: string): string {
   mkdirSync(dir, { recursive: true });
@@ -79,9 +82,10 @@ interface JobSpec {
 
 /** A reserved job, optionally carrying a submission, exactly as the manager would build it. */
 function makeJob(spec: JobSpec) {
-  const store = new ScoutCaptureStore(db);
+  const store = new ArchiveCaptureStore(db);
   const taskId = spec.taskId ?? `task-${++checkouts}`;
   const job = store.reserve({
+    kind: "scout",
     taskId,
     sessionId: "sess-1",
     episodeId: "ep-1",
@@ -100,7 +104,7 @@ function makeJob(spec: JobSpec) {
       })),
     ],
   });
-  if (spec.reportPath === undefined) return { store, job, key: scoutOperationKey(taskId, "ep-1") };
+  if (spec.reportPath === undefined) return { store, job, key: archiveOperationKey(taskId, "ep-1") };
   const updated = store.recordSubmission(job.operationKey, {
     reportPath: spec.reportPath,
     summary: spec.summary ?? "Resume rebuilt the session without replaying the grant.",
@@ -111,6 +115,42 @@ function makeJob(spec: JobSpec) {
 }
 
 const deps = { libraryRoot: library, producerLabel: "a laptop" };
+
+// ---------------------------------------------------------------------------
+// What a capture claims to be
+// ---------------------------------------------------------------------------
+
+test("a published manifest declares the kind its job was reserved with", async () => {
+  const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml() });
+  const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
+  const outcome = await captureArchive(job, deps);
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  const manifest = parseArchiveManifest(
+    JSON.parse(readFileSync(join(library, job.producerId, job.archiveId, "manifest.json"), "utf8")),
+  );
+  assert.equal(manifest.ok, true);
+  if (!manifest.ok) return;
+  assert.equal(manifest.manifest.kind, "scout");
+});
+
+test("a kind with no planner is refused by name rather than published empty", async () => {
+  // The phase that introduced the discriminator deliberately left exactly one kind reachable
+  // from the write path. This is what makes that provable rather than incidental: a job
+  // carrying any other kind cannot reach a planner, so it cannot produce a bundle - a bundle
+  // with no plan behind it would be an empty archive claiming to preserve something.
+  const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml() });
+  const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
+  const outcome = await captureArchive({ ...job, kind: "plan" }, deps);
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.deepEqual(outcome.problems, ["this build cannot capture a plan archive"]);
+  assert.equal(
+    existsSync(join(library, job.producerId, job.archiveId)),
+    false,
+    "nothing may be written for a kind this build has no rule for",
+  );
+});
 
 // ---------------------------------------------------------------------------
 // The happy path, and what it actually wrote
@@ -132,7 +172,7 @@ test("a submitted report publishes the whole report directory with exact bytes a
     supporting: [{ repoSlot: "repo-01", path: "evidence/resume-debug.log" }],
   });
 
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, true, JSON.stringify(outcome));
   if (!outcome.ok) return;
   assert.equal(outcome.captureStatus, "complete");
@@ -141,7 +181,7 @@ test("a submitted report publishes the whole report directory with exact bytes a
   const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
   // The report's own bytes, unchanged. Rewriting a finished report - even to fix a link - is
   // the one thing the format forbids, because the archive is what somebody else will read.
-  assert.equal(readFileSync(join(bundle, SCOUT_PRIMARY_REPORT_PATH), "utf8"), report);
+  assert.equal(readFileSync(join(bundle, ARCHIVE_PRIMARY_REPORT_PATH), "utf8"), report);
   assert.equal(readFileSync(join(bundle, "report/evidence.csv"), "utf8"), "when,what\n1,grant missing\n");
   assert.equal(readFileSync(join(bundle, "report/nested/trace.txt"), "utf8"), "a trace");
   assert.equal(
@@ -149,7 +189,7 @@ test("a submitted report publishes the whole report directory with exact bytes a
     "a log line",
   );
 
-  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  const manifest = parseArchiveManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
   assert.equal(manifest.ok, true);
   if (!manifest.ok) return;
   // Provenance is SERVER-DERIVED. The scout said none of this.
@@ -169,7 +209,7 @@ test("a submitted report publishes the whole report directory with exact bytes a
   assert.ok(!roles.some((role) => role.includes(".DS_Store")));
 
   // And the whole thing verifies through the same importer a stranger's bundle goes through.
-  const read = await verifyScoutBundle(library, outcome.identity);
+  const read = await verifyArchiveBundle(library, outcome.identity);
   assert.equal(read.kind, "verified");
 });
 
@@ -180,7 +220,7 @@ test("nothing a scout did not name is captured, including ignored and unrelated 
     "notes.local": "ignored by the checkout",
   });
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
   assert.equal(outcome.artifactCount, 1, "only the report; a checkout is not a deliverable");
@@ -196,7 +236,7 @@ test("an explicitly named ignored file is refused by name rather than archived",
     reportPath: "docs/reports/resume/report.html",
     supporting: [{ repoSlot: "repo-01", path: "secrets/token.txt" }],
   });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), /secrets\/token\.txt is ignored by git/);
@@ -208,14 +248,14 @@ test("an ignored non-hidden report companion is refused by name rather than arch
     "docs/reports/resume/credentials.local": "must stay in the checkout",
   });
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(
     outcome.problems.join(" "),
     /docs\/reports\/resume\/credentials\.local.*is ignored by git and was not archived/,
   );
-  const read = await verifyScoutBundle(library, {
+  const read = await verifyArchiveBundle(library, {
     producerId: PRODUCER,
     archiveId: job.archiveId,
   });
@@ -233,7 +273,7 @@ test("every offending path is named at once, so one correction fixes them all", 
       { repoSlot: "repo-09", path: "anything.txt" },
     ],
   });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.equal(outcome.problems.length, 3);
@@ -255,7 +295,7 @@ test("a supporting path that escapes the checkout is refused", async () => {
     reportPath: "docs/reports/resume/report.html",
     supporting: [{ repoSlot: "repo-01", path: "../outside/secret.txt" }],
   });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), /leaves the checkout|cannot be represented/);
@@ -274,7 +314,7 @@ test("a symlink anywhere on a supporting path is refused, leaf or directory", as
       reportPath: "docs/reports/resume/report.html",
       supporting: [{ repoSlot: "repo-01", path }],
     });
-    const outcome = await captureScoutArchive(job, deps);
+    const outcome = await captureArchive(job, deps);
     assert.equal(outcome.ok, false, `${path} should be refused`);
     if (outcome.ok) continue;
     assert.match(outcome.problems.join(" "), /symbolic link/);
@@ -296,7 +336,7 @@ test("a parent symlink swap cannot redirect a validated source outside the check
     supporting: [{ repoSlot: "repo-01", path: "evidence/secret.txt" }],
   });
   let swapped = false;
-  const outcome = await captureScoutArchive(job, {
+  const outcome = await captureArchive(job, {
     ...deps,
     beforeCopy: async (plannedSource) => {
       if (plannedSource !== source) return;
@@ -310,7 +350,7 @@ test("a parent symlink swap cannot redirect a validated source outside the check
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), /changed after its checkout path was validated/);
-  const read = await verifyScoutBundle(library, {
+  const read = await verifyArchiveBundle(library, {
     producerId: PRODUCER,
     archiveId: job.archiveId,
   });
@@ -327,7 +367,7 @@ test("a companion directory swap cannot redirect discovery outside the checkout"
   const sourceParent = join(root, "docs/reports/resume/evidence");
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
   let swapped = false;
-  const outcome = await captureScoutArchive(job, {
+  const outcome = await captureArchive(job, {
     ...deps,
     beforeCompanionDirectory: async (directory) => {
       if (directory !== sourceParent) return;
@@ -341,7 +381,7 @@ test("a companion directory swap cannot redirect discovery outside the checkout"
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), /evidence.*symbolic link/);
-  const read = await verifyScoutBundle(library, {
+  const read = await verifyArchiveBundle(library, {
     producerId: PRODUCER,
     archiveId: job.archiveId,
   });
@@ -358,13 +398,13 @@ test("a submitted report with a symlinked companion is refused rather than calle
   symlinkSync(join(outside, "secret.txt"), join(root, "docs/reports/resume/linked.txt"));
 
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.equal(outcome.problems.length, 2, "every automatically omitted companion is a problem");
   assert.match(outcome.problems.join(" "), /docs\/reports\/resume\/linked\.txt.*symbolic link/);
   assert.match(outcome.problems.join(" "), /bad\\name\.txt.*cannot be represented/);
-  const read = await verifyScoutBundle(library, {
+  const read = await verifyArchiveBundle(library, {
     producerId: PRODUCER,
     archiveId: job.archiveId,
   });
@@ -381,7 +421,7 @@ test("a supporting file already beside the report is refused rather than archive
     reportPath: "docs/reports/resume/report.html",
     supporting: [{ repoSlot: "repo-01", path: "docs/reports/resume/evidence.csv" }],
   });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), /already captured with the report directory/);
@@ -400,12 +440,12 @@ test("a report that would execute or reach the network never reaches the library
   for (const [label, html] of cases) {
     const root = makeCheckout({ "docs/reports/resume/report.html": html });
     const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
-    const outcome = await captureScoutArchive(job, deps);
+    const outcome = await captureArchive(job, deps);
     assert.equal(outcome.ok, false, `${label} should be refused`);
     if (outcome.ok) continue;
     assert.match(outcome.problems.join(" "), /not a static report/);
     // And the refusal happened in staging: no half-archive is visible in the library.
-    const read = await verifyScoutBundle(library, { producerId: PRODUCER, archiveId: job.archiveId });
+    const read = await verifyArchiveBundle(library, { producerId: PRODUCER, archiveId: job.archiveId });
     assert.equal(read.kind, "absent");
   }
 });
@@ -418,7 +458,7 @@ test("a report linking to a companion that was not captured is refused", async (
     "docs/reports/resume/.hidden.csv": "a,b\n",
   });
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), /not a static report/);
@@ -427,7 +467,7 @@ test("a report linking to a companion that was not captured is refused", async (
 test("a report path that is not the convention is refused with the required shape", async () => {
   const root = makeCheckout({ "docs/report.html": validReportHtml() });
   const { job } = makeJob({ root, reportPath: "docs/report.html" });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), new RegExp(SCOUT_REPORT_PATH_SHAPE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -441,12 +481,12 @@ test("a replay returns the existing archive rather than publishing a second one"
   const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml() });
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
 
-  const first = await captureScoutArchive(job, deps);
+  const first = await captureArchive(job, deps);
   assert.equal(first.ok, true);
   if (!first.ok) return;
   assert.equal(first.replayed, false);
 
-  const second = await captureScoutArchive(job, deps);
+  const second = await captureArchive(job, deps);
   assert.equal(second.ok, true);
   if (!second.ok) return;
   assert.equal(second.replayed, true);
@@ -456,14 +496,14 @@ test("a replay returns the existing archive rather than publishing a second one"
 test("a final key that already holds an archive is a conflict, never an overwrite", async () => {
   const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml("first") });
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
-  const first = await captureScoutArchive(job, deps);
+  const first = await captureArchive(job, deps);
   assert.equal(first.ok, true);
   if (!first.ok) return;
 
   // Damage the published manifest so the replay check cannot accept it, then capture again
   // under the same identity: the directory is there, and it must not be replaced.
   writeFileSync(join(library, job.producerId, job.archiveId, "manifest.json"), "{ not json");
-  const second = await captureScoutArchive(job, deps);
+  const second = await captureArchive(job, deps);
   assert.equal(second.ok, false);
   if (second.ok) return;
   assert.equal(second.conflict, true);
@@ -478,18 +518,18 @@ test("a final key that already holds an archive is a conflict, never an overwrit
 test("a failed rename leaves nothing in the library and no staging residue", async () => {
   const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml() });
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
-  const outcome = await captureScoutArchive(job, {
+  const outcome = await captureArchive(job, {
     ...deps,
     rename: () => Promise.reject(new Error("disk went away")),
   });
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), /disk went away/);
-  const read = await verifyScoutBundle(library, { producerId: PRODUCER, archiveId: job.archiveId });
+  const read = await verifyArchiveBundle(library, { producerId: PRODUCER, archiveId: job.archiveId });
   assert.equal(read.kind, "absent");
 
   // And the operation is still retryable: nothing about the failure consumed the identity.
-  const retry = await captureScoutArchive(job, deps);
+  const retry = await captureArchive(job, deps);
   assert.equal(retry.ok, true);
 });
 
@@ -512,7 +552,7 @@ test("a file that changes while it is being archived fails the whole operation",
   }, 1);
   let outcome;
   try {
-    outcome = await captureScoutArchive(job, deps);
+    outcome = await captureArchive(job, deps);
   } finally {
     clearInterval(churn);
   }
@@ -520,7 +560,7 @@ test("a file that changes while it is being archived fails the whole operation",
   // one outcome that must never happen is a published archive whose digest does not describe
   // the bytes beside it, which the importer below would catch.
   if (outcome.ok) {
-    const read = await verifyScoutBundle(library, outcome.identity);
+    const read = await verifyArchiveBundle(library, outcome.identity);
     assert.equal(read.kind, "verified", "a published archive always describes its own bytes");
   } else {
     assert.match(outcome.problems.join(" "), /changed while it was being archived|exceeds/);
@@ -540,12 +580,12 @@ test("a supporting file is read from the checkout its slot names", async () => {
     extraRoots: [{ slot: "repo-02", root: secondary, label: "sibling" }],
     supporting: [{ repoSlot: "repo-02", path: "notes/other.md" }],
   });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, true, JSON.stringify(outcome));
   if (!outcome.ok) return;
   const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
   assert.equal(readFileSync(join(bundle, "artifacts/repo-02/notes/other.md"), "utf8"), "from the second repo");
-  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  const manifest = parseArchiveManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
   assert.equal(manifest.ok, true);
   if (!manifest.ok) return;
   assert.deepEqual(
@@ -565,13 +605,13 @@ test("exactly one conventional report is recovered as a complete archive", async
     "docs/reports/resume/evidence.csv": "a,b\n",
   });
   const { job } = makeJob({ root });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
   assert.equal(outcome.captureStatus, "complete");
   assert.equal(outcome.artifactCount, 2);
   const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
-  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  const manifest = parseArchiveManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
   assert.equal(manifest.ok, true);
   if (!manifest.ok) return;
   // No summary was invented for it. A recovered archive says what was written, not what a
@@ -586,12 +626,12 @@ test("a recovered report with a symlinked companion is an honest partial", async
   symlinkSync(join(outside, "secret.txt"), join(root, "docs/reports/resume/linked.txt"));
 
   const { job } = makeJob({ root });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
   assert.equal(outcome.captureStatus, "partial");
   const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
-  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  const manifest = parseArchiveManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
   assert.equal(manifest.ok, true);
   if (!manifest.ok) return;
   assert.equal(manifest.manifest.missing[0]?.expectedSource, "docs/reports/resume/linked.txt");
@@ -604,13 +644,13 @@ test("an ignored recovered primary report becomes a named partial and is not arc
     "docs/reports/resume/report.html": validReportHtml(),
   });
   const { job } = makeJob({ root });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
   assert.equal(outcome.captureStatus, "partial");
   assert.equal(outcome.artifactCount, 0);
   const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
-  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  const manifest = parseArchiveManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
   assert.equal(manifest.ok, true);
   if (!manifest.ok) return;
   assert.equal(manifest.manifest.missing[0]?.expectedSource, "docs/reports/resume/report.html");
@@ -623,12 +663,12 @@ test("two candidate reports are never guessed between - the archive is an honest
     "docs/reports/other/report.html": validReportHtml("a different investigation"),
   });
   const { job } = makeJob({ root });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
   assert.equal(outcome.captureStatus, "partial");
   const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
-  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  const manifest = parseArchiveManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
   assert.equal(manifest.ok, true);
   if (!manifest.ok) return;
   assert.equal(manifest.manifest.primaryArtifactId, null);
@@ -638,19 +678,19 @@ test("two candidate reports are never guessed between - the archive is an honest
 test("no report at all is a partial that says so, and never a manufactured one", async () => {
   const root = makeCheckout({ "notes.md": "I thought about it" });
   const { job } = makeJob({ root });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
   assert.equal(outcome.captureStatus, "partial");
   assert.equal(outcome.artifactCount, 0);
   const bundle = join(library, outcome.identity.producerId, outcome.identity.archiveId);
-  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  const manifest = parseArchiveManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
   assert.equal(manifest.ok, true);
   if (!manifest.ok) return;
   assert.equal(manifest.manifest.missing[0]!.kind, "primary_report");
   assert.match(manifest.manifest.missing[0]!.reason, /without submitting a report/);
   // The partial still verifies as a bundle: it is a record, not a broken one.
-  const read = await verifyScoutBundle(library, outcome.identity);
+  const read = await verifyArchiveBundle(library, outcome.identity);
   assert.equal(read.kind, "verified");
   if (read.kind !== "verified") return;
   assert.equal(read.bundle.status, "partial");
@@ -658,7 +698,7 @@ test("no report at all is a partial that says so, and never a manufactured one",
 
 test("a checkout that is already gone cannot be captured from, and says so", async () => {
   const { job } = makeJob({ root: join(home, "never-existed"), reportPath: "docs/reports/x/report.html" });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), /checkout is no longer available/);
@@ -688,7 +728,7 @@ test("a report that is not a regular file is refused before anything is copied",
   const root = makeCheckout({});
   mkdirp(join(root, "docs/reports/resume/report.html"));
   const { job } = makeJob({ root, reportPath: "docs/reports/resume/report.html" });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.problems.join(" "), /is not an ordinary file/);
@@ -705,7 +745,7 @@ test("an unreadable source file fails the capture rather than publishing a short
     reportPath: "docs/reports/resume/report.html",
     supporting: [{ repoSlot: "repo-01", path: "locked.txt" }],
   });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   chmodSync(join(root, "locked.txt"), 0o644);
   // Running as root reads it anyway, which is a legitimate environment rather than a failure.
   if (outcome.ok) return;
@@ -728,7 +768,7 @@ test("a supporting path is archived under the file it resolved to, not the strin
       { repoSlot: "repo-01", path: "evidence//trace.log" },
     ],
   });
-  const outcome = await captureScoutArchive(job, deps);
+  const outcome = await captureArchive(job, deps);
   assert.equal(outcome.ok, false, "the duplicates are named rather than silently deduplicated");
   if (outcome.ok) return;
   assert.equal(outcome.problems.length, 2);
@@ -739,13 +779,13 @@ test("a supporting path is archived under the file it resolved to, not the strin
     reportPath: "docs/reports/resume/report.html",
     supporting: [{ repoSlot: "repo-01", path: "./evidence/trace.log" }],
   });
-  const ok = await captureScoutArchive(single, deps);
+  const ok = await captureArchive(single, deps);
   assert.equal(ok.ok, true, JSON.stringify(ok));
   if (!ok.ok) return;
   const bundle = join(library, ok.identity.producerId, ok.identity.archiveId);
-  // The `./` never reaches the archive path, which `validateScoutArchivePath` would refuse.
+  // The `./` never reaches the archive path, which `validateArchivePath` would refuse.
   assert.equal(readFileSync(join(bundle, "artifacts/repo-01/evidence/trace.log"), "utf8"), "a trace");
-  const manifest = parseScoutManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
+  const manifest = parseArchiveManifest(JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")));
   assert.equal(manifest.ok, true);
   if (!manifest.ok) return;
   const supporting = manifest.manifest.artifacts.find((a) => a.role === "supporting")!;

@@ -2044,6 +2044,18 @@ export function App(): React.JSX.Element {
     [replaceLibrarySelection],
   );
 
+  /**
+   * The way out of an authoring surface, for its back row and its Escape ladder alike.
+   *
+   * `navigate`, not `replace` and not `history`: the surfaces report their own SELECTION
+   * through `replace` precisely because that bypasses the dirty gate, and leaving the page
+   * is the opposite case - the gate is what turns Escape from a way to lose a draft into a
+   * question about one. One callback for both exits, so there is one path to keep honest.
+   */
+  const leaveLibrary = useCallback(() => {
+    navigate({ page: "library" });
+  }, [navigate]);
+
   const libraryShelf = route.page === "library" ? route.shelf ?? null : null;
   const libraryAssetId = route.page === "library" ? route.assetId ?? null : null;
   const libraryCreating = route.page === "library" && route.creating === true;
@@ -2071,6 +2083,8 @@ export function App(): React.JSX.Element {
           hasSnapshot={hasSnapshot}
           initialWorkflowId={libraryAssetId}
           startNew={libraryCreating}
+          isOverlayOpen={isOverlayOpen}
+          onLeave={leaveLibrary}
           onDirtyChange={setWorkflowDirty}
           onSelectionChange={onWorkflowSelected}
           onBindVersion={(version) => setWorkflowBindingTarget({
@@ -2097,6 +2111,8 @@ export function App(): React.JSX.Element {
           commands={workflowCommands}
           hasSnapshot={hasSnapshot}
           initialSlot={libraryAssetId}
+          isOverlayOpen={isOverlayOpen}
+          onLeave={leaveLibrary}
           onDirtyChange={setWorkflowDirty}
           onSelectionChange={onCommandSelected}
         />
@@ -2114,6 +2130,7 @@ export function App(): React.JSX.Element {
             initialPersonaId={libraryAssetId}
             startNew={libraryCreating}
             isOverlayOpen={isOverlayOpen}
+            onLeave={leaveLibrary}
             onDirtyChange={setWorkflowDirty}
             onSelectionChange={onPersonaSelected}
           />
@@ -2128,6 +2145,7 @@ export function App(): React.JSX.Element {
               initialActionId={libraryAssetId}
               startNew={libraryCreating}
               isOverlayOpen={isOverlayOpen}
+              onLeave={leaveLibrary}
               onDirtyChange={setWorkflowDirty}
               onSelectionChange={onActionSelected}
             />

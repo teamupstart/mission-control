@@ -12185,6 +12185,54 @@ select.ensemble-judge-persona {
   border-right: 1px solid var(--border-soft);
   background: var(--panel-2);
 }
+/* The way out, in all four authoring rails.
+
+   Above each rail's heading and OUTSIDE the scrolling asset list, which is the half that
+   makes it findable: a row inside the list is a control you have to already know about,
+   because it is not there once you have scrolled to the Persona you were looking for.
+
+   `flex: none` is what holds it out of each rail's flex distribution, so it keeps its own
+   height above `.persona-list` / `.wf-action-list` / `.wf-command-list` instead of being
+   sized by what is left.
+
+   It is NOT pinned to the viewport, and that is a scope line rather than an oversight. All
+   four rails are `min-height`-sized today: a list long enough to outgrow the viewport makes
+   the whole PAGE scroll rather than the list inside a bounded rail, so the row leaves the
+   screen with the rail's own heading. Holding it there means giving the rail a bounded
+   height and its list the scroll - which is the Rail rebuild the next phase owns, and doing
+   half of it here would be reverted by the other half. Measured, not assumed: with 34
+   Personas the list reports `scrollHeight === clientHeight` and the document grows to
+   2525px. */
+.lib-back-row {
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.lib-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  /* Pulled back by its own padding so the arrow lines up with the rail heading below it
+     rather than sitting one hover-target's worth to its right. */
+  margin-left: -8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--working);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.lib-back:hover {
+  background: var(--panel);
+  color: var(--fg);
+}
+.lib-back:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: -2px;
+}
+
 .persona-sidebar-head,
 .wf-action-sidebar-head,
 .wf-command-sidebar-head {

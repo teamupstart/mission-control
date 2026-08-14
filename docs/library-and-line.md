@@ -109,6 +109,28 @@ as every unknown hash always has.
 An editor with unsaved changes still holds a navigation away from it and asks first, whichever
 home you are leaving for.
 
+### Getting back out of an authoring surface
+
+Every authoring rail begins with a **← Library** row, above its own heading, so the way back is
+the first thing in reading order on every one of the four surfaces. It carries `esc` on its
+face when keyboard hints are on, because the keystroke is the half you could not have guessed.
+
+<kbd>Esc</kbd> is a ladder rather than a single action, and it peels one layer per press:
+
+1. An overlay - a confirm dialog, the unsaved-changes question - closes itself, and the page
+   stays where it is.
+2. Otherwise, if the keyboard is inside something that edits text - the guidance or prompt
+   editor, a name field, a Command's argv box - the press leaves that and nothing else.
+   Leaving the page out from under a half-typed field is not a back button.
+3. Otherwise the press leaves for `#/library`.
+
+With text selected in the guidance editor that reads as three presses, and each one is doing
+something: the editor collapses the selection, then the second leaves the editor, then the
+third leaves the page.
+
+Both exits leave through the same navigation, so an unsaved draft raises the same
+leave-with-unsaved-changes question either way and neither is a route around it.
+
 ### The Ship log
 
 `#/shipped` is the cross-repo record of what the fleet landed: the Inspector's adoption

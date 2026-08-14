@@ -44,9 +44,26 @@ function markup(commands: WorkflowCommandView[], initialSlot: string | null = nu
     commands,
     hasSnapshot: true,
     initialSlot,
+    isOverlayOpen: () => false,
+    onLeave: () => {},
     onDirtyChange: () => {},
   })));
 }
+
+test("the rail's first row is the way out, above its own heading", () => {
+  // The reported dead end: opening this screen left no way back. Escape did nothing, and the
+  // only control that navigated to `#/library` was the topbar chip already painted
+  // `aria-current` - the page you are on, not the way out of it.
+  //
+  // Asserted as ORDER rather than presence. The row has to be first in reading order and
+  // outside the scrolling list, or it is a control you have to already know about to find.
+  const html = markup([view({ defaultCommand: ["npm", "test"] })]);
+  const row = html.indexOf('aria-label="Back to Library"');
+  assert.ok(row > 0, "no back row in the rail");
+  assert.ok(row < html.indexOf('wf-command-sidebar-head'), "the back row must precede the rail heading");
+  // The keystroke on the face, so Escape is taught rather than assumed.
+  assert.match(html, /<kbd class="kb-hint">esc<\/kbd>/);
+});
 
 test("the rail is the four built-in slots, in registry order, configured or not", () => {
   const html = markup([view({ defaultCommand: ["npm", "test"] })]);

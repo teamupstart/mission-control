@@ -8,6 +8,8 @@ import type {
 } from "@shared/workflow.ts";
 import { PersonaEditor } from "./PersonaEditor.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
+import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
 import {
   deriveImportedPersonaName,
@@ -86,6 +88,7 @@ export function PersonaLibrary({
   initialPersonaId = null,
   startNew = false,
   isOverlayOpen,
+  onLeave,
   onDirtyChange,
   onSelectionChange,
 }: {
@@ -112,6 +115,12 @@ export function PersonaLibrary({
   /** Mount straight into a blank draft, for the Library's "＋ New Persona" card. */
   startNew?: boolean;
   isOverlayOpen: () => boolean;
+  /**
+   * Leave this surface for the Library index. App points it at the router's `navigate`, so
+   * the back row and Escape leave by ONE path and an unsaved draft raises the existing
+   * leave-with-unsaved-changes dialog rather than being dropped.
+   */
+  onLeave: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onSelectionChange?: (personaId: string | null) => void;
 }): React.JSX.Element {
@@ -149,6 +158,10 @@ export function PersonaLibrary({
       (streamedPersona === null || localPersona.revision > streamedPersona.revision)
     ? localPersona
     : streamedPersona;
+
+  // Escape leaves the guidance editor, then leaves the page - the same ladder the back row
+  // above the rail is the visible half of.
+  useLibraryEscape({ isOverlayOpen, onLeave });
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
@@ -306,6 +319,7 @@ export function PersonaLibrary({
   return (
     <section className="persona-library">
       <aside className="persona-sidebar" aria-label="Persona library">
+        <LibraryBackRow onLeave={onLeave} />
         <div className="persona-sidebar-head">
           <div>
             <h3>Personas</h3>

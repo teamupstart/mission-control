@@ -39,6 +39,13 @@ const THIRD = "Re-file the task and go ahead with the build";
 /** The dispatch prompt, which is the operator's first message in the conversation. */
 const DISPATCH = "exercise the yours rail";
 
+/**
+ * The card's own heading, which the dispatch prompt becomes.
+ *
+ * Case-insensitive because the title is drawn title-cased from what was typed.
+ */
+const CARD_TITLE = /exercise the yours rail/i;
+
 /** What is delivered on the operator's behalf - the turns that must NOT read as theirs. */
 const FOREMAN_SAYS = "Continue. You have approval to run the build.";
 const WORKFLOW_SAYS = "Repair the failing stage and report back.";
@@ -158,7 +165,11 @@ async function conversationWithMessages(
 ): Promise<ReturnType<Page["locator"]>> {
   await dispatch(page, daemon);
 
-  const card = page.locator("article.card").first();
+  // The card is an `article`, and so is every turn inside it now that both renderings
+  // draw a turn as one - so the heading it carries is what tells the two apart. Filtering
+  // on a role rather than reaching for `article.card` keeps every selector in this spec
+  // to a role, a label, a placeholder or text a person can read on screen.
+  const card = page.getByRole("article").filter({ has: page.getByRole("heading", { name: CARD_TITLE }) });
   await card.getByRole("button", { name: "Expand conversation" }).click();
 
   const reply = card.getByPlaceholder(/^Reply to this session/);
@@ -402,7 +413,7 @@ test("the tab survives find taking the column, and switches back", async ({ dash
   await expect(row(card, SECOND)).toBeVisible();
 
   // Find owns the whole column while it is open - the rail is not merely covered.
-  await card.getByRole("heading", { name: /Exercise The Yours Rail/i }).click();
+  await card.getByRole("heading", { name: CARD_TITLE }).click();
   await dashboard.keyboard.press("Meta+f");
   await expect(card.getByRole("searchbox", { name: "Find in conversation" })).toBeVisible();
   await expect(card.getByRole("region", { name: "Conversation rail" })).toHaveCount(0);
@@ -429,7 +440,7 @@ test("find's You scope and the Yours tab agree about whose message is whose", as
   await delivers(daemon, await session(daemon), "foreman", FOREMAN_SAYS);
   await expect(card.getByText(FOREMAN_SAYS, { exact: true })).toBeVisible();
 
-  await card.getByRole("heading", { name: /Exercise The Yours Rail/i }).click();
+  await card.getByRole("heading", { name: CARD_TITLE }).click();
   await dashboard.keyboard.press("Meta+f");
   const box = card.getByRole("searchbox", { name: "Find in conversation" });
   // A word both the operator and Foreman used, so scope is the only thing that can

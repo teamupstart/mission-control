@@ -1,4 +1,4 @@
-import type { ScoutArchiveSummary, ScoutIndexStatus } from "@shared/scouts.ts";
+import type { ArchiveIndexStatus, ArchiveSummary } from "@shared/archives.ts";
 
 /**
  * The words the Scouts page puts beside every state colour.
@@ -6,7 +6,7 @@ import type { ScoutArchiveSummary, ScoutIndexStatus } from "@shared/scouts.ts";
  * Shared by the rail, the reader and the delete confirmation so one archive is never
  * called "Partial" in one pane and "Incomplete" in the next.
  */
-export const SCOUT_STATUS_WORD: Record<ScoutIndexStatus, string> = {
+export const SCOUT_STATUS_WORD: Record<ArchiveIndexStatus, string> = {
   ready: "Complete",
   partial: "Partial",
   unreadable: "Unreadable",
@@ -23,7 +23,7 @@ export const SCOUT_STATUS_WORD: Record<ScoutIndexStatus, string> = {
  * type says empty, because `title` is a non-optional string.
  */
 export function scoutLabel(
-  archive: Pick<ScoutArchiveSummary, "title" | "archiveId">,
+  archive: Pick<ArchiveSummary, "title" | "archiveId">,
 ): string {
   return archive.title.trim() || `Unreadable archive ${archive.archiveId.slice(0, 8)}`;
 }

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  ScoutArchiveDetail,
-  ScoutArtifactRole,
-  ScoutArtifactView,
-} from "@shared/scouts.ts";
+  ArchiveArtifactRole,
+  ArchiveArtifactView,
+  ArchiveDetail,
+} from "@shared/archives.ts";
 import type { OpenTargetId } from "@shared/open-targets.ts";
 import { api } from "../../lib/api.ts";
 import { formatBytes } from "../../lib/format.ts";
@@ -20,7 +20,7 @@ import type { ScoutDeleteTarget } from "./ScoutDeleteModal.tsx";
 import type { ScoutDetailState } from "./useScoutsCatalog.ts";
 import { SCOUT_STATUS_WORD, scoutLabel } from "./scout-labels.ts";
 
-const ROLE_WORD: Record<ScoutArtifactRole, string> = {
+const ROLE_WORD: Record<ArchiveArtifactRole, string> = {
   primary_report: "Primary report",
   report_companion: "Report companion",
   supporting: "Supporting",
@@ -50,7 +50,7 @@ function isTextual(mediaType: string): boolean {
   );
 }
 
-function isMarkdown(artifact: ScoutArtifactView): boolean {
+function isMarkdown(artifact: ArchiveArtifactView): boolean {
   return mediaEssence(artifact.mediaType) === "text/markdown"
     || artifact.archivePath.endsWith(".md");
 }
@@ -73,7 +73,7 @@ export function ScoutReader({
   onDelete,
   onBack,
 }: {
-  detail: ScoutArchiveDetail | null;
+  detail: ArchiveDetail | null;
   state: ScoutDetailState;
   error: string | null;
   libraryPath: string | null;
@@ -124,7 +124,7 @@ export function ScoutReader({
       setLoaded({ kind: "opaque" });
       return;
     }
-    void api.scoutArtifact(detail.key, active.id, controller.signal).then(async (result) => {
+    void api.archiveArtifact(detail.key, active.id, controller.signal).then(async (result) => {
       if (controller.signal.aborted) return;
       if (!result.ok) {
         setLoaded({ kind: "error", error: result.error });
@@ -182,7 +182,7 @@ export function ScoutReader({
     if (!detail || !active) return;
     setOpening(true);
     setOpenError(null);
-    const result = await api.openScoutArtifact(detail.key, active.id, target);
+    const result = await api.openArchiveArtifact(detail.key, active.id, target);
     setOpening(false);
     if (!result.ok) setOpenError(result.error ?? "That artifact could not be opened.");
   }
@@ -380,7 +380,7 @@ export function ScoutReader({
                   <Tooltip label={`Save ${artifact.archivePath} out of the archive`}>
                     <a
                       className="btn btn-ghost"
-                      href={`/api/scouts/${encodeURIComponent(detail.key)}/artifacts/${
+                      href={`/api/archives/${encodeURIComponent(detail.key)}/artifacts/${
                         encodeURIComponent(artifact.id)
                       }`}
                       download

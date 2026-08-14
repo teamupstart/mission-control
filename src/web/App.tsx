@@ -209,7 +209,7 @@ export function App(): React.JSX.Element {
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
     // how the Scouts page learns to refetch its current window without the browser polling
     // and without unbounded history entering the SSE snapshot.
-    scoutsRevision,
+    archivesRevision,
     schedules,
     connected,
     hasSnapshot,
@@ -2470,7 +2470,7 @@ export function App(): React.JSX.Element {
                 route={route}
                 navigate={navigate}
                 replace={replace}
-                revision={scoutsRevision}
+                revision={archivesRevision}
               />
             ) : null
           }

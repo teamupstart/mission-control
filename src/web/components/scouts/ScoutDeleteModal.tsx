@@ -46,7 +46,7 @@ export function ScoutDeleteModal({
     if (!armed) return;
     setBusy(true);
     setError(null);
-    const result = await api.deleteScout(target.key);
+    const result = await api.deleteArchive(target.key);
     if (!result.ok) {
       // The modal and the archive both stay put, showing the daemon's own reason. An
       // unreadable bundle is still deletable by its server-verified path, so a refusal here

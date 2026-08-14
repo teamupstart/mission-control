@@ -392,6 +392,12 @@ retention sweep - a ready archive stays until you delete it.
 an operator actually reaches for - investigation, findings, report, research, evidence,
 history, audit.
 
+It lists the archive library without filtering by `kind`. That is deliberate: an unreadable
+bundle has no kind at all, so a `kind=scout` query would hide exactly the state that most
+needs an operator, and no other surface lists archives - it would be invisible and
+impossible to delete. The cost is that an archive of another kind can appear here, so each
+row says which kind it is rather than letting it pass as a scout.
+
 ![The Scouts page: the archive rail, the sandboxed report, and the evidence spine](images/scouts.png)
 
 Two stable routes, both copyable:
@@ -402,7 +408,7 @@ Two stable routes, both copyable:
 #/scouts/<producer-id>~<archive-id>?q=&producer=&repo=&agent=&status=&from=&to=
 ```
 
-The filter names are exactly the ones `GET /api/scouts` validates, so a link and a request
+The filter names are exactly the ones `GET /api/archives` validates, so a link and a request
 never disagree. The pagination cursor is deliberately absent: it continues the window you are
 looking at rather than naming a place, so a pasted link cannot open on page three with no
 first page above it.

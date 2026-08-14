@@ -82,10 +82,10 @@ import type {
 import type { SweepReport, TaskSourceRef, TaskSourcesView } from "@shared/task-source.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type {
-  ScoutArchiveDetail,
-  ScoutArchivePage,
-  ScoutSearchQuery,
-} from "@shared/scouts.ts";
+  ArchiveDetail,
+  ArchivePage,
+  ArchiveSearchQuery,
+} from "@shared/archives.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
 import type { PersonaDefaultsView } from "@shared/workflow.ts";
@@ -856,7 +856,7 @@ export interface DispatchInput {
   backlog?: boolean;
 }
 
-// ---- Scouts ----
+// ---- Archives ----
 //
 // The archive read model. Everything here is BOUNDED and on demand: the catalog is unbounded
 // history that is deliberately absent from the SSE snapshot, so the page asks for one window
@@ -869,7 +869,7 @@ export interface DispatchInput {
 // failure instead.
 
 /** A bounded read that distinguishes "nothing there" from "could not ask". */
-export type ScoutRead<T> =
+export type ArchiveRead<T> =
   | { ok: true; value: T }
   | { ok: false; error: string; status?: number };
 
@@ -880,7 +880,7 @@ export type ScoutRead<T> =
  * caller: a superseded keystroke is not a fault, and the page drops it rather than drawing
  * an error for a request it cancelled itself.
  */
-async function scoutJson<T>(path: string, signal?: AbortSignal): Promise<ScoutRead<T>> {
+async function archiveJson<T>(path: string, signal?: AbortSignal): Promise<ArchiveRead<T>> {
   try {
     const res = await fetch(path, { ...(signal ? { signal } : {}) });
     if (!res.ok) {
@@ -894,7 +894,7 @@ async function scoutJson<T>(path: string, signal?: AbortSignal): Promise<ScoutRe
 }
 
 /** True when a rejected read was this page cancelling itself, not a failure worth showing. */
-export function isScoutAbort(err: unknown): boolean {
+export function isArchiveAbort(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
@@ -903,9 +903,9 @@ export function isScoutAbort(err: unknown): boolean {
  *
  * Built HERE rather than in the component so there is one place that knows an out-of-range
  * `limit` or a malformed `cursor` is REFUSED by the route rather than clamped, and one place
- * that spells each parameter. The names match `ScoutSearchQuerySchema` exactly.
+ * that spells each parameter. The names match `ArchiveSearchQuerySchema` exactly.
  */
-export function scoutSearchPath(query: Partial<ScoutSearchQuery>): string {
+export function archiveSearchPath(query: Partial<ArchiveSearchQuery>): string {
   const params = new URLSearchParams();
   if (query.q) params.set("q", query.q);
   if (query.producer) params.set("producer", query.producer);
@@ -917,11 +917,11 @@ export function scoutSearchPath(query: Partial<ScoutSearchQuery>): string {
   if (query.cursor) params.set("cursor", query.cursor);
   if (query.limit !== undefined && query.limit !== null) params.set("limit", String(query.limit));
   const search = params.toString();
-  return search ? `/api/scouts?${search}` : "/api/scouts";
+  return search ? `/api/archives?${search}` : "/api/archives";
 }
 
 /** One artifact's bytes, plus what the daemon said they are. */
-export interface ScoutArtifactBody {
+export interface ArchiveArtifactBody {
   blob: Blob;
   mediaType: string;
 }
@@ -1268,11 +1268,11 @@ export const api = {
   injectPrompt: (id: string, text: string, buffer = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text, buffer }),
 
-  // ---- Scouts ----
+  // ---- Archives ----
 
   /** One bounded, cursor-paged window of the archive catalog, newest first. */
-  listScouts: (query: Partial<ScoutSearchQuery>, signal?: AbortSignal) =>
-    scoutJson<ScoutArchivePage>(scoutSearchPath(query), signal),
+  listArchives: (query: Partial<ArchiveSearchQuery>, signal?: AbortSignal) =>
+    archiveJson<ArchivePage>(archiveSearchPath(query), signal),
 
   /**
    * One archive in full: provenance, completeness, and artifact metadata, but no bodies.
@@ -1280,8 +1280,8 @@ export const api = {
    * Fetched even for a key absent from the current window, which is what makes a deep link
    * to a filtered-out archive open the archive instead of an empty reader.
    */
-  scoutDetail: (archiveKey: string, signal?: AbortSignal) =>
-    scoutJson<ScoutArchiveDetail>(`/api/scouts/${encodeURIComponent(archiveKey)}`, signal),
+  archiveDetail: (archiveKey: string, signal?: AbortSignal) =>
+    archiveJson<ArchiveDetail>(`/api/archives/${encodeURIComponent(archiveKey)}`, signal),
 
   /**
    * One artifact's bytes, addressed by its GENERATED id.
@@ -1292,14 +1292,14 @@ export const api = {
    * `default-src 'none'; sandbox`, so these bytes are inert wherever they land - a blob URL
    * made from one cannot execute, and the caller is expected to revoke it.
    */
-  scoutArtifact: async (
+  archiveArtifact: async (
     archiveKey: string,
     artifactId: string,
     signal?: AbortSignal,
-  ): Promise<ScoutRead<ScoutArtifactBody>> => {
+  ): Promise<ArchiveRead<ArchiveArtifactBody>> => {
     try {
       const res = await fetch(
-        `/api/scouts/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}`,
+        `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}`,
         { ...(signal ? { signal } : {}) },
       );
       if (!res.ok) {
@@ -1317,9 +1317,9 @@ export const api = {
   },
 
   /** Hand one archived artifact to an application outside Mission Control. */
-  openScoutArtifact: (archiveKey: string, artifactId: string, target: OpenTargetId) =>
+  openArchiveArtifact: (archiveKey: string, artifactId: string, target: OpenTargetId) =>
     post<OpenFileResult & ActionResult>(
-      `/api/scouts/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}/open`,
+      `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}/open`,
       { target },
     ),
 
@@ -1331,10 +1331,10 @@ export const api = {
    * looking at, so a list that reordered under a stale browser cannot turn a confirmed
    * delete into a delete of whatever now occupies that position.
    */
-  deleteScout: (archiveKey: string) =>
+  deleteArchive: (archiveKey: string) =>
     request<{ deletedBundle?: boolean } & ActionResult>(
       "DELETE",
-      `/api/scouts/${encodeURIComponent(archiveKey)}`,
+      `/api/archives/${encodeURIComponent(archiveKey)}`,
       { confirmArchiveKey: archiveKey },
     ),
 };

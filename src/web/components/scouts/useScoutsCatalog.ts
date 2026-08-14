@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  ScoutArchiveDetail,
-  ScoutArchiveSummary,
-  ScoutSearchQuery,
-} from "@shared/scouts.ts";
-import { SCOUT_SEARCH_LIMITS } from "@shared/scouts.ts";
+  ArchiveDetail,
+  ArchiveSearchQuery,
+  ArchiveSummary,
+} from "@shared/archives.ts";
+import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
 import { api } from "../../lib/api.ts";
 import type { ScoutFilters } from "../../workflows/useWorkflowRoute.ts";
 
@@ -16,7 +16,7 @@ import type { ScoutFilters } from "../../workflows/useWorkflowRoute.ts";
  * 1. **A failed read is not an empty library.** Every state below can say "could not ask",
  *    and the page draws that differently from "nothing archived yet". Getting this wrong
  *    would tell an operator their evidence is gone when the daemon merely refused.
- * 2. **The browser never polls.** One `scoutsRevision` counter arrives from the existing
+ * 2. **The browser never polls.** One `archivesRevision` counter arrives from the existing
  *    event stream - incremented once per reconciled batch and once per reconnect - and a
  *    change refetches the CURRENT window. There is no interval anywhere in this file.
  * 3. **Requests are superseded, not raced.** Every fetch carries an abort signal owned by
@@ -37,7 +37,7 @@ export type ScoutListState =
 export type ScoutDetailState = "idle" | "loading" | "ready" | "error";
 
 export interface ScoutsCatalog {
-  archives: ScoutArchiveSummary[];
+  archives: ArchiveSummary[];
   /** Where the library lives on this machine, straight from the list route. */
   libraryPath: string | null;
   listState: ScoutListState;
@@ -45,7 +45,7 @@ export interface ScoutsCatalog {
   hasMore: boolean;
   loadingMore: boolean;
   loadMore: () => void;
-  detail: ScoutArchiveDetail | null;
+  detail: ArchiveDetail | null;
   detailState: ScoutDetailState;
   detailError: string | null;
   /** Refetch the current window and the open archive, e.g. after a delete. */
@@ -53,7 +53,7 @@ export interface ScoutsCatalog {
 }
 
 /** The filters, in the shape the API takes. One place converts, so no component does. */
-function toQuery(filters: ScoutFilters | undefined): Partial<ScoutSearchQuery> {
+function toQuery(filters: ScoutFilters | undefined): Partial<ArchiveSearchQuery> {
   return {
     ...(filters?.q ? { q: filters.q } : {}),
     ...(filters?.producer ? { producer: filters.producer } : {}),
@@ -62,7 +62,7 @@ function toQuery(filters: ScoutFilters | undefined): Partial<ScoutSearchQuery> {
     ...(filters?.status ? { status: filters.status } : {}),
     ...(filters?.from !== undefined ? { from: filters.from } : {}),
     ...(filters?.to !== undefined ? { to: filters.to } : {}),
-    limit: SCOUT_SEARCH_LIMITS.defaultLimit,
+    limit: ARCHIVE_SEARCH_LIMITS.defaultLimit,
   };
 }
 
@@ -98,9 +98,9 @@ export function continuationApplies(
  * archive twice.
  */
 export function appendArchives(
-  prev: readonly ScoutArchiveSummary[],
-  incoming: readonly ScoutArchiveSummary[],
-): ScoutArchiveSummary[] {
+  prev: readonly ArchiveSummary[],
+  incoming: readonly ArchiveSummary[],
+): ArchiveSummary[] {
   const seen = new Set(prev.map((archive) => archive.key));
   return [...prev, ...incoming.filter((archive) => !seen.has(archive.key))];
 }
@@ -116,16 +116,16 @@ export function useScoutsCatalog({
 }: {
   filters: ScoutFilters | undefined;
   archiveKey: string | null;
-  /** `scoutsRevision` from the event stream: bumps per reconciled batch and per reconnect. */
+  /** `archivesRevision` from the event stream: bumps per reconciled batch and per reconnect. */
   revision: number;
 }): ScoutsCatalog {
-  const [archives, setArchives] = useState<ScoutArchiveSummary[]>([]);
+  const [archives, setArchives] = useState<ArchiveSummary[]>([]);
   const [libraryPath, setLibraryPath] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [listState, setListState] = useState<ScoutListState>("first");
   const [listError, setListError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [detail, setDetail] = useState<ScoutArchiveDetail | null>(null);
+  const [detail, setDetail] = useState<ArchiveDetail | null>(null);
   const [detailState, setDetailState] = useState<ScoutDetailState>("idle");
   const [detailError, setDetailError] = useState<string | null>(null);
   /** Bumped by `refresh()` to re-run the window effect without touching the route. */
@@ -165,7 +165,7 @@ export function useScoutsCatalog({
     // "first" only while nothing is on screen. Once a window has landed, a refetch is a
     // background refresh and must not blank the rail an operator is reading.
     setListState((prev) => (prev === "ready" || prev === "refreshing" ? "refreshing" : "first"));
-    void api.listScouts(toQuery(filters), controller.signal).then((result) => {
+    void api.listArchives(toQuery(filters), controller.signal).then((result) => {
       if (controller.signal.aborted) return;
       if (!result.ok) {
         setListState("error");
@@ -201,7 +201,7 @@ export function useScoutsCatalog({
     // Fetched by key alone, never read out of the loaded window. That is what makes a deep
     // link to an archive the current filters exclude open the archive instead of an empty
     // reader - and what keeps it open when reconciliation reorders the list under it.
-    void api.scoutDetail(archiveKey, controller.signal).then((result) => {
+    void api.archiveDetail(archiveKey, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
       if (!result.ok) {
         setDetail(null);
@@ -225,7 +225,7 @@ export function useScoutsCatalog({
     // The window this continuation belongs to, captured BEFORE the request goes out.
     const generation = windowGeneration.current;
     void api
-      .listScouts({ ...toQuery(filters), cursor }, controller.signal)
+      .listArchives({ ...toQuery(filters), cursor }, controller.signal)
       .then((result) => {
         // Checked before ANY state is written, `setLoadingMore` included: a continuation
         // that outlived its window must leave the current one exactly as it found it.

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { ScoutArchiveSummary } from "../src/shared/scouts.ts";
+import type { ArchiveSummary } from "../src/shared/archives.ts";
 import {
   appendArchives,
   continuationApplies,
@@ -22,12 +22,13 @@ import {
  * - it was in believing a resolved response still belonged to the screen.
  */
 
-function summary(key: string): ScoutArchiveSummary {
+function summary(key: string): ArchiveSummary {
   return {
     key,
     producerId: "7aa704fd-d2ab-48b3-a726-0c2643ed91d2",
     producerLabel: null,
     archiveId: key,
+    kind: "scout",
     status: "ready",
     captureStatus: "complete",
     title: `Archive ${key}`,

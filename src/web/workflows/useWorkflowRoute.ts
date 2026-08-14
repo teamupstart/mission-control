@@ -10,10 +10,10 @@ import {
   type WorkflowRunStatus,
 } from "@shared/workflow.ts";
 import {
-  SCOUT_INDEX_STATUSES,
-  parseScoutArchiveKey,
-  type ScoutIndexStatus,
-} from "@shared/scouts.ts";
+  ARCHIVE_INDEX_STATUSES,
+  parseArchiveKey,
+  type ArchiveIndexStatus,
+} from "@shared/archives.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
 // dashboard has - fleet, Library, Runs, Ensembles, Settings - is a variant of `MissionRoute`
@@ -106,7 +106,7 @@ export interface ScoutFilters {
   producer?: string;
   repo?: string;
   agent?: string;
-  status?: ScoutIndexStatus;
+  status?: ArchiveIndexStatus;
   /** Epoch ms, inclusive, bounding the archive's sort time. */
   from?: number;
   to?: number;
@@ -252,8 +252,8 @@ export function parseMissionRoute(hash: string): MissionRoute {
       // An unknown status is DROPPED rather than carried, exactly as an unknown run status
       // is: the page would have to refuse it at the API anyway, and a filter chip naming a
       // state this build does not have is a control nothing can clear.
-      ...(rawStatusFilter && (SCOUT_INDEX_STATUSES as readonly string[]).includes(rawStatusFilter)
-        ? { status: rawStatusFilter as ScoutIndexStatus }
+      ...(rawStatusFilter && (ARCHIVE_INDEX_STATUSES as readonly string[]).includes(rawStatusFilter)
+        ? { status: rawStatusFilter as ArchiveIndexStatus }
         : {}),
       ...(rawFrom !== undefined ? { from: rawFrom } : {}),
       ...(rawTo !== undefined ? { to: rawTo } : {}),
@@ -271,7 +271,7 @@ export function parseMissionRoute(hash: string): MissionRoute {
     const archiveKey = scout ? segment(scout[1]!) : null;
     return {
       page: "scouts",
-      ...(archiveKey && parseScoutArchiveKey(archiveKey) ? { archiveKey } : {}),
+      ...(archiveKey && parseArchiveKey(archiveKey) ? { archiveKey } : {}),
       ...(withScoutFilters ? { filters: withScoutFilters } : {}),
     };
   }
@@ -397,7 +397,7 @@ export function missionRouteHash(route: MissionRoute): string {
     // without it, and a codec that does not round-trip is how the address bar starts
     // disagreeing with the page.
     const path =
-      route.archiveKey && parseScoutArchiveKey(route.archiveKey)
+      route.archiveKey && parseArchiveKey(route.archiveKey)
         ? `#/scouts/${encodeURIComponent(route.archiveKey)}`
         : "#/scouts";
     const params = new URLSearchParams();

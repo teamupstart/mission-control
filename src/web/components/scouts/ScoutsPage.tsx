@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ScoutArchiveSummary, ScoutIndexStatus } from "@shared/scouts.ts";
-import { SCOUT_INDEX_STATUSES } from "@shared/scouts.ts";
+import type { ArchiveIndexStatus, ArchiveSummary } from "@shared/archives.ts";
+import { ARCHIVE_INDEX_STATUSES } from "@shared/archives.ts";
 import type { MissionRoute, ScoutFilters } from "../../workflows/useWorkflowRoute.ts";
 import { formatBytes } from "../../lib/format.ts";
 import { useScoutsCatalog } from "./useScoutsCatalog.ts";
@@ -32,12 +32,12 @@ function clockLabel(at: number): string {
 }
 
 /** The time an archive sorts and groups by, matching the daemon's own `sort_at`. */
-function sortAt(archive: ScoutArchiveSummary): number {
+function sortAt(archive: ArchiveSummary): number {
   return archive.completedAt ?? archive.createdAt ?? archive.indexedAt;
 }
 
 /** The second line of a rail row: honest about a partial or unreadable record. */
-function railDetail(archive: ScoutArchiveSummary): string {
+function railDetail(archive: ArchiveSummary): string {
   if (archive.status === "unreadable") {
     return archive.error ? `unreadable · ${archive.error}` : "unreadable";
   }
@@ -128,7 +128,7 @@ export function ScoutsPage({
   }, [selectedKey, catalog.listState, catalog.archives, filters, replace]);
 
   const groups = useMemo(() => {
-    const out: { day: string; rows: ScoutArchiveSummary[] }[] = [];
+    const out: { day: string; rows: ArchiveSummary[] }[] = [];
     for (const archive of catalog.archives) {
       const day = dayLabel(sortAt(archive));
       const last = out[out.length - 1];
@@ -185,12 +185,12 @@ export function ScoutsPage({
                   onChange={(event) =>
                     setFilters({
                       ...activeFilters,
-                      status: (event.target.value || undefined) as ScoutIndexStatus | undefined,
+                      status: (event.target.value || undefined) as ArchiveIndexStatus | undefined,
                     })
                   }
                 >
                   <option value="">Any state</option>
-                  {SCOUT_INDEX_STATUSES.map((value) => (
+                  {ARCHIVE_INDEX_STATUSES.map((value) => (
                     <option key={value} value={value}>{SCOUT_STATUS_WORD[value]}</option>
                   ))}
                 </select>
@@ -260,6 +260,18 @@ export function ScoutsPage({
                           <span className="scouts-row-head">
                             <span className={`dot scouts-dot-${archive.status}`} aria-hidden />
                             <span className="scouts-row-title">{scoutLabel(archive)}</span>
+                            {/*
+                              Archives became kind-agnostic (`scout` | `plan`) upstream, and
+                              this page deliberately does NOT filter by kind: an unreadable
+                              bundle has no kind at all, so a `kind=scout` query would hide
+                              the one state that most needs an operator - and no other
+                              surface lists archives, so it would be unreachable and
+                              undeletable. The cost is that another kind can appear here, so
+                              it says which it is rather than passing as a scout.
+                            */}
+                            {archive.kind && archive.kind !== "scout" ? (
+                              <span className="scouts-row-kind mono">{archive.kind}</span>
+                            ) : null}
                           </span>
                           <span className="scouts-row-meta">
                             <span className="mono">{clockLabel(sortAt(archive))}</span>

@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { dialogMarker, sha1Hex } from "../src/shared/session.ts";
 import type { PaneDialog, ReviewItem, SessionNoteSummary } from "../src/shared/types.ts";
-import { acquireSidecarLayout } from "../src/web/components/ForemanRecommendation.tsx";
+import { acquireSidecarLayout, claimSoleSidecar } from "../src/web/components/ForemanRecommendation.tsx";
 import { PaneDialogPrompt } from "../src/web/components/PaneDialogPrompt.tsx";
 import { ReviewCard } from "../src/web/components/ReviewModal.tsx";
 import {
@@ -275,11 +275,37 @@ test("the console hides only this note's transcript turn while its ask is open",
   );
 });
 
-test("the layout reservation survives one of two open sidecars closing", () => {
-  // An ensemble draws a card per candidate, each with its own recommendation trigger, so two
-  // sidecars can be mounted at once. The reservation is a single page-wide class, so an
-  // uncounted removal on the first unmount would strip the column the second one still needs
-  // and put it back over the review's Submit - the exact bug this disclosure was fixed for.
+test("opening a sidecar closes the one already on screen", () => {
+  // The panel is fixed to the right edge with no per-instance offset, so two of them occupy
+  // the same rectangle: the second would completely hide the first while the first still
+  // believed it was open. Each also listens for Escape on `document` directly, where
+  // stopPropagation does not stop sibling listeners, so one press closed both and each queued
+  // its own focus restore. An ensemble makes this reachable - a card per candidate, each with
+  // its own trigger.
+  const closed: string[] = [];
+  const releaseFirst = claimSoleSidecar(() => closed.push("first"));
+  assert.deepEqual(closed, [] as string[], "nothing to displace yet");
+
+  const releaseSecond = claimSoleSidecar(() => closed.push("second"));
+  assert.deepEqual(closed, ["first"], "the one already on screen is asked to close");
+
+  // The displaced panel's own unmount cleanup still runs, and must not close the live one.
+  releaseFirst();
+  const releaseThird = claimSoleSidecar(() => closed.push("third"));
+  assert.deepEqual(closed, ["first", "second"]);
+
+  releaseThird();
+  releaseThird();
+  assert.deepEqual(closed, ["first", "second"], "releasing is idempotent and closes nothing");
+  releaseSecond();
+});
+
+test("the layout reservation survives the handover between two sidecars", () => {
+  // Only one sidecar is OPEN, but open and mounted are not the same instant: React mounts the
+  // replacement before unmounting the one it replaced. The reservation is a single page-wide
+  // class, so an uncounted removal on that unmount would strip the column the live panel still
+  // needs and put it back over the review's Submit - the exact bug this disclosure was fixed
+  // for.
   const calls: string[] = [];
   const body = {
     classList: {

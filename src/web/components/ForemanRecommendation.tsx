@@ -58,11 +58,11 @@ export interface LayoutFlagTarget {
 /**
  * Claim the page-wide layout reservation, returning the release for this claimant.
  *
- * Exported because the counting IS the behaviour: releasing while another sidecar is still
- * open drops `.app`'s reserved column and puts that sidecar back on top of the review's
- * Submit. That is only reachable with two sidecars mounted at once, which needs two sessions
- * and two dispatches to stage in a browser - so it is pinned here as the small piece of state
- * it actually is.
+ * Exported because the counting IS the behaviour: releasing while another sidecar still holds
+ * the reservation drops `.app`'s reserved column and puts that sidecar back on top of the
+ * review's Submit. Only one sidecar is ever OPEN (see `claimSoleSidecar`), but open and
+ * mounted are not the same instant - React mounts the replacement before it unmounts the one
+ * it replaced, so the count is what stops the class flickering off between them.
  */
 export function acquireSidecarLayout(body: LayoutFlagTarget): () => void {
   openSidecars += 1;
@@ -75,6 +75,38 @@ export function acquireSidecarLayout(body: LayoutFlagTarget): () => void {
     released = true;
     openSidecars = Math.max(0, openSidecars - 1);
     if (openSidecars === 0) body.classList.remove("foreman-sidecar-open");
+  };
+}
+
+/** Every sidecar currently registered as the one on screen. At most one, by construction. */
+const openPanels = new Set<() => void>();
+
+/**
+ * Make this sidecar the only one open, closing any other, and return its deregistration.
+ *
+ * The panel is `position: fixed` against the right edge with no per-instance offset, so two
+ * of them occupy exactly the same rectangle: the second would completely hide the first while
+ * the first still believed it was open. Escape is worse - each instance listens on `document`
+ * directly, and `stopPropagation` does not stop other listeners on the SAME node, so one press
+ * closed every open panel and each queued its own focus restore, landing focus wherever the
+ * last one processed happened to leave it.
+ *
+ * Ensembles make this reachable: a card per candidate, each with its own trigger. Closing the
+ * previous one is the honest resolution rather than stacking or offsetting them, because this
+ * is one page-level context panel about whichever review you just asked about - and two of
+ * them side by side is not a thing a fixed right-hand rail can offer anyway.
+ */
+export function claimSoleSidecar(close: () => void): () => void {
+  for (const other of [...openPanels]) {
+    openPanels.delete(other);
+    other();
+  }
+  openPanels.add(close);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    openPanels.delete(close);
   };
 }
 
@@ -96,6 +128,10 @@ export function ForemanRecommendationSidecar({
   returnFocusRef?: RefObject<HTMLButtonElement | null>;
 }): React.JSX.Element | null {
   const closeRef = useRef<HTMLButtonElement>(null);
+  // The latest `onClose`, so the mount-only registration below can call it without taking a
+  // dependency on an identity that changes every parent render.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   // Mount-only, and deliberately NOT joined with the Escape handler below. Both call sites
   // pass an inline arrow for `onClose`, so its identity changes on every parent render -
@@ -128,6 +164,10 @@ export function ForemanRecommendationSidecar({
   // once. Removing the class on the first one's unmount would strip the reservation while
   // the second is still on screen, putting it straight back to covering Submit.
   useEffect(() => acquireSidecarLayout(document.body), []);
+
+  // Opening one closes any other, so two can never share the same fixed rectangle and a single
+  // Escape can only be about the panel actually on screen.
+  useEffect(() => claimSoleSidecar(() => onCloseRef.current()), []);
 
   if (typeof document === "undefined") return null;
 

@@ -133,6 +133,7 @@ pre{background:var(--panel);border:1px solid var(--border);border-radius:8px;pad
 
 <h2>Cross-phase contracts</h2>
 <ul>
+<li><b>The stalemate card is windowed too.</b> Phase 2 renders <code>runStalemates(detail, asOfRound)</code>, not <code>detail.repeatOffenders</code>, which is computed over the whole run and anchored on its newest submission. Nothing in the rail may state a fact from a round later than the one being viewed.</li>
 <li><b>The worklist is windowed by the viewed round.</b> <code>runChangeWorklist(detail, asOfRound)</code> returns the run as it stood at the end of that round, and Phase 2 passes the round scrubber's current submission. The rest of the reader pane is already round-scoped, so a whole-run worklist beside it would put three counts from two different moments on one segmented control. Phase 2 does no windowing of its own.</li>
 <li><code>ChangeWorklistRow.key</code> is stable across renders and is both the React key and the selected-row identity. Phase 2 must not key rows positionally.</li>
 <li><b>The key includes the owning persona node.</b> A row's <code>nodeId</code> and <code>personaName</code> always name the reviewer that raised it, so two reviewers asking for the same thing produce two rows. Phase 2 wires the per-row actions off that node and must not dedupe the rows in the view.</li>
@@ -190,9 +191,13 @@ npm run test:e2e</pre>
 <ol start="5">
 <li><b>A reworded finding could make the rail contradict itself.</b> An LLM reviewer that rephrases a title it keeps raising retires the old key, which read as <code>resolved</code> - on the same rail as a stalemate card, derived title-independently from <code>repeat-offender.ts</code>, calling that reviewer a repeat offender. <code>state</code> gains a third value, <code>superseded</code>, derived from the rounds the worklist already walks rather than by reading <code>repeatOffenders</code>, whose latest-submission anchor and <code>rounds &gt;= 2</code> threshold are wrong for a per-key, per-window question.</li>
 </ol>
-<p>All five fixes tighten the design without touching an approved human decision, so none was escalated. Each phase's cross-phase audit record carries the detail.</p>
+<p>Round 5 raised one <code>major</code>, accepted:</p>
+<ol start="6">
+<li><b>The stalemate card was not windowed like everything above it.</b> <code>detail.repeatOffenders</code> is computed over the run's whole submission list and anchored on its newest one, so scrubbing to round 4 of a 10-round run would have left the card reading "failed 10 rounds running" beneath segments correctly describing round 4. Phase 1's own round-4 audit record already named that anchor as unusable for a windowed question; the observation had been applied to <code>superseded</code> and not to the card. Phase 1 now exports <code>runStalemates(detail, asOfRound)</code>, pinned against the payload field at the default window.</li>
+</ol>
+<p>All six fixes tighten the design without touching an approved human decision, so none was escalated. Each phase's cross-phase audit record carries the detail.</p>
 <p>Three of the five are the same class of mistake: a rule borrowed from a neighbouring subsystem without checking which of its preconditions this one actually has. <code>marker.ts</code> has one author; <code>repeat-offender.ts</code> compares within a round rather than against a global newest; the rest of the reader pane is round-scoped. Each was right there in the source and each needed reading rather than assuming.</p>
-<p>The fifth is a different lesson and worth keeping: this document justified duplicating the round-folding rule on the grounds that two derivations of one fact must not disagree on one screen, then let a second case of the same disagreement through as an accepted trade-off. A principle stated once has to be applied everywhere it reaches, including where it is inconvenient.</p>
+<p>The fifth and sixth are one lesson, and it is the more useful one: this document justified duplicating the round-folding rule on the grounds that two derivations of one fact must not disagree on one screen - then let that disagreement through twice more, once as an accepted trade-off and once in the very card the principle was written to protect. The sixth is the starkest, because the reason was already written down in an audit record and simply not carried to the element beside it. <b>A principle stated once has to be applied everywhere it reaches, and writing down why something is wrong is not the same as fixing everywhere it is wrong.</b></p>
 <p>Worth noting what the third one implies for the kept scrubber: "unchanged" means it keeps the meaning it has today and now governs this section too, not that some of the page ignores it.</p>
 
 </div>

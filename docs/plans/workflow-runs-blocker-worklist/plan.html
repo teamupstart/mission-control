@@ -200,8 +200,12 @@ svg{display:block;max-width:100%;height:auto;margin:0 auto}
 <p><span class="adopted">Adopted.</span> The selected blocker is local component state, exactly like the selected round. Deep-linking to an individual change is a deliberate non-goal. This removes all route work from the plan.</p>
 </div>
 
-<h3><code>repeatOffenders</code> is already in the payload</h3>
-<p><code>WorkflowStore.runDetail</code> emits it (<code>src/server/workflows/store.ts:5997-6024</code>) and <code>WorkflowRunView</code> ignores it. Rendering the stalemate card needs no server work at all.</p>
+<h3>The stalemate fact is in the payload, but latest-anchored</h3>
+<p><code>WorkflowStore.runDetail</code> emits <code>repeatOffenders</code> (<code>src/server/workflows/store.ts:5997-6024</code>) and <code>WorkflowRunView</code> ignores it, so the fact never reaches this page. No server work is needed to fix that.</p>
+<p>It cannot be rendered straight from the payload field, though. <code>repeatOffenders(submissions, attempts)</code> is called with the <b>whole run's</b> submissions and anchors on the newest one, so the value is always "as of the latest round" and the <code>asOfRound</code> window cannot re-scope it. Rendered directly, scrubbing back to round 4 of a 10-round run would leave a card reading <i>"failed 10 rounds running"</i> beneath segments correctly describing round 4 - a fact from six rounds in the reader's future, sitting in the one place this design keeps insisting must not disagree with itself.</p>
+<div class="callout good">
+<p><span class="adopted">Adopted.</span> The worklist derives its own windowed stalemate signal from the folded rounds it already walks, and the card renders that. At the default window it equals <code>detail.repeatOffenders</code> by construction, which a test pins. The payload field keeps serving the ladder and the alert engine, which genuinely do want the latest-anchored answer.</p>
+</div>
 
 <h2>Success criteria</h2>
 <ol>

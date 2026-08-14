@@ -66,6 +66,9 @@ foundational interface, and it leaves the tree operable and green at the merge b
 
 ## Cross-phase contracts
 
+- **The stalemate card is windowed too.** Phase 2 renders `runStalemates(detail, asOfRound)`,
+  not `detail.repeatOffenders`, which is computed over the whole run and anchored on its newest
+  submission. Nothing in the rail may state a fact from a round later than the one being viewed.
 - **The worklist is windowed by the viewed round.** `runChangeWorklist(detail, asOfRound)`
   returns the run as it stood at the end of that round, and Phase 2 passes the round scrubber's
   current submission. The rest of the reader pane is already round-scoped, so a whole-run
@@ -168,7 +171,17 @@ Round 4 raised one `minor`, accepted:
    worklist already walks rather than by reading `repeatOffenders`, whose latest-submission
    anchor and `rounds >= 2` threshold are wrong for a per-key, per-window question.
 
-All five fixes tighten the design without touching an approved human decision, so none was
+Round 5 raised one `major`, accepted:
+
+6. **The stalemate card was not windowed like everything above it.** `detail.repeatOffenders` is
+   computed over the run's whole submission list and anchored on its newest one, so scrubbing to
+   round 4 of a 10-round run would have left the card reading "failed 10 rounds running" beneath
+   segments correctly describing round 4. Phase 1's own round-4 audit record already named that
+   anchor as unusable for a windowed question; the observation had been applied to `superseded`
+   and not to the card. Phase 1 now exports `runStalemates(detail, asOfRound)`, pinned against
+   the payload field at the default window.
+
+All six fixes tighten the design without touching an approved human decision, so none was
 escalated. Each phase's cross-phase audit record carries the detail.
 
 Three of the five are the same class of mistake: a rule borrowed from a neighbouring subsystem
@@ -177,11 +190,13 @@ without checking which of its preconditions this one actually has. `marker.ts` h
 reader pane is round-scoped. Each was right there in the source and each needed reading rather
 than assuming.
 
-The fifth is a different lesson and worth keeping: this document justified duplicating the
-round-folding rule on the grounds that two derivations of one fact must not disagree on one
-screen, then let a second case of the same disagreement through as an accepted trade-off. A
-principle stated once has to be applied everywhere it reaches, including where it is
-inconvenient.
+The fifth and sixth are one lesson, and it is the more useful one: this document justified
+duplicating the round-folding rule on the grounds that two derivations of one fact must not
+disagree on one screen - then let that disagreement through twice more, once as an accepted
+trade-off and once in the very card the principle was written to protect. The sixth is the
+starkest, because the reason was already written down in an audit record and simply not carried
+to the element beside it. **A principle stated once has to be applied everywhere it reaches,
+and writing down why something is wrong is not the same as fixing everywhere it is wrong.**
 
 Worth noting what the third one implies for the kept scrubber: "unchanged" means it keeps the
 meaning it has today and now governs this section too, not that some of the page ignores it.

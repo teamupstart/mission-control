@@ -185,7 +185,36 @@ Derivation, in order:
 Read verdicts defensively, mirroring `normalizePersonaVerdict`'s intent: a row that fails to
 parse is skipped, never crashes the page.
 
-### 3. Unit tests
+### 3. `runStalemates(detail, asOfRound): WorklistStalemate[]`
+
+```ts
+export interface WorklistStalemate {
+  nodeId: string;
+  personaName: string;
+  /** Consecutive rounds this member failed, ending at the window's horizon. Always >= 2. */
+  rounds: number;
+}
+```
+
+The windowed twin of `repeat-offender.ts`, sharing the fold helper from step 1 and the horizon
+from step 1b. Same rule - candidates are the nodes failing at the horizon, walk back while each
+keeps failing, keep those with `rounds >= 2` - so the sentence it feeds means exactly what the
+ladder's means.
+
+**Why this exists rather than rendering `detail.repeatOffenders`.** That field is computed by
+`store.ts` from the run's whole submission list and anchored on its newest one, so it is always
+"as of the latest round" and this window cannot re-scope it. Rendered directly under a worklist
+scrubbed to round 4, it would say "failed 10 rounds running" - a fact six rounds in the reader's
+future, on the one rail this design keeps insisting must not contradict itself. Step 4b already
+records that anchor as the reason `superseded` is derived here; this is the same reason reaching
+the same conclusion for the card.
+
+The duplication is deliberate and bounded, on the same grounds as the fold rule: the server
+module cannot enter the browser bundle, and the server has no reason to compute a windowed
+variant. Pin them against each other - at the default window the output must equal
+`detail.repeatOffenders`.
+
+### 4. Unit tests
 
 New file `test/workflow-change-worklist.test.ts`, using `node:test` and `node:assert/strict`.
 
@@ -221,6 +250,13 @@ Cases:
 - A change that lapses in round 2 and returns in round 3 reports `roundsOpen: 2`, not 3.
 - The newest round's wording wins when a title is sharpened but keys the same.
 - An attempt with an unparseable verdict is skipped without throwing.
+- **`runStalemates` at the default window equals `detail.repeatOffenders`.** Build one fixture
+  that produces offenders and assert the two derivations agree element for element. This is the
+  guard against the browser twin and the server original drifting apart.
+- `runStalemates(detail, 4)` on a 10-round run counts only up to round 4, and reports nothing for
+  a node whose failing streak had not yet reached two rounds by then.
+- A node failing at the horizon but passing the round before it is not a stalemate
+  (`rounds >= 2`).
 - **Partial round, the regression this model exists to avoid.** Round 3 is in flight: persona A
   has posted a fail, persona B has no attempt in round 3 at all. A's change is `"open"`. B's
   change from round 2 is **also `"open"`**, not `"resolved"` - B has not re-checked it.
@@ -256,8 +292,11 @@ no runtime surface and no UI.
 
 ## Merge and exit criteria
 
-- `runChangeWorklist` and `requestedChangeKey` are exported from `run-model.ts` with doc
-  comments that state the identity rule and cite `marker.ts` as prior art.
+- `requestedChangeKey`, `runChangeWorklist` and `runStalemates` are exported from `run-model.ts`
+  with doc comments that state the identity rule, cite `marker.ts` as prior art, and say why the
+  stalemate signal is derived here rather than read from `detail.repeatOffenders`.
+- `runStalemates` at the default window equals `detail.repeatOffenders`, asserted against a
+  fixture rather than assumed.
 - Every unit test above passes, including the two-segments-one-round case and the partial-round
   case.
 - No change is ever reported `"resolved"` on the strength of another persona having advanced
@@ -289,6 +328,10 @@ Phase 2 may rely on:
   round makes the worklist describe the same moment as the round-scoped `reviewAttempts` beside
   it, so the segmented control's three counts always agree. Phase 2 does no windowing of its
   own.
+- `runStalemates(detail, asOfRound)` answering the stalemate question **for the same window**, so
+  the card at the foot of the rail describes the viewed round like everything above it. Phase 2
+  renders this and **not** `detail.repeatOffenders`, which is latest-anchored and cannot be
+  re-scoped.
 
 The boundary of this model, stated so Phase 2 does not wait for something that is not coming:
 it covers **requested changes only**. Check outcomes and passing reviewers are not rows here
@@ -318,6 +361,16 @@ Phase 2 must not:
   to keep this model narrow rather than widen it, and the boundary now lives in this phase's
   downstream handoff, which is the earliest place that must own it. No scope or signature here
   changed.
+- **Inspector round 5, `major`, accepted.** The round-4 entry below records that
+  `repeatOffenders`' latest-submission anchor is wrong for a windowed question and that
+  `asOfRound` cannot re-scope it - and then that observation was used only to justify deriving
+  `superseded` here, never applied to the stalemate card, which Phase 2 still rendered straight
+  from the unscoped field. Scrubbed to round 4 of a 10-round run, the card would have read
+  "failed 10 rounds running" under segments describing round 4. Adds `runStalemates(detail,
+  asOfRound)`, the windowed twin of `repeat-offender.ts`, sharing this file's fold helper and
+  horizon. Pinned against `detail.repeatOffenders` at the default window so the browser twin and
+  the server original cannot drift. The lesson is narrower than the fix: a reason written down in
+  an audit record is not the same as a reason applied everywhere it reaches.
 - **Inspector round 4, `minor`, accepted.** A reviewer that rewords a title it keeps raising
   produced a `"resolved"` row for the old key, which would sit on the same rail as a stalemate
   card saying that reviewer has failed every round - the exact on-screen disagreement this file

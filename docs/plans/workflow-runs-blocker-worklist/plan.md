@@ -170,10 +170,24 @@ by local state (`WorkflowRuns.tsx:452`). There is no precedent for a sub-run sel
 Deep-linking to an individual change is a deliberate non-goal. This removes all route work
 from the plan.
 
-### `repeatOffenders` is already in the payload
+### The stalemate fact is in the payload, but latest-anchored
 
-`WorkflowStore.runDetail` emits it (`src/server/workflows/store.ts:5997-6024`) and
-`WorkflowRunView` ignores it. Rendering the stalemate card needs no server work at all.
+`WorkflowStore.runDetail` emits `repeatOffenders` (`src/server/workflows/store.ts:5997-6024`)
+and `WorkflowRunView` ignores it, so the fact never reaches this page. No server work is needed
+to fix that.
+
+It cannot be rendered straight from the payload field, though. `repeatOffenders(submissions,
+attempts)` is called with the **whole run's** submissions and anchors on the newest one, so the
+value is always "as of the latest round" and the `asOfRound` window cannot re-scope it. Rendered
+directly, scrubbing back to round 4 of a 10-round run would leave a card reading *"failed 10
+rounds running"* beneath segments correctly describing round 4 - a fact from six rounds in the
+reader's future, sitting in the one place this design keeps insisting must not disagree with
+itself.
+
+**Adopted:** the worklist derives its own windowed stalemate signal from the folded rounds it
+already walks, and the card renders that. At the default window it equals `detail.repeatOffenders`
+by construction, which a test pins. The payload field keeps serving the ladder and the alert
+engine, which genuinely do want the latest-anchored answer.
 
 ## Success criteria
 

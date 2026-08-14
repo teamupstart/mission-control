@@ -18,7 +18,8 @@ This is the phase a person sees.
 ## Scope
 
 - Replace the `Reviewer verdicts` section in `WorkflowRunView`.
-- Render `detail.repeatOffenders` as a stalemate card.
+- Render a stalemate card from Phase 1's windowed `runStalemates`, so the fact finally reaches
+  this page and describes the round being viewed.
 - Styles for the new surface in `src/web/styles.css`.
 - Update the existing e2e spec that asserts the old section, and add one for the worklist.
 
@@ -118,8 +119,15 @@ rounds should stay selected as the reader moves between them.
   `skipped` or `unavailable`. The latter two are **degraded passes**, not failures
   (`CHECK_OUTCOME_STATUSES` marks them `degraded: true`); they keep their amber chip in
   `Passed` and must not be silently drawn as green.
-- Stalemate card at the foot when `detail.repeatOffenders` is non-empty, using the ladder's
-  sentence.
+- Stalemate card at the foot when `runStalemates(detail, viewed?.round ?? null)` is non-empty,
+  using the ladder's sentence so one fact is worded one way across both surfaces.
+
+  **Render the windowed signal, not `detail.repeatOffenders`.** The payload field is computed
+  over the run's whole submission list and anchored on its newest one, so it cannot be re-scoped
+  by the viewed round. Rendered directly it would put "failed 10 rounds running" under segments
+  describing round 4 - the reader's own future, on the rail this design keeps insisting must
+  agree with itself. `detail.repeatOffenders` stays untouched for the ladder and the alert
+  engine, which do want the latest-anchored answer.
 
 The check routing is the one place this phase decides something Phase 1's model cannot express,
 so state it once here as the rule: **`checkOutcomeOf(attempt)` is asked first, exactly as it is
@@ -226,16 +234,18 @@ requires a Playwright spec for every UI change with no exemptions.
 - **A failed check renders under `Blocking` with its exit code and output tail**, and a run
   blocked only by a failed check does not present as having nothing outstanding. Skipped and
   unavailable checks render under `Passed` keeping their degraded chip.
-- **All three segment counts describe the round the scrubber points at.** Scrubbing to an
-  earlier round moves `Blocking`, `Archive` and `Passed` together, and `roundsOpen` is counted
-  up to that round rather than to today.
+- **Everything in the rail describes the round the scrubber points at, the stalemate card
+  included.** Scrubbing to an earlier round moves `Blocking`, `Archive`, `Passed` and the card
+  together, and `roundsOpen` is counted up to that round rather than to today. Nothing in this
+  section states a fact from a round later than the one being viewed.
 - **No Archive row claims a reviewer is satisfied while the stalemate card says otherwise.** A
   `"superseded"` row reads as rephrased, not resolved, and does not take the green rail. Verify
   by eye on a run that has both a superseded row and a `repeatOffenders` entry for the same
   persona; this is a two-elements-agreeing assertion that markup shape alone cannot make.
 - A change carried from an earlier round says which round raised it and how many rounds it has
   been open; a resolved one says which round resolved it.
-- `repeatOffenders` renders, using the same sentence as the ladder.
+- The stalemate card renders, using the same sentence as the ladder, from the windowed
+  `runStalemates` rather than the latest-anchored `detail.repeatOffenders`.
 - Every empty and degenerate arm from the old section still renders its sentence.
 - The pipeline, header, round scrubber and run rail are unchanged in behavior.
 - The updated and new e2e specs pass; the full unit suite, typecheck, lint, build and smoke
@@ -268,6 +278,12 @@ There are no later phases. Future work that touches this surface should know:
   Phase 1's test list pins it so this phase inherits a derivation that cannot crash on it.
 - **Confirmed no concurrency.** Phase 2 depends on Phase 1 and there is no third phase, so
   there is nothing to run in parallel and no merge-order ambiguity.
+- **Inspector round 5, `major`, accepted.** This phase rendered the stalemate card straight from
+  `detail.repeatOffenders` while claiming in its own exit criteria that the rail describes the
+  viewed round. That field is latest-anchored and cannot be re-scoped, so scrubbing back would
+  have left the card six rounds ahead of the segments above it. Now renders Phase 1's
+  `runStalemates(detail, viewed?.round ?? null)`. The exit criterion was widened from "all three
+  segment counts" to everything in the rail, which is what it should have said.
 - **Inspector round 4, `minor`, accepted, derived in Phase 1.** A reworded finding marked its old
   key resolved, so Archive could read "Resolved in round 5" for the same persona the stalemate
   card at the foot of the rail calls a repeat offender. Phase 1 now emits a third `state`,

@@ -40,6 +40,16 @@ const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const REGISTRIES = ["shared/types.ts", "shared/task.ts"];
 
 /**
+ * Independently owned kind vocabularies that happen to share task-kind words.
+ *
+ * Archive kinds are an append-only portable format contract, not a task-kind restatement:
+ * `ship` is intentionally absent and future task kinds must not become archive kinds by
+ * inheritance. Keep that registry independent and keep this syntax detector from treating
+ * its deliberate overlap as a stale task picker.
+ */
+const DISTINCT_KIND_REGISTRIES = ["shared/archives.ts"];
+
+/**
  * Kind `<select>`s that hand-write their `<option>`s. EMPTY, and it stays empty.
  *
  * It held two: `TaskSourcesPanel` and `ScheduleEditor`, each with its own wording -
@@ -152,7 +162,7 @@ test("nothing outside the registries declares the set of kinds", () => {
   const offenders: string[] = [];
   for (const file of sourceFiles(SRC)) {
     const rel = path.relative(SRC, file).split(path.sep).join("/");
-    if (REGISTRIES.includes(rel)) continue;
+    if (REGISTRIES.includes(rel) || DISTINCT_KIND_REGISTRIES.includes(rel)) continue;
     if (restatesTheSet(readFileSync(file, "utf8"))) offenders.push(rel);
   }
   // Exact, not a subset: a file that appears here is a new copy of the set and must read

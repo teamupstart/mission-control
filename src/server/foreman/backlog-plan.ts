@@ -88,8 +88,11 @@ export function backlogTimeoutMs(count: number): number {
  * The empty-string-is-a-cleared-box rule this function used to state is now enforced for
  * all four roles at once inside `resolveForemanModel`.
  */
-export function backlogModel(cfg: { backlogModel?: string; runner?: LlmRunnerId }): string {
-  return resolveForemanModel("backlog", cfg, process.env, cfg.runner ?? "claude").id;
+export function backlogModel(
+  cfg: { backlogModel?: string; runner?: LlmRunnerId },
+  runner: LlmRunnerId = cfg.runner ?? DEFAULT_LLM_RUNNER_ID,
+): string {
+  return resolveForemanModel("backlog", cfg, process.env, runner).id;
 }
 
 /** What the model returns, before any of it is believed. See `sanitizePlan`. */

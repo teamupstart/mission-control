@@ -8,6 +8,7 @@ import { ForemanPopover } from "../src/web/components/ForemanBar.tsx";
 import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "../src/shared/foreman-models.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
+import type { ForemanStatus } from "../src/shared/types.ts";
 
 // Static markup, per the repo convention (the SSE stream hangs headless automation). The
 // panel's picker candidates arrive via an effect that static render never runs, so the
@@ -42,6 +43,26 @@ function mkState(over: Partial<ForemanConfig> = {}): ForemanState {
     update: async () => true,
     error: null,
   };
+}
+
+function plannerStatus(): ForemanStatus {
+  return {
+    enabled: true,
+    mode: "live",
+    running: true,
+    queueDepth: 0,
+    counts: { answered: 0, escalated: 0, pending: 0, skipped: 0 },
+    lastActionAt: null,
+    autopilot: { on: true, active: 6, max: 9, ready: 6, blocked: 6, disabled: 0 },
+    planner: {
+      state: "degraded",
+      runner: "codex",
+      model: "gpt-5.6-terra",
+      failureCount: 3,
+      lastError: "codex exited 1: schema validation failed",
+      nextRetryAt: Date.now() + 600_000,
+    },
+  } as ForemanStatus;
 }
 
 function renderPanel(state: ForemanState): string {
@@ -138,6 +159,15 @@ test("Foreman exposes separate compatible defaults for fresh backlog launches", 
   assert.match(html, /id="foreman-backlog-task-model-codex"/);
   assert.match(html, /already names one/);
   assert.match(html, /existing session.{0,50}unchanged/);
+  assert.match(html, /unrelated to the Backlog[\s\S]*dependency planner/);
+});
+
+test("Foreman Provider visibly owns all four model roles", () => {
+  const html = renderPanel(mkState({ runner: "codex" }));
+  assert.match(html, /Foreman Provider controls all four model roles/);
+  for (const role of ["Review", "Verify", "Triage", "Backlog dependency planner"]) {
+    assert.match(html, new RegExp(role));
+  }
 });
 
 // ---- the prose is printed once, not twice ----
@@ -278,6 +308,20 @@ test("turning the open-PR guard off says what that now allows", () => {
   // And the hint is not shown while the guard is on - it would describe the opposite of
   // what is happening.
   assert.doesNotMatch(renderPopover(mkState({ autoBacklog: true })), /can be handed the next task/);
+});
+
+test("a degraded dependency planner names its runtime, safe error, and retry path", () => {
+  const state = mkState({ autoBacklog: true, runner: "codex" });
+  state.status = plannerStatus();
+  const html = renderPopover(state);
+  assert.match(html, /Backlog dependency planner health/);
+  assert.match(html, /Dependency planner/);
+  assert.match(html, /degraded/);
+  assert.match(html, /codex/);
+  assert.match(html, /gpt-5\.6-terra/);
+  assert.match(html, /3 failures/);
+  assert.match(html, /schema validation failed/);
+  assert.match(html, /Retry planner now/);
 });
 
 test("the wrap-up trigger group is a multi-select, and Then has no automatic review mode", () => {

@@ -166,7 +166,7 @@ focus remains separate.
 
 **Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
 tier, **Models** for the provider and four Foreman roles, **Launches** for the three
-per-harness backlog models, and **Safety** for the completion safeguards. Each tab shows how
+per-harness task-agent launch models, and **Safety** for the completion safeguards. Each tab shows how
 many settings it holds, and each field's explanation appears on hover or focus - as the
 control's tooltip and accessible description - rather than printing under the field. The
 current Foreman posture stays above the tabs so a stopped worker is always visible. **Live
@@ -292,6 +292,9 @@ Foreman spawns a fresh, tool-less headless call for four different jobs, and eac
 own model. **Settings → Foreman → Models** shows what each is running as and lets you change it.
 One **Provider** row above the four says which CLI they all spawn through - `claude` or
 `codex exec` - and changing it clears all four boxes, since a model id does not carry across.
+This one provider controls **Review, Verify, Triage, and Backlog** together. The separate
+**Launches** tab does not control any of those calls. It chooses the models of task agents
+Foreman starts from the backlog, which is unrelated to the model that reads dependencies.
 Claude uses one fresh Agent SDK query by default; [`MISSION_CLAUDE_TRANSPORT=print`](configuration.md)
 keeps the one-shot `claude -p` path available as an operator-pinned escape hatch.
 Left unchosen it follows the app-wide
@@ -314,6 +317,13 @@ variable set in the daemon's shell outranks the box and would otherwise be invis
 browser.
 
 Any id the selected provider's CLI accepts works - the fields are free text, not a fixed list.
+
+Codex structured calls pass the same provider-neutral JSON Schema used by Claude through
+`codex exec --output-schema`. The schema is written to a private temporary file for that one
+run and removed on success, failure, spawn error, or timeout. Codex still runs ephemeral,
+read-only, without command tools or approvals. If `codex exec` exits nonzero, Foreman keeps a
+bounded reason from Codex's JSON failure event rather than dropping stdout or exposing the
+stream's agent messages, which can contain operator task text.
 
 > Before this existed, Review and Verify passed no `--model` at all and silently inherited
 > whatever the CLI happened to be logged in as. If you relied on that, set the two fields to
@@ -419,8 +429,17 @@ lease and renews it; when nothing does, Foreman is enabled, set to whatever mode
 and nothing is executing it - a state that until now looked exactly like a quiet fleet.
 That reading outranks the mode in the posture line, because a mode nothing is running is
 not the fact you need first. The live figures beside it - sessions needing you, when the
-last decision was, the backlog autopilot's budget - are under **Right now**, and are
+last decision was, the backlog autopilot's budget, and the dependency planner's effective
+provider, model, health, and failure count - are under **Right now**, and are
 deliberately a different population from the historical ledger above.
+
+The top-bar Foreman popover carries the actionable version of that planner status inside
+**Backlog**. A degraded planner names its last bounded error and the next automatic retry.
+**Retry planner now** rearms one immediate probe without restarting Mission Control. Changing
+the effective Foreman Provider or Backlog model also clears the old provider's strikes and
+forces an immediate probe, even when the stored plan still covers the backlog. A failed
+probe returns to the same serial safety fallback; recovery is reported only after a fresh
+plan is successfully stored.
 
 Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar
 Foreman control: those are the things you reach for while watching the fleet, and the

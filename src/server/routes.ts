@@ -24,6 +24,8 @@ import {
   ForemanConfigPatchSchema,
   ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
+  ForemanPlannerHealthReportSchema,
+  ForemanPlannerRetrySchema,
   HarnessesConfigPatchSchema,
   UiConfigPatchSchema,
   InspectorConfigPatchSchema,
@@ -148,9 +150,12 @@ import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
 import {
   claimForemanLease,
+  foremanPlannerControl,
   foremanStatus,
   getForemanConfig,
+  recordForemanPlannerHealth,
   releaseForemanLease,
+  requestForemanPlannerRetry,
   setForemanConfig,
 } from "./foreman/config.ts";
 import { getBacklogPlan, setBacklogPlan } from "./backlog.ts";
@@ -3417,6 +3422,22 @@ export function buildApp(
     return c.json(config);
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
+  // The worker owns this circuit. These routes only project its bounded report and carry
+  // an operator's retry signal across the daemon/worker process boundary.
+  app.get("/api/foreman/planner/control", (c) => c.json(foremanPlannerControl()));
+  app.post("/api/foreman/planner/health", async (c) => {
+    const parsed = await parseBody(c, ForemanPlannerHealthReportSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!recordForemanPlannerHealth(parsed.data)) {
+      return c.json({ error: "that worker does not hold the Foreman lease" }, 409);
+    }
+    return c.body(null, 204);
+  });
+  app.post("/api/foreman/planner/retry", async (c) => {
+    const parsed = await parseBody(c, ForemanPlannerRetrySchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(requestForemanPlannerRetry());
+  });
   // The fleet-wide episode ledger, newest first - the cross-session counterpart to
   // `/api/sessions/:id/foreman-episodes`, and the direct analogue of `/api/inspector/prs`
   // above. Capped because it is a display; nothing else reads it.

@@ -236,7 +236,7 @@ both surfaces say so.
 
 ### What model an autopilot launch runs on
 
-**Settings → Foreman → "&lt;harness&gt; backlog tasks"** sets a per-harness model used **only**
+**Settings → Foreman → Launches → "&lt;harness&gt; backlog tasks"** sets a per-harness model used **only**
 when the autopilot launches an unpinned task from the backlog. It ships on *the Harnesses
 default*, so most fleets never need to touch it.
 
@@ -244,6 +244,11 @@ Set it, and it outranks the Harnesses default for autopilot launches only. It is
 the dispatch model order, which [Settings → Harnesses](dispatch-and-backlog.md#default-model) owns and states in
 full - including what this field does and does not persist. If an autopilot-launched agent
 isn't on the model you expected, that list is where to start.
+
+These are task-agent models, not Foreman's dependency planner. **Settings → Foreman →
+Models → Provider** controls all four of Foreman's own model roles, including **Backlog**;
+the **Backlog** role's model field selects the dependency planner model. Changing a Launches
+field never changes the provider or model that reads the dependency graph.
 
 **The autopilot only assigns into sessions Mission Control created** - embedded ones and
 ones it dispatched. That is a stricter bar than the rest of Foreman applies: everything else
@@ -270,8 +275,8 @@ sitting in front of; both are more consequential than answering a prompt. In **d
 and **semi-auto** it still *plans*, so you see the ordering and the dependency read on the
 board and can click **launch new agent** yourself. Dry-run means dry-run.
 
-**Foreman's inferred dependencies come from a model, and are treated as one.** A fresh
-tool-less Claude call (Sonnet by default, over the Agent SDK transport - `FOREMAN_BACKLOG_MODEL`) sees every planning
+**Foreman's inferred dependencies come from a model, and are treated as one.** A fresh,
+tool-less call through the effective Foreman Provider sees every planning
 item's title and intent and returns an order plus, for each item, what it must
 wait for. The reply isn't trusted as written: ids that aren't in the backlog are dropped,
 self-references are dropped, **only the edges that close a cycle** are cut, and any item
@@ -281,6 +286,12 @@ a forgotten item would leave the plan permanently stale, which is an unbounded r
 loop. Every dependency that isn't part of a cycle survives, whatever order the model listed
 the items in, and the plan is stored in dependency order. The read re-runs only when the
 planning head **gains an uncovered item**, so a steady backlog costs nothing.
+
+Claude enforces the planner's JSON Schema through its structured-output contract. Codex
+enforces the same schema through `codex exec --output-schema`, using a per-run temporary
+schema file that is always removed. Both paths remain fresh, read-only, and tool-less. A
+failed Codex JSON stream contributes only its bounded failure-event message to planner
+health; agent-message output and task briefs are never copied into the error.
 
 Operator-selected dependencies from the dispatch form are separate, persisted facts. The
 planner sees them, cannot reverse or remove them, and its inferred graph is sanitized
@@ -300,6 +311,21 @@ than to wrong. That's a cooldown, not a latch: after `FOREMAN_BACKLOG_RETRY_MS` 
 one fresh read is tried, so an API blip heals itself instead of waiting for a restart. A
 daemon that refuses to *store* a plan degrades the same way rather than halting, on its own
 counter and its own backoff.
+
+The Foreman popover makes that circuit visible. **Dependency planner** reports
+`healthy` or `degraded`, the effective provider and Backlog model, the consecutive failure
+count, the last bounded error, and when the next automatic retry is due. While degraded,
+**Retry planner now** spends one immediate probe. It does not disable the serial fallback:
+if the provider or plan store is still unavailable, Foreman returns to one-at-a-time
+scheduling and waits through the bounded cooldown again.
+
+Changing the effective **Foreman Provider** or **Backlog** model retires the previous pair's
+failure state and forces an immediate dependency read, even if an older stored plan still
+covers every item. This is also how changing away from a broken provider recovers without an
+app restart. A successful provider answer is not enough to declare recovery; the new plan
+must also be accepted by the daemon. The worker reports this process-local circuit over
+localhost and never opens SQLite. The daemon exposes the bounded status and retry signal but
+does not make scheduling decisions, so there is still one scheduler source of truth.
 
 One read, one model call, over the **first 400 backlog items**, including any
 [held back](dispatch-and-backlog.md#hold-a-backlog-item-back) - they stay in the read so the edges pointing at

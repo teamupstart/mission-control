@@ -2139,6 +2139,32 @@ export const ForemanHeartbeatSchema = z.object({
 });
 export type ForemanHeartbeat = z.infer<typeof ForemanHeartbeatSchema>;
 
+/**
+ * The worker's bounded projection of its process-local backlog planner circuit.
+ * The daemon keeps this in memory only; accepting the report never makes the worker a
+ * database writer or gives the daemon a second scheduler state machine.
+ */
+export const ForemanPlannerHealthReportSchema = z.object({
+  workerId: z.string().min(1).max(256),
+  state: z.enum(["healthy", "degraded"]),
+  runner: z.enum(LLM_RUNNER_IDS),
+  model: z.string().min(1).max(200),
+  failureCount: z.number().int().min(0).max(1_000_000),
+  lastError: z.string().max(400).nullable(),
+  nextRetryAt: z.number().int().nonnegative().nullable(),
+});
+export type ForemanPlannerHealthReport = z.infer<typeof ForemanPlannerHealthReportSchema>;
+
+/** A body is still schema-checked even though retry needs no operator options. */
+export const ForemanPlannerRetrySchema = z.object({}).strict();
+
+/** Process-local daemon signal polled by the worker; it is not scheduler state. */
+export interface ForemanPlannerControl {
+  retryGeneration: number;
+  /** Changes on daemon restart so a live worker republishes its in-memory health. */
+  projectionEpoch: string;
+}
+
 /** The daemon's answer to a leased heartbeat: are you the leader, and until when. */
 export interface ForemanLeaseResult {
   leader: boolean;

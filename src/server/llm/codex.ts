@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveAgentBin } from "../harness/index.ts";
 import { codexTokenSplit } from "../harness/codex/usage.ts";
 import { estimateStandardApiUsage } from "../harness/codex/pricing.ts";
@@ -10,6 +12,7 @@ import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 
 const CODEX_BIN = resolveAgentBin("codex");
 const DEFAULT_TIMEOUT_MS = Number(process.env.MISSION_CODEX_TIMEOUT_MS || 120_000);
+const FAILURE_DETAIL_MAX = 300;
 const live = new Set<ReturnType<typeof spawn>>();
 
 function headlessEnv(): NodeJS.ProcessEnv {
@@ -98,6 +101,77 @@ function readCodexEvents(stdout: string): {
   return { text, usage, threadId };
 }
 
+/** One bounded, single-line provider diagnostic, never an agent message or raw stream. */
+function safeFailureText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\s+/g, " ").trim().slice(0, FAILURE_DETAIL_MAX);
+}
+
+/**
+ * Read only Codex's explicit failure events from a failed `--json` stream.
+ *
+ * The stream can also contain `agent_message` text, which may repeat operator task briefs.
+ * None of that is diagnostic material. Restricting this to the CLI's named error fields is
+ * what lets a useful provider refusal survive without turning stdout into a prompt leak.
+ */
+function readCodexFailure(stdout: string): string {
+  let reason = "";
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (event.type === "error") {
+      reason = safeFailureText(event.message);
+      continue;
+    }
+    if (event.type === "turn.failed") {
+      if (typeof event.error === "string") {
+        reason = safeFailureText(event.error);
+      } else if (event.error && typeof event.error === "object") {
+        reason = safeFailureText((event.error as Record<string, unknown>).message);
+      }
+    }
+  }
+  return reason;
+}
+
+function codexFailureDetail(stdout: string, stderr: string): string {
+  const event = readCodexFailure(stdout);
+  // A named JSON failure event is the provider's diagnostic. Prefer it outright rather
+  // than appending stderr, which is less structured and could contain unrelated process
+  // output. Bounded stderr remains useful when Codex dies before emitting any event.
+  return event || safeFailureText(stderr) || "no provider failure detail";
+}
+
+interface MaterializedSchema {
+  path: string;
+  cleanup(): void;
+}
+
+/** Give `codex exec` a schema file whose lifetime is exactly one run. */
+function materializeSchema(schema: Record<string, unknown> | undefined): MaterializedSchema | null {
+  if (!schema) return null;
+  const dir = mkdtempSync(join(tmpdir(), "mission-codex-schema-"));
+  const path = join(dir, "output-schema.json");
+  try {
+    writeFileSync(path, JSON.stringify(schema), { encoding: "utf8", mode: 0o600 });
+  } catch (err) {
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  return {
+    path,
+    // `dir` is a unique directory minted above and contains only the file this function
+    // wrote. Never broaden this to the shared temp directory or a caller-provided path.
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
 /**
  * Turn one finished run into a spend report, or null when there is nothing to report.
  *
@@ -148,77 +222,80 @@ export const codexRunner: LlmRunner = {
       const refusal = grantRefusal(codexRunner.sandbox, grant);
       throw new Error(`codex runner refused the tool grant: ${refusal ?? "unsupported grant"}`);
     }
-    return await new Promise((resolve, reject) => {
-      const args = [
-        "exec",
-        "--ephemeral",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--skip-git-repo-check",
-        "--sandbox", "read-only",
-        "--color", "never",
-        "-c", 'approval_policy="never"',
-        "-c", "features.shell_tool=false",
-        "-c", "features.unified_exec=false",
-        // Machine-readable events instead of the human transcript - see `readCodexEvents`.
-        // Load-bearing for accounting: an `--ephemeral` run writes no rollout file, so this
-        // stream is the only place its token usage is ever stated.
-        "--json",
-      ];
-      // `codex exec` has no equivalent of Claude's `--json-schema`, so `opts.schema` is
-      // intentionally ignored. The caller still runs its own Zod parse and retains its
-      // parse retry, making this a loss of provider validation rather than correctness.
-      if (opts.model) args.push("--model", opts.model);
-      args.push("-");
-      const child = spawn(CODEX_BIN, args, {
-        cwd: tmpdir(),
-        stdio: ["pipe", "pipe", "pipe"],
-        env: headlessEnv(),
-        detached: true,
+    const schema = materializeSchema(opts.schema);
+    try {
+      return await new Promise((resolve, reject) => {
+        const args = [
+          "exec",
+          "--ephemeral",
+          "--ignore-user-config",
+          "--ignore-rules",
+          "--skip-git-repo-check",
+          "--sandbox", "read-only",
+          "--color", "never",
+          "-c", 'approval_policy="never"',
+          "-c", "features.shell_tool=false",
+          "-c", "features.unified_exec=false",
+          // Machine-readable events instead of the human transcript - see `readCodexEvents`.
+          // Load-bearing for accounting: an `--ephemeral` run writes no rollout file, so this
+          // stream is the only place its token usage is ever stated.
+          "--json",
+        ];
+        if (schema) args.push("--output-schema", schema.path);
+        if (opts.model) args.push("--model", opts.model);
+        args.push("-");
+        const child = spawn(CODEX_BIN, args, {
+          cwd: tmpdir(),
+          stdio: ["pipe", "pipe", "pipe"],
+          env: headlessEnv(),
+          detached: true,
+        });
+        hookExitOnce();
+        live.add(child);
+        let out = "";
+        let err = "";
+        let settled = false;
+        const done = (): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          live.delete(child);
+        };
+        const timer = setTimeout(() => {
+          killTree(child);
+          done();
+          reject(new Error("codex exec timed out"));
+        }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+        timer.unref?.();
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (d: string) => (out += d));
+        child.stderr.on("data", (d: string) => (err += d));
+        child.stdin.on("error", () => {});
+        child.on("error", (e) => {
+          done();
+          reject(e);
+        });
+        child.on("close", (code) => {
+          done();
+          if (code !== 0) {
+            reject(new Error(`codex exited ${code}: ${codexFailureDetail(out, err)}`));
+            return;
+          }
+          const events = readCodexEvents(out);
+          // Reported BEFORE resolving, so the accounting cannot be skipped by a caller that
+          // throws on the value - and after the exit check, so a failed spawn reports nothing.
+          if (opts.role) {
+            const report = codexSpendReport(opts.role, opts.model ?? "", events, Date.now());
+            if (report) reportLlmSpend(report);
+          }
+          resolve(events.text.trim());
+        });
+        child.stdin.end(prompt);
       });
-      hookExitOnce();
-      live.add(child);
-      let out = "";
-      let err = "";
-      let settled = false;
-      const done = (): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        live.delete(child);
-      };
-      const timer = setTimeout(() => {
-        killTree(child);
-        done();
-        reject(new Error("codex exec timed out"));
-      }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-      timer.unref?.();
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (d: string) => (out += d));
-      child.stderr.on("data", (d: string) => (err += d));
-      child.stdin.on("error", () => {});
-      child.on("error", (e) => {
-        done();
-        reject(e);
-      });
-      child.on("close", (code) => {
-        done();
-        if (code !== 0) {
-          reject(new Error(`codex exited ${code}: ${err.slice(0, 300)}`));
-          return;
-        }
-        const events = readCodexEvents(out);
-        // Reported BEFORE resolving, so the accounting cannot be skipped by a caller that
-        // throws on the value - and after the exit check, so a failed spawn reports nothing.
-        if (opts.role) {
-          const report = codexSpendReport(opts.role, opts.model ?? "", events, Date.now());
-          if (report) reportLlmSpend(report);
-        }
-        resolve(events.text.trim());
-      });
-      child.stdin.end(prompt);
-    });
+    } finally {
+      schema?.cleanup();
+    }
   },
 
   /**
@@ -252,7 +329,7 @@ export const codexRunner: LlmRunner = {
   },
 
   runInThread: null,
-  structuredOutput: null,
+  structuredOutput: { guaranteesInputShape: true },
   sandbox: null,
   litter: null,
   killLiveRuns: killLiveCodexRuns,

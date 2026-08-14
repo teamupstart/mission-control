@@ -225,6 +225,30 @@ export function LibraryPage({
       </header>
 
       <Shelf
+        id="missions"
+        cards={[...missions, taskSourcesCard()]}
+        crossLink={missionsCrossLink(schedules)}
+        crossLinkHint="Open recurring missions - cadence, preview, and run history"
+        onCrossLink={onOpenMissions}
+        onOpenCard={(card) => {
+          if (card.id === TASK_SOURCES_CARD_ID) onOpenTaskSources();
+          else onOpenMissions();
+        }}
+        openHint={(card) => (card.id === TASK_SOURCES_CARD_ID
+          ? "Open task sources in Settings"
+          : `Open ${card.name} in recurring missions`)}
+        newCard={{
+          label: "＋ New mission",
+          sub: "file a task on a cadence",
+          hint: "Schedule a recurring mission - it files a backlog task and never launches an agent",
+          onClick: onOpenMissions,
+        }}
+        // The sources card is always present, so this only shows if the shelf model itself
+        // returned nothing - which it cannot. Kept honest rather than removed.
+        empty="No missions or sources yet."
+      />
+
+      <Shelf
         id="workflows"
         cards={workflows}
         crossLink={workflowRunsCrossLink(workflowRuns)}
@@ -239,6 +263,22 @@ export function LibraryPage({
           onClick: () => onCreateAsset("workflows"),
         }}
         empty="No workflows yet."
+      />
+
+      <Shelf
+        id="commands"
+        cards={commands}
+        // No cross-link, and no ＋ New card. The four slots ship with the product, and their
+        // runs are the workflow runs the first shelf already links to.
+        crossLink={null}
+        crossLinkHint=""
+        onCrossLink={() => {}}
+        onOpenCard={(card) => onOpenAsset("commands", card.id)}
+        openHint={(card) => `Set what the ${card.name} Command runs on this machine`}
+        newCard={null}
+        // Unreachable: `commandCards` projects the four built-in slots, so the shelf is
+        // never empty. Kept honest rather than removed.
+        empty="This build offers no Command slots."
       />
 
       <Shelf
@@ -287,46 +327,6 @@ export function LibraryPage({
         // start one.
         newCard={null}
         empty="This build offers no ensemble strategies."
-      />
-
-      <Shelf
-        id="missions"
-        cards={[...missions, taskSourcesCard()]}
-        crossLink={missionsCrossLink(schedules)}
-        crossLinkHint="Open recurring missions - cadence, preview, and run history"
-        onCrossLink={onOpenMissions}
-        onOpenCard={(card) => {
-          if (card.id === TASK_SOURCES_CARD_ID) onOpenTaskSources();
-          else onOpenMissions();
-        }}
-        openHint={(card) => (card.id === TASK_SOURCES_CARD_ID
-          ? "Open task sources in Settings"
-          : `Open ${card.name} in recurring missions`)}
-        newCard={{
-          label: "＋ New mission",
-          sub: "file a task on a cadence",
-          hint: "Schedule a recurring mission - it files a backlog task and never launches an agent",
-          onClick: onOpenMissions,
-        }}
-        // The sources card is always present, so this only shows if the shelf model itself
-        // returned nothing - which it cannot. Kept honest rather than removed.
-        empty="No missions or sources yet."
-      />
-
-      <Shelf
-        id="commands"
-        cards={commands}
-        // No cross-link, and no ＋ New card. The four slots ship with the product, and their
-        // runs are the workflow runs the first shelf already links to.
-        crossLink={null}
-        crossLinkHint=""
-        onCrossLink={() => {}}
-        onOpenCard={(card) => onOpenAsset("commands", card.id)}
-        openHint={(card) => `Set what the ${card.name} Command runs on this machine`}
-        newCard={null}
-        // Unreachable: `commandCards` projects the four built-in slots, so the shelf is
-        // never empty. Kept honest rather than removed.
-        empty="This build offers no Command slots."
       />
     </main>
   );

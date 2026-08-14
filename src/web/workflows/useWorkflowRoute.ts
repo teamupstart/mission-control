@@ -24,16 +24,17 @@ import {
 /**
  * The Library's six shelves, in the order they are read on the page.
  *
- * Append-only, and the strings are the hash segments: a rename is a broken bookmark. The
- * sixth is appended rather than filed beside Workflows for exactly that reason.
+ * Their strings are hash segments, so their names stay stable for saved bookmarks. Reading
+ * order is deliberately separate from that URL contract and may change when the Library's
+ * organization needs to become clearer.
  */
 export const LIBRARY_SHELVES = [
+  "missions",
   "workflows",
+  "commands",
   "personas",
   "actions",
   "ensembles",
-  "missions",
-  "commands",
 ] as const;
 export type LibraryShelf = (typeof LIBRARY_SHELVES)[number];
 

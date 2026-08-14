@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -73,14 +73,62 @@ interface FleetSession {
   runtime: string;
 }
 
+/**
+ * Photograph the surface the assertions above just proved.
+ *
+ * Unconditional, unlike the older rails' capture helpers: those are gated behind
+ * `MC_E2E_EVIDENCE` to avoid rewriting a committed binary on every run, and nothing here
+ * is committed - `e2e/.artifacts/` is gitignored, so the write costs nothing and a gate
+ * would only mean a green run proved a picture COULD be taken rather than that one was.
+ * Every run of this spec now leaves the evidence beside its result.
+ */
 async function shoot(page: Page, card: ReturnType<Page["locator"]>, name: string): Promise<void> {
-  if (process.env.MC_E2E_EVIDENCE !== "1") return;
   mkdirSync(EVIDENCE, { recursive: true });
   // Off every control first: `Tooltip` portals a bubble under a resting pointer, and it
   // lands on top of the rows being photographed.
   await page.mouse.move(0, 0);
   await card.screenshot({ path: `${EVIDENCE}${name}.png` });
   console.log(`CAPTURED e2e/.artifacts/conversation-yours-rail/${name}.png`);
+}
+
+/**
+ * Wrap a capture in a page that says what it is, and inline the image into it.
+ *
+ * A bare PNG on disk is evidence only to whoever already knows what they are looking at,
+ * and a reviewer reading a pull request cannot open a path on somebody else's machine.
+ * This writes one self-contained file - the image is a data URI, so there is nothing
+ * beside it to lose - captioned with the assertions that had to pass in the same run for
+ * the picture to be taken at all. It is written next to the PNG, under the gitignored
+ * artifacts directory, because evidence is never committed.
+ */
+function evidencePage(name: string, title: string, claims: string[]): void {
+  const png = readFileSync(`${EVIDENCE}${name}.png`).toString("base64");
+  const html = `<!doctype html>
+<meta charset="utf-8">
+<title>${title}</title>
+<style>
+  body { margin:0; background:#0a0c0f; color:#e7ebf1;
+         font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:1320px; margin:0 auto; padding:40px 28px 80px; }
+  h1 { font-size:26px; letter-spacing:-.01em; margin:0 0 6px; }
+  p.sub { color:#939eae; margin:0 0 26px; }
+  img { width:100%; border:1px solid #232a33; border-radius:13px; display:block; }
+  ul { margin:22px 0 0; padding-left:20px; color:#939eae; }
+  li { margin-bottom:8px; }
+  b { color:#e7ebf1; font-weight:600; }
+</style>
+<div class="wrap">
+  <h1>${title}</h1>
+  <p class="sub">Captured by <code>e2e/specs/conversation-yours-rail.spec.ts</code> during a real
+     browser run, against the built dashboard and the built daemon, with every agent binary
+     faked. The run that produced this image is the run that asserted the claims below.</p>
+  <img alt="${title}" src="data:image/png;base64,${png}">
+  <ul>${claims.map((c) => `\n    <li>${c}</li>`).join("")}
+  </ul>
+</div>
+`;
+  writeFileSync(`${EVIDENCE}${name}.html`, html);
+  console.log(`CAPTURED e2e/.artifacts/conversation-yours-rail/${name}.html`);
 }
 
 /**
@@ -167,10 +215,11 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await expect(dialog).toBeHidden();
 }
 
-/** Dispatch, expand, and leave a conversation with three more of the operator's messages. */
+/** Dispatch, expand, and leave a conversation with more of the operator's messages in it. */
 async function conversationWithMessages(
   page: Page,
   daemon: DaemonHandle,
+  texts: string[] = [FIRST, SECOND, THIRD],
 ): Promise<ReturnType<Page["locator"]>> {
   await dispatch(page, daemon);
 
@@ -184,7 +233,7 @@ async function conversationWithMessages(
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
 
-  for (const [i, text] of [FIRST, SECOND, THIRD].entries()) {
+  for (const [i, text] of texts.entries()) {
     await reply.fill(text);
     await reply.press("Enter");
     // Wait on the operator's own turn ARRIVING rather than on the echo quoting it back.
@@ -248,6 +297,81 @@ function yourTurn(
 function colourOf(locator: ReturnType<Page["locator"]>): Promise<string> {
   return locator.evaluate((el) => getComputedStyle(el).color);
 }
+
+test("both groups and a jump, in one frame", async ({ dashboard, daemon }) => {
+  // The whole feature at once, in the smallest conversation that can show it.
+  //
+  // The rail is 244px wide and about four rows tall, so a session with seven rows in it
+  // cannot put both groups on screen together however it is scrolled - the test below
+  // proves the grouping by reading the rows, which needs no picture. This one exists so
+  // that a person who has not run the code can SEE it: two messages the operator sent,
+  // then the two sent for them, dimmed and named, and the transcript holding the turn a
+  // row just jumped to. It asserts what it photographs, so the picture cannot outlive
+  // the behaviour.
+  // Tall enough that the whole card is on screen at once. `toBeInViewport` answers about
+  // the BROWSER's viewport, not the rail's scroller, so at the default 720px the foot of
+  // the card falls off the bottom and rows that are perfectly visible inside the rail
+  // still read as out of view.
+  await dashboard.setViewportSize({ width: 1280, height: 1000 });
+  await enableSkills(daemon);
+  const card = await conversationWithMessages(dashboard, daemon, [FIRST]);
+
+  const target = await session(daemon);
+  await delivers(daemon, target, "foreman", FOREMAN_SAYS);
+  await expect(turnsBy(card, FOREMAN)).toBeVisible();
+  await missionControlDelivers(daemon, target);
+  await expect(turnsBy(card, MISSION_CONTROL)).toBeVisible();
+
+  await rail(card).getByRole("tab", { name: "Yours" }).click();
+
+  // Four rows, and every one of them on screen: the operator's two first, then the two
+  // sent on their behalf, each naming its author.
+  const ordered = rows(card);
+  await expect(ordered).toHaveCount(4);
+  await expect(ordered.nth(0)).toHaveAccessibleName(new RegExp(DISPATCH));
+  await expect(ordered.nth(1)).toHaveAccessibleName(new RegExp(FIRST));
+  await expect(ordered.nth(2)).toHaveAccessibleName(new RegExp(FOREMAN));
+  await expect(ordered.nth(3)).toHaveAccessibleName(new RegExp(MISSION_CONTROL));
+
+  // The two delivered rows are drawn quieter than the operator's own.
+  const quiet = await colourOf(ordered.nth(2));
+  expect(quiet).not.toBe(await colourOf(ordered.nth(1)));
+  expect(await colourOf(ordered.nth(3))).toBe(quiet);
+
+  // And a row moves the log: Foreman's turn is marked in the rail and flashing in the
+  // transcript, with the conversation still around it.
+  await ordered.nth(2).click();
+  await expect(turnsBy(card, FOREMAN)).toBeInViewport();
+  await expect(turnsBy(card, FOREMAN)).toHaveClass(/is-flashed/);
+  await expect(ordered.nth(2)).toHaveAttribute("aria-current", "true");
+
+  // The boundary between the two groups, on screen together: one of the operator's own
+  // messages, then both of the ones sent for them. The rail is a 244px column about three
+  // rows tall, so this trio is the most of the list that can share a frame - and it is the
+  // part that carries the meaning, because it is where "mine" stops and "sent for me"
+  // starts. Asserted rather than hoped for, so the photograph below cannot quietly stop
+  // showing it.
+  await ordered.nth(3).scrollIntoViewIfNeeded();
+  for (const i of [1, 2, 3]) await expect(ordered.nth(i)).toBeInViewport();
+
+  await shoot(dashboard, card, "00-rail-and-jump");
+  evidencePage("00-rail-and-jump", "The Yours rail, and a jump into the transcript", [
+    "The <b>Yours</b> tab is reachable from the rail, and reports <b>2</b> - the messages the "
+      + "operator typed, not the five turns the tab lists.",
+    "Both of the operator's own messages are listed first, in the order they were sent.",
+    "<b>Foreman</b> and <b>Mission Control</b> are listed below them, dimmed, each naming its "
+      + "author. Both were delivered through their real routes - Foreman through "
+      + "<code>/inject</code>, Mission Control through the retro delivery - so the origin on each "
+      + "is one the daemon actually recorded.",
+    "The dimming is asserted by computed colour, not by eye: the delivered rows draw their "
+      + "message in a different colour from the operator's own, and share it with each other.",
+    "The Foreman row was <b>clicked</b>. It carries <code>aria-current</code> in the rail, and the "
+      + "Foreman turn is flashing in the transcript beside it.",
+    "Nothing is hidden. The agent's replies, the operator's own turn and the Mission Control turn "
+      + "are all still in the log around the turn that was jumped to - which is the whole "
+      + "difference between an index and a filter.",
+  ]);
+});
 
 test("the Yours tab lists what you sent, and says who sent the rest", async ({
   dashboard,
@@ -313,10 +437,24 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({
   // The rail says why, on the surface, rather than leaving the dimming to be decoded.
   await expect(rail(card)).toContainText(/without it reading as yours/);
 
-  // The rail opens anchored on the operator's last message, so the delivered rows sit
-  // below the fold. Bring them up for the photograph - the point of the picture is the
-  // two groups together.
-  await missionRow.scrollIntoViewIfNeeded();
+  // The one frame that carries the whole feature, taken after everything above has
+  // already been asserted so the picture and the proof come from the same run.
+  //
+  // The rail opens anchored on the operator's last message, so the delivered rows start
+  // below the fold: bringing them up puts both groups in shot at once, which is the point.
+  // Then a delivered row is CLICKED, so the same frame also holds the other half of the
+  // feature - the row marked in the rail, and the turn it jumped to flashing in the log.
+  // Taken while the flash is still up, which is why it follows the class assertion
+  // directly rather than after any further waiting.
+  // The middle of the three delivered rows, deliberately: clicking focuses it and the
+  // browser scrolls a focused control into view, which lands the window on the boundary
+  // between the two groups - the operator's last message above, all three delivered rows
+  // below it - with no scrolling of our own to fight the focus. The rail holds about four
+  // rows at this height, so this is the frame that carries the most of the feature at once.
+  await workflowRow.click();
+  await expect(turnsBy(card, WORKFLOW)).toBeInViewport();
+  await expect(turnsBy(card, WORKFLOW)).toHaveClass(/is-flashed/);
+  await expect(workflowRow).toHaveAttribute("aria-current", "true");
   await shoot(dashboard, card, "01-yours-tab");
 
   // An index hides nothing: the agent's replies are all still in the transcript beside it,

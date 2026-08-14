@@ -847,12 +847,13 @@ after the hour of work, not before it. The original pull request includes a runt
 how the four read against each other.
 
 What the CLI writes into the conversation on its own behalf is not one of those voices and
-is not shown: the note it leaves in place of a pasted image, the payload it attaches when a
-skill loads, its own resume nudge. The client marks those records as its own, and the log
-drops them on that marker rather than on anything about their wording. They had no author
-the daemon could attribute, so they used to arrive wearing your byline - which made the
-conversation claim you had typed `[Image: original 2360x12932…]` or *Continue from where
-you left off.*
+never reaches the dashboard: the note it leaves in place of a pasted image, the payload it
+attaches when a skill loads, its own resume nudge. The CLI marks those records as its own
+in the transcript file, and the daemon's transcript reader drops them on that marker as it
+parses - so they are gone before the conversation is sent, and no browser has to decide
+anything about their wording. They had no author the daemon could attribute, so they used
+to arrive wearing your byline, which made the conversation claim you had typed
+`[Image: original 2360x12932…]` or *Continue from where you left off.*
 
 Scroll to the top of the log and the page above loads automatically, then the page above
 that, back to the session's first turn. **Load older messages** does the same on click,

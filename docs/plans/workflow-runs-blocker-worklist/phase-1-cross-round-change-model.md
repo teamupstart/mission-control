@@ -109,7 +109,7 @@ export interface ChangeWorklistRow {
   firstRound: number;
   lastRound: number;
   roundsOpen: number;
-  state: "open" | "resolved";
+  state: "open" | "resolved" | "superseded";
 }
 ```
 
@@ -151,12 +151,35 @@ Derivation, in order:
    round 4, a change that its persona re-raised in round 4 is `"open"` even if that persona
    dropped it in round 5 - because at round 4 it was open, and that is what the reader asked to
    see. Resolution is still decided per owning `nodeId` **within the window**.
+
+4b. **Split "stopped appearing" into two outcomes.** For a key that is no longer being raised,
+   look at what its owning node did in the rounds after `lastRound`, inside the window:
+
+   - the node **passed**, or stopped returning a `fail` verdict, in a later round: `"resolved"`;
+   - the node **kept failing** in a later round: `"superseded"`. The reviewer did not become
+     satisfied, it rephrased. Almost always this is an LLM reviewer rewording a title it keeps
+     raising, which `requestedChangeKey` correctly reads as a different change.
+
+   Without this split the rail contradicts itself. The stalemate card at its foot comes from
+   `repeat-offender.ts`, which keys on `nodeId` and pass/fail and never reads a title, so a
+   reworded finding produces an Archive row reading *"Resolved in round 5"* directly above a card
+   reading *"Test Evidence Auditor has failed 10 rounds running"*. Same reviewer, same rail,
+   opposite claims. Duplicating the round-folding rule was justified in this document by exactly
+   that argument, so this case does not get to be the exception.
+
+   Derive it here, from the folded rounds this function already walks. **Do not read
+   `detail.repeatOffenders` for it.** That signal is anchored at the run's latest submission and
+   thresholded at `rounds >= 2` for alerting, neither of which is right for a per-key,
+   per-window question - and reading it would make this model depend on a value the `asOfRound`
+   window cannot re-scope.
 5. `roundsOpen` counts the rounds from `firstRound` through `lastRound` **inclusive** in which
    the key appeared. Document whether it is a span or a count of appearances and make the test
    pin it; a change that lapses for a round and returns is the case that distinguishes them.
    Adopt **count of appearances**, so the number never claims a round the reviewer stayed
    silent in.
-6. Sort: open before resolved; then `firstRound` ascending (oldest grievance first); then
+6. Sort: `open`, then `superseded`, then `resolved` - descending by how much the reader still
+   has to care, which puts the rephrased ones at the top of Archive rather than buried under
+   things that genuinely went away. Then `firstRound` ascending (oldest grievance first); then
    `nodeId`; then title. Stable and independent of map iteration order.
 
 Read verdicts defensively, mirroring `normalizePersonaVerdict`'s intent: a row that fails to
@@ -170,8 +193,16 @@ Cases:
 
 - Two rounds raising the same title at the same path produce **one** row with
   `firstRound: 1`, `roundsOpen: 2`, `state: "open"`.
-- A change raised in rounds 1 and 2 but absent in round 3 is `state: "resolved"`,
-  `lastRound: 2`.
+- A change raised in rounds 1 and 2, absent in round 3, whose persona **passed** in round 3, is
+  `state: "resolved"`, `lastRound: 2`.
+- **Reworded finding.** A persona raises title A in rounds 1 to 5, then raises title B in rounds
+  6 to 10 and never passes. Key A is `"superseded"`, not `"resolved"`; key B is `"open"`. This is
+  the case that would otherwise put "Resolved in round 5" on the same rail as "failed 10 rounds
+  running" for one reviewer.
+- A superseded row and the `repeatOffenders` entry for its node never disagree: any node still
+  reported as a repeat offender has every one of its stopped keys marked `"superseded"`, never
+  `"resolved"`. Assert this against a fixture that also produces a `repeatOffenders` entry, so
+  the two derivations are pinned against each other rather than separately.
 - Title differing only by case, backticks, trailing period or collapsed whitespace is the
   **same** key.
 - A different `line` on the same path and title is the **same** key.
@@ -246,8 +277,10 @@ Phase 2 may rely on:
   `personaName` always name the reviewer that actually raised it, and two reviewers raising
   colliding titles produce two rows rather than one. Phase 2 can wire "Disable {persona}" and
   the directive editor straight off the row.
-- `state` partitioning the rows into the `Blocking` and `Archive` segments with no further
-  filtering.
+- `state` partitioning the rows: `"open"` is `Blocking`, `"resolved"` and `"superseded"` are
+  both `Archive`, with no further filtering. The two Archive states are distinguished only so
+  Phase 2 can label them honestly - a `"superseded"` row must never be worded as though its
+  reviewer became satisfied.
 - `state` being **conservative under a partial round**: a change whose persona has not
   re-attempted stays `"open"`. Phase 2 never has to ask whether a round finished before
   trusting the partition.
@@ -285,6 +318,17 @@ Phase 2 must not:
   to keep this model narrow rather than widen it, and the boundary now lives in this phase's
   downstream handoff, which is the earliest place that must own it. No scope or signature here
   changed.
+- **Inspector round 4, `minor`, accepted.** A reviewer that rewords a title it keeps raising
+  produced a `"resolved"` row for the old key, which would sit on the same rail as a stalemate
+  card saying that reviewer has failed every round - the exact on-screen disagreement this file
+  cites to justify sharing the round-folding rule, left as an exception to it. Dismissing it as
+  "the same trade-off `marker.ts` makes" did not hold either: `marker.ts` has no adjacent
+  title-independent signal to contradict. `state` gains a third value, `"superseded"`, derived
+  in step 4b from the folded rounds this function already walks. Deliberately **not** read from
+  `detail.repeatOffenders`, whose latest-submission anchor and `rounds >= 2` alerting threshold
+  are both wrong for a per-key, per-window question, and which the `asOfRound` window cannot
+  re-scope. Three test cases, one of which pins this derivation against a fixture that also
+  produces a `repeatOffenders` entry so the two cannot drift apart.
 - **Inspector round 3, `major`, accepted.** `requestedChangeKey` took only the change, so its
   identity was `path` plus normalized title - which is where mirroring `marker.ts` stopped being
   right and nobody had noticed, including me. That module has exactly one author, so it cannot

@@ -76,12 +76,15 @@ foundational interface, and it leaves the tree operable and green at the merge b
 - **The key includes the owning persona node.** A row's `nodeId` and `personaName` always name
   the reviewer that raised it, so two reviewers asking for the same thing produce two rows.
   Phase 2 wires the per-row actions off that node and must not dedupe the rows in the view.
-- Rows arrive **pre-sorted** (open before resolved, then oldest first). Phase 2 does not
-  re-sort.
-- `state` alone partitions the `Blocking` and `Archive` segments, and is **conservative under a
-  partial round**: resolution is decided per owning persona, so a change whose reviewer has not
-  re-attempted stays `open` rather than reading as fixed because some other reviewer advanced
-  the round.
+- Rows arrive **pre-sorted** (`open`, then `superseded`, then `resolved`, then oldest first).
+  Phase 2 does not re-sort.
+- `state` alone partitions the segments - `open` is `Blocking`, `resolved` and `superseded` are
+  both `Archive` - and is **conservative under a partial round**: resolution is decided per
+  owning persona, so a change whose reviewer has not re-attempted stays `open` rather than
+  reading as fixed because some other reviewer advanced the round.
+- **A key that stops appearing while its persona keeps failing is `superseded`, not `resolved`.**
+  Phase 2 must label and colour the two differently: a superseded row cannot read as satisfaction
+  while the stalemate card on the same rail calls that reviewer a repeat offender.
 - `roundsOpen` is a **count of appearances**, not a span, so it never claims a round the
   reviewer was silent in.
 - The model covers **requested changes only**. Checks never flow through it. Phase 2 keeps the
@@ -156,14 +159,29 @@ Round 3 raised one more `major`, also verified and accepted:
    `nodeId`, dropping the other's evidence and making its objection un-actionable, since Phase 2
    wires the disable and directive actions off the row's node. The key now leads with `nodeId`.
 
-All four fixes tighten the design without touching an approved human decision, so none was
+Round 4 raised one `minor`, accepted:
+
+5. **A reworded finding could make the rail contradict itself.** An LLM reviewer that rephrases
+   a title it keeps raising retires the old key, which read as `resolved` - on the same rail as a
+   stalemate card, derived title-independently from `repeat-offender.ts`, calling that reviewer a
+   repeat offender. `state` gains a third value, `superseded`, derived from the rounds the
+   worklist already walks rather than by reading `repeatOffenders`, whose latest-submission
+   anchor and `rounds >= 2` threshold are wrong for a per-key, per-window question.
+
+All five fixes tighten the design without touching an approved human decision, so none was
 escalated. Each phase's cross-phase audit record carries the detail.
 
-Three of the four are the same class of mistake: a rule borrowed from a neighbouring subsystem
+Three of the five are the same class of mistake: a rule borrowed from a neighbouring subsystem
 without checking which of its preconditions this one actually has. `marker.ts` has one author;
 `repeat-offender.ts` compares within a round rather than across a global newest; the rest of the
 reader pane is round-scoped. Each was right there in the source and each needed reading rather
 than assuming.
+
+The fifth is a different lesson and worth keeping: this document justified duplicating the
+round-folding rule on the grounds that two derivations of one fact must not disagree on one
+screen, then let a second case of the same disagreement through as an accepted trade-off. A
+principle stated once has to be applied everywhere it reaches, including where it is
+inconvenient.
 
 Worth noting what the third one implies for the kept scrubber: "unchanged" means it keeps the
 meaning it has today and now governs this section too, not that some of the page ignores it.

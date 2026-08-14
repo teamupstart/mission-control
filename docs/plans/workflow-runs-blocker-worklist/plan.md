@@ -119,9 +119,24 @@ Including the node costs nothing for the job the key exists to do. A persona's `
 stable across rounds within a run's immutable workflow version, so cross-round matching for a
 single reviewer is unaffected; the node component only prevents cross-reviewer merging.
 
-**Known failure mode, accepted:** a reviewer that rewords its own title produces a new key, so
-the change reads as newly raised and its predecessor reads as resolved. This is the same
-trade-off `marker.ts` already makes.
+**Known failure mode, handled:** a reviewer that rewords a title it keeps raising produces a new
+key, so the old key stops appearing. `marker.ts` accepts exactly this and can afford to, because
+nothing sits beside it contradicting the result. This surface is different: the stalemate card
+at the foot of the same rail is derived from `repeat-offender.ts`, which keys on `nodeId` and
+pass/fail and never reads a title. Left alone, the rail would show an Archive row saying
+*"Resolved in round 5"* directly above a card saying *"Test Evidence Auditor has failed 10
+rounds running"* - about the same reviewer. That is precisely the on-screen disagreement this
+plan cites to justify sharing the round-folding rule, so it does not get to be an exception.
+
+**Adopted:** a change has three states, not two. A key that stops appearing while its owning
+persona **keeps failing** is `superseded` - the objection did not go away, it got rephrased. A
+key that stops appearing because its persona stopped objecting is `resolved`. Both live in
+Archive and are labelled differently, so no row ever claims a reviewer is satisfied while
+another part of the same rail says it is not.
+
+This is derivable inside the worklist from data it already walks, so it needs no reference to
+`repeatOffenders` and does not inherit that signal's `rounds >= 2` threshold - which exists for
+alerting and has nothing to do with this question.
 
 ### Rounds are not submissions
 

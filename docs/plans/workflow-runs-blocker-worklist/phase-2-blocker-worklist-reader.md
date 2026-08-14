@@ -108,7 +108,12 @@ rounds should stay selected as the reader moves between them.
   The `{personaName}` on the row is what distinguishes them, so it is never optional.
 - Blocking rows, failing checks: the existing `CheckCard`, unchanged, so the command, exit code,
   output tail and truncated-byte count survive the redesign intact.
-- Archive rows: green rail, `Resolved in round {lastRound}`.
+- Archive rows, `state: "resolved"`: green rail, `Resolved in round {lastRound}`.
+- Archive rows, `state: "superseded"`: **amber rail, not green**, and worded so it cannot be read
+  as satisfaction - `Rephrased after round {lastRound}` with a second line naming the reviewer as
+  still requesting changes. Green here would tell the operator a reviewer is happy while the
+  stalemate card at the foot of the same rail says it has failed every round. The colour is
+  carrying the claim, so it has to be the honest one.
 - Passed segment: one line per passing reviewer, plus checks whose outcome is `passed`,
   `skipped` or `unavailable`. The latter two are **degraded passes**, not failures
   (`CHECK_OUTCOME_STATUSES` marks them `degraded: true`); they keep their amber chip in
@@ -224,6 +229,10 @@ requires a Playwright spec for every UI change with no exemptions.
 - **All three segment counts describe the round the scrubber points at.** Scrubbing to an
   earlier round moves `Blocking`, `Archive` and `Passed` together, and `roundsOpen` is counted
   up to that round rather than to today.
+- **No Archive row claims a reviewer is satisfied while the stalemate card says otherwise.** A
+  `"superseded"` row reads as rephrased, not resolved, and does not take the green rail. Verify
+  by eye on a run that has both a superseded row and a `repeatOffenders` entry for the same
+  persona; this is a two-elements-agreeing assertion that markup shape alone cannot make.
 - A change carried from an earlier round says which round raised it and how many rounds it has
   been open; a resolved one says which round resolved it.
 - `repeatOffenders` renders, using the same sentence as the ladder.
@@ -259,6 +268,12 @@ There are no later phases. Future work that touches this surface should know:
   Phase 1's test list pins it so this phase inherits a derivation that cannot crash on it.
 - **Confirmed no concurrency.** Phase 2 depends on Phase 1 and there is no third phase, so
   there is nothing to run in parallel and no merge-order ambiguity.
+- **Inspector round 4, `minor`, accepted, derived in Phase 1.** A reworded finding marked its old
+  key resolved, so Archive could read "Resolved in round 5" for the same persona the stalemate
+  card at the foot of the rail calls a repeat offender. Phase 1 now emits a third `state`,
+  `"superseded"`. This phase owns the wording and the colour: superseded rows take an amber rail
+  and read as rephrased, because green would be the element making the false claim. Added to the
+  exit criteria.
 - **Inspector round 3, `major`, accepted, resolved in Phase 1.** The change key carried no
   author, so two personas raising identically-normalizing titles on one file would have merged
   into a single row with one `nodeId` - and this phase wires "Disable {persona}" and the

@@ -58,6 +58,17 @@ the environment: a value arriving through the environment was there before the p
 which is exactly what an operator's configured state dir looks like, and it is recorded as
 one.
 
+**Where this stops.** `openDb` is not a sandbox. A test that spawns plain `node` and strips
+`NODE_TEST_CONTEXT`, `MISSION_TEST_STATE` and the inherited home has not disguised itself as
+something else - it has built the daemon's own launch, byte for byte, and no signal can refuse
+one without refusing the other. A test can also skip all of this and call
+`new DatabaseSync(...)` from `node:sqlite` directly, which never reaches `openDb`. Both are
+pinned in `test/db-isolation.test.ts` so the boundary is stated rather than assumed. What the
+guard closes is the accident - the missing preamble, the hoisted import, the override applied
+one line too late - which is what every incident behind this actually was. Spawn a child
+without scrubbing it and it inherits the worker's disposable home, which is why the suite's
+seventeen child-spawning files need nothing from you.
+
 The preload seeds `HARNESS_HOME` and clears any inherited `MISSION_HOME` and `FLEET_HOME`.
 That is a precedence decision, not a preference for the old name: `envVar` reads `MISSION_`
 then `FLEET_` then `HARNESS_`, so the last name in the chain is the only one a test file can

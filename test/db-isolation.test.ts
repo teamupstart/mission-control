@@ -556,6 +556,92 @@ test("an override set after the path resolved is refused, singleton or not", () 
   }
 });
 
+// ---- spawned children -------------------------------------------------------
+
+/** Plain `node` - no runner, no preload - with whatever environment is handed to it. */
+function runPlainNode(env: Record<string, string | undefined>, script: string): ChildResult {
+  try {
+    const stdout = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+      cwd: REPO_ROOT,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+    return { status: 0, stdout, stderr: "" };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string; stderr?: string };
+    return { status: e.status ?? 1, stdout: String(e.stdout ?? ""), stderr: String(e.stderr ?? "") };
+  }
+}
+
+const REPORT_STATE_DIR = `
+  const { STATE_DIR, DB_PATH } = await import("./src/server/config.ts");
+  const { openDb } = await import("./src/server/db.ts");
+  openDb();
+  console.log(JSON.stringify({ stateDir: STATE_DIR, db: DB_PATH }));
+`;
+
+test("a plain-node child of an isolated worker inherits that isolation", () => {
+  // The realistic shape, and the one worth pinning: a test spawns a helper to drive the
+  // daemon from the outside and does NOT scrub the environment. That child is plain `node` -
+  // no runner flags, no preload, no marker - so nothing identifies it as a test worker and
+  // the guard never runs in it. It is isolated anyway, because it inherits `HARNESS_HOME`
+  // from the preload and lands in this worker's own disposable directory.
+  //
+  // Isolation by inheritance rather than by refusal. Seventeen files in this suite spawn
+  // children exactly like this.
+  const jail = join(home, "plain-child-jail");
+  mkdirSync(jail, { recursive: true });
+  const env: Record<string, string | undefined> = { ...process.env, HOME: jail };
+  delete env.NODE_TEST_CONTEXT;
+
+  const res = runPlainNode(env, REPORT_STATE_DIR);
+  assert.equal(res.status, 0, res.stderr);
+  const report = JSON.parse(res.stdout.trim().split("\n").filter(Boolean).at(-1)!) as {
+    stateDir: string;
+  };
+  assert.match(report.stateDir, /mission-test-state-/, "the child escaped the worker's state dir");
+  assert.equal(
+    existsSync(join(jail, ".mission-control")),
+    false,
+    "a plain child reached for a home-directory state dir",
+  );
+});
+
+test("a child scrubbed of every test signal is the daemon, by construction", () => {
+  // The boundary of this guard, stated as an executable fact rather than a caveat in a
+  // comment. Strip `NODE_TEST_CONTEXT`, `MISSION_TEST_STATE` and the inherited home from a
+  // plain-node child and what remains is not a disguised test worker - it is byte-for-byte
+  // the daemon's own launch: same argv, same absence of runner flags, same resolved path.
+  //
+  // That is why no further signal can help. Anything that refused the first of these would
+  // refuse the second, which is the live daemon. Both run under a jailed HOME here, so the
+  // claim is demonstrated without either process going near the real state dir.
+  //
+  // The residue this leaves is deliberate and documented in AGENTS.md: a test that sets out
+  // to reach the operator's database can do it, and has a far shorter route than this one -
+  // `new DatabaseSync(...)` from `node:sqlite`, which never enters `openDb` at all. What the
+  // guard closes is the accident.
+  const jail = join(home, "scrubbed-jail");
+  mkdirSync(jail, { recursive: true });
+
+  const scrubbed: Record<string, string | undefined> = { ...process.env, HOME: jail };
+  for (const name of ["NODE_TEST_CONTEXT", "MISSION_TEST_STATE", "MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"]) {
+    delete scrubbed[name];
+  }
+  const daemonShaped = { ...scrubbed };
+
+  const asTestChild = runPlainNode(scrubbed, REPORT_STATE_DIR);
+  const asDaemon = runPlainNode(daemonShaped, REPORT_STATE_DIR);
+
+  assert.equal(asTestChild.status, 0, asTestChild.stderr);
+  assert.equal(asDaemon.status, 0, asDaemon.stderr);
+  const dbOf = (res: ChildResult) =>
+    (JSON.parse(res.stdout.trim().split("\n").filter(Boolean).at(-1)!) as { db: string }).db;
+  assert.equal(dbOf(asTestChild), dbOf(asDaemon), "the two launches must be indistinguishable");
+  assert.equal(dbOf(asTestChild), join(jail, ".mission-control", "harness.db"));
+});
+
 // ---- the bootstrap ----------------------------------------------------------
 
 test("a worker that sets nothing is isolated by the bootstrap alone", () => {

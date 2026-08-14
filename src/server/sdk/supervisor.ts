@@ -736,6 +736,10 @@ export class SdkSupervisor {
         agent: row.agent,
         name: restoredName(row, task?.title ?? null),
         cwd: row.cwd,
+        // An idle resume emits a binding but owes no assistant/result frame, so carry the
+        // durable no-turn fact into the card that binding confirms. Fresh launches and
+        // interrupted restores stay `starting`; the latter receives its recovery turn below.
+        initialState: row.turnInProgress ? "starting" : "idle",
         permissionMode: row.permissionMode,
         gitBranch: task?.branch ?? null,
         gitRoot: row.cwd,

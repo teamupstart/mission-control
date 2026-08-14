@@ -250,12 +250,12 @@ export function paneDialogReason(dialog: PaneDialog): string {
  * Foreman and the daemon disagreeing about whether an agent is still typing.
  *
  * The gate is `state === "idle"`, and that is enough on its own because `state` is
- * only ever `idle` from a REAL source - a fresh hook overlay, or the transcript-
- * derived passive state. The base rebuild default is `working`, so nothing sets
- * `idle` without evidence: an `idle` here is always a claim someone made, never an
- * absence of data. (This is the distinction `reportBucket` can't make, where `idle`
- * is also its catch-all for an uninstrumented session - so don't be tempted to gate
- * this on the bucket instead.)
+ * only ever `idle` from a REAL source - a fresh hook or driver lifecycle, the transcript-
+ * derived passive state, or a restored SDK row whose durable turn flag is clear. The base
+ * rebuild default is `working`, so nothing sets `idle` without evidence: an `idle` here is
+ * always a claim someone made, never an absence of data. (This is the distinction
+ * `reportBucket` can't make, where `idle` is also its catch-all for an uninstrumented
+ * session - so don't be tempted to gate this on the bucket instead.)
  *
  * We used to also require `instrumented` (a fresh hook within 30 min). That was
  * redundant while hooks were the only source of `idle`, and became WRONG once the

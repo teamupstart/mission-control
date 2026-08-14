@@ -28,6 +28,8 @@ const { getSdkSession, listSdkSessions, upsertSdkSession } = await import(
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { reportBucket } = await import("../src/shared/session.ts");
+const { stateDisplay } = await import("../src/web/lib/format.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
 
 type Handle = import("../src/server/harness/types.ts").SdkSessionHandle;
@@ -188,6 +190,10 @@ test("start persists a row, registers the card, and records the binding", async 
     assert.equal(registry.getSession(session.id)?.agentSessionId, "agent-7");
     assert.equal(registry.getSession(session.id)?.meta?.modelId, "actual-model");
     assert.equal(registry.getSession(session.id)?.hooksSeen, true);
+    const boundFresh = registry.getSession(session.id)!;
+    assert.equal(boundFresh.state, "starting", "a fresh launch remains active after binding");
+    assert.equal(reportBucket(boundFresh), "working");
+    assert.deepEqual(stateDisplay(boundFresh), { label: "starting", tone: "working" });
 
     handle.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
@@ -598,6 +604,20 @@ test("restore resumes the same conversation rather than starting a new one", asy
     // and then re-learned, or a crash in that window loses the only thing a resume needs.
     assert.equal(getSdkSession("sdk:restore-1")?.agentSessionId, "agent-42");
     assert.deepEqual(handle.sent, [], "an idle restored session receives no unsolicited turn");
+
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-42",
+      transcriptPath: null,
+      modelId: "m",
+      pid: null,
+    });
+    await waitFor(() => registry.getSession("sdk:restore-1")?.stateConfirmed === true);
+    const restored = registry.getSession("sdk:restore-1")!;
+    assert.equal(restored.state, "idle", "binding confirms the durable idle projection");
+    assert.equal(reportBucket(restored), "idle");
+    assert.deepEqual(stateDisplay(restored), { label: "idle", tone: "idle" });
+    assert.deepEqual(handle.sent, [], "binding an idle restore still sends no turn");
   } finally {
     fake.restore();
   }
@@ -620,7 +640,8 @@ test("restore automatically continues an interrupted turn without replaying its 
       turnInProgress: true,
     });
 
-    await new SdkSupervisor(new Registry()).restore();
+    const registry = new Registry();
+    await new SdkSupervisor(registry).restore();
 
     assert.equal(fake.calls.length, 1);
     assert.equal(fake.calls[0]?.resume, "agent-interrupted");
@@ -629,6 +650,19 @@ test("restore automatically continues an interrupted turn without replaying its 
     assert.match(handle.sent[0]?.text ?? "", /previous turn was still in progress/i);
     assert.match(handle.sent[0]?.text ?? "", /do not repeat completed work/i);
     assert.equal(getSdkSession("sdk:continue-1")?.turnInProgress, true);
+
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-interrupted",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+    });
+    await waitFor(() => registry.getSession("sdk:continue-1")?.stateConfirmed === true);
+    const restored = registry.getSession("sdk:continue-1")!;
+    assert.equal(restored.state, "starting", "an interrupted restore remains active at bind");
+    assert.equal(reportBucket(restored), "working");
+    assert.deepEqual(stateDisplay(restored), { label: "starting", tone: "working" });
 
     handle.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession("sdk:continue-1")?.turnInProgress === false);

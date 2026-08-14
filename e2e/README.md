@@ -170,6 +170,31 @@ are all things a route assertion can prove changed but only a capture shows a re
 
 Attach the generated frames to the pull request; they are never committed.
 
+### The Persona detail screen on the Rail direction
+
+`e2e/.artifacts/persona-rail/` holds five frames from the run that asserts the rebuilt Persona
+screen. `01-rail-groups.png` is the rail split into Built-in and Yours with counts;
+`02-overflow-menu.png` is the `⋯` menu open, which is where the four verbs that used to sit
+beside Save now live; `03-provider-chip-open.png` is the provider chip's popover holding the
+control the five-field metadata block used to hold; `04-provider-overridden.png` is the chip row
+after the override, where the `source` readout has stopped saying `app defaults`; and
+`05-builtin-promotes-duplicate.png` is a built-in promoting **Duplicate to edit** with no Save
+on the header at all.
+
+The quiet-versus-solid chip treatment is the whole point of that row and is the one thing an
+assertion can only approximate - it is a weight and a colour, and a reader has to see it.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/persona-rail.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### Per-harness dispatch defaults propagating
 
 `e2e/.artifacts/harness-defaults-propagate/`

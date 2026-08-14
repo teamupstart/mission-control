@@ -40,6 +40,7 @@ import type {
 import { connectionAllowed } from "@shared/workflow-graph.ts";
 import { checkLabel } from "@shared/workflow-stages.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { personaRoutingLabel } from "../library/library-model.ts";
 import { WORKFLOW_NODE_TYPES, type WorkflowCanvasNode } from "./WorkflowNode.tsx";
 import { NEW_NODE_MIME, parseDroppedNode, type NewWorkflowNode } from "./new-node.ts";
 
@@ -200,7 +201,7 @@ function canvasNodes(
       fallbackLabel = snapshot?.name ?? live?.name ?? "Missing Persona";
       subtitle = snapshot
         ? `Snapshot revision ${snapshot.sourceRevision}`
-        : live ? `${live.execution.runner.id} · ${live.execution.model.id}` : "Select an active Persona";
+        : live ? personaRoutingLabel(live) : "Select an active Persona";
     } else if (node.kind === "all_pass") {
       fallbackLabel = "All pass";
       subtitle = `${incoming.get(node.id)?.size ?? 0} predecessor${incoming.get(node.id)?.size === 1 ? "" : "s"}`;

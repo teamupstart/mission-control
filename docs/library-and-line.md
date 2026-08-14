@@ -131,6 +131,33 @@ third leaves the page.
 Both exits leave through the same navigation, so an unsaved draft raises the same
 leave-with-unsaved-changes question either way and neither is a route around it.
 
+### The Persona detail screen
+
+Behind a Persona card is a rail and a workspace, and both are arranged around the one thing on
+the screen that is the asset: the guidance Markdown.
+
+**The rail** lists Personas in two groups - **Built-in** and **Yours** - each with a count, so
+the roles that ship with the build stop reading as things you wrote and forgot. Each row's
+sub-label is the resolved runner and model, which is what tells two reviewers apart; the
+description is not repeated there, because on the shipped roles it restates the title. Search
+sits above the list. **Import .md**, **Import from path**, **Check upstream** and the
+**Archived** toggle sit in a footer below it, out of the path between the heading and the row
+you came for. The Archived toggle carries the archived count, so whether there is anything in
+there is answered without pressing it.
+
+**The workspace header** carries the name and description as the fields they are - editing the
+title edits the Persona - with the revision and the import provenance on one dim line beneath.
+Exactly one verb is promoted: **Save** on a Persona you can edit, **Duplicate to edit** on a
+built-in or an archived one, where there is no revision the editor could write. Copy Markdown,
+Download .md, Duplicate, Re-import from source and Archive live behind the `⋯` menu beside it.
+The menu closes on <kbd>Esc</kbd> without leaving the page.
+
+**Property chips** replace the metadata block. `provider` and `model` open the control that set
+them; `source` and `utf-8 bytes` are readouts. A chip whose value is inherited from the app
+defaults draws quiet, and one this Persona overrides draws solid - so what this Persona
+actually changes is legible without opening anything, and `source` names where the routing was
+decided. Everything left over is the guidance editor.
+
 ### The Ship log
 
 `#/shipped` is the cross-repo record of what the fleet landed: the Inspector's adoption

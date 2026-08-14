@@ -277,13 +277,14 @@ test("a reviewer card is tagged when its imported source file has moved on", () 
 // cards, always, in registry order - and the fact on each is durable configuration, never
 // anything a run is doing.
 
-test("Commands is the sixth shelf, with one card per built-in slot and no New card", () => {
+test("Commands follows Workflows, with one card per built-in slot and no New card", () => {
   const html = page();
-  // Appended, not filed beside Workflows: the shelf strings are hash segments, so the
-  // reading order is append-only.
+  // Sources come first to begin with intake, and Commands follows the Workflows that name
+  // its portable slots. Shelf ids remain stable hash segments even as their reading order
+  // changes.
   assert.deepEqual(
     LIBRARY_SHELF_COPY.map((shelf) => shelf.id),
-    ["workflows", "personas", "actions", "ensembles", "missions", "commands"],
+    ["missions", "workflows", "commands", "personas", "actions", "ensembles"],
   );
   const cards = commandCards([], true);
   assert.deepEqual(cards.map((card) => card.id), ["test", "lint", "typecheck", "build"]);

@@ -256,13 +256,22 @@ const detail: EnsembleRunDetailResponse = {
   pagination: { eventsTotal: 1, eventsReturned: 1, attemptsTotal: 2, attemptsReturned: 2 },
 };
 
-function renderDetail(over: Partial<EnsembleRunDetailResponse> = {}): string {
+function renderDetail(
+  over: Partial<EnsembleRunDetailResponse> = {},
+  action: {
+    actionPending?: string | null;
+    actionError?: string | null;
+    actionErrorKind?: string | null;
+    actionErrorMemberId?: string | null;
+  } = {},
+): string {
   return renderToStaticMarkup(
     createElement(EnsembleDetail, {
       detail: { ...detail, ...over },
       actionPending: null,
       actionError: null,
       actionErrorKind: null,
+      ...action,
       onAction: () => {},
       onDelete: () => {},
       onLoadPatch: async () => ({ error: "not loaded" }),
@@ -616,9 +625,21 @@ test("stage retry uses only the latest supported non-member attempt", () => {
   );
   assert.doesNotMatch(memberHtml, /Retry stage/);
 
+  // A supported non-member stage offers the door. Finalize rather than review, because a review's
+  // door is gated on its infrastructure budget being spent - a single model-charged failure is not
+  // a state the engine rests in (with retries left it opens the next attempt in the same walk, and
+  // with the budget spent it fails the run, where `terminal` hides this anyway). Which statuses a
+  // REVIEW offers it for has its own test below.
+  const failedFinalize: EnsembleStageAttempt = {
+    ...failedReview,
+    id: "sa-finalize",
+    stageId: "finalize",
+    driverKind: "finalize",
+    driverKey: "select_one_finalize@1",
+  };
   const failedHtml = renderToStaticMarkup(
     createElement(EnsembleActions, {
-      detail: { ...detail, stageAttempts: [failedReview] },
+      detail: { ...detail, stageAttempts: [failedFinalize] },
       pending: null,
       error: null,
       onAction: () => {},
@@ -626,6 +647,106 @@ test("stage retry uses only the latest supported non-member attempt", () => {
     }),
   );
   assert.match(failedHtml, /Retry stage/);
+});
+
+test("a blocked review offers the retry, and an interrupted one leaves it to the engine", () => {
+  // The two statuses either side of the operator door, on the reader that decides whether it is
+  // drawn at all. A review whose INFRASTRUCTURE budget is spent parks on a non-terminal run, and
+  // this button is the only way a person can start it again - so it has to be here.
+  // Three rows, because that is what parked actually looks like: the engine only writes a null
+  // `retryAt` on the attempt that SPENDS the budget, so a lone infrastructure row carrying one is
+  // a state it never produces, and a fixture that invents it tests nothing the daemon can reach.
+  const infra = (n: number, retryAt: number | null): EnsembleStageAttempt => ({
+    ...stage,
+    id: `${stage.id}-${n}`,
+    attempt: n,
+    status: "failed",
+    output: { charge: "infrastructure", kind: "infrastructure", retryAt },
+    error: "infrastructure: spawn ENOENT",
+  });
+  const blockedHtml = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, stageAttempts: [infra(1, 2_000), infra(2, 5_000), infra(3, null)] },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.match(blockedHtml, /Retry stage/);
+
+  // An `interrupted` attempt is the daemon's own record that it stopped watching, and the engine
+  // re-drives it without being asked. Offering a button for it would invite a person to press
+  // something that was already happening, so the door stays shut on this one.
+  const interrupted: EnsembleStageAttempt = {
+    ...stage,
+    status: "interrupted",
+    error: "the daemon exited while this comparison was in flight",
+  };
+  const interruptedHtml = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, stageAttempts: [interrupted] },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.doesNotMatch(interruptedHtml, /Retry stage/);
+
+  // Unless the stage is PARKED underneath that interruption. The engine does not re-drive a
+  // blocked stage, so an operator-granted retry that a restart interrupted leaves a run nothing
+  // will move on its own - and hiding the button on the "engine re-drives it" assumption is what
+  // left that run with no path forward at all. The door has to be here.
+  const parkedThenInterrupted = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: {
+        ...detail,
+        stageAttempts: [
+          infra(1, 2_000),
+          infra(2, 5_000),
+          infra(3, null),
+          { ...interrupted, id: `${stage.id}-4`, attempt: 4 },
+        ],
+      },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.match(parkedThenInterrupted, /Retry stage/);
+
+  // And NOT while a backoff is still owed. The newest row is `failed`, but the engine has a timer
+  // armed and the pipeline is drawing this same stage as *retrying after an infrastructure error*
+  // - so a button here is a second, contradicting claim about what is happening, and pressing it
+  // skips the wait that exists to stop one provider blip becoming three.
+  const midBackoff = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, stageAttempts: [infra(1, 2_000), infra(2, 5_000)] },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.doesNotMatch(midBackoff, /Retry stage/);
+
+  // A finalize stage keeps the plain rule: nothing re-drives it on its own, so a failed row is
+  // exactly the state that needs this door.
+  const finalize = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: {
+        ...detail,
+        stageAttempts: [{ ...stage, driverKind: "finalize", status: "failed", error: "cleanup failed" }],
+      },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.match(finalize, /Retry stage/);
 });
 
 test("unreadable runs can still be cancelled and healthy handoffs cannot be skipped", () => {
@@ -885,9 +1006,35 @@ test("decision busy state and errors stay owned by their action surface", () => 
   );
   assert.match(detailSource, /busy: actionBusy/);
   assert.match(detailSource, /actionErrorKind === "decide" \? actionError : null/);
-  assert.match(detailSource, /actionErrorKind !== "decide" \? actionError : null/);
+  // Three surfaces raise an action, so three own a refusal: the decision form, the member card
+  // whose button was clicked, and - only for what is left - the Actions section. Asserted on the
+  // source because the routing is a set of mutually exclusive conditions, and a render can show
+  // that one of them fired without showing that the other two did not.
+  assert.match(detailSource, /actionErrorKind !== "decide" && memberActionError === null \? actionError : null/);
+  assert.match(detailSource, /actionError=\{memberActionError\}/);
+  assert.match(detailSource, /actionErrorMemberId !== null\s*\? \{ memberId: actionErrorMemberId, message: actionError \}/);
   assert.match(detailSource, /actionsDisabled=\{actionBusy\}/);
   assert.match(decisionSource, /!decision\.busy/);
+});
+
+test("a member-addressed refusal reaches the member card and leaves the Actions section clean", () => {
+  const html = renderDetail(
+    { run: { ...run, status: "failed", error: "stage stage-2 can no longer meet its barrier" } },
+    {
+      actionError: "that member cannot be retried right now",
+      actionErrorKind: "retry_member",
+      actionErrorMemberId: "m-1",
+    },
+  );
+  // Once, on the card - not a second time under `Actions`, which is where it used to land, a
+  // whole page away from the control that produced it.
+  assert.equal(html.match(/that member cannot be retried right now/g)?.length, 1);
+  const actionsAt = html.indexOf('aria-label="Run actions"');
+  assert.ok(actionsAt > 0, "the actions surface rendered");
+  assert.ok(
+    html.indexOf("that member cannot be retried right now") < actionsAt,
+    "the refusal is rendered with the member, above the run's own action surface",
+  );
 });
 
 test("collapsed stage payloads defer bounded serialization until expansion", () => {

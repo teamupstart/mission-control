@@ -22,12 +22,12 @@ noun:
 
 | Shelf | Question | What is on it |
 | --- | --- | --- |
+| Missions · Sources | Where does work come from? | Recurring missions and a link to task sources in Settings |
 | Workflows | What counts as done? | Workflow cards - version, reviewer count, draft validation errors. The builder is one level deeper |
+| Commands | What does each standard gate run? | The four portable workflow slots - `test`, `lint`, `typecheck`, `build` - each with what it runs on this machine |
 | Personas | Who does the reviewing? | Persona cards with the provider and model each resolves to |
 | Actions | What can a run tell the session to do? | [Session action](workflows.md#session-actions) cards - required skill and what proves completion |
 | Ensembles | Not sure of the best approach? | Strategy launchers (Best of N, Panel vote, Consensus) that open Dispatch already in Ensemble mode on that strategy |
-| Missions · Sources | Where does work come from? | Recurring missions and a link to task sources in Settings |
-| Commands | What does each standard gate run? | The four portable workflow slots - `test`, `lint`, `typecheck`, `build` - each with what it runs on this machine |
 
 The four authoring surfaces mount one level deeper at bookmarkable hashes:
 

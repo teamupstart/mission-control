@@ -185,6 +185,17 @@ export type EnsembleAttemptStatus = (typeof ENSEMBLE_ATTEMPT_STATUSES)[number];
 export const ENSEMBLE_ARTIFACT_STATUSES = ["capturing", "ready", "failed", "superseded"] as const;
 export type EnsembleArtifactStatus = (typeof ENSEMBLE_ARTIFACT_STATUSES)[number];
 
+/**
+ * One attempt at one stage. `interrupted` is appended last, per the append-only contract.
+ *
+ * `interrupted` carries the same meaning here that it already carried for evaluations and LLM
+ * calls, and it exists so that a stage attempt can say what those two rows already said. A daemon
+ * that exited mid-review left a stage attempt nobody was executing; recording that as `failed`
+ * charged a restart to the evaluator's retry budget, so two restarts could exhaust a default
+ * budget of 2 without a model having answered once. It is terminal for the ROW it settles - a
+ * retry is always a new attempt number - but it is not a failure of the STAGE, so the walk treats
+ * it as not-started and spends no budget on it.
+ */
 export const ENSEMBLE_STAGE_STATUSES = [
   "queued",
   "running",
@@ -192,6 +203,7 @@ export const ENSEMBLE_STAGE_STATUSES = [
   "succeeded",
   "failed",
   "cancelled",
+  "interrupted",
 ] as const;
 export type EnsembleStageStatus = (typeof ENSEMBLE_STAGE_STATUSES)[number];
 
@@ -367,6 +379,24 @@ export const ENSEMBLE_HARD_LIMITS = {
   maxMembers: 16,
   maxConcurrentMembers: 8,
   maxWaves: 8,
+  /**
+   * The ceiling on one stage's attempts, in both of the senses a stage has to bound.
+   *
+   * It caps the `maxAttempts` any strategy config may ask for - how many times a MODEL is
+   * allowed to answer badly - and it is also the ceiling on how many times one stage may be
+   * INTERRUPTED without settling. The second is the backstop the first cannot provide once the
+   * budget stopped being the attempt number: a model failure is capped by `maxAttempts` and an
+   * unreachable provider by its own budget, so those two can only open a bounded number of rows,
+   * but an interruption is deliberately free - and a daemon crash-looping through the same review
+   * would otherwise open a free attempt on every boot, forever.
+   *
+   * It counts interruptions rather than rows for a reason worth keeping: the two budgets sum to
+   * exactly this number at the shipped defaults, so a ceiling on ROWS left a stage no headroom to
+   * be interrupted at all, and a couple of restarts before a provider outage would fail a run at
+   * the very moment its infrastructure budget asked to park it for a person.
+   *
+   * A stage that reaches it is no longer retrying, it is thrashing, and the run fails saying so.
+   */
   maxStageAttempts: 5,
 } as const;
 
@@ -995,6 +1025,115 @@ export interface EnsembleStageAttempt {
   updatedAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+}
+
+/**
+ * Which budget a failed review stage attempt was charged to.
+ *
+ * The distinction the operator cares about is who answered badly. `model` is a review that ran
+ * and produced something unusable - the thing `maxAttempts` is a policy about. `infrastructure`
+ * is a call that never got an answer at all (a spawn failure, a timeout, a provider blip), which
+ * says nothing about the candidates and is charged to its own bounded budget instead.
+ */
+export const ENSEMBLE_REVIEW_CHARGES = ["model", "infrastructure"] as const;
+export type EnsembleReviewCharge = (typeof ENSEMBLE_REVIEW_CHARGES)[number];
+
+/**
+ * How many times ONE review stage may fail on INFRASTRUCTURE before it parks for an operator.
+ *
+ * Its own budget, beside the evaluator's `maxAttempts`, because the two answer different
+ * questions. `maxAttempts` asks how many bad answers to tolerate from a model; this asks how long
+ * to keep trying to reach one at all. Charging a provider blip to the first is what let two
+ * failures milliseconds apart destroy a run that had already paid for every candidate agent.
+ *
+ * Three, and the engine's exponential backoff, mirror the Workflow engine's `MAX_INFRA_ATTEMPTS`
+ * and `RETRY_BASE_MS` deliberately: an ensemble review and a Workflow Persona call fail the same
+ * ways, so a second idiom here would be a second thing to reason about at 3am and not a better
+ * answer. Exhaustion follows that precedent too - it BLOCKS rather than terminating, because the
+ * expensive, irreplaceable part of an ensemble run is the candidate work already on disk.
+ *
+ * It lives in shared rather than in the engine because the DASHBOARD has to reach the same verdict
+ * the daemon did. When it did not, a parked review whose newest row was an interruption drew as a
+ * live attempt with no Retry stage button, and the run sat parked with nothing on screen to press.
+ */
+export const MAX_REVIEW_INFRA_ATTEMPTS = 3;
+
+/** What one review stage's failed attempts have charged, per budget. */
+export interface EnsembleReviewChargeCounts {
+  /** Charged to the evaluator's `maxAttempts`: a model answered, and the answer was unusable. */
+  model: number;
+  /** Charged to the infrastructure budget: no answer was ever reached. */
+  infrastructure: number;
+}
+
+/**
+ * What a review stage has spent, per budget, from its durable attempt rows.
+ *
+ * The ONE place this tally is computed. The daemon reads it to decide whether a stage is parked,
+ * the pipeline reads it to render the counter and the pause line, and the actions surface reads
+ * it to decide whether to offer the door - and the last time these were three separate loops the
+ * daemon and the dashboard reached different verdicts about the same stage, which is a bug that
+ * ends with an operator staring at a run that says it is working and never moves again.
+ *
+ * Aggregated over every row, never read off the newest one. The newest row says what happened
+ * LAST, which is a different question: an operator-granted retry that a restart interrupted leaves
+ * an `interrupted` row on a stage the daemon is still parking, and a reader that takes its verdict
+ * from that row alone concludes a retry is coming when nothing is going to start one.
+ */
+export function ensembleReviewChargeCounts(
+  attempts: readonly EnsembleStageAttempt[],
+  stageId: string,
+): EnsembleReviewChargeCounts {
+  let model = 0;
+  let infrastructure = 0;
+  for (const attempt of attempts) {
+    if (attempt.stageId !== stageId || attempt.status !== "failed") continue;
+    if (readReviewAttemptReceipt(attempt.output).charge === "infrastructure") infrastructure += 1;
+    else model += 1;
+  }
+  return { model, infrastructure };
+}
+
+/** Whether a review stage has spent its infrastructure budget, and so is parked for a person. */
+export function ensembleReviewIsInfrastructureBlocked(
+  attempts: readonly EnsembleStageAttempt[],
+  stageId: string,
+): boolean {
+  return ensembleReviewChargeCounts(attempts, stageId).infrastructure >= MAX_REVIEW_INFRA_ATTEMPTS;
+}
+
+/** What a settled review stage attempt recorded about its own failure, on its `output` receipt. */
+export interface EnsembleReviewAttemptReceipt {
+  charge: EnsembleReviewCharge;
+  /** The driver's own word for what went wrong, for the operator. Null when it did not say. */
+  kind: string | null;
+  /** Wall clock before which the next attempt must not start. Null when nothing is owed. */
+  retryAt: number | null;
+}
+
+/**
+ * Read a failed review attempt's receipt, TOTALLY - an absent or unreadable one reads as a
+ * charge to the model budget.
+ *
+ * That default is the compatibility rule and not a guess: rows written before the budgets were
+ * split were all charged to `maxAttempts`, so reading them that way keeps their runs behaving
+ * exactly as they did, and a newer build's unknown charge degrades to the conservative side
+ * rather than to free retries.
+ */
+export function readReviewAttemptReceipt(output: EnsembleJson | null): EnsembleReviewAttemptReceipt {
+  const empty: EnsembleReviewAttemptReceipt = { charge: "model", kind: null, retryAt: null };
+  if (output === null || typeof output !== "object" || Array.isArray(output)) return empty;
+  const charge = output.charge;
+  const kind = output.kind;
+  const retryAt = output.retryAt;
+  return {
+    charge:
+      typeof charge === "string" && (ENSEMBLE_REVIEW_CHARGES as readonly string[]).includes(charge)
+        ? (charge as EnsembleReviewCharge)
+        : "model",
+    kind: typeof kind === "string" ? kind : null,
+    retryAt: typeof retryAt === "number" && Number.isFinite(retryAt) ? retryAt : null,
+  };
 }
 
 export interface EnsembleEvaluation {

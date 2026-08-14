@@ -9,6 +9,9 @@ import {
   ENSEMBLE_PLAN_VERSION,
   ensemblePayload,
   ensembleIsRunnable,
+  ensembleReviewChargeCounts,
+  ensembleReviewIsInfrastructureBlocked,
+  readReviewAttemptReceipt,
   type CompiledEnsemblePlan,
 } from "../src/shared/ensemble.ts";
 
@@ -465,6 +468,120 @@ test("a command key is spent once, however many times the daemon replays it", ()
   assert.deepEqual(finished.value.output, { launched: 2 });
   assert.equal(store.finishStageAttempt(first.id, ["running"], "waiting").ok, false);
   assert.equal(store.finishStageAttempt(first.id, ["succeeded"], "running").ok, false);
+});
+
+test("an interrupted stage attempt round-trips, is terminal for its row, and retries as a new number", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const open = (attempt: number) =>
+    store.startStageAttempt({
+      runId: run.id,
+      stageId: "stage-2",
+      driverKind: "review",
+      driverKey: "comparative_review@1",
+      attempt,
+      commandKey: `review:${run.id}:stage-2:${attempt}`,
+      status: "running" as const,
+      input: { command: "review", attempt },
+    });
+
+  const first = open(1);
+  const interrupted = store.finishStageAttempt(first.id, ["running"], "interrupted", {
+    error: "the daemon exited while this comparison was in flight",
+  });
+  assert.equal(interrupted.ok, true);
+  if (!interrupted.ok) return;
+  // It survives the enum decoder: a status this build cannot read comes back null, so a null here
+  // would mean the appended value never reached `ENSEMBLE_STAGE_STATUSES`.
+  assert.equal(interrupted.value.status, "interrupted");
+  assert.equal(store.listStageAttempts(run.id).find((a) => a.id === first.id)?.status, "interrupted");
+  assert.ok(interrupted.value.finishedAt, "an interrupted attempt is finished, not still open");
+
+  // Terminal for the ROW: a late outcome cannot rewrite it into a verdict either way.
+  assert.equal(store.finishStageAttempt(first.id, ["running"], "succeeded").ok, false);
+  assert.equal(store.finishStageAttempt(first.id, ["interrupted"], "failed").ok, false);
+
+  // The retry is a new attempt NUMBER against the same stage - which is what keeps
+  // `UNIQUE (run_id, stage_id, attempt)` and the command-key replay identity intact.
+  const second = open(2);
+  assert.notEqual(second.id, first.id);
+  assert.equal(store.listStageAttempts(run.id).filter((a) => a.stageId === "stage-2").length, 2);
+});
+
+test("a review attempt receipt says which budget it spent, and an absent one reads as the model's", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const attempt = store.startStageAttempt({
+    runId: run.id,
+    stageId: "stage-2",
+    driverKind: "review",
+    driverKey: "comparative_review@1",
+    attempt: 1,
+    commandKey: `review:${run.id}:stage-2:1`,
+    status: "running" as const,
+    input: { command: "review" },
+  });
+  const finished = store.finishStageAttempt(attempt.id, ["running"], "failed", {
+    output: { charge: "infrastructure", kind: "infrastructure", retryAt: 4_000 },
+    error: "infrastructure: spawn ENOENT",
+  });
+  assert.equal(finished.ok, true);
+  if (!finished.ok) return;
+  assert.deepEqual(readReviewAttemptReceipt(finished.value.output), {
+    charge: "infrastructure",
+    kind: "infrastructure",
+    retryAt: 4_000,
+  });
+  // Rows written before the budgets were split carry no receipt, and were all charged to
+  // `maxAttempts` at the time. Reading them any other way would hand old runs free retries.
+  assert.deepEqual(readReviewAttemptReceipt(null), { charge: "model", kind: null, retryAt: null });
+  assert.equal(readReviewAttemptReceipt({ charge: "from-a-newer-build" }).charge, "model");
+});
+
+test("one tally answers what a review spent, for the daemon and the dashboard alike", () => {
+  // The daemon decides whether a stage is parked from this; the pipeline renders its counter and
+  // its pause line from this; the actions surface decides whether to offer the door from this.
+  // They were three loops once, and the daemon and the browser reached different verdicts about
+  // the same stage - so the property worth pinning is that the count is computed in one place and
+  // reads persisted rows, not that any one caller happens to agree today.
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const settle = (n: number, status: "failed" | "interrupted" | "succeeded", output?: unknown) => {
+    const opened = store.startStageAttempt({
+      runId: run.id,
+      stageId: "stage-2",
+      driverKind: "review",
+      driverKey: "comparative_review@1",
+      attempt: n,
+      commandKey: `review:${run.id}:stage-2:${n}`,
+      status: "running" as const,
+      input: { command: "review", attempt: n },
+    });
+    store.finishStageAttempt(opened.id, ["running"], status, output === undefined ? {} : { output: output as never });
+  };
+  settle(1, "failed", { charge: "infrastructure", kind: "infrastructure", retryAt: 1_000 });
+  settle(2, "interrupted");
+  settle(3, "failed", { charge: "model", kind: "invalid_output", retryAt: null });
+  settle(4, "failed", { charge: "infrastructure", kind: "infrastructure", retryAt: null });
+  settle(5, "succeeded");
+  const attempts = store.listStageAttempts(run.id);
+
+  assert.deepEqual(ensembleReviewChargeCounts(attempts, "stage-2"), { model: 1, infrastructure: 2 });
+  assert.equal(
+    ensembleReviewIsInfrastructureBlocked(attempts, "stage-2"),
+    false,
+    "two infrastructure failures is under the budget of three",
+  );
+  // Only FAILED rows charge anything: an interruption is free by design and a success is not a
+  // charge at all, which is the distinction the whole change rests on.
+  assert.equal(attempts.filter((a) => a.stageId === "stage-2").length, 5);
+
+  settle(6, "failed", { charge: "infrastructure", kind: "infrastructure", retryAt: null });
+  const spent = store.listStageAttempts(run.id);
+  assert.deepEqual(ensembleReviewChargeCounts(spent, "stage-2"), { model: 1, infrastructure: 3 });
+  assert.equal(ensembleReviewIsInfrastructureBlocked(spent, "stage-2"), true);
+  // Scoped to its own stage, so a busy run's other stages never move this one's verdict.
+  assert.deepEqual(ensembleReviewChargeCounts(spent, "stage-9"), { model: 0, infrastructure: 0 });
 });
 
 test("an evaluation is one row per stage attempt and attempt number, and reports what ran", () => {

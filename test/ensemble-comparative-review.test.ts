@@ -20,10 +20,10 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "mission-ensemble-review-"));
 process.env.HARNESS_HOME = join(home, "state");
 
-const { ENSEMBLE_HARD_LIMITS } = await import("../src/shared/ensemble.ts");
+const { ENSEMBLE_HARD_LIMITS, readReviewAttemptReceipt } = await import("../src/shared/ensemble.ts");
 const { openDb } = await import("../src/server/db.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
-const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
+const { EnsembleEngine, MAX_REVIEW_INFRA_ATTEMPTS } = await import("../src/server/ensembles/engine.ts");
 const { createReviewScheduler } = await import("../src/server/llm/review-scheduler.ts");
 const { parseBestOfNComparison } = await import("../src/shared/ensemble-strategies/best-of-n.ts");
 const { perSubjectPatchBytes } = await import("../src/server/ensembles/reviews/packet.ts");
@@ -163,6 +163,14 @@ interface HarnessOptions {
   capturedFilesChanged?: number;
   resolveExecution?: () => { runnerId: "claude" | "codex"; modelId: string; unknownRunner: string | null };
   scheduler?: <T>(fn: () => Promise<T>) => Promise<T>;
+  /**
+   * The default is a timer that never fires, which is what most tests here want. A test about
+   * the infrastructure backoff passes one that fires, and reads the delay it was asked for -
+   * these plans set no deadline, so the retry wake is the only timer the engine arms.
+   */
+  armTimer?: (delayMs: number, fire: () => void) => () => void;
+  reviewRetryBaseMs?: number;
+  now?: () => number;
 }
 
 function harness(opts: HarnessOptions = {}) {
@@ -175,7 +183,9 @@ function harness(opts: HarnessOptions = {}) {
     tasks: gateway,
     publish: () => {},
     adapters: reviewAdapters(opts.materialize, opts.capturedFilesChanged),
-    armTimer: () => () => {},
+    armTimer: opts.armTimer ?? (() => () => {}),
+    ...(opts.reviewRetryBaseMs === undefined ? {} : { reviewRetryBaseMs: opts.reviewRetryBaseMs }),
+    ...(opts.now === undefined ? {} : { now: opts.now }),
     review: {
       scheduler: opts.scheduler ?? (<T>(fn: () => Promise<T>) => fn()),
       resolveExecution:
@@ -200,14 +210,14 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
   }
 }
 
-/** Launch a run, submit every member with its claims, and wait until the review settles. */
-async function runToReview(
+/** Launch a run and submit every member with its claims. Does NOT wait for the review to settle. */
+async function submitEveryMember(
   engine: Engine,
   gateway: Gateway,
   store: InstanceType<typeof EnsembleStore>,
   runId: string,
   claims: Array<{ summary: string; checks: string[]; testEvidence: string | null }> = [],
-): Promise<string | null> {
+): Promise<void> {
   await engine.launch(runId);
   const dispatched = [...gateway.dispatched];
   for (let i = 0; i < dispatched.length; i++) {
@@ -223,6 +233,25 @@ async function runToReview(
       requireWorktree: `/wt/${taskId}`,
     });
   }
+}
+
+/** Every review stage attempt of a run, in attempt order. */
+function reviewAttempts(store: InstanceType<typeof EnsembleStore>, runId: string) {
+  return store
+    .listStageAttempts(runId)
+    .filter((attempt) => attempt.driverKind === "review")
+    .sort((a, b) => a.attempt - b.attempt);
+}
+
+/** Launch a run, submit every member with its claims, and wait until the review settles. */
+async function runToReview(
+  engine: Engine,
+  gateway: Gateway,
+  store: InstanceType<typeof EnsembleStore>,
+  runId: string,
+  claims: Array<{ summary: string; checks: string[]; testEvidence: string | null }> = [],
+): Promise<string | null> {
+  await submitEveryMember(engine, gateway, store, runId, claims);
   await waitFor(() => {
     const status = store.getRun(runId)?.status;
     return status === "awaiting_decision" || status === "failed" || status === "completed" || status === "cancelled";
@@ -561,18 +590,183 @@ test("a runner without schema support keeps the parse retry inside one evaluatio
   );
 });
 
-test("a provider that always throws exhausts the bounded retry and fails the run", async () => {
+/**
+ * A controllable clock for the infrastructure backoff: every armed wait fires on the next tick
+ * and advances the engine's clock by exactly the delay it asked for.
+ *
+ * Real time is never waited on, so the ladder is exercised in milliseconds, and the wait is still
+ * REAL - the engine re-reads the persisted `retryAt` when it wakes and only proceeds once its own
+ * clock says the wait is served. These plans set no deadline, so every armed timer is a retry.
+ */
+function fastClock(startAt = 10_000) {
+  let now = startAt;
+  const delays: number[] = [];
+  return {
+    delays,
+    now: () => now,
+    armTimer: (delayMs: number, fire: () => void) => {
+      delays.push(delayMs);
+      now += delayMs;
+      const timer = setTimeout(fire, 0);
+      timer.unref?.();
+      return () => clearTimeout(timer);
+    },
+  };
+}
+
+test("two provider blips in a row cost the evaluator none of its attempts", async () => {
+  let calls = 0;
+  const clock = fastClock();
   const { store, gateway, engine } = harness({
+    now: clock.now,
+    armTimer: clock.armTimer,
+    runModel: (prompt) => {
+      calls += 1;
+      // Two throws, milliseconds apart - the shape that used to destroy a run whose candidate
+      // agents had all already been paid for.
+      if (calls <= 2) throw new Error("spawn ENOENT");
+      return validResponse(prompt);
+    },
+  });
+  const run = makeRun(store, bestOfNPlan(2));
+  assert.equal(await runToReview(engine, gateway, store, run.id), "awaiting_decision");
+
+  const attempts = reviewAttempts(store, run.id);
+  assert.deepEqual(attempts.map((a) => a.attempt), [1, 2, 3], "attempt numbers stay monotonic");
+  assert.deepEqual(attempts.map((a) => a.status), ["failed", "failed", "succeeded"]);
+  assert.deepEqual(
+    attempts.slice(0, 2).map((a) => readReviewAttemptReceipt(a.output).charge),
+    ["infrastructure", "infrastructure"],
+    "neither blip was charged to the evaluator's budget of 2",
+  );
+  // Three rows against a budget of two, and the run still reached a decision: the budget is a
+  // count of bad ANSWERS, and no model answered until the third call.
+  assert.equal(store.listEvaluations(run.id).filter((e) => e.status === "succeeded").length, 1);
+});
+
+test("each infrastructure retry waits longer than the last, on a durable receipt", async () => {
+  const clock = fastClock();
+  const { store, gateway, engine } = harness({
+    now: clock.now,
+    armTimer: clock.armTimer,
+    reviewRetryBaseMs: 50,
+    runModel: () => {
+      throw new Error("provider unreachable");
+    },
+  });
+  const run = makeRun(store, bestOfNPlan(2));
+  await submitEveryMember(engine, gateway, store, run.id);
+  await waitFor(() => reviewAttempts(store, run.id).length === MAX_REVIEW_INFRA_ATTEMPTS);
+  await waitFor(() => reviewAttempts(store, run.id).every((a) => a.status === "failed"));
+
+  assert.deepEqual(clock.delays, [50, 200], "the backoff grows 4x per attempt rather than retrying in the same tick");
+  const receipts = reviewAttempts(store, run.id).map((a) => readReviewAttemptReceipt(a.output));
+  assert.deepEqual(
+    receipts.map((r) => (r.retryAt === null ? null : "owed")),
+    ["owed", "owed", null],
+    "the last attempt owes no retry: that is the durable fact that says it is blocked",
+  );
+});
+
+test("a provider that always throws parks the run for an operator instead of failing it", async () => {
+  const clock = fastClock();
+  const { store, gateway, engine } = harness({
+    now: clock.now,
+    armTimer: clock.armTimer,
     runModel: () => {
       throw new Error("spawn ENOENT");
     },
   });
   const run = makeRun(store, bestOfNPlan(2));
+  await submitEveryMember(engine, gateway, store, run.id);
+  await waitFor(
+    () =>
+      reviewAttempts(store, run.id).length === MAX_REVIEW_INFRA_ATTEMPTS &&
+      reviewAttempts(store, run.id).every((a) => a.status === "failed"),
+  );
+
+  // Blocked, not failed. The run holds every candidate it paid for and the evaluator's own
+  // budget was never touched, so an operator whose provider comes back has something to retry.
+  assert.equal(store.getRun(run.id)!.status, "evaluating");
+  const attempts = reviewAttempts(store, run.id);
+  assert.equal(attempts.length, MAX_REVIEW_INFRA_ATTEMPTS);
+  assert.ok(
+    attempts.every((a) => readReviewAttemptReceipt(a.output).charge === "infrastructure"),
+    "every attempt was charged to the infrastructure budget",
+  );
+  assert.equal(store.listArtifacts(run.id).filter((a) => a.status === "ready").length, 2);
+
+  // The operator door grants exactly one more attempt per press, and never rewrites history.
+  const stageId = attempts[0]!.stageId;
+  assert.equal(await engine.retryStage(run.id, stageId), true);
+  await waitFor(() => reviewAttempts(store, run.id).length === MAX_REVIEW_INFRA_ATTEMPTS + 1);
+  await waitFor(() => reviewAttempts(store, run.id).every((a) => a.status === "failed"));
+  assert.deepEqual(reviewAttempts(store, run.id).map((a) => a.attempt), [1, 2, 3, 4]);
+  assert.equal(store.getRun(run.id)!.status, "evaluating", "still blocked, still not failed");
+});
+
+test("a review that parks revises the run, which is the only way the dashboard hears about it", async () => {
+  // The dashboard refetches a run's detail exactly when its SSE summary reports a newer
+  // `updatedAt` (`EnsembleRuns.tsx` keys the fetch on `selectedSummary.updatedAt`), so a
+  // transition that settles only an attempt row is one the browser never sees. Every other review
+  // transition moves the run row on its way out - a retry starts an attempt, a spent budget fails
+  // the run - which is why parking was the case that broke: the daemon sat blocked while the
+  // browser kept drawing the attempt it last saw START, a live review with no Retry stage button.
+  //
+  // A clock that ticks on every read is what makes that observable here: the assertion is that the
+  // run is not older than its newest attempt, and it fails on a run stamped when the attempt began.
+  let t = 10_000;
+  const clock = {
+    now: () => (t += 1),
+    armTimer: (delayMs: number, fire: () => void) => {
+      t += delayMs;
+      const timer = setTimeout(fire, 0);
+      timer.unref?.();
+      return () => clearTimeout(timer);
+    },
+  };
+  const { store, gateway, engine } = harness({
+    now: clock.now,
+    armTimer: clock.armTimer,
+    runModel: () => {
+      throw new Error("provider unreachable");
+    },
+  });
+  const run = makeRun(store, bestOfNPlan(2));
+  await submitEveryMember(engine, gateway, store, run.id);
+  await waitFor(
+    () =>
+      reviewAttempts(store, run.id).length === MAX_REVIEW_INFRA_ATTEMPTS &&
+      reviewAttempts(store, run.id).every((a) => a.status === "failed"),
+  );
+
+  const parked = store.getRun(run.id)!;
+  assert.equal(parked.status, "evaluating", "parked, so there is no status change to notice");
+  const newest = reviewAttempts(store, run.id).at(-1)!;
+  assert.ok(
+    parked.updatedAt >= newest.updatedAt,
+    `the run must be at least as new as the attempt that parked it: run ${parked.updatedAt} < attempt ${newest.updatedAt}`,
+  );
+});
+
+test("a malformed reply still spends the evaluator's budget and fails the run", async () => {
+  // The other half of the split: a model that ANSWERS badly is what `maxAttempts` is a budget
+  // about, so two of those still fail the run exactly as before.
+  const clock = fastClock();
+  const { store, gateway, engine } = harness({
+    now: clock.now,
+    armTimer: clock.armTimer,
+    runModel: () => "not a comparison at all",
+  });
+  const run = makeRun(store, bestOfNPlan(2));
   assert.equal(await runToReview(engine, gateway, store, run.id), "failed");
-  // The compiled cap is 2 review attempts, so there are two failed stage attempts and no decision.
-  const reviewAttempts = store.listStageAttempts(run.id).filter((a) => a.driverKind === "review");
-  assert.equal(reviewAttempts.length, 2);
-  assert.ok(reviewAttempts.every((a) => a.status === "failed"));
+  const attempts = reviewAttempts(store, run.id);
+  assert.equal(attempts.length, 2);
+  assert.ok(attempts.every((a) => a.status === "failed"));
+  assert.ok(
+    attempts.every((a) => readReviewAttemptReceipt(a.output).charge === "model"),
+    "an answer that arrived and did not parse is the model's failure, not the provider's",
+  );
 });
 
 test("cancelling mid-comparison stops later provider work from starting", async () => {

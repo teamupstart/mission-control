@@ -78,7 +78,15 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   its runtime alone and the raw string never reaches `Session.foremanInvite`; the row
   stays in place for the build that understands it. `'withdrawn'` is a tombstone and
   never surfaces on `Session.foremanInvite`; the registry resolves it to `null`
-- Ensemble strategy, driver, artifact, source, run, and member values
+- Ensemble strategy, driver, artifact, source, run, member, and STAGE-ATTEMPT status values
+  (`ENSEMBLE_STAGE_STATUSES`) - a status this build does not know decodes to `null` through
+  `readEnsembleEnum`, which is the forward-compatibility seam, so a new one is appended to the
+  tuple and nowhere else: there is no `CHECK` constraint on `ensemble_stage_attempts.status`
+  and `EnsembleStageStatusSchema` derives from the tuple. What DOES need deciding at the same
+  time is whether the new value is terminal for the row (`TERMINAL_STAGE_STATUSES` in
+  `src/server/ensembles/store.ts`, which is what stops a late outcome rewriting a settled
+  attempt) and what the walk makes of it (`stageStatus` in `src/server/ensembles/engine.ts`,
+  whose fall-through reads anything unhandled as a stage still running)
 - Inspector marker versions
 - Workflow graph node kinds, source and target ports, and SessionAction completion kinds
   (`SESSION_ACTION_COMPLETION_KINDS`) - these reach draft graphs, immutable published

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
 import {
   ENSEMBLE_LIMITS,
+  ensembleIsTerminal,
   type EnsembleArtifact,
   type EnsembleAttempt,
   type EnsembleMember,
@@ -27,6 +28,18 @@ export interface EnsembleMemberLiveLane {
   reviews: ReviewItem[];
 }
 
+/**
+ * A refusal from an action that named ONE member, addressed back to that member's card.
+ *
+ * The generic action surface at the page bottom owns the run's own refusals; a member's does not
+ * belong there. `Retry`'s 400 arriving under `Actions`, screens away from the card whose button
+ * was clicked, is the same fact told to the wrong person.
+ */
+export interface EnsembleMemberActionError {
+  memberId: string;
+  message: string;
+}
+
 const EMPTY_LIVE_LANES: ReadonlyMap<string, EnsembleMemberLiveLane> = new Map();
 
 /**
@@ -39,6 +52,7 @@ export function EnsembleMembers({
   detail,
   liveByMemberId = EMPTY_LIVE_LANES,
   pending,
+  actionError = null,
   onAction,
   onOpenSession,
   onOpenTask,
@@ -47,6 +61,7 @@ export function EnsembleMembers({
   detail: EnsembleRunDetailResponse;
   liveByMemberId?: ReadonlyMap<string, EnsembleMemberLiveLane>;
   pending: string | null;
+  actionError?: EnsembleMemberActionError | null;
   onAction: (body: EnsembleActionBody) => void;
   onOpenSession?: (sessionId: string) => void;
   onOpenTask?: (taskId: string) => void;
@@ -81,6 +96,7 @@ export function EnsembleMembers({
                   live={liveByMemberId.get(member.id) ?? null}
                   attemptsPartial={attemptsPartial}
                   pending={pending}
+                  actionError={actionError?.memberId === member.id ? actionError.message : null}
                   onAction={onAction}
                   onOpenSession={onOpenSession}
                   onOpenTask={onOpenTask}
@@ -147,6 +163,7 @@ function MemberCard({
   live,
   attemptsPartial,
   pending,
+  actionError,
   onAction,
   onOpenSession,
   onOpenTask,
@@ -157,6 +174,7 @@ function MemberCard({
   live: EnsembleMemberLiveLane | null;
   attemptsPartial: boolean;
   pending: string | null;
+  actionError: string | null;
   onAction: (body: EnsembleActionBody) => void;
   onOpenSession?: (sessionId: string) => void;
   onOpenTask?: (taskId: string) => void;
@@ -196,7 +214,15 @@ function MemberCard({
   const active = member.status
     ? ["pending", "launching", "active", "submitted", "reviewing"].includes(member.status)
     : false;
-  const retryable = member.status === "failed";
+  // A terminal run refuses `retry_member` outright - `EnsembleEngine.retryMember` returns false for
+  // one, which the manager maps to `invalid` and the route to a 400 - and a failed run leaves failed
+  // members behind by design, so the member status alone offers a button whose only possible outcome
+  // is that refusal. The same `ensembleIsTerminal` term `EnsembleActions` gates the run's own verbs
+  // on, read off the run this card is already given. Withdraw deliberately keeps no such term: it is
+  // gated on the member being unsettled, which is what `withdrawMember` itself checks.
+  const runStatus = detail.run.status;
+  const terminal = runStatus !== null && ensembleIsTerminal(runStatus);
+  const retryable = !terminal && member.status === "failed";
 
   const reportedChecks = Array.isArray(reported?.checks)
     ? (reported!.checks as unknown[]).filter((c): c is string => typeof c === "string")
@@ -263,6 +289,11 @@ function MemberCard({
           </Tooltip>
         )}
       </div>
+      {actionError && (
+        <p className="ensemble-error" role="alert">
+          {actionError}
+        </p>
+      )}
       {facts.length > 0 && <p className="ensemble-member-facts">{facts.join(" · ")}</p>}
       {session && (
         <div className="ensemble-lane-live">

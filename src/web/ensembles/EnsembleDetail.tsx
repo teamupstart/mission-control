@@ -52,6 +52,7 @@ export function EnsembleDetail({
   actionPending,
   actionError,
   actionErrorKind,
+  actionErrorMemberId = null,
   onAction,
   onDelete,
   onLoadPatch,
@@ -67,6 +68,8 @@ export function EnsembleDetail({
   actionPending: string | null;
   actionError: string | null;
   actionErrorKind: string | null;
+  /** The member `actionError` was addressed to, when the refused action named one. */
+  actionErrorMemberId?: string | null;
   onAction: (body: EnsembleActionBody) => void;
   onDelete: (confirmId: string) => void;
   onLoadPatch: (artifactId: string) => Promise<EnsembleArtifactPatch | { error: string }>;
@@ -173,6 +176,16 @@ export function EnsembleDetail({
   const tone = ensembleStatusTone(run.status, run.unreadable);
   const actionBusy = actionPending !== null;
   const decisionPending = actionPending === "decide";
+
+  // An action refusal is addressed to the surface that raised it, and the Actions section is only
+  // one of those: a `decide` goes back to the result renderer holding the decision form, and an
+  // action that named a member goes back to that member's card. Everything else is what Actions
+  // shows. A refusal rendered at the page bottom under a heading the operator did not click reads
+  // as a fact about the run rather than as an answer to what they just did.
+  const memberActionError =
+    actionError !== null && actionErrorMemberId !== null
+      ? { memberId: actionErrorMemberId, message: actionError }
+      : null;
 
   const Renderer = run.strategyId ? ENSEMBLE_RESULT_RENDERERS[run.strategyId] : undefined;
   const decision =
@@ -338,6 +351,7 @@ export function EnsembleDetail({
           detail={detail}
           liveByMemberId={liveByMemberId}
           pending={actionPending}
+          actionError={memberActionError}
           onAction={onAction}
           onOpenSession={onOpenSession}
           onOpenTask={onOpenTask}
@@ -377,7 +391,7 @@ export function EnsembleDetail({
         <EnsembleActions
           detail={detail}
           pending={actionPending}
-          error={actionErrorKind !== "decide" ? actionError : null}
+          error={actionErrorKind !== "decide" && memberActionError === null ? actionError : null}
           onAction={onAction}
           onDelete={onDelete}
         />

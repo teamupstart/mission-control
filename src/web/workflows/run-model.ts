@@ -173,21 +173,7 @@ export function latestAttemptsFor(
   return newest;
 }
 
-/** The newest full-workflow submission before the round being viewed, by node id. */
-export function previousFullWorkflowAttempts(
-  detail: WorkflowRunDetail,
-  submission: WorkflowSubmission | null,
-): Map<string, WorkflowNodeAttempt> {
-  if (!submission) return new Map();
-  const ordered = orderedSubmissions(detail);
-  const index = ordered.findIndex((candidate) => candidate.id === submission.id);
-  if (index < 1) return new Map();
-  const previous = ordered.slice(0, index).reverse()
-    .find((candidate) => candidate.mode === "full_workflow");
-  return latestAttemptsFor(detail, previous?.id ?? null);
-}
-
-/** Whether a prior attempt earned the green Inspector-repair bypass treatment. */
+/** Whether a prior attempt is a pass this round is entitled to carry forward. */
 export function priorAttemptPassed(
   kind: "persona" | "check" | "session_action",
   attempt: WorkflowNodeAttempt | undefined,
@@ -196,6 +182,185 @@ export function priorAttemptPassed(
   if (kind === "check") return checkOutcomeOf(attempt)?.status === "passed";
   if (kind === "session_action") return sessionActionProgress(attempt)?.complete === true;
   return verdictOf(attempt)?.verdict === "pass";
+}
+
+/**
+ * The submissions a round may inherit an outcome FROM, nearest first.
+ *
+ * Two shapes of submission legitimately leave an authored node with no attempt of its own,
+ * and they are the only two - a repair round restarts the graph at Session and queues every
+ * node again, so it inherits nothing and must never borrow a chip:
+ *
+ * - a CONTINUATION segment (`segment > 0`) resumes from one action's `complete` route, so the
+ *   stages above it keep the attempts they earned on the evidence they actually reviewed. Its
+ *   provenance is the durable `parentSubmissionId` chain rather than "whatever came before",
+ *   because ordering alone cannot tell a parent from an unrelated sibling round;
+ * - an INSPECTOR-ONLY round is inserted already complete with zero attempts, and the round it
+ *   bypasses is the newest full-workflow one before it.
+ *
+ * The `seen` guard is not defensive noise: this walks persisted ids, and a cycle in them would
+ * otherwise hang the reader rather than degrade it.
+ */
+function inheritanceSources(
+  detail: WorkflowRunDetail,
+  submission: WorkflowSubmission,
+): WorkflowSubmission[] {
+  if (submission.mode === "inspector_only") {
+    const ordered = orderedSubmissions(detail);
+    const index = ordered.findIndex((candidate) => candidate.id === submission.id);
+    if (index < 1) return [];
+    const previous = ordered.slice(0, index).reverse()
+      .find((candidate) => candidate.mode === "full_workflow");
+    return previous ? [previous] : [];
+  }
+  if (submission.segment === 0) return [];
+  const byId = new Map(detail.submissions.map((candidate) => [candidate.id, candidate]));
+  const chain: WorkflowSubmission[] = [];
+  const seen = new Set<string>([submission.id]);
+  let parentId = submission.parentSubmissionId;
+  while (parentId !== null && !seen.has(parentId)) {
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    seen.add(parent.id);
+    chain.push(parent);
+    parentId = parent.parentSubmissionId;
+  }
+  return chain;
+}
+
+/** One node's outcome, earned in an earlier submission and still standing in this one. */
+export interface InheritedPass {
+  attempt: WorkflowNodeAttempt;
+  /** The submission that earned it. The scrub target, so the proof is one click away. */
+  submission: WorkflowSubmission;
+  /** `Round 1 · evidence 1` - the round a reader has to be able to name and reach. */
+  roundLabel: string;
+}
+
+/**
+ * Node id -> the NEAREST attempt an earlier submission recorded for it, pass or not.
+ *
+ * This is the display fallback, and it is deliberately wider than `inheritedPasses`: a Check
+ * whose command is not configured on this machine recorded `skipped` rather than `passed`, and
+ * a round that inherits nothing for it drops the one sentence saying WHY it is amber. The
+ * reader would get a bare wait where an explanation used to be.
+ *
+ * A node with an attempt in THIS submission inherits nothing - its own outcome is the truth,
+ * whatever it is. And the walk stops at the first source that holds an attempt even when that
+ * attempt failed, because the nearest recorded outcome is the current one; searching past it
+ * for an older pass would resurrect a result the run has already superseded.
+ */
+export function inheritedAttempts(
+  detail: WorkflowRunDetail,
+  submission: WorkflowSubmission | null,
+): Map<string, InheritedPass> {
+  const inherited = new Map<string, InheritedPass>();
+  const graph = detail.version?.graph;
+  if (!submission || !graph) return inherited;
+  const sources = inheritanceSources(detail, submission).map((source) => ({
+    submission: source,
+    attempts: latestAttemptsFor(detail, source.id),
+  }));
+  if (sources.length === 0) return inherited;
+  const current = latestAttemptsFor(detail, submission.id);
+  for (const node of graph.nodes) {
+    if (node.kind !== "persona" && node.kind !== "check" && node.kind !== "session_action") {
+      continue;
+    }
+    if (current.has(node.id)) continue;
+    for (const source of sources) {
+      const attempt = source.attempts.get(node.id);
+      if (!attempt) continue;
+      inherited.set(node.id, {
+        attempt,
+        submission: source.submission,
+        roundLabel: submissionRoundLabel(detail, source.submission),
+      });
+      break;
+    }
+  }
+  return inherited;
+}
+
+/**
+ * Node id -> the pass this round carries forward rather than re-earning.
+ *
+ * This replaces the reader's trip to the previous round. A node that did not run here reads
+ * "Not re-run" beside the round its pass came from, and neither the chip nor the sentence
+ * claims the stage ran again: the tone stays neutral and the provenance line carries the tick.
+ *
+ * A SESSION ACTION is excluded, and not as an oversight. An action judges nothing - this app is
+ * emphatic that nothing about one ever reads Passed, Failed or Changes requested - so
+ * "✓ Passed in Round 1 · evidence 1" is the one vocabulary it must never be given. It is also
+ * the wrong claim about the wrong node: a continuation segment exists BECAUSE that action
+ * completed, so the reader's question there is "what did the action do", which its own lifecycle
+ * chip already answers with `Complete`.
+ */
+export function inheritedPasses(
+  detail: WorkflowRunDetail,
+  submission: WorkflowSubmission | null,
+): Map<string, InheritedPass> {
+  const passes = new Map<string, InheritedPass>();
+  const graph = detail.version?.graph;
+  if (!graph) return passes;
+  const kinds = new Map(graph.nodes.map((node) => [node.id, node.kind]));
+  for (const [nodeId, inherited] of inheritedAttempts(detail, submission)) {
+    const kind = kinds.get(nodeId);
+    if (kind !== "persona" && kind !== "check") continue;
+    if (priorAttemptPassed(kind, inherited.attempt)) passes.set(nodeId, inherited);
+  }
+  return passes;
+}
+
+const CARRIED_TOOLTIP_LEAD = "Not re-run in this round.";
+
+/**
+ * The chip for a stage this round did not run because an earlier one already passed it.
+ *
+ * The tone is deliberately NEUTRAL rather than green. A pass chip on a node that did not
+ * execute is the same false assurance `degraded` exists to prevent, and the reader's actual
+ * question - "did this pass, and where do I see it?" - is answered by the provenance line
+ * beside it, which names the round and links to it. Amber `waiting`, the status this replaces,
+ * was worse than either: it promised a stage was about to run that never will.
+ */
+export function carriedStatus(roundLabel: string): PipelineStatus {
+  return {
+    tone: "stopped",
+    label: "Not re-run",
+    tooltip: `${CARRIED_TOOLTIP_LEAD} It passed in ${roundLabel}, and that pass still stands.`,
+    skipKind: "carried_pass",
+  };
+}
+
+/** The stage-header chip for a stage whose every member was carried forward. */
+export function carriedStageStatus(roundLabels: readonly string[]): PipelineStatus {
+  const distinct = [...new Set(roundLabels)];
+  if (distinct.length === 1) return carriedStatus(distinct[0]!);
+  return {
+    tone: "stopped",
+    label: "Not re-run",
+    tooltip: `${CARRIED_TOOLTIP_LEAD} Every member passed in an earlier round, and those`
+      + " passes still stand.",
+    skipKind: "carried_pass",
+  };
+}
+
+/**
+ * The one carried source worth naming on a surface that has room for exactly one.
+ *
+ * The NEWEST, because a stage carried across several segments is most usefully traced to the
+ * round nearest the reader; the older ones are reachable from there by the same control.
+ */
+export function newestInheritedSource(
+  passes: readonly InheritedPass[],
+): InheritedPass | null {
+  return passes.reduce<InheritedPass | null>((newest, pass) => {
+    if (!newest) return pass;
+    const better = pass.submission.round > newest.submission.round
+      || (pass.submission.round === newest.submission.round
+        && pass.submission.segment > newest.submission.segment);
+    return better ? pass : newest;
+  }, null);
 }
 
 export function verdictOf(attempt: WorkflowNodeAttempt): PersonaVerdict | null {
@@ -319,31 +484,53 @@ export function runRounds(
   nameOfNode: (nodeId: string) => string | null = () => null,
 ): RoundView[] {
   const submissions = orderedSubmissions(detail);
-  const segmentsPerRound = new Map<number, number>();
-  for (const submission of submissions) {
-    segmentsPerRound.set(submission.round, (segmentsPerRound.get(submission.round) ?? 0) + 1);
-  }
+  const segmentsPerRound = segmentCounts(submissions);
   return submissions.map((submission) => {
     const verdicts = attemptsFor(detail, submission.id).map(verdictOf);
     const changesRequested = verdicts.some((verdict) => verdict?.verdict === "fail");
-    const inspectorOnly = submission.mode === "inspector_only";
-    const continued = (segmentsPerRound.get(submission.round) ?? 1) > 1;
     return {
       submissionId: submission.id,
       round: submission.round,
       segment: submission.segment,
-      label: `Round ${submission.round}`
-        + (inspectorOnly ? " · Inspector" : "")
-        // One-based for a human. `segment` is a durable zero-based index and stays that way
-        // in the field beside this; the label is the only place it is counted for reading.
-        + (continued ? ` · evidence ${submission.segment + 1}` : ""),
+      label: roundLabelFor(submission, (segmentsPerRound.get(submission.round) ?? 1) > 1),
       status: submissionStatus(submission, changesRequested),
-      inspectorOnly,
+      inspectorOnly: submission.mode === "inspector_only",
       continuedFrom: submission.continuationNodeId === null
         ? null
         : nameOfNode(submission.continuationNodeId),
     };
   });
+}
+
+function segmentCounts(submissions: readonly WorkflowSubmission[]): Map<number, number> {
+  const counts = new Map<number, number>();
+  for (const submission of submissions) {
+    counts.set(submission.round, (counts.get(submission.round) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function roundLabelFor(submission: WorkflowSubmission, continued: boolean): string {
+  return `Round ${submission.round}`
+    + (submission.mode === "inspector_only" ? " · Inspector" : "")
+    // One-based for a human. `segment` is a durable zero-based index and stays that way in the
+    // field beside this; the label is the only place it is counted for reading.
+    + (continued ? ` · evidence ${submission.segment + 1}` : "");
+}
+
+/**
+ * One submission's round label, for a surface that names a round it is not currently showing.
+ *
+ * Shared with the scrubber rather than reimplemented beside it: a carried stage that cites
+ * "Round 1 · evidence 1" and a scrubber tab reading something else for the same submission
+ * would be two dialects for one fact, and the link between them would look broken.
+ */
+export function submissionRoundLabel(
+  detail: WorkflowRunDetail,
+  submission: WorkflowSubmission,
+): string {
+  const counts = segmentCounts(detail.submissions);
+  return roundLabelFor(submission, (counts.get(submission.round) ?? 1) > 1);
 }
 
 /**
@@ -389,41 +576,6 @@ export function submissionStatus(
 /** The latest round intentionally skipped Personas and exists only to re-audit an Inspector fix. */
 export function inspectorOnlyRoundSentence(): string {
   return "Persona review bypassed for Inspector repair.";
-}
-
-const INSPECTOR_ONLY_SKIP_TOOLTIP =
-  "Skipped because this stage passed in the prior full workflow round. This Inspector repair round only rechecks Inspector.";
-
-/** A previously-passed stage intentionally bypassed by an Inspector-only repair round. */
-export function inspectorOnlySkipStatus(): PipelineStatus {
-  return {
-    tone: "passed",
-    label: "Skipped",
-    tooltip: INSPECTOR_ONLY_SKIP_TOOLTIP,
-    skipKind: "inspector_repair",
-  };
-}
-
-/**
- * Whether one authored pipeline member can inherit the prior-pass treatment in an
- * Inspector-only round.
- *
- * The Inspector-only policy proves why a valid, attempt-free node was bypassed. It says
- * nothing about a malformed pipeline member, so a missing id or a stale id that resolves to
- * no graph node must keep the ordinary waiting status instead of borrowing a green skip.
- */
-export function canShowInspectorOnlySkip(
-  inspectorOnly: boolean,
-  memberNodeId: string | null,
-  nodeExists: boolean,
-  hasCurrentAttempt: boolean,
-  passedPriorFullRound: boolean,
-): boolean {
-  return inspectorOnly
-    && memberNodeId !== null
-    && nodeExists
-    && !hasCurrentAttempt
-    && passedPriorFullRound;
 }
 
 const REVIEWER_STATUSES: Record<

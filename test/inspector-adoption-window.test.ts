@@ -25,6 +25,13 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "mission-inspector-window-"));
 process.env.MISSION_HOME = home;
 
+const { DB_PATH } = await import("../src/server/config.ts");
+assert.equal(
+  DB_PATH,
+  join(home, "harness.db"),
+  "refusing to seed the adoption-window fixture outside its disposable home",
+);
+
 const {
   openDb,
   adoptInspectorPr,
@@ -78,7 +85,7 @@ function seed(number: number, adoptedAt: number, over: { title?: string | null }
 }
 
 before(() => {
-  openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments");
+  openDb();
   // Three inside the week, adopted out of order on purpose, and one the week before it.
   seed(1, WEEK_AGO + 1 * DAY);
   seed(3, WEEK_AGO + 5 * DAY);

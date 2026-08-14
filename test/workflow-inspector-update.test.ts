@@ -12,6 +12,13 @@ const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-update-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
+const { DB_PATH } = await import("../src/server/config.ts");
+assert.equal(
+  DB_PATH,
+  join(home, "harness.db"),
+  "refusing to seed the Inspector update fixture outside its disposable home",
+);
+
 const {
   adoptInspectorPr,
   openDb,

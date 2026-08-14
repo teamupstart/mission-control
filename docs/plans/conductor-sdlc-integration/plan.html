@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conductor SDLC integration: bridge ai-conductor into Mission Control</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2733; --muted: #5b6a7a; --border: #d8dee6;
+    --panel: #f5f7fa; --accent: #2563c4; --code-bg: #f0f3f7; --good: #1d8a5f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --fg: #e7ebf1; --muted: #939eae; --border: #232a33;
+      --panel: #14181e; --accent: #4a9eff; --code-bg: #171c23; --good: #35c08a;
+    }
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0 auto; max-width: 880px; padding: 40px 24px 80px;
+    background: var(--bg); color: var(--fg);
+    font: 15.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 14px; }
+  h2 { font-size: 19px; margin: 40px 0 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+  h3 { font-size: 15.5px; margin: 24px 0 8px; }
+  p, li { color: var(--fg); }
+  .lead { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto;
+  }
+  pre code { background: none; border: none; padding: 0; }
+  ol.decisions > li { margin: 8px 0; }
+  ul > li { margin: 6px 0; }
+  .figure {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin: 18px 0; overflow-x: auto;
+  }
+  .figure figcaption { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .svgbox { min-width: 900px; }
+  .note {
+    border-left: 3px solid var(--accent); background: var(--panel);
+    padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 14px 0;
+  }
+</style>
+</head>
+<body>
+
+<h1>Conductor SDLC integration: bridge ai-conductor into Mission Control</h1>
+
+<p class="lead">Mission Control gains a native surface for ai-conductor pipelines: the gated
+22-step SDLC that conductor drives (SETUP, UNDERSTAND, DECIDE, BUILD, SHIP) becomes visible,
+operable, and dispatchable from the dashboard, without merging the two systems. Conductor stays
+the engine and the only writer of its own state; Mission Control observes, projects, and
+controls through conductor's own sanctioned surfaces. Everything ships off by default; an
+operator without conductor installed sees nothing new.</p>
+
+<p>This page renders <code>docs/plans/conductor-sdlc-integration/plan.md</code>, the committed,
+self-contained source of truth for the work. It distills and supersedes the scout investigation
+(session-archived report <code>conductor-sdlc-integration</code>, deliberately not committed per
+the scout contract). Repository facts were verified against ai-harness <code>dc2d99a</code> and
+ai-conductor <code>8b51392d</code>.</p>
+
+<h2>Approved decisions</h2>
+<p>Decided by the human during plan review; requirements, not open questions:</p>
+<ol class="decisions">
+  <li><strong>Bridge, do not merge.</strong> Conductor remains a standalone engine. MC
+    integrates through a compile-time "pipeline provider" axis modeled on MC's existing
+    registries, plus conductor's visualizer plugin seam for live events. No conductor logic is
+    ported into MC.</li>
+  <li><strong>Pipelines live inside the Runs page behind a page-level kind tab</strong> -
+    Workflows | Pipelines - not a new topbar destination.</li>
+  <li><strong>The existing Runs page is not modified.</strong> The Workflows tab is today's Runs
+    page, byte for byte: the run rail, the horizontal workflow diagram (stage cards, command
+    rows, reviewer cards, round tabs, the repair-loop footer, Reviewer verdicts) are all
+    untouched by this work, and a Playwright regression spec pins that.</li>
+  <li><strong>The pipeline detail gets its own diagram</strong> on the Pipelines tab, in the
+    same visual grammar as the workflow diagram: header with live eyebrow and run actions,
+    attempt cards where the workflow detail shows round tabs, a horizontal Spec terminus /
+    SETUP / UNDERSTAND / DECIDE / BUILD / SHIP / PR terminus strip with command-style step
+    rows, labeled wires, a kickback rule footer, and a "Gate verdicts" section below.</li>
+  <li><strong>The conversation window's per-session Workflows tab</strong> additionally renders
+    a pipeline ladder (the vertical ladder it already draws for workflow runs) when a session
+    is correlated to a pipeline. Every other session's tab is unchanged.</li>
+  <li><strong>As native as possible.</strong> MC design tokens, existing component grammar, no
+    new visual language. Custom views are fine where needed to make the integration
+    seamless.</li>
+  <li><strong>Consent model:</strong> detection is automatic, everything arrives disabled,
+    enabling is consent - the task-sources posture, verbatim.</li>
+  <li>The scout's "phase 4" ideas (ensemble-powered DECIDE, memory unification, intake
+    bridging) are explicitly deferred and are not part of this plan's scheduled work.</li>
+</ol>
+
+<h2>What the investigation established</h2>
+<ul>
+  <li><strong>Conductor's visualizer plugin seam is dormant.</strong> The plugin registry
+    discovers <code>kind: visualizer</code> plugins, but nothing in production starts them:
+    only the built-in OTel visualizer is wired inline in <code>src/index.ts</code>, and the
+    daemon entrypoint wires none. "Zero conductor changes" therefore holds for file-based
+    observation but fails for live events. One small upstream PR wiring registered-visualizer
+    start/stop in both entrypoints closes it; until it lands, an events-file tail carries the
+    integration.</li>
+  <li><strong>Observation is file-shaped and stable enough to build on.</strong> Per worktree:
+    <code>.pipeline/conduct-state.json</code> (per-step statuses, <code>last_step</code>,
+    <code>complexity_tier</code>, <code>track</code>), <code>gates/&lt;step&gt;.json</code>
+    verdicts, <code>HALT</code>/<code>DONE</code> markers, <code>.daemon/</code> (pidfile,
+    <code>PAUSED</code>, <code>parked/</code>, <code>grants/</code>, schema-versioned
+    <code>gated.json</code>/<code>blocked.json</code>), an <code>events.jsonl</code> ledger
+    (74 event kinds, unversioned), and a machine-readable
+    <code>~/.ai-conductor/registry.json</code> plus JSON-emitting CLI verbs.</li>
+  <li><strong>Control is CLI-shaped.</strong> Daemon start/stop/pause/resume, park/unpark,
+    <code>decide-grant</code> (which refuses <code>--step plan</code> by design), reseal
+    (TTY-only ceremony), and <code>daemon connect --attach-into</code> for hosted consoles.
+    Engineer verbs exit 0 even on malformed invocations, so control validation must parse
+    expected stdout, not exit codes.</li>
+  <li><strong>The session-carding hazard is real, on both sides.</strong> MC's discovery cards
+    any tty claude process, and conductor spawns claude non-detached with a pane tty in
+    <code>--print</code> mode - so a conductor-driven agent cards as an ordinary session with
+    a live composer writing into a process that reads no input. Recognition (badge, grouping,
+    composer suppression) is a correctness fix.</li>
+  <li><strong>MC's pool reaper cannot touch conductor worktrees.</strong> Its candidates come
+    only from <code>treehouse status</code> output gated on <code>treehouse.toml</code>;
+    conductor's in-repo <code>.worktrees/</code> never enters that set.</li>
+  <li><strong>Inspector adoption is additive.</strong> <code>adoptPr(url, ctx, source, ts)</code>
+    takes a source string; extending <code>InspectorSource</code> is a type-level append with
+    zero DDL.</li>
+  <li><strong>Conductor's engine refuses to nest</strong> (<code>CLAUDECODE</code> guard) and
+    <code>engineer</code> reads a real stdin, so dispatching a pipeline from MC must use a
+    terminal-runtime session, never the SDK runtime.</li>
+</ul>
+
+<h2>Architecture</h2>
+
+<h3>Shared contracts (<code>src/shared/</code>, browser-safe, no <code>node:</code> imports)</h3>
+<p>New <code>src/shared/pipeline.ts</code>:</p>
+<pre><code>export const PIPELINE_PROVIDER_IDS = ["ai-conductor"] as const; // APPEND-ONLY
+export type PipelineProviderId = (typeof PIPELINE_PROVIDER_IDS)[number];
+
+export type PipelinePhase = "SETUP" | "UNDERSTAND" | "DECIDE" | "BUILD" | "SHIP";
+export type PipelineStepState =
+  "pending" | "in_progress" | "done" | "failed" | "skipped" | "stale";
+export type PipelineHaltClass =
+  "needs-human" | "mechanical" | "protected-artifact" | "legacy" | "unclassified";
+
+export interface PipelineRun {
+  provider: PipelineProviderId;
+  repoRoot: string;
+  slug: string;                        // the plan stem - conductor's canonical key
+  tier: "S" | "M" | "L" | null;        // conduct-state.complexity_tier
+  track: "product" | "technical" | null;
+  steps: { name: string; state: PipelineStepState }[]; // source order; unknown names tolerated
+  lastStep: string | null;
+  halt: { class: PipelineHaltClass; reason: string } | null;
+  group: "building" | "eligible" | "waiting" | "halted" | "parked" | "processed";
+  prUrl: string | null;
+  costTokens: number | null;
+  updatedAt: number;
+}</code></pre>
+<p>Plus a browser-safe <code>PIPELINE_PROVIDER_INFO</code> record mirroring
+<code>TASK_SOURCE_KIND_INFO</code>, and one additive optional <code>Session</code> field:
+<code>pipeline: { provider; slug; step } | null</code>, with the matching entry in
+<code>SESSION_FIELD_COMPARATORS</code>. MC ships its own frozen copy of conductor's 22-step
+order and phase map for display; a step name the copy does not know renders as an unknown-step
+chip and sorts after known ones, so a conductor upgrade degrades the display, never the page.</p>
+
+<h3>Daemon side (<code>src/server/</code>)</h3>
+<ul>
+  <li><strong><code>src/server/pipelines/</code></strong> (new module): provider registry;
+    <code>conductor/probe.ts</code> (binary, version, registry read with file fallback);
+    <code>conductor/state.ts</code> (total parsers for state files, gates, markers, daemon
+    snapshots); <code>conductor/tail.ts</code> (byte-offset incremental reads of
+    <code>events.jsonl</code>); <code>conductor/control.ts</code> (spawns CLI verbs, validates
+    by parsing expected stdout); <code>conductor/normalize.ts</code> (fold into
+    <code>PipelineRun</code>). The module never writes a conductor-owned file.</li>
+  <li><strong>Two tables</strong>: <code>pipeline_runs</code>, a projection cache keyed
+    <code>(provider, repo_root, slug)</code>, rebuildable from files at any time;
+    <code>pipeline_events</code>, an append-only ingest ledger keyed
+    <code>(provider, repo_root, slug, seq)</code> with <code>seq NOT NULL</code>. The daemon
+    remains the only SQLite writer.</li>
+  <li><strong>Two <code>ServerEvent</code> kinds</strong>: <code>pipeline_upsert</code> and
+    <code>pipeline_remove</code>, plus a <code>pipelineRuns</code> collection in
+    <code>snapshot</code>; two case arms before the never-check in
+    <code>src/web/useEventStream.ts</code>.</li>
+  <li><strong>Ingest route</strong>: <code>POST /ingest/conductor</code> beside
+    <code>/hooks/:event</code>; first-line <code>x-harness-token</code> check, Zod envelope
+    <code>{ repo, worktree, slug, seq, event }</code>, unknown event kinds stored opaquely
+    rather than rejected.</li>
+  <li><strong>Session correlation</strong>: a carded claude/codex session whose cwd sits under
+    an enabled conductor repo's <code>.worktrees/&lt;slug&gt;</code> gets its
+    <code>pipeline</code> field stamped; the web layer renders the badge, groups the card,
+    and suppresses the composer while showing the real permission posture. Uncorrelated
+    sessions are untouched.</li>
+  <li><strong>Halts into attention</strong>: a sixth <code>AttentionItem</code> kind
+    <code>pipeline_halt</code>, derived before <code>session_blocked</code> claims leftovers,
+    carrying halt class, blocker text, runbook name, and verb buttons.</li>
+  <li><strong>Cost roll-in</strong>: a fifth append-only <code>usage_ledger</code> writer id
+    <code>conductor</code> (<code>spend_kind: "automation"</code>).</li>
+  <li><strong>Settings</strong>: a Conductor panel modeled on task sources - detection state,
+    master enable, per-repo switches, health line. Arrives off.</li>
+</ul>
+
+<h3>Web side (<code>src/web/</code>)</h3>
+<ul>
+  <li><strong>Runs page</strong>: the page-level Workflows | Pipelines kind tab; the Workflows
+    tab unchanged (decision 3, regression-pinned); the Pipelines tab as a sibling surface with
+    its own rail and detail. Deep links: <code>#/runs/:id</code> keeps meaning a workflow run;
+    <code>#/runs/pipeline/:repo/:slug</code> addresses a pipeline.</li>
+  <li><strong>Pipeline detail diagram</strong> per decision 4, with verdict chips read from
+    <code>gates/*.json</code>, the deprecated no-op drawn dashed, labeled wires, and the
+    kickback rule in the footer strip.</li>
+  <li><strong>Conversation window</strong>: <code>SessionWorkflowsPane</code> renders the
+    pipeline ladder when <code>session.pipeline</code> is set; unchanged otherwise.</li>
+  <li><strong>Fleet surfaces</strong>: session-card badge and grouping; the attention inbox
+    section; the dispatch modal's <code>pipeline</code> kind, terminal runtime only.</li>
+</ul>
+
+<h3>Conductor side (ai-conductor repository)</h3>
+<ul>
+  <li><strong>One upstream PR</strong>: start registered <code>visualizer</code> plugins in
+    both entrypoints - beside the OTel visualizer in <code>src/index.ts</code>, and the same
+    start/stop-with-flush pass in <code>daemon-cli.ts</code>. Optional companions: a
+    <code>seq</code>/<code>schemaVersion</code> field on persisted events, and declaring
+    <code>daemon pause</code>/<code>resume</code> in the help tree.</li>
+  <li><strong>The plugin ships from the MC repo</strong>: a directory installable into
+    <code>~/.ai-conductor/plugins/mission-control/</code> - <code>plugin.yml</code>
+    (<code>kind: visualizer</code>, <code>harness_version</code> pinned) and a
+    default-exported <code>{ name, start(emitter), stop() }</code> instance that batches
+    NDJSON to <code>/ingest/conductor</code> and swallows transport failures after one bounded
+    warning. The file tail remains the backfill.</li>
+</ul>
+
+<h2>Data flow</h2>
+<figure class="figure">
+<div class="svgbox">
+<svg width="800" height="350" viewBox="0 0 800 350" role="img" aria-label="Data flow between ai-conductor and Mission Control">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: var(--bg); stroke: var(--border); rx: 10; }
+    .box-accent { fill: var(--bg); stroke: var(--accent); rx: 10; }
+    .t { font: 600 12.5px -apple-system, sans-serif; fill: var(--fg); }
+    .s { font: 11px ui-monospace, Menlo, monospace; fill: var(--muted); }
+    .lbl { font: 11px -apple-system, sans-serif; fill: var(--muted); }
+    .wire { stroke: var(--muted); stroke-width: 1.4; fill: none; marker-end: url(#arr); }
+    .wire-dash { stroke-dasharray: 5 4; }
+  </style>
+  <!-- conductor engine -->
+  <rect class="box" x="10" y="110" width="150" height="70"/>
+  <text class="t" x="85" y="140" text-anchor="middle">ai-conductor engine</text>
+  <text class="s" x="85" y="160" text-anchor="middle">CLI + tmux daemon</text>
+  <!-- files -->
+  <rect class="box" x="200" y="36" width="180" height="76"/>
+  <text class="t" x="290" y="60" text-anchor="middle">State files</text>
+  <text class="s" x="290" y="78" text-anchor="middle">.pipeline/ + .daemon/</text>
+  <text class="s" x="290" y="94" text-anchor="middle">events.jsonl / worktree</text>
+  <!-- ingest -->
+  <rect class="box" x="200" y="180" width="180" height="70"/>
+  <text class="t" x="290" y="206" text-anchor="middle">POST /ingest/conductor</text>
+  <text class="s" x="290" y="226" text-anchor="middle">x-harness-token</text>
+  <!-- MC daemon -->
+  <rect class="box-accent" x="420" y="105" width="160" height="80"/>
+  <text class="t" x="500" y="132" text-anchor="middle">MC daemon</text>
+  <text class="s" x="500" y="152" text-anchor="middle">src/server/pipelines/</text>
+  <text class="s" x="500" y="168" text-anchor="middle">only SQLite writer</text>
+  <!-- sqlite -->
+  <rect class="box" x="420" y="230" width="160" height="72"/>
+  <text class="t" x="500" y="254" text-anchor="middle">SQLite</text>
+  <text class="s" x="500" y="272" text-anchor="middle">pipeline_runs cache</text>
+  <text class="s" x="500" y="288" text-anchor="middle">pipeline_events ledger</text>
+  <!-- dashboard -->
+  <rect class="box" x="620" y="95" width="170" height="100"/>
+  <text class="t" x="705" y="120" text-anchor="middle">Dashboard</text>
+  <text class="s" x="705" y="139" text-anchor="middle">Runs Pipelines tab</text>
+  <text class="s" x="705" y="155" text-anchor="middle">cards + ladder</text>
+  <text class="s" x="705" y="171" text-anchor="middle">attention inbox</text>
+  <!-- wires -->
+  <path class="wire" d="M 130 110 C 155 85, 170 76, 196 74"/>
+  <text class="lbl" x="146" y="66">writes</text>
+  <path class="wire wire-dash" d="M 130 180 C 155 200, 170 211, 196 213"/>
+  <text class="lbl" x="12" y="240">visualizer plugin</text>
+  <text class="lbl" x="12" y="255">(after upstream wiring)</text>
+  <path class="wire" d="M 380 74 C 405 74, 407 108, 418 118"/>
+  <text class="lbl" x="388" y="96">probe / parse / tail</text>
+  <path class="wire" d="M 380 213 C 405 213, 407 180, 418 168"/>
+  <path class="wire" d="M 500 185 L 500 227"/>
+  <text class="lbl" x="508" y="212">project</text>
+  <path class="wire" d="M 580 250 C 608 244, 608 180, 618 166"/>
+  <text class="lbl" x="588" y="222">SSE</text>
+  <path class="wire" d="M 705 195 C 705 330, 250 338, 78 184"/>
+  <text class="lbl" x="240" y="325">control verbs, spawned + stdout-validated (never file writes)</text>
+</svg>
+</div>
+<figcaption>Conductor's files stay the source of truth; the SQLite projection is rebuildable
+from them at any time. The control path never writes conductor files - it spawns conductor's
+own CLI. The dashed plugin path goes live only after the upstream wiring phase.</figcaption>
+</figure>
+
+<h2>Testing</h2>
+<p>Per MC's rules: a fake <code>conduct-ts</code> plus canned state-file trees (a fixture repo
+with <code>.worktrees/&lt;slug&gt;/.pipeline/</code> and <code>.daemon/</code>) in
+<code>e2e/fixtures/</code>, following the fake-agents pattern - both dispatch paths stay faked
+and no spec ever spends a model token. Playwright specs for every UI surface, including the
+Workflows-tab-unchanged regression spec. Unit tests in <code>test/</code> for the state
+parsers, the normalizer, projection rebuild-from-files, and control-verb stdout validation.
+The compile-probe exhaustiveness tests extend for the two new event kinds. An upgrade test
+opens a pre-feature database. Selectors by role and label, never <code>data-testid</code>.</p>
+
+<h2>Phasing</h2>
+<p>The implementation split, dependency graph, and per-phase detail live in
+<a href="phased-plan.html">phased-plan.html</a> (source:
+<code>phased-plan.md</code>) and the <code>phase-&lt;n&gt;-*.md</code> files beside this plan.
+Six phases land in this repository; one small companion phase lands in the ai-conductor
+repository and is dispatched separately from the dashboard.</p>
+
+<h2>Non-goals</h2>
+<ul>
+  <li>No modification to the existing workflow Runs surface (decision 3).</li>
+  <li>No porting of conductor's engine, gates, or step logic into MC.</li>
+  <li>No MC-side writes to any conductor-owned file.</li>
+  <li>No second session-eviction path, no second SQLite writer, no new topbar destination.</li>
+  <li>Ensemble-powered DECIDE, memory unification, and intake bridging: deferred
+    (decision 8).</li>
+</ul>
+
+</body>
+</html>

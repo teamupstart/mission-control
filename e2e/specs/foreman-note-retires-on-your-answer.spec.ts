@@ -343,6 +343,29 @@ test("answering the review channel's question retires it too", async ({ dashboar
   const sidecar = dashboard.getByRole("dialog", { name: "Foreman recommendation" });
   await expect(sidecar).toContainText(SUGGESTION);
   await expect(biomeOption).toContainText("Foreman's pick");
+
+  // Reachable, not merely visible. This modal and the sidecar are both portalled to <body>,
+  // so a stacking order that put the modal on top would leave the sidecar's controls dead
+  // under it - the same way the modal's own Submit was dead under the sidecar before the
+  // width was reserved. Only a real click can tell the two apart, and `toBeVisible` cannot:
+  // Playwright would intercept the click and fail here rather than silently pass.
+  await sidecar.getByRole("button", { name: "Close Foreman recommendation" }).click();
+  await expect(sidecar).toBeHidden();
+  await recommendation.click();
+  await expect(sidecar).toContainText(SUGGESTION);
+
+  // And WHY it is reachable, pinned so the reason cannot quietly stop being true: the modal's
+  // backdrop is inset by the reserved width, so the two surfaces sit side by side rather than
+  // stacked, and their z-order never arises. Verified by dropping the sidecar's z-index below
+  // the backdrop's and watching the click above still succeed. Delete the inset and this is
+  // the assertion that fails, before anyone has to rediscover it as a dead button.
+  const backdrop = await dashboard.locator(".modal-backdrop").boundingBox();
+  const panel = await sidecar.boundingBox();
+  expect(backdrop && panel, "both surfaces are on screen").toBeTruthy();
+  expect(
+    Math.round(backdrop!.x + backdrop!.width),
+    "the backdrop stops where the sidecar starts",
+  ).toBeLessThanOrEqual(Math.round(panel!.x) + 1);
   // Submit sits on the side the sidecar occupies, so "is it reachable" is a question only a
   // frame of the WHOLE viewport can answer - a crop of the form would look identical whether
   // the panel reserved its width or painted over it.

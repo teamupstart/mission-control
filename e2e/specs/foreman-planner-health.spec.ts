@@ -99,4 +99,11 @@ test("a degraded backlog planner is diagnosable and retryable without restarting
     .toBeVisible();
   await expect(dashboard.getByText(/degraded · codex\/gpt-5.6-terra · 4 failures/))
     .toBeVisible({ timeout: 20_000 });
+
+  // The circuit snapshot remains available for recovery, but an inactive autopilot must
+  // not present that snapshot as a planner that is actively degraded.
+  await request(daemon, "PUT", "/api/foreman/config", { autoBacklog: false });
+  await expect(dashboard.getByText(/idle \(autopilot off\) · codex\/gpt-5.6-terra/))
+    .toBeVisible({ timeout: 20_000 });
+  await expect(dashboard.getByText(/degraded · codex\/gpt-5.6-terra/)).toHaveCount(0);
 });

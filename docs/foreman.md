@@ -431,7 +431,9 @@ That reading outranks the mode in the posture line, because a mode nothing is ru
 not the fact you need first. The live figures beside it - sessions needing you, when the
 last decision was, the backlog autopilot's budget, and the dependency planner's effective
 provider, model, health, and failure count - are under **Right now**, and are
-deliberately a different population from the historical ledger above.
+deliberately a different population from the historical ledger above. When backlog
+autopilot is off, the planner row says **idle (autopilot off)** instead of presenting its
+last circuit snapshot as an active degradation.
 
 The top-bar Foreman popover carries the actionable version of that planner status inside
 **Backlog**. A degraded planner names its last bounded error and the next automatic retry.

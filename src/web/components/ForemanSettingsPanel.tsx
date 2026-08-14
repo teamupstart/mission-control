@@ -808,9 +808,12 @@ export function ForemanSettingsPanel({
               {status.planner && (
                 <p className="sc-health-row">
                   <span>Dependency planner</span>
-                  <span className={`sc-health-value${status.planner.state === "degraded" ? " sc-health-warn" : ""}`}>
-                    {status.planner.state} · {status.planner.runner}/{status.planner.model}
-                    {status.planner.failureCount > 0 && ` · ${status.planner.failureCount} failures`}
+                  <span className={`sc-health-value${status.autopilot.on && status.planner.state === "degraded" ? " sc-health-warn" : ""}`}>
+                    {status.autopilot.on
+                      ? `${status.planner.state} · ${status.planner.runner}/${status.planner.model}`
+                      : `idle (autopilot off) · ${status.planner.runner}/${status.planner.model}`}
+                    {status.autopilot.on && status.planner.failureCount > 0
+                      && ` · ${status.planner.failureCount} failures`}
                   </span>
                 </p>
               )}

@@ -324,6 +324,17 @@ test("a degraded dependency planner names its runtime, safe error, and retry pat
   assert.match(html, /Retry planner now/);
 });
 
+test("settings call the dependency planner idle while backlog autopilot is off", () => {
+  const state = mkState({ autoBacklog: false, runner: "codex" });
+  const status = plannerStatus();
+  status.autopilot = { ...status.autopilot, on: false };
+  state.status = status;
+
+  const html = renderPanel(state);
+  assert.match(html, /idle \(autopilot off\) · codex\/gpt-5\.6-terra/);
+  assert.doesNotMatch(html, /degraded · codex\/gpt-5\.6-terra/);
+});
+
 test("the wrap-up trigger group is a multi-select, and Then has no automatic review mode", () => {
   // The whole point of the split: any number of moments, exactly one action. A regression
   // to radios for the triggers would silently make the two mutually exclusive, and a

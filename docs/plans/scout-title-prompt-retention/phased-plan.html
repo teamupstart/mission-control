@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Short scout titles and prompt context: phased plan</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#f3f5f4;--paper:#fff;--paper2:#f7f9f8;--ink:#18221f;--muted:#61706b;--line:#dce4e0;--accent:#17785c;--blue:#2e6fbb;--amber:#b36d12;--code:#edf4f1;--shadow:0 18px 50px rgba(21,38,32,.09);--sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    @media(prefers-color-scheme:dark){:root{--bg:#0b0f0e;--paper:#141b18;--paper2:#101613;--ink:#e5eee9;--muted:#95a69f;--line:#293730;--accent:#43c59a;--blue:#65a8f5;--amber:#f2aa4c;--code:#19241f;--shadow:0 20px 58px rgba(0,0,0,.34)}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}body{margin:0;min-width:0;background:radial-gradient(900px 500px at 90% -12%,color-mix(in srgb,var(--accent) 13%,transparent),transparent 62%),var(--bg);color:var(--ink);font:15px/1.68 var(--sans)}a{color:var(--blue);text-underline-offset:3px}.mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 90%,transparent)}.mast-inner{max-width:1320px;margin:auto;padding:40px clamp(20px,5vw,64px) 34px}.kicker{margin:0 0 8px;color:var(--accent);font:800 11px/1.2 var(--mono);letter-spacing:.14em;text-transform:uppercase}.mast h1{max-width:900px;margin:0;font-size:clamp(34px,5vw,58px);line-height:1.06;letter-spacing:-.04em}.mast-copy{max-width:880px;margin:15px 0 0;color:var(--muted);font-size:17px}.badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:20px}.badge{padding:5px 10px;border:1px solid color-mix(in srgb,var(--accent) 38%,var(--line));border-radius:999px;background:color-mix(in srgb,var(--accent) 7%,var(--paper));color:var(--accent);font:700 11px var(--mono)}.layout{display:grid;grid-template-columns:230px minmax(0,930px);gap:32px;max-width:1240px;margin:auto;padding:30px 18px 90px}nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}nav b{display:block;margin:0 0 8px;color:var(--muted);font:800 10px var(--mono);letter-spacing:.12em;text-transform:uppercase}nav a{display:block;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}article{min-width:0;padding:10px clamp(18px,4vw,50px) 58px;border:1px solid var(--line);border-radius:17px;background:var(--paper);box-shadow:var(--shadow)}article>h1:first-child{display:none}h2{margin:46px 0 13px;padding-top:7px;border-top:1px solid var(--line);font-size:24px;line-height:1.25;letter-spacing:-.02em}h2:first-of-type{margin-top:22px;border-top:0}h3{margin:29px 0 9px;font-size:18px;line-height:1.35}p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:5px 0}code{padding:2px 5px;border:1px solid var(--line);border-radius:5px;background:var(--code);color:var(--accent);font:12.5px/1.45 var(--mono);overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font-size:11px}.flow{max-width:100%;margin:22px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}.flow figcaption{margin-bottom:12px;font-weight:760}.flow svg{display:block;width:100%;height:auto;min-width:760px}.flow p{margin:11px 3px 0;color:var(--muted);font-size:12px}.flow .edges path{fill:none;stroke:var(--muted);stroke-width:1.7;marker-end:url(#flow-arrow)}.flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .node.human rect,.flow .node.planning rect{fill:color-mix(in srgb,var(--blue) 8%,var(--paper));stroke:var(--blue)}.flow .node.journal rect,.flow .node.collector rect{fill:color-mix(in srgb,var(--amber) 8%,var(--paper));stroke:var(--amber)}.flow .node.bundle rect,.flow .node.final rect{fill:color-mix(in srgb,var(--accent) 8%,var(--paper));stroke:var(--accent)}.flow .state rect{fill:var(--paper);stroke:var(--accent);stroke-dasharray:4 4}.flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:480}.flow text.label{fill:var(--muted);font:500 9px var(--mono)}footer{max-width:1240px;margin:0 auto 34px;padding:0 18px;color:var(--muted);font:11px var(--mono)}
+    @media(max-width:860px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:20px}}@media(max-width:560px){.mast-inner{padding-top:28px}.layout{padding-inline:8px}article{border-radius:13px}th,td{min-width:130px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav,footer{display:none}article{border:0}.flow svg{min-width:0}}
+  </style>
+</head>
+<body>
+  <header class="mast"><div class="mast-inner"><p class="kicker">Mission Control · merge-aware implementation</p><h1>Short scout titles and prompt context: phased plan</h1><p class="mast-copy">Three serial merge units: durable authorship, portable archive projection, then the reader that exposes it.</p><div class="badges"><span class="badge">ai-harness only</span><span class="badge">3 serial phases</span><span class="badge">offline render</span></div></div></header>
+  <div class="layout"><nav aria-label="Plan sections"><b>On this page</b><a href="#source">Source</a><a href="#incorporated-decisions">Incorporated decisions</a><a href="#what-the-repository-investigation-changed">What the repository investigation changed</a><a href="#phase-map">Phase map</a><a href="#dependency-graph">Dependency graph</a><a href="#concurrency-and-merge-order">Concurrency and merge order</a><a href="#why-three-phases">Why three phases</a><a href="#cross-phase-contracts">Cross-phase contracts</a><a href="#merge-boundary-operability">Merge-boundary operability</a><a href="#final-verification-strategy">Final verification strategy</a><a href="#requirement-ownership-audit">Requirement ownership audit</a><a href="#final-cross-phase-audit">Final cross-phase audit</a></nav><article><h1 id="phased-plan-short-scout-titles-and-preserved-prompt-context">Phased plan: short scout titles and preserved prompt context</h1>
+<h2 id="source">Source</h2>
+<ul>
+<li>Approved source plan: <a href="plan.md"><code>plan.md</code></a></li>
+<li>Rendered source plan: <a href="plan.html"><code>plan.html</code></a></li>
+</ul>
+<p>The user explicitly asked to phase this scope and schedule it as Mission Control tasks. The source
+plan contains no unresolved product choice.</p>
+<h2 id="incorporated-decisions">Incorporated decisions</h2>
+<table><thead><tr><th>Decision</th><th>Adopted selection</th><th>Owning phase</th></tr></thead><tbody><tr><td>Archive title</td><td>Use the live session card&#x27;s <code>session.name</code>; recover from the frozen episode name, then legacy task title</td><td>1 freezes, 2 projects</td></tr><tr><td>Original prompt</td><td>Preserve exact <code>task.intent</code> before <code>question</code> preview clipping</td><td>2</td></tr><tr><td>Later context</td><td>Preserve human user prompts from this scout episode in conversation order</td><td>1 attributes, 2 collects</td></tr><tr><td>Exclusions</td><td>No assistant, tools, system text, hidden reasoning, scout appendix or attributed automation</td><td>1 and 2</td></tr><tr><td>Archive role</td><td>Prompt context is metadata and search material, never a report fallback</td><td>2 and 3</td></tr><tr><td>Publication</td><td>Freeze at reservation; never append to a published bundle</td><td>2</td></tr><tr><td>Compatibility</td><td>Additive version 1 field; old bundles expose no trail</td><td>2 and 3</td></tr><tr><td>Follow-up</td><td>Create a phased implementation plan and dependency-linked tasks</td><td>This document</td></tr></tbody></table>
+<h2 id="what-the-repository-investigation-changed">What the repository investigation changed</h2>
+<p>The initial scout recommendation was a title source change plus a manifest prompt array. The deeper
+trace added one prerequisite phase:</p>
+<ol>
+<li><strong>A final transcript window is incomplete by design.</strong> <code>TranscriptMessages.window</code> keeps a head
+and tail, so long conversations can omit middle follow-ups. The work needs bounded forward paging
+from the task-delivery byte boundary.</li>
+<li><strong>Attribution is not durable today.</strong> <code>src/server/injections.ts</code> forgets Foreman, Workflow and
+harness origins on restart. A capture after restart could archive automation as if the human wrote
+it. Scout-scoped attribution must survive until the capture job freezes.</li>
+<li><strong>Queued text is not yet a prompt.</strong> <code>PendingTurnManager.submit</code> creates an editable outbox row.
+Journal only SDK acceptance or verified terminal pickup, or recalled text will be preserved as
+context the agent never received.</li>
+<li><strong>There are two task-delivery seams.</strong> Fresh dispatch and assignment both compose the scout
+appendix. The transcript anchor and session-name snapshot must cover both, including Pi&#x27;s
+launch-time prompt.</li>
+<li><strong>The rail already uses archive title.</strong> The server projection creates the short rail title with
+no React edit, but it is still visible behavior and needs Playwright coverage in Phase 2.</li>
+<li><strong>The reader heading uses the clipped question.</strong> Phase 3 must change it to archive title before
+adding prompt context, or the selected page will still lead with the long request.</li>
+</ol>
+<p>No code in <code>ai-conductor</code> participates in scout capture, archive storage or the Scouts page. All
+implementation phases target <code>ai-harness</code> only.</p>
+<h2 id="phase-map">Phase map</h2>
+<table><thead><tr><th>Phase</th><th>Name</th><th>Depends on</th><th>Independently delivers</th></tr></thead><tbody><tr><td>1</td><td><a href="phase-1-durable-scout-prompt-context.md">Durable scout prompt context</a></td><td>none</td><td>Work-episode title/offset snapshot, accepted-turn journal, durable attribution and bounded forward transcript paging</td></tr><tr><td>2</td><td><a href="phase-2-portable-scout-title-and-prompts.md">Portable scout title and prompt projection</a></td><td>Phase 1</td><td>Short archive titles, additive prompt manifest, recovery-safe capture, detail API and prompt search</td></tr><tr><td>3</td><td><a href="phase-3-scout-prompt-context-reader.md">Scout prompt context reader</a></td><td>Phase 2</td><td>Concise reader heading, visible prompt trail, search language, responsive styles and complete E2E proof</td></tr></tbody></table>
+<h2 id="dependency-graph">Dependency graph</h2>
+
+<figure class="flow" aria-labelledby="phase-flow-title">
+  <figcaption id="phase-flow-title">Merge-aware implementation sequence</figcaption>
+  <svg viewBox="0 0 1120 280" role="img" aria-label="The merged planning artifacts release Phase 1 durable prompt context, which releases Phase 2 portable archive projection, which releases Phase 3 Scouts reader. Each phase also produces an independently useful green state.">
+    <defs><marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z"/></marker></defs>
+    <g class="edges"><path d="M220 112H290"/><path d="M530 112H600"/><path d="M840 112H910"/><path d="M410 145V218"/><path d="M720 145V218"/><path d="M1010 145V218"/></g>
+    <g class="node planning" transform="translate(20 78)"><rect width="200" height="68" rx="14"/><text x="100" y="30">Planning artifacts</text><text class="sub" x="100" y="51">must merge before tasks</text></g>
+    <g class="node" transform="translate(290 78)"><rect width="240" height="68" rx="14"/><text x="120" y="28">Phase 1</text><text class="sub" x="120" y="48">durable prompt context</text></g>
+    <g class="node" transform="translate(600 78)"><rect width="240" height="68" rx="14"/><text x="120" y="28">Phase 2</text><text class="sub" x="120" y="48">portable archive projection</text></g>
+    <g class="node final" transform="translate(910 78)"><rect width="200" height="68" rx="14"/><text x="100" y="28">Phase 3</text><text class="sub" x="100" y="48">prompt context reader</text></g>
+    <g class="state" transform="translate(305 218)"><rect width="210" height="42" rx="10"/><text x="105" y="26">restart-safe attribution</text></g>
+    <g class="state" transform="translate(615 218)"><rect width="210" height="42" rx="10"/><text x="105" y="26">short title + search</text></g>
+    <g class="state" transform="translate(905 218)"><rect width="210" height="42" rx="10"/><text x="105" y="26">complete reader UX</text></g>
+  </svg>
+  <p>The graph is serial because every later merge consumes a reviewed contract from the prior one. Numbering reflects direct implementation dependencies.</p>
+</figure>
+<h2 id="concurrency-and-merge-order">Concurrency and merge order</h2>
+<p>The phases are strictly serial.</p>
+<ul>
+<li>Phase 2 consumes Phase 1&#x27;s task boundary, durable authorship and forward transcript page
+contracts. Reimplementing those inside capture would create two sources of truth.</li>
+<li>Phase 3 consumes Phase 2&#x27;s portable read model and search vocabulary. Building it against a local
+component-only type would produce a temporary API contract that Phase 2 later removes.</li>
+</ul>
+<p>Merge order is Phase 1, then Phase 2, then Phase 3. Each task also directly depends on the current
+planning session, as required by the scheduling workflow.</p>
+<h2 id="why-three-phases">Why three phases</h2>
+<p>Phase 1 is the subtle correctness boundary. It decides whether a turn was actually delivered, which
+work episode owns it, and whether its author was the human. Reviewing that underneath manifest,
+index and UI changes would make the privacy and restart guarantees hard to see.</p>
+<p>Phase 2 is one server-side vertical slice. Once merged, newly published bundles already have short
+titles, durable prompt data and search. Phase 3 is then a conventional read-model consumer with the
+repository&#x27;s required browser proof.</p>
+<p>Phase 1 is additive and temporarily unconsumed. That is a bounded trade: its tables and paging
+capability are fully tested, do not change existing behavior, and let the capture phase rely on one
+reviewed contract rather than land delivery semantics and archive publication at once.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<ul>
+<li><strong>C1, one episode boundary (Phase 1):</strong> <code>(task_id, episode_id)</code> owns the frozen session name,
+transcript path and byte offset established at the actual task-delivery seam.</li>
+<li><strong>C2, accepted turns only (Phase 1):</strong> an editable, recalled, refused, failed or unresolved
+uncertain pending row is not a prompt. Positive SDK acceptance or verified terminal pickup is.</li>
+<li><strong>C3, durable authorship (Phase 1):</strong> human and non-human delivery attribution survives daemon
+restart until archive reservation. No later phase infers author from role alone.</li>
+<li><strong>C4, bounded transcript walk (Phase 1):</strong> archive collection pages forward from a byte anchor and
+never uses a head-tail window or unbounded remainder read.</li>
+<li><strong>C5, title identity (Phases 1 and 2):</strong> capture uses live <code>session.name</code>, then the episode&#x27;s frozen
+session name, then legacy <code>task.title</code>. It never calls a model or derives a second short title.</li>
+<li><strong>C6, prompt semantics (Phase 2):</strong> one initial entry is exact <code>task.intent</code>; later entries are
+human follow-ups. The delivered scout appendix and every attributed automated turn are excluded.</li>
+<li><strong>C7, bounded honesty (Phase 2):</strong> 256 entries, 256 KiB per entry and 3 MiB total are hard portable
+bounds. Any omission sets <code>truncated</code>; the initial prompt is retained before newest follow-ups.</li>
+<li><strong>C8, immutable recovery (Phase 2):</strong> title and prompts freeze on <code>ArchiveCaptureJob</code>. Publication,
+replay and restart read the job, not a live task or transcript.</li>
+<li><strong>C9, portable authority (Phase 2):</strong> the verified manifest is the durable source of title, prompt
+detail and prompt search. SQLite remains a rebuildable projection.</li>
+<li><strong>C10, report separation (Phases 2 and 3):</strong> prompt context cannot satisfy completion and never
+becomes report HTML. The authored report remains the primary artifact.</li>
+<li><strong>C11, safe reader (Phase 3):</strong> prompt text renders as escaped plain text outside the iframe. The
+report keeps its existing sandbox and evidence navigation.</li>
+<li><strong>C12, old bundle behavior (Phases 2 and 3):</strong> an archive with no prompt field remains readable and
+keeps its current question fallback. No published bundle is rewritten.</li>
+</ul>
+<h2 id="merge-boundary-operability">Merge-boundary operability</h2>
+<ol>
+<li><strong>After Phase 1:</strong> existing behavior is unchanged. A running scout has restart-safe prompt
+context and all current tests remain green. The new paging API is bounded and unit-tested.</li>
+<li><strong>After Phase 2:</strong> newly completed scouts have the correct short rail title, portable prompt
+history and prompt search. Operators can retrieve prompt detail through the existing detail API;
+the report reader still works and no archive is unreadable.</li>
+<li><strong>After Phase 3:</strong> the reader exposes that context, uses the concise title consistently and has
+end-to-end coverage of human versus non-human turns.</li>
+</ol>
+<p>No phase depends on a later phase to repair a broken database, unreadable bundle or misleading
+intermediate title.</p>
+<h2 id="final-verification-strategy">Final verification strategy</h2>
+<p>Each phase runs its focused commands. After Phase 3 merges, run:</p>
+<pre><code class="language-sh">npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e -- e2e/specs/scout-archive.spec.ts
+</code></pre>
+<p>The final acceptance flow proves one identity across time:</p>
+<ol>
+<li>observe the short title on a live scout card;</li>
+<li>deliver a human follow-up and an attributed automated instruction;</li>
+<li>submit and publish the scout report;</li>
+<li>remove the session and rebuild the derived archive index;</li>
+<li>find the archive by a phrase unique to the follow-up;</li>
+<li>verify the rail and reader retain the live title, the original request and human follow-up, but
+not the automated instruction.</li>
+</ol>
+<h2 id="requirement-ownership-audit">Requirement ownership audit</h2>
+<table><thead><tr><th>Source-plan requirement</th><th>Owner</th></tr></thead><tbody><tr><td>Same title as live session card</td><td>Phase 1 snapshot, Phase 2 projection, Phase 3 reader</td></tr><tr><td>Exact initial task intent</td><td>Phase 2</td></tr><tr><td>Later human prompts in order</td><td>Phase 1 attribution, Phase 2 collection</td></tr><tr><td>No automated, assistant, tool, system or hidden content</td><td>Phase 1 attribution, Phase 2 filter, Phase 3 E2E</td></tr><tr><td>Long-session completeness without unbounded reads</td><td>Phase 1 paging, Phase 2 collector</td></tr><tr><td>Recovery after daemon/session loss</td><td>Phase 1 durability, Phase 2 capture job</td></tr><tr><td>Additive manifest and old-bundle compatibility</td><td>Phase 2</td></tr><tr><td>Prompt search</td><td>Phase 2 projection, Phase 3 copy and E2E</td></tr><tr><td>Visible Prompt context</td><td>Phase 3</td></tr><tr><td>Report remains required and immutable</td><td>Phase 2 tests and docs, Phase 3 separation</td></tr><tr><td>No ai-conductor change</td><td>Non-goal in every phase</td></tr></tbody></table>
+<p>Every requirement has one behavior owner or an explicit producer-consumer split. No requirement is
+left to an unnamed cleanup phase.</p>
+<h2 id="final-cross-phase-audit">Final cross-phase audit</h2>
+<ul>
+<li>Reconciled the phase documents against the source plan after all three were written.</li>
+<li>Confirmed every persisted vocabulary change is append-only and every database change has an
+upgrade path.</li>
+<li>Confirmed title selection has one server owner and React consumes the archive title rather than
+deriving another one.</li>
+<li>Confirmed prompt collection freezes before immutable publication and restart recovery never needs
+a vanished transcript.</li>
+<li>Confirmed Phase 2&#x27;s visible rail change and Phase 3&#x27;s reader change each carry Playwright coverage.</li>
+<li>Confirmed the task graph is a single serial chain with direct dependencies only.</li>
+<li>Confirmed the secondary <code>ai-conductor</code> checkout has no implementation phase and needs no pull
+request.</li>
+</ul></article></div>
+  <footer>Source of truth: phased-plan.md · static HTML · no external requests</footer>
+</body>
+</html>

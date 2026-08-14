@@ -54,6 +54,32 @@ export function foremanNoteCompanionsOpenAsk(o: {
   return o.pendingReviewIds?.has(reviewId) ?? false;
 }
 
+/**
+ * The transcript entries to draw while the open form already owns this note.
+ *
+ * The console shows Foreman's turn inline at the point it spoke. When the ask it is about is
+ * still open on the same screen, that turn is the same voice a second time, which is the
+ * crowding this disclosure exists to remove - so the live entry yields and the recommendation
+ * control speaks for it. Only THIS note's entry goes; the rest of the history stays, and the
+ * complete episode remains in Foreman history.
+ *
+ * Equality is safe because both sides are the same string by construction: `classifyPending`
+ * mints a marker per waiting episode and the worker stamps that very marker as the note's
+ * `handledMarker` for its own idempotency, which is what makes `(note_key, marker)` unique in
+ * `foreman_episodes`. Pinned in the tests so a drift in either spelling fails loudly rather
+ * than turning this filter into a silent no-op.
+ */
+export function visibleForemanEpisodes<T extends { marker: string }>(
+  episodes: T[],
+  o: { companionsOpenAsk: boolean; handledMarker: string | null | undefined },
+): T[] {
+  // Returned as-is rather than copied when nothing is hidden, which is the overwhelmingly
+  // common case: a fresh array on every render would hand the transcript a new identity each
+  // tick for no change in content.
+  if (!o.companionsOpenAsk || !o.handledMarker) return episodes;
+  return episodes.filter((episode) => episode.marker !== o.handledMarker);
+}
+
 /** Fold typography without changing the meaningful words in an option label. */
 function folded(value: string): string {
   return value

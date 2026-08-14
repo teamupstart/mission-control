@@ -65,20 +65,6 @@ export interface Pending {
 }
 
 /**
- * The marker for the ask a child is showing on screen - a stable digest of the menu.
- *
- * Digested rather than carried whole because a marker is only ever compared for equality
- * (the worker's idempotency check), and `dialogIdentity` is a JSON blob of every row's
- * number and label. Same reason, same shape, and the same 12 hex chars as
- * the other compact episode markers in this module.
- *
- * Exported because two callers now have to arrive at the SAME string from opposite ends.
- * `classifyPending` mints it when Foreman first faces the ask; the answer routes rebuild it
- * to find the note that was pinned on the ask a human has just answered themselves
- * (`retireNoteAnsweredByYou`). A second spelling of the digest would silently retire
- * nothing - the note would still be there, and the miss would look like the original bug.
- */
-/**
  * Stand-in `question` `classifyPending` substitutes when a needs-you session carries no
  * activity line at all. It is phrased as prose because it goes straight into the Tier 2
  * reviewer prompt as the question.

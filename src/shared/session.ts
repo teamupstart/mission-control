@@ -216,6 +216,16 @@ export function sha1Hex(input: string): string {
  * Shared by the daemon that writes the note and the browser that decides whether the
  * note is optional context for the open form. The SHA-1 prefix is an existing persisted
  * shape, so changing it would strand live notes and make Foreman judge the same ask twice.
+ *
+ * Digested rather than carried whole because a marker is only ever compared for equality,
+ * and `dialogIdentity` is a JSON blob of every row's number and label.
+ *
+ * Three callers now have to arrive at the SAME string from different ends. `classifyPending`
+ * mints it when Foreman first faces the ask; the answer routes rebuild it to find the note
+ * pinned on an ask a human has just answered themselves (`retireNoteAnsweredByYou`); and the
+ * dashboard rebuilds it again to decide whether the open form already owns this note. A
+ * second spelling would silently retire nothing - the note would still be there, and the miss
+ * would look like the original bug.
  */
 export function dialogMarker(dialog: PaneDialog): string {
   return `dialog:${sha1Hex(dialogIdentity(dialog)).slice(0, 12)}`;

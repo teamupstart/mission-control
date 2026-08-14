@@ -45,7 +45,7 @@ import {
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import { useTimelineReviews } from "../../lib/timelineReviews.ts";
-import { foremanNoteCompanionsOpenAsk } from "../../lib/foreman-review.ts";
+import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/foreman-review.ts";
 import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
@@ -211,9 +211,10 @@ export function ConsoleDetail({
     note: session.note,
     pendingReviewIds: view.pendingReviewIds,
   });
-  const visibleEpisodes = noteCompanionsOpenAsk && session.note?.handledMarker
-    ? episodes.filter((episode) => episode.marker !== session.note?.handledMarker)
-    : episodes;
+  const visibleEpisodes = visibleForemanEpisodes(episodes, {
+    companionsOpenAsk: noteCompanionsOpenAsk,
+    handledMarker: session.note?.handledMarker,
+  });
   // Set when the send shortcut arrives on another tab: the reply box exists, it's just
   // not mounted yet, so the focus has to wait for the conversation to come back.
   const focusPending = useRef(false);

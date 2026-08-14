@@ -20567,11 +20567,30 @@ span.line-run-prov {
 /* `--purple` is the token's own stated job - "neither a session state nor a warning" -
    which is exactly what a task kind is, and the two rules above only borrow state tones
    because they were written before there was a third kind to separate from.
-   `--attention` was the other candidate and is wrong: amber means "this session needs
-   you" on every card, badge and rail mark in the app, and a kind chip wearing it would
-   read as an alert on a task nobody has looked at yet. Every kind needs its own rule -
-   there is no fallback here, so a kind added without one inherits body text colour and
-   is the only chip on the card that is not coloured. */
+
+   Every other tone was eliminated, and by the same test: is it already on THIS card?
+   `--idle` and `--working` are the two rules directly above. `--attention` is worn by
+   `.bl-off` and `.bl-blocked`, and by `--prio-high` in the chip one row up - and amber
+   means "this needs you" everywhere else in the app, so a kind would read as an alert on
+   a task nobody has looked at yet. `--danger` is `.bl-deadblock` and `--prio-blocker`.
+   The greys are `.bl-agent`, `.bl-repos`, `.bl-added` and `--prio-low`. `--syntax-type`
+   is the one unspoken hue left and it is the code-highlighting palette's - borrowing it
+   here is how `--claude` ended up doubling as Foreman's accent.
+
+   Its cost, stated plainly the way `--held` states its own: purple is already on this
+   exact card. `.bl-next` is `--pr-merged` mixed toward `--fg`, and `--pr-merged` IS
+   `--purple`, so a plan task that Foreman's autopilot has also picked up next shows two
+   purple-toned marks a line apart, for two unrelated facts. That is a real crowding and
+   it is accepted rather than solved, because solving it means either inventing a sixth
+   brand hue for one chip - which this palette has refused to do before, `--held` included
+   - or restyling the whole `.bl-kind-*` family so colour stops being its only cue, which
+   would change what a SHIP and a SCOUT card render. Both marks print their own word, and
+   `.bl-next` appears on exactly one card in a column; the family-wide pass is the real
+   fix and is recorded as follow-up rather than smuggled in here.
+
+   Every kind needs its own rule - there is no fallback in this family, so a kind added
+   without one inherits `.bl-foot`'s `--dim` and is the only chip on the card that is not
+   coloured. */
 .bl-kind-plan {
   color: var(--purple);
 }

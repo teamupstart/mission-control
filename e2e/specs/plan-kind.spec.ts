@@ -104,6 +104,46 @@ function optionPairs(select: Locator): Promise<[string, string][]> {
   );
 }
 
+/**
+ * The hue angle of an sRGB triple, so two marks can be compared by the thing a reader
+ * actually confuses - their place on the wheel - rather than by an exact string. Two
+ * purples, one of them mixed toward `--fg`, are different values and the same colour.
+ */
+function hueOf([r0, g0, b0]: number[]): number {
+  const [r, g, b] = [r0 / 255, g0 / 255, b0 / 255];
+  const max = Math.max(r, g, b);
+  const span = max - Math.min(r, g, b);
+  if (span === 0) return 0;
+  const sixth =
+    max === r ? (g - b) / span : max === g ? (b - r) / span + 2 : (r - g) / span + 4;
+  return ((sixth * 60) % 360 + 360) % 360;
+}
+
+/**
+ * A rendered element's colour as an sRGB triple, RASTERIZED rather than parsed.
+ *
+ * `getComputedStyle().color` does not resolve to `rgb()` for every author value: a
+ * `color-mix(in oklab, …)` - which is what `.bl-next` and half this stylesheet use - comes
+ * back as a literal `oklab(0.744 0.063 -0.122)` string. Parsing three numbers out of that
+ * and treating them as r/g/b silently produces a nonsense hue, which is exactly the wrong
+ * answer to get from a test whose whole job is comparing two colours. Painting the value
+ * into a 1x1 canvas makes the browser do the conversion it already knows how to do.
+ */
+function rgbOf(scope: Locator, selector: string): Promise<number[]> {
+  return scope.evaluate((el, sel) => {
+    const node = el.querySelector(sel);
+    if (!node) throw new Error(`the card should draw ${sel}`);
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no 2d context");
+    ctx.fillStyle = getComputedStyle(node).color;
+    ctx.fillRect(0, 0, 1, 1);
+    return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+  }, selector);
+}
+
 /** The id of the published Workflow whose option label starts with `prefix`. */
 async function workflowOptionId(afterWork: Locator, prefix: string): Promise<string> {
   const id = await afterWork.evaluate(
@@ -261,9 +301,13 @@ test("a plan task draws its own kind chip on the backlog card", async ({ dashboa
   // All three, because the claim is not "plan renders" - a chip with no colour rule renders
   // perfectly well, in body text, and looks like a card that failed to style itself. The
   // claim is that plan is drawn AS A KIND, the way its two siblings are.
+  // The plan task is seeded FIRST so it is the one `nextUpTaskId` picks, which puts the
+  // "next up" chip on the same card as the kind chip. That is the busiest a plan card
+  // gets, and it is the case worth driving rather than the quiet one - see the note on
+  // the shared purple at the end of this test.
+  await seedBacklogTask(daemon, "plan", "Plan the retry policy rewrite");
   await seedBacklogTask(daemon, "ship", "Rebuild the retry policy");
   await seedBacklogTask(daemon, "scout", "Audit the retry policy");
-  await seedBacklogTask(daemon, "plan", "Plan the retry policy rewrite");
   await useBoardLayout(dashboard, daemon);
 
   const card = dashboard.locator(".bl-card", { hasText: "Plan the retry policy rewrite" });
@@ -275,28 +319,46 @@ test("a plan task draws its own kind chip on the backlog card", async ({ dashboa
   // person meets it: three kinds, three colours, side by side in one column.
   await shoot(dashboard, "02-three-kind-chips", dashboard.locator("section.board-backlog"));
 
-  /** The chip colour beside the agent chip's, which has no colour rule and inherits. */
-  const colours = async (title: string): Promise<{ kind: string; inherited: string }> =>
-    dashboard.locator(".bl-card", { hasText: title }).evaluate((el) => {
-      const kind = el.querySelector(".bl-kind");
-      const agent = el.querySelector(".bl-agent");
-      if (!kind || !agent) throw new Error("the card should draw a kind chip and an agent chip");
-      return {
-        kind: getComputedStyle(kind).color,
-        inherited: getComputedStyle(agent).color,
-      };
-    });
+  /** One card's kind chip and its agent chip, which has no colour rule and inherits. */
+  const chips = async (title: string): Promise<{ kind: number[]; inherited: number[] }> => {
+    const row = dashboard.locator(".bl-card", { hasText: title });
+    return {
+      kind: await rgbOf(row, ".bl-kind"),
+      inherited: await rgbOf(row, ".bl-agent"),
+    };
+  };
 
-  const plan = await colours("Plan the retry policy rewrite");
+  const plan = await chips("Plan the retry policy rewrite");
   // The exact defect `.bl-kind-plan` exists to prevent: there is no fallback rule in this
   // family, so a kind added without one is the only chip on the card that is not coloured.
-  expect(plan.kind, "the plan chip should be coloured, not inherited body text").not.toBe(
+  expect(plan.kind, "the plan chip should be coloured, not inherited body text").not.toEqual(
     plan.inherited,
   );
 
   // And it is its OWN colour. Two kinds sharing one is a chip that has to be read rather
   // than recognised, which is the entire reason this family colours them at all.
-  const ship = await colours("Rebuild the retry policy");
-  const scout = await colours("Audit the retry policy");
-  expect(new Set([plan.kind, ship.kind, scout.kind]).size, "three kinds, three colours").toBe(3);
+  const ship = await chips("Rebuild the retry policy");
+  const scout = await chips("Audit the retry policy");
+  expect(
+    new Set([plan.kind, ship.kind, scout.kind].map((c) => c.join(","))).size,
+    "three kinds, three colours",
+  ).toBe(3);
+
+  // The known crowding, pinned as it currently STANDS rather than as it ought to be, so the
+  // day somebody fixes it this line fails and points at the reasoning rather than letting
+  // the fix land with no record that it was ever a considered trade. `.bl-next` is
+  // `--pr-merged` mixed toward `--fg` and `--pr-merged` IS `--purple`, so this card wears
+  // two purple-toned marks a line apart for two unrelated facts. The threshold is measured
+  // rather than guessed: 262 degrees against 259, which is the same colour to a reader.
+  // See the comment on `.bl-kind-plan` for why it is accepted here.
+  await expect(
+    card.locator(".bl-next"),
+    "the plan card should be the one Foreman would pick up next",
+  ).toBeVisible();
+  const planHue = hueOf(plan.kind);
+  const nextHue = hueOf(await rgbOf(card, ".bl-next"));
+  expect(
+    Math.abs(planHue - nextHue),
+    `plan (${Math.round(planHue)}deg) and next up (${Math.round(nextHue)}deg) share a hue today - if this now differs, the family-wide colour pass landed and the note on .bl-kind-plan is stale`,
+  ).toBeLessThan(20);
 });

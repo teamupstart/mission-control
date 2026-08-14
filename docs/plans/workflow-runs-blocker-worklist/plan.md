@@ -133,9 +133,14 @@ known rather than guessing why.
 
 | Situation | State | What is known |
 | --- | --- | --- |
-| Key stops appearing, its persona **passed** afterwards | `resolved` | It is fixed. The reviewer said so. |
-| Key stops appearing, its persona **never passed** afterwards | `unconfirmed` | Nothing. It may be fixed, or reworded. |
 | Key still being raised at the viewed round | `open` | It is outstanding. |
+| Key stops appearing, its persona **has not re-run since** | `open` | Nothing has changed. Nobody has looked. |
+| Key stops appearing, its persona re-ran and **passed** | `resolved` | It is fixed. The reviewer said so. |
+| Key stops appearing, its persona re-ran and **never passed** | `unconfirmed` | It looked and did not confirm. May be fixed, may be reworded. |
+
+The second row is the one that is easy to lose. A reviewer that has not re-run yet has not
+"failed to confirm" anything, so its changes stay `open` rather than dropping into Archive; only
+a reviewer that actually produced a later verdict can move a change out of `Blocking`.
 
 `unconfirmed` deliberately does **not** claim the finding was rephrased. From the outside those
 two cases are indistinguishable: a reviewer that stops raising A because A is fixed, while

@@ -85,11 +85,13 @@ foundational interface, and it leaves the tree operable and green at the merge b
   both `Archive` - and is **conservative under a partial round**: resolution is decided per
   owning persona, so a change whose reviewer has not re-attempted stays `open` rather than
   reading as fixed because some other reviewer advanced the round.
-- **A key that stops appearing while its persona never passes is `unconfirmed`, not `resolved`.**
-  The state is a claim about knowledge, not about intent: it says the reviewer never passed, so
-  nothing is known. Phase 2 must label and colour the two differently, and must not word
-  `unconfirmed` as *rephrased* - a reviewer that stops raising a change because it is fixed while
-  raising something unrelated lands here too, and calling that a rewording is false.
+- **A change only leaves `Blocking` once its owning persona has actually re-run.** No later
+  completed attempt from that node means `open`, however many rounds have passed. Once it has
+  re-run: passed means `resolved`, never passed means `unconfirmed`.
+- **`unconfirmed` is a claim about knowledge, not about intent.** It says the reviewer looked and
+  did not confirm. Phase 2 must label and colour it distinctly from `resolved`, and must not word
+  it as *rephrased* - a reviewer that stops raising a change because it is fixed while raising
+  something unrelated lands here too, and calling that a rewording is false.
 - `roundsOpen` is a **count of appearances**, not a span, so it never claims a round the
   reviewer was silent in.
 - The model covers **requested changes only**. Checks never flow through it. Phase 2 keeps the
@@ -183,6 +185,16 @@ Round 5 raised one `major`, accepted:
    and not to the card. Phase 1 now exports `runStalemates(detail, asOfRound)`, pinned against
    the payload field at the default window.
 
+Round 8 raised one `major`, accepted:
+
+10. **The third state could swallow an in-flight change.** Step 4b's pass/never-passed split
+    carried no precondition, so "never passed in a later round" was literally true of a node
+    that never *ran* a later round - labelling a change `unconfirmed`, which claims the reviewer
+    looked and withheld confirmation, when the partial-round rule from round 1 requires `open`.
+    The document contradicted itself: 4b was written in round 6 against a two-state world and
+    never reconciled with round 1's precondition. Now a three-way rule with "no completed later
+    attempt" first.
+
 Round 7 raised one `major`, accepted:
 
 9. **The two stalemate anchors did not actually match.** The default horizon was "the newest
@@ -205,7 +217,7 @@ Round 6 raised one `major` and one `minor`, both accepted:
    the selection was a bare key over two unreconciled id spaces. Phase 2 now defines a
    `WorklistItem` discriminated union with namespaced keys and branches on `kind`.
 
-All nine fixes tighten the design without touching an approved human decision, so none was
+All ten fixes tighten the design without touching an approved human decision, so none was
 escalated. Each phase's cross-phase audit record carries the detail.
 
 The ninth is worth separating from the rest: every line-number citation in this plan was

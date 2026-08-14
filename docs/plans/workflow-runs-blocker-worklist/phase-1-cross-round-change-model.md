@@ -163,14 +163,26 @@ Derivation, in order:
    dropped it in round 5 - because at round 4 it was open, and that is what the reader asked to
    see. Resolution is still decided per owning `nodeId` **within the window**.
 
-4b. **Split "stopped appearing" into two outcomes.** For a key that is no longer being raised,
-   look at what its owning node did in the rounds after `lastRound`, inside the window:
+4b. **Split "stopped appearing" into two outcomes - but only once the owning node has spoken
+   again.** For a key that is no longer being raised, look at what its owning node did in the
+   rounds after `lastRound`, inside the window:
 
+   - the node has **no completed attempt** in any later round: `"open"`. Step 4's baseline wins
+     and this split does not apply at all. The reviewer has not re-run, so "stopped appearing"
+     is an artefact of nobody having looked yet, not an observation about the change.
    - the node **passed** in a later round: `"resolved"`. The reviewer said so.
-   - the node **never passed** in a later round: `"unconfirmed"`. Nothing is known.
+   - the node completed a later round and **never passed**: `"unconfirmed"`. It looked, and did
+     not confirm.
+
+   The first bullet is the precondition, and it is not decoration: without it "never passed in a
+   later round" is literally true of a node that never ran a later round, which would label an
+   in-flight change `"unconfirmed"` - claiming the reviewer looked and withheld confirmation when
+   it has not looked at all. That is the same partial-round error step 4 exists to prevent, and
+   the Partial-round test case pins the opposite outcome. Read together, the rule is: no later
+   attempt means `"open"`; a later attempt means the pass/never-passed split decides.
 
    `"unconfirmed"` asserts only what the data supports. It is tempting to call this case
-   "unconfirmed" and say the reviewer rephrased, and that is wrong: a reviewer that stops raising
+   `superseded` and say the reviewer rephrased, and that is wrong: a reviewer that stops raising
    A **because A is fixed** while separately raising unrelated C is indistinguishable, from the
    outside, from one that reworded A into C. Both leave key A absent and the node still failing.
    Title-based identity cannot separate them, so the state says the reviewer never passed and
@@ -261,6 +273,10 @@ Cases:
   6 to 10 and never passes. Key A is `"unconfirmed"`, not `"resolved"`; key B is `"open"`. This is
   the case that would otherwise put "Resolved in round 5" on the same rail as "failed 10 rounds
   running" for one reviewer.
+- **No later attempt is `"open"`, not `"unconfirmed"`.** A change last raised in round 2 whose
+  persona has not run in round 3 at all stays `"open"`. This is the same fixture as the
+  Partial-round case above, asserted against the *third* state rather than against `"resolved"`,
+  because step 4b's split is the other way this can go wrong.
 - **A persona that fixes one thing and raises another.** It raises key A in rounds 1 and 2, then
   in round 3 stops raising A and raises unrelated key C. Key A is `"unconfirmed"` - correct,
   because nothing here proves A was fixed - and the row must not be worded as though A was
@@ -405,6 +421,16 @@ Phase 2 must not:
   to keep this model narrow rather than widen it, and the boundary now lives in this phase's
   downstream handoff, which is the earliest place that must own it. No scope or signature here
   changed.
+- **Inspector round 8, `major`, accepted.** Step 4b's two-way split had no precondition, so
+  "never passed in a later round" was literally true of a node that never *ran* a later round -
+  labelling an in-flight change `"unconfirmed"`, which claims the reviewer looked and withheld
+  confirmation. Step 4 and the Partial-round test case both require `"open"` there, so the
+  document contradicted itself: 4b was written in round 6 against a two-state world and never
+  reconciled with the partial-round precondition added in round 1. 4b is now a three-way rule
+  with "no completed later attempt" first, and a test case pins that outcome against the third
+  state specifically rather than only against `"resolved"`. Also fixed a sentence the round-6
+  rename had corrupted into nonsense - "tempting to call this case `unconfirmed`" now reads
+  `superseded`, which is what it meant.
 - **Inspector round 7, `major`, accepted.** Step 1b defaulted the horizon to "the newest round
   carrying folded attempt data", which misread `repeat-offender.ts:64-65`: that line is a
   **bail-out** returning `[]`, not a fallback stepping back to an older round. The two anchors

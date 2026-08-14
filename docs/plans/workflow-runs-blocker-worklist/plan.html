@@ -182,9 +182,10 @@ svg{display:block;max-width:100%;height:auto;margin:0 auto}
 <table>
 <thead><tr><th>Situation</th><th>State</th><th>What is known</th></tr></thead>
 <tbody>
-<tr><td>Key stops appearing, its persona <b>passed</b> afterwards</td><td><code>resolved</code></td><td>It is fixed. The reviewer said so.</td></tr>
-<tr><td>Key stops appearing, its persona <b>never passed</b> afterwards</td><td><code>unconfirmed</code></td><td>Nothing. It may be fixed, or reworded.</td></tr>
 <tr><td>Key still being raised at the viewed round</td><td><code>open</code></td><td>It is outstanding.</td></tr>
+<tr><td>Key stops appearing, its persona <b>has not re-run since</b></td><td><code>open</code></td><td>Nothing has changed. Nobody has looked.</td></tr>
+<tr><td>Key stops appearing, its persona re-ran and <b>passed</b></td><td><code>resolved</code></td><td>It is fixed. The reviewer said so.</td></tr>
+<tr><td>Key stops appearing, its persona re-ran and <b>never passed</b></td><td><code>unconfirmed</code></td><td>It looked and did not confirm. May be fixed, may be reworded.</td></tr>
 </tbody>
 </table>
 </div>

@@ -450,6 +450,18 @@ test("clicking a row moves the transcript to that turn and flashes it", async ({
   await expect(thirdTurn).toBeInViewport();
   await expect(thirdTurn).toHaveClass(/is-flashed/);
   await expect(firstTurn).not.toHaveClass(/is-flashed/);
+
+  // Clicking the row you are ALREADY on flashes again, which is the one case a class
+  // that never leaves the DOM would silently swallow: React drops a state update that
+  // does not change the id, so the ring would sit at its faded end while the reader
+  // watched nothing happen. Read off the animation's own clock rather than a screenshot,
+  // because "did it start over?" is exactly what that clock answers.
+  const ringAge = (): Promise<number> =>
+    thirdTurn.evaluate((el) => Number(el.getAnimations()[0]?.currentTime ?? -1));
+  await dashboard.waitForTimeout(700);
+  expect(await ringAge(), "the ring should have been running a while").toBeGreaterThan(400);
+  await row(card, THIRD).click();
+  expect(await ringAge(), "a repeat click should restart the ring").toBeLessThan(400);
 });
 
 test("the jump works in the terminal rendering too", async ({ dashboard, daemon }) => {

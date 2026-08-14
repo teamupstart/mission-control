@@ -436,9 +436,20 @@ export function TranscriptPanel({
    * turn without re-flashing it: the reader did not ask to be taken anywhere the second
    * time. The timer is cleared and restarted per jump, so a run of quick clicks leaves
    * exactly one turn flashing rather than several fading at once.
+   *
+   * The rewind is what makes a SECOND click on the same row flash again. Setting the id
+   * it already holds is a state update React bails on, so the class never leaves the DOM
+   * and the CSS animation - which only replays when the class is removed and re-added -
+   * would sit at its faded end state while the timer quietly extended. Rewinding the
+   * running animation instead restarts the ring without a re-render, without the class
+   * flicker a clear-then-set would cost, and without remounting the turn. It finds
+   * nothing on a first click, which is correct: there is no animation yet, and applying
+   * the class below starts one.
    */
   useEffect(() => {
     if (!jump) return;
+    const el = logRef.current?.querySelector(`[data-turn-id="${CSS.escape(jump.id)}"]`);
+    for (const animation of el?.getAnimations() ?? []) animation.currentTime = 0;
     setFlashedTurnId(jump.id);
     if (turnFlashTimer.current) clearTimeout(turnFlashTimer.current);
     turnFlashTimer.current = setTimeout(() => {

@@ -291,8 +291,10 @@ whatever turn was in flight. The supervisor resumes the same conversation on the
 before anything else runs, including its Mission MCP tools. When durable state says a turn
 was unfinished, it sends a cautious continuation that tells the agent to inspect the checkout
 and avoid repeating completed work; it never replays the original task prompt. Recovery is
-at-least-once across the database and vendor process boundary, while restored sessions that
-were already idle remain idle.
+at-least-once across the database and vendor process boundary. A restored session whose
+durable turn flag is clear sends no prompt; its driver binding confirms it as idle even when
+the harness emits no assistant or result frame during an empty-prompt resume. Fresh launches
+and interrupted restores remain starting until their ordinary driver lifecycle advances them.
 
 **Automation works here, and works better.** Foreman reviews, answers and drives the work
 queue on an embedded session exactly as it does on a pane-backed one, over the same routes -

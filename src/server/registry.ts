@@ -232,6 +232,15 @@ export interface SdkSessionRegistration {
    * synthetic SDK id makes workflow bindings believe the conversation changed.
    */
   agentSessionId?: string | null;
+  /**
+   * The lifecycle projection the card carries until the driver reports a state.
+   *
+   * Omitted for a fresh launch or an interrupted restore, both of which are genuinely
+   * starting work. The supervisor passes `idle` only when it is restoring a durable row
+   * that owes no turn; the driver's `bound` event then confirms that projection without
+   * requiring a harness to manufacture an idle frame.
+   */
+  initialState?: "starting" | "idle";
   pid?: number;
   permissionMode?: PermissionMode | null;
   gitBranch?: string | null;
@@ -1604,7 +1613,7 @@ export class Registry extends EventEmitter {
       nameSource: "sdk",
       // Fresh launches learn this from `bound`; restored sessions carry the durable identity
       // immediately so note-keyed state never observes a synthetic-id interlude.
-      state: "starting",
+      state: input.initialState ?? "starting",
       cwd: input.cwd,
       gitBranch: input.gitBranch ?? null,
       gitRoot: input.gitRoot ?? null,

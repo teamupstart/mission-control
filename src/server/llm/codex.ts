@@ -287,6 +287,24 @@ export const codexRunner: LlmRunner = {
           done();
           reject(e);
         });
+        // A run KILLED by a signal settles here rather than on `close`, and the difference is
+        // the difference between a shutdown and a stall.
+        //
+        // `close` does not mean "the process ended", it means "the process ended AND nothing
+        // still holds its stdio". `codex` is a launcher in front of a real binary, so a
+        // grandchild that survives the signal - one that put itself in another process group,
+        // which `killTree`'s group kill cannot reach - keeps these pipes open and `close`
+        // never arrives. The run then sat until its own `timeoutMs` and reported a timeout for
+        // work that was killed seconds earlier, which is both a wrong diagnosis and, on the
+        // shutdown path, a hang.
+        //
+        // Only for a signal. An ordinary exit keeps waiting for `close`, because there the
+        // remaining stdio IS the answer and settling early would truncate a large stdout.
+        child.on("exit", (_code, signal) => {
+          if (signal === null || settled) return;
+          done();
+          reject(new Error(`codex exited ${signal}: ${codexFailureDetail(out, err)}`));
+        });
         child.on("close", (code) => {
           done();
           if (code !== 0) {

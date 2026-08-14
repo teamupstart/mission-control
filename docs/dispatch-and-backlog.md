@@ -238,9 +238,17 @@ it launches.
 A plan finishes on Foreman's ordinary boundary and is offered the ordinary wrap-up a ship task
 gets, so the plan lands as a pull request. That is deliberate rather than incidental: the
 scheduled phase tasks carry paths rather than content, and those paths have to resolve on the
-default branch before any phase can start. Durable capture of the plan into the
-[archive library](archives.md) is a separate change, tracked in
-[`docs/plans/plan-kind/`](plans/plan-kind/phased-plan.md).
+default branch before any phase can start.
+
+The plan also **outlives the checkout it was written in**. When anything is about to destroy
+that checkout - Reclaim, Remove, Cancel, Reschedule, or the startup pass after a restart the
+agent did not survive - the plan directories this task wrote are captured into the
+[archive library](archives.md) first, as ordinary files on your machine that stay readable
+after the worktree, the task card, and even the database are gone. Which directories those are
+comes from the task's own diff, so an unrelated plan sitting in the same checkout is never
+swept up. Unlike a scout, nothing about a plan **waits** on that: the task reaches done on its
+own boundary, and a plan task that wrote no plan at all releases its worktree cleanly rather
+than holding it.
 
 Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and

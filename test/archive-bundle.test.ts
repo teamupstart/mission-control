@@ -191,7 +191,7 @@ test("version 1 allows static markup, inline CSS and SVG, fragments, and data: i
   assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result.problems));
 });
 
-test("an external link a person can click is allowed, in every navigational slot", () => {
+test("an external link a person can click is allowed, and only where a click reaches it", () => {
   const ok = (fragment: string): void => {
     const result = validateStaticReportHtml(
       `<!doctype html><html><body>${fragment}</body></html>`,
@@ -201,19 +201,32 @@ test("an external link a person can click is allowed, in every navigational slot
   };
   ok('<a href="https://example.com/docs#anchor?q=1">the upstream documentation</a>');
   ok('<a href="http://example.com/docs">an insecure one, still only a click away</a>');
-  // A form is a forbidden ELEMENT, so these two can only ever appear on an inert control -
-  // but the slot rule is what decides, and it is asserted rather than left to that accident.
-  ok('<button formaction="https://example.com/x">x</button>');
-  ok('<div action="https://example.com/x">x</div>');
+  // An image-map region is an anchor with a shape.
+  ok('<map name="m"><area href="https://example.com/docs" shape="rect" coords="0,0,1,1"></map>');
+  // An SVG anchor is still an anchor: parse5 reports its tag as `a`.
+  ok('<svg><a href="https://example.com/docs"><text>x</text></a></svg>');
 });
 
 test("every slot that fetches on its own refuses http(s), one case per slot", () => {
-  // The relaxation above is confined to slots a person CLICKS. This is the boundary test,
-  // and it is per-slot on purpose: a single case would pass while the allowance leaked into
-  // every other attribute, and each of these fires on OPEN, before anyone has decided
-  // anything. `ping` is here because it is the near miss - it is sent on a click, but it is
-  // not where the click goes, so nobody ever sees where it went.
+  // The relaxation above is confined to the element+attribute pairs a person CLICKS. This is
+  // the boundary test, and it is per-slot on purpose: a single case would pass while the
+  // allowance leaked into every other slot, and each of these fires on OPEN, before anyone
+  // has decided anything. `ping` is here because it is the other near miss - it is sent on a
+  // click, but it is not where the click goes, so nobody ever sees where it went.
   const fetching: Array<[string, string]> = [
+    // The `href` fetching elements come FIRST because they are the near misses that matter
+    // most: `href` is a click destination on `<a>` and a resource everywhere else, so an
+    // allowance keyed to the attribute name rather than the element+attribute PAIR admits a
+    // page that phones home the moment it opens. A revision of this validator did exactly
+    // that, and these four are what caught it.
+    ["link[href] stylesheet", '<link rel="stylesheet" href="https://example.com/a.css">'],
+    ["link[href] icon", '<link rel="icon" href="https://example.com/f.ico">'],
+    ["svg use[href]", '<svg><use href="https://example.com/x.svg#a"/></svg>'],
+    ["svg image[href]", '<svg><image href="https://example.com/a.png"/></svg>'],
+    // `<form>` is a forbidden element, so neither of these can ever be submitted - and a slot
+    // no click can reach is not a destination, so it gets no allowance either.
+    ["formaction", '<button formaction="https://example.com/x">x</button>'],
+    ["action", '<div action="https://example.com/x">x</div>'],
     ["src", '<img src="https://example.com/pixel.png" alt="">'],
     ["srcset", '<img srcset="https://example.com/a.png 2x" alt="">'],
     ["imagesrcset", '<link rel="preload" as="image" imagesrcset="https://example.com/a.png 2x">'],

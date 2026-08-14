@@ -196,7 +196,11 @@ export function validateStaticReportHtml(
       }
       if (!URL_ATTRIBUTES.has(name)) continue;
       for (const value of splitUrlAttribute(name, attr.value)) {
-        const problem = urlProblem(value, { slot: slotFor(name), relativeTargets });
+        const problem = urlProblem(value, {
+          linkTarget: LINK_TARGET_ATTRIBUTES.has(name),
+          clickable: isClickableDestination(tag, name),
+          relativeTargets,
+        });
         if (problem) add(problem.code, problem.message);
       }
     }
@@ -337,30 +341,39 @@ function splitUrlAttribute(name: string, raw: string): string[] {
 }
 
 /**
- * What the browser does with a URL in this attribute, which is the only distinction the
- * external-link allowance rests on.
+ * Attributes whose value is a link TARGET rather than a resource to load.
  *
- * - `link` - `href`, `action`, `formaction`. The destination of a CLICK. Nothing is
- *   requested until a person acts, and what they get is a page they asked for, in their
- *   browser, with the address bar showing where they went.
- * - `beacon` - `ping`. Requested on a click, but not the thing the click navigates to: the
- *   person goes to the `href` and the browser quietly POSTs somewhere else. Nobody sees
- *   where, which is exactly the property that makes it a request on somebody's behalf.
- * - `fetch` - everything else in `URL_ATTRIBUTES`. Requested when the page OPENS, with no
- *   act by anyone.
+ * Used for one thing only: refusing a `data:` URL in a slot where a browser would treat it
+ * as somewhere to GO. That rule predates the external-link allowance and is unchanged by it -
+ * a `data:` link target opens attacker-authored markup with the archive's own opener, whatever
+ * element carries it.
  */
-type UrlSlot = "link" | "beacon" | "fetch";
+const LINK_TARGET_ATTRIBUTES = new Set(["href", "action", "formaction", "ping"]);
 
-function slotFor(attributeName: string): UrlSlot {
-  if (attributeName === "href" || attributeName === "action" || attributeName === "formaction") {
-    return "link";
-  }
-  if (attributeName === "ping") return "beacon";
-  return "fetch";
+/**
+ * Whether this element+attribute pair is a destination a person must CLICK to reach.
+ *
+ * The pair, never the attribute alone, and that is the whole correctness argument. `href` is
+ * not one kind of thing: on `<a>` it is where a click goes, and on `<link>`, SVG `<use>` and
+ * SVG `<image>` it is a resource the browser fetches the moment the page opens. Keying the
+ * allowance to the attribute name would therefore have let `<link rel=stylesheet
+ * href="https://…">` and `<use href="https://…/x.svg#a">` through - a page that phones home on
+ * open, which is precisely what this validator exists to prevent. An earlier revision of this
+ * change did exactly that; `test/archive-bundle.test.ts` pins each of those elements.
+ *
+ * `<area>` is here with `<a>` because an image-map region is an anchor with a shape. `action`
+ * and `formaction` are deliberately NOT here: `<form>` is a forbidden element, so neither can
+ * ever be submitted, and a slot that cannot be reached is not a destination a person clicks.
+ */
+function isClickableDestination(tag: string, attributeName: string): boolean {
+  return attributeName === "href" && (tag === "a" || tag === "area");
 }
 
 interface UrlContext {
-  slot: UrlSlot;
+  /** A link target: refuses `data:`, exactly as it always has. */
+  linkTarget: boolean;
+  /** `<a href>` or `<area href>`: the one place an external `http(s)` reference is allowed. */
+  clickable: boolean;
   relativeTargets: ReadonlySet<string> | null;
 }
 
@@ -376,11 +389,12 @@ interface UrlContext {
  * defending: what this machine requests on somebody else's behalf when a human OPENS an
  * archive they were sent. An `<img src>` fetches on open, tells a server the page was read,
  * and does it before anyone has decided anything - so every scheme stays refused there, and
- * in every other fetching slot, including a `ping` beacon, which is sent on a click without
- * being where the click goes. An `<a href="https://...">` requests nothing until a person
- * acts, and then takes them somewhere their own browser shows them. Real pages cite their
- * sources; refusing that made an archived report link to documentation it could only
- * describe.
+ * in every other fetching slot: a `ping` beacon, which is sent on a click without being where
+ * the click goes, and every `href` that is a RESOURCE rather than a destination
+ * (`<link rel=stylesheet>`, SVG `<use>`, SVG `<image>`). An `<a href="https://...">` requests
+ * nothing until a person acts, and then takes them somewhere their own browser shows them.
+ * Real pages cite their sources; refusing that made an archived report link to documentation
+ * it could only describe.
  *
  * `data:` is unchanged in every slot. A `data:` link target is a navigation primitive rather
  * than a reference - it opens attacker-authored markup with the archive's own opener - and
@@ -395,11 +409,11 @@ function urlProblem(raw: string, context: UrlContext): ArchiveHtmlProblem | null
   }
   const scheme = SCHEME_RE.exec(value)?.[0]?.slice(0, -1).toLowerCase();
   if (scheme) {
-    if (context.slot === "link" && (scheme === "http" || scheme === "https")) return null;
+    if (context.clickable && (scheme === "http" || scheme === "https")) return null;
     if (scheme !== "data") {
       return { code: "external_url", message: `the ${scheme}: scheme is not allowed in an archived report` };
     }
-    if (context.slot !== "fetch") {
+    if (context.linkTarget) {
       return { code: "data_navigation", message: "a data: URL cannot be a link target in an archived report" };
     }
     if (value.length > MAX_DATA_URL_CHARS) {
@@ -486,7 +500,7 @@ function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null): 
     // Every reference a stylesheet carries is fetched when the page opens, however it is
     // spelled, so CSS is entirely a fetching slot and the navigational allowance never
     // reaches it.
-    const problem = urlProblem(value, { slot: "fetch", relativeTargets });
+    const problem = urlProblem(value, { linkTarget: false, clickable: false, relativeTargets });
     if (problem) problems.push(problem);
   };
 

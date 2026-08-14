@@ -62,6 +62,11 @@ function harness(
     rename?: (from: string, to: string) => Promise<void>;
     root?: string;
     /**
+     * Roots that are read and never written. Absent means none, because naming `root`
+     * explicitly means "this directory is the library" - see `ArchiveLibrary`.
+     */
+    legacyRoots?: readonly string[];
+    /**
      * A task gateway, for the submission route only.
      *
      * Absent by default so every read test keeps proving that the read surface needs no task
@@ -77,6 +82,7 @@ function harness(
   const opened: string[] = [];
   const manager = new ArchiveManager({
     root,
+    legacyRoots: options.legacyRoots,
     store: new ArchiveStore(db),
     producer: { id: "00000000-0000-4000-8000-000000000000", label: null },
     intervalMs: null,
@@ -119,6 +125,107 @@ async function settle(manager: InstanceType<typeof ArchiveManager>): Promise<voi
 }
 
 beforeEach(() => clearArchiveTables(db));
+
+// ---------------------------------------------------------------------------
+// The compatibility window, end to end
+// ---------------------------------------------------------------------------
+
+test("a bundle an older build published is still listed, and still readable, through the archive routes", async () => {
+  // The upgrade an operator actually performs: a library written by a build that predates
+  // the kind discriminator, opened by this one. Nothing moves, nothing is rewritten, and the
+  // whole route surface has to keep answering for it - which is what makes "the legacy ones
+  // stay readable" a property somebody can check rather than a claim in a document.
+  //
+  // Both roots are the DAEMON'S OWN, resolved from `MISSION_HOME` rather than handed in, so
+  // this also pins the wiring: `ARCHIVES_DIR` is written and `LEGACY_SCOUTS_DIR` is read.
+  const config = await import("../src/server/config.ts");
+  mkdirSync(config.ARCHIVES_DIR, { recursive: true });
+  mkdirSync(config.LEGACY_SCOUTS_DIR, { recursive: true });
+  // Realpath'd because the index stores the root it actually walked, and macOS resolves the
+  // temp dir through a symlink - the same reason `newLibrary()` above does it.
+  const ARCHIVES_DIR = realpathSync(config.ARCHIVES_DIR);
+  const LEGACY_SCOUTS_DIR = realpathSync(config.LEGACY_SCOUTS_DIR);
+  const legacy = writeScoutBundle(LEGACY_SCOUTS_DIR, {
+    legacyFormat: true,
+    title: "Published before archives declared a kind",
+    companions: { "permission-events.csv": "when,what\n1,grant missing\n" },
+  });
+  // Proof the fixture is what it claims to be: the old format string, and no kind field.
+  const onDisk = JSON.parse(readFileSync(join(legacy.dir, "manifest.json"), "utf8")) as Record<string, unknown>;
+  assert.equal(onDisk.format, "mission-control/scout-archive");
+  assert.equal("kind" in onDisk, false);
+
+  const { app, manager } = harness({ root: ARCHIVES_DIR, legacyRoots: [LEGACY_SCOUTS_DIR] });
+  await settle(manager);
+
+  const list = (await (await app.request("/api/archives", { headers: LOOPBACK })).json()) as {
+    archives: Array<{ key: string; kind: string | null; status: string; title: string }>;
+    libraryPath: string;
+  };
+  assert.equal(list.archives.length, 1);
+  assert.equal(list.archives[0]?.key, legacy.key);
+  assert.equal(list.archives[0]?.kind, "scout", "a manifest with no kind field is the scout it always was");
+  assert.equal(list.archives[0]?.status, "ready");
+  assert.equal(list.archives[0]?.title, "Published before archives declared a kind");
+  assert.equal(list.libraryPath, ARCHIVES_DIR, "new work is written to the new root, not the one this came from");
+
+  // The kind filter reaches it, and does not reach past it.
+  const scouts = (await (await app.request("/api/archives?kind=scout", { headers: LOOPBACK })).json()) as {
+    archives: unknown[];
+  };
+  assert.equal(scouts.archives.length, 1);
+  const plans = (await (await app.request("/api/archives?kind=plan", { headers: LOOPBACK })).json()) as {
+    archives: unknown[];
+  };
+  assert.equal(plans.archives.length, 0);
+
+  // The detail route names the directory that actually holds the files - the legacy root.
+  const detail = (await (await app.request(`/api/archives/${legacy.key}`, { headers: LOOPBACK })).json()) as {
+    kind: string | null;
+    bundlePath: string;
+    formatVersion: number;
+    artifacts: Array<{ id: string }>;
+  };
+  assert.equal(detail.kind, "scout");
+  assert.equal(detail.formatVersion, 1);
+  assert.equal(detail.bundlePath, legacy.dir);
+  assert.ok(detail.bundlePath.startsWith(LEGACY_SCOUTS_DIR), "nothing was moved into the new root");
+
+  // And the bytes come back: the report, and a companion beside it.
+  const report = await app.request(`/api/archives/${legacy.key}/artifacts/report`, { headers: LOOPBACK });
+  assert.equal(report.status, 200);
+  assert.equal(report.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.match(await report.text(), /Resume permission loss/);
+
+  const companion = await app.request(`/api/archives/${legacy.key}/artifacts/artifact-01`, { headers: LOOPBACK });
+  assert.equal(companion.status, 200);
+  assert.equal(await companion.text(), "when,what\n1,grant missing\n");
+});
+
+test("a bundle in each root appears in one catalog, from one pass", async () => {
+  const config = await import("../src/server/config.ts");
+  mkdirSync(config.LEGACY_SCOUTS_DIR, { recursive: true });
+  mkdirSync(config.ARCHIVES_DIR, { recursive: true });
+  const ARCHIVES_DIR = realpathSync(config.ARCHIVES_DIR);
+  const LEGACY_SCOUTS_DIR = realpathSync(config.LEGACY_SCOUTS_DIR);
+  const legacy = writeScoutBundle(LEGACY_SCOUTS_DIR, { legacyFormat: true, title: "The old one" });
+  const fresh = writeScoutBundle(ARCHIVES_DIR, { title: "The new one" });
+
+  const { app, manager } = harness({ root: ARCHIVES_DIR, legacyRoots: [LEGACY_SCOUTS_DIR] });
+  await settle(manager);
+
+  const list = (await (await app.request("/api/archives", { headers: LOOPBACK })).json()) as {
+    archives: Array<{ key: string; kind: string | null }>;
+  };
+  const keys = list.archives.map((row) => row.key);
+  // Containment rather than equality: these tests share the daemon's own roots on disk, and
+  // `clearArchiveTables` clears rows rather than directories, so a bundle an earlier test
+  // wrote is legitimately still there. What is under test is that ONE query answers for both
+  // roots, which containment says exactly.
+  assert.ok(keys.includes(legacy.key), "the bundle under the legacy root is in the catalog");
+  assert.ok(keys.includes(fresh.key), "so is the one under the write root");
+  for (const row of list.archives) assert.equal(row.kind, "scout");
+});
 
 test("the list route returns bounded summaries and the library path", async () => {
   const { app, root, manager } = harness();

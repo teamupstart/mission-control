@@ -37,11 +37,14 @@ const RUN_CWD = join(home, "cwd");
 const RUN_ENV = join(home, "env");
 const RUN_SCHEMA_PATH = join(home, "schema-path");
 const RUN_SCHEMA = join(home, "schema");
+const RUN_ORPHAN_READY = join(home, "orphan-ready");
 process.env.RUN_ARGS = RUN_ARGS;
 process.env.RUN_CWD = RUN_CWD;
 process.env.RUN_ENV = RUN_ENV;
 process.env.RUN_SCHEMA_PATH = RUN_SCHEMA_PATH;
 process.env.RUN_SCHEMA = RUN_SCHEMA;
+process.env.RUN_NODE = process.execPath;
+process.env.RUN_ORPHAN_READY = RUN_ORPHAN_READY;
 
 const fakeBin = join(home, "fake-claude.sh");
 writeFileSync(
@@ -83,6 +86,16 @@ if [ "$RUN_CODEX_FAIL" = "1" ]; then
   printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OPERATOR BRIEF MUST NOT LEAK"}}'
   printf '%s\\n' '{"type":"turn.failed","error":{"message":"schema validation failed: missing tasks"}}'
   exit 1
+fi
+if [ "$RUN_CODEX_ORPHAN" = "1" ]; then
+  # A survivor holding this run's stdout from ANOTHER session, which is what the group kill
+  # cannot reach - the shape a real launcher leaves when it hands off to a helper. A plain
+  # '( ... ) &' would not do: a non-interactive shell puts it in the same process group, so
+  # the group kill gets it and nothing is proven. Spawning detached from node calls setsid,
+  # and fd 1 is this run's stdout, so the pipe stays open after the shell is gone.
+  "$RUN_NODE" -e 'require("child_process").spawn(process.execPath,["-e","setTimeout(()=>{},6000)"],{detached:true,stdio:["ignore",1,2]}).unref()'
+  : > "$RUN_ORPHAN_READY"
+  sleep 30
 fi
 if [ "$RUN_CODEX_WAIT" = "1" ]; then
   sleep 30
@@ -135,7 +148,7 @@ function flag(name: string): string | null {
 }
 
 function clearRecording(): void {
-  for (const f of [RUN_ARGS, RUN_CWD, RUN_ENV, RUN_SCHEMA_PATH, RUN_SCHEMA]) {
+  for (const f of [RUN_ARGS, RUN_CWD, RUN_ENV, RUN_SCHEMA_PATH, RUN_SCHEMA, RUN_ORPHAN_READY]) {
     rmSync(f, { force: true });
   }
 }
@@ -393,6 +406,32 @@ test("Codex cleans a live schema synchronously when shutdown kills the run", asy
     await assert.rejects(run, /codex exited/);
   } finally {
     delete process.env.RUN_CODEX_WAIT;
+    codexRunner.killLiveRuns?.();
+  }
+});
+
+test("a killed Codex run settles when the process dies, not when its stdio does", async () => {
+  // The failure this pins is a HANG, and it hid behind a wrong error message. `close` fires
+  // only once nothing holds the run's stdio, so a survivor of the kill - a helper the group
+  // signal could not reach - kept the promise pending until the run's own `timeoutMs` fired
+  // and reported "timed out" for work that was killed immediately. Killing must settle the
+  // run at the process's death, which is a fact about the process rather than about who else
+  // is holding a pipe.
+  clearRecording();
+  process.env.RUN_CODEX_ORPHAN = "1";
+  const started = Date.now();
+  // Far longer than this should ever take, so a pass cannot come from the timeout instead.
+  const run = codexRunner.run("wait for shutdown", { timeoutMs: 60_000 });
+  try {
+    await assertSoon(() => existsSync(RUN_ORPHAN_READY));
+    codexRunner.killLiveRuns?.();
+    await assert.rejects(run, /codex exited/);
+    const elapsed = Date.now() - started;
+    // Well under the 6s the survivor holds the pipe for: this is the whole assertion, and a
+    // looser bound would pass on the `close` that eventually arrives when the survivor exits.
+    assert.ok(elapsed < 3_000, `a killed run must settle at once, took ${elapsed}ms`);
+  } finally {
+    delete process.env.RUN_CODEX_ORPHAN;
     codexRunner.killLiveRuns?.();
   }
 });

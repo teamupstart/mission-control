@@ -46,8 +46,16 @@ const REGISTRIES = ["shared/types.ts", "shared/task.ts"];
  * `ship` is intentionally absent and future task kinds must not become archive kinds by
  * inheritance. Keep that registry independent and keep this syntax detector from treating
  * its deliberate overlap as a stale task picker.
+ *
+ * `task-gateway.ts` is the ONE place the two vocabularies meet - the map from a task kind to
+ * the archive kind its work is captured as - so it necessarily writes archive-kind values
+ * beside task-kind keys. It is exempt from the SYNTAX rule and not from the rule's purpose:
+ * that map is a total `Record<TaskKind, ArchiveKind | null>`, so a fourth task kind fails to
+ * compile until it has said whether it is archived, which is a stronger guarantee than this
+ * scan can give. Adding a file here without that property would be the drift this file
+ * exists to catch.
  */
-const DISTINCT_KIND_REGISTRIES = ["shared/archives.ts"];
+const DISTINCT_KIND_REGISTRIES = ["shared/archives.ts", "server/archives/task-gateway.ts"];
 
 /**
  * Kind `<select>`s that hand-write their `<option>`s. EMPTY, and it stays empty.

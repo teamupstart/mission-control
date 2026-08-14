@@ -2101,6 +2101,13 @@ export function openDb(): DatabaseSync {
       question        TEXT,
       origin_json     TEXT,
       repos_json      TEXT,
+      -- WHICH unit of work in those checkouts this job captures, for a kind that can produce
+      -- more than one archive from one task. Null for a scout, whose whole episode is one
+      -- archive. Frozen at reservation for the same reason the kind above is: a plan job
+      -- names the directory that was in the task's diff WHEN THE JOB WAS RESERVED, so a
+      -- capture resumed after a restart archives what was reserved rather than whatever the
+      -- tree happens to hold by then.
+      scope_json      TEXT,
       -- Where the published bundle landed under the library root, once it did.
       relative_path   TEXT,
       capture_status  TEXT,
@@ -2696,6 +2703,12 @@ function migrate(d: DatabaseSync): void {
     DROP TABLE IF EXISTS scout_artifacts;
     DROP TABLE IF EXISTS scout_archives;
   `);
+
+  // Which unit of work a capture job covers, for the kinds that can reserve more than one job
+  // per task episode. Additive and nullable: every existing row is a scout's, and a scout's
+  // job has always covered the whole episode, so null reads as "the episode" rather than as a
+  // value that went missing.
+  addColumn(d, "archive_capture_jobs", "scope_json", "TEXT");
 
   rebuildInFlightIndexIfStale(d);
 }

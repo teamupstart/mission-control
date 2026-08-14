@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased plan: the Blocker Worklist</title>
+<style>
+:root{
+  color-scheme: light dark;
+  --bg:#ffffff; --fg:#16191d; --muted:#5b6470; --dim:#7b8593;
+  --border:#e0e4ea; --panel:#f6f8fa; --accent:#1f6feb; --warn:#9a6700; --good:#1a7f37;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  --sans: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d1117; --fg:#e6edf3; --muted:#9aa4b2; --dim:#7d8590;
+    --border:#262c36; --panel:#151b23; --accent:#589bff; --warn:#d29922; --good:#3fb950;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--sans);background:var(--bg);color:var(--fg);line-height:1.62;font-size:15.5px;padding:44px 24px 110px}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:30px;line-height:1.24;margin:0 0 8px;letter-spacing:-0.02em}
+h2{font-size:21px;margin:44px 0 8px;letter-spacing:-0.01em;padding-top:14px;border-top:1px solid var(--border)}
+h3{font-size:16.5px;margin:26px 0 6px}
+p{margin:0 0 13px}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:.86em;background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+ul,ol{margin:0 0 14px;padding-left:23px}
+li{margin:0 0 7px}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:14px 0}
+th,td{border:1px solid var(--border);padding:8px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel);font-weight:600}
+.scroll{overflow-x:auto}
+.eyebrow{color:var(--dim);font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 8px}
+.lede{font-size:17px;color:var(--muted);margin:0 0 6px}
+.callout{border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:10px;background:var(--panel);padding:16px 18px;margin:22px 0}
+.callout.warn{border-left-color:var(--warn)}
+.callout :last-child{margin-bottom:0}
+figure{margin:22px 0;border:1px solid var(--border);border-radius:10px;background:var(--panel);padding:16px}
+figcaption{font-size:13px;color:var(--dim);margin-top:10px}
+svg{display:block;max-width:100%;height:auto;margin:0 auto}
+pre{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="eyebrow">Phased plan &middot; Mission Control</p>
+<h1>Phased plan: the Blocker Worklist</h1>
+<p class="lede">Two merge units. The subtle part gets its own review.</p>
+
+<h2>Source</h2>
+<ul>
+<li>Approved plan: <a href="plan.html">plan.html</a> (<a href="plan.md">markdown</a>)</li>
+<li>Design comparison the selection came from: <a href="../../reports/workflow-runs-triage-mockups/report.html">the mockup report</a></li>
+</ul>
+
+<h2>Incorporated human decisions</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>Decision</th><th>Selection</th><th>Where it lands</th></tr></thead>
+<tbody>
+<tr><td>Which of six mockups</td><td><b>B, Blocker Worklist</b></td><td>Phase 2</td></tr>
+<tr><td>Stage pipeline, run header, round scrubber</td><td><b>Keep unchanged</b></td><td>Non-goal in both phases</td></tr>
+<tr><td>Run rail and filters</td><td><b>Keep unchanged</b></td><td>Non-goal in both phases</td></tr>
+<tr><td>Next step</td><td><b>Phase it and schedule the work</b></td><td>This document</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>What the investigation changed</h2>
+<p>The repository disagreed with the mockup in four places. Each is recorded in the plan with its evidence; the phases implement the adopted position, not the drawing.</p>
+<ol>
+<li><b>A requested change has no identity.</b> <code>RequestedChange</code> carries no id and nothing in the codebase correlates verdict content across rounds. "Open since round 4" has to be derived, and that derivation is the entire reason this is two phases rather than one.</li>
+<li><b>A round is not a submission.</b> A session action splits one round into several evidence segments. <code>repeat-offender.ts</code> already folds for this and documents why; the worklist reuses the rule so the rail and the stalemate card cannot disagree on one screen.</li>
+<li><b>Not every change has a path.</b> The type makes it optional and the e2e fail fixture emits none. The mockup drew a file on every row.</li>
+<li><b>Sub-run selection is not routed.</b> The selected round is local state and there is no precedent for a sub-run selection in <code>MissionRoute</code>. Selection follows that precedent, which removes all route work - and with it the <code>App.tsx</code> <code>onFilters</code> hazard that silently drops unspread route fields.</li>
+</ol>
+<p>The last of these is why there is no route phase. The first is why there is a model phase.</p>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>Phase</th><th>Name</th><th>Depends on</th><th>Delivers</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><a href="phase-1-cross-round-change-model.md">Cross-round change model</a></td><td>none</td><td><code>requestedChangeKey</code> and <code>runChangeWorklist</code> in <code>run-model.ts</code>, with unit tests</td></tr>
+<tr><td>2</td><td><a href="phase-2-blocker-worklist-reader.md">Blocker Worklist reader pane</a></td><td>Phase 1</td><td>The worklist UI, the stalemate card, styles, and e2e coverage</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Dependency graph</h2>
+<figure>
+<svg viewBox="0 0 700 120" role="img" aria-label="Phase 1 precedes Phase 2. Strictly ordered, no concurrency.">
+  <defs>
+    <style>
+      .box{fill:#589bff;fill-opacity:.10;stroke:#589bff;stroke-width:1.8}
+      .t{font:600 13px system-ui,sans-serif;fill:#589bff}
+      .s{font:11px system-ui,sans-serif;fill:#7d8590}
+      .a{stroke:#8b94a3;stroke-width:1.8;fill:none;marker-end:url(#ah)}
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b94a3"/>
+    </marker>
+  </defs>
+  <rect class="box" x="20" y="26" width="260" height="66" rx="9"/>
+  <text class="t" x="38" y="52">Phase 1</text>
+  <text class="s" x="38" y="70">Cross-round change model</text>
+  <text class="s" x="38" y="85">run-model.ts + unit tests</text>
+
+  <line class="a" x1="290" y1="59" x2="400" y2="59"/>
+  <text class="s" x="308" y="50">merges first</text>
+
+  <rect class="box" x="410" y="26" width="270" height="66" rx="9"/>
+  <text class="t" x="428" y="52">Phase 2</text>
+  <text class="s" x="428" y="70">Blocker Worklist reader pane</text>
+  <text class="s" x="428" y="85">UI + styles + e2e</text>
+</svg>
+<figcaption>Strictly ordered. Phase 2 consumes Phase 1's exports, so there is no concurrency and no merge-order ambiguity.</figcaption>
+</figure>
+
+<h2>Concurrency</h2>
+<p>None. Phase 2 consumes Phase 1's exports, so the two are strictly ordered. Merge order is Phase 1 then Phase 2.</p>
+
+<h2>Why two phases and not one</h2>
+<div class="callout">
+<p>The change-identity rule is the only genuinely subtle decision in this work: a key that includes the line number re-raises every finding on every edit, and a key over the raw title splits on a reworded sentence. It deserves review on its own, with unit tests that pin the edge cases, rather than review buried inside a several-hundred-line layout change.</p>
+<p>Phase 1 is additive and unconsumed until Phase 2 merges. That is a deliberate, bounded trade: a pure module with a full unit suite is the repository's normal shape for a foundational interface, and it leaves the tree operable and green at the merge boundary.</p>
+</div>
+
+<h2>Cross-phase contracts</h2>
+<ul>
+<li><b>The stalemate card is windowed too.</b> Phase 2 renders <code>runStalemates(detail, asOfRound)</code>, not <code>detail.repeatOffenders</code>, which is computed over the whole run and anchored on its newest submission. Nothing in the rail may state a fact from a round later than the one being viewed.</li>
+<li><b>The worklist is windowed by the viewed round.</b> <code>runChangeWorklist(detail, asOfRound)</code> returns the run as it stood at the end of that round, and Phase 2 passes the round scrubber's current submission. The rest of the reader pane is already round-scoped, so a whole-run worklist beside it would put three counts from two different moments on one segmented control. Phase 2 does no windowing of its own.</li>
+<li><code>ChangeWorklistRow.key</code> is stable across renders and is both the React key and the selected-row identity. Phase 2 must not key rows positionally.</li>
+<li><b>The key includes the owning persona node.</b> A row's <code>nodeId</code> and <code>personaName</code> always name the reviewer that raised it, so two reviewers asking for the same thing produce two rows. Phase 2 wires the per-row actions off that node and must not dedupe the rows in the view.</li>
+<li>Rows arrive <b>pre-sorted</b> (<code>open</code>, then <code>unconfirmed</code>, then <code>resolved</code>, then oldest first). Phase 2 does not re-sort.</li>
+<li><code>state</code> alone partitions the segments - <code>open</code> is <code>Blocking</code>, <code>resolved</code> and <code>unconfirmed</code> are both <code>Archive</code> - and is <b>conservative under a partial round</b>: resolution is decided per owning persona, so a change whose reviewer has not re-attempted stays <code>open</code> rather than reading as fixed because some other reviewer advanced the round.</li>
+<li><b>A change only leaves <code>Blocking</code> once its owning persona has actually re-run.</b> No later completed attempt from that node means <code>open</code>, however many rounds have passed. Once it has re-run: passed means <code>resolved</code>, never passed means <code>unconfirmed</code>.</li>
+<li><b><code>unconfirmed</code> is a claim about knowledge, not about intent.</b> It says the reviewer looked and did not confirm. Phase 2 must label and colour it distinctly from <code>resolved</code>, and must not word it as <i>rephrased</i> - a reviewer that stops raising a change because it is fixed while raising something unrelated lands here too, and calling that a rewording is false.</li>
+<li><code>roundsOpen</code> is a <b>count of appearances</b>, not a span, so it never claims a round the reviewer was silent in.</li>
+<li>The model covers <b>requested changes only</b>. Checks never flow through it. Phase 2 keeps the existing <code>checkOutcomeOf</code> path and routes on the outcome's <code>status</code>: a <b>failing</b> check renders in <code>Blocking</code> above the persona changes, and <code>passed</code>, <code>skipped</code> and <code>unavailable</code> render in <code>Passed</code>, the latter two keeping their degraded amber chip.</li>
+<li>Both phases descend from the round-folding rule in <code>src/server/workflows/repeat-offender.ts</code>. Changing one is changing both.</li>
+</ul>
+
+<h2>Final verification</h2>
+<p>After Phase 2 merges:</p>
+<pre>npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e</pre>
+<p>The acceptance check a person performs: open a run with requested changes, confirm the blockers are readable without scrolling past a single passing reviewer, confirm a carried change names the round that raised it, and confirm the pipeline above it is untouched.</p>
+
+<h2>Audit</h2>
+<p>Every requirement in the plan is owned by exactly one phase:</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Requirement</th><th>Phase</th></tr></thead>
+<tbody>
+<tr><td>Blockers readable without scrolling past passes</td><td>2</td></tr>
+<tr><td>A carried change names its first round and rounds open</td><td>1 derives, 2 renders</td></tr>
+<tr><td>A resolved change names the round that resolved it</td><td>1 derives, 2 renders</td></tr>
+<tr><td>Consecutive-failure reviewers are named</td><td>2</td></tr>
+<tr><td>Per-change actions without leaving the worklist</td><td>2</td></tr>
+<tr><td>A failing check keeps its exit code and output tail</td><td>2</td></tr>
+<tr><td>Pipeline, header, scrubber, rail unchanged</td><td>Non-goal in both</td></tr>
+</tbody>
+</table>
+</div>
+<p>No phase depends on an unmerged later phase to repair an intermediate state.</p>
+
+<h2>Review record</h2>
+<p>Inspector round 1 raised two <code>major</code> findings against the design, both verified against the source and both accepted:</p>
+<ol>
+<li><b>Phase 1's <code>state</code> could flip a still-blocking change to resolved mid-round.</b> Stage 3 personas do not finish together, so comparing each change's last-seen round against a global newest round archives every change owned by a reviewer that has not re-run yet. Resolution is now per owning <code>nodeId</code>, mirroring how <code>repeat-offender.ts</code> builds its candidate set.</li>
+<li><b>Phase 2 left a failing check with no segment.</b> Every check renders today regardless of outcome; as drafted, a failed command gate would have lost its exit code and output tail. Failing checks now sort into <code>Blocking</code>.</li>
+</ol>
+<p>Round 2 raised one more <code>major</code>, also verified and accepted:</p>
+<ol start="3">
+<li><b>The worklist was run-wide while the segment beside it was round-scoped.</b> <code>reviewAttempts</code> filters to the scrubber's viewed submission, so scrubbing to round 3 would have left <code>Blocking</code> and <code>Archive</code> on round 10 while <code>Passed</code> followed the scrubber. <code>runChangeWorklist</code> now takes an <code>asOfRound</code> window, which changed Phase 1's signature and Phase 2's call site together. The Inspector-only empty state was scoped to <code>Passed</code> in the same pass, since it was written for a round-scoped section and is false of a <code>Blocking</code> segment that carries changes forward.</li>
+</ol>
+<p>Round 3 raised one more <code>major</code>, also verified and accepted:</p>
+<ol start="4">
+<li><b>The change key carried no author.</b> Identity was <code>path</code> plus normalized title, mirroring <code>marker.ts</code> - but that module has exactly one Inspector and cannot suffer a cross-author collision, while a run has several personas reviewing at once. Two reviewers objecting about one file in identically-normalizing words would have folded into a single row keeping one <code>nodeId</code>, dropping the other's evidence and making its objection un-actionable, since Phase 2 wires the disable and directive actions off the row's node. The key now leads with <code>nodeId</code>.</li>
+</ol>
+<p>Round 4 raised one <code>minor</code>, accepted:</p>
+<ol start="5">
+<li><b>A reworded finding could make the rail contradict itself.</b> An LLM reviewer that rephrases a title it keeps raising retires the old key, which read as <code>resolved</code> - on the same rail as a stalemate card, derived title-independently from <code>repeat-offender.ts</code>, calling that reviewer a repeat offender. <code>state</code> gains a third value, <code>unconfirmed</code>, derived from the rounds the worklist already walks rather than by reading <code>repeatOffenders</code>, whose latest-submission anchor and <code>rounds &gt;= 2</code> threshold are wrong for a per-key, per-window question.</li>
+</ol>
+<p>Round 5 raised one <code>major</code>, accepted:</p>
+<ol start="6">
+<li><b>The stalemate card was not windowed like everything above it.</b> <code>detail.repeatOffenders</code> is computed over the run's whole submission list and anchored on its newest one, so scrubbing to round 4 of a 10-round run would have left the card reading "failed 10 rounds running" beneath segments correctly describing round 4. Phase 1's own round-4 audit record already named that anchor as unusable for a windowed question; the observation had been applied to <code>unconfirmed</code> and not to the card. Phase 1 now exports <code>runStalemates(detail, asOfRound)</code>, pinned against the payload field at the default window.</li>
+</ol>
+<p>Round 8 raised one <code>major</code>, accepted:</p>
+<ol start="10">
+<li><b>The third state could swallow an in-flight change.</b> Step 4b's pass/never-passed split carried no precondition, so "never passed in a later round" was literally true of a node that never <i>ran</i> a later round - labelling a change <code>unconfirmed</code>, which claims the reviewer looked and withheld confirmation, when the partial-round rule from round 1 requires <code>open</code>. The document contradicted itself: 4b was written in round 6 against a two-state world and never reconciled with round 1's precondition. Now a three-way rule with "no completed later attempt" first.</li>
+</ol>
+<p>Round 7 raised one <code>major</code>, accepted:</p>
+<ol start="9">
+<li><b>The two stalemate anchors did not actually match.</b> The default horizon was "the newest round carrying attempt data", which misreads <code>repeat-offender.ts:64-65</code> as a fallback when it is a bail-out returning <code>[]</code>. When a round opens before Stage 1 runs, <code>repeatOffenders</code> says <code>[]</code> while <code>runStalemates(detail, null)</code> would have reported the previous round's stalemate - breaking the parity criterion three files assert. The default is now the latest submission's round unconditionally, bail-out included.</li>
+</ol>
+<p>Round 6 raised one <code>major</code> and one <code>minor</code>, both accepted:</p>
+<ol start="7">
+<li><b>The third state asserted more than the data supports.</b> It was called <code>superseded</code> and said the finding had been rephrased, decided purely from whether the owning node failed again for any reason. A reviewer that stops raising A <i>because A is fixed</i> while raising unrelated C landed in it, so the row told an operator their fix had merely been reworded. Renamed <code>unconfirmed</code> and narrowed to what is knowable: the reviewer never passed, so nothing is known. An evidence-or-path heuristic to separate the two was rejected as trading a known unknown for a confident wrong answer.</li>
+<li><b>The detail pane was specified only for changes.</b> <code>Blocking</code> holds failing checks too, and the selection was a bare key over two unreconciled id spaces. Phase 2 now defines a <code>WorklistItem</code> discriminated union with namespaced keys and branches on <code>kind</code>.</li>
+</ol>
+<p>All ten fixes tighten the design without touching an approved human decision, so none was escalated. Each phase's cross-phase audit record carries the detail.</p>
+<p>The ninth is worth separating from the rest: every line-number citation in this plan was verified, twice, and the defect was in how one of those accurate citations was <b>read</b> - a bail-out taken for a fallback. Checking that a reference points at the right line is not the same as checking that the sentence about it is true.</p>
+<p>Three of the five are the same class of mistake: a rule borrowed from a neighbouring subsystem without checking which of its preconditions this one actually has. <code>marker.ts</code> has one author; <code>repeat-offender.ts</code> compares within a round rather than against a global newest; the rest of the reader pane is round-scoped. Each was right there in the source and each needed reading rather than assuming.</p>
+<p>The fifth and sixth are one lesson, and it is the more useful one: this document justified duplicating the round-folding rule on the grounds that two derivations of one fact must not disagree on one screen - then let that disagreement through twice more, once as an accepted trade-off and once in the very card the principle was written to protect. The sixth is the starkest, because the reason was already written down in an audit record and simply not carried to the element beside it. <b>A principle stated once has to be applied everywhere it reaches, and writing down why something is wrong is not the same as fixing everywhere it is wrong.</b></p>
+<p>Worth noting what the third one implies for the kept scrubber: "unchanged" means it keeps the meaning it has today and now governs this section too, not that some of the page ignores it.</p>
+
+</div>
+</body>
+</html>

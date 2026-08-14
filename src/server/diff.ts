@@ -120,6 +120,79 @@ export async function sourceRef(cwd: string): Promise<string | null> {
   return null;
 }
 
+/** Every repo-relative path a checkout changed since its source branch, or why not. */
+export type ChangedPathsResult =
+  | { ok: true; repoRoot: string; paths: string[] }
+  | { ok: false; reason: string };
+
+/**
+ * The PATHS a checkout changed since its source branch - the same question
+ * `computeSessionDiff` answers, without building the patch to answer it.
+ *
+ * Same base selection, deliberately: `merge-base(HEAD, sourceRef)` so the mainline's own
+ * newer commits stay out, the same fall back to `HEAD` for a branch with no shared history,
+ * and untracked files counted as changes too. What differs is only the cost and the honesty
+ * of the answer. `computeSessionDiff` renders every untracked file through its own
+ * `--no-index` diff and then clips the result at 1.2 MB, so a caller that wanted file names
+ * pays for a patch it throws away and gets a `truncated` flag that means "this list is not
+ * the whole list". Two `git` calls produce the complete list at any size, which is what a
+ * caller deciding WHICH FILES TO ARCHIVE needs: a partial list there is not a smaller
+ * archive, it is a plan that silently went missing.
+ *
+ * Deletions are excluded (`--diff-filter=d`), matching `changedPaths`, which reads new-side
+ * paths off `+++` and so drops a file the diff only removed. A path that no longer exists
+ * cannot be captured and must not be reported as though it could.
+ *
+ * Fails CLOSED. Every exit code is checked, because `run` reports a timeout as a plain
+ * non-zero exit with whatever stdout was flushed - so an unchecked failure would answer
+ * "this checkout changed nothing", which is indistinguishable from a real empty result and
+ * is the one answer a caller must never act on.
+ */
+export async function changedPathsSince(cwd: string | null): Promise<ChangedPathsResult> {
+  if (!cwd) return { ok: false, reason: "there is no working directory to read" };
+  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0 || !top.stdout.trim()) return { ok: false, reason: "not a git repository" };
+  const repoRoot = top.stdout.trim();
+
+  const ref = await sourceRef(cwd);
+  let diffBase = "HEAD";
+  if (ref) {
+    const mb = await git(cwd, ["merge-base", "HEAD", ref]);
+    const merged = mb.code === 0 ? mb.stdout.trim() : "";
+    if (merged) diffBase = merged;
+  }
+
+  const paths = new Set<string>();
+  // An unborn HEAD has nothing tracked to diff against and `git diff HEAD` says so. Confirmed
+  // positively through `symbolic-ref`, exactly as `computeSessionDiff` does it: inferring it
+  // from a failed `rev-parse` would let a timing-out call skip the tracked half and answer
+  // with the untracked one alone, which is the fail-open this function exists to avoid.
+  const headRes = await git(cwd, ["rev-parse", "--short", "HEAD"]);
+  const unborn =
+    !(headRes.code === 0 && headRes.stdout.trim()) && (await git(cwd, ["symbolic-ref", "-q", "HEAD"])).code === 0;
+  if (!unborn) {
+    const tracked = await git(cwd, ["diff", "--name-only", "--diff-filter=d", diffBase]);
+    if (tracked.code !== 0) return { ok: false, reason: "could not read the changed paths" };
+    for (const line of tracked.stdout.split("\n")) {
+      const path = line.trim();
+      if (path) paths.add(path);
+    }
+  }
+
+  // Run from the TOPLEVEL: `ls-files --others` emits paths relative to where it runs and
+  // lists only what sits beneath it, while `git diff` above ignores cwd and reports against
+  // the toplevel. Both halves have to share one path base or a session cwd'd in a
+  // subdirectory mixes two of them into one list.
+  const untracked = await git(repoRoot, ["ls-files", "--others", "--exclude-standard"]);
+  if (untracked.code !== 0) return { ok: false, reason: "could not enumerate untracked files" };
+  for (const line of untracked.stdout.split("\n")) {
+    const path = line.trim();
+    if (path) paths.add(path);
+  }
+
+  return { ok: true, repoRoot, paths: [...paths].sort() };
+}
+
 /** Count added lines in a unified diff body (`+` lines, excluding the `+++` header). */
 function countAdded(patch: string): number {
   let n = 0;

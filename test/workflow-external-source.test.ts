@@ -819,6 +819,21 @@ test("run detail carries display provenance and never the opaque idempotency key
     "activePersonaNames",
     "bindingId",
     "bypassedPersonaReview",
+    // The two fields that decide whether a parked repair round is anybody's problem, and the
+    // only pair on this list that is ALWAYS emitted rather than conditionally spread. That is
+    // the point of them: every other optional key is absent when it has nothing to say, while
+    // these are absent only when the daemon cannot say - which every reader treats as "behave
+    // as you did before this field existed". Emitting them always is what stops a run this
+    // build knows nothing will ever resume from being read as one it is about to.
+    //
+    // They are paid for on the same terms `externalSource` was, and for a stronger reason:
+    // without them `workflowRunWaitsOnOperator` had to assume every `waiting_for_session` run
+    // resumes itself, which is true only under `auto` + `live`. Every other posture - a
+    // manual version, a Preview binding - parked a round that only a human Resubmit clears,
+    // and the Line strip, the Review drawer and the palette all said nothing about it. Both
+    // are compact scalars off joins the summary query already had.
+    "deliveryMode",
+    "resumptionPolicy",
     "failedPersonaCount",
     "gate",
     "gateHeadShort",

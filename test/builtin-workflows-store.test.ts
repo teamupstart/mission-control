@@ -317,6 +317,14 @@ test("a run bound to a built-in version resolves its workflow rather than readin
   assert.equal(summary?.workflowId, SHIPPED_ID);
   assert.equal(summary?.workflowName, "Fixture Review");
   assert.equal(summary?.workflowVersion, 1);
+  // The catalog answers for the resumption policy too, and this is the arm that matters most
+  // in practice: every shipped version before 7 is `manual`, so falling through to the absent
+  // `v.resumption_policy` column would report the whole population of built-in runs as
+  // self-resuming - and a run nothing will ever resume would be left out of exactly the
+  // counts that exist to surface it. The binding is the authority for the delivery mode,
+  // which needs no fallback because that join is an inner one.
+  assert.equal(summary?.resumptionPolicy, "manual");
+  assert.equal(summary?.deliveryMode, "preview");
   // And filtering run history by that workflow must find it, which the `d.id` join cannot.
   const page = store.listRunSummaryPage({ limit: 10, cursor: null, workflowId: SHIPPED_ID });
   assert.deepEqual(page.items.map((item) => item.id), ["r1"]);

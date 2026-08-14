@@ -116,15 +116,20 @@ export function startAwayWatcher(
       const t = now();
       const snap = registry.snapshot();
 
+      // Read ONCE and share. The stall rules and the alert scope must reason about the same
+      // runs: a stall saying a run is parked, beside a scope that never saw it, is the
+      // daemon disagreeing with itself about one snapshot.
+      const workflowRuns = snap.workflowRunSummaries ?? [];
+
       stalls = cfg.detectStalls
-        ? detectStalls(snap.sessions, t, stallThresholds(cfg))
+        ? detectStalls(snap.sessions, workflowRuns, t, stallThresholds(cfg))
         : [];
 
       const scope: AlertScope = {
         sessions: snap.sessions,
         tasks: snap.tasks,
         stalls,
-        workflowRuns: snap.workflowRunSummaries ?? [],
+        workflowRuns,
         ...(deps.workflowRepeatOffenders
           ? { workflowRepeatOffenders: deps.workflowRepeatOffenders() }
           : {}),

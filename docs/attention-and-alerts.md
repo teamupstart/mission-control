@@ -67,8 +67,26 @@ The daemon also watches for sessions that have **gone quiet**, which no state
 transition can announce - a stall is defined by nothing happening. Four rules, all
 deterministic: an instrumented session that claims to be working but hasn't reported
 in ~10 minutes; a session idle ~20 minutes with a task or queue still open against it
-(the "died with work unfinished" case); and a Foreman escalation nobody answered. A stuck session is attention-level, so
-it breaks through even while you're away.
+(the "died with work unfinished" case); a session idle that long with a **workflow run
+parked on it**; and a Foreman escalation nobody answered. A stuck session is
+attention-level, so it breaks through even while you're away.
+
+The parked-run rule is the backstop for a review loop that quietly stopped. A run
+waiting in `waiting_for_session` or `waiting_for_new_head` is waiting on *that session's
+next turn*, so a session that took the repair packet, made the fix and went idle has
+work outstanding against it even though its task is done and its queue is empty. The
+alert names the missing step rather than the silence - "repair round 2 never reopened",
+or "waiting for a pushed head" for the Inspector findings that clear only when the
+poller sees a new head **on the remote** - and it deep-links to the run rather than to
+the session, because the control that clears it lives on the Runs page.
+
+Runs that will never resume themselves do not wait for that clock at all. A run on a
+`manual` version or a Preview binding is counted as **needing you** on the Line's Review
+strip, in the Review drawer and in the palette from the moment it parks, because nothing
+but a person moves it. An `auto` version delivering `live` is the daemon's own to reopen
+and is never called yours - the resumption observer picks it up seconds after the agent
+settles, and saying otherwise would be telling you to do by hand something already in
+hand.
 
 ### Away mode
 

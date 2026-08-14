@@ -24,6 +24,7 @@ import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "mission-inspector-window-"));
 process.env.MISSION_HOME = home;
+after(() => rmSync(home, { recursive: true, force: true }));
 
 const { DB_PATH } = await import("../src/server/config.ts");
 assert.equal(
@@ -41,8 +42,6 @@ const {
   updateInspectorPr,
   upsertInspectorComment,
 } = await import("../src/server/db.ts");
-
-after(() => rmSync(home, { recursive: true, force: true }));
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;

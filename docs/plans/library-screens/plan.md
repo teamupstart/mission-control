@@ -105,8 +105,8 @@ The workspace:
   effective source and the guidance byte count. Inherited values render quiet, overridden values
   render solid, so what this Persona actually changes is legible without opening anything.
 - The guidance editor takes all remaining height.
-- A **used by** footer names the workflows referencing this Persona and whether a run is gating on it
-  now.
+- A **used by** footer names the workflows referencing this Persona and whether a run is gating on
+  it now. See the repository finding below: this footer lands last, in its own phase.
 
 ## Screen: Actions
 
@@ -120,7 +120,7 @@ asset carrying a machine-checked contract, and the screen has never stated it.
   allowed to call it done.
 - A completion kind this build cannot prove stays visible and marked, rather than being a disabled
   option inside a closed dropdown.
-- A **used by** footer, as above.
+- A **used by** footer, as above, landing in the same final phase.
 
 ## Screen: Commands
 
@@ -141,13 +141,36 @@ matching path wins.
 
 ## Deliberately not in scope
 
-- No change to what any of these assets **are**: no schema, migration, route, or persisted-identifier
-  change. This is the browser surface only.
-- No change to the Library index card wall.
+- No migration and no change to a persisted identifier.
+- No change to the Library index card wall, whose "nothing runs from here" contract is pinned by
+  `library-page-render.test.ts`. That contract governs the index, not the detail screen you opened
+  deliberately.
 - No change to the Workflows authoring surface, which shares the rail CSS but not this work.
-- No new server route. "Used by" is derived from catalogs the browser already holds.
 - Commands gains no New, no archive, and no user-created slots. There are four, forever.
 - No change to command execution, Trust gating, or authorization copy.
+
+## One repository finding that changed this plan
+
+The design above assumed "used by" could be computed in the browser from catalogs it already holds.
+**It cannot.** A persona id lives only inside a workflow graph - `personaId` on a draft node,
+`persona.sourcePersonaId` on a published one - and no graph is in the SSE snapshot. What the browser
+holds is `WorkflowSummary`, whose own contract is *"the bounded catalog projection carried over SSE.
+Graphs and guidance stay on HTTP"*, and whose only persona field is the scalar `personaCount`.
+Answering "which workflows reference this Persona" today means one HTTP fetch per workflow.
+
+Half of the footer *is* already derivable: `WorkflowRunSummary.activePersonaNames` answers "a run is
+gating on it now" for Personas, and `status === "waiting_for_action"` with `actionWait` answers it
+for Actions. Both are in the snapshot. The persona half matches by **name**, not id, so a built-in
+shadowed by a same-named operator Persona is ambiguous.
+
+Consequences carried into the phasing:
+
+- "Used by" is **not** free UI work and does not ride along with a screen. It needs a deliberate
+  decision about how the reference is projected, and it touches `src/shared/` wire contracts.
+- It is therefore **sequenced last, as its own phase**, after the three screens have shipped. The
+  dead end and the three rebuilt screens do not wait on it.
+- The three screen phases must leave a footer slot the last phase fills, and must not ship a
+  half-answer in the meantime.
 
 ## Verification
 

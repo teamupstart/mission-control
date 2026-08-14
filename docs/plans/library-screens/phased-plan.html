@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Library detail screens: phased implementation</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1b1f24; --muted: #57606a; --dim: #78818c;
+  --border: #d8dee4; --border-soft: #eaeef2; --panel: #f6f8fa; --panel-2: #eef1f4;
+  --accent: #0969da; --good: #1a7f37; --warn: #9a6700; --purple: #8250df;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --dim: #7d8590;
+    --border: #30363d; --border-soft: #21262d; --panel: #161b22; --panel-2: #1c2128;
+    --accent: #4493f8; --good: #3fb950; --warn: #d29922; --purple: #a371f7;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0 20px 96px; background: var(--bg); color: var(--fg);
+  font-family: var(--sans); font-size: 16px; line-height: 1.62; -webkit-font-smoothing: antialiased;
+}
+main { max-width: 900px; margin: 0 auto; }
+header.doc { padding: 44px 0 8px; border-bottom: 1px solid var(--border-soft); margin-bottom: 8px; }
+h1 { font-size: 30px; line-height: 1.25; letter-spacing: -0.02em; margin: 0 0 10px; }
+h2 { font-size: 21px; letter-spacing: -0.01em; margin: 40px 0 12px; padding-bottom: 7px; border-bottom: 1px solid var(--border-soft); }
+p { margin: 0 0 14px; }
+ul, ol { margin: 0 0 14px; padding-left: 24px; }
+li { margin: 5px 0; }
+a { color: var(--accent); }
+strong { font-weight: 640; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--panel); border: 1px solid var(--border-soft); padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere; }
+.tablewrap { overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--border); border-radius: 9px; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+thead th { background: var(--panel); font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+.lede { font-size: 17px; color: var(--muted); margin: 0 0 16px; }
+.pill { display: inline-block; font-family: var(--mono); font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; color: var(--muted); background: var(--panel); }
+.pill.approved { color: var(--good); border-color: var(--good); }
+.callout { border: 1px solid var(--border); border-left: 3px solid var(--warn); background: var(--panel); border-radius: 9px; padding: 14px 17px; margin: 0 0 18px; }
+.callout p:last-child { margin-bottom: 0; }
+figure { margin: 20px 0 22px; }
+figure svg { display: block; width: 100%; height: auto; }
+figcaption { margin-top: 9px; font-size: 13.5px; color: var(--dim); }
+.phase { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 14px 17px; margin: 0 0 11px; }
+.phase h3 { margin: 0 0 5px; font-size: 16px; }
+.phase h3 .n { display: inline-grid; place-items: center; width: 23px; height: 23px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border); font-family: var(--mono); font-size: 12px; color: var(--muted); margin-right: 8px; vertical-align: 2px; }
+.phase p { margin: 0 0 8px; font-size: 14.5px; color: var(--muted); }
+.phase .meta { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.phase .meta b { color: var(--muted); font-weight: 500; }
+footer.doc { margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--border-soft); font-size: 13.5px; color: var(--dim); }
+</style>
+</head>
+<body>
+<main>
+
+<header class="doc">
+  <p><span class="pill approved">approved: Rail</span> <span class="pill">5 phases</span> <span class="pill">5 pull requests</span></p>
+  <h1>Library detail screens: phased implementation</h1>
+  <p class="lede">Source plan: <a href="plan.html">plan.html</a> (<a href="plan.md">markdown</a>).
+  The approved direction is <strong>Rail</strong>, for all three screens, chosen from nine mockups at
+  <a href="mockups/index.html">mockups/index.html</a>.</p>
+</header>
+
+<p>Each phase file beside this index is the authoritative brief for one merge unit. The route and the
+component names in them are implementation guidance, not a specification: re-read the adjacent
+repository patterns before editing, and record any deviation in the phase's pull request.</p>
+
+<h2>Incorporated decisions</h2>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Decision</th><th>Selection</th><th>Consequence</th></tr></thead>
+  <tbody>
+    <tr><td>Detail-screen shape</td><td><strong>Rail</strong></td><td>Keep the two-pane workbench on all three screens and fix its grammar; Focus and Sheet were reviewed and rejected</td></tr>
+    <tr><td>Exit affordance</td><td>Persistent rail row + Escape</td><td>A <code>← Library</code> row above the asset list carrying <code>esc</code>, plus a page-level Escape ladder</td></tr>
+    <tr><td>Escape semantics</td><td>Editor first, page second</td><td>Inside the guidance or prompt editor Escape leaves the editor; outside it, Escape leaves the page</td></tr>
+    <tr><td>Header actions</td><td>One promoted verb + overflow</td><td>Save, or Duplicate on a built-in; everything else behind a menu</td></tr>
+    <tr><td>Metadata</td><td>Property chips</td><td>Quiet when inherited, solid when overridden</td></tr>
+    <tr><td>Dependants</td><td>"Used by" footer</td><td>Sequenced last, as its own phase - see the finding below</td></tr>
+    <tr><td>Scope of the screens</td><td>Browser only</td><td>Phases 1 to 4 add no server, schema, route or migration change</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Repository findings that shaped the phases</h2>
+<ul>
+  <li><strong>Escape is unhandled on these routes, not swallowed.</strong> <code>App.tsx</code>
+  returns for any page that is not the fleet before reaching its Escape ladder, and no Library
+  component registers one. The comment above that guard states the architecture - every non-fleet
+  page owns its own keys - so the ladder belongs to the Library surfaces, as
+  <code>SettingsPage</code>'s does to Settings.</li>
+  <li><strong>The obvious fix is dead where it matters.</strong> <code>SettingsPage</code>'s handler
+  bails on a <code>contenteditable</code> target, which is exactly CodeMirror's content host. Phase 1
+  detects the editor from the focused element instead.</li>
+  <li><strong>No CodeMirror extension is needed.</strong> <code>basicSetup</code>'s three Escape
+  bindings declare neither <code>preventDefault</code> nor <code>stopPropagation</code>, and
+  CodeMirror prevents the default only when a bound command returns <code>true</code>. A plain Escape
+  with a collapsed cursor bubbles cleanly. There is no <code>Prec.high</code> or
+  <code>EditorView.domEventHandlers</code> anywhere in <code>src/web</code>, and this work does not
+  introduce the first one.</li>
+  <li><strong>The overlay stand-down channel already reaches the Library</strong> as an
+  <code>isOverlayOpen</code> getter prop on <code>PersonaLibrary</code> and
+  <code>SessionActionLibrary</code>. <code>CommandLibrary</code> does not receive it; Phase 1 threads
+  it.</li>
+  <li><strong>"Used by" is not client-derivable.</strong> Persona and action ids live only inside
+  workflow graphs, and <code>WorkflowSummary</code> - which documents itself as carrying the bounded
+  catalog while graphs stay on HTTP - exposes only a scalar <code>personaCount</code>. The live half
+  is derivable today, by <strong>name</strong> rather than id. This disproved a source-plan
+  assumption; <code>plan.md</code> was corrected and the work became Phase 5.</li>
+  <li><strong><code>test/overlay-registry.test.ts</code> walks every <code>.tsx</code> under
+  <code>src/web</code></strong> and allows <code>modal-backdrop</code> only in
+  <code>Overlay.tsx</code>, checking <code>role="dialog"</code> against an allowlist. The overflow
+  menu and chip popovers must use <code>ContextMenu</code>, a plain <code>role="menu"</code>, or
+  <code>Overlay</code>.</li>
+  <li><strong>Two unrelated test files import helpers directly out of
+  <code>PersonaLibrary.tsx</code></strong> (<code>filterPersonas</code>,
+  <code>readPersonaImport</code>). Its export surface is load-bearing beyond this redesign.</li>
+  <li><strong><code>RepoCombobox</code> swallows Escape when its list is open</strong> and reports it
+  through an <code>onEscape</code> the Command screen does not pass. Harmless today; a live conflict
+  once Phase 1 lands, so Phase 4 owns it.</li>
+  <li><strong>The Library index's "nothing runs from here" contract is pinned by tests.</strong> It
+  governs the index, not the detail screen you opened deliberately - Phase 5 makes that distinction
+  explicitly and leaves the index's tests untouched.</li>
+</ul>
+
+<h2>Phases</h2>
+
+<div class="phase">
+  <h3><span class="n">1</span><a href="phase-1-library-exit-contract.md">The Library exit contract</a></h3>
+  <p>A person who opens a Persona, Action or Command can get back out. This is the reported bug, and
+  it ships alone so the fix is not held behind three screen rebuilds.</p>
+  <p class="meta">depends on <b>nothing</b> · surface <b>browser</b></p>
+</div>
+<div class="phase">
+  <h3><span class="n">2</span><a href="phase-2-persona-rail.md">The Persona screen, and the rail grammar the others inherit</a></h3>
+  <p>Built-in and Yours groups, one promoted verb plus an overflow menu, and metadata as property
+  chips. The shared primitives land here with their first real consumer rather than as an unused
+  kit.</p>
+  <p class="meta">depends on <b>1</b> · surface <b>browser</b></p>
+</div>
+<div class="phase">
+  <h3><span class="n">3</span><a href="phase-3-action-rail.md">The Action screen and its contract line</a></h3>
+  <p>The rail grammar, plus the first statement of the contract an Action enforces: the skill the
+  session must have, and what has to be observed before a stage may call it done.</p>
+  <p class="meta">depends on <b>2</b> · concurrent with <b>4</b> · surface <b>browser</b></p>
+</div>
+<div class="phase">
+  <h3><span class="n">4</span><a href="phase-4-command-rail.md">The Command screen as a resolution table</a></h3>
+  <p>One table of rules with the default pinned first, an add row that looks like one, and the parsed
+  argv on every rule instead of only the default.</p>
+  <p class="meta">depends on <b>2</b> · concurrent with <b>3</b> · surface <b>browser</b></p>
+</div>
+<div class="phase">
+  <h3><span class="n">5</span><a href="phase-5-asset-usage.md">What is using this asset</a></h3>
+  <p>The "used by" footer on Personas and Actions. The one part of the direction that is not
+  browser-only, landing last so nothing else waits on a wire-contract decision.</p>
+  <p class="meta">depends on <b>2, 3</b> · surface <b>daemon + shared + browser</b></p>
+</div>
+
+<h2>Dependency graph</h2>
+<figure>
+<svg viewBox="0 0 800 190" role="img" aria-label="Phase dependency graph: 1 to 2, then 3 and 4 concurrently, with 5 after 3">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="#8b949e" stroke-width="1.5">
+    <rect x="10" y="70" width="140" height="48" rx="9"/>
+    <rect x="205" y="70" width="150" height="48" rx="9"/>
+    <rect x="410" y="12" width="150" height="48" rx="9"/>
+    <rect x="410" y="128" width="150" height="48" rx="9"/>
+    <rect x="620" y="12" width="170" height="48" rx="9" stroke="#8250df"/>
+    <path d="M 154 94 L 199 94" marker-end="url(#a)"/>
+    <path d="M 359 88 L 385 88 L 385 36 L 404 36" marker-end="url(#a)"/>
+    <path d="M 359 100 L 385 100 L 385 152 L 404 152" marker-end="url(#a)"/>
+    <path d="M 564 36 L 614 36" marker-end="url(#a)"/>
+    <path d="M 280 70 L 280 -0 L 705 -0 L 705 8" marker-end="url(#a)" stroke-dasharray="4 4" opacity="0"/>
+  </g>
+  <g font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="#8b949e">
+    <text x="80" y="90" text-anchor="middle" font-weight="600">1 · Exit contract</text>
+    <text x="80" y="107" text-anchor="middle" font-size="11.5" fill="#7d8590">the bug fix</text>
+    <text x="280" y="90" text-anchor="middle" font-weight="600">2 · Persona rail</text>
+    <text x="280" y="107" text-anchor="middle" font-size="11.5" fill="#7d8590">+ shared primitives</text>
+    <text x="485" y="32" text-anchor="middle" font-weight="600">3 · Action rail</text>
+    <text x="485" y="49" text-anchor="middle" font-size="11.5" fill="#7d8590">contract line</text>
+    <text x="485" y="148" text-anchor="middle" font-weight="600">4 · Command rail</text>
+    <text x="485" y="165" text-anchor="middle" font-size="11.5" fill="#7d8590">resolution table</text>
+    <text x="705" y="32" text-anchor="middle" font-weight="600" fill="#a371f7">5 · Asset usage</text>
+    <text x="705" y="49" text-anchor="middle" font-size="11.5" fill="#7d8590">daemon + shared + web</text>
+  </g>
+</svg>
+<figcaption>Direct prerequisites only. Phase 5 depends on 2 and 3 because it fills the footer slot
+both leave; it does not depend on 4, which touches no shared file with it. Phases 3 and 4 are
+concurrent, and 4 is concurrent with 5.</figcaption>
+</figure>
+
+<h2>Concurrency groups</h2>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Group</th><th>Phases</th><th>Note</th></tr></thead>
+  <tbody>
+    <tr><td>A</td><td>1</td><td>Alone. Everything else inherits its exit contract.</td></tr>
+    <tr><td>B</td><td>2</td><td>Alone. It lands the primitives 3, 4 and 5 consume.</td></tr>
+    <tr><td>C</td><td>3, 4</td><td>Concurrent. Disjoint components, disjoint CSS rules, safe to merge in either order.</td></tr>
+    <tr><td>D</td><td>5</td><td>Concurrent with 4. Needs 3 merged.</td></tr>
+  </tbody>
+</table>
+</div>
+<p><strong>Merge order.</strong> 1 → 2 → then 3 and 4 in either order, with 5 following 3. The only
+serialisation that matters is 1 before 2 before everything else; the tail is free.</p>
+
+<h2>Cross-phase contracts</h2>
+<ul>
+  <li><strong><code>LibraryBackRow</code> and <code>useLibraryEscape</code></strong> (Phase 1). Later
+  phases restyle around the row and must not move it below the rail heading, change its accessible
+  name, alter the ladder's decision order, or bypass the dirty gate. Any new dismissible surface must
+  avoid a second <code>window</code> Escape listener.</li>
+  <li><strong>The four shared primitives</strong> (Phase 2): rail group head, rail row, property chip,
+  workspace header, under <code>src/web/library/</code>. Phases 3 and 4 extend them with props; they
+  do not fork or restyle them locally. A change to a primitive's signature belongs in Phase 2's files
+  and must be reconciled with the other concurrent phase before merging.</li>
+  <li><strong>The footer slot</strong> (Phases 2 and 3 leave it empty; Phase 5 fills it). No phase
+  ships a partial answer in it.</li>
+  <li><strong>Commands has no footer</strong>, recorded in both Phase 4 and Phase 5 so the omission
+  reads as a decision.</li>
+  <li><strong>No phase renames a persisted identifier</strong>, changes a slot value, or edits the
+  route codec.</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+<p>Every phase runs <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+and <code>npm run build</code> plus <code>npm run test:e2e</code>. Phase 5 adds
+<code>npm run smoke</code>, being the only phase that changes a runtime surface.</p>
+<p>Every phase ships a Playwright spec, because every phase is a UI change and <code>e2e/</code> is
+the only layer that connects a click to a route to a server event and back to the DOM. Each phase's
+spec must fail against the branch point and pass after, and every earlier phase's spec must keep
+passing unedited - a spec that needed editing is the signal that a cross-phase contract moved.</p>
+<p>After Phase 5, the three screens match the approved mockups, the dead end is gone, and no phase
+left a surface that only works because a later one is coming.</p>
+
+<footer class="doc">
+  Source of truth is <code>docs/plans/library-screens/phased-plan.md</code>; this page is a rendering
+  of it. Source plan: <a href="plan.html">plan.html</a>. Mockups:
+  <a href="mockups/index.html">mockups/index.html</a>.
+</footer>
+
+</main>
+</body>
+</html>

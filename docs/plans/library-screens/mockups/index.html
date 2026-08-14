@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Library detail screens - mockups</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+main.sheet { max-width: 1080px; }
+.cards { display: grid; gap: 13px; margin: 0 0 12px; }
+a.card {
+  display: grid; grid-template-columns: 40px 1fr auto; gap: 16px; align-items: start;
+  text-decoration: none; color: inherit;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel); padding: 17px 19px;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+a.card:hover {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  background: color-mix(in oklab, var(--working) 5%, var(--panel));
+}
+a.card .glyph {
+  display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  font-size: 15px; color: var(--muted);
+}
+.card h2 { margin: 0 0 5px; font-size: 15.5px; font-weight: 620; }
+.card p { margin: 0 0 10px; font-size: 12.5px; line-height: 1.62; color: var(--muted); }
+.card .facts { margin: 0; }
+.go { align-self: center; font-size: 11.5px; color: var(--dim); }
+
+.sub-h {
+  margin: 34px 0 12px; font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.18em; text-transform: uppercase; color: var(--dim);
+}
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+.brief { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--panel); padding: 14px 16px; }
+.brief h3 { margin: 0 0 6px; font-size: 13.5px; font-weight: 620; display: flex; align-items: center; gap: 8px; }
+.brief h3 .letter {
+  display: grid; place-items: center; width: 21px; height: 21px; flex: none; border-radius: 6px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 11px; font-weight: 620; color: var(--muted);
+}
+.brief p { margin: 0 0 9px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.brief dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
+.brief dt { font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); padding-top: 2px; }
+.brief dd { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.brief code, .card p code {
+  font-family: var(--mono); font-size: 11px; color: var(--fg);
+  background: var(--panel-2); padding: 1px 5px; border-radius: 4px;
+}
+
+.bug {
+  border: 1px solid color-mix(in oklab, var(--attention) 34%, var(--border));
+  border-left: 3px solid var(--attention);
+  border-radius: 11px; background: color-mix(in oklab, var(--attention) 6%, var(--panel));
+  padding: 15px 18px; margin: 0 0 30px;
+}
+.bug h2 { margin: 0 0 8px; font-size: 14px; font-weight: 620; color: var(--fg); }
+.bug p { margin: 0 0 9px; font-size: 12.5px; line-height: 1.68; color: var(--muted); max-width: 92ch; }
+.bug p:last-child { margin-bottom: 0; }
+.bug code { font-family: var(--mono); font-size: 11px; color: var(--fg); background: var(--bg-2); padding: 1px 5px; border-radius: 4px; }
+.bug b { color: var(--fg); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<nav class="mock-nav">
+  <a class="on" href="index.html">all screens</a>
+  <a href="personas.html">Personas</a>
+  <a href="actions.html">Actions</a>
+  <a href="commands.html">Commands</a>
+  <span class="sp"></span>
+  <span>static mockups · nothing here is wired to the daemon</span>
+</nav>
+
+<main class="sheet">
+  <p class="eyebrow">Library · detail screens</p>
+  <h1>Personas, Actions and Commands</h1>
+  <p class="lede">Three approaches to each of the three Library detail screens - nine mockups.
+  They share a spine so they can be judged as one decision, and each is customised for what its
+  screen is actually for: a Persona is <b>writing</b>, an Action is a <b>contract</b>, a Command
+  is a <b>resolution</b>. Pick one letter and it applies to all three.</p>
+
+  <div class="bug">
+    <h2>The bug that started this, confirmed in the running app</h2>
+    <p>Escape on <code>#/library/personas/…</code>, <code>#/library/actions/…</code> or
+    <code>#/library/commands/…</code> does nothing at all - it is not being swallowed by a
+    competing handler, <b>the behaviour is simply absent</b>. App's global keydown does its
+    page-shortcut work and then hits <code>if (route.page !== "fleet") return;</code>
+    (<code>App.tsx:1531</code>), which sits above the entire Escape ladder. No component under
+    <code>src/web/library/</code>, <code>PersonaLibrary</code>, <code>SessionActionLibrary</code>
+    or <code>CommandLibrary</code> registers one either.</p>
+    <p>And there is <b>no visible way out</b>: none of the four authoring surfaces renders a
+    back button, a breadcrumb, or a close control. The only exit is clicking the topbar
+    <code>Library</code> segment - which is already painted <code>aria-current</code>, so it
+    reads as the page you are on. The <kbd>w</kbd> chord is blocked by the typing guard, and
+    the CodeMirror pane that dominates Personas and Actions is <code>contenteditable</code>, so
+    it is blocked exactly where the screen is biggest.</p>
+    <p>That last detail is the trap in the obvious fix. <code>SettingsPage.tsx:412</code>
+    already has the page-level Escape to copy, but it bails on
+    <code>closest("input, textarea, select, [contenteditable='true']")</code> - copied verbatim
+    it would be <b>dead in the pane that fills the screen</b>. A Library Escape needs an
+    explicit rule for the editor host: first Escape leaves the editor, second leaves the page.
+    Every approach below assumes that ladder.</p>
+  </div>
+
+  <p class="sub-h">the three approaches</p>
+  <div class="grid3">
+    <div class="brief">
+      <h3><span class="letter">A</span> Rail</h3>
+      <p>Keep the two-pane workbench, fix its grammar. A permanent <b>← Library</b> row carrying
+      <kbd>esc</kbd>, Built-in / Yours groups, one promoted verb plus an overflow menu, and the
+      metadata block collapsed into property chips.</p>
+      <dl>
+        <dt>Persona</dt><dd>chips for provider and model, quiet when inherited</dd>
+        <dt>Action</dt><dd>a contract line under the chips, written as one sentence</dd>
+        <dt>Command</dt><dd>default and overrides as one table, add row visibly an add row</dd>
+      </dl>
+    </div>
+    <div class="brief">
+      <h3><span class="letter">B</span> Focus</h3>
+      <p>Drop the rail on the detail. Centred column, breadcrumb plus a labelled Close, and
+      everything that is not the payload behind one bar that summarises itself while shut.
+      Prev/next replaces the list.</p>
+      <dl>
+        <dt>Persona</dt><dd>the guidance is the page; ~410px more writing width</dd>
+        <dt>Action</dt><dd>the contract as a sentence you fill in, above the instruction</dd>
+        <dt>Command</dt><dd>a resolver: pick a repo, see which rule wins and why</dd>
+      </dl>
+    </div>
+    <div class="brief">
+      <h3><span class="letter">C</span> Sheet</h3>
+      <p>The card wall never unmounts; the detail opens over it behind the app's own
+      <code>rgba(4,6,9,.72)</code> backdrop. Escape, Close and the backdrop all dismiss, and
+      none of it needs teaching. Content is tabbed.</p>
+      <dl>
+        <dt>Persona</dt><dd>Guidance / Routing / Provenance - drift finally gets a home</dd>
+        <dt>Action</dt><dd>the contract drawn as the chain it is at run time</dd>
+        <dt>Command</dt><dd>all four gates as one repository × slot matrix</dd>
+      </dl>
+    </div>
+  </div>
+
+  <p class="sub-h">open the mockups</p>
+  <div class="cards">
+    <a class="card" href="personas.html">
+      <span class="glyph">❝</span>
+      <span>
+        <h2>Personas</h2>
+        <p>A reviewer's standards in Markdown, plus the provider and model that carry them.
+        The payload is 3,151 bytes of prose sitting under 330px of chrome, and nothing on the
+        screen tells you a run is currently gating on it.</p>
+        <span class="facts">
+          <span class="fact">3 approaches</span>
+          <span class="fact">real Code Risk Reviewer content</span>
+          <span class="fact good">adds "used by"</span>
+        </span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+
+    <a class="card" href="actions.html">
+      <span class="glyph">▤</span>
+      <span>
+        <h2>Actions</h2>
+        <p>The only Library asset with a machine-checked contract: a required skill and an
+        observable completion condition. Today that contract is two unlabelled selects in a row
+        of four fields, so the screen never says what it will actually check.</p>
+        <span class="facts">
+          <span class="fact">3 approaches</span>
+          <span class="fact">real Pull Request built-in</span>
+          <span class="fact good">gives the contract a shape</span>
+        </span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+
+    <a class="card" href="commands.html">
+      <span class="glyph">❯</span>
+      <span>
+        <h2>Commands</h2>
+        <p>No Markdown and nothing to write - four fixed slots, one default argv each, and a
+        list of exceptions where the longest matching path wins. The question people arrive
+        with, "what will <code>test</code> run in this repository", is never answered.</p>
+        <span class="facts">
+          <span class="fact">3 approaches</span>
+          <span class="fact">real test slot, revision 3</span>
+          <span class="fact good">answers the resolution question</span>
+        </span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+  </div>
+
+  <p class="note">Mockups only - static HTML beside the plan, nothing wired to the daemon.
+  Tokens, control metrics and type scale are lifted from <code>src/web/styles.css</code>
+  (<code>tokens.css</code>); the furniture the three approaches share lives in
+  <code>screens.css</code>. Content in every frame is real state from this machine, captured at
+  1600&times;1000. Once a direction is picked, the plan goes in
+  <code>docs/plans/library-screens/plan.md</code> via the phased-plan skill.</p>
+</main>
+</body>
+</html>

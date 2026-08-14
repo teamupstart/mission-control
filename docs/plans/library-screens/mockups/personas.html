@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Personas - three approaches</title>
+<link rel="stylesheet" href="tokens.css" />
+<link rel="stylesheet" href="screens.css" />
+</head>
+<body>
+
+<nav class="mock-nav">
+  <a href="index.html">← all screens</a>
+  <a class="on" href="personas.html">Personas</a>
+  <a href="actions.html">Actions</a>
+  <a href="commands.html">Commands</a>
+  <span class="sp"></span>
+  <span>static mockups · nothing here is wired to the daemon</span>
+</nav>
+
+<main class="sheet">
+  <p class="eyebrow">Library · detail screens</p>
+  <h1>Personas</h1>
+  <p class="lede">Three approaches to the screen behind a Persona card, each fixing the same
+  four faults. <b>There is no way out</b> - <code>App.tsx:1531</code> returns before the Escape
+  ladder for any page that is not the fleet, and none of the four authoring surfaces renders a
+  back control, so the only exit is a topbar chip already styled as the current page.
+  <b>You pick the same thing twice</b>, once from the card wall and again from a rail that
+  repeats it. <b>Roughly 330px of chrome</b> sits above the markdown that is the actual asset.
+  And <b>Save is one of four equal-weight text links</b>, next to Archive. All three approaches
+  also add the fact the screen is missing entirely: which workflows are pointing at this
+  Persona right now.</p>
+
+  <!-- ================================= A ================================= -->
+  <section class="approach">
+    <div class="approach-head">
+      <span class="letter">A</span>
+      <h2>Rail</h2>
+      <span class="tagline">evolve the workbench · smallest diff</span>
+    </div>
+    <p class="why">The two-pane shape stays, because reading one reviewer's standards while
+    editing another's is a real thing people do here. Its grammar changes. The rail gains a
+    permanent <b>← Library</b> row at the top, so the exit is first in reading order and never
+    scrolls away, and it carries <kbd>esc</kbd> as its own label so the keystroke is taught
+    rather than assumed. Assets group into <b>Built-in</b> and <b>Yours</b>, so the four
+    shipped Personas stop reading as things you wrote. The flat four-link header becomes one
+    promoted verb plus an overflow menu. The five-field metadata block collapses into property
+    chips that open popovers, and inherited values render quiet while overridden values render
+    solid - so what this Persona actually changes is legible without opening anything.</p>
+    <div class="facts">
+      <span class="fact good">smallest change to ship</span>
+      <span class="fact good">exit always visible</span>
+      <span class="fact good">editor gains ~215px of height</span>
+      <span class="fact good">keeps side-by-side comparison</span>
+      <span class="fact cost">two lists still describe one choice</span>
+    </div>
+
+    <div class="frame" style="height:684px">
+      <div class="topbar">
+        <span class="brand"><i></i><h1>Mission Control</h1></span>
+        <span class="page-seg">
+          <button class="page-seg-btn">▦ Fleet <span class="kb-hint">f</span></button>
+          <button class="page-seg-btn" aria-current="page">⌗ Library <span class="kb-hint">w</span></button>
+          <button class="page-seg-btn">▷ Runs <span class="kb-hint">r</span></button>
+        </span>
+        <span class="filter-box">⌕ Filter (/)</span>
+        <span class="sp"></span>
+        <span class="rt-pill">11 sessions</span>
+        <span class="spend-chip">≈$1,968</span>
+      </div>
+
+      <div class="stage">
+        <aside class="rail">
+          <div class="rail-top">
+            <button class="back-row">← Library <span class="sp"></span><kbd>esc</kbd></button>
+          </div>
+          <div class="rail-head">
+            <h3>Personas</h3><span class="n">4</span>
+            <span class="sp"></span>
+            <button class="btn btn-sm">+ New</button>
+          </div>
+          <div class="rail-find"><input class="field-input" style="font-size:12px;padding:6px 9px" placeholder="Search Personas" /></div>
+          <div class="rail-list">
+            <div class="rail-group">Built-in <span class="n">4</span></div>
+            <button class="rail-item on">
+              <span class="r1"><span class="dot"></span><span class="nm">Code Risk Reviewer</span></span>
+              <span class="sub">codex · gpt-5.6-terra</span>
+            </button>
+            <button class="rail-item">
+              <span class="r1"><span class="dot"></span><span class="nm">Documentation Steward</span></span>
+              <span class="sub">codex · gpt-5.6-terra</span>
+            </button>
+            <button class="rail-item">
+              <span class="r1"><span class="dot"></span><span class="nm">Intent Conformance Judge</span></span>
+              <span class="sub">codex · gpt-5.6-terra</span>
+            </button>
+            <button class="rail-item">
+              <span class="r1"><span class="dot"></span><span class="nm">Test Evidence Auditor</span></span>
+              <span class="sub">codex · gpt-5.6-terra</span>
+            </button>
+            <div class="rail-group">Yours <span class="n">0</span></div>
+            <p style="margin:2px 0 0;padding:2px 10px 8px;font-size:11.5px;line-height:1.55;color:var(--dim)">
+              Nothing yet. Duplicate a built-in to start from its standards, or import a
+              <code style="font-family:var(--mono);font-size:11px;color:var(--muted)">.md</code>.
+            </p>
+          </div>
+          <div class="rail-foot">
+            <button class="btn btn-sm btn-ghost" style="flex:1;justify-content:center">Import .md</button>
+            <button class="btn btn-sm btn-ghost">Archived <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">0</span></button>
+          </div>
+        </aside>
+
+        <div class="work">
+          <div class="work-head">
+            <div class="work-title">
+              <h2>Code Risk Reviewer <span class="lib-tag lib-tag-builtin">built-in</span></h2>
+              <span class="prov">ships with this build · read-only until you duplicate it</span>
+            </div>
+            <span class="sp"></span>
+            <button class="btn btn-sm">Duplicate to edit</button>
+            <button class="icon-btn" title="Copy Markdown, Download .md, Archive">⋯</button>
+          </div>
+
+          <div class="props">
+            <button class="prop inherited"><span class="k">provider</span><span class="v">Codex</span><span class="caret"></span></button>
+            <button class="prop inherited"><span class="k">model</span><span class="v mono">gpt-5.6-terra</span><span class="caret"></span></button>
+            <span class="prop readonly"><span class="k">source</span><span class="v" style="color:var(--muted);font-weight:480">app defaults</span></span>
+            <span class="sp" style="flex:1"></span>
+            <span class="prop readonly"><span class="k">size</span><span class="v mono" style="color:var(--muted);font-weight:480">3,151 / 100,000 B</span></span>
+          </div>
+
+          <div class="work-body">
+            <div class="editor" style="flex:1">
+              <div class="editor-bar">
+                <span class="name">code-risk-reviewer.md</span>
+                <span class="meta">MARKDOWN</span>
+                <span style="flex:1"></span>
+                <span class="tog"><button>Preview</button><button class="on">Editor</button></span>
+              </div>
+              <div class="editor-body">
+                <div class="gutter"></div>
+                <div class="code"><span class="h"># Code Risk Reviewer</span>
+
+Reviews the risk the changed code introduces: bugs, security issues,
+performance regressions, breaking changes, and error handling that will
+not hold.
+
+<span class="h">## What you judge</span>
+
+Every material risk this change creates. Read the surrounding context in
+the diff and the session transcript when you need it to understand why
+the code is shaped the way it is and where a failure would actually
+land. Do a full pass over the change before deciding, and enumerate
+every issue you can substantiate. A review that stops at the first
+problem is worse than no review, because it reads as though the rest
+was checked.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usedby">
+            <span class="lbl">used by</span>
+            <a class="ref" href="#"><span class="g">⌁</span> No-Mistakes Review <span style="color:var(--dim)">stage 3</span></a>
+            <a class="ref" href="#"><span class="g">⧉</span> Panel vote</a>
+            <span class="sp"></span>
+            <span class="badge badge-working"><span class="badge-dot"></span>1 run gating on it now →</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="caption"><b>Exit:</b> the <code>← Library</code> rail row, <kbd>esc</kbd>, or
+    browser back. <b>Overflow ⋯</b> holds Copy Markdown, Download .md and Archive - on a
+    built-in the only verb worth promoting is Duplicate, and today Save sits there disabled
+    pretending otherwise. <b>Note</b> the persona list stays visible while you edit, which is
+    the one thing B gives up.</p>
+  </section>
+
+  <!-- ================================= B ================================= -->
+  <section class="approach">
+    <div class="approach-head">
+      <span class="letter">B</span>
+      <h2>Focus</h2>
+      <span class="tagline">the guidance is the page</span>
+    </div>
+    <p class="why">A Persona is a piece of writing - 3,151 bytes of standards that a reviewer
+    gates on. This approach treats it that way. The rail goes; the column centres at a readable
+    measure; the markdown starts about 190px from the top instead of 330px. Everything that is
+    not the writing collapses into <b>one properties bar that answers its own question while
+    shut</b> - you read "Codex · gpt-5.6-terra · inherited" without opening it, and you open it
+    on the rare occasion you are changing routing rather than standards. The rail's one genuinely
+    useful job, moving between Personas, becomes a footer pager, so <kbd>[</kbd> and <kbd>]</kbd>
+    still walk the set without a permanent 268px tax on the writing surface.</p>
+    <div class="facts">
+      <span class="fact good">editor gains ~410px of width and ~140px of height</span>
+      <span class="fact good">three labelled exits, none of them a bare glyph</span>
+      <span class="fact good">reads as a document, not a form</span>
+      <span class="fact cost">no side-by-side comparison</span>
+      <span class="fact cost">largest departure from what ships</span>
+    </div>
+
+    <div class="frame" style="height:684px">
+      <div class="topbar">
+        <span class="brand"><i></i><h1>Mission Control</h1></span>
+        <span class="page-seg">
+          <button class="page-seg-btn">▦ Fleet <span class="kb-hint">f</span></button>
+          <button class="page-seg-btn" aria-current="page">⌗ Library <span class="kb-hint">w</span></button>
+          <button class="page-seg-btn">▷ Runs <span class="kb-hint">r</span></button>
+        </span>
+        <span class="filter-box">⌕ Filter (/)</span>
+        <span class="sp"></span>
+        <span class="rt-pill">11 sessions</span>
+        <span class="spend-chip">≈$1,968</span>
+      </div>
+
+      <div class="crumb">
+        <a href="#">Library</a><span class="sep">/</span>
+        <a href="#">Personas</a><span class="sep">/</span>
+        <span class="here">Code Risk Reviewer</span>
+        <span class="sp"></span>
+        <button class="btn btn-sm" disabled>Save</button>
+        <button class="btn btn-sm">Duplicate to edit</button>
+        <button class="icon-btn" title="Copy Markdown, Download .md, Archive">⋯</button>
+        <span class="rule"></span>
+        <button class="btn btn-sm btn-ghost">Close <kbd>esc</kbd></button>
+      </div>
+
+      <div class="doc-scroll">
+        <div class="doc">
+          <div class="kicker">
+            <span class="lib-tag lib-tag-builtin">built-in persona</span>
+            <span class="lib-tag">codex</span>
+            <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim)">3,151 / 100,000 UTF-8 bytes</span>
+          </div>
+          <h1>Code Risk Reviewer</h1>
+          <p class="desc">Reviews the risk the changed code introduces: bugs, security issues,
+          performance regressions, breaking changes, and error handling that will not hold.</p>
+
+          <button class="disclosure">
+            <span class="tw"></span>
+            <span class="lbl">Routing &amp; provenance</span>
+            <span class="summary">
+              <span>provider <b>Codex</b></span>
+              <span>model <b>gpt-5.6-terra</b></span>
+              <span>both <b>inherited</b> from app defaults</span>
+              <span>ships with this build</span>
+            </span>
+          </button>
+
+          <div class="doc-editor">
+            <div class="editor-bar">
+              <span class="name">code-risk-reviewer.md</span>
+              <span class="meta">MARKDOWN</span>
+              <span style="flex:1"></span>
+              <span class="tog"><button>Preview</button><button class="on">Editor</button></span>
+            </div>
+            <div class="editor-body">
+              <div class="gutter"></div>
+              <div class="code"><span class="h"># Code Risk Reviewer</span>
+
+Reviews the risk the changed code introduces: bugs, security issues, performance
+regressions, breaking changes, and error handling that will not hold.
+
+<span class="h">## What you judge</span>
+
+Every material risk this change creates. Read the surrounding context in the diff
+and the session transcript when you need it to understand why the code is shaped
+the way it is and where a failure would actually land. Do a full pass over the
+change before deciding, and enumerate every issue you can substantiate. A review
+that stops at the first problem is worse than no review, because it reads as
+though the rest was checked.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-pager">
+        <button class="pgbtn"><kbd>[</kbd> Documentation Steward</button>
+        <span class="pgpos">1 of 4 · built-in</span>
+        <button class="pgbtn">Test Evidence Auditor <kbd>]</kbd></button>
+        <span class="sp"></span>
+        <span class="lbl">used by</span>
+        <a class="ref" href="#"><span class="g">⌁</span> No-Mistakes Review</a>
+        <a class="ref" href="#"><span class="g">⧉</span> Panel vote</a>
+      </div>
+    </div>
+    <p class="caption"><b>Exit:</b> three, deliberately. The breadcrumb is the one you read,
+    <code>Close</code> is the one you click, <kbd>esc</kbd> is the one you learn - all three land
+    on <code>#/library</code>. <b>The disclosure summary is what makes the collapse honest:</b>
+    a bar that only said "Routing" would be a place to hide fields, one that says
+    "gpt-5.6-terra, inherited" is a readout you can trust without opening.</p>
+  </section>
+
+  <!-- ================================= C ================================= -->
+  <section class="approach">
+    <div class="approach-head">
+      <span class="letter">C</span>
+      <h2>Sheet</h2>
+      <span class="tagline">the Library never leaves</span>
+    </div>
+    <p class="why">The premise of the bug is that people press Escape on things that look like
+    they are <i>on top of</i> something else. So make that true rather than teaching around it.
+    The card wall stays mounted and visible behind a scrim, and a Persona opens as a sheet over
+    it. Escape closes it, the backdrop closes it, the Close button closes it, and none of that
+    needs a hint. Because a sheet is a bounded surface rather than a page, its content can be
+    tabbed - <b>Guidance</b> for the writing, <b>Routing</b> for provider and model,
+    <b>Provenance</b> for import path, content hash and upstream drift. That last one matters:
+    drift is currently a banner that only appears when something is already wrong, and this is
+    the only approach of the three that gives it a permanent home.</p>
+    <div class="facts">
+      <span class="fact good">Escape is self-evident, not learned</span>
+      <span class="fact good">you never lose your place in the Library</span>
+      <span class="fact good">provenance and drift get a real home</span>
+      <span class="fact cost">smallest writing surface of the three</span>
+      <span class="fact cost">needs a focus trap, and a dirty gate on every dismiss path</span>
+    </div>
+
+    <div class="frame" style="height:684px">
+      <div class="topbar">
+        <span class="brand"><i></i><h1>Mission Control</h1></span>
+        <span class="page-seg">
+          <button class="page-seg-btn">▦ Fleet <span class="kb-hint">f</span></button>
+          <button class="page-seg-btn" aria-current="page">⌗ Library <span class="kb-hint">w</span></button>
+          <button class="page-seg-btn">▷ Runs <span class="kb-hint">r</span></button>
+        </span>
+        <span class="filter-box">⌕ Filter (/)</span>
+        <span class="sp"></span>
+        <span class="rt-pill">11 sessions</span>
+        <span class="spend-chip">≈$1,968</span>
+      </div>
+
+      <div class="c-wrap">
+        <div class="c-index">
+          <p class="ey">Personas</p>
+          <h3>Who does the reviewing?</h3>
+          <p>A Persona is one reviewer's standards in Markdown. Workflow stages gate on their verdicts; ensembles judge with them.</p>
+          <div class="c-row">
+            <div class="c-card"><b>Code Risk Reviewer</b><span>Reviews the risk the changed code introduces: bugs, security issues, performance regressions…</span><i>codex · gpt-5.6-terra</i></div>
+            <div class="c-card"><b>Documentation Steward</b><span>Judges whether this change left the project's documentation telling the truth.</span><i>codex · gpt-5.6-terra</i></div>
+            <div class="c-card"><b>Intent Conformance Judge</b><span>Decides one narrow question: does this change contradict the acceptance criteria?</span><i>codex · gpt-5.6-terra</i></div>
+            <div class="c-card"><b>Test Evidence Auditor</b><span>Asks whether the submitted work has been shown to do what was asked.</span><i>codex · gpt-5.6-terra</i></div>
+            <div class="c-card new">+ New Persona</div>
+          </div>
+          <p class="ey">Actions</p>
+          <h3>What can a run tell the session to do?</h3>
+          <p>An Action is a reusable instruction a workflow stage sends to the bound session - open a PR, run a migration. It completes; it never judges.</p>
+          <div class="c-row">
+            <div class="c-card"><b>Pull Request</b><span>Prepare the reviewed work as a reviewer-ready pull request.</span><i>Skill · pull-request</i></div>
+            <div class="c-card"><b>Retro</b><span>Run the retrospective over this session and commit what it taught.</span><i>Skill · retro</i></div>
+            <div class="c-card new">+ New action</div>
+          </div>
+        </div>
+
+        <div class="c-scrim">
+          <div class="c-sheet">
+            <div class="c-head">
+              <h2>Code Risk Reviewer</h2>
+              <span class="lib-tag lib-tag-builtin">built-in</span>
+              <span class="sp"></span>
+              <button class="btn btn-sm">Duplicate to edit</button>
+              <button class="c-close">Close <kbd>esc</kbd></button>
+            </div>
+            <div class="c-tabs">
+              <button class="c-tab on">Guidance</button>
+              <button class="c-tab">Routing <span class="n">codex</span></button>
+              <button class="c-tab">Provenance</button>
+              <button class="c-tab">Used by <span class="n">2</span></button>
+            </div>
+            <div class="c-body">
+              <div class="c-list">
+                <div class="rail-group" style="padding:4px 8px 6px">Built-in <span class="n">4</span></div>
+                <button class="rail-item on"><span class="r1"><span class="dot"></span><span class="nm">Code Risk Reviewer</span></span></button>
+                <button class="rail-item"><span class="r1"><span class="dot"></span><span class="nm">Documentation Steward</span></span></button>
+                <button class="rail-item"><span class="r1"><span class="dot"></span><span class="nm">Intent Conformance Judge</span></span></button>
+                <button class="rail-item"><span class="r1"><span class="dot"></span><span class="nm">Test Evidence Auditor</span></span></button>
+                <div class="rail-group" style="padding:11px 8px 6px">Yours <span class="n">0</span></div>
+                <button class="rail-item"><span class="r1"><span class="nm" style="color:var(--dim);font-weight:500">+ New Persona</span></span></button>
+              </div>
+              <div class="c-main">
+                <div class="editor" style="flex:1">
+                  <div class="editor-bar">
+                    <span class="name">code-risk-reviewer.md</span>
+                    <span class="meta">MARKDOWN</span>
+                    <span class="meta">3,151 / 100,000 B</span>
+                    <span style="flex:1"></span>
+                    <span class="tog"><button>Preview</button><button class="on">Editor</button></span>
+                  </div>
+                  <div class="editor-body">
+                    <div class="gutter"></div>
+                    <div class="code"><span class="h"># Code Risk Reviewer</span>
+
+Reviews the risk the changed code introduces: bugs, security
+issues, performance regressions, breaking changes, and error
+handling that will not hold.
+
+<span class="h">## What you judge</span>
+
+Every material risk this change creates. Read the surrounding
+context in the diff and the session transcript when you need it
+to understand why the code is shaped the way it is and where a
+failure would actually land. Do a full pass over the change
+before deciding, and enumerate every issue you can substantiate.
+A review that stops at the first problem is worse than no review.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="c-foot">
+              <span class="hint">Built-in - this Persona ships with Mission Control and always carries the
+              guidance this build was made from. Duplicate it to make a copy you own and can edit.</span>
+              <span class="sp"></span>
+              <button class="btn btn-sm btn-ghost">Copy Markdown</button>
+              <button class="btn btn-sm btn-ghost">Download .md</button>
+              <button class="btn btn-sm" disabled>Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="caption"><b>Exit:</b> <kbd>esc</kbd>, Close, or the visible Library behind the
+    scrim. <b>Trade-off to weigh:</b> the writing column is ~640px here against ~810px in B.
+    If most Persona edits are a sentence or a rule, never losing your place is worth it; if you
+    write these from scratch, it is not.</p>
+  </section>
+
+  <p class="note">Mockups only - static HTML beside the plan, nothing wired to the daemon.
+  Colours, radii, type scale and control metrics come from <code>src/web/styles.css</code>;
+  the content is the real <code>Code Risk Reviewer</code> built-in as it renders today at
+  1600&times;1000. The "used by" row in all three is new: nothing on the current screen tells
+  you a workflow run is gating on the Persona you are about to change.</p>
+</main>
+
+<script>
+/* Mockup scaffolding: keep each gutter's line count honest against its code block,
+   so an edit to the sample text can never leave orphan line numbers behind. */
+for (const body of document.querySelectorAll(".editor-body")) {
+  const code = body.querySelector(".code");
+  const gutter = body.querySelector(".gutter");
+  if (!code || !gutter) continue;
+  const lines = code.textContent.replace(/\n$/, "").split("\n").length;
+  gutter.innerHTML = Array.from({ length: lines }, (_, i) => i + 1).join("<br>");
+}
+</script>
+</body>
+</html>

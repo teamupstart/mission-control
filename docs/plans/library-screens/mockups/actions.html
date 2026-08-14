@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Actions - three approaches</title>
+<link rel="stylesheet" href="tokens.css" />
+<link rel="stylesheet" href="screens.css" />
+<style>
+/* ---- Actions-specific: the contract ----
+   An Action is the only one of the three assets that carries a machine-checked contract:
+   it needs a skill to be present, and something observable has to happen before the stage
+   is allowed to call it done. All three approaches give that contract a shape. */
+
+/* A: one line of prose under the property chips, so the two selects stop reading as
+   unrelated dropdowns and start reading as the sentence they actually form. */
+.contract-line {
+  flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 22px 12px; padding: 9px 12px;
+  font-size: 12px; line-height: 1.55; color: var(--muted);
+  background: color-mix(in oklab, var(--working) 6%, var(--panel));
+  border: 1px solid var(--border-soft); border-left: 2px solid var(--working);
+  border-radius: 8px;
+}
+.contract-line b { color: var(--fg); font-weight: 600; }
+.contract-line code { font-family: var(--mono); font-size: 11px; color: var(--fg); background: var(--bg-2); padding: 1px 6px; border-radius: 4px; }
+
+/* B: the contract as a sentence you fill in. The controls sit inside the prose, so the
+   consequence of each choice is read rather than inferred. */
+.sentence {
+  font-size: 14.5px; line-height: 2.15; color: var(--muted);
+  margin: 0 0 15px; max-width: 82ch;
+}
+.slot {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 560; color: var(--fg); cursor: pointer;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 7px;
+  padding: 4px 9px; margin: 0 2px; vertical-align: baseline;
+}
+.slot:hover { border-color: color-mix(in oklab, var(--working) 45%, var(--border)); }
+.slot.mono { font-family: var(--mono); font-size: 12px; }
+.slot .caret { width: 6px; height: 6px; border-right: 1.4px solid var(--dim); border-bottom: 1.4px solid var(--dim); transform: translateY(-2px) rotate(45deg); }
+.slot.unset { color: var(--dim); font-weight: 480; border-style: dashed; }
+
+/* C: the contract drawn. Where the instruction sits in the run, and what has to be true
+   before the stage below is allowed to read it. */
+.wire { display: flex; align-items: stretch; gap: 0; margin: 0 0 14px; }
+.wnode {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px;
+  padding: 11px 13px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-2);
+}
+.wnode .wk { font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); }
+.wnode .wv { font-size: 12.5px; font-weight: 560; color: var(--fg); }
+.wnode .ws { font-size: 11px; line-height: 1.45; color: var(--dim); }
+.wnode.self { background: color-mix(in oklab, var(--working) 10%, var(--panel)); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); }
+.wnode.self .wk { color: var(--working); }
+.wnode.gate { background: color-mix(in oklab, var(--idle) 8%, var(--panel)); border-color: color-mix(in oklab, var(--idle) 34%, var(--border)); }
+.wnode.gate .wk { color: var(--idle); }
+.warrow { flex: none; width: 26px; display: grid; place-items: center; color: #3d4652; font-size: 13px; }
+
+.sec-h {
+  display: flex; align-items: center; gap: 9px; margin: 0 0 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
+}
+.sec-h .rule { flex: 1; height: 1px; background: var(--border-soft); }
+.evidence-note { margin: 0; font-size: 11.5px; line-height: 1.6; color: var(--dim); }
+</style>
+</head>
+<body>
+
+<nav class="mock-nav">
+  <a href="index.html">← all screens</a>
+  <a href="personas.html">Personas</a>
+  <a class="on" href="actions.html">Actions</a>
+  <a href="commands.html">Commands</a>
+  <span class="sp"></span>
+  <span>static mockups · nothing here is wired to the daemon</span>
+</nav>
+
+<main class="sheet">
+  <p class="eyebrow">Library · detail screens</p>
+  <h1>Actions</h1>
+  <p class="lede">Actions inherit every fault Personas have - no exit, two lists for one
+  choice, chrome above the payload - and add one of their own. An Action is the only Library
+  asset carrying a <b>machine-checked contract</b>: it needs a skill to be present on the
+  session, and something observable has to happen (<code>session_turn</code>,
+  <code>pull_request</code>, <code>repo_commit</code>) before the stage is allowed to call it
+  done. Today that contract is two unlabelled selects sitting in a row of four fields, so the
+  screen never says what it will actually check. Each approach below gives the contract a
+  different shape.</p>
+
+  <!-- ================================= A ================================= -->
+  <section class="approach">
+    <div class="approach-head">
+      <span class="letter">A</span>
+      <h2>Rail</h2>
+      <span class="tagline">evolve the workbench · smallest diff</span>
+    </div>
+    <p class="why">Same rail grammar as Personas A - a permanent <b>← Library</b> row carrying
+    <kbd>esc</kbd>, Built-in and Yours groups, one promoted verb and an overflow menu. What is
+    specific to Actions is the <b>contract line</b> under the property chips: the same two
+    values the selects hold, written once as the sentence they form. The rail sub-labels change
+    too, from a description that repeats the title to <code>skill · completion</code>, which is
+    the one thing that distinguishes two Actions from each other at a glance.</p>
+    <div class="facts">
+      <span class="fact good">smallest change to ship</span>
+      <span class="fact good">contract is stated, not inferred</span>
+      <span class="fact good">exit always visible</span>
+      <span class="fact cost">contract still lives in chips you must open to change</span>
+    </div>
+
+    <div class="frame" style="height:684px">
+      <div class="topbar">
+        <span class="brand"><i></i><h1>Mission Control</h1></span>
+        <span class="page-seg">
+          <button class="page-seg-btn">▦ Fleet <span class="kb-hint">f</span></button>
+          <button class="page-seg-btn" aria-current="page">⌗ Library <span class="kb-hint">w</span></button>
+          <button class="page-seg-btn">▷ Runs <span class="kb-hint">r</span></button>
+        </span>
+        <span class="filter-box">⌕ Filter (/)</span>
+        <span class="sp"></span>
+        <span class="rt-pill">11 sessions</span>
+        <span class="spend-chip">≈$1,968</span>
+      </div>
+
+      <div class="stage">
+        <aside class="rail">
+          <div class="rail-top">
+            <button class="back-row">← Library <span class="sp"></span><kbd>esc</kbd></button>
+          </div>
+          <div class="rail-head">
+            <h3>Actions</h3><span class="n">2</span>
+            <span class="sp"></span>
+            <button class="btn btn-sm">+ New</button>
+          </div>
+          <div class="rail-find"><input class="field-input" style="font-size:12px;padding:6px 9px" placeholder="Search actions" /></div>
+          <div class="rail-list">
+            <div class="rail-group">Built-in <span class="n">2</span></div>
+            <button class="rail-item on">
+              <span class="r1"><span class="nm">Pull Request</span></span>
+              <span class="sub">pull-request · PR opened</span>
+            </button>
+            <button class="rail-item">
+              <span class="r1"><span class="nm">Retro</span></span>
+              <span class="sub">retro · commit lands</span>
+            </button>
+            <div class="rail-group">Yours <span class="n">0</span></div>
+            <p style="margin:2px 0 0;padding:2px 10px 8px;font-size:11.5px;line-height:1.55;color:var(--dim)">
+              Nothing yet. An Action is exact Markdown plus one skill - duplicate a built-in to
+              see the shape.
+            </p>
+          </div>
+          <div class="rail-foot">
+            <button class="btn btn-sm btn-ghost" style="flex:1;justify-content:center">Archived <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">0</span></button>
+          </div>
+        </aside>
+
+        <div class="work">
+          <div class="work-head">
+            <div class="work-title">
+              <h2>Pull Request <span class="lib-tag lib-tag-builtin">built-in</span></h2>
+              <span class="prov">ships with this build · read-only until you duplicate it</span>
+            </div>
+            <span class="sp"></span>
+            <button class="btn btn-sm">Duplicate to edit</button>
+            <button class="icon-btn" title="Archive">⋯</button>
+          </div>
+
+          <div class="props">
+            <button class="prop"><span class="k">requires skill</span><span class="v mono">pull-request</span><span class="caret"></span></button>
+            <button class="prop"><span class="k">completes when</span><span class="v">Pull request is opened and verified</span><span class="caret"></span></button>
+            <span class="sp" style="flex:1"></span>
+            <span class="prop readonly"><span class="k">size</span><span class="v mono" style="color:var(--muted);font-weight:480">2,287 / 58,000 B</span></span>
+          </div>
+
+          <p class="contract-line">
+            The stage sends this instruction to the bound session, which must have the
+            <code>pull-request</code> skill. It is <b>done when Mission Control can see an open
+            pull request whose head matches the pushed work</b> - not when the session says so.
+            Evidence is captured after, and only the stages below this one review it.
+          </p>
+
+          <div class="work-body">
+            <div class="editor" style="flex:1">
+              <div class="editor-bar">
+                <span class="name">pull-request.md</span>
+                <span class="meta">MARKDOWN</span>
+                <span style="flex:1"></span>
+                <span class="tog"><button>Preview</button><button class="on">Editor</button></span>
+              </div>
+              <div class="editor-body">
+                <div class="gutter"></div>
+                <div class="code"><span class="h"># Pull Request</span>
+
+Prepare the reviewed work as a reviewer-ready pull request.
+
+<span class="h">## What to do</span>
+
+Use the invoked pull-request skill to turn the work this workflow just
+reviewed into one open pull request. Commit everything that was reviewed,
+push the branch, and open the pull request.
+
+This is about one repository and one branch: the repository named in the
+packet above, or the one you are standing in when it names none. If an
+open pull request already exists for that branch and its head matches the
+work you just pushed, update that pull request rather than opening a
+second one for it.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usedby">
+            <span class="lbl">used by</span>
+            <a class="ref" href="#"><span class="g">⌁</span> No-Mistakes Review <span style="color:var(--dim)">after stage 4</span></a>
+            <span class="sp"></span>
+            <span class="badge badge-neutral"><span class="badge-dot"></span>no run waiting on it</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="caption"><b>What changed against today:</b> "Required skill" and "Completes when"
+    stop being two selects in a four-across field row and become chips with a sentence beneath
+    them. The rail sub-label switches from the description - which just repeats the title - to
+    the contract, so Pull Request and Retro are told apart by the thing that differs.</p>
+  </section>
+
+  <!-- ================================= B ================================= -->
+  <section class="approach">
+    <div class="approach-head">
+      <span class="letter">B</span>
+      <h2>Focus</h2>
+      <span class="tagline">the contract is a sentence you fill in</span>
+    </div>
+    <p class="why">Same document shape as Personas B - centred column, breadcrumb and a
+    labelled Close, properties collapsed behind a bar that summarises itself. The Actions
+    variant puts the contract <b>above</b> the instruction as a sentence with the controls set
+    into it: <i>"Run this on the bound session, which must have the <u>pull-request</u> skill.
+    Consider it done when <u>a pull request is opened and verified</u>."</i> Both selects are
+    still selects; they are just read in the order that explains them. A completion kind this
+    build cannot prove renders as a dashed, unset slot inside the same sentence, so an
+    unsatisfiable contract is visible as a hole in a sentence rather than a disabled option
+    inside a closed dropdown.</p>
+    <div class="facts">
+      <span class="fact good">the contract cannot be misread</span>
+      <span class="fact good">unavailable completion kinds are visible while closed</span>
+      <span class="fact good">largest writing surface</span>
+      <span class="fact cost">a sentence is harder to scan than a table when you have many</span>
+      <span class="fact cost">no side-by-side comparison</span>
+    </div>
+
+    <div class="frame" style="height:684px">
+      <div class="topbar">
+        <span class="brand"><i></i><h1>Mission Control</h1></span>
+        <span class="page-seg">
+          <button class="page-seg-btn">▦ Fleet <span class="kb-hint">f</span></button>
+          <button class="page-seg-btn" aria-current="page">⌗ Library <span class="kb-hint">w</span></button>
+          <button class="page-seg-btn">▷ Runs <span class="kb-hint">r</span></button>
+        </span>
+        <span class="filter-box">⌕ Filter (/)</span>
+        <span class="sp"></span>
+        <span class="rt-pill">11 sessions</span>
+        <span class="spend-chip">≈$1,968</span>
+      </div>
+
+      <div class="crumb">
+        <a href="#">Library</a><span class="sep">/</span>
+        <a href="#">Actions</a><span class="sep">/</span>
+        <span class="here">Pull Request</span>
+        <span class="sp"></span>
+        <button class="btn btn-sm" disabled>Save</button>
+        <button class="btn btn-sm">Duplicate to edit</button>
+        <button class="icon-btn" title="Archive">⋯</button>
+        <span class="rule"></span>
+        <button class="btn btn-sm btn-ghost">Close <kbd>esc</kbd></button>
+      </div>
+
+      <div class="doc-scroll">
+        <div class="doc">
+          <div class="kicker">
+            <span class="lib-tag lib-tag-builtin">built-in session action</span>
+            <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim)">2,287 / 58,000 UTF-8 bytes</span>
+          </div>
+          <h1>Pull Request</h1>
+          <p class="sentence">
+            Run this on the bound session, which must have the
+            <button class="slot mono">pull-request <span class="caret"></span></button>
+            skill. Consider it done when
+            <button class="slot">a pull request is opened and verified <span class="caret"></span></button>.
+          </p>
+
+          <button class="disclosure">
+            <span class="tw"></span>
+            <span class="lbl">Description &amp; evidence</span>
+            <span class="summary">
+              <span>"Prepare the reviewed work as a reviewer-ready pull request."</span>
+              <span>evidence captured <b>after</b> the turn</span>
+            </span>
+          </button>
+
+          <div class="doc-editor">
+            <div class="editor-bar">
+              <span class="name">pull-request.md</span>
+              <span class="meta">MARKDOWN</span>
+              <span style="flex:1"></span>
+              <span class="tog"><button>Preview</button><button class="on">Editor</button></span>
+            </div>
+            <div class="editor-body">
+              <div class="gutter"></div>
+              <div class="code"><span class="h"># Pull Request</span>
+
+Prepare the reviewed work as a reviewer-ready pull request.
+
+<span class="h">## What to do</span>
+
+Use the invoked pull-request skill to turn the work this workflow just reviewed
+into one open pull request. Commit everything that was reviewed, push the branch,
+and open the pull request.
+
+This is about one repository and one branch: the repository named in the packet
+above, or the one you are standing in when it names none. If an open pull request
+already exists for that branch and its head matches the work you just pushed,
+update that pull request rather than opening a second one for it.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-pager">
+        <span class="pgpos">1 of 2 · built-in</span>
+        <button class="pgbtn">Retro <kbd>]</kbd></button>
+        <span class="sp"></span>
+        <span class="lbl">used by</span>
+        <a class="ref" href="#"><span class="g">⌁</span> No-Mistakes Review</a>
+      </div>
+    </div>
+    <p class="caption"><b>Why the sentence and not a form:</b> the two values are not
+    independent settings, they are one rule with a subject and a predicate. Written as a
+    sentence, "requires <code>retro</code>, completes on <code>repo_commit</code>" is obviously
+    coherent and "requires <code>pull-request</code>, completes on <code>session_turn</code>"
+    is obviously suspicious. Written as two selects two columns apart, neither reads as
+    anything.</p>
+  </section>
+
+  <!-- ================================= C ================================= -->
+  <section class="approach">
+    <div class="approach-head">
+      <span class="letter">C</span>
+      <h2>Sheet</h2>
+      <span class="tagline">the contract, drawn</span>
+    </div>
+    <p class="why">Same sheet mechanics as Personas C - the card wall stays behind the app's
+    own <code>rgba(4,6,9,.72)</code> backdrop, Escape and Close both dismiss, you never lose
+    your place. The Actions variant spends its <b>Contract</b> tab on a picture: where this
+    instruction enters the run, which session receives it, what skill has to be present, and
+    what Mission Control watches for before the stages below are allowed to read the evidence.
+    That chain exists today only as prose in a paragraph most people scroll past, and it is
+    the single hardest thing to hold in your head when you are writing a new Action.</p>
+    <div class="facts">
+      <span class="fact good">the run-time chain is shown, not described</span>
+      <span class="fact good">Escape is self-evident</span>
+      <span class="fact good">you never lose your place in the Library</span>
+      <span class="fact cost">smallest writing surface</span>
+      <span class="fact cost">a diagram is one more thing to keep true as the model changes</span>
+    </div>
+
+    <div class="frame" style="height:684px">
+      <div class="topbar">
+        <span class="brand"><i></i><h1>Mission Control</h1></span>
+        <span class="page-seg">
+          <button class="page-seg-btn">▦ Fleet <span class="kb-hint">f</span></button>
+          <button class="page-seg-btn" aria-current="page">⌗ Library <span class="kb-hint">w</span></button>
+          <button class="page-seg-btn">▷ Runs <span class="kb-hint">r</span></button>
+        </span>
+        <span class="filter-box">⌕ Filter (/)</span>
+        <span class="sp"></span>
+        <span class="rt-pill">11 sessions</span>
+        <span class="spend-chip">≈$1,968</span>
+      </div>
+
+      <div class="c-wrap">
+        <div class="c-index">
+          <p class="ey">Actions</p>
+          <h3>What can a run tell the session to do?</h3>
+          <p>An Action is a reusable instruction a workflow stage sends to the bound session - open a PR, run a migration. It completes; it never judges.</p>
+          <div class="c-row">
+            <div class="c-card"><b>Pull Request</b><span>Prepare the reviewed work as a reviewer-ready pull request.</span><i>Skill · pull-request</i></div>
+            <div class="c-card"><b>Retro</b><span>Run the retrospective over this session and commit what it taught into the repository's memory.</span><i>Skill · retro</i></div>
+            <div class="c-card new">+ New action</div>
+          </div>
+          <p class="ey">Commands</p>
+          <h3>What does each standard gate run?</h3>
+          <p>A workflow names a slot, never a command, so it travels between repositories.</p>
+          <div class="c-row">
+            <div class="c-card"><b>test</b><span>The automated test suite this repository gates on.</span><i>Global default · 2 overrides</i></div>
+            <div class="c-card"><b>lint</b><span>The style and correctness pass that runs before review.</span><i>Global default</i></div>
+            <div class="c-card"><b>typecheck</b><span>The type checker, when this repository has one separate from its build.</span><i>Global default</i></div>
+            <div class="c-card"><b>build</b><span>The build or bundle step that proves the change compiles.</span><i>Global default</i></div>
+          </div>
+        </div>
+
+        <div class="c-scrim">
+          <div class="c-sheet">
+            <div class="c-head">
+              <h2>Pull Request</h2>
+              <span class="lib-tag lib-tag-builtin">built-in</span>
+              <span class="sp"></span>
+              <button class="btn btn-sm">Duplicate to edit</button>
+              <button class="c-close">Close <kbd>esc</kbd></button>
+            </div>
+            <div class="c-tabs">
+              <button class="c-tab">Instruction</button>
+              <button class="c-tab on">Contract</button>
+              <button class="c-tab">Used by <span class="n">1</span></button>
+            </div>
+            <div class="c-body">
+              <div class="c-list">
+                <div class="rail-group" style="padding:4px 8px 6px">Built-in <span class="n">2</span></div>
+                <button class="rail-item on"><span class="r1"><span class="nm">Pull Request</span></span><span class="sub">pull-request</span></button>
+                <button class="rail-item"><span class="r1"><span class="nm">Retro</span></span><span class="sub">retro</span></button>
+                <div class="rail-group" style="padding:11px 8px 6px">Yours <span class="n">0</span></div>
+                <button class="rail-item"><span class="r1"><span class="nm" style="color:var(--dim);font-weight:500">+ New action</span></span></button>
+              </div>
+              <div class="c-main" style="overflow:auto">
+                <p class="sec-h">What happens when a stage reaches this action <span class="rule"></span></p>
+                <div class="wire">
+                  <div class="wnode">
+                    <span class="wk">1 · stage</span>
+                    <span class="wv">No-Mistakes Review</span>
+                    <span class="ws">after every reviewer passes</span>
+                  </div>
+                  <span class="warrow">→</span>
+                  <div class="wnode self">
+                    <span class="wk">2 · this action</span>
+                    <span class="wv">pull-request.md</span>
+                    <span class="ws">2,287 bytes, sent byte-exact</span>
+                  </div>
+                  <span class="warrow">→</span>
+                  <div class="wnode">
+                    <span class="wk">3 · session</span>
+                    <span class="wv">the bound session</span>
+                    <span class="ws">must have <code style="font-family:var(--mono);font-size:10.5px;color:var(--fg)">pull-request</code></span>
+                  </div>
+                  <span class="warrow">→</span>
+                  <div class="wnode gate">
+                    <span class="wk">4 · done when</span>
+                    <span class="wv">A pull request is open</span>
+                    <span class="ws">head matches the pushed work</span>
+                  </div>
+                </div>
+
+                <p class="sec-h">Required skill <span class="rule"></span></p>
+                <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+                  <span class="sel" style="width:280px">pull-request</span>
+                  <span class="badge badge-idle"><span class="badge-dot"></span>available on this daemon</span>
+                </div>
+                <p class="evidence-note" style="margin-bottom:16px">If the bound session cannot invoke this skill,
+                the stage refuses the Action rather than sending an instruction that cannot be followed.</p>
+
+                <p class="sec-h">Completes when <span class="rule"></span></p>
+                <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+                  <span class="sel" style="width:280px">Pull request is opened and verified</span>
+                  <span class="lib-tag">repo_commit also available</span>
+                  <span class="lib-tag lib-tag-attention">session_turn unavailable here</span>
+                </div>
+                <p class="evidence-note">Whatever the session changes while it works, Mission Control captures
+                fresh evidence afterwards, and only the stages below this one review it.</p>
+              </div>
+            </div>
+            <div class="c-foot">
+              <span class="hint">Built-in - this session action ships with Mission Control and carries the
+              instruction this build was made from. Duplicate it to make a copy you own and can edit.</span>
+              <span class="sp"></span>
+              <button class="btn btn-sm" disabled>Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="caption"><b>The diagram earns its place only if it stays true.</b> Every node
+    above is a value the daemon already holds - the binding stage, the prompt bytes, the
+    capability id, the completion kind - so it can be rendered from state rather than drawn by
+    hand. If it ever has to be maintained as a picture, it should not ship.</p>
+  </section>
+
+  <p class="note">Mockups only. Content is the real <code>Pull Request</code> built-in
+  (<code>builtin:pull-request</code>) as it renders today at 1600&times;1000, with completion
+  capabilities from <code>GET /api/session-actions/capabilities</code>.</p>
+</main>
+
+<script>
+/* Mockup scaffolding: keep each gutter's line count honest against its code block. */
+for (const body of document.querySelectorAll(".editor-body")) {
+  const code = body.querySelector(".code");
+  const gutter = body.querySelector(".gutter");
+  if (!code || !gutter) continue;
+  const lines = code.textContent.replace(/\n$/, "").split("\n").length;
+  gutter.innerHTML = Array.from({ length: lines }, (_, i) => i + 1).join("<br>");
+}
+</script>
+</body>
+</html>

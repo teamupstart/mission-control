@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Library detail screens: the Rail direction</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1b1f24; --muted: #57606a; --dim: #78818c;
+  --border: #d8dee4; --border-soft: #eaeef2; --panel: #f6f8fa; --panel-2: #eef1f4;
+  --accent: #0969da; --good: #1a7f37; --warn: #9a6700; --bad: #cf222e; --purple: #8250df;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --dim: #7d8590;
+    --border: #30363d; --border-soft: #21262d; --panel: #161b22; --panel-2: #1c2128;
+    --accent: #4493f8; --good: #3fb950; --warn: #d29922; --bad: #f85149; --purple: #a371f7;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0 20px 96px; background: var(--bg); color: var(--fg);
+  font-family: var(--sans); font-size: 16px; line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 860px; margin: 0 auto; }
+header.doc { padding: 44px 0 8px; border-bottom: 1px solid var(--border-soft); margin-bottom: 8px; }
+h1 { font-size: 30px; line-height: 1.25; letter-spacing: -0.02em; margin: 0 0 10px; }
+h2 {
+  font-size: 21px; letter-spacing: -0.01em; margin: 40px 0 12px;
+  padding-bottom: 7px; border-bottom: 1px solid var(--border-soft);
+}
+h3 { font-size: 16.5px; margin: 26px 0 8px; }
+p { margin: 0 0 14px; }
+ul, ol { margin: 0 0 14px; padding-left: 24px; }
+li { margin: 5px 0; }
+li > ul, li > ol { margin: 5px 0; }
+a { color: var(--accent); }
+strong { font-weight: 640; }
+code {
+  font-family: var(--mono); font-size: 0.86em;
+  background: var(--panel); border: 1px solid var(--border-soft);
+  padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere;
+}
+.tablewrap { overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--border); border-radius: 9px; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+thead th { background: var(--panel); font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+.lede { font-size: 17px; color: var(--muted); margin: 0 0 16px; }
+.callout {
+  border: 1px solid var(--border); border-left: 3px solid var(--warn);
+  background: var(--panel); border-radius: 9px; padding: 14px 17px; margin: 0 0 18px;
+}
+.callout p:last-child { margin-bottom: 0; }
+.callout.ok { border-left-color: var(--good); }
+.callout.info { border-left-color: var(--accent); }
+.pill {
+  display: inline-block; font-family: var(--mono); font-size: 12px;
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px;
+  color: var(--muted); background: var(--panel);
+}
+.pill.approved { color: var(--good); border-color: var(--good); }
+figure { margin: 20px 0 22px; }
+figure svg { display: block; width: 100%; height: auto; max-width: 100%; }
+figcaption { margin-top: 9px; font-size: 13.5px; color: var(--dim); }
+.mockcta {
+  display: block; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); padding: 15px 18px; margin: 0 0 22px;
+  text-decoration: none; color: inherit;
+}
+.mockcta:hover { border-color: var(--accent); }
+.mockcta b { display: block; font-size: 15.5px; margin-bottom: 3px; color: var(--accent); }
+.mockcta span { font-size: 14px; color: var(--muted); }
+footer.doc { margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--border-soft); font-size: 13.5px; color: var(--dim); }
+</style>
+</head>
+<body>
+<main>
+
+<header class="doc">
+  <p><span class="pill approved">approved: Rail</span> <span class="pill">3 screens</span></p>
+  <h1>Library detail screens: the Rail direction</h1>
+  <p class="lede">Personas, Actions and Commands each have a detail screen one level under the
+  Library card wall. This plan fixes the dead end a person hits when they open one, and rebuilds
+  all three screens on a single shared grammar.</p>
+</header>
+
+<a class="mockcta" href="mockups/index.html">
+  <b>Open the mockups →</b>
+  <span>The approved Rail direction and the two it was chosen over, for all three screens.</span>
+</a>
+
+<h2>The problem</h2>
+
+<h3>You cannot get out</h3>
+<p>Opening a Persona, Action or Command and pressing Escape does nothing, and there is no visible
+way back to the Library.</p>
+<ul>
+  <li>Escape is <strong>unhandled</strong>, not swallowed. <code>App.tsx</code>'s global keydown does
+  its page-shortcut work and then returns for any page that is not the fleet, above the entire
+  Escape ladder. No component under <code>src/web/library/</code>, <code>PersonaLibrary</code>,
+  <code>SessionActionLibrary</code> or <code>CommandLibrary</code> registers an Escape handler of
+  its own.</li>
+  <li>None of the four authoring surfaces renders a back button, a breadcrumb, or a close control.
+  Driving the running dashboard, the only control on the Actions detail that navigates back to
+  <code>#/library</code> is the topbar <strong>Library</strong> segment - and it is already painted
+  <code>aria-current</code>, so it reads as the page you are on rather than the way out of it.</li>
+  <li>The <code>w</code> chord that would return to the Library is blocked by the global typing
+  guard, and the CodeMirror pane that dominates the Persona and Action editors is
+  <code>contenteditable</code>, so the chord is dead in exactly the region that fills the
+  screen.</li>
+</ul>
+<p><code>SettingsPage</code> already solves this for its own page with a visible leave control and a
+page-level Escape. The Library never got either.</p>
+
+<h3>The screens under the card wall do not match the card wall</h3>
+<ul>
+  <li><strong>You pick the same thing twice.</strong> The Library index is a question-led wall of
+  cards. Clicking one lands you in a two-pane editor whose left rail lists the same assets you just
+  chose from.</li>
+  <li><strong>Chrome sits above the payload.</strong> On a Persona roughly 330px of banner, title row
+  and a five-field metadata block sit above the markdown that is the actual asset.</li>
+  <li><strong>Save is one of four equal-weight text links.</strong> Save, Copy Markdown, Download .md
+  and Duplicate render as peers, next to Archive. On a built-in, Save is permanently disabled and
+  Duplicate is the only verb that does anything.</li>
+  <li><strong>The three screens disagree with each other.</strong> Personas has import, a state filter
+  and search; Actions has a state filter and search; Commands has none of them, and a rail listing
+  four fixed slots that can never grow.</li>
+  <li><strong>Nothing says what depends on the asset.</strong> A Persona can be gating a live workflow
+  run while you edit its standards, and the screen never mentions it.</li>
+</ul>
+
+<h2>Approved direction: Rail</h2>
+<p>Reviewed as three approaches across all three screens (Rail, Focus, Sheet). <strong>Rail is
+approved for all three</strong>, recorded here as a requirement rather than an option.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Decision</th><th>Selection</th><th>Consequence</th></tr></thead>
+  <tbody>
+    <tr><td>Detail-screen shape</td><td><strong>Rail</strong></td><td>Keep the two-pane workbench on all three screens and fix its grammar, rather than replacing it with a centred document (Focus) or an overlay sheet (Sheet)</td></tr>
+    <tr><td>Exit affordance</td><td>Persistent rail row + Escape</td><td>A <code>← Library</code> row pinned above the asset list, carrying <code>esc</code> as its own label</td></tr>
+    <tr><td>Escape semantics</td><td>Two-step ladder</td><td>Inside the editor, Escape leaves the editor; outside it, Escape leaves the page</td></tr>
+    <tr><td>Header actions</td><td>One promoted verb + overflow</td><td>Save (or Duplicate on a built-in) is promoted; Copy Markdown, Download .md, Re-import and Archive move into an overflow menu</td></tr>
+    <tr><td>Metadata</td><td>Property chips</td><td>The flat field row becomes chips that open popovers, rendering quiet when inherited and solid when overridden</td></tr>
+    <tr><td>Dependants</td><td>"Used by" footer</td><td>Each screen names the workflows referencing the open asset</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Rail was chosen because it is the smallest change that fixes the dead end, it preserves reading
+one asset while editing another, and it keeps a single grammar across three screens whose payloads
+have nothing in common. Focus's centred document buys writing width the Persona editor would enjoy
+but strands Commands, which has no document. Sheet makes Escape self-evident but pays for it with a
+focus trap, a dismissal-time dirty gate on three paths, and the smallest editing surface of the
+three.</p>
+
+<h2>The shared exit contract</h2>
+<p>All three screens adopt the same exit, and it is the foundation the rest of the work sits on.</p>
+<ul>
+  <li><strong>A <code>← Library</code> row</strong> pinned above the asset list in every rail, first
+  in reading order, never scrolled away. It carries <code>esc</code> as its own label so the
+  keystroke is taught rather than assumed.</li>
+  <li><strong>A page-level Escape ladder</strong> for <code>#/library/&lt;surface&gt;/&lt;asset&gt;</code>:
+    <ol>
+      <li>If focus is inside the guidance or prompt editor, Escape leaves the editor and returns
+      focus to the surrounding page. It does not navigate.</li>
+      <li>Otherwise Escape leaves the page for <code>#/library</code>.</li>
+    </ol>
+  </li>
+  <li>The handler stands down when an overlay owns Escape, so a confirm or discard dialog still
+  closes itself first and the page stays put.</li>
+  <li>Escape routes through the same navigation the rail row uses, so an unsaved draft raises the
+  existing "leave with unsaved changes" dialog rather than discarding work.</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 820 300" role="img" aria-label="Escape key decision ladder on a Library detail route">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-width="1.5" color="#8b949e">
+    <rect x="8" y="126" width="146" height="48" rx="9"/>
+    <rect x="214" y="126" width="152" height="48" rx="9"/>
+    <rect x="426" y="126" width="152" height="48" rx="9"/>
+    <rect x="638" y="18" width="174" height="48" rx="9" stroke="#8250df"/>
+    <rect x="638" y="126" width="174" height="48" rx="9" stroke="#1a7f37"/>
+    <rect x="638" y="234" width="174" height="48" rx="9" stroke="#0969da"/>
+    <path d="M 158 150 L 208 150" marker-end="url(#ar)"/>
+    <path d="M 370 150 L 420 150" marker-end="url(#ar)"/>
+    <path d="M 582 150 L 632 150" marker-end="url(#ar)"/>
+    <path d="M 290 126 L 290 42 L 632 42" marker-end="url(#ar)" stroke="#8250df"/>
+    <path d="M 502 174 L 502 258 L 632 258" marker-end="url(#ar)" stroke="#0969da"/>
+  </g>
+  <g font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="currentColor" color="#8b949e">
+    <text x="81" y="145" text-anchor="middle" font-weight="600" fill="#8b949e">Escape</text>
+    <text x="81" y="162" text-anchor="middle" font-size="11.5" fill="#7d8590">on #/library/…</text>
+
+    <text x="290" y="145" text-anchor="middle" font-weight="600" fill="#8b949e">Overlay open?</text>
+    <text x="290" y="162" text-anchor="middle" font-size="11.5" fill="#7d8590">confirm / discard</text>
+
+    <text x="502" y="145" text-anchor="middle" font-weight="600" fill="#8b949e">Focus in editor?</text>
+    <text x="502" y="162" text-anchor="middle" font-size="11.5" fill="#7d8590">CodeMirror host</text>
+
+    <text x="725" y="38" text-anchor="middle" font-weight="600" fill="#a371f7">Stand down</text>
+    <text x="725" y="55" text-anchor="middle" font-size="11.5" fill="#7d8590">overlay closes itself</text>
+
+    <text x="725" y="146" text-anchor="middle" font-weight="600" fill="#3fb950">Leave the page</text>
+    <text x="725" y="163" text-anchor="middle" font-size="11.5" fill="#7d8590">→ #/library (dirty gate)</text>
+
+    <text x="725" y="254" text-anchor="middle" font-weight="600" fill="#4493f8">Leave the editor</text>
+    <text x="725" y="271" text-anchor="middle" font-size="11.5" fill="#7d8590">focus back to the page</text>
+
+    <text x="316" y="34" font-size="11.5" fill="#a371f7">yes</text>
+    <text x="516" y="196" font-size="11.5" fill="#4493f8">yes</text>
+    <text x="392" y="142" font-size="11.5" fill="#7d8590">no</text>
+    <text x="604" y="142" font-size="11.5" fill="#7d8590">no</text>
+  </g>
+</svg>
+<figcaption>The Escape ladder. The <em>leave the editor</em> branch is the one the obvious fix
+misses: <code>SettingsPage</code>'s handler bails on a <code>contenteditable</code> target, which is
+exactly what CodeMirror's content host is, so copied verbatim it would be dead in the pane that
+fills the screen.</figcaption>
+</figure>
+
+<h2>Screen: Personas</h2>
+<p>The rail:</p>
+<ul>
+  <li><code>← Library</code> row above everything.</li>
+  <li>Assets grouped <strong>Built-in</strong> and <strong>Yours</strong>, so the four shipped
+  Personas stop reading as things you wrote, with counts on each group head.</li>
+  <li>Each row's sub-label is the resolved runner and model, which is what distinguishes two Personas
+  at a glance.</li>
+  <li>Search stays. Import .md and the archived-state filter move to a rail footer, out of the path
+  between the header and the list.</li>
+</ul>
+<p>The workspace:</p>
+<ul>
+  <li>Title row carries the name, a built-in tag, and a provenance line. <strong>Duplicate to
+  edit</strong> is promoted on a built-in; Save is promoted on an editable Persona. Copy Markdown,
+  Download .md, Re-import from source and Archive move into an overflow menu.</li>
+  <li>The five-field metadata block becomes property chips: provider, model, and read-only chips for
+  the effective source and the guidance byte count. Inherited values render quiet, overridden values
+  render solid, so what this Persona actually changes is legible without opening anything.</li>
+  <li>The guidance editor takes all remaining height.</li>
+  <li>A <strong>used by</strong> footer names the workflows referencing this Persona and whether a
+  run is gating on it now. See the repository finding below: this footer lands last, in its own
+  phase.</li>
+</ul>
+
+<h2>Screen: Actions</h2>
+<p>Everything in the Personas rail grammar, plus what is specific to an Action: it is the only
+Library asset carrying a machine-checked contract, and the screen has never stated it.</p>
+<ul>
+  <li>Rail sub-labels become <code>skill · completion</code> rather than a description that repeats
+  the title.</li>
+  <li>Property chips hold the required skill and the completion condition.</li>
+  <li>A <strong>contract line</strong> under the chips states the same two values as the one sentence
+  they form: what the stage sends, what the session must have, and what Mission Control observes
+  before the stage is allowed to call it done.</li>
+  <li>A completion kind this build cannot prove stays visible and marked, rather than being a
+  disabled option inside a closed dropdown.</li>
+  <li>A <strong>used by</strong> footer, as above, landing in the same final phase.</li>
+</ul>
+
+<h2>Screen: Commands</h2>
+<p>Commands keeps the rail for consistency, and its body changes the most, because it has no document
+to edit. A slot holds one repository-neutral default argv plus a list of exceptions, and the longest
+matching path wins.</p>
+<ul>
+  <li>Rail sub-labels carry the resolved default and the override count, so you can see which of the
+  four slots has exceptions without opening each one.</li>
+  <li><strong>The default and its overrides become one table</strong> with a header row. The default
+  is pinned at the top as the rule it actually is - the one that applies where nothing more specific
+  matches - rather than a separately titled section above an unrelated list.</li>
+  <li><strong>The add row is visibly an add row</strong>, not a third entry indistinguishable from the
+  two saved ones.</li>
+  <li><strong>Every rule shows its parsed argv</strong>, not just the default. That readout is where a
+  quoting mistake becomes visible, and today it is only offered for one of the three rules on
+  screen.</li>
+  <li>The save contract does not change: one compare-and-swap per slot, replacing the default and the
+  whole override list together.</li>
+</ul>
+
+<h2>Deliberately not in scope</h2>
+<ul>
+  <li>No migration and no change to a persisted identifier.</li>
+  <li>No change to the Library index card wall, whose "nothing runs from here" contract is pinned by
+  <code>library-page-render.test.ts</code>. That contract governs the index, not the detail screen
+  you opened deliberately.</li>
+  <li>No change to the Workflows authoring surface, which shares the rail CSS but not this work.</li>
+  <li>Commands gains no New, no archive, and no user-created slots. There are four, forever.</li>
+  <li>No change to command execution, Trust gating, or authorization copy.</li>
+</ul>
+
+<h2>One repository finding that changed this plan</h2>
+<div class="callout">
+<p>The design above assumed "used by" could be computed in the browser from catalogs it already
+holds. <strong>It cannot.</strong> A persona id lives only inside a workflow graph -
+<code>personaId</code> on a draft node, <code>persona.sourcePersonaId</code> on a published one -
+and no graph is in the SSE snapshot. What the browser holds is <code>WorkflowSummary</code>, whose
+own contract is <em>"the bounded catalog projection carried over SSE. Graphs and guidance stay on
+HTTP"</em>, and whose only persona field is the scalar <code>personaCount</code>. Answering "which
+workflows reference this Persona" today means one HTTP fetch per workflow.</p>
+</div>
+<p>Half of the footer <em>is</em> already derivable: <code>WorkflowRunSummary.activePersonaNames</code>
+answers "a run is gating on it now" for Personas, and <code>status === "waiting_for_action"</code>
+with <code>actionWait</code> answers it for Actions. Both are in the snapshot. The persona half
+matches by <strong>name</strong>, not id, so a built-in shadowed by a same-named operator Persona is
+ambiguous.</p>
+<p>Consequences carried into the phasing:</p>
+<ul>
+  <li>"Used by" is <strong>not</strong> free UI work and does not ride along with a screen. It needs
+  a deliberate decision about how the reference is projected, and it touches <code>src/shared/</code>
+  wire contracts.</li>
+  <li>It is therefore <strong>sequenced last, as its own phase</strong>, after the three screens have
+  shipped. The dead end and the three rebuilt screens do not wait on it.</li>
+  <li>The three screen phases must leave a footer slot the last phase fills, and must not ship a
+  half-answer in the meantime.</li>
+</ul>
+
+<h2>Verification</h2>
+<ul>
+  <li>Render tests pin the markup shape of each rebuilt rail and workspace.</li>
+  <li><strong>Every screen here is a UI change and needs a Playwright spec in <code>e2e/</code>.</strong>
+  The exit contract in particular is a browser behaviour: only a real browser can assert that Escape
+  inside CodeMirror leaves the editor, that a second Escape lands on <code>#/library</code>, and that
+  a dirty draft raises the confirm dialog instead of discarding.</li>
+  <li>The existing <code>library.spec.ts</code> and <code>library-commands.spec.ts</code> specs keep
+  passing, extended rather than replaced.</li>
+  <li>Runtime verification against the built dashboard, with screenshots attached to each phase's
+  pull request.</li>
+</ul>
+
+<div class="callout ok">
+<p><strong>Record.</strong> The three-approach review was presented and decided in session:
+<strong>Rail, for all three screens</strong>, with the phased implementation follow-up selected.
+Because the selection was made directly rather than through a dashboard decision form, it is
+recorded here as the approved requirement and carried into
+<a href="phased-plan.html">phased-plan.html</a>.</p>
+</div>
+
+<footer class="doc">
+  Source of truth is <code>docs/plans/library-screens/plan.md</code>; this page is a rendering of it.
+  Phase breakdown: <a href="phased-plan.html">phased-plan.html</a>.
+  Mockups: <a href="mockups/index.html">mockups/index.html</a>.
+</footer>
+
+</main>
+</body>
+</html>

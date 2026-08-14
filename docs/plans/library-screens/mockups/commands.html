@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Commands - three approaches</title>
+<link rel="stylesheet" href="tokens.css" />
+<link rel="stylesheet" href="screens.css" />
+<style>
+/* ---- Commands-specific ----
+   Commands is the odd one out: no Markdown, nothing to write. A slot holds one
+   repository-neutral default argv plus a list of exceptions, and the longest matching path
+   wins. So the screen is not an editor, it is a resolution table - and the question it should
+   answer first is "what actually runs in this repository", which today it never answers. */
+
+.cmd-body { flex: 1; min-height: 0; overflow: auto; padding: 0 22px 20px; }
+
+.sec-h {
+  display: flex; align-items: center; gap: 10px; margin: 16px 0 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
+}
+.sec-h .rule { flex: 1; height: 1px; background: var(--border-soft); }
+.sec-h .n { font-family: var(--mono); font-size: 10.5px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--dim); }
+.hint { margin: 0 0 10px; font-size: 11.5px; line-height: 1.6; color: var(--dim); max-width: 92ch; }
+.hint b { color: var(--muted); font-weight: 600; }
+
+/* the override table - today these are a stack of bordered blocks where the "add" row is
+   indistinguishable from a saved one */
+.tbl { width: 100%; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.trow { display: grid; grid-template-columns: 260px minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 9px 13px; }
+.trow + .trow { border-top: 1px solid var(--border-soft); }
+.thead {
+  background: var(--panel-2); border-bottom: 1px solid var(--border-soft);
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--dim); padding: 7px 13px;
+}
+.trow .scope { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.trow .scope b { font-size: 12.5px; font-weight: 560; color: var(--fg); }
+.trow .scope i { font-family: var(--mono); font-style: normal; font-size: 10.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .cmd { font-family: var(--mono); font-size: 12px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow.is-default { background: color-mix(in oklab, var(--working) 6%, var(--panel)); }
+.trow.is-default .scope b { color: var(--working); }
+.trow.add { background: var(--bg-2); }
+.trow.add .field-input { padding: 6px 9px; font-size: 12px; }
+.trow.win { background: color-mix(in oklab, var(--idle) 9%, var(--panel)); box-shadow: inset 2px 0 0 var(--idle); }
+.trow.lose { opacity: 0.45; }
+.argv { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+.argv b { color: var(--muted); font-weight: 500; }
+
+/* B: the resolver. "What runs in ___" answered by ordering the rules by specificity and
+   marking the winner, instead of stating "the longest matching path wins" in a hint. */
+.resolver {
+  display: flex; align-items: center; gap: 11px; flex-wrap: wrap;
+  padding: 12px 14px; margin-bottom: 4px;
+  border: 1px solid color-mix(in oklab, var(--working) 34%, var(--border));
+  border-radius: 11px; background: color-mix(in oklab, var(--working) 7%, var(--panel));
+}
+.resolver .q { font-size: 13px; font-weight: 560; color: var(--fg); }
+.resolver .out { display: flex; align-items: center; gap: 9px; margin-left: auto; }
+.resolver .out .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+.resolver .out code {
+  font-family: var(--mono); font-size: 13px; font-weight: 550; color: var(--fg);
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 7px; padding: 5px 10px;
+}
+
+/* the four slots as one ledger, since there are only ever four */
+.slot-strip { display: flex; gap: 8px; margin-bottom: 4px; }
+.slot-chip {
+  flex: 1; display: flex; flex-direction: column; gap: 3px; cursor: pointer; font: inherit; text-align: left;
+  padding: 9px 12px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--panel);
+}
+.slot-chip:hover { border-color: var(--border); }
+.slot-chip.on { background: color-mix(in oklab, var(--working) 12%, var(--panel)); border-color: color-mix(in oklab, var(--working) 42%, var(--border)); }
+.slot-chip .sn { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--fg); }
+.slot-chip .sc { font-family: var(--mono); font-size: 10.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-chip.unset .sc { color: var(--attention); }
+
+/* C: the matrix. repositories down, the four gates across - the shape of the question
+   "when a workflow runs here, what are the four commands". */
+.matrix { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.matrix th, .matrix td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); }
+.matrix thead th {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--dim); background: var(--panel-2);
+  border-bottom: 1px solid var(--border); position: sticky; top: 0;
+}
+.matrix tbody th { font-weight: 560; color: var(--fg); }
+.matrix tbody th i { display: block; font-family: var(--mono); font-style: normal; font-size: 10.5px; color: var(--dim); margin-top: 2px; }
+.matrix td code { font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+.matrix td.inherit { color: var(--dim); font-style: italic; }
+.matrix tbody tr:hover td, .matrix tbody tr:hover th { background: color-mix(in oklab, var(--working) 5%, transparent); }
+.matrix .cell-btn { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; width: 100%; }
+.matrix .cell-btn:hover code { color: var(--working); }
+.matrix tr.base td, .matrix tr.base th { background: color-mix(in oklab, var(--working) 7%, transparent); }
+.matrix tr.base th { color: var(--working); }
+</style>
+</head>
+<body>
+
+<nav class="mock-nav">
+  <a href="index.html">← all screens</a>
+  <a href="personas.html">Personas</a>
+  <a href="actions.html">Actions</a>
+  <a class="on" href="commands.html">Commands</a>
+  <span class="sp"></span>
+  <span>static mockups · nothing here is wired to the daemon</span>
+</nav>
+
+<main class="sheet">
+  <p class="eyebrow">Library · detail screens</p>
+  <h1>Commands</h1>
+  <p class="lede">Commands is the odd one out and its screen has never admitted it. There is
+  <b>no Markdown and nothing to write</b> - a slot holds one repository-neutral default argv
+  plus a list of exceptions, and <b>the longest matching path wins</b>. There are exactly four
+  slots, forever, so the rail that Personas and Actions need is here a fixed list of four that
+  can never grow, with no New, no search and no state filter to justify its width. And the one
+  question a person actually arrives with - <b>"what will <code>test</code> run in this
+  repository?"</b> - is never answered on screen; you are given the ingredients and a sentence
+  about precedence and left to resolve it in your head.</p>
+
+  <!-- ================================= A ================================= -->
+  <section class="approach">
+    <div class="approach-head">
+      <span class="letter">A</span>
+      <h2>Rail</h2>
+      <span class="tagline">evolve the workbench · smallest diff</span>
+    </div>
+    <p class="why">The rail stays for consistency with the other two screens, and gains the
+    same <b>← Library</b> row carrying <kbd>esc</kbd>. The body is where the work is: the
+    default and its exceptions become <b>one table with a header row</b>, default pinned at the
+    top as the rule it actually is, and the add row visibly an add row rather than a third
+    entry indistinguishable from the two saved ones. Each row carries its parsed argv
+    underneath, so the "Runs as: 1. make 2. test" readout that today applies only to the
+    default now applies to every rule. The rail sub-labels carry override counts, so you can
+    see which of the four slots has exceptions without opening each one.</p>
+    <div class="facts">
+      <span class="fact good">smallest change to ship</span>
+      <span class="fact good">add row is finally distinguishable from a saved one</span>
+      <span class="fact good">argv preview on every rule, not just the default</span>
+      <span class="fact cost">268px of rail for a list that can never exceed four</span>
+      <span class="fact cost">still does not answer "what runs in repo X"</span>
+    </div>
+
+    <div class="frame" style="height:640px">
+      <div class="topbar">
+        <span class="brand"><i></i><h1>Mission Control</h1></span>
+        <span class="page-seg">
+          <button class="page-seg-btn">▦ Fleet <span class="kb-hint">f</span></button>
+          <button class="page-seg-btn" aria-current="page">⌗ Library <span class="kb-hint">w</span></button>
+          <button class="page-seg-btn">▷ Runs <span class="kb-hint">r</span></button>
+        </span>
+        <span class="filter-box">⌕ Filter (/)</span>
+        <span class="sp"></span>
+        <span class="rt-pill">11 sessions</span>
+        <span class="spend-chip">≈$1,968</span>
+      </div>
+
+      <div class="stage">
+        <aside class="rail">
+          <div class="rail-top">
+            <button class="back-row">← Library <span class="sp"></span><kbd>esc</kbd></button>
+          </div>
+          <div class="rail-head">
+            <h3>Commands</h3><span class="n">4 slots</span>
+          </div>
+          <div class="rail-list">
+            <div class="rail-group">Built-in slots <span class="n">4</span></div>
+            <button class="rail-item on">
+              <span class="r1"><span class="nm" style="font-family:var(--mono)">test</span></span>
+              <span class="sub">make test · 2 overrides</span>
+            </button>
+            <button class="rail-item">
+              <span class="r1"><span class="nm" style="font-family:var(--mono)">lint</span></span>
+              <span class="sub">global default only</span>
+            </button>
+            <button class="rail-item">
+              <span class="r1"><span class="nm" style="font-family:var(--mono)">typecheck</span></span>
+              <span class="sub">global default only</span>
+            </button>
+            <button class="rail-item">
+              <span class="r1"><span class="nm" style="font-family:var(--mono)">build</span></span>
+              <span class="sub">global default only</span>
+            </button>
+          </div>
+          <div class="rail-foot">
+            <span style="font-size:11px;line-height:1.5;color:var(--dim);padding:0 2px">
+              Four slots ship with Mission Control. A workflow names a slot, never a command.
+            </span>
+          </div>
+        </aside>
+
+        <div class="work">
+          <div class="work-head">
+            <div class="work-title">
+              <h2><span style="font-family:var(--mono)">test</span> <span class="lib-tag lib-tag-builtin">built-in slot</span></h2>
+              <span class="prov">revision 3 · updated 8/13/2026, 4:39:31 PM</span>
+            </div>
+            <span class="sp"></span>
+            <button class="btn btn-sm btn-primary">Save slot</button>
+          </div>
+
+          <div class="props">
+            <span class="prop readonly"><span class="k">gates on</span><span class="v" style="color:var(--muted);font-weight:480">the automated test suite</span></span>
+            <span class="prop readonly"><span class="k">overrides</span><span class="v mono" style="color:var(--muted);font-weight:480">2</span></span>
+            <span class="sp" style="flex:1"></span>
+            <span class="prop readonly"><span class="k">runs</span><span class="v" style="color:var(--muted);font-weight:480">no shell, commit-pinned checkout</span></span>
+          </div>
+
+          <div class="cmd-body">
+            <p class="hint">Saving stores an argv - it runs nothing. A workflow reaching the
+            <b>test</b> Command runs it later, without a shell, in a commit-pinned checkout of a
+            repository granted the Workflows cell in Trust. <b>The longest matching path wins.</b></p>
+
+            <div class="tbl">
+              <div class="thead trow" style="padding:7px 13px"><span>Scope</span><span>Command</span><span></span></div>
+              <div class="trow is-default">
+                <span class="scope"><b>Every repository</b><i>the default</i></span>
+                <span>
+                  <input class="field-input mono" value="make test" style="padding:6px 9px" />
+                  <span class="argv">runs as <b>1.</b> make <b>2.</b> test</span>
+                </span>
+                <button class="btn btn-sm btn-ghost">Clear</button>
+              </div>
+              <div class="trow">
+                <span class="scope"><b>ai-harness</b><i>/Users/jordanmance/workspace/ai-harness</i></span>
+                <span>
+                  <span class="cmd">make test</span>
+                  <span class="argv" style="display:block;margin-top:3px">runs as <b>1.</b> make <b>2.</b> test</span>
+                </span>
+                <button class="btn btn-sm btn-danger-ghost">Remove</button>
+              </div>
+              <div class="trow">
+                <span class="scope"><b>repo</b><i>/repo</i></span>
+                <span>
+                  <span class="cmd">/opt/homebrew/Cellar/node/25.9.0_1/bin/node -e "const v = require('node:fs')…</span>
+                  <span class="argv" style="display:block;margin-top:3px">runs as <b>1.</b> node <b>2.</b> -e <b>3.</b> const v = require… <b>4.</b> /var/folders/…/check-marker.txt</span>
+                </span>
+                <button class="btn btn-sm btn-danger-ghost">Remove</button>
+              </div>
+              <div class="trow add">
+                <input class="field-input" placeholder="/path/to/repository (or a subdirectory)" />
+                <input class="field-input mono" placeholder="pnpm -C . test" />
+                <button class="btn btn-sm" disabled>Add override</button>
+              </div>
+            </div>
+
+            <p class="hint" style="margin-top:12px">Save replaces this slot's default and its whole
+            override list together, so the two halves can never be stored apart.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="caption"><b>What changed against today:</b> the default stops being its own titled
+    section and becomes the first row of the table - because it <i>is</i> a rule, the one that
+    applies where nothing more specific matches. The add row gets a distinct fill and a header
+    above it. Every rule shows its parsed argv, which is where a quoting mistake becomes
+    visible.</p>
+  </section>
+
+  <!-- ================================= B ================================= -->
+  <section class="approach">
+    <div class="approach-head">
+      <span class="letter">B</span>
+      <h2>Focus</h2>
+      <span class="tagline">answer the question first</span>
+    </div>
+    <p class="why">There is no document here to focus on, so Focus becomes something better: the
+    screen leads with <b>the question people arrive with</b>. Pick a repository and the header
+    tells you what <code>test</code> will run in it; the rules below reorder by specificity with
+    the winner marked and the losers dimmed, so <i>"the longest matching path wins"</i> is
+    demonstrated rather than asserted. The rail is gone - four slots do not need 268px - and
+    becomes a strip of four chips across the top, each showing what it resolves to for the
+    repository you picked. That strip is the whole gate set at a glance, which is the thing you
+    are really configuring.</p>
+    <div class="facts">
+      <span class="fact good">answers "what runs in repo X" directly</span>
+      <span class="fact good">precedence is shown by ordering, not stated in a hint</span>
+      <span class="fact good">all four slots visible at once</span>
+      <span class="fact good">reclaims the 268px rail</span>
+      <span class="fact cost">a resolver is new behaviour, not a re-layout</span>
+    </div>
+
+    <div class="frame" style="height:640px">
+      <div class="topbar">
+        <span class="brand"><i></i><h1>Mission Control</h1></span>
+        <span class="page-seg">
+          <button class="page-seg-btn">▦ Fleet <span class="kb-hint">f</span></button>
+          <button class="page-seg-btn" aria-current="page">⌗ Library <span class="kb-hint">w</span></button>
+          <button class="page-seg-btn">▷ Runs <span class="kb-hint">r</span></button>
+        </span>
+        <span class="filter-box">⌕ Filter (/)</span>
+        <span class="sp"></span>
+        <span class="rt-pill">11 sessions</span>
+        <span class="spend-chip">≈$1,968</span>
+      </div>
+
+      <div class="crumb">
+        <a href="#">Library</a><span class="sep">/</span>
+        <a href="#">Commands</a><span class="sep">/</span>
+        <span class="here">test</span>
+        <span class="sp"></span>
+        <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim)">revision 3 · updated 8/13/2026, 4:39:31 PM</span>
+        <button class="btn btn-sm btn-primary">Save slot</button>
+        <span class="rule"></span>
+        <button class="btn btn-sm btn-ghost">Close <kbd>esc</kbd></button>
+      </div>
+
+      <div class="doc-scroll">
+        <div class="doc" style="max-width:1060px;padding:20px 30px 0">
+          <div class="slot-strip">
+            <button class="slot-chip on"><span class="sn">test</span><span class="sc">make test</span></button>
+            <button class="slot-chip"><span class="sn">lint</span><span class="sc">npm run lint</span></button>
+            <button class="slot-chip"><span class="sn">typecheck</span><span class="sc">npm run typecheck</span></button>
+            <button class="slot-chip unset"><span class="sn">build</span><span class="sc">not configured - passes with a note</span></button>
+          </div>
+
+          <div class="resolver">
+            <span class="q">What does <code style="font-family:var(--mono);color:var(--fg)">test</code> run in</span>
+            <span class="sel" style="width:330px">ai-harness · ~/workspace/ai-harness</span>
+            <span class="out">
+              <span class="k">resolves to</span>
+              <code>make test</code>
+            </span>
+          </div>
+          <p class="hint" style="margin:8px 0 2px">Matched the <b>ai-harness</b> override. Two rules
+          matched this path; the longer one won.</p>
+
+          <p class="sec-h">Rules, most specific first <span class="rule"></span><span class="n">2 overrides + 1 default</span></p>
+          <div class="tbl">
+            <div class="trow win">
+              <span class="scope"><b>ai-harness</b><i>/Users/jordanmance/workspace/ai-harness</i></span>
+              <span>
+                <span class="cmd">make test</span>
+                <span class="argv" style="display:block;margin-top:3px">runs as <b>1.</b> make <b>2.</b> test</span>
+              </span>
+              <span style="display:flex;gap:8px;align-items:center">
+                <span class="badge badge-idle"><span class="badge-dot"></span>wins here</span>
+                <button class="btn btn-sm btn-danger-ghost">Remove</button>
+              </span>
+            </div>
+            <div class="trow lose">
+              <span class="scope"><b>repo</b><i>/repo</i></span>
+              <span>
+                <span class="cmd">/opt/homebrew/Cellar/node/25.9.0_1/bin/node -e "const v = require('node:fs')…</span>
+                <span class="argv" style="display:block;margin-top:3px">does not match this path</span>
+              </span>
+              <button class="btn btn-sm btn-danger-ghost">Remove</button>
+            </div>
+            <div class="trow lose is-default">
+              <span class="scope"><b>Every repository</b><i>the default</i></span>
+              <span>
+                <span class="cmd">make test</span>
+                <span class="argv" style="display:block;margin-top:3px">matched, but a longer path won</span>
+              </span>
+              <button class="btn btn-sm btn-ghost">Edit</button>
+            </div>
+            <div class="trow add">
+              <input class="field-input" placeholder="/path/to/repository (or a subdirectory)" />
+              <input class="field-input mono" placeholder="pnpm -C . test" />
+              <button class="btn btn-sm" disabled>Add override</button>
+            </div>
+          </div>
+
+          <p class="hint" style="margin-top:11px">Saving stores an argv - it runs nothing, and it
+          replaces this slot's default and its whole override list together.</p>
+        </div>
+      </div>
+    </div>
+    <p class="caption"><b>The dimmed rows are the point.</b> The <code>ai-harness</code>
+    override and the default hold the same argv today, which is almost certainly a leftover -
+    and on the shipping screen there is no way to notice that, because nothing ever puts the
+    two side by side under a single question. Here it is the first thing you see.</p>
+  </section>
+
+  <!-- ================================= C ================================= -->
+  <section class="approach">
+    <div class="approach-head">
+      <span class="letter">C</span>
+      <h2>Sheet</h2>
+      <span class="tagline">all four gates, one grid</span>
+    </div>
+    <p class="why">Same sheet mechanics as the other two screens - the card wall stays behind
+    the app's own backdrop, Escape and Close both dismiss. What is specific to Commands is that
+    the sheet holds <b>all four slots at once</b> as a matrix: repositories down the side, the
+    four gates across the top, each cell the command that will actually run there. Because
+    there are exactly four slots and they never change, the whole configuration fits one grid -
+    and the mental model this matches is the real one, which is not "configure the test slot"
+    but <b>"make this repository's gates work"</b>. A cell showing <i>default</i> is inheriting;
+    click it to override just that one.</p>
+    <div class="facts">
+      <span class="fact good">the entire gate configuration on one screen</span>
+      <span class="fact good">matches how you actually work - per repository, not per slot</span>
+      <span class="fact good">Escape is self-evident</span>
+      <span class="fact cost">wide rows once a command is long</span>
+      <span class="fact cost">four independent CAS saves behind one surface</span>
+    </div>
+
+    <div class="frame" style="height:640px">
+      <div class="topbar">
+        <span class="brand"><i></i><h1>Mission Control</h1></span>
+        <span class="page-seg">
+          <button class="page-seg-btn">▦ Fleet <span class="kb-hint">f</span></button>
+          <button class="page-seg-btn" aria-current="page">⌗ Library <span class="kb-hint">w</span></button>
+          <button class="page-seg-btn">▷ Runs <span class="kb-hint">r</span></button>
+        </span>
+        <span class="filter-box">⌕ Filter (/)</span>
+        <span class="sp"></span>
+        <span class="rt-pill">11 sessions</span>
+        <span class="spend-chip">≈$1,968</span>
+      </div>
+
+      <div class="c-wrap">
+        <div class="c-index">
+          <p class="ey">Commands</p>
+          <h3>What does each standard gate run?</h3>
+          <p>A workflow names a slot, never a command, so it travels between repositories. Here each slot gets one machine-wide default plus any repository exceptions.</p>
+          <div class="c-row">
+            <div class="c-card"><b>test</b><span>The automated test suite this repository gates on.</span><i>Global default · 2 overrides</i></div>
+            <div class="c-card"><b>lint</b><span>The style and correctness pass that runs before review.</span><i>Global default</i></div>
+            <div class="c-card"><b>typecheck</b><span>The type checker, when this repository has one separate from its build.</span><i>Global default</i></div>
+            <div class="c-card"><b>build</b><span>The build or bundle step that proves the change compiles.</span><i>Global default</i></div>
+          </div>
+        </div>
+
+        <div class="c-scrim">
+          <div class="c-sheet">
+            <div class="c-head">
+              <h2>Commands</h2>
+              <span class="lib-tag lib-tag-builtin">4 built-in slots</span>
+              <span class="sp"></span>
+              <button class="btn btn-sm">+ Add repository</button>
+              <button class="btn btn-sm btn-primary">Save</button>
+              <button class="c-close">Close <kbd>esc</kbd></button>
+            </div>
+            <div class="c-tabs">
+              <button class="c-tab on">By repository</button>
+              <button class="c-tab">By slot</button>
+              <button class="c-tab">Trust <span class="n">1 granted</span></button>
+            </div>
+            <div class="c-body">
+              <div class="c-main" style="overflow:auto;padding:0">
+                <table class="matrix">
+                  <thead>
+                    <tr>
+                      <th style="width:250px">Repository</th>
+                      <th>test</th><th>lint</th><th>typecheck</th><th>build</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="base">
+                      <th>Every repository<i>the default</i></th>
+                      <td><button class="cell-btn"><code>make test</code></button></td>
+                      <td><button class="cell-btn"><code>npm run lint</code></button></td>
+                      <td><button class="cell-btn"><code>npm run typecheck</code></button></td>
+                      <td class="inherit"><button class="cell-btn">not set - passes with a note</button></td>
+                    </tr>
+                    <tr>
+                      <th>ai-harness<i>/Users/jordanmance/workspace/ai-harness</i></th>
+                      <td><button class="cell-btn"><code>make test</code></button></td>
+                      <td class="inherit"><button class="cell-btn">default</button></td>
+                      <td class="inherit"><button class="cell-btn">default</button></td>
+                      <td class="inherit"><button class="cell-btn">default</button></td>
+                    </tr>
+                    <tr>
+                      <th>repo<i>/repo</i></th>
+                      <td><button class="cell-btn"><code>node -e "const v = require('node:fs')…</code></button></td>
+                      <td class="inherit"><button class="cell-btn">default</button></td>
+                      <td class="inherit"><button class="cell-btn">default</button></td>
+                      <td class="inherit"><button class="cell-btn">default</button></td>
+                    </tr>
+                    <tr>
+                      <th style="color:var(--dim);font-weight:500">+ Add a repository or subdirectory<i>longest matching path wins</i></th>
+                      <td colspan="4" class="inherit" style="color:var(--dim)">inherits every default until you set one</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="c-foot">
+              <span class="hint">Saving stores an argv - it runs nothing. A workflow reaching a Command runs
+              it later, without a shell, in a commit-pinned checkout of a repository granted the Workflows cell in Trust.</span>
+              <span class="sp"></span>
+              <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim)">1 slot changed</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="caption"><b>The honest cost:</b> the daemon stores one revision per slot and
+    <code>PUT /api/workflow-commands/:slot</code> is one CAS per slot, so a single Save here is
+    up to four conditional writes and needs a partial-failure story the other two approaches do
+    not. The <b>By slot</b> tab keeps A's per-slot view for when that is what you want.</p>
+  </section>
+
+  <p class="note">Mockups only. Slot names, purposes, the revision line and both overrides are
+  the real <code>test</code> slot on this machine as it renders today at 1600&times;1000.</p>
+</main>
+</body>
+</html>

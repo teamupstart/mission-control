@@ -79,7 +79,7 @@ export function ConversationActivity({
   // context, and counting them would restate the exact conflation the tab avoids.
   const count = yoursTab ? yours.length : rows.length;
 
-  // Follow the newest row the way the log follows its tail: stick to the bottom while
+  // Follow the newest row the way the log follows its tail: hold the resting place while
   // the reader is there, stay put while they are reading history. A layout effect so the
   // correction lands before paint rather than as a jump. `open` is a dependency because
   // the narrow disclosure mounts its list hidden: the scroll can only land once the body
@@ -92,19 +92,45 @@ export function ConversationActivity({
   // instead, and lands on the true bottom only when there is nothing dimmed to sit past.
   const bodyRef = useRef<HTMLDivElement>(null);
   const lastOwnRef = useRef<HTMLLIElement>(null);
-  const atBottom = useRef(true);
+  /** Whether the list is sitting where it would sit if nobody had scrolled it. */
+  const atRest = useRef(true);
+  /** Which tab the scroller was last positioned for. */
+  const shownTab = useRef(tab);
+
+  /**
+   * How far the scroller is from where it belongs, in pixels, signed.
+   *
+   * The resting place is NOT always the scroller's end, which is the whole subtlety here:
+   * on Yours it is the last of the operator's own rows, because the dimmed ones sit past
+   * it. Measuring "has the reader scrolled away?" against the literal bottom instead was
+   * a self-inflicted wound - anchoring short of the end fires a scroll event that reports
+   * the view as away from the bottom, so the rail would decide the reader had left, and
+   * every later message would arrive without the list following it.
+   *
+   * Measured off `getBoundingClientRect` rather than `offsetTop`, which answers to
+   * whichever ancestor happens to be positioned.
+   */
+  function restOffset(el: HTMLDivElement): number {
+    const anchor = yoursTab && injected.length > 0 ? lastOwnRef.current : null;
+    if (!anchor) return el.scrollHeight - el.scrollTop - el.clientHeight;
+    return anchor.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom;
+  }
+
   useLayoutEffect(() => {
     const el = bodyRef.current;
-    if (!el || !atBottom.current) return;
-    const anchor = yoursTab && injected.length > 0 ? lastOwnRef.current : null;
-    if (!anchor) {
-      el.scrollTop = el.scrollHeight;
-      return;
+    if (!el) return;
+    // Choosing a tab is a fresh look at a different list, so it starts where that list
+    // means to start rather than wherever the other one had been left. Without this the
+    // reader scrolls up on Activity, switches to Yours, and lands mid-list on a tab whose
+    // entire job is to show them their latest message.
+    if (shownTab.current !== tab) {
+      shownTab.current = tab;
+      atRest.current = true;
     }
-    // Measured rather than read off `offsetTop`, which answers to whichever ancestor
-    // happens to be positioned, and adjusted on the rail's own scroller so it cannot
-    // scroll the card or the page the way `scrollIntoView` would.
-    el.scrollTop += anchor.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom;
+    if (!atRest.current) return;
+    const offset = restOffset(el);
+    // Sub-pixel differences are not a scroll anyone asked for.
+    if (Math.abs(offset) >= 1) el.scrollTop += offset;
   }, [rows.length, yours.length, injected.length, open, tab, yoursTab]);
 
   /** One message row. A button, because clicking it moves the log. */
@@ -151,7 +177,7 @@ export function ConversationActivity({
               type="button"
               role="tab"
               id={activityTabId}
-              className={`activity-tab${yoursTab ? "" : " on"}`}
+              className="activity-tab"
               aria-selected={!yoursTab}
               aria-controls={listId}
               onClick={() => onTab("activity")}
@@ -164,7 +190,7 @@ export function ConversationActivity({
               type="button"
               role="tab"
               id={yoursTabId}
-              className={`activity-tab${yoursTab ? " on" : ""}`}
+              className="activity-tab"
               aria-selected={yoursTab}
               aria-controls={listId}
               onClick={() => onTab("yours")}
@@ -217,7 +243,10 @@ export function ConversationActivity({
         ref={bodyRef}
         onScroll={() => {
           const el = bodyRef.current;
-          if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+          // Against the resting place, not the scroller's end - see `restOffset`. Reading
+          // it the other way meant the rail's own correction looked like the reader
+          // walking away from the tail.
+          if (el) atRest.current = Math.abs(restOffset(el)) < 32;
         }}
       >
         {yoursTab ? (

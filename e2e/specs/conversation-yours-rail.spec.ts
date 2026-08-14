@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -38,6 +38,8 @@ const EVIDENCE = artifactsDir("conversation-yours-rail");
 const FIRST = "Investigate the ensemble failure and schedule fixes";
 const SECOND = "Do not run the build in that checkout";
 const THIRD = "Re-file the task and go ahead with the build";
+/** Sent after the rail is already open, to prove it still follows the tail. */
+const FOURTH = "And pin the flake before it costs another run";
 
 /** The dispatch prompt, which is the operator's first message in the conversation. */
 const DISPATCH = "exercise the yours rail";
@@ -76,59 +78,18 @@ interface FleetSession {
 /**
  * Photograph the surface the assertions above just proved.
  *
- * Unconditional, unlike the older rails' capture helpers: those are gated behind
- * `MC_E2E_EVIDENCE` to avoid rewriting a committed binary on every run, and nothing here
- * is committed - `e2e/.artifacts/` is gitignored, so the write costs nothing and a gate
- * would only mean a green run proved a picture COULD be taken rather than that one was.
- * Every run of this spec now leaves the evidence beside its result.
+ * Behind `MC_E2E_EVIDENCE`, matching the sibling rail spec: the assertions are what keep
+ * the feature honest on every run, and a picture nobody asked for is a cost with no
+ * reader. Produced outside the repository, because evidence is never committed.
  */
 async function shoot(page: Page, card: ReturnType<Page["locator"]>, name: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
   mkdirSync(EVIDENCE, { recursive: true });
   // Off every control first: `Tooltip` portals a bubble under a resting pointer, and it
   // lands on top of the rows being photographed.
   await page.mouse.move(0, 0);
   await card.screenshot({ path: `${EVIDENCE}${name}.png` });
   console.log(`CAPTURED e2e/.artifacts/conversation-yours-rail/${name}.png`);
-}
-
-/**
- * Wrap a capture in a page that says what it is, and inline the image into it.
- *
- * A bare PNG on disk is evidence only to whoever already knows what they are looking at,
- * and a reviewer reading a pull request cannot open a path on somebody else's machine.
- * This writes one self-contained file - the image is a data URI, so there is nothing
- * beside it to lose - captioned with the assertions that had to pass in the same run for
- * the picture to be taken at all. It is written next to the PNG, under the gitignored
- * artifacts directory, because evidence is never committed.
- */
-function evidencePage(name: string, title: string, claims: string[]): void {
-  const png = readFileSync(`${EVIDENCE}${name}.png`).toString("base64");
-  const html = `<!doctype html>
-<meta charset="utf-8">
-<title>${title}</title>
-<style>
-  body { margin:0; background:#0a0c0f; color:#e7ebf1;
-         font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
-  .wrap { max-width:1320px; margin:0 auto; padding:40px 28px 80px; }
-  h1 { font-size:26px; letter-spacing:-.01em; margin:0 0 6px; }
-  p.sub { color:#939eae; margin:0 0 26px; }
-  img { width:100%; border:1px solid #232a33; border-radius:13px; display:block; }
-  ul { margin:22px 0 0; padding-left:20px; color:#939eae; }
-  li { margin-bottom:8px; }
-  b { color:#e7ebf1; font-weight:600; }
-</style>
-<div class="wrap">
-  <h1>${title}</h1>
-  <p class="sub">Captured by <code>e2e/specs/conversation-yours-rail.spec.ts</code> during a real
-     browser run, against the built dashboard and the built daemon, with every agent binary
-     faked. The run that produced this image is the run that asserted the claims below.</p>
-  <img alt="${title}" src="data:image/png;base64,${png}">
-  <ul>${claims.map((c) => `\n    <li>${c}</li>`).join("")}
-  </ul>
-</div>
-`;
-  writeFileSync(`${EVIDENCE}${name}.html`, html);
-  console.log(`CAPTURED e2e/.artifacts/conversation-yours-rail/${name}.html`);
 }
 
 /**
@@ -355,22 +316,6 @@ test("both groups and a jump, in one frame", async ({ dashboard, daemon }) => {
   for (const i of [1, 2, 3]) await expect(ordered.nth(i)).toBeInViewport();
 
   await shoot(dashboard, card, "00-rail-and-jump");
-  evidencePage("00-rail-and-jump", "The Yours rail, and a jump into the transcript", [
-    "The <b>Yours</b> tab is reachable from the rail, and reports <b>2</b> - the messages the "
-      + "operator typed, not the five turns the tab lists.",
-    "Both of the operator's own messages are listed first, in the order they were sent.",
-    "<b>Foreman</b> and <b>Mission Control</b> are listed below them, dimmed, each naming its "
-      + "author. Both were delivered through their real routes - Foreman through "
-      + "<code>/inject</code>, Mission Control through the retro delivery - so the origin on each "
-      + "is one the daemon actually recorded.",
-    "The dimming is asserted by computed colour, not by eye: the delivered rows draw their "
-      + "message in a different colour from the operator's own, and share it with each other.",
-    "The Foreman row was <b>clicked</b>. It carries <code>aria-current</code> in the rail, and the "
-      + "Foreman turn is flashing in the transcript beside it.",
-    "Nothing is hidden. The agent's replies, the operator's own turn and the Mission Control turn "
-      + "are all still in the log around the turn that was jumped to - which is the whole "
-      + "difference between an index and a filter.",
-  ]);
 });
 
 test("the Yours tab lists what you sent, and says who sent the rest", async ({
@@ -576,6 +521,46 @@ test("a narrow conversation can still reach the tabs, once it opens the rail", a
   await opened.click();
   await expect(row(card, SECOND)).toBeHidden();
   await expect(yours).toBeVisible();
+});
+
+test("the rail keeps following your latest message, and reopens on it", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Two regressions, both of them in how the rail decides the reader has scrolled away.
+  //
+  // The rail rests on the last of the OPERATOR's rows rather than on the scroller's end,
+  // because the dimmed rows sit past it. It used to measure "has the reader left?" against
+  // the literal bottom, so its own anchoring reported the view as away from the tail and
+  // it stopped following - one delivered turn was enough to break it for the rest of the
+  // session. And the flag was shared across both tabs, so a list left scrolled up handed
+  // that position to the other tab.
+  const card = await conversationWithMessages(dashboard, daemon);
+  await delivers(daemon, await session(daemon), "foreman", FOREMAN_SAYS);
+  await expect(turnsBy(card, FOREMAN)).toBeVisible();
+  await rail(card).getByRole("tab", { name: "Yours" }).click();
+
+  // Resting on the operator's last message, with the delivered row below the fold.
+  await expect(row(card, THIRD)).toBeInViewport();
+
+  // A message sent now still pulls the rail after it. This is the case the old reading of
+  // "at the bottom" silently dropped.
+  const reply = card.getByPlaceholder(/^Reply to this session/);
+  await reply.fill(FOURTH);
+  await reply.press("Enter");
+  await expect(row(card, FOURTH)).toBeInViewport();
+  // And the list really is overflowing, so following it meant something.
+  await expect(row(card, DISPATCH)).not.toBeInViewport();
+
+  // Reading back through your own messages parks the rail where you left it.
+  await row(card, DISPATCH).scrollIntoViewIfNeeded();
+  await expect(row(card, FOURTH)).not.toBeInViewport();
+
+  // But asking for a tab is asking to see that list, so it opens on its own resting place
+  // rather than inheriting wherever the column happened to be left.
+  await rail(card).getByRole("tab", { name: "Activity" }).click();
+  await rail(card).getByRole("tab", { name: "Yours" }).click();
+  await expect(row(card, FOURTH)).toBeInViewport();
 });
 
 test("the tab survives find taking the column, and switches back", async ({ dashboard, daemon }) => {

@@ -73,6 +73,9 @@ foundational interface, and it leaves the tree operable and green at the merge b
   control. Phase 2 does no windowing of its own.
 - `ChangeWorklistRow.key` is stable across renders and is both the React key and the
   selected-row identity. Phase 2 must not key rows positionally.
+- **The key includes the owning persona node.** A row's `nodeId` and `personaName` always name
+  the reviewer that raised it, so two reviewers asking for the same thing produce two rows.
+  Phase 2 wires the per-row actions off that node and must not dedupe the rows in the view.
 - Rows arrive **pre-sorted** (open before resolved, then oldest first). Phase 2 does not
   re-sort.
 - `state` alone partitions the `Blocking` and `Archive` segments, and is **conservative under a
@@ -144,8 +147,23 @@ Round 2 raised one more `major`, also verified and accepted:
    written for a round-scoped section and is false of a `Blocking` segment that carries changes
    forward.
 
-All three fixes tighten the design without touching an approved human decision, so none was
+Round 3 raised one more `major`, also verified and accepted:
+
+4. **The change key carried no author.** Identity was `path` plus normalized title, mirroring
+   `marker.ts` - but that module has exactly one Inspector and cannot suffer a cross-author
+   collision, while a run has several personas reviewing at once. Two reviewers objecting about
+   one file in identically-normalizing words would have folded into a single row keeping one
+   `nodeId`, dropping the other's evidence and making its objection un-actionable, since Phase 2
+   wires the disable and directive actions off the row's node. The key now leads with `nodeId`.
+
+All four fixes tighten the design without touching an approved human decision, so none was
 escalated. Each phase's cross-phase audit record carries the detail.
+
+Three of the four are the same class of mistake: a rule borrowed from a neighbouring subsystem
+without checking which of its preconditions this one actually has. `marker.ts` has one author;
+`repeat-offender.ts` compares within a round rather than across a global newest; the rest of the
+reader pane is round-scoped. Each was right there in the source and each needed reading rather
+than assuming.
 
 Worth noting what the third one implies for the kept scrubber: "unchanged" means it keeps the
 meaning it has today and now governs this section too, not that some of the page ignores it.

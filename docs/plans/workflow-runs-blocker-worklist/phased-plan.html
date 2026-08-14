@@ -135,6 +135,7 @@ pre{background:var(--panel);border:1px solid var(--border);border-radius:8px;pad
 <ul>
 <li><b>The worklist is windowed by the viewed round.</b> <code>runChangeWorklist(detail, asOfRound)</code> returns the run as it stood at the end of that round, and Phase 2 passes the round scrubber's current submission. The rest of the reader pane is already round-scoped, so a whole-run worklist beside it would put three counts from two different moments on one segmented control. Phase 2 does no windowing of its own.</li>
 <li><code>ChangeWorklistRow.key</code> is stable across renders and is both the React key and the selected-row identity. Phase 2 must not key rows positionally.</li>
+<li><b>The key includes the owning persona node.</b> A row's <code>nodeId</code> and <code>personaName</code> always name the reviewer that raised it, so two reviewers asking for the same thing produce two rows. Phase 2 wires the per-row actions off that node and must not dedupe the rows in the view.</li>
 <li>Rows arrive <b>pre-sorted</b> (open before resolved, then oldest first). Phase 2 does not re-sort.</li>
 <li><code>state</code> alone partitions the <code>Blocking</code> and <code>Archive</code> segments, and is <b>conservative under a partial round</b>: resolution is decided per owning persona, so a change whose reviewer has not re-attempted stays <code>open</code> rather than reading as fixed because some other reviewer advanced the round.</li>
 <li><code>roundsOpen</code> is a <b>count of appearances</b>, not a span, so it never claims a round the reviewer was silent in.</li>
@@ -180,7 +181,12 @@ npm run test:e2e</pre>
 <ol start="3">
 <li><b>The worklist was run-wide while the segment beside it was round-scoped.</b> <code>reviewAttempts</code> filters to the scrubber's viewed submission, so scrubbing to round 3 would have left <code>Blocking</code> and <code>Archive</code> on round 10 while <code>Passed</code> followed the scrubber. <code>runChangeWorklist</code> now takes an <code>asOfRound</code> window, which changed Phase 1's signature and Phase 2's call site together. The Inspector-only empty state was scoped to <code>Passed</code> in the same pass, since it was written for a round-scoped section and is false of a <code>Blocking</code> segment that carries changes forward.</li>
 </ol>
-<p>All three fixes tighten the design without touching an approved human decision, so none was escalated. Each phase's cross-phase audit record carries the detail.</p>
+<p>Round 3 raised one more <code>major</code>, also verified and accepted:</p>
+<ol start="4">
+<li><b>The change key carried no author.</b> Identity was <code>path</code> plus normalized title, mirroring <code>marker.ts</code> - but that module has exactly one Inspector and cannot suffer a cross-author collision, while a run has several personas reviewing at once. Two reviewers objecting about one file in identically-normalizing words would have folded into a single row keeping one <code>nodeId</code>, dropping the other's evidence and making its objection un-actionable, since Phase 2 wires the disable and directive actions off the row's node. The key now leads with <code>nodeId</code>.</li>
+</ol>
+<p>All four fixes tighten the design without touching an approved human decision, so none was escalated. Each phase's cross-phase audit record carries the detail.</p>
+<p>Three of the four are the same class of mistake: a rule borrowed from a neighbouring subsystem without checking which of its preconditions this one actually has. <code>marker.ts</code> has one author; <code>repeat-offender.ts</code> compares within a round rather than against a global newest; the rest of the reader pane is round-scoped. Each was right there in the source and each needed reading rather than assuming.</p>
 <p>Worth noting what the third one implies for the kept scrubber: "unchanged" means it keeps the meaning it has today and now governs this section too, not that some of the page ignores it.</p>
 
 </div>

@@ -95,12 +95,29 @@ So "open since round 4" and "resolved in round 9" have to be **derived**, and th
 is the subtle part of this work. The prior art is `src/server/inspector/marker.ts:140`, which
 fingerprints a PR finding over `path` plus a normalized title and **deliberately excludes the
 line number**, because the next push moves the line and the reviewer would re-raise every
-finding on every commit. The worklist adopts the same rule for the same reason.
+finding on every commit. The worklist adopts **that** rule for that reason, and departs from
+the rest of it - see the author paragraph below.
 
-**Adopted:** identity is `path` (empty when absent) plus the normalized title, lowercased,
-stripped of backticks, quotes and emphasis, whitespace-collapsed and trailing-punctuation
-trimmed. It is **not hashed** - `marker.ts` uses `node:crypto`, which the browser bundle
-cannot take, and a UI grouping key has no need to be a digest.
+**Adopted:** identity is the **owning persona node id**, plus `path` (empty when absent), plus
+the normalized title - lowercased, stripped of backticks, quotes and emphasis,
+whitespace-collapsed and trailing-punctuation trimmed. It is **not hashed** - `marker.ts` uses
+`node:crypto`, which the browser bundle cannot take, and a UI grouping key has no need to be a
+digest.
+
+**Where the `marker.ts` analogy stops: the author.** There is only ever one Inspector raising
+findings on a pull request, so `path` plus title is a sufficient identity there and no
+cross-author collision is possible. A workflow run has several personas reviewing at once, and
+two of them can independently object about the same file in words that normalize identically -
+"attach completed test output" is exactly the kind of sentence two reviewers write. Keyed
+without the author they would fold into one row, and because the row carries a single `nodeId`
+the losing reviewer's evidence would vanish and its objection would become un-actionable from
+the worklist: "Disable {persona}" and "Give this reviewer feedback" both act on the surviving
+node. Two reviewers wanting the same thing are two objections, separately actionable, and the
+identity has to say so.
+
+Including the node costs nothing for the job the key exists to do. A persona's `nodeId` is
+stable across rounds within a run's immutable workflow version, so cross-round matching for a
+single reviewer is unaffected; the node component only prevents cross-reviewer merging.
 
 **Known failure mode, accepted:** a reviewer that rewords its own title produces a new key, so
 the change reads as newly raised and its predecessor reads as resolved. This is the same

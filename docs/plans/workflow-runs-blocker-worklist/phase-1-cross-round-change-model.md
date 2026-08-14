@@ -53,18 +53,27 @@ change* - separated from the layout work that consumes it.
 
 ## Implementation steps
 
-### 1. `requestedChangeKey(change: RequestedChange): string`
+### 1. `requestedChangeKey(nodeId: string, change: RequestedChange): string`
 
 New exported function in `src/web/workflows/run-model.ts`.
 
 - Normalize the title: lowercase, strip `` ` ``, `"`, `'`, `*`, `_`, collapse whitespace,
   trim trailing `.,;:!?`.
-- Key is `` `${change.path ?? ""}\n${normalizedTitle}` ``.
+- Key is `` `${nodeId}\n${change.path ?? ""}\n${normalizedTitle}` ``.
 - Deliberately excludes `line`, mirroring `marker.ts` for the reason its comment gives: the
   next edit moves the line, and a location-sensitive key re-raises every finding every round.
+- **Deliberately includes the owning `nodeId`, which is where this design stops mirroring
+  `marker.ts`.** Only one Inspector raises findings on a pull request, so `path` plus title is
+  a sufficient identity there. A run has several personas reviewing at once, and two can object
+  about the same file in words that normalize identically. Without the node they fold into one
+  row that carries a single `nodeId`, so the losing reviewer's evidence disappears and its
+  objection becomes un-actionable - Phase 2 wires "Disable {persona}" and "Give this reviewer
+  feedback" straight off the row's `nodeId`. A persona's node id is stable across rounds inside
+  a run's immutable version, so this costs the cross-round matching nothing.
 - Not hashed. `node:crypto` is unavailable in the browser bundle and a grouping key needs no
   digest. Carry a doc comment saying so, and cross-reference `marker.ts` so the next reader
-  finds the prior art rather than assuming divergence is accidental.
+  finds the prior art - and state the author divergence there, so it reads as a decision rather
+  than as drift.
 
 ### 2. `runChangeWorklist(detail, asOfRound): ChangeWorklistRow[]`
 
@@ -115,7 +124,9 @@ Derivation, in order:
    later round: a row that knows the future is exactly the incoherence this parameter exists to
    prevent.
 2. For each round in the window, for each persona attempt whose verdict is `fail`, key every
-   `requestedChanges[]` entry with `requestedChangeKey`.
+   `requestedChanges[]` entry with `requestedChangeKey(attempt.nodeId, change)`. Because the
+   node is in the key, a row can only ever accumulate from one persona, and `nodeId` /
+   `personaName` on the row are facts rather than last-writer-wins.
 3. Accumulate per key: `firstRound` = lowest round it appeared in; `lastRound` = highest.
    Keep the **newest** round's title, rationale, evidence, path, line, confidence and persona
    name, so a reviewer that sharpens its wording shows the current wording.
@@ -165,6 +176,13 @@ Cases:
   **same** key.
 - A different `line` on the same path and title is the **same** key.
 - A different `path` with the same title is a **different** key.
+- **Two personas, one colliding title, same file.** Reviewer A and reviewer B both raise a
+  change whose title normalizes identically on the same path. The result is **two rows**, each
+  carrying its own `nodeId`, `personaName`, `rationale` and `evidence`. Neither reviewer's
+  objection is dropped and neither becomes un-actionable. This is the case the `marker.ts`
+  design cannot have and this one can.
+- One persona resolving such a colliding change while the other still raises it leaves the
+  other's row `"open"`, because resolution is per owning node and the rows never merged.
 - A change with **no path** keys and renders without crashing, and does not collide with a
   different pathless change.
 - Two segments inside one round (a session action mid-round) count as **one** round, matching
@@ -224,7 +242,10 @@ Phase 2 may rely on:
 - `runChangeWorklist(detail, asOfRound)` returning rows already sorted for display, so the view
   does no sorting of its own.
 - `ChangeWorklistRow.key` being stable across renders and usable as a React key and as the
-  selected-row identity.
+  selected-row identity. It **includes the owning `nodeId`**, so a row's `nodeId` and
+  `personaName` always name the reviewer that actually raised it, and two reviewers raising
+  colliding titles produce two rows rather than one. Phase 2 can wire "Disable {persona}" and
+  the directive editor straight off the row.
 - `state` partitioning the rows into the `Blocking` and `Archive` segments with no further
   filtering.
 - `state` being **conservative under a partial round**: a change whose persona has not
@@ -264,6 +285,17 @@ Phase 2 must not:
   to keep this model narrow rather than widen it, and the boundary now lives in this phase's
   downstream handoff, which is the earliest place that must own it. No scope or signature here
   changed.
+- **Inspector round 3, `major`, accepted.** `requestedChangeKey` took only the change, so its
+  identity was `path` plus normalized title - which is where mirroring `marker.ts` stopped being
+  right and nobody had noticed, including me. That module has exactly one author, so it cannot
+  suffer a cross-author collision; a run has several personas reviewing at once. Two reviewers
+  objecting about one file in identically-normalizing words would have folded into a single row
+  keeping one `nodeId`, silently dropping the other's evidence and making its objection
+  un-actionable, because Phase 2 wires the disable and directive actions off the row's node. The
+  key now takes `nodeId` as its first component. Cross-round matching is unaffected: a persona's
+  node id is stable inside a run's immutable version, so the node only ever prevents
+  cross-reviewer merging. Two test cases added, and the divergence from `marker.ts` is now
+  stated in the doc comment so it reads as a decision rather than drift.
 - **Inspector round 2, `major`, accepted.** The function was whole-run and took only `detail`,
   while the `reviewAttempts` derivation Phase 2 keeps for its `Passed` segment is scoped to the
   scrubber's viewed submission. Scrubbing to round 3 would have left `Blocking` and `Archive`

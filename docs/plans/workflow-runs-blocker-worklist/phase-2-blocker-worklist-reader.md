@@ -101,6 +101,11 @@ rounds should stay selected as the reader moves between them.
   `Blocking {n}` counts both.
 - Blocking rows, persona changes: title, path when present, `{personaName} · round
   {firstRound}`.
+- **Two reviewers can produce two near-identical rows, and that is correct.** The key includes
+  the owning node, so if Code Risk and Test Evidence both ask for the same thing on the same
+  file you get one row each. Do not dedupe them in the view: they carry different rationales and
+  evidence, they resolve independently, and each one's actions target a different persona.
+  The `{personaName}` on the row is what distinguishes them, so it is never optional.
 - Blocking rows, failing checks: the existing `CheckCard`, unchanged, so the command, exit code,
   output tail and truncated-byte count survive the redesign intact.
 - Archive rows: green rail, `Resolved in round {lastRound}`.
@@ -254,6 +259,14 @@ There are no later phases. Future work that touches this surface should know:
   Phase 1's test list pins it so this phase inherits a derivation that cannot crash on it.
 - **Confirmed no concurrency.** Phase 2 depends on Phase 1 and there is no third phase, so
   there is nothing to run in parallel and no merge-order ambiguity.
+- **Inspector round 3, `major`, accepted, resolved in Phase 1.** The change key carried no
+  author, so two personas raising identically-normalizing titles on one file would have merged
+  into a single row with one `nodeId` - and this phase wires "Disable {persona}" and the
+  directive editor straight off that node, so one reviewer's objection would have become
+  un-actionable and its evidence invisible. Fixed in Phase 1 by putting `nodeId` in the key.
+  This phase gained one rule as a consequence: near-identical rows from different reviewers must
+  **not** be deduped in the view, since they resolve independently and their actions target
+  different personas.
 - **Inspector round 2, `major`, accepted.** Step 1 called a whole-run `runChangeWorklist(detail)`
   while keeping the round-scoped `reviewAttempts` for `Passed`, so the segmented control would
   have shown three counts from two different moments as soon as anyone touched the scrubber. The

@@ -556,7 +556,7 @@ test("a plan page that is not self-contained degrades to a partial rather than b
 // Reserving at the moment a session goes away
 // ---------------------------------------------------------------------------
 
-test("a session exiting reserves and captures the plan it was writing", async () => {
+test("a session exiting publishes nothing while the plan task is still live", async () => {
   const h = harness();
   const { repoRoot, worktreePath } = makeCheckout({
     written: {
@@ -582,17 +582,41 @@ test("a session exiting reserves and captures the plan it was writing", async ()
   (h.registry as unknown as { sessions: Map<string, Session> }).sessions.set(session.id, session);
   h.registry.upsertTask({ ...task, sessionId: session.id });
 
+  // The exit listener fires while the task is still `running` - that is the condition it
+  // selects for. A scout publishes here because its report is untracked and its session was
+  // the only thing that could have submitted it. A plan must NOT, because an archive is
+  // immutable and this is not the end of the work.
   h.archives.reserveOnExit(session);
-  await waitFor(() =>
-    h.archives.captureJobsForTask(task.id).some((job) => job.status === "published"),
+  await settle();
+  assert.deepEqual(
+    h.archives.captureJobsForTask(task.id),
+    [],
+    "an exiting session must not freeze a plan that is still being written",
   );
+
+  // The proof that the exclusion matters rather than merely being tidy: the plan changes
+  // after that exit, and it is the FINAL text that gets archived. Had the exit published,
+  // the teardown would have found a published job under the same scoped key and replayed
+  // its verification instead of capturing again - so the draft would have won permanently.
+  writeFileSync(
+    join(worktreePath, "docs/plans/archive-rename/plan.html"),
+    planHtml("The kind-agnostic archive", "<p>The conclusion the human actually approved.</p>"),
+  );
+  h.registry.upsertTask({ ...task, sessionId: session.id, status: "done" });
+  assert.equal((await h.tasks.reclaim(task.id)).ok, true);
+
   const [job] = h.archives.captureJobsForTask(task.id);
   assert.equal(job!.kind, "plan");
   assert.equal(job!.captureStatus, "complete");
   assert.equal(job!.scope?.directory, "docs/plans/archive-rename");
+  assert.match(
+    readFileSync(join(bundleDir(h, task.id)[0]!, ARCHIVE_PRIMARY_REPORT_PATH), "utf8"),
+    /the human actually approved/,
+    "the archive holds the plan as it finally stood, not as it stood at the exit",
+  );
 });
 
-test("settling after an exit reservation publishes one bundle, not two", async () => {
+test("settling twice publishes one bundle, not two", async () => {
   const h = harness();
   const { repoRoot, worktreePath } = makeCheckout({
     written: {
@@ -603,8 +627,9 @@ test("settling after an exit reservation publishes one bundle, not two", async (
   const task = mkPlan({ worktreePath, repoRoot, status: "done" });
   h.registry.upsertTask(task);
 
-  // Both entry points, one after the other. The scoped operation key is what makes them
-  // converge rather than mint a second archive of the same plan.
+  // Two teardown paths in a row - cancel then remove, or a retried reclaim. The scoped
+  // operation key is what makes them converge rather than mint a second archive of the
+  // same plan.
   await h.archives.settleBeforeCleanup(task.id);
   await h.archives.settleBeforeCleanup(task.id);
   assert.equal(h.archives.captureJobsForTask(task.id).length, 1);
@@ -688,6 +713,11 @@ test("changed paths fail closed rather than answering that nothing changed", asy
   const changed = await changedPathsSince(notARepo);
   assert.equal(changed.ok, false, "an empty list here would read as a task that wrote nothing");
 });
+
+/** Let any work an inline listener kicked off run, so "nothing happened" is a real result. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

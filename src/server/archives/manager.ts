@@ -441,7 +441,7 @@ export class ArchiveManager {
   }
 
   /**
-   * The last-chance reservation, on `Registry.onSessionExit`.
+   * The last-chance reservation for a SCOUT, on `Registry.onSessionExit`.
    *
    * SYNCHRONOUS up to the durable row and asynchronous after it, and the split is the whole
    * design. `beginEviction` gives a session a few seconds before its row disappears, and it
@@ -449,23 +449,32 @@ export class ArchiveManager {
    * the worktree paths, happens now, while they can still be derived; the capture, which needs
    * only what was just persisted, happens afterwards and cannot delay eviction or throw into
    * it.
+   *
+   * Scout-only. The body says why a plan must not be published from here; the short version is
+   * that this fires while the task is still live, and an archive cannot be rewritten.
    */
   reserveOnExit(session: Session): void {
     if (!this.tasks || !this.acceptingJobs) return;
     try {
       const exiting = this.tasks.subjectForExitingSession(session);
       if (!exiting) return;
+      // SCOUTS ONLY, and the exclusion is a correctness rule rather than a scope decision.
+      //
+      // This listener fires while the task is still `running` or `dispatching` - that is the
+      // condition `subjectForExitingSession` selects for. For a scout that is the end of the
+      // work by definition: the report is an untracked file, the session that would have
+      // submitted it is gone, and completion cannot happen without an archive, so capturing
+      // now loses nothing and saves evidence that is otherwise about to be unreachable.
+      //
+      // For a plan it is not the end of the work, and an archive is IMMUTABLE. Publishing
+      // here would freeze whatever the checkout held at the moment a session went away as
+      // the permanent archive of a plan that is still being written, and the teardown that
+      // follows could not replace it: it finds the published job under the same scoped key
+      // and replays the verification rather than re-capturing. A plan's files are committed
+      // and its checkout survives eviction, so there is nothing to rescue early - teardown
+      // is both the last moment and the first correct one.
+      if (exiting.kind !== "scout") return;
       const subject = exiting.subject;
-      if (exiting.kind === "plan") {
-        // A plan reserves asynchronously, because WHICH archives it owes is a question for
-        // git in the checkout, and `beginEviction` runs its listeners inline. The half that
-        // genuinely has to be synchronous still is: `subject` was frozen above, off the live
-        // session and task binding, and it is everything the reservation needs. The checkout
-        // itself outlives eviction - it is destroyed by teardown, and every teardown path
-        // settles first - so the durable row landing a tick later costs nothing.
-        void this.reservePlanCapturesOnExit(subject);
-        return;
-      }
       // Already archived for THIS attempt: this is an ordinary scout finishing and its
       // session going away. A superseded episode's archive must not suppress reservation of
       // the checkout that is about to disappear.
@@ -525,28 +534,6 @@ export class ArchiveManager {
   /** The capture job for one task, for tests and diagnostics. Never a durable read path. */
   captureJobsForTask(taskId: string): ArchiveCaptureJob[] {
     return this.captureStore.forTask(taskId);
-  }
-
-  /**
-   * Reserve, then capture, every plan an exiting session left behind.
-   *
-   * Swallow-and-log for the same reason the synchronous listener is wrapped: nothing about a
-   * capture may reach `beginEviction`, and by the time this runs the caller is long gone, so
-   * a rejection here would be an unhandled one. Every teardown path settles again anyway, so
-   * a failure at this point costs promptness rather than the archive.
-   */
-  private async reservePlanCapturesOnExit(subject: ArchiveSubject): Promise<void> {
-    try {
-      for (const job of await this.reservePlanJobs(subject)) {
-        if (!this.acceptingJobs) return;
-        await this.runCapture(job.operationKey);
-      }
-    } catch (error) {
-      this.log("could not reserve a plan capture on session exit", {
-        taskId: subject.taskId,
-        error: describeError(error),
-      });
-    }
   }
 
   /**

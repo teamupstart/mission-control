@@ -53,6 +53,8 @@ test("the library row marks a built-in and leaves an operator's own workflow unm
     summaries: [summary(), summary({ id: "mine", name: "My review", builtin: false })],
     personas: [],
     hasSnapshot: true,
+    isOverlayOpen: () => false,
+    onLeave: () => {},
     onDirtyChange: () => {},
   }));
   assert.match(html, /<em class="wf-list-tag">Built-in<\/em>/);

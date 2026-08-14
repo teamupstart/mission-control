@@ -8,6 +8,8 @@ import type { SessionAction } from "@shared/workflow.ts";
 import type { SkillCatalogEntry } from "@shared/types.ts";
 import { fetchSkills } from "../lib/api.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
+import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import {
   EMPTY_SESSION_ACTION_SEED,
   SessionActionEditor,
@@ -73,6 +75,7 @@ export function SessionActionLibrary({
   initialActionId = null,
   startNew = false,
   isOverlayOpen,
+  onLeave,
   onDirtyChange,
   onSelectionChange,
 }: {
@@ -92,6 +95,12 @@ export function SessionActionLibrary({
   /** Mount straight into a blank draft, for the Library's "＋ New action" card. */
   startNew?: boolean;
   isOverlayOpen: () => boolean;
+  /**
+   * Leave this surface for the Library index. App points it at the router's `navigate`, so
+   * the back row and Escape leave by ONE path and an unsaved draft raises the existing
+   * leave-with-unsaved-changes dialog rather than being dropped.
+   */
+  onLeave: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onSelectionChange?: (actionId: string | null) => void;
 }): React.JSX.Element {
@@ -125,6 +134,10 @@ export function SessionActionLibrary({
   const [editorKey, setEditorKey] = useState(0);
   const [skills, setSkills] = useState<readonly SkillCatalogEntry[]>([]);
   const capabilities = useSessionActionCapabilities();
+
+  // Escape leaves the prompt editor, then leaves the page - the same ladder the back row
+  // above the rail is the visible half of.
+  useLibraryEscape({ isOverlayOpen, onLeave });
 
   const listed = useMemo(
     () => filterSessionActions(ordered, actionState, search),
@@ -227,6 +240,7 @@ export function SessionActionLibrary({
   return (
     <section className="wf-action-library">
       <aside className="wf-action-sidebar" aria-label="Session action library">
+        <LibraryBackRow onLeave={onLeave} />
         <div className="wf-action-sidebar-head">
           <div>
             <h3>Session actions</h3>

@@ -96,12 +96,35 @@ function text(html: string): string {
   return html.replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&amp;/g, "&");
 }
 
+test("the rail's first row is the way out, above its own heading", () => {
+  // The reported dead end: opening a Persona left no way back. Escape did nothing, and the
+  // only control that navigated to `#/library` was the topbar chip already painted
+  // `aria-current` - the page you are on, not the way out of it.
+  //
+  // Asserted as ORDER rather than presence. The row has to be first in reading order and
+  // outside the scrolling list, or it is a control you have to already know about to find.
+  const html = renderToStaticMarkup(createElement(PersonaLibrary, {
+    personas: [],
+    providers: PROVIDERS,
+    defaults: DEFAULTS,
+    isOverlayOpen: () => false,
+    onLeave: () => {},
+    onDirtyChange: () => {},
+  }));
+  const row = html.indexOf('aria-label="Back to Library"');
+  assert.ok(row > 0, "no back row in the rail");
+  assert.ok(row < html.indexOf("persona-sidebar-head"), "the back row must precede the rail heading");
+  // The keystroke on the face, so Escape is taught rather than assumed.
+  assert.match(html, /<kbd class="kb-hint">esc<\/kbd>/);
+});
+
 test("an empty library offers New and import without pretending workflows already execute", () => {
   const html = text(renderToStaticMarkup(createElement(PersonaLibrary, {
     personas: [],
     providers: PROVIDERS,
     defaults: DEFAULTS,
     isOverlayOpen: () => false,
+    onLeave: () => {},
     onDirtyChange: () => {},
   })));
   assert.match(html, /No saved Personas yet/);
@@ -273,6 +296,7 @@ test("the library flags built-ins in the list so their read-only editor is not a
     providers: PROVIDERS,
     defaults: null,
     isOverlayOpen: () => false,
+    onLeave: () => {},
     onDirtyChange: () => {},
   }));
   assert.match(html, /class="persona-list-tag">Built-in</);
@@ -397,6 +421,7 @@ test("the sidebar tags a drifted Persona beside the built-in tag, and only when 
     defaults: null,
     upstream: new Map([[IMPORTED.id, "changed" as const]]),
     isOverlayOpen: () => false,
+    onLeave: () => {},
     onDirtyChange: () => {},
   }));
   assert.match(html, /class="persona-list-tag is-attention">upstream changed</);
@@ -511,6 +536,8 @@ test("the builder and the Runs surface are both active, one home apart", () => {
     summaries: [],
     personas: [],
     hasSnapshot: true,
+    isOverlayOpen: () => false,
+    onLeave: () => {},
     onDirtyChange: () => {},
   }));
   assert.match(workflows, /Build a review workflow/);

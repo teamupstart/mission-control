@@ -141,6 +141,7 @@ test("shadowed built-ins resolve while Persona pickers show the operator row", (
     providers: [],
     defaults: null,
     isOverlayOpen: () => false,
+    onLeave: () => {},
     onDirtyChange: () => {},
   }));
   assert.equal(library.match(/class="persona-list-item/g)?.length, 1);

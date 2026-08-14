@@ -58,6 +58,8 @@ import {
   rememberWorkflowId,
 } from "./workflowSelection.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
+import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 
 interface CreateResponse { summary: WorkflowSummary }
 
@@ -210,6 +212,8 @@ export function WorkflowLibrary({
   hasSnapshot,
   initialWorkflowId = null,
   startNew = false,
+  isOverlayOpen,
+  onLeave,
   onDirtyChange,
   onSelectionChange,
   onBindVersion = () => {},
@@ -244,6 +248,14 @@ export function WorkflowLibrary({
   initialWorkflowId?: string | null;
   /** Create a draft as this surface mounts, for the Library's "＋ New workflow" card. */
   startNew?: boolean;
+  /** Whether any `<Overlay>` owns the screen, so the Escape ladder stands down for it. */
+  isOverlayOpen: () => boolean;
+  /**
+   * Leave this surface for the Library index. App points it at the router's `navigate`, so
+   * the back row and Escape leave by ONE path and an unsaved draft raises the existing
+   * leave-with-unsaved-changes dialog rather than being dropped.
+   */
+  onLeave: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onSelectionChange?: (workflowId: string | null) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
@@ -277,6 +289,15 @@ export function WorkflowLibrary({
     ordered,
     observedWorkflowIds.current,
   );
+  // The fourth authoring surface takes the same ladder as the three detail screens, so the
+  // Library does not disagree with itself about what Escape means one level under its card
+  // wall. Two of its nested Escapes - the graph's connect dialog, the pipeline's insert
+  // picker - are React handlers that `preventDefault`, so the ladder's first stand-down rung
+  // leaves their press alone. The canvas is the exception and is handled by name: React Flow
+  // unselects on Escape WITHOUT preventing the default, so `.react-flow` is an inner layer
+  // the ladder peels rather than navigates over. See `LIBRARY_EDITOR_SELECTOR`.
+  useLibraryEscape({ isOverlayOpen, onLeave });
+
   const selectedWorkflowRemoved = removalTarget !== undefined;
   const draft = useWorkflowDraft(
     selectedId,
@@ -800,6 +821,7 @@ export function WorkflowLibrary({
         </Tooltip>
       </div>
       <aside className={`workflow-library-sidebar${mobileDrawer === "library" ? " mobile-open" : ""}`} aria-label="Workflow library and node palette">
+        <LibraryBackRow onLeave={onLeave} />
         <header><div><h3>Workflows</h3><p>Drafts and published versions</p></div><Tooltip label="Create a new workflow draft"><button className="btn" disabled={transitioning} onClick={() => void create()}>New</button></Tooltip></header>
         <div className="workflow-library-list">
           {listed.length === 0 && <p>No workflow drafts yet.</p>}

@@ -637,6 +637,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
 | <kbd>Enter</kbd> | Open the selected session's detail. **Cards**: focus-expands or collapses the selected card. **Board**: opens the drill-in. Console already shows the selected session. On a focused link or button Enter activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect. In guided dispatch's Repo step, the first press closes the repo list and leaves the pass for the ordinary form; a second closes the modal | Anywhere |
+| <kbd>Esc</kbd> | Leave the [authoring surface](library-and-line.md#getting-back-out-of-an-authoring-surface) for `#/library`, one layer per press: an open dialog closes itself, then a focused editor or field is left, then the page. An unsaved draft raises the same leave-with-unsaved-changes question the **← Library** row does | Library: a Persona, Action, Command or workflow |
 | <kbd>f</kbd> | Open **Fleet** | Anywhere |
 | <kbd>w</kbd> | Open the **Library** | Anywhere |
 | <kbd>r</kbd> | Open **Workflow Runs** | Anywhere |
@@ -702,7 +703,8 @@ Complete and Kill on a card; Focus, Diff, Reset, Interrupt, Complete and Kill in
 footer; the Console's
 Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board card's workflow disclosure; the Diff reader's
-Open in Files action; and the settings rail's search box. They
+Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
+settings rail's search box. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.
 A narrow Console or Board detail is the one place they come off on their own: the tabs' keycaps
 are the first thing that row gives up to stay on one line, and the chords keep working.

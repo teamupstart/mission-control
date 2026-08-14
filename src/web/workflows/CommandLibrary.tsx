@@ -17,6 +17,8 @@ import { fetchRepos, fetchWorkflowRepoAllowlist, resolveRepo } from "../lib/api.
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { RepositoryName } from "../components/RepositoryName.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
+import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { workflowRequest, WorkflowApiError } from "./workflowApi.ts";
 import {
   WorkflowConfirmModal,
@@ -266,6 +268,8 @@ export function CommandLibrary({
   commands,
   hasSnapshot = false,
   initialSlot = null,
+  isOverlayOpen,
+  onLeave,
   onDirtyChange,
   onSelectionChange,
 }: {
@@ -279,6 +283,22 @@ export function CommandLibrary({
   hasSnapshot?: boolean;
   /** The slot the ROUTE asked for, read once as this surface mounts. */
   initialSlot?: string | null;
+  /**
+   * Whether any `<Overlay>` owns the screen, so the Escape ladder stands down for it.
+   *
+   * A getter over App's ref rather than a boolean, so it is correct in the same commit a
+   * modal mounts - the same contract the Persona and Action libraries already take it under
+   * for their save shortcut. This surface and the workflow builder never received it before
+   * the ladder needed it: its conflict confirmation and the router's dirty gate are both
+   * overlays this page must not answer over.
+   */
+  isOverlayOpen: () => boolean;
+  /**
+   * Leave this surface for the Library index. App points it at the router's `navigate`, so
+   * the back row and Escape leave by ONE path and an unsaved draft raises the existing
+   * leave-with-unsaved-changes dialog rather than being dropped.
+   */
+  onLeave: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onSelectionChange?: (slot: string | null) => void;
 }): React.JSX.Element {
@@ -311,6 +331,11 @@ export function CommandLibrary({
   const [allowlist, setAllowlist] = useState<string[]>([]);
 
   const dirty = commandDraftDirty(draft, baseline);
+
+  // This screen has no document editor, so its ladder is the two rungs the other three
+  // share minus the CodeMirror case: a press inside the default/override fields or the
+  // repository combobox leaves that field, and the next one leaves the page.
+  useLibraryEscape({ isOverlayOpen, onLeave });
 
   const adopt = useCallback((view: WorkflowCommandView | null): void => {
     setBaseline(view);
@@ -528,6 +553,7 @@ export function CommandLibrary({
   return (
     <section className="wf-command-library">
       <aside className="wf-command-sidebar" aria-label="Command library">
+        <LibraryBackRow onLeave={onLeave} />
         <div className="wf-command-sidebar-head">
           <div>
             <h3>Commands</h3>

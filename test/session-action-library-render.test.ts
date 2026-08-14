@@ -4,7 +4,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
+import {
+  SESSION_ACTION_COMPLETION_CAPABILITIES,
+  SESSION_ACTION_COMPLETION_KINDS,
+  WORKFLOW_LIMITS,
+} from "../src/shared/workflow.ts";
 import type {
   SessionAction,
   SessionActionCompletionCapability,
@@ -12,24 +16,29 @@ import type {
 import { CreateSessionActionSchema } from "../src/shared/protocol.ts";
 import {
   filterSessionActions,
+  groupSessionActions,
   SessionActionLibrary,
-  sessionActionRevisionLine,
-  sessionActionRowSummary,
 } from "../src/web/workflows/SessionActionLibrary.tsx";
+import { sessionActionContractLabel } from "../src/web/library/library-model.ts";
+import { LibraryMenuList } from "../src/web/library/LibraryWorkspaceHeader.tsx";
 import {
   completionChoices,
   isSessionActionSaveShortcut,
   reconcileSessionActionSave,
+  SessionActionContractLine,
   SessionActionEditor,
   SessionActionEditorStatus,
+  SessionActionSkillControl,
   sessionActionCapabilityBlock,
   sessionActionCompletionInherited,
   sessionActionCreateBody,
   sessionActionDraftProblem,
+  sessionActionOverflowActions,
   sessionActionPatchFrom,
   sessionActionPromptPath,
   sessionActionSaveTarget,
   sessionActionSeed,
+  sessionActionUpdatedLine,
   sessionActionUpdatePatch,
   type SessionActionDraftSeed,
 } from "../src/web/workflows/SessionActionEditor.tsx";
@@ -92,11 +101,13 @@ const editor = (
   target: SessionAction | null,
   seed?: SessionActionDraftSeed,
   capabilities: SessionActionCompletionCapability[] = CAPABILITIES,
+  capabilitiesLoading = false,
 ): string =>
   renderToStaticMarkup(createElement(SessionActionEditor, {
     action: target,
     ...(seed ? { seed } : {}),
     capabilities,
+    capabilitiesLoading,
     skills: [
       { id: "pull-request", name: "pull-request", description: "", category: "git", enforcement: "triggered" },
     ],
@@ -138,36 +149,107 @@ test("the Actions shelf is a real route, and the legacy tab hash still reaches i
   });
 });
 
-test("the list names what a row needs, what proves it, and whose it is", () => {
+function groupHead(label: string, count: number): RegExp {
+  return new RegExp(
+    `<h4 class="lib-rail-group"><span>${label}</span><span class="lib-rail-group-count">${count}</span></h4>`,
+  );
+}
+
+test("the rail separates what ships from what you wrote, and names each row by its contract", () => {
   const html = library([
     action(),
     action({ id: "b", name: "Pull Request", normalizedName: "pull request", builtin: true, requiredSkillId: "pull-request", completion: { kind: "pull_request" } }),
   ]);
   assert.match(html, /Tidy the workspace/);
-  assert.match(html, /No required skill · Session turn finishes/);
-  assert.match(html, /Skill · pull-request · Pull request is opened and verified/);
-  assert.match(html, /Revision 2 · updated/);
-  assert.match(html, /Built-in · ships with this build/);
-  // Provenance both ways: a shipped row and an operator's own are told apart at a glance and
-  // in words, so the read-only editor is not a surprise.
-  assert.match(html, />Built-in</);
-  assert.match(html, />Yours</);
+  // The sub-label is the CONTRACT, from the one helper the Library card reads too. The
+  // description sat here and, on the shipped pair, it is the title again in a longer
+  // sentence - so two actions could not be told apart by the line meant to tell them apart.
+  //
+  // `is-two-line` is on the shared row because this rail asked for it with `detailLines={2}`,
+  // not because the rail restyled `.lib-rail-row-detail` from a selector of its own. That
+  // fork is what the primitive forbids, and it would outrank any rule the primitive grew
+  // later - so the class is asserted here, where the string it wraps is.
+  assert.match(
+    html,
+    /<small class="lib-rail-row-detail mono is-two-line">No required skill · Session turn finishes<\/small>/,
+  );
+  assert.match(
+    html,
+    /<small class="lib-rail-row-detail mono is-two-line">Skill · pull-request · Pull request is opened and verified<\/small>/,
+  );
+  assert.doesNotMatch(html, />Remove the scratch files</, "the description is not the sub-label");
+  // Provenance is said once, at the head, for every row beneath it - rather than as a tag on
+  // each row, which is the flat list apologising for being flat.
+  assert.match(html, groupHead("Built-in", 1));
+  assert.match(html, groupHead("Yours", 1));
+  assert.doesNotMatch(html, /class="wf-action-list-tag/);
+  // Not merely present: the shipped row is UNDER the head that claims it, and Built-in leads.
+  const order = ["Built-in", "Pull Request", "Yours", "Tidy the workspace"].map((needle) => {
+    const at = html.indexOf(needle);
+    assert.ok(at > 0, `${needle} is missing from the rail`);
+    return at;
+  });
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), "the rail's groups are out of order");
   // 2 actions, one of them a built-in, both live.
   assert.match(html, /2 active/);
 });
 
-test("the row summary and the revision line answer for archived and built-in rows", () => {
-  assert.equal(sessionActionRowSummary(action({ archivedAt: 5 })), "Archived");
+test("the contract label is one string, and grouping never re-decides which row wins", () => {
   assert.equal(
-    sessionActionRowSummary(action({ requiredSkillId: "pull-request" })),
+    sessionActionContractLabel(action()),
+    "No required skill · Session turn finishes",
+  );
+  assert.equal(
+    sessionActionContractLabel(action({ requiredSkillId: "pull-request" })),
     "Skill · pull-request · Session turn finishes",
   );
-  assert.equal(
-    sessionActionRevisionLine(action({ builtin: true })),
-    "Built-in · ships with this build",
-    "a shipped row carries a synthetic revision and no publish instant to print",
+
+  // A built-in shadowed by a same-named action of the operator's resolves to theirs, and that
+  // decision belongs to `sessionActionsForDisplay` - which has already made it by the time
+  // these rows are split. The group a row lands in must not be a second opinion about it.
+  const shipped = action({ id: "builtin:pull-request", builtin: true });
+  assert.deepEqual(groupSessionActions([shipped, action()]), {
+    builtin: [shipped],
+    yours: [action()],
+  });
+  assert.deepEqual(groupSessionActions([]), { builtin: [], yours: [] });
+});
+
+test("an empty Yours group says what to do about it, and only where that is true", () => {
+  const shipped = action({ id: "builtin:pull-request", builtin: true });
+  const nothingYet = library([shipped]);
+  assert.match(nothingYet, groupHead("Yours", 0));
+  assert.match(nothingYet, /duplicate a built-in to see the shape/);
+
+  // Not with the list empty, where the line below already says it in the right words for the
+  // state, and not under a search, where it would be a claim about the catalog rather than
+  // about the filter.
+  assert.doesNotMatch(library([]), /duplicate a built-in to see the shape/);
+  assert.match(library([]), /No session actions yet/);
+});
+
+test("the archived filter is a counted toggle under the list, not a select above it", () => {
+  const html = library([action(), action({ id: "old", name: "Retired", normalizedName: "retired", archivedAt: 9 })]);
+  // The count answers "is there anything in there?" without pressing it, which the
+  // Active/Archived select it replaces could not.
+  assert.match(html, /aria-pressed="false"[^>]*>Archived <span class="wf-action-archived-count mono">1<\/span>/);
+  const list = html.indexOf('class="wf-action-list"');
+  assert.ok(list > 0 && list < html.indexOf("wf-action-rail-foot"), "the footer must follow the list");
+  assert.ok(
+    html.indexOf('class="wf-action-search"') < list,
+    "the search box is the last thing above the list",
   );
-  assert.match(sessionActionRevisionLine(action()), /^Revision 2 · updated /);
+});
+
+test("the header's dim line says when the open row was last written, and never for a built-in", () => {
+  assert.equal(
+    sessionActionUpdatedLine(action({ builtin: true })),
+    null,
+    "a shipped row has no publish instant to print, and the eyebrow already says it ships",
+  );
+  assert.equal(sessionActionUpdatedLine(null), null, "a draft has no history to state");
+  assert.match(sessionActionUpdatedLine(action())!, /^Updated /);
+  assert.match(editor(action()), /<p class="wf-action-updated">Updated /);
 });
 
 test("search and state filtering agree with what the empty states claim", () => {
@@ -195,33 +277,96 @@ test("a live operator row shadows a same-named built-in in the list", () => {
   assert.doesNotMatch(html, />Built-in</);
 });
 
-test("the editor authors the five fields, and offers only the adapters the daemon reported", () => {
-  const html = editor(action());
-  assert.match(html, /Required skill/);
-  assert.match(html, /Completes when/);
-  assert.match(html, /Session turn finishes/);
-  // The one this build cannot execute is not selectable and is not silently absent either -
-  // it is simply not offered, because the current value is not it.
-  assert.doesNotMatch(html, /<option[^>]*>Pull request is opened and verified<\/option>/);
-  // The prompt editor states the exact ceiling a delivery packet can carry.
+test("the contract is two chips and the sentence they form, not two selects in a field row", () => {
+  const html = editor(action({ requiredSkillId: "pull-request" }));
+  // The chips answer their own question while shut. `requires skill` draws solid because
+  // this action asserts one; the byte count is a readout of the asset, not a setting on it.
+  assert.match(html, /<span class="lib-chip-k">requires skill<\/span>/);
+  assert.match(html, /<span class="lib-chip-k">completes when<\/span>/);
+  assert.match(html, /<span class="lib-chip-v mono">pull-request<\/span>/);
+  assert.match(html, /<span class="lib-chip-v">Session turn finishes<\/span>/);
+  // The prompt's exact ceiling, still stated - as a property of the asset rather than as the
+  // one file toolbar in the app that carried a byte count.
+  const bytes = new TextEncoder().encode(action().promptMarkdown).byteLength;
   assert.match(
     html,
-    new RegExp(`${WORKFLOW_LIMITS.sessionActionPromptBytes.toLocaleString()} UTF-8 bytes`),
+    new RegExp(`<span class="lib-chip-v mono">${bytes} / ${
+      WORKFLOW_LIMITS.sessionActionPromptBytes.toLocaleString()
+    }</span>`),
   );
+  assert.doesNotMatch(html, /UTF-8 bytes<\/span>/);
   assert.match(html, /Revision 2/);
-  assert.match(html, /Archive/);
-  assert.match(html, /Duplicate/);
 });
 
-test("an action already naming an unavailable adapter keeps it, disabled, and says why", () => {
+test("the contract line states the sentence the two chips form, in the shared words", () => {
+  const html = editor(action({ requiredSkillId: "pull-request" }));
+  // What the stage sends, what the session must have, and what Mission Control observes -
+  // which is the thing this screen has never said. `<b>` carries the completion clause and it
+  // is the shared string, letter for letter, so the chip and the sentence cannot disagree.
+  assert.match(html, /The stage sends this instruction to the bound session/);
+  assert.match(html, /must be able to invoke the <code>pull-request<\/code> skill/);
+  assert.match(html, /<b>Session turn finishes<\/b>/);
+  assert.match(html, /never because the session said so/);
+  // And the "what happens next" sentence the note under the old selector carried.
+  assert.match(html, /only the stages below this one read it/);
+
+  // The clause is the SHARED one for every kind, not a two-armed test on the kind - which is
+  // the shape `test/session-action-completion-copy.test.ts` scans this whole tree for. Here
+  // it is checked by consequence: each kind prints its own capability label verbatim.
+  for (const kind of SESSION_ACTION_COMPLETION_KINDS) {
+    const line = renderToStaticMarkup(createElement(SessionActionContractLine, {
+      requiredSkillId: null,
+      completion: { kind },
+    }));
+    assert.match(line, new RegExp(`<b>${SESSION_ACTION_COMPLETION_CAPABILITIES[kind].label}</b>`));
+    // An action requiring no skill says so rather than leaving the clause out, or the sentence
+    // would read as though the requirement had been forgotten.
+    assert.match(line, /whatever skills that session has loaded/);
+  }
+});
+
+test("the chip and the contract line print ONE string, whatever the daemon calls it", () => {
+  /*
+   * The review finding this exists for. The chip read the matching capability's `label` off
+   * the daemon's answer while the sentence beneath it called the shared helper - so a daemon
+   * a version ahead, wording its own capability differently, put TWO contract strings for one
+   * stored completion on one screen, with nothing to say which was the promise.
+   *
+   * The kinds are append-only and the wire carries a label, so this is a state a future
+   * daemon can reach without anything here being edited. Both surfaces read the one owner.
+   */
+  const reworded: SessionActionCompletionCapability[] = [{
+    kind: "session_turn",
+    available: true,
+    label: "The turn wraps up (a newer daemon's wording)",
+    unavailableReason: null,
+  }];
+  const html = editor(action(), undefined, reworded);
+
+  const shared = SESSION_ACTION_COMPLETION_CAPABILITIES.session_turn.label;
+  assert.match(html, new RegExp(`<span class="lib-chip-v">${shared}</span>`));
+  assert.match(html, new RegExp(`<b>${shared}</b>`));
+  // Exactly one wording of the contract reaches the face of this screen.
+  assert.doesNotMatch(html, /a newer daemon's wording/);
+
+  // The picker is the one surface that still speaks the daemon's words, because it lists what
+  // THAT daemon can prove rather than what this action promises. Asserted so the fix above is
+  // read as "the contract has one owner" and not as "the capability label is ignored".
+  const offered = completionChoices(reworded, "session_turn");
+  assert.equal(offered[0]!.label, "The turn wraps up (a newer daemon's wording)");
+});
+
+test("an action already naming an unavailable adapter keeps it, marked, and says why", () => {
   const html = editor(action({ completion: { kind: "pull_request" } }));
-  // Retained, or the next save would quietly rewrite the proof contract this action was
-  // authored with.
-  assert.match(
-    html,
-    /<option value="pull_request" disabled="" selected="">Pull request is opened and verified<\/option>/,
-  );
-  assert.match(html, /This build cannot verify a pull request yet\./);
+  // Marked on the chip's FACE and readable while shut. It used to be a disabled option inside
+  // a closed dropdown, so the one fact on this row that is waiting on somebody was the only
+  // one an operator had to open a control to find.
+  assert.match(html, /class="lib-chip is-overridden is-attention[^"]*"/);
+  assert.match(html, /<span class="lib-chip-v">Pull request is opened and verified<\/span>/);
+  assert.match(html, /<p class="lib-props-note">This build cannot verify a pull request yet\.<\/p>/);
+  // And the contract line still states what this action names, rather than falling back to
+  // something this build could prove - the action's own guarantee is not the build's to edit.
+  assert.match(html, /<b>Pull request is opened and verified<\/b>/);
 
   const choices = completionChoices(CAPABILITIES, "pull_request");
   assert.deepEqual(choices.map((choice) => choice.kind), ["pull_request", "session_turn"]);
@@ -241,6 +386,10 @@ test("a capability read still in flight accuses the action of nothing", () => {
   const loading = completionChoices([], "session_turn", true);
   assert.deepEqual(loading.map((choice) => choice.kind), ["session_turn"]);
   assert.equal(loading[0]!.note, null, "a pending read is not an accusation");
+  // Nor is it a refusal. `disabled` on this arm means the daemon was ASKED and cannot prove
+  // this one - it is what the editor's chip marks itself from - so it stays false until there
+  // is an answer, and the picker holds the stored value without striking it out.
+  assert.equal(loading[0]!.disabled, false, "a pending read struck out the stored completion");
   // And it reads as itself rather than as the wire spelling. The shared table supplies the
   // WORDING; `available` still comes only from the daemon.
   assert.equal(loading[0]!.label, "Session turn finishes");
@@ -260,15 +409,148 @@ test("a capability read still in flight accuses the action of nothing", () => {
   );
 });
 
+test("the completion chip's FACE says nothing either, while the read is in flight", () => {
+  /*
+   * The same rule as the test above, asserted where an operator actually reads it. The note was
+   * gated on `loading` and the chip was not, so for the round trip after every open the chip
+   * drew amber and its tooltip stated "This build cannot prove the completion this action
+   * names" - about `session_turn`, on a daemon that plainly runs it. The mark is the whole
+   * point of the chip: it is what tells an operator this action is waiting on somebody.
+   *
+   * Every editor passes through this state, because `useSessionActionCapabilities` starts
+   * `loading: true` with an empty list and the retained arm is selected-but-not-yet-offered for
+   * exactly as long as that is true.
+   */
+  const pending = editor(action(), undefined, [], true);
+  assert.doesNotMatch(pending, /is-attention/, "the chip accused the action mid-fetch");
+  assert.doesNotMatch(pending, /This build cannot prove the completion this action names/);
+  assert.doesNotMatch(pending, /class="lib-props-note"/);
+  // The stored completion still reads as itself, in the shared words - held, not repainted.
+  assert.match(pending, /<span class="lib-chip-v">Session turn finishes<\/span>/);
+  assert.match(pending, /<b>Session turn finishes<\/b>/);
+  // The chip's tooltip is the ordinary one: what the field is, rather than a verdict on it.
+  assert.match(
+    pending,
+    /What Mission Control must observe before the stages after this action run/,
+  );
+
+  // The signal that IS honest mid-fetch, on the surface that owns it. A draft choosing a
+  // completion has to prove it can be run, so Save stands down and names the fact it is
+  // waiting for - and it still says nothing about what this build can prove.
+  const drafting = editor(null, {
+    name: "Tidy the workspace",
+    description: "",
+    promptMarkdown: "# Tidy\n",
+    requiredSkillId: null,
+    completionKind: "session_turn",
+  }, [], true);
+  assert.match(drafting, /<button class="btn" disabled=""[^>]*>Save<\/button>/);
+  assert.match(drafting, /Waiting for this daemon to report which completions it can prove/);
+  assert.doesNotMatch(drafting, /is-attention/);
+
+  // The two controls that make the negative mean something. Answered, and the answer is no:
+  // the chip is marked again...
+  const refused = editor(action({ completion: { kind: "pull_request" } }), undefined, CAPABILITIES);
+  assert.match(refused, /class="lib-chip is-overridden is-attention[^"]*"/);
+  assert.match(refused, /This build cannot prove the completion this action names/);
+  // ...and no answer at all, once the read has FINISHED, is marked too - "the daemon never
+  // said" is a state to act on, where "the daemon has not said yet" is one to wait through.
+  const unanswered = editor(action(), undefined, []);
+  assert.match(unanswered, /class="lib-chip is-overridden is-attention[^"]*"/);
+  assert.match(unanswered, /This daemon has not said which completions it can prove yet\./);
+});
+
 test("a built-in and an archived action are read-only, and say which and why", () => {
   const builtin = editor(action({ builtin: true }));
   assert.match(builtin, /Built-in session action/);
   assert.match(builtin, /Duplicate it to make a copy you own and can edit/);
-  assert.doesNotMatch(builtin, /Archive<\/button>/);
+  assert.match(builtin, /<span class="lib-tag lib-tag-builtin">built-in<\/span>/);
+  assert.doesNotMatch(builtin, /Archive/);
 
   const archived = editor(action({ archivedAt: 9 }));
   assert.match(archived, /is read-only and is no longer offered to new stages/);
   assert.match(archived, /Every published version keeps the instruction it was published with/);
+});
+
+test("one verb is promoted, and on a read-only action it is the one that does something", () => {
+  // Save sat first in this header permanently greyed out on both shipped actions, which reads
+  // as "the thing you want, unavailable" - when the thing you want was one control to its
+  // right and perfectly available. There is no revision this editor could write, so it does
+  // not offer one.
+  const builtin = editor(action({ builtin: true }));
+  assert.doesNotMatch(builtin, />Save<\/button>/);
+  assert.match(builtin, />Duplicate to edit<\/button>/);
+  assert.match(editor(action({ archivedAt: 9 })), />Duplicate to edit<\/button>/);
+  assert.match(editor(action()), />Save<\/button>/);
+});
+
+test("everything the header does not promote is in the menu, and a read-only action has none", () => {
+  const menu = (over: Partial<SessionAction> = {}): string[] => sessionActionOverflowActions({
+    action: true,
+    builtin: over.builtin === true,
+    archived: over.archivedAt != null,
+    onDuplicate: () => {},
+    onArchive: () => {},
+  }).map((entry) => entry.label);
+
+  // Asserted about the ACTIONS rather than about the row they sit in: which verbs each state
+  // offers is behaviour, and it survives a rearrangement of the header only if it is pinned
+  // as data. A closed menu renders nothing, so markup could not say this at all.
+  assert.deepEqual(menu(), ["Duplicate", "Archive"]);
+  // Duplicate is the promoted verb on both read-only states, and offering it twice makes the
+  // more prominent one the one nobody can find again later. Archive is a write neither takes.
+  assert.deepEqual(menu({ builtin: true }), []);
+  assert.deepEqual(menu({ archivedAt: 9 }), []);
+  // A draft has no row to copy or retire yet.
+  assert.deepEqual(
+    sessionActionOverflowActions({
+      action: false,
+      builtin: false,
+      archived: false,
+      onDuplicate: () => {},
+      onArchive: () => {},
+    }),
+    [],
+  );
+
+  // And the labels are unchanged from wherever each verb lived before: a menu is where they
+  // are now, not what they are called.
+  const rows = renderToStaticMarkup(createElement(LibraryMenuList, {
+    actions: sessionActionOverflowActions({
+      action: true,
+      builtin: false,
+      archived: false,
+      onDuplicate: () => {},
+      onArchive: () => {},
+    }),
+    onChoose: () => {},
+  }));
+  assert.match(rows, /role="menuitem"[^>]*>Duplicate</);
+  assert.match(rows, /class="lib-menu-row is-danger"[^>]*>Archive</);
+  assert.match(rows, /published versions keep their snapshot/);
+});
+
+test("a stored skill this build's catalog does not carry stays selectable, and is not accused", () => {
+  // The control lives in a popover a static render cannot open, so the rule it carries would
+  // otherwise have no test: an id the catalog no longer lists has to stay in the options, or
+  // opening the action silently drops the requirement it was saved with.
+  const control = (unlisted: boolean): string =>
+    renderToStaticMarkup(createElement(SessionActionSkillControl, {
+      skills: [{ id: "retro", name: "retro", description: "", category: "git", enforcement: "triggered" }],
+      value: "pull-request",
+      unlisted,
+      disabled: false,
+      onChange: () => {},
+    }));
+  assert.match(control(true), /<option value="pull-request" selected="">Unavailable: pull-request<\/option>/);
+  assert.match(control(true), /<option value="">No required skill<\/option>/);
+  assert.doesNotMatch(control(false), /Unavailable/);
+
+  // The chip itself is never marked for it, and that is deliberate: the catalog is read once
+  // over HTTP, so for the round trip before it lands EVERY stored skill looks unlisted. An
+  // unread catalog is not a refusal - the same lesson the completion capability code learned.
+  const html = editor(action({ requiredSkillId: "nothing-ships-this" }));
+  assert.doesNotMatch(html, /class="lib-chip is-overridden is-attention/);
 });
 
 test("reapply is a three-way merge: my changes, onto the revision that now exists", () => {

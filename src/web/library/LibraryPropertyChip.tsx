@@ -56,8 +56,17 @@ export function LibraryPropertyChip({
   mono?: boolean;
   /** Omitted for a read-only readout, which has no inherited/overridden axis at all. */
   state?: LibraryChipState;
-  /** `danger` is the over-limit byte count, which keeps the treatment the toolbar gave it. */
-  tone?: "danger";
+  /**
+   * `danger` is the over-limit byte count, which keeps the treatment the toolbar gave it.
+   *
+   * `attention` is a value that is stored and STANDING but that this build cannot honour -
+   * an Action retaining a completion whose adapter is unavailable here. It is a tone rather
+   * than a separate `state` because the inherited/overridden axis is still true of it and
+   * still worth reading: the chip says both "this asset decides this" and "something about
+   * it needs you". The explanation belongs beside the row, in `.lib-props-note`, because a
+   * fact you have to open a popover to discover is the one this row exists to replace.
+   */
+  tone?: "danger" | "attention";
   /** `end` pushes this chip to the far edge, away from the properties that lead the row. */
   align?: "end";
   tooltip: string;
@@ -87,7 +96,7 @@ export function LibraryPropertyChip({
   const classes = [
     "lib-chip",
     children ? `is-${state ?? "inherited"}` : "is-readonly",
-    tone === "danger" ? "is-danger" : "",
+    tone ? `is-${tone}` : "",
     align === "end" ? "is-trailing" : "",
   ].filter(Boolean).join(" ");
 

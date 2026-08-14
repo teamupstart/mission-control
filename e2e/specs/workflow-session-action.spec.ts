@@ -56,8 +56,10 @@ test("an operator authors a session action in the library, and the daemon stores
   // already in the catalog, so this is also the read-only built-in case: it is listed, it is
   // selected, and its editor says why nothing here can be saved.
   await expect(dashboard.getByRole("heading", { name: "Session actions" })).toBeVisible();
+  // Whose a row is, said once at the group head rather than as a tag on every row.
+  await expect(dashboard.getByRole("heading", { name: /^Built-in\s+2$/ })).toBeVisible();
   await expect(dashboard.locator(".wf-action-list-item").filter({ hasText: "Pull Request" }))
-    .toContainText("Built-in");
+    .toContainText("Skill · pull-request · Pull request is opened and verified");
   await expect(dashboard.locator(".wf-state.builtin"))
     .toContainText("Duplicate it to make a copy you own and can edit");
 
@@ -78,13 +80,17 @@ test("an operator authors a session action in the library, and the daemon stores
   // Only what this build can PROVE is offered, and it now proves all three. The list is
   // asserted exhaustively rather than by membership, and in the append-only tuple's order: a
   // completion the daemon cannot run appearing here is how an operator authors a workflow that
-  // then refuses to publish.
-  const completion = fields.getByLabel("Completes when");
+  // then refuses to publish. Reached through the chip the four-across field row became; the
+  // control inside it is the same `select`.
+  await dashboard.getByRole("button", { name: /^completes when\b/ }).click();
+  const completion = dashboard.getByRole("group", { name: "Completes when" })
+    .getByRole("combobox", { name: "Completes when" });
   await expect(completion.locator("option")).toHaveText([
     "Session turn finishes",
     "Pull request is opened and verified",
     "A commit lands in the checkout",
   ]);
+  await dashboard.keyboard.press("Escape");
 
   await dashboard.getByRole("button", { name: "Save" }).click();
   await expect(dashboard.locator(".wf-action-editor-head .workflow-eyebrow"))
@@ -104,8 +110,9 @@ test("an operator authors a session action in the library, and the daemon stores
   // And the list row reads back what the runtime will require, in the words it proves.
   await expect(dashboard.locator(".wf-action-list-item").filter({ hasText: "Tidy the workspace" }))
     .toContainText("No required skill · Session turn finishes");
-  await expect(dashboard.locator(".wf-action-list-item").filter({ hasText: "Tidy the workspace" }))
-    .toContainText("Revision 1");
+  // The revision is on the open workspace rather than on every row: a revision and a
+  // timestamp per row was provenance about four actions at once, none of them the one open.
+  await expect(dashboard.locator(".wf-action-editor-head")).toContainText("Revision 1");
 });
 
 test("a filled new action will not save while the daemon has not said what it can prove", async ({
@@ -134,7 +141,9 @@ test("a filled new action will not save while the daemon has not said what it ca
   // it" - that is an answer, and no answer arrived.
   await expect(dashboard.locator(".wf-error"))
     .toContainText("has not said which completions it can prove");
-  await expect(dashboard.locator(".wf-action-note"))
+  // The note sits beside the chip it is about, on the face rather than inside a popover: a
+  // completion this build cannot vouch for is the one fact on that row waiting on somebody.
+  await expect(dashboard.locator("p.lib-props-note"))
     .toHaveText("This daemon has not said which completions it can prove yet.");
   // Nothing reached the catalog. Asserted against the route rather than the screen, because
   // "the button looked off" is not the claim - "no row was written" is.
@@ -184,8 +193,11 @@ test("editing bumps one revision, and archiving retires the action without touch
   expect(afterEdit.promptMarkdown).toBe(PROMPT);
 
   // Archive is one dialog, and it states what survives: an operator retiring an action needs
-  // to know their published versions keep working.
-  await dashboard.getByRole("button", { name: "Archive" }).click();
+  // to know their published versions keep working. It lives behind the overflow menu now,
+  // beside Duplicate - one promoted verb, everything else one click further in.
+  await dashboard.getByRole("button", { name: "More session action options" }).click();
+  await dashboard.getByRole("menu", { name: "More session action options" })
+    .getByRole("menuitem", { name: "Archive" }).click();
   const dialog = dashboard.getByRole("dialog", { name: /Archive Tidy the workspace/ });
   await expect(dialog).toContainText("Every published version keeps the snapshot it was published with");
   await dialog.getByRole("button", { name: "Archive session action" }).click();
@@ -201,10 +213,14 @@ test("editing bumps one revision, and archiving retires the action without touch
     .toHaveCount(0);
   await expect(dashboard.locator(".wf-action-list-item").filter({ hasText: "Pull Request" }))
     .toHaveCount(1);
-  // It is still reachable, because a draft or a version may name it.
-  await dashboard.locator(".wf-action-sidebar").getByLabel("State").selectOption("archived");
+  // It is still reachable, because a draft or a version may name it. Through the counted
+  // toggle in the rail's footer, which is where the Active/Archived select went.
+  const archivedToggle = dashboard.locator(".wf-action-sidebar")
+    .getByRole("button", { name: /^Archived/ });
+  await expect(archivedToggle).toHaveText(/Archived\s*1/);
+  await archivedToggle.click();
   await expect(dashboard.locator(".wf-action-list-item").filter({ hasText: "Tidy the workspace" }))
-    .toContainText("Archived");
+    .toHaveCount(1);
 });
 
 test("a second tab's edit is a conflict that preserves the local draft", async ({

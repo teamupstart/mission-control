@@ -227,6 +227,25 @@ export function personaCards(
     });
 }
 
+/**
+ * What an Action needs and what proves it finished, as the one line a card or a rail row
+ * prints.
+ *
+ * `personaRoutingLabel`'s neighbour, for its reason: these are the two facts that tell two
+ * Actions apart - the description on the shipped pair is the title again in a longer
+ * sentence - and the Library card and the Action rail are two answers to "which action is
+ * this". They read it from here so they cannot drift, and both halves come from the shared
+ * skill and completion helpers rather than being spelled locally, so a third adapter changes
+ * one table.
+ */
+export function sessionActionContractLabel(
+  action: Pick<SessionAction, "completion" | "requiredSkillId">,
+): string {
+  return `${sessionActionSkillLabel(action.requiredSkillId)} · ${
+    sessionActionCompletionLabel(action.completion)
+  }`;
+}
+
 export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {
   return actions
     .filter((action) => action.archivedAt === null)
@@ -237,9 +256,7 @@ export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {
       name: action.name,
       description: action.description,
       tags: action.builtin ? [{ label: "built-in", tone: "builtin" as const }] : [],
-      fact: `${sessionActionSkillLabel(action.requiredSkillId)} · ${
-        sessionActionCompletionLabel(action.completion)
-      }`,
+      fact: sessionActionContractLabel(action),
     }));
 }
 

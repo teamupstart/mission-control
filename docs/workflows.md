@@ -287,7 +287,9 @@ claims that success afterwards. A workflow whose final gate is None shows no foo
 A **session action** is a reusable instruction a workflow stage sends to the session it is
 bound to. It is not a third kind of reviewer. A Persona reads one immutable submission and
 returns a verdict; an action writes to the bound conversation, may change the repository, and
-returns only "this finished". `#/library/actions` is its shelf and editor, beside Personas.
+returns only "this finished". `#/library/actions` is its shelf and
+[editor](library-and-line.md#the-action-detail-screen), beside Personas, and that screen states
+the contract below as the sentence its two property chips form.
 
 An action's fields are its name, description, the **exact Markdown instruction** the session
 receives, an optional **required skill**, and the **completion** Mission Control must observe
@@ -309,8 +311,9 @@ three:
 
 Archive is soft: an archived action is read-only, leaves the add
 controls, keeps reserving its normalized name, and stays readable because drafts and published
-versions name its id. Built-in actions ship with the application, are marked `Built-in`, and
-are read-only; **Duplicate** is the way to a copy you own.
+versions name its id. Built-in actions ship with the application, are listed under their own
+**Built-in** rail group and tagged in the editor's header, and are read-only; **Duplicate to
+edit** is the way to a copy you own.
 
 The authored Markdown behind the built-ins is in this repository under [`actions/`](../actions/) -
 Mission Control session actions, not GitHub Actions - one document per action, beside the

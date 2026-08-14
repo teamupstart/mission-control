@@ -345,16 +345,24 @@ export class ArchiveStore {
   /**
    * Drop every archive not observed by the pass that just finished, returning their keys.
    *
-   * Only ever called after a COMPLETE walk. A pass that threw halfway would otherwise prune
-   * the producers it never reached, and an external sync tool that had merely not finished
-   * writing would look like a deletion.
+   * Only ever called after a COMPLETE walk of the roots it prunes. A pass that threw halfway
+   * would otherwise prune the producers it never reached, and an external sync tool that had
+   * merely not finished writing would look like a deletion.
+   *
+   * `heldBackRoots` names the roots this pass could NOT walk. Their rows are exempt, because
+   * "I did not see it" and "it is not there" are the same observation from a root that could
+   * not be read - and only one of them is a reason to forget an archive. Everything else
+   * prunes exactly as it did when there was one root, including a root that resolved to
+   * nothing: an absent library is an empty one, and its rows should stop answering queries.
    */
-  pruneUnseen(epoch: number): string[] {
+  pruneUnseen(epoch: number, heldBackRoots: readonly string[] = []): string[] {
     return this.inTransaction(() => {
+      const held = [...new Set(heldBackRoots)];
+      const clause = held.length > 0 ? ` AND library_root NOT IN (${held.map(() => "?").join(", ")})` : "";
       const stale = (
-        this.db.prepare(`SELECT key FROM archives WHERE last_seen_epoch < ?`).all(epoch) as unknown as Array<{
-          key: string;
-        }>
+        this.db
+          .prepare(`SELECT key FROM archives WHERE last_seen_epoch < ?${clause}`)
+          .all(epoch, ...held) as unknown as Array<{ key: string }>
       ).map((row) => row.key);
       for (const key of stale) this.clearRows(key);
       return stale;

@@ -274,7 +274,12 @@ There is no import step, no reindex button, and no startup migration. SQLite hol
    what stops a half-copied archive from flashing up as corrupt.
 5. Once settled, it verifies the manifest, containment, sizes, digests, limits, and the
    report's static-HTML rules, then replaces that archive's derived rows in one transaction.
-6. After a **complete** pass, archives the pass did not see are dropped from the index.
+6. After a **complete** pass, archives the pass did not see are dropped from the index. A
+   root the pass could not READ - an unmounted volume, a permission change - is skipped and
+   its archives are held back from that pruning rather than forgotten, because "I did not see
+   it" and "it is gone" are the same observation from a directory that cannot be opened. Every
+   other root still reconciles and still prunes. A root that is simply ABSENT is not a
+   failure: an absent library is an empty one, and its rows go.
 
 The watcher is a hint and the scan is the authority, because watchers drop events on network
 and synchronised directories - which is exactly where foreign bundles come from.

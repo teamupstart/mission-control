@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
@@ -150,6 +150,96 @@ test("a bundle only in the legacy root survives pruning driven by the write root
   await settleTwice(reconciler);
   assert.ok(store.get(legacy.key), "the legacy row is still there after a pass that indexed a new bundle");
   assert.equal(store.count(), 2);
+});
+
+test("a root that cannot be read holds back only its own rows, and prunes the rest", async () => {
+  // The failure an operator actually produces: the legacy root is a directory the daemon no
+  // longer writes to, and it can be unmounted, chmodded, or left on a network share that goes
+  // away. None of that is a reason for an archive DELETED from the live root to keep
+  // answering queries, which is what aborting the whole pass on the first bad root caused.
+  const writeRoot = newLibrary();
+  const legacyRoot = newLibrary();
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [writeRoot, legacyRoot],
+    store,
+    intervalMs: null,
+    watch: false,
+  });
+  after(() => reconciler.stop());
+
+  const legacy = writeScoutBundle(legacyRoot, { legacyFormat: true, title: "In the legacy root" });
+  const fresh = writeScoutBundle(writeRoot, { title: "In the write root" });
+  const doomed = writeScoutBundle(writeRoot, { title: "Deleted while the legacy root is broken" });
+  await settleTwice(reconciler);
+  assert.equal(store.count(), 3);
+
+  // The legacy root becomes unreadable in a way that is not "absent": EACCES rather than
+  // ENOENT, which is the case the old code treated as fatal to the whole pass.
+  chmodSync(legacyRoot, 0o000);
+  after(() => chmodSync(legacyRoot, 0o700));
+  rmSync(join(writeRoot, doomed.producerId), { recursive: true, force: true });
+
+  const pass = await reconciler.settle();
+  assert.ok(pass.failed, "the pass still reports that a root could not be read");
+  assert.equal(store.get(doomed.key), null, "the live root's deletion is still pruned");
+  assert.ok(store.get(fresh.key), "and its surviving archive is untouched");
+  assert.ok(
+    store.get(legacy.key),
+    "while the unreadable root's rows are held back - not seeing a bundle and it being gone are the same observation from a root that cannot be read",
+  );
+
+  // And it recovers by itself: once the root is readable again, its rows reconcile normally.
+  chmodSync(legacyRoot, 0o700);
+  const after1 = await reconciler.settle();
+  assert.equal(after1.failed, null);
+  assert.ok(store.get(legacy.key), "the legacy archive is still there once its root comes back");
+});
+
+test("a root that is absent still prunes its rows, because an absent library is an empty one", async () => {
+  // The neighbour case, pinned so the exemption above cannot quietly swallow it: ENOENT is
+  // not a fault, it is an answer, and the index must stop claiming archives that are gone.
+  const writeRoot = newLibrary();
+  const legacyRoot = newLibrary();
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [writeRoot, legacyRoot],
+    store,
+    intervalMs: null,
+    watch: false,
+  });
+  after(() => reconciler.stop());
+
+  const legacy = writeScoutBundle(legacyRoot, { legacyFormat: true });
+  await settleTwice(reconciler);
+  assert.ok(store.get(legacy.key));
+
+  rmSync(legacyRoot, { recursive: true, force: true });
+  const pass = await reconciler.settle();
+  assert.equal(pass.failed, null, "a root that is not there is not a failure");
+  assert.equal(store.get(legacy.key), null, "and its rows go");
+});
+
+test("the candidate ceiling bounds a whole pass, not each root separately", async () => {
+  // With a budget per root, two roots quietly doubled the documented ceiling. The budget is
+  // shared, so the number keeps describing what one pass costs.
+  const writeRoot = newLibrary();
+  const legacyRoot = newLibrary();
+  const store = new ArchiveStore(db);
+  const reconciler = new ArchiveReconciler({
+    roots: [writeRoot, legacyRoot],
+    store,
+    intervalMs: null,
+    watch: false,
+    maxCandidates: 3,
+  });
+  after(() => reconciler.stop());
+
+  for (let i = 0; i < 3; i += 1) writeScoutBundle(writeRoot, {});
+  for (let i = 0; i < 3; i += 1) writeScoutBundle(legacyRoot, { legacyFormat: true });
+
+  const pass = await reconciler.settle();
+  assert.equal(pass.scanned, 3, "the second root gets what the first left of the budget, which is nothing");
 });
 
 test("a new bundle is only indexed once two observations agree about it", async () => {

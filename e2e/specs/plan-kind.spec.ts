@@ -36,7 +36,12 @@ async function shoot(
   await page.setViewportSize(viewport);
   // Off every control first: `Tooltip` portals a bubble under a resting pointer.
   await page.mouse.move(0, 0);
-  await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
+  // `animations: "disabled"` finishes any transition in flight and freezes it at its end
+  // state. Without it a popover caught mid-fade is captured SEMI-TRANSPARENT, and the form
+  // behind it reads straight through the options - which looks like a rendering bug in the
+  // product rather than in the frame, and is exactly the wrong thing for a picture whose
+  // whole job is to show that the control draws correctly.
+  await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
   if (restore) await page.setViewportSize(restore);
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/plan-kind/${name}.png`);

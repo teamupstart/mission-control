@@ -35,7 +35,6 @@ import {
   fetchTaskSources,
 } from "../lib/api.ts";
 import {
-  readLastDispatchExtraRepos,
   readLastDispatchRepo,
   rememberDispatchRepo,
 } from "../lib/lastRepo.ts";
@@ -106,13 +105,10 @@ function freshDispatchDraft(): DispatchDraft {
   return {
     ...EMPTY_DISPATCH_DRAFT,
     repoRoot: readLastDispatchRepo(),
-    extraRepoRoots: readLastDispatchExtraRepos(),
+    // Secondary repos widen one task's worktree and write scope. They are never a default
+    // for the next task, even though the primary repo deliberately remains sticky.
+    extraRepoRoots: [],
   };
-}
-
-/** Two attached-repo lists holding the same roots in the same order. */
-function sameRepoList(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((root, i) => root === b[i]);
 }
 
 /**
@@ -164,9 +160,7 @@ type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
 function isEmptyDispatchDraft(d: DispatchDraft): boolean {
   return (
     d.repoRoot.trim() === readLastDispatchRepo() &&
-    // Seeded, like the primary, so a form carrying only what the last dispatch left
-    // behind still counts as untouched and Clear stays greyed out.
-    sameRepoList(d.extraRepoRoots, readLastDispatchExtraRepos()) &&
+    d.extraRepoRoots.length === 0 &&
     !d.intent.trim() &&
     !d.title.trim() &&
     !d.labels.trim() &&
@@ -1824,7 +1818,7 @@ function DispatchModal({
     // saving it is a visit to an old decision, not a statement about what to dispatch
     // next, and letting it move the seed would strand the next task in that repo.
     if (r.ok && !editing) {
-      rememberDispatchRepo(submitted.repoRoot.trim(), attachedRepoRoots(submitted));
+      rememberDispatchRepo(submitted.repoRoot.trim());
     }
     // Clear the draft and close only once the task row exists - the worktree and
     // terminal home are provisioned in the background after this reply, and any

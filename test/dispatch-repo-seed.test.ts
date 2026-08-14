@@ -33,7 +33,9 @@ const { readLastDispatchRepo, rememberDispatchRepo } = await import("../src/web/
 const { DispatchLayer } = await import("../src/web/components/DispatchModal.tsx");
 
 const KEY = "mission-control.dispatch.repo";
+const LEGACY_EXTRAS_KEY = "mission-control.dispatch.extraRepos";
 const REPO = "/Users/x/workspace/mission-control";
+const SECOND_REPO = "/Users/x/workspace/design-system";
 
 beforeEach(() => store.clear());
 
@@ -93,6 +95,15 @@ function clearDisabled(html: string): boolean {
 test("a fresh dispatch form opens on the last dispatched repo", () => {
   rememberDispatchRepo(REPO);
   assert.equal(repoValue(renderForm()), REPO);
+});
+
+test("a fresh dispatch ignores secondary repos remembered by an older build", () => {
+  rememberDispatchRepo(REPO);
+  store.set(LEGACY_EXTRAS_KEY, JSON.stringify([SECOND_REPO]));
+  const html = renderForm();
+  assert.equal(repoValue(html), REPO, "the primary convenience remains intact");
+  assert.doesNotMatch(html, new RegExp(`Detach repo: ${SECOND_REPO}`));
+  assert.ok(clearDisabled(html), "ignored legacy state is not fresh-draft input");
 });
 
 test("with nothing remembered the repo field opens empty", () => {

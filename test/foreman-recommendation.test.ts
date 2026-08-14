@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -140,6 +141,36 @@ test("a label buried inside a longer word is not Foreman naming that option", ()
   // The same short labels still match when the prose actually names one of them.
   assert.deepEqual([...recommendedChoiceKeys("Answer: No.", choices)], ["no"]);
   assert.deepEqual([...recommendedChoiceKeys('Choose "Go" and move on.', choices)], ["go"]);
+});
+
+test("a label that is a prefix of another marks only the option actually named", () => {
+  // These are mutually exclusive rows, so two marks would say Foreman picked two. Prose
+  // naming the longer option necessarily contains the shorter one, and the boundary after
+  // "merge now" is a space either way - so the boundary check alone cannot separate them.
+  const choices = [
+    { key: "now", label: "Merge now", number: 1 },
+    { key: "notify", label: "Merge now and notify the team", number: 2 },
+  ];
+  assert.deepEqual(
+    [...recommendedChoiceKeys("Merge now and notify the team is the safer choice.", choices)],
+    ["notify"],
+  );
+  // The shorter option still wins outright when it is the one the prose names.
+  assert.deepEqual([...recommendedChoiceKeys("Just merge now.", choices)], ["now"]);
+});
+
+test("the sidecar stops its own clicks reaching the card behind it", () => {
+  // A portal moves the DOM node but not the React tree, so a click inside the sidecar still
+  // bubbles to this component's JSX ancestors. PaneDialogPrompt renders it as a SIBLING of
+  // its guarded `.pane-dialog` section, so the caller's guard does not cover it, and the
+  // nearest real ancestor is the card's expand/collapse toggle: clicking Close on a
+  // collapsed card would expand the card underneath.
+  const source = readFileSync(
+    new URL("../src/web/components/ForemanRecommendation.tsx", import.meta.url),
+    "utf8",
+  );
+  const aside = source.slice(source.indexOf("<aside"), source.indexOf(">", source.indexOf("frs-head")));
+  assert.match(aside, /onClick=\{\(event\) => event\.stopPropagation\(\)\}/);
 });
 
 test("the console hides only this note's transcript turn while its ask is open", () => {

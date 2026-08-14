@@ -145,6 +145,13 @@ export function ForemanRecommendationSidecar({
       role="dialog"
       aria-modal="false"
       aria-label="Foreman recommendation"
+      // A portal moves the DOM node but not the React tree, so events still bubble to this
+      // component's JSX ancestors - and one of those is the card's expand/collapse toggle.
+      // `PaneDialogPrompt` renders this as a SIBLING of its own guarded `.pane-dialog`
+      // section, so the caller's guard does not cover it: clicking Close on a collapsed card
+      // would expand the card underneath. Guarded here rather than at the call sites so a
+      // future host cannot forget it.
+      onClick={(event) => event.stopPropagation()}
     >
       <header className="frs-head">
         <span className="fn-badge">Foreman</span>

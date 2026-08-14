@@ -139,11 +139,27 @@ export function recommendedChoiceKeys(
 ): ReadonlySet<string> {
   if (!recommendation?.trim()) return new Set();
   const prose = folded(recommendation);
-  const matched = new Set<string>();
+
+  // The text that actually matched, per choice, keeping the longest when a choice offers a
+  // hinted and unhinted spelling of itself.
+  const hits = new Map<string, string>();
   for (const choice of choices) {
-    if (labelsForMatch(choice.label).some((label) => namesLabel(prose, label))) {
-      matched.add(choice.key);
-    }
+    const [longest] = labelsForMatch(choice.label)
+      .filter((label) => namesLabel(prose, label))
+      .sort((a, b) => b.length - a.length);
+    if (longest) hits.set(choice.key, longest);
+  }
+
+  // One label being a prefix of another is enough to mark both: prose naming "Merge now and
+  // notify the team" contains "Merge now", and the boundary after it is a space either way.
+  // These are mutually exclusive rows, so marking both says Foreman picked two. The most
+  // specific label wins, which is the one whose text the prose could not have satisfied by
+  // accident.
+  const texts = [...hits.values()];
+  const matched = new Set<string>();
+  for (const [key, text] of hits) {
+    if (texts.some((other) => other.length > text.length && other.includes(text))) continue;
+    matched.add(key);
   }
   if (matched.size > 0) return matched;
 

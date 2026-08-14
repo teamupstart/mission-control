@@ -1,6 +1,8 @@
 import type {
+  EvidenceRef,
   PersonaVerdict,
   PublishedWorkflowGraph,
+  RequestedChange,
   WorkflowCheckOutcome,
   WorkflowCheckStatus,
   WorkflowContextSnapshot,
@@ -29,6 +31,7 @@ import {
 } from "@shared/workflow.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
+  PersonaVerdictSchema,
   SessionActionAttemptStateSchema,
   SessionActionCompletedOutputSchema,
   WorkflowCheckOutcomeSchema,
@@ -1332,6 +1335,385 @@ export function verdictMeta(
       : null,
     costUsd: priced ? mine.reduce((total, call) => total + (call.costUsd ?? 0), 0) : null,
   };
+}
+
+/**
+ * What makes two requested changes, raised in two different rounds, THE SAME CHANGE.
+ *
+ * The prior art is `src/server/inspector/marker.ts`, which fingerprints a pull-request
+ * finding over its file plus a normalized title and DELIBERATELY EXCLUDES THE LINE NUMBER.
+ * Its comment gives the reason and it holds here unchanged: a finding is anchored to a line,
+ * the next edit moves that line, and a location-sensitive identity re-raises every finding
+ * on every round - the single most obnoxious thing an automated reviewer can do.
+ *
+ * Two deliberate divergences from that module, stated here so they read as decisions rather
+ * than as drift:
+ *
+ * - IT LEADS WITH THE OWNING NODE. Exactly one Inspector authors findings on a pull request,
+ *   so file plus title cannot collide across authors there. A run has several Personas
+ *   reviewing at once, and two of them can object about one file in words that normalize
+ *   identically. Folded into one row, that row would carry a single `nodeId`: the losing
+ *   reviewer's evidence would vanish and its objection would become un-actionable, because
+ *   the worklist's per-row actions - disable this reviewer, give it feedback - act on that
+ *   node. A Persona's node id is stable across the rounds of one run, since the version is
+ *   immutable, so the node component costs cross-round matching nothing and only ever
+ *   prevents cross-reviewer merging.
+ * - IT IS NOT HASHED. `marker.ts` digests with `node:crypto`, which the browser bundle cannot
+ *   take, and a grouping key has no need to be a digest.
+ *
+ * The normalization is `marker.ts`'s with one ordering fix: the trim runs before the
+ * trailing-punctuation strip as well as after it, so a title ending `". "` loses the period
+ * rather than keeping it because a space stood in the way.
+ */
+export function requestedChangeKey(nodeId: string, change: RequestedChange): string {
+  const normalized = change.title
+    .toLowerCase()
+    .replace(/[`"'*_]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.,;:!?]+$/, "")
+    .trim();
+  return `${nodeId}\n${change.path ?? ""}\n${normalized}`;
+}
+
+/** The attempt that ends one round for one node, with its verdict already read. */
+interface FoldedAttempt {
+  attempt: WorkflowNodeAttempt;
+  /**
+   * Parsed ONCE, here, rather than at each of the questions asked of it below.
+   *
+   * Not an optimization for its own sake: every row's `changeState` interrogates every later
+   * round of its own node, so a ten-round run with a full worklist would otherwise re-parse
+   * the same verdicts thousands of times on every render of the reader pane.
+   */
+  verdict: PersonaVerdict | null;
+}
+
+/** The run folded to one entry per round per node, plus the anchor every window starts from. */
+interface FoldedRun {
+  /** Round -> node id -> the attempt that ENDS that round for the node. */
+  rounds: Map<number, Map<string, FoldedAttempt>>;
+  /**
+   * The latest submission's round, WHETHER OR NOT it has produced an attempt yet, or null on
+   * a run with no submissions. Same anchor as `repeat-offender.ts`'s `ordered[0].round`.
+   */
+  latestRound: number | null;
+}
+
+/**
+ * A REPAIR ROUND, not a submission - the same fold `src/server/workflows/repeat-offender.ts`
+ * performs, duplicated here on purpose and to the letter.
+ *
+ * A session action splits one round into several evidence segments, so walking submissions
+ * sees two rows of one round, decides the sequence broke, and reports a reviewer that has
+ * failed five rounds running as having failed one. That module's comment says it at length.
+ * The rows are folded to one entry per round first, keeping each node's newest attempt across
+ * that round's segments, ordered by `segment` then `attempt` exactly as it orders them - down
+ * to the guard that keeps a higher-numbered attempt from an earlier segment, so the two
+ * derivations cannot disagree about which answer ended a round.
+ *
+ * DUPLICATED RATHER THAN IMPORTED because that module is server-side - it reads
+ * `normalizePersonaVerdict`, which pulls in the model-JSON parser - and this one has to stay
+ * in the browser bundle. The duplication is the reason `test/workflow-change-worklist.test.ts`
+ * pins `runStalemates` against `repeatOffenders` output rather than against a hand-written
+ * expectation: changing the rule in one place has to fail in the other.
+ */
+function foldRun(detail: WorkflowRunDetail): FoldedRun {
+  const ordered = [...detail.submissions].sort((left, right) =>
+    right.round - left.round
+    || right.segment - left.segment
+    || right.createdAt - left.createdAt
+    || right.id.localeCompare(left.id));
+  const roundOf = new Map(ordered.map((submission) => [submission.id, submission.round]));
+  const segmentOf = new Map(ordered.map((submission) => [submission.id, submission.segment]));
+  const byRound = new Map<number, WorkflowNodeAttempt[]>();
+  for (const attempt of detail.attempts) {
+    const round = roundOf.get(attempt.submissionId);
+    if (round === undefined) continue;
+    byRound.set(round, [...(byRound.get(round) ?? []), attempt]);
+  }
+  const rounds = new Map<number, Map<string, FoldedAttempt>>();
+  for (const [round, roundAttempts] of byRound) {
+    const newest = new Map<string, WorkflowNodeAttempt>();
+    const sorted = [...roundAttempts].sort((left, right) =>
+      (segmentOf.get(left.submissionId) ?? 0) - (segmentOf.get(right.submissionId) ?? 0)
+      || left.attempt - right.attempt);
+    for (const attempt of sorted) {
+      const previous = newest.get(attempt.nodeId);
+      if (previous && previous.attempt > attempt.attempt) continue;
+      newest.set(attempt.nodeId, attempt);
+    }
+    rounds.set(round, new Map([...newest].map(([nodeId, attempt]) => [
+      nodeId,
+      { attempt, verdict: parsedVerdict(attempt) },
+    ])));
+  }
+  return { rounds, latestRound: ordered[0]?.round ?? null };
+}
+
+/**
+ * The last round a windowed derivation may look at.
+ *
+ * The default is the LATEST SUBMISSION'S ROUND, whether or not it has produced an attempt -
+ * `repeat-offender.ts` anchors on exactly that, and its `if (!latestAttempts) return []` is a
+ * BAIL-OUT rather than a fallback to an older round. Defaulting to "the newest round carrying
+ * attempts" would make this file report a stalemate for a round nobody is viewing at the one
+ * moment a new round has opened and Stage 1 has not run, while `detail.repeatOffenders` says
+ * nothing at all.
+ *
+ * A requested round above the run's own is clamped rather than emptied, so a stale scrubber
+ * selection behaves like `null` instead of blanking the section.
+ */
+function horizonRound(folded: FoldedRun, asOfRound: number | null): number | null {
+  if (folded.latestRound === null) return null;
+  return asOfRound === null ? folded.latestRound : Math.min(asOfRound, folded.latestRound);
+}
+
+/**
+ * A Persona verdict READ rather than cast, for the cross-round derivations only.
+ *
+ * `verdictOf` above stays an unchecked cast: it feeds per-round display, where an unreadable
+ * shape still has an attempt state to draw beside it. These functions walk every round of a
+ * run and reach into `requestedChanges[]`, so a row written by an older or newer daemon has to
+ * be skipped rather than take the page down - the posture `normalizePersonaVerdict` holds on
+ * the server. `PersonaVerdictSchema` is that same strict schema, minus the model-facing
+ * leniency a durable row has already been through on its way in.
+ */
+function parsedVerdict(attempt: WorkflowNodeAttempt): PersonaVerdict | null {
+  const parsed = PersonaVerdictSchema.safeParse(attempt.verdict);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * A PERSONA failure. `persona !== null` is not defensive noise, it is the filter.
+ *
+ * A failing Check writes a synthetic fail verdict carrying one requested change - "Fix the
+ * failing lint check", from `engine.ts`'s `checkVerdict` - and this model covers Persona
+ * changes only. A check belongs to the reader's own `checkOutcomeOf` path, which keeps the
+ * exit code and the output tail that a row keyed on a title could not carry.
+ * `repeat-offender.ts` excludes checks by the same test.
+ */
+function failedPersonaAttempt(folded: FoldedAttempt | undefined): boolean {
+  return folded?.attempt.persona != null && folded.verdict?.verdict === "fail";
+}
+
+/**
+ * What is known about a requested change that is no longer being raised.
+ *
+ * `open` and `resolved` are the obvious two. `unconfirmed` is the honest third: the owning
+ * reviewer ran again and did not pass, so the change was never confirmed fixed. It
+ * deliberately does NOT claim the finding was rephrased - a reviewer that stops raising A
+ * because A is fixed, while raising an unrelated C, is indistinguishable from one that
+ * reworded A into C, and title-based identity cannot separate them.
+ */
+export type ChangeWorklistState = "open" | "resolved" | "unconfirmed";
+
+/** One distinct requested change, as it stood at the end of the window's horizon round. */
+export interface ChangeWorklistRow {
+  /** `requestedChangeKey` - stable across renders, usable as a React key and as selection. */
+  key: string;
+  /** The newest wording, so a reviewer that sharpens a title shows the current sentence. */
+  title: string;
+  rationale: string;
+  path: string | null;
+  line: number | null;
+  evidence: EvidenceRef[];
+  /**
+   * The reviewer that raised it. Part of the key, so this is a fact rather than
+   * last-writer-wins, and NON-NULLABLE: a row is only ever accumulated from a Persona
+   * attempt's fail verdict, so a `| null` here would only buy Phase 2 a dead fallback string
+   * to render.
+   */
+  nodeId: string;
+  personaName: string;
+  confidence: number;
+  /** The first round inside the window that raised it. */
+  firstRound: number;
+  /** The last round inside the window that raised it. */
+  lastRound: number;
+  /**
+   * How many rounds RAISED it between `firstRound` and `lastRound` inclusive - a count of
+   * appearances, never a span, so it cannot claim a round its reviewer stayed silent in.
+   */
+  roundsOpen: number;
+  state: ChangeWorklistState;
+}
+
+/** Sort order: descending by how much the reader still has to care. */
+const CHANGE_STATE_ORDER: Record<ChangeWorklistState, number> = {
+  open: 0,
+  unconfirmed: 1,
+  resolved: 2,
+};
+
+/**
+ * Resolution decided PER OWNING PERSONA, never against a global round number.
+ *
+ * Stage 3 Personas do not finish together, so while a round is in flight one reviewer can
+ * have posted its fail before another has run at all. Comparing each change's last-seen round
+ * against the run's newest round would archive every change owned by a reviewer that has not
+ * re-attempted yet - not because the issue is gone but because nobody has looked, which is the
+ * question this worklist exists to answer, answered backwards.
+ *
+ * So a later ROUND is worth nothing; a later VERDICT FROM THIS NODE is everything. No later
+ * verdict at all means `open`, however many rounds have passed. Once the node has spoken
+ * again, a pass means `resolved` and never having passed means `unconfirmed`. This mirrors
+ * `repeat-offender.ts`'s posture of saying nothing about a node that did not run, rather than
+ * inventing a recovery for it.
+ *
+ * A node the operator disabled auto-passes, and that counts as a pass here exactly as it does
+ * on the ladder and in the repeat-offender streak: one synthetic verdict, read the same way by
+ * every surface.
+ */
+function changeState(
+  folded: FoldedRun,
+  inWindow: readonly number[],
+  row: { nodeId: string; lastRound: number },
+): ChangeWorklistState {
+  const later = inWindow
+    .filter((round) => round > row.lastRound)
+    .map((round) => folded.rounds.get(round)?.get(row.nodeId)?.verdict)
+    .filter((verdict): verdict is PersonaVerdict => verdict != null);
+  if (later.length === 0) return "open";
+  return later.some((verdict) => verdict.verdict === "pass") ? "resolved" : "unconfirmed";
+}
+
+/**
+ * One row per distinct requested change, as the run stood at the end of `asOfRound`.
+ *
+ * This is the derivation the Blocker Worklist is built on, and the only thing on this page
+ * that can say a change raised in round 1 is still the change being raised in round 10.
+ * Identity is `requestedChangeKey`; a round is `foldRun`'s round; resolution is `changeState`'s
+ * per-reviewer question. Each of those three carries its own comment, because each is a place
+ * a reasonable implementation goes wrong.
+ *
+ * `asOfRound` IS NOT OPTIONAL DECORATION. The rest of the reader pane is round-scoped - the
+ * verdict list is filtered to the scrubber's viewed submission - so a whole-run worklist beside
+ * it would put counts describing two different moments on one segmented control: scrub to
+ * round 3 and `Passed` follows you while `Blocking` stays on round 10. Null means the latest
+ * submission's round. Nothing here may read a round above the horizon: a row that knows the
+ * future is exactly the incoherence the parameter exists to prevent.
+ *
+ * The rows come back sorted for display - `open`, then `unconfirmed`, then `resolved`, then
+ * oldest grievance first - and the order is independent of map iteration.
+ *
+ * REQUESTED CHANGES ONLY. Check outcomes and passing reviewers are not rows here and never
+ * will be: they carry no requested change, and folding them in would turn a change model into
+ * a view model.
+ */
+export function runChangeWorklist(
+  detail: WorkflowRunDetail,
+  /** The round the reader is looking at. Null means the latest submission's round. */
+  asOfRound: number | null,
+): ChangeWorklistRow[] {
+  const folded = foldRun(detail);
+  const horizon = horizonRound(folded, asOfRound);
+  if (horizon === null) return [];
+  const inWindow = [...folded.rounds.keys()]
+    .filter((round) => round <= horizon)
+    .sort((left, right) => left - right);
+
+  const raised = new Map<string, Omit<ChangeWorklistRow, "roundsOpen" | "state"> & {
+    rounds: Set<number>;
+  }>();
+  for (const round of inWindow) {
+    for (const { attempt, verdict } of folded.rounds.get(round)?.values() ?? []) {
+      if (!attempt.persona) continue;
+      if (verdict?.verdict !== "fail") continue;
+      for (const change of verdict.requestedChanges) {
+        const key = requestedChangeKey(attempt.nodeId, change);
+        const previous = raised.get(key);
+        // Ascending rounds, so the newest occurrence overwrites the wording while the first
+        // round it was ever raised in is carried forward.
+        raised.set(key, {
+          key,
+          title: change.title,
+          rationale: change.rationale,
+          path: change.path ?? null,
+          line: change.line ?? null,
+          evidence: change.evidence,
+          nodeId: attempt.nodeId,
+          personaName: attempt.persona.name,
+          confidence: verdict.confidence,
+          firstRound: previous?.firstRound ?? round,
+          lastRound: round,
+          rounds: (previous?.rounds ?? new Set<number>()).add(round),
+        });
+      }
+    }
+  }
+
+  return [...raised.values()]
+    .map(({ rounds, ...row }): ChangeWorklistRow => ({
+      ...row,
+      roundsOpen: rounds.size,
+      state: changeState(folded, inWindow, row),
+    }))
+    .sort((left, right) =>
+      CHANGE_STATE_ORDER[left.state] - CHANGE_STATE_ORDER[right.state]
+      || left.firstRound - right.firstRound
+      || left.nodeId.localeCompare(right.nodeId)
+      || left.title.localeCompare(right.title)
+      || left.key.localeCompare(right.key));
+}
+
+export interface WorklistStalemate {
+  nodeId: string;
+  personaName: string;
+  /** Consecutive rounds this member failed, ending at the window's horizon. Always >= 2. */
+  rounds: number;
+}
+
+/**
+ * Consecutive Persona failures ending at the window's horizon - the windowed twin of
+ * `src/server/workflows/repeat-offender.ts`.
+ *
+ * WHY THIS EXISTS RATHER THAN RENDERING `detail.repeatOffenders`. That field is computed by
+ * the store over the run's whole submission list and anchored on its newest one, so it is
+ * always "as of the latest round" and this window cannot re-scope it. Drawn under a worklist
+ * scrubbed to round 4 of a ten-round run it would read "failed 10 rounds running" - a fact six
+ * rounds in the reader's future, on the one rail this design keeps insisting must not
+ * contradict itself. The payload field keeps serving the ladder and the alert engine, which
+ * genuinely do want the latest-anchored answer.
+ *
+ * Same rule as the server's, so the sentence this feeds means what the ladder's means:
+ * candidates are the nodes failing at the horizon, walk back while each keeps failing, keep
+ * those with `rounds >= 2`. INCLUDING THE BAIL-OUT - a horizon round carrying no folded
+ * attempts returns `[]` rather than stepping back to an older round. That has a visible
+ * consequence worth stating rather than discovering: when a new round opens, the stalemate
+ * card disappears until that round produces its first attempt, then comes back. The ladder
+ * already flickers exactly so, from the same anchor, and matching it is the point.
+ *
+ * At the default window the output equals `detail.repeatOffenders`, which the unit suite pins
+ * against the server derivation itself rather than assuming.
+ */
+export function runStalemates(
+  detail: WorkflowRunDetail,
+  /** The round the reader is looking at. Null means the latest submission's round. */
+  asOfRound: number | null,
+): WorklistStalemate[] {
+  const folded = foldRun(detail);
+  const horizon = horizonRound(folded, asOfRound);
+  if (horizon === null) return [];
+  const atHorizon = folded.rounds.get(horizon);
+  if (!atHorizon) return [];
+  return [...atHorizon.values()]
+    .filter(failedPersonaAttempt)
+    .map(({ attempt }) => attempt)
+    .sort((left, right) => left.nodeId.localeCompare(right.nodeId))
+    .flatMap((candidate): WorklistStalemate[] => {
+      let rounds = 0;
+      for (let round = horizon; round >= 1; round -= 1) {
+        if (!failedPersonaAttempt(folded.rounds.get(round)?.get(candidate.nodeId))) break;
+        rounds++;
+      }
+      if (rounds < 2) return [];
+      return [{
+        nodeId: candidate.nodeId,
+        personaName: candidate.persona!.name,
+        rounds,
+      }];
+    });
 }
 
 /**

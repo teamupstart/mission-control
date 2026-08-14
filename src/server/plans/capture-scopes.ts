@@ -68,7 +68,17 @@ export async function discoverPlanCaptureScopes(
   const unreadable: Array<{ slot: string; reason: string }> = [];
 
   for (const root of roots) {
-    if (!root.realRoot) continue;
+    if (!root.realRoot) {
+      // A slot with NO root at all is ordinary - a task that holds no checkout of its own has
+      // nothing here to capture, and saying so on every assigned task would be noise. A slot
+      // that names a root which no longer resolves is the other thing entirely: a checkout was
+      // recorded and cannot be read now, which is a plan that went unarchived for a reason an
+      // operator should be able to see.
+      if (root.root !== null) {
+        unreadable.push({ slot: root.slot, reason: "its checkout root could not be resolved" });
+      }
+      continue;
+    }
     const changed = await changedPathsSince(root.realRoot);
     if (!changed.ok) {
       unreadable.push({ slot: root.slot, reason: changed.reason });

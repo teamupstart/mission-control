@@ -148,14 +148,14 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
         detail: "the credential does not match this task's live session and checkout",
       };
     }
-    return { ok: true, subject: this.subject(task, session) };
+    return { ok: true, subject: this.subject(task, session, "scout") };
   }
 
   subjectForTask(taskId: string, kind: ArchiveKind): ArchiveSubject | null {
     const task = this.registry.getTask(taskId);
     if (!task || captureKindOf(task) !== kind) return null;
     const session = task.sessionId ? this.registry.getSession(task.sessionId) : undefined;
-    return this.subject(task, session ?? null);
+    return this.subject(task, session ?? null, kind);
   }
 
   subjectForExitingSession(session: Session): ArchiveSubjectForKind | null {
@@ -167,7 +167,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
     // Only work that was actually under way. A backlog task bound to nothing, and a task
     // already settled by hand, have no evidence an eviction could take with it.
     if (task.status !== "running" && task.status !== "dispatching") return null;
-    return { kind, subject: this.subject(task, session) };
+    return { kind, subject: this.subject(task, session, kind) };
   }
 
   captureKind(taskId: string): ArchiveKind | null {
@@ -188,7 +188,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
    * which episode this task's work belongs to, while the session's current one may already
    * have rotated onto whatever the agent did next.
    */
-  private subject(task: Task, session: Session | null): ArchiveSubject {
+  private subject(task: Task, session: Session | null, kind: ArchiveKind): ArchiveSubject {
     return {
       taskId: task.id,
       sessionId: session?.id ?? task.sessionId,
@@ -209,7 +209,19 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
           ARCHIVE_TEXT_LIMITS.label,
         ),
       },
-      repos: scoutRepoSlots(task, session?.cwd ?? null),
+      // The fallback checkout is the SESSION's, and only a scout may have it.
+      //
+      // An assigned task has no worktree of its own: it runs in the checkout the operator's
+      // own agent was already standing in. For a scout that is the right root to read, because
+      // a scout names the one file it wants and the daemon copies exactly that.
+      //
+      // A plan reads the checkout's DIFF to decide what to capture, which is only a statement
+      // about this task while the checkout belongs to this task alone. In a shared checkout it
+      // is a statement about everything anybody is doing there, so an ordinary Cancel or Remove
+      // would archive a colleague's in-progress plan under this task's name - precisely the
+      // unrelated-directory capture the diff-based selection exists to rule out. So a plan gets
+      // no fallback, its assigned form resolves to no checkout, and it is not archived.
+      repos: scoutRepoSlots(task, kind === "scout" ? (session?.cwd ?? null) : null),
     };
   }
 }

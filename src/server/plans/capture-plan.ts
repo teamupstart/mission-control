@@ -5,7 +5,7 @@ import {
   ARCHIVE_REPORT_DIR,
   type ArchiveManifestMissing,
 } from "@shared/archives.ts";
-import { PLAN_PAGE_FILENAME } from "@shared/plans.ts";
+import { PLAN_PAGE_FILENAME, PLAN_SOURCE_FILENAME } from "@shared/plans.ts";
 import type { ArchiveCaptureJob } from "../archives/capture-store.ts";
 import { isIgnored, resolveCheckoutFile } from "../archives/checkout.ts";
 import { validateStaticReportHtml } from "../archives/html.ts";
@@ -138,17 +138,29 @@ export async function planPlanCapture(
     });
   }
 
-  files.push(...captured.files);
-
-  const limits = limitProblems(files);
-  if (limits.length > 0) {
-    // Over a limit is a property of the directory, not a transient fault, so retrying the
-    // teardown would refuse for ever. The bundle records why it holds nothing instead.
-    return unavailable(pagePath, limits[0]!);
+  // Companions are admitted one at a time, keeping the page, rather than the whole directory
+  // being accepted or thrown away together.
+  //
+  // Crossing an aggregate limit is a fact about the COMPANIONS - a phased plan with a diagram
+  // and an export per phase can pass 256 files or 128 MiB - and the page itself is bounded
+  // separately and already under its own limit. Dropping everything on that would destroy the
+  // checkout and publish an empty bundle in place of a plan that was present, valid and
+  // readable, which is the exact loss this capture exists to prevent. Refusing instead would
+  // wedge the worktree over a directory nobody can trim once cleanup is the only thing left
+  // running. So the page is kept, as many companions as fit follow it, and every one that did
+  // not fit is named in `missing`.
+  const admitted = admitWithinLimits(files, prioritized(captured.files, scope.directory));
+  files.push(...admitted.files);
+  for (const dropped of admitted.dropped) {
+    missing.push({
+      kind: "report_companion",
+      expectedSource: dropped.originalPath,
+      reason: clipReason(`${dropped.reason}, so this file beside the plan was not archived`),
+    });
   }
 
   const hasPrimary = files.some((file) => file.role === "primary_report");
-  if (!hasPrimary && files.length === 0) {
+  if (files.length === 0) {
     return unavailable(pagePath, "the plan directory held no file that could be archived");
   }
   return {
@@ -157,6 +169,52 @@ export async function planPlanCapture(
     missing,
     captureStatus: hasPrimary && missing.length === 0 ? "complete" : "partial",
   };
+}
+
+/**
+ * The order companions are offered to the bundle in, most worth keeping first.
+ *
+ * Only matters when a directory does not fit, and then it matters a lot. The walk hands files
+ * over alphabetically, so a plan with a pile of `exhibit-*.md` beside it would fill the bundle
+ * with exhibits and drop `plan.md` on the letter it starts with - discarding the plan's SOURCE
+ * OF TRUTH, of which the page is only a rendering, to keep somebody's attachments. So the
+ * source goes first and everything else keeps the walk's order, which is stable, so the same
+ * directory always yields the same bundle.
+ */
+function prioritized(files: readonly PlannedFile[], directory: string): PlannedFile[] {
+  const source = `${directory}/${PLAN_SOURCE_FILENAME}`;
+  const first = files.filter((file) => file.originalPath === source);
+  return first.length === 0 ? [...files] : [...first, ...files.filter((file) => file.originalPath !== source)];
+}
+
+/**
+ * As many companions as the bundle's aggregate limits allow, and what had to be left out.
+ *
+ * Greedy in the walk's own order, which is alphabetical and therefore stable: the same
+ * directory yields the same bundle every time rather than one that depends on how the
+ * filesystem happened to enumerate. `limitProblems` stays the single authority on the limits -
+ * this asks it about the set it is building rather than re-deriving any threshold.
+ */
+function admitWithinLimits(
+  kept: readonly PlannedFile[],
+  candidates: readonly PlannedFile[],
+): { files: PlannedFile[]; dropped: Array<{ originalPath: string; reason: string }> } {
+  const files: PlannedFile[] = [];
+  const dropped: Array<{ originalPath: string; reason: string }> = [];
+  const running = [...kept];
+  for (const candidate of candidates) {
+    running.push(candidate);
+    const problems = limitProblems(running);
+    if (problems.length === 0) {
+      files.push(candidate);
+      continue;
+    }
+    // Put it back and keep going: a later, smaller companion can still fit where this one
+    // did not, and stopping at the first overflow would drop a whole tail over one big file.
+    running.pop();
+    dropped.push({ originalPath: candidate.originalPath, reason: problems[0]! });
+  }
+  return { files, dropped };
 }
 
 /**

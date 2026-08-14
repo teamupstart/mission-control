@@ -664,6 +664,92 @@ test("a checkout that vanished after a refusal publishes an honest partial, not 
   assert.equal(job!.captureStatus, "partial", "it says what it could not reach rather than claiming a plan");
 });
 
+test("an assigned plan task never diffs the operator's own checkout", async () => {
+  const h = harness();
+  // The operator's real, ongoing checkout - not a worktree cut for this task. Somebody else's
+  // plan is in flight in it, uncommitted, exactly as it would be mid-afternoon.
+  const { repoRoot, worktreePath: shared } = makeCheckout({
+    written: {
+      "docs/plans/somebody-elses-work/plan.md": "# Somebody else's work\n",
+      "docs/plans/somebody-elses-work/plan.html": planHtml("Somebody else's work"),
+    },
+  });
+  // Assigned, so the task owns NO worktree: it is running inside that shared session.
+  const task = mkPlan({ worktreePath: null, repoRoot, status: "running" });
+  const session = {
+    ...({} as Session),
+    id: `sess-${++seq}`,
+    agent: "claude",
+    runtime: "terminal",
+    origin: "operator",
+    name: "agent",
+    state: "idle",
+    cwd: shared,
+    repoRoot: shared,
+    instrumented: true,
+    pendingReviews: 0,
+    meta: null,
+  } as Session;
+  (h.registry as unknown as { sessions: Map<string, Session> }).sessions.set(session.id, session);
+  h.registry.upsertTask({ ...task, sessionId: session.id });
+
+  // An ordinary Cancel. A diff only speaks for one task while the tree is that task's alone,
+  // so a shared checkout must never be read - archiving from it would file a colleague's
+  // in-progress plan under this task's name.
+  const cancelled = await h.tasks.cancel(task.id);
+  assert.equal(cancelled.ok, true, cancelled.error);
+  assert.deepEqual(h.archives.captureJobsForTask(task.id), []);
+  assert.equal(
+    existsSync(join(shared, "docs/plans/somebody-elses-work/plan.html")),
+    true,
+    "the operator's checkout is untouched",
+  );
+});
+
+test("a directory too big for one bundle keeps its page and names what did not fit", async () => {
+  const h = harness();
+  // Past the 256-entry report limit. The page is far under its own 32 MiB limit and perfectly
+  // readable; it is the companions that overflow. Dropping the plan over that would destroy the
+  // checkout and publish an empty bundle in place of a plan that was right there.
+  const companions: Record<string, string> = {
+    "docs/plans/archive-rename/plan.md": "# The kind-agnostic archive\n",
+    "docs/plans/archive-rename/plan.html": planHtml("The kind-agnostic archive"),
+  };
+  for (let i = 0; i < 300; i++) {
+    companions[`docs/plans/archive-rename/exhibit-${String(i).padStart(3, "0")}.md`] = `# Exhibit ${i}\n`;
+  }
+  const { repoRoot, worktreePath } = makeCheckout({ committed: companions });
+  const task = mkPlan({ worktreePath, repoRoot, status: "done" });
+  h.registry.upsertTask(task);
+
+  const reclaimed = await h.tasks.reclaim(task.id);
+  assert.equal(reclaimed.ok, true, reclaimed.error);
+
+  const [job] = h.archives.captureJobsForTask(task.id);
+  assert.equal(job!.status, "published");
+  assert.equal(job!.captureStatus, "partial", "honest that it could not hold everything");
+
+  const dir = bundleDir(h, task.id)[0]!;
+  const paths = archivedPaths(dir);
+  // The plan itself survived, which is the whole point.
+  assert.equal(
+    readFileSync(join(dir, ARCHIVE_PRIMARY_REPORT_PATH), "utf8"),
+    planHtml("The kind-agnostic archive"),
+  );
+  assert.ok(paths.includes("report/plan.md"));
+  // Filled up to the limit rather than truncated to nothing, and what was left out is named.
+  const kept = paths.filter((path) => path.startsWith("report/")).length;
+  assert.equal(kept, 256, `expected the report directory filled to its limit, got ${kept}`);
+  const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+    missing: Array<{ expected_source: string; reason: string }>;
+  };
+  assert.ok(manifest.missing.length > 0, "the files that did not fit are named");
+  assert.ok(
+    manifest.missing.every((entry) => entry.expected_source.startsWith("docs/plans/archive-rename/")),
+    "every omission names a real file from the plan's own directory",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // The two server-derived answers everything above rests on
 // ---------------------------------------------------------------------------

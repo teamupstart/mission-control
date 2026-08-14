@@ -263,15 +263,30 @@ source branch, keeps the paths under `docs/plans/<name>/`, and archives those di
 no others. That answer is derived from the repository rather than from anything an agent said,
 so a plan task cannot aim capture at a file it did not write.
 
-Two consequences worth stating:
+It also means the checkout has to belong to this task alone. A diff is only a statement about
+one task's work while nothing else is happening in that tree, so a plan is captured **only from
+a worktree the task owns**. A plan task an operator assigned to their own running session has
+no worktree of its own, and is not archived: reading that shared checkout's diff would attribute
+whatever else was in progress there - including a colleague's half-written plan - to this task.
+Nothing reclaims that checkout either, so the plan stays where its author left it.
+
+Three consequences worth stating:
 
 - **A task that touched two plan directories produces two archives**, one per plan, never one
   merged bundle. A bundle has exactly one page at its centre, and merging would make one plan's
   page the front of another plan's files.
+- **A directory too big for a bundle is trimmed, not dropped.** The plan's page is kept and as
+  many of its companions as the archive limits allow follow it; every file that did not fit is
+  named in the manifest's missing list. Losing a readable plan because the diagrams beside it
+  crossed a size limit would be the exact failure this capture exists to prevent.
 - **A checkout that cannot answer the question contributes nothing.** If git cannot report what
-  changed, no archive is written for that checkout and the cleanup proceeds. Guessing would
-  mean archiving a stranger's plan, and unlike a scout's report a plan's own files are
-  committed and reach its pull request regardless.
+  changed, no archive is written for that checkout and the cleanup proceeds. Guessing would mean
+  archiving a stranger's plan, which is worse than a missing archive.
+
+  What that costs depends on how far the task got. A plan that reached its ordinary finish is
+  committed and on its way to a pull request, so the archive was the convenience and not the
+  copy. A plan **cancelled before it committed anything** has neither, and in that one case an
+  unreadable checkout does lose it. The trade is deliberate and it is not free.
 
 ### Nothing to archive is a normal ending
 

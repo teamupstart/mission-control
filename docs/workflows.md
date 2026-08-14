@@ -97,15 +97,17 @@ one immediately.
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
 
-They are **app data, not your data**, and the Personas tab marks each one `Built-in`. Each
+They are **app data, not your data**, and the Persona rail groups them under `Built-in`, apart
+from the ones you wrote. Each
 carries exactly the guidance the build was made from. An upgrade that improves a role updates
 the current catalog, so drafts and newly published versions use the new guidance. Existing
 published versions keep the guidance they were published with and history marks them
 outdated. Adopting the changed guidance requires publishing a new version. Opening a
-built-in shows it read-only: Save is disabled, Archive is absent, and there is a line saying
-why. **Duplicate** is the way to a version you own - the copy is an ordinary Persona with
-its own name, editable, archivable, and never touched by an upgrade. Their guidance is still
-exactly as visible as any other: Copy Markdown, Download .md and the preview all work.
+built-in shows it read-only: there is no Save to press, Archive is absent, and there is a line
+saying why. **Duplicate to edit** is the promoted verb and the way to a version you own - the
+copy is an ordinary Persona with its own name, editable, archivable, and never touched by an
+upgrade. Their guidance is still exactly as visible as any other: Copy Markdown, Download .md
+and the preview all work, from the header's `⋯` menu.
 
 Because they always exist, their names are reserved: creating or renaming a Persona to
 `Code Risk Reviewer` is refused the way any duplicate name is. The one exception is

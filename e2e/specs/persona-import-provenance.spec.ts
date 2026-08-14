@@ -117,11 +117,14 @@ test("a Markdown role imported by path records where it came from, badges upstre
     .toBeVisible();
   await shoot(dashboard, "upstream-changed");
 
-  // Adopting it is a deliberate act with a confirmation that states the invariant. One button,
-  // in the header beside Save and Archive - the status line above names it rather than
-  // duplicating it.
-  await expect(dashboard.getByRole("button", { name: "Re-import from source" })).toHaveCount(1);
-  await dashboard.getByRole("button", { name: "Re-import from source" }).click();
+  // Adopting it is a deliberate act with a confirmation that states the invariant. Still
+  // exactly ONE button - the status line above names the action rather than duplicating it -
+  // and it now sits in the header's overflow menu, where the Rail rebuild put every verb it
+  // does not promote. Same accessible name and same behaviour, one click further in, and a
+  // `menuitem` rather than a `button` because that is what it now is.
+  await dashboard.getByRole("button", { name: "More Persona actions" }).click();
+  await expect(dashboard.getByRole("menuitem", { name: "Re-import from source" })).toHaveCount(1);
+  await dashboard.getByRole("menuitem", { name: "Re-import from source" }).click();
   const confirm = dashboard.getByRole("dialog", { name: "Re-import Claw Reviewer" });
   await expect(confirm).toContainText("keeps the guidance it was published with");
   await confirm.getByRole("button", { name: "Re-import guidance" }).click();

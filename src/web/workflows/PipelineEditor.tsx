@@ -43,6 +43,7 @@ import {
 } from "./pipeline-bits.tsx";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { personaRoutingLabel } from "../library/library-model.ts";
 
 /**
  * Authoring a workflow as stages of Persona reviewers and deterministic Checks.
@@ -1026,7 +1027,7 @@ export function PipelineEditor({
                     const meta = member.kind === "check"
                       ? "Deterministic gate · passes when no command is configured here"
                       : persona
-                        ? `${persona.execution.runner.id} · ${persona.execution.model.id}${persona.archivedAt === null ? "" : " · archived"}`
+                        ? `${personaRoutingLabel(persona)}${persona.archivedAt === null ? "" : " · archived"}`
                         : "This Persona no longer exists";
                     return (
                       <ReviewerRow

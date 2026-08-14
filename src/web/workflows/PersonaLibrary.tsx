@@ -9,6 +9,8 @@ import type {
 import { PersonaEditor } from "./PersonaEditor.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
+import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
+import { personaRoutingLabel } from "../library/library-model.ts";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
 import {
@@ -74,6 +76,28 @@ export function catalogTag(
 ): string | null {
   if (persona.builtin) return null;
   return persona.provenance?.catalogLabel ?? null;
+}
+
+/**
+ * The rail's two groups: what shipped with the build, and what the operator wrote.
+ *
+ * The fault it fixes: a flat list made the four Personas Mission Control ships read as
+ * things you had written and forgotten, and the only sign otherwise was a small tag on each
+ * row. Grouping states it once, at the head, where it also answers the question the tag
+ * never could - "have I written any of these yet?".
+ *
+ * Order inside each group is whatever order arrived, which is `normalizedName` from the
+ * caller. It deliberately does NOT re-sort or re-resolve: `personasForDisplay` has already
+ * decided which of a shadowed pair survives, and a second opinion here would be a second
+ * source of truth about that (`test/builtin-personas-web.test.ts` pins the first).
+ */
+export function groupPersonas(
+  listed: readonly PersonaView[],
+): { builtin: PersonaView[]; yours: PersonaView[] } {
+  return {
+    builtin: listed.filter((persona) => persona.builtin),
+    yours: listed.filter((persona) => !persona.builtin),
+  };
 }
 
 export function filterPersonas(
@@ -166,6 +190,19 @@ export function PersonaLibrary({
     () => filterPersonas(ordered, personaState, search),
     [ordered, personaState, search],
   );
+  const groups = useMemo(() => groupPersonas(listed), [listed]);
+  const archivedCount = useMemo(
+    () => ordered.filter((persona) => persona.archivedAt !== null).length,
+    [ordered],
+  );
+  /*
+   * "Nothing yet" is said only where it is true AND useful. Under a search it would be a
+   * lie about the library rather than a fact about the filter, and with nothing listed at
+   * all the single empty line below already says it in the right words for the state.
+   */
+  const yoursIsEmptyAndSaidSo = listed.length > 0
+    && groups.yours.length === 0
+    && search.trim().length === 0;
   const streamedPersona = ordered.find((persona) => persona.id === selectedId) ?? null;
   // The route response can beat its SSE event. Keep the acknowledged revision visible until
   // the stream catches up, especially for archive where falling back would briefly re-enable edits.
@@ -244,6 +281,47 @@ export function PersonaLibrary({
       setDirty(false);
       setError(null);
     });
+  }
+
+  /**
+   * One rail row.
+   *
+   * No `Built-in` tag any more: the group head above it says so once, for four rows at a
+   * time, and repeating it on each was the flat list apologising for being flat. The drift
+   * tag stays, because nothing else on the row implies it and it is the one fact here that
+   * is waiting on the operator.
+   */
+  function personaRow(persona: PersonaView): React.JSX.Element {
+    const drift = driftTag(upstream?.get(persona.id));
+    const catalog = catalogTag(persona);
+    return (
+      <LibraryRailRow
+        key={persona.id}
+        className="persona-list-item"
+        name={persona.name}
+        // What actually tells two reviewers apart. The description used to sit here and, on
+        // the shipped four, it is the title again in a longer sentence.
+        detail={personaRoutingLabel(persona)}
+        /*
+         * Two tags, and they are different KINDS of fact, which is why one is quiet and one
+         * is toned. The catalog says which plugin supplied this reviewer - provenance, like
+         * the `Built-in` head above it, and never a thing to act on. Drift says the file it
+         * came from has moved on, which is a decision waiting for the operator.
+         *
+         * The `Built-in` tag itself is gone: the group head says it once for four rows. A
+         * supplied Persona is still editable, so its tag gates nothing.
+         */
+        tags={[
+          ...(catalog ? [{ label: catalog } as const] : []),
+          ...(drift ? [{ label: drift, tone: "attention" } as const] : []),
+        ]}
+        selected={selectedId === persona.id}
+        tooltip={persona.builtin
+          ? `Open the built-in ${persona.name} - read-only, Duplicate to customize`
+          : `Open ${persona.name} in the editor`}
+        onSelect={() => select(persona.id)}
+      />
+    );
   }
 
   function start(seedValue: PersonaDraftSeed): void {
@@ -344,68 +422,6 @@ export function PersonaLibrary({
             <button className="btn" onClick={() => start(EMPTY_SEED)}>New</button>
           </Tooltip>
         </div>
-        <div className="persona-import-row">
-          <Tooltip label="Create a Persona from a markdown file on disk">
-            <button className="btn btn-ghost" onClick={() => importRef.current?.click()}>Import .md</button>
-          </Tooltip>
-          <label>
-            State
-            <Tooltip label="Choose whether to browse active or archived Personas">
-              <select
-                value={personaState}
-                onChange={(event) => setPersonaState(event.target.value as "active" | "archived")}
-              >
-                <option value="active">Active</option>
-                <option value="archived">Archived</option>
-              </select>
-            </Tooltip>
-          </label>
-          <input
-            ref={importRef}
-            className="persona-file-input"
-            type="file"
-            accept=".md,text/markdown,text/plain"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.currentTarget.value = "";
-              if (file) importMarkdown(file);
-            }}
-          />
-        </div>
-        {/* Importing BY PATH, which is a different thing from the file picker above and not a
-            second way to do it: the daemon reads the file, so the Persona remembers where its
-            guidance came from and can be told when that file changes. */}
-        <div className="persona-import-source">
-          <label className="persona-import-path">
-            <span className="sr-only">Absolute path of a Markdown file on this machine</span>
-            <input
-              type="text"
-              value={importPath}
-              spellCheck={false}
-              placeholder="/path/to/role.md"
-              onChange={(event) => setImportPath(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") return;
-                event.preventDefault();
-                guardDiscard(`Importing ${importPath.trim()}`, () => void importFromPath());
-              }}
-            />
-          </label>
-          <Tooltip label="Import a Markdown role the daemon can read, recording where it came from">
-            <button
-              className="btn btn-ghost"
-              disabled={importing || importPath.trim().length === 0}
-              onClick={() => guardDiscard(`Importing ${importPath.trim()}`, () => void importFromPath())}
-            >
-              {importing ? "Importing…" : "Import from path"}
-            </button>
-          </Tooltip>
-          <Tooltip label="Re-read every imported Persona's source file and update its badge">
-            <button className="btn btn-ghost" onClick={() => onCheckUpstream?.()}>
-              Check upstream
-            </button>
-          </Tooltip>
-        </div>
         <label className="persona-search">
           <span className="sr-only">Search Personas by name or description</span>
           <input
@@ -425,41 +441,91 @@ export function PersonaLibrary({
                   : "No saved Personas yet."}
             </p>
           )}
-          {listed.map((persona) => {
-            const drift = driftTag(upstream?.get(persona.id));
-            return (
-              <Tooltip
-                key={persona.id}
-                label={persona.builtin
-                  ? `Open the built-in ${persona.name} - read-only, Duplicate to customize`
-                  : `Open ${persona.name} in the editor`}
+          {groups.builtin.length > 0 && (
+            <LibraryRailGroup label="Built-in" count={groups.builtin.length}>
+              {groups.builtin.map(personaRow)}
+            </LibraryRailGroup>
+          )}
+          {(groups.yours.length > 0 || yoursIsEmptyAndSaidSo) && (
+            <LibraryRailGroup label="Yours" count={groups.yours.length}>
+              {groups.yours.map(personaRow)}
+              {yoursIsEmptyAndSaidSo && (
+                <p className="lib-rail-group-empty">
+                  Nothing yet. Duplicate a built-in to start from its standards, or import a
+                  {" "}<code>.md</code>.
+                </p>
+              )}
+            </LibraryRailGroup>
+          )}
+        </div>
+        {/* Import and the archived filter live BELOW the list, not between the heading and it.
+            Above, they were three rows of controls an operator crossed on the way to the thing
+            they came for, and one of them - importing by path - is the rarest action on the
+            screen. */}
+        <div className="persona-rail-foot">
+          <div className="persona-rail-foot-row">
+            <Tooltip label="Create a Persona from a markdown file on disk">
+              <button className="btn btn-ghost" onClick={() => importRef.current?.click()}>Import .md</button>
+            </Tooltip>
+            <Tooltip
+              label={personaState === "archived"
+                ? "Back to the active Personas"
+                : "Browse the Personas you have archived"}
+            >
+              <button
+                className={`btn btn-ghost persona-archived-toggle${personaState === "archived" ? " on" : ""}`}
+                aria-pressed={personaState === "archived"}
+                onClick={() => setPersonaState((state) => (state === "archived" ? "active" : "archived"))}
               >
-                <button
-                  className={`persona-list-item${selectedId === persona.id ? " active" : ""}`}
-                  onClick={() => select(persona.id)}
-                >
-                  <span className="persona-list-name">
-                    <span>{persona.name}</span>
-                    {persona.builtin && <em className="persona-list-tag">Built-in</em>}
-                    {/* The catalog that supplied this reviewer, in the same muted tag as
-                        `Built-in` and for the same reason: both answer "where did this come from
-                        and may I edit it", and neither is a thing to act on. The label is
-                        rendered verbatim from provenance - this component knows that catalogs
-                        have names, never which. A supplied Persona IS editable, unlike a
-                        built-in, so the tag stays informational and gates nothing. */}
-                    {catalogTag(persona) && (
-                      <em className="persona-list-tag">{catalogTag(persona)}</em>
-                    )}
-                    {/* Provenance beside provenance: `Built-in` says this came with the app, this
-                        says the file it came from has moved on. Toned rather than muted, because
-                        unlike `Built-in` it is something to act on. */}
-                    {drift && <em className="persona-list-tag is-attention">{drift}</em>}
-                  </span>
-                  <small>{persona.archivedAt === null ? persona.description || "No description" : "Archived"}</small>
-                </button>
-              </Tooltip>
-            );
-          })}
+                Archived <span className="persona-archived-count mono">{archivedCount}</span>
+              </button>
+            </Tooltip>
+            <input
+              ref={importRef}
+              className="persona-file-input"
+              type="file"
+              accept=".md,text/markdown,text/plain"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.currentTarget.value = "";
+                if (file) importMarkdown(file);
+              }}
+            />
+          </div>
+          {/* Importing BY PATH, which is a different thing from the file picker above and not a
+              second way to do it: the daemon reads the file, so the Persona remembers where its
+              guidance came from and can be told when that file changes. */}
+          <div className="persona-import-source">
+            <label className="persona-import-path">
+              <span className="sr-only">Absolute path of a Markdown file on this machine</span>
+              <input
+                type="text"
+                value={importPath}
+                spellCheck={false}
+                placeholder="/path/to/role.md"
+                onChange={(event) => setImportPath(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  guardDiscard(`Importing ${importPath.trim()}`, () => void importFromPath());
+                }}
+              />
+            </label>
+            <Tooltip label="Import a Markdown role the daemon can read, recording where it came from">
+              <button
+                className="btn btn-ghost"
+                disabled={importing || importPath.trim().length === 0}
+                onClick={() => guardDiscard(`Importing ${importPath.trim()}`, () => void importFromPath())}
+              >
+                {importing ? "Importing…" : "Import from path"}
+              </button>
+            </Tooltip>
+            <Tooltip label="Re-read every imported Persona's source file and update its badge">
+              <button className="btn btn-ghost" onClick={() => onCheckUpstream?.()}>
+                Check upstream
+              </button>
+            </Tooltip>
+          </div>
         </div>
       </aside>
 

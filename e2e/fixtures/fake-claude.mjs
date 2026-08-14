@@ -48,6 +48,17 @@ function argvValue(flag) {
 const MODEL = argvValue("--model") ?? "claude-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const HELD_TURN_MS = 5_000;
+/**
+ * Keep turn one open for specs that inject a lifecycle event from INSIDE that turn.
+ *
+ * A real Claude permission prompt blocks the turn that raised it: the Notification hook
+ * arrives while that turn is live, and its `result` cannot arrive until the prompt is
+ * answered. The ordinary fake answers turn one immediately. Under full-suite contention
+ * its result could be emitted before a spec posted the hook but consumed afterwards, which
+ * manufactured an impossible `awaiting_input -> idle` transition. This opt-in preserves the
+ * real ordering without slowing every dispatch in the suite.
+ */
+const HOLD_FIRST_TURN = process.env.MC_E2E_HOLD_FIRST_TURN === "1";
 const SLOW_STOP = "E2E_SLOW_SESSION_STOP";
 const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
@@ -771,6 +782,15 @@ rl.on("line", (line) => {
     // completion per message and never notice the reservation it was owed for ever.
     if (openTurn) {
       openTurn.prompts.push(prompt);
+      return;
+    }
+
+    // A fixture-owned permission wait: keep the SAME first turn alive until teardown, so a
+    // hook a spec posts for it cannot be followed by a stale result from before the hook.
+    // No timer on purpose. A real permission prompt also has no time-based completion; only
+    // an answer ends it, and this fixture's test is about the still-unanswered state.
+    if (HOLD_FIRST_TURN && results === 0) {
+      openTurn = { prompts: [prompt] };
       return;
     }
 

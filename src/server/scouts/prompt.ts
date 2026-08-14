@@ -5,7 +5,6 @@ import {
 } from "@shared/scouts.ts";
 import type { Task } from "@shared/types.ts";
 import type { ArchiveRepoSlot } from "../archives/capture-store.ts";
-import { scoutRepoSlots } from "./repos.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./submission-tool.ts";
 
 /**
@@ -21,7 +20,8 @@ import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./submission-tool.ts";
  * It is an APPENDIX, after the operator's intent, deliberately. The agent's first job is the
  * question it was asked; this says what "delivered" means for a scout. Nothing here clamps or
  * rewrites the intent - a scout that could not read its own request intact would fail at
- * something more important than its file layout.
+ * something more important than its file layout. `../task-contract.ts` is what appends it, for
+ * every kind that has one, at both delivery seams.
  *
  * Kept aligned with the skill by `test/scout-prompt.test.ts`, which reads both files: the
  * required path, the self-contained static rule, answer-first structure, the citation rule,
@@ -40,24 +40,6 @@ export const SCOUT_APPENDIX_MARKER = "--- Mission Control scout ---";
  */
 export function isScoutTask(task: Pick<Task, "kind">): boolean {
   return task.kind === "scout";
-}
-
-/**
- * The intent a scout is actually delivered: the composed intent, then the contract.
- *
- * `composedIntent` is whatever the caller has already built - the repo manifest prefix on a
- * multi-repo dispatch, the repository-memory pointer on Pi, the raw intent on an assignment.
- * Composing here rather than in each caller is what makes the ordering deterministic: the
- * prefixes are context the agent needs BEFORE the request, and this is the contract it needs
- * after it.
- */
-export function withScoutReportContract(
-  task: Task,
-  composedIntent: string,
-  fallbackRoot: string | null = null,
-): string {
-  if (!isScoutTask(task)) return composedIntent;
-  return `${composedIntent}\n\n${scoutReportAppendix(scoutRepoSlots(task, fallbackRoot))}`;
 }
 
 /**

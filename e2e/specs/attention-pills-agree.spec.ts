@@ -31,6 +31,13 @@ const TASK = "check the linter config";
 
 const EVIDENCE = artifactsDir("attention-pills-agree");
 
+// The fake normally answers a dispatch's opening turn immediately. A real permission prompt
+// parks that SAME turn and cannot emit its `result` until the operator answers. Pinning turn
+// one open makes the synthetic Notification below obey that ordering: without it, contention
+// could delay consumption of the already-emitted result until after the hook, manufacturing
+// an impossible `awaiting_input -> idle` transition and taking both amber segments away.
+test.use({ daemonEnv: { MC_E2E_HOLD_FIRST_TURN: "1" } });
+
 /**
  * Photograph a state this spec has already asserted on.
  *

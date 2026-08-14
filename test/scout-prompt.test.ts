@@ -6,14 +6,14 @@ import {
   SCOUT_REPORT_PATH_SHAPE,
   SCOUT_REPORT_ROOT,
 } from "../src/shared/scouts.ts";
-import { MISSION_MCP_TOOLS, scoutMissionMcpRequirement } from "../src/server/mission-mcp.ts";
+import { MISSION_MCP_TOOLS, kindMissionMcpRequirement } from "../src/server/mission-mcp.ts";
 import {
   SCOUT_APPENDIX_MARKER,
   isScoutTask,
   scoutReportAppendix,
-  withScoutReportContract,
 } from "../src/server/scouts/prompt.ts";
 import { scoutRepoSlots } from "../src/server/scouts/repos.ts";
+import { withTaskKindContract } from "../src/server/task-contract.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../src/server/scouts/submission-tool.ts";
 import { SubmitScoutArtifactsSchema } from "../src/shared/protocol.ts";
 import type { Task } from "../src/shared/types.ts";
@@ -80,7 +80,7 @@ function mkTask(overrides: Partial<Task> = {}): Task {
 
 test("a scout's intent arrives intact, with the contract appended after it", () => {
   const task = mkTask();
-  const delivered = withScoutReportContract(task, task.intent);
+  const delivered = withTaskKindContract(task, task.intent);
   assert.ok(delivered.startsWith(task.intent), "the operator's request is read first, unmodified");
   const marker = delivered.indexOf(SCOUT_APPENDIX_MARKER);
   assert.ok(marker > task.intent.length - 1, "and the contract follows it");
@@ -88,7 +88,7 @@ test("a scout's intent arrives intact, with the contract appended after it", () 
 
 test("a ship task's intent is byte-identical to what it was", () => {
   const task = mkTask({ kind: "ship" });
-  assert.equal(withScoutReportContract(task, task.intent), task.intent);
+  assert.equal(withTaskKindContract(task, task.intent), task.intent);
   assert.equal(isScoutTask(task), false);
 });
 
@@ -198,23 +198,23 @@ test("every scout launch requires the tool its prompt names", () => {
     ([...MISSION_MCP_TOOLS] as string[]).includes(SUBMIT_SCOUT_ARTIFACTS_TOOL),
     "a caller can require it",
   );
-  const required = scoutMissionMcpRequirement(mkTask(), null);
+  const required = kindMissionMcpRequirement(mkTask(), null);
   assert.deepEqual(required, { tools: [SUBMIT_SCOUT_ARTIFACTS_TOOL] });
 });
 
 test("a scout's requirement is unioned with the caller's rather than replacing it", () => {
-  const required = scoutMissionMcpRequirement(mkTask(), { tools: ["report_status"] });
+  const required = kindMissionMcpRequirement(mkTask(), { tools: ["report_status"] });
   assert.deepEqual([...(required?.tools ?? [])].sort(), ["report_status", SUBMIT_SCOUT_ARTIFACTS_TOOL].sort());
   // And a repeat is idempotent - a set, not a list.
-  const again = scoutMissionMcpRequirement(mkTask(), required);
+  const again = kindMissionMcpRequirement(mkTask(), required);
   assert.equal(again?.tools.length, 2);
 });
 
 test("a ship task's requirement is returned untouched, null included", () => {
   const ship = mkTask({ kind: "ship" });
-  assert.equal(scoutMissionMcpRequirement(ship, null), null, "an unchanged dispatch stays unchanged");
+  assert.equal(kindMissionMcpRequirement(ship, null), null, "an unchanged dispatch stays unchanged");
   const existing = { tools: ["submit_ensemble_result"] } as const;
-  assert.equal(scoutMissionMcpRequirement(ship, existing), existing, "the same object, not a copy");
+  assert.equal(kindMissionMcpRequirement(ship, existing), existing, "the same object, not a copy");
 });
 
 test("the bundled MCP server registers the tool under the exact name the prompt uses", () => {
@@ -249,9 +249,11 @@ test("the scout submission body cannot select a session or checkout", () => {
 
 test("both delivery seams compose the contract, not just the dispatcher", () => {
   // A dispatcher-only helper would leave every backlog scout assigned to a live agent with no
-  // idea it owed an HTML page - the exact gap this pins.
-  assert.match(src("src/server/dispatcher.ts"), /withScoutReportContract\(/);
-  assert.match(src("src/server/tasks.ts"), /withScoutReportContract\(/);
+  // idea it owed an HTML page - the exact gap this pins. One symbol, because the composer is
+  // kind-dispatched now: a second helper beside it is how the two seams start disagreeing
+  // about the order the contract is appended in.
+  assert.match(src("src/server/dispatcher.ts"), /withTaskKindContract\(/);
+  assert.match(src("src/server/tasks.ts"), /withTaskKindContract\(/);
 });
 
 function escape(value: string): string {

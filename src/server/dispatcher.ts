@@ -37,12 +37,14 @@ import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from ".
 import type { Registry } from "./registry.ts";
 import { resetWorktreeToCommit, verifyHeadIs } from "./git/ensemble-snapshot.ts";
 import {
+  kindMissionMcpRequirement,
   missionMcpDescriptor,
-  scoutMissionMcpRequirement,
   verifyMissionMcpTools,
   type MissionMcpRequirement,
 } from "./mission-mcp.ts";
-import { withScoutReportContract } from "./scouts/prompt.ts";
+import { isPlanTask } from "./plans/prompt.ts";
+import { planSkillsForAgent } from "./plans/skills.ts";
+import { withTaskKindContract } from "./task-contract.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { withRepoMemoryPointer } from "./memory.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
@@ -153,6 +155,13 @@ export class Dispatcher {
       verifyMissionMcpTools?: typeof verifyMissionMcpTools;
       /** Publish the checkout-scoped scout bearer before its agent starts. */
       provisionScoutCredential?: typeof provisionScoutSubmissionCredential;
+      /**
+       * Which planning-skill invocations a plan task's contract may name.
+       *
+       * A seam only so a test can drive the refusal, and the launch-time resolver by
+       * construction: this launch's conversation does not exist yet.
+       */
+      planSkills?: typeof planSkillsForAgent;
       resolveRuntime?: typeof resolveDispatchRuntime;
     } = {},
   ) {}
@@ -190,6 +199,27 @@ export class Dispatcher {
       // pinned-base check above. Reading a toggle flipped mid-batch still reaches the next
       // session rather than the next restart, which is all the later position bought.
       const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
+
+      // A plan task's contract POINTS AT the two planning skills rather than restating them,
+      // so their invocations have to be resolved before it can be composed - and a launch that
+      // cannot resolve them cannot honour the contract at all. Resolved HERE, in front of the
+      // worktree, for the same reason the pinned base above is: a refusal at this line costs
+      // an error, and a refusal after provisioning costs a worktree, a terminal home and an
+      // agent that has to be torn down again.
+      //
+      // Throwing is how this reports: `dispatch` never throws OUT, it lands the task in
+      // `failed` with the reason on its card, which is the honest place for a refusal that
+      // reached the launch. The doors an operator dispatches through refuse earlier and
+      // synchronously (`planDispatchBlock`), so this is the backstop for a schedule, a task
+      // source, and the window in which a toggle is flipped while a title is being derived.
+      //
+      // `skillInvocationForAgent`, never the watermark-aware resolver: the conversation this
+      // is resolving for does not exist yet and will start after the current skill generation
+      // by construction. See `skills/invoke.ts`.
+      const planSkills = isPlanTask(task)
+        ? (this.deps.planSkills ?? planSkillsForAgent)(task.agent)
+        : null;
+      if (planSkills && !planSkills.ok) throw new Error(planSkills.message);
       // `multiRepoDispatch`, enforced ONCE here for BOTH runtimes rather than per launch
       // path. A task that attaches repositories and cannot be given write access to them
       // must not start at all: the worktrees would be provisioned and the intent manifest
@@ -258,17 +288,20 @@ export class Dispatcher {
         extraRepos: extras,
       };
       // The repo manifest is a PREFIX (context the agent needs before the request) and the
-      // scout contract is a SUFFIX (what "delivered" means once it has read it), so the
+      // kind's contract is a SUFFIX (what "delivered" means once it has read it), so the
       // operator's own words are never buried and the ordering is the same on both delivery
-      // seams. A ship task passes through `withScoutReportContract` unchanged, which is what
+      // seams. A ship task passes through `withTaskKindContract` unchanged, which is what
       // keeps its intent bytes identical to what they were.
-      const intent = withScoutReportContract(provisioned, intentWithRepoManifest(provisioned));
+      const intent = withTaskKindContract(provisioned, intentWithRepoManifest(provisioned), {
+        planSkills: planSkills?.ok ? planSkills.commands : null,
+      });
       // Which of OUR tools this launch has to be able to call. A scout ALWAYS has to be able
-      // to submit its report - that is now the only way its task can finish - so the
-      // requirement is unioned in here rather than left to whichever caller happened to
-      // dispatch it. A ship task is unaffected: `scoutMissionMcpRequirement` returns the
-      // caller's requirement untouched, including `null`.
-      const missionMcp = scoutMissionMcpRequirement(task, options.missionMcp ?? null);
+      // to submit its report and a plan ALWAYS has to be able to ask its human and file the
+      // phases it schedules, so the requirement is unioned in here rather than left to
+      // whichever caller happened to dispatch it. A ship task is unaffected:
+      // `kindMissionMcpRequirement` returns the caller's requirement untouched, `null`
+      // included.
+      const missionMcp = kindMissionMcpRequirement(task, options.missionMcp ?? null);
       if (task.kind === "scout") {
         (this.deps.provisionScoutCredential ?? provisionScoutSubmissionCredential)(taskId, wt.path);
       }

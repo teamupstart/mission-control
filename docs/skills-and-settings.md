@@ -90,6 +90,15 @@ phase. The HTML Plans review always offers this as its final selectable follow-u
 passes the approved plan and submitted decisions into
 [`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
 
+**A `plan` task depends on both of those rows, and this is where it differs from a scout.** The
+contract a [plan task](dispatch-and-backlog.md) is delivered *points at* HTML Plans and Phased
+Plan instead of restating them, so with either row switched off - or the master switch off -
+the dispatch is **refused**, with a message naming the toggle and pointing here. It is refused
+at the moment it would launch rather than when the task is filed, so a plan task can sit in the
+backlog while the skills are off and dispatch cleanly once they are on. A pointer at a skill
+that is not installed points at nothing, and an agent left to improvise a plan looks exactly
+like one that followed a procedure.
+
 The opt-in **HTML Report** row applies to the other half of the work - the sessions that are
 asked to find something out rather than to change something. An investigation, scout, audit or
 research answer is written as one self-contained page at `docs/reports/<slug>/report.html` and
@@ -104,6 +113,12 @@ submit its page by its own prompt, composed by the daemon at the moment the task
 so the requirement arrives with the global toggle off and with no skills installed at all. The
 skill is how to write a good report; the scout contract is whether one exists, and it is
 enforced by [archives](archives.md) rather than by a setting.
+
+**Do not generalize that to plan**, where the opposite is true. A scout's contract could repeat
+its skill because the archive enforces the outcome whatever the agent does; a plan's outcome is
+a human saying the plan is right, so there is nothing to enforce it against and the contract
+hands the procedure over instead. That is the whole reason the two planning rows above are a
+launch requirement and this one is not.
 
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`

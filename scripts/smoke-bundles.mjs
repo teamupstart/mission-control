@@ -287,8 +287,13 @@ async function smokeMcp() {
  * A scrape rather than an import because this script is plain `node` with no TypeScript
  * loader, and the alternative - a hand-copied list in a smoke script - is a fourth place the
  * vocabulary can drift, which is the exact class of bug the check above exists to catch.
- * The two constants it has to resolve live in their own single-spelling modules, so they are
+ * The constants it has to resolve live in their own single-spelling modules, so they are
  * read from there for the same reason.
+ *
+ * A name arriving as a constant this script cannot resolve is a FAILURE rather than a skip,
+ * which is why adding one to `MISSION_MCP_TOOLS` means adding it to the map below too. Silently
+ * dropping it would shrink the declared list and quietly hand the "extra" branch above a tool
+ * the bundle publishes and nobody declares - the opposite of what happened.
  */
 async function declaredMcpTools() {
   const read = async (path) => await readFile(resolve(path), "utf8");
@@ -305,12 +310,15 @@ async function declaredMcpTools() {
       tools.push(literal[1]);
       continue;
     }
-    // The two submission tools arrive as imported constants, each named in exactly one module.
+    // Some names arrive as imported constants, each spelled in exactly one module: the two
+    // submission tools, and the two a plan task's prompt names and its launch pre-approves.
     const ref = /^\s*([A-Z_]+),/.exec(line);
     if (!ref) continue;
     const from = {
       SUBMIT_ENSEMBLE_RESULT_TOOL: "src/server/ensembles/submission-tool.ts",
       SUBMIT_SCOUT_ARTIFACTS_TOOL: "src/server/scouts/submission-tool.ts",
+      PLAN_DECISIONS_TOOL: "src/server/plans/tools.ts",
+      PLAN_SCHEDULING_TOOL: "src/server/plans/tools.ts",
     }[ref[1]];
     if (!from) {
       fail(`MISSION_MCP_TOOLS names ${ref[1]}, which this smoke does not know how to resolve`);

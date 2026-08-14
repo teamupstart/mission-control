@@ -120,6 +120,46 @@ function diffContainsOnlyReviewArtifacts(paths: readonly string[]): boolean {
 }
 
 /**
+ * Whether the review-artifact classifier is asked about a task of this kind at all.
+ *
+ * A statement about the KIND, read once and applied to both halves of the classifier, rather
+ * than a negation dropped into two conditions - because it is one claim, and a claim split
+ * across two `&&`s is one somebody later fixes in half.
+ *
+ * `plan` is the exemption, and it is a requirement of this kind rather than a consequence of
+ * it. The classifier would catch a plan task twice over: its objective says "write a plan",
+ * which is the vocabulary `REVIEW_ARTIFACT_REQUEST` matches, and its diff lands entirely under
+ * `docs/plans/**`, which is every path matching `REVIEW_ARTIFACT_PATH`. Both halves have to be
+ * exempted or the approved "offer ordinary wrap-up" decision is not delivered.
+ *
+ * The reason a plan is not a review artifact in the sense this setting means: a mockup is
+ * produced FOR a review and then discarded, and shipping it would put a throwaway on the
+ * default branch. A plan is a durable document whose landing on the default branch is the
+ * thing that releases the phase tasks depending on it - `phased-plan` schedules tasks carrying
+ * paths rather than content, and an unmerged plan leaves every one of those paths dead. So the
+ * plan kind wants exactly what a ship task gets, and the exemption is keyed on the kind so
+ * that a SHIP task producing only mockups - or only plans - is judged exactly as before.
+ *
+ * `scout` still takes the classifier. Its own branch above is separately switchable, and an
+ * operator who turns that one off has not asked for a scout's mockup-only diff to start
+ * shipping itself.
+ *
+ * `Record<TaskKind, …>` for `TASK_KIND_INFO`'s reason: a fourth kind does not compile until it
+ * has answered this, which is the one question about a new kind that is easiest to forget and
+ * whose wrong answer is invisible until a completion is silently retired.
+ */
+const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
+  ship: true,
+  scout: true,
+  plan: false,
+};
+
+/** A session with no linked task has no kind to exempt it, so it is classified as before. */
+function classifiesAsReviewArtifact(kind: TaskKind | null): boolean {
+  return kind === null || KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER[kind];
+}
+
+/**
  * The one automatic-shipping eligibility boundary shared by both Foreman completion triggers.
  *
  * A block means neither an existing Foreman-complete binding nor the built-in No-Mistakes
@@ -131,22 +171,19 @@ export function automaticWrapupBlock(input: AutomaticWrapupInput): AutomaticWrap
     return { kind: "scout", reason: "the linked task kind is scout" };
   }
 
-  if (
-    input.skipReviewArtifactWrapup
-    && input.objective
-    && objectiveRequestsReviewArtifacts(input.objective)
-  ) {
+  // Read once and applied to both halves below: the classifier either speaks about this task
+  // or it does not, and the two halves must not be able to answer that differently.
+  const classified =
+    input.skipReviewArtifactWrapup && classifiesAsReviewArtifact(input.taskKind);
+
+  if (classified && input.objective && objectiveRequestsReviewArtifacts(input.objective)) {
     return {
       kind: "review_artifact",
       reason: "the requested output is a review artifact rather than a shippable change",
     };
   }
 
-  if (
-    input.skipReviewArtifactWrapup
-    && input.changedPaths
-    && diffContainsOnlyReviewArtifacts(input.changedPaths)
-  ) {
+  if (classified && input.changedPaths && diffContainsOnlyReviewArtifacts(input.changedPaths)) {
     return {
       kind: "review_artifact",
       reason: "the completed diff contains only review artifacts",

@@ -148,3 +148,59 @@ test("ordinary ship work remains eligible", () => {
   assert.equal(block({ changedPaths: [] }), null);
   assert.equal(block({ taskKind: null, objective: null, changedPaths: null }), null);
 });
+
+/**
+ * The plan kind's exemption, which is a requirement rather than a consequence.
+ *
+ * A plan task matches the review-artifact classifier TWICE over - "write a plan" is the
+ * vocabulary its objective half matches, and a `docs/plans/**`-only diff is every path its
+ * diff half matches - so the approved "offer ordinary wrap-up" decision is only delivered if
+ * both halves are exempted. The reason a plan is not a review artifact in the sense this
+ * setting means: a mockup is produced FOR a review and discarded, while a plan's landing on
+ * the default branch is what releases the phase tasks that depend on its paths.
+ */
+test("a plan task is offered ordinary wrap-up, through both halves of the classifier", () => {
+  // The objective half, which is the one that matters at the two call sites supplying no diff.
+  assert.equal(block({ taskKind: "plan", objective: "Write a plan for the archives reading UI." }), null);
+  assert.equal(block({ taskKind: "plan", objective: "Output: a plan" }), null);
+  assert.equal(block({ taskKind: "plan", objective: "Prepare a migration plan for operator review." }), null);
+
+  // The diff half, on the shape every plan task actually produces.
+  assert.equal(
+    block({
+      taskKind: "plan",
+      objective: "Plan the archives reading UI.",
+      changedPaths: ["docs/plans/archives-ui/plan.md", "docs/plans/archives-ui/plan.html"],
+    }),
+    null,
+  );
+});
+
+test("the exemption is keyed on the kind and did not weaken the classifier", () => {
+  // THE negative case. Same objective, same diff, `ship` instead of `plan`: still blocked. A
+  // classifier loosened rather than exempted would go green on the case above and quietly stop
+  // retiring every mockup-only ship task in the fleet.
+  const shipLikeAPlan = {
+    objective: "Write a plan for the archives reading UI.",
+    changedPaths: ["docs/plans/archives-ui/plan.md", "docs/plans/archives-ui/plan.html"],
+  };
+  assert.equal(block({ ...shipLikeAPlan, taskKind: "ship" })?.kind, "review_artifact");
+  assert.equal(block({ ...shipLikeAPlan, taskKind: null })?.kind, "review_artifact");
+  // And a scout still takes it too, on both halves - its own branch is separately switchable,
+  // and an operator who turned that one off did not ask for this one to stop applying.
+  assert.equal(
+    block({ ...shipLikeAPlan, taskKind: "scout", skipScoutWrapup: false })?.kind,
+    "review_artifact",
+  );
+});
+
+test("the plan exemption does not reach past the review-artifact classifier", () => {
+  // It exempts a plan from being retired as an ARTIFACT. It is not a blanket "never block a
+  // plan", and the distinction is what keeps this a change to one classifier rather than to
+  // the wrap-up boundary itself.
+  assert.equal(
+    block({ taskKind: "plan", objective: "Plan it.", skipReviewArtifactWrapup: false }),
+    null,
+    "with the safeguard off there was nothing to exempt from in the first place",
+  );
+});

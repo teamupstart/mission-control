@@ -188,6 +188,15 @@ finished work never reaches an automatic completion action:
 The safeguards are independent. A task matching either one is retired while that switch is
 on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
 
+**A `plan` task is exempt from the second safeguard**, and only from that one. Its objective
+says "write a plan" and its diff lands entirely under `docs/plans/`, so it would match both
+halves of the review-artifact test and be retired - which is the wrong answer for this kind. A
+mockup is produced *for* a review and then discarded; a plan is a durable document whose
+landing on the default branch is what releases the phase tasks depending on its paths. So a
+completed plan task reaches the ordinary **Ship it / Straight to PR** handling a ship task
+gets. The exemption is keyed on the durable `Kind`, so a **ship** task that produces only
+mockups - or only plans - is judged exactly as it was before.
+
 In the [Console and Board](ui.md#layout-cards-console-or-board) detail, a standalone Foreman
 decision is arranged differently because a permanent conversation gives it somewhere better
 to sit: the note is rendered **in the transcript**, as a turn at the point it spoke, and what

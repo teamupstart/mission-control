@@ -53,9 +53,11 @@ export type AgentType = (typeof AGENT_TYPES)[number];
  * process) vs `exited`. The precise `idle` / `awaiting_input` / `awaiting_review`
  * states come from active reporting (hooks or an SDK driver) and the harness's own
  * review queue. `starting` is the brief window after a terminal SessionStart hook or
- * SDK registration, before the first prompt or driver binding. `stopping` means an SDK
- * driver has accepted an operator stop but has not finished draining its event stream;
- * durable cleanup still waits for `exited` and the later `session_remove`.
+ * a fresh or interrupted SDK registration, before the first prompt or driver lifecycle
+ * frame. An SDK restore whose durable turn flag is clear instead carries `idle` into the
+ * binding that confirms it. `stopping` means an SDK driver has accepted an operator stop
+ * but has not finished draining its event stream; durable cleanup still waits for `exited`
+ * and the later `session_remove`.
  */
 export type SessionState =
   | "starting"

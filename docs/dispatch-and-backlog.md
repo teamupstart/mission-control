@@ -218,11 +218,28 @@ that page into a durable [scout archive](archives.md). Its worktree is not recla
 until that archive exists either, so the answer survives the checkout. No pull request is
 expected, and the conversation is not archived.
 
-**plan** records that the work is to produce a reviewed plan rather than a change, and the
-backlog, the Sitrep report and Foreman's backlog planner all read it as such. It does not yet
-change what the agent is told: a plan task is delivered its intent exactly as you wrote it,
-the way a ship task is. The delivered planning contract and the durable capture of the plan
-it produces are separate changes, tracked in
+**plan** changes what the agent is told, the way scout does, and in the opposite direction. A
+plan task's intent arrives exactly as you wrote it, followed by a contract that hands the work
+to the [HTML Plans skill](skills-and-settings.md): write the plan at `docs/plans/<name>/plan.md`
+with a rendered `plan.html` beside it, ask for the review - and for every open choice in it -
+through `request_plan_decisions` rather than in prose, and end that review with the phased
+implementation follow-up. Choose it and the phases are written beside the plan and scheduled as
+dependency-linked backlog tasks that release when the plan's pull request merges.
+
+The contract **points at** that skill rather than restating it, which is the one place plan
+differs from scout in kind and not just in wording. A scout's contract repeats its skill,
+because a scout's report is enforced by the archive and had to hold with every skill switched
+off. A plan's does not, so **HTML Plans and Phased Plan both have to be switched on** before a
+plan can be dispatched. With either one off the dispatch is refused on the form, naming the
+toggle and where to find it, rather than launching an agent that would improvise a plan nobody
+asked for. Backlogging a plan task is always allowed - the check is asked again at the moment
+it launches.
+
+A plan finishes on Foreman's ordinary boundary and is offered the ordinary wrap-up a ship task
+gets, so the plan lands as a pull request. That is deliberate rather than incidental: the
+scheduled phase tasks carry paths rather than content, and those paths have to resolve on the
+default branch before any phase can start. Durable capture of the plan into the
+[archive library](archives.md) is a separate change, tracked in
 [`docs/plans/plan-kind/`](plans/plan-kind/phased-plan.md).
 
 Once the task has a session, this selection is frozen so the task row and

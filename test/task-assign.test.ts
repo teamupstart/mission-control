@@ -1155,3 +1155,79 @@ test("an assigned scout is typed the report contract, and an assigned ship task 
     }
   }
 });
+
+// A plan's contract POINTS AT the two planning skills rather than restating them, so the
+// question this seam has to answer is not "is a bundle on this machine" but "could THIS
+// conversation load them". Both are asked before the destructive reset, for the same reason.
+
+test("a plan is refused before the reset when its planning skills cannot be invoked", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-plan-noskill-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "plan" }));
+  let reset = false;
+  let typed = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    requirePlanSkills: () => ({
+      ok: false,
+      message:
+        "Enable Skills and the html-plans skill before sending this instruction. "
+        + "Switch them on under Settings → Skills, then dispatch again.",
+    }),
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+    inject: async () => {
+      typed = true;
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /Enable Skills and the html-plans skill/, "name the toggle");
+  assert.match(res.error ?? "", /Settings → Skills/, "and where to find it");
+  assert.equal(reset, false, "nothing may be done to an agent that cannot follow the contract");
+  assert.equal(typed, false, "and nothing pointing at a skill it cannot load is pasted at it");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+  assert.equal(
+    gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"),
+    "feature/mine",
+    "the checkout is untouched - the refusal happens before the reset",
+  );
+});
+
+test("an assigned plan is typed the invocations THAT SESSION could actually run", async () => {
+  // The resolver is the session-scoped one, so what lands in the pane is what this
+  // conversation can load - not what a freshly launched agent of the same harness could.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-plan-contract-");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "plan", intent: "plan the archives reading UI" }));
+  let typed: string | null = null;
+  let askedAbout: string | null = null;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    requirePlanSkills: (session) => {
+      askedAbout = session.id;
+      return { ok: true, commands: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" } };
+    },
+    reset: cleanReset,
+    inject: async (_session, prompt) => {
+      typed = prompt;
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.equal(askedAbout, sessionId, "resolved against the session being typed into");
+  assert.ok(typed !== null, "the task was typed");
+  assert.match(typed!, /^plan the archives reading UI/, "the operator's words come first, intact");
+  assert.match(typed!, /--- Mission Control plan ---/);
+  assert.match(typed!, /\/html-plans/, "the resolved invocation, verbatim");
+  assert.match(typed!, /\/phased-plan/);
+  assert.match(typed!, /request_plan_decisions/);
+  assert.doesNotMatch(typed!, /submit_scout_artifacts/, "a plan is not handed a scout's contract");
+});

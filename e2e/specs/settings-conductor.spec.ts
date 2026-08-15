@@ -98,8 +98,10 @@ test("the engine is detected, arrives off, and one switch starts observing it", 
   await expect(repoSwitch).toBeVisible();
   await expect(repoSwitch).not.toBeChecked();
   await expect(page.getByText("Off - no pipeline state is being read.")).toBeVisible();
+  // Both switches are off here, and the master one is what the row names: it blocks the
+  // read either way, and flipping it is what makes this row's own switch the next ask.
   await expect(
-    page.getByText("Not observed - switch this repository on to project its pipelines."),
+    page.getByText("Not observed - Observe pipelines is off, so no repository is read."),
   ).toBeVisible();
   await shoot(page, "01-detected-and-off");
 

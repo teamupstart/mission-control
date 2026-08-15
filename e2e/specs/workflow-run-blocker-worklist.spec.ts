@@ -54,12 +54,33 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
   return (await response.json()) as T;
 }
 
+/**
+ * Photograph the worklist, and TRANSCRIBE it in the same breath.
+ *
+ * The image is for a person; the transcript is for everyone who cannot open one - a review
+ * round reading a diff and a turn, a CI log, a bug report pasted into an issue. A screenshot
+ * committed beside the docs proves what rendered only to a reader who can render it back, and
+ * "the spec passed" proves the assertions rather than the surface. Reading the region's own
+ * `innerText` at the moment the shutter fires is the one artifact that is both: it is the text
+ * a user actually saw, taken from the live DOM of a real run rather than described afterwards.
+ *
+ * Both halves are gated on `MC_E2E_EVIDENCE` like every other capture in this suite, so an
+ * ordinary run pays nothing for either.
+ */
 async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // A `Locator` carries `innerText`; a whole `Page` does not, and transcribing one would be the
+  // entire dashboard rather than the region under the shutter.
+  const seen = "innerText" in target
+    ? (await target.innerText()).split("\n").map((line) => `  | ${line}`).join("\n")
+    : "  | (whole page - see the image)";
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED e2e/.artifacts/workflow-run-blocker-worklist/${name}.png`);
+  console.log(
+    `CAPTURED e2e/.artifacts/workflow-run-blocker-worklist/${name}.png\n`
+    + `OBSERVED ${name}, as the browser rendered it:\n${seen}`,
+  );
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {

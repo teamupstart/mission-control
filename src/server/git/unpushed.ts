@@ -1,7 +1,7 @@
 import { run } from "../util/exec.ts";
 import type { UnpushedCommits, UnpushedUnknownReason } from "@shared/unpushed.ts";
 
-// Does this checkout hold commits origin has never seen?
+// Does this checkout hold commits its configured upstream has never seen?
 //
 // Read-only and local, in the strongest sense both words have here. It NEVER fetches, and it
 // never writes: no push, no ref update, no index touch, no stdin. That is a hard requirement
@@ -14,8 +14,13 @@ import type { UnpushedCommits, UnpushedUnknownReason } from "@shared/unpushed.ts
 // Not fetching is what makes the answer safe to say out loud. A remote-tracking ref we have
 // not fetched cannot vouch for a commit, so every staleness in the local refs pushes the
 // count UP, toward "you still have work here" - which the caller may then decline to say -
-// and never toward a false all-clear. `resetWouldDestroyWork` in `actions.ts` reasons the
-// same way for the same reason, and this deliberately reuses its comparison.
+// and never toward a false all-clear.
+//
+// The comparison is `@{upstream}..HEAD`. It is deliberately NOT the `--remotes` sweep that
+// `resetWouldDestroyWork` in `actions.ts` uses, and the two are answering different questions:
+// that refusal asks "could this destroy work that exists nowhere else", where any remote will
+// do, while this asks "has the branch the Inspector is watching received these commits", where
+// only the tracked one counts.
 
 /** The dominant timeout for a local git read in this daemon (diff, actions, pool all use it). */
 const GIT_READ_TIMEOUT_MS = 15_000;
@@ -39,7 +44,7 @@ function unknown(why: UnpushedUnknownReason): UnpushedCommits {
 }
 
 /**
- * Commits in this checkout that no origin ref holds, or why we cannot say.
+ * Commits this checkout holds that its configured upstream does not, or why we cannot say.
  *
  * Four questions, each of which can only end in an answer or a named silence:
  *
@@ -51,15 +56,14 @@ function unknown(why: UnpushedUnknownReason): UnpushedCommits {
  *     matters most. A branch with no upstream is the ordinary state of work that was never
  *     meant to be pushed yet, and calling that "unpushed commits" would accuse a person of
  *     forgetting a step they never owed.
- *  4. How many commits does HEAD hold that no remote-tracking ref does?
+ *  4. How many commits does `@{upstream}..HEAD` hold?
  *
- * Step 4 compares against EVERY remote-tracking ref rather than against `@{upstream}` alone,
- * while step 3 still insists an upstream exists. That split is deliberate and it is the
- * difference between a useful sentence and a wrong one. The gate has to be `@{upstream}`
- * because "this branch tracks nothing" is exactly the case that must stay silent. The COUNT
- * must not be, because a session that pushed its work to a differently-named branch, or to a
- * remote that is not called `origin`, has genuinely pushed it - and a narrower comparison
- * would report those commits as missing and tell a person to push what is already there.
+ * Steps 3 and 4 name the SAME ref, and that is the contract: the upstream is both what
+ * licenses a claim and what the claim is measured against. The caller is the parked-run
+ * stall, which speaks for an Inspector waiting on one branch - the one the pull request
+ * points at, which is the one this branch tracks. Commits that reached some other ref have
+ * not reached that one, so a wider comparison would call the wait satisfied while the run
+ * stayed parked.
  *
  * Every failure mode returns `unknown`, never a zero and never a count. "We could not look"
  * and "there is nothing there" are different facts, and only one of them may be spoken.
@@ -98,18 +102,22 @@ export async function readUnpushedCommits(
   if (tracking.code !== 0 || !tracking.stdout.trim()) return unknown("no_upstream");
   const upstream = tracking.stdout.trim();
 
-  // 4. Commits NO remote-tracking ref holds. A branch that was pushed reads 0 here whether
-  //    its pull request is open or merged, because its commits stay reachable from
-  //    `<remote>/<branch>`.
+  // 4. Commits HEAD holds that its CONFIGURED UPSTREAM does not - `@{upstream}..HEAD`.
   //
-  //    Every remote rather than `--remotes=origin`, which is what `resetWouldDestroyWork`
-  //    uses. That refusal can afford to assume origin because being wrong there costs a
-  //    worktree; being wrong HERE costs a person a hunt for a mistake they did not make. A
-  //    clone whose remote is named anything else - `upstream` on a fork is the ordinary case
-  //    - has no `origin/*` refs at all, so scoping the count to origin reports its entire
-  //    history as unpushed. Widening to every remote can only ever make the count smaller,
-  //    which is the direction this function is allowed to be wrong in.
-  const counted = await git(root, ["rev-list", "--count", "HEAD", "--not", "--remotes"]);
+  //    Measured against the branch's own upstream rather than against every remote-tracking
+  //    ref, and the difference is the whole contract. The question this reader exists to
+  //    answer is "has the head the Inspector is waiting for been pushed", and the Inspector
+  //    waits on ONE branch: the one the pull request points at, which is the one this branch
+  //    tracks. A commit sitting on some other remote ref - a different branch name, a second
+  //    remote - has not reached the ref anybody is watching, so counting it as pushed would
+  //    report the wait as satisfied while the run stays parked for ever.
+  //
+  //    `@{upstream}` also resolves to whatever the branch ACTUALLY tracks, so a clone whose
+  //    remote is not called `origin` (a fork cloned with `--origin upstream` is the ordinary
+  //    case) is compared against its real upstream rather than against refs it does not have.
+  //    That is what keeps a fully pushed fork from being accused of its entire history, which
+  //    is the failure a hardcoded `--remotes=origin` produced.
+  const counted = await git(root, ["rev-list", "--count", `${upstream}..HEAD`]);
   if (counted.outcomeUnknown) return unknown("git_failed");
   if (counted.code !== 0) return unknown("git_failed");
 

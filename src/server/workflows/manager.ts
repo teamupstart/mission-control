@@ -5787,6 +5787,23 @@ export class WorkflowManager {
   }
 
   /**
+   * The checkout a run's work lives in, or null when there is nothing to read.
+   *
+   * The BINDING's checkout rather than the session's, which is the whole reason this is a
+   * lookup and not a field on the run summary. A multi-repo task's session holds one run per
+   * repository, and only `WorkflowBinding.sessionCwd` says which worktree each one reviews -
+   * `session.cwd` would answer with the session's own checkout for every one of them, so a
+   * count of unpushed commits would be measured in the wrong repository and reported against
+   * the right-looking run.
+   *
+   * Read by the away watcher's unpushed observer, on the same terms as `repeatOffenderSignals`
+   * below: the watcher must not import this store, so what it needs arrives as a function.
+   */
+  bindingCheckout(bindingId: string): string | null {
+    return this.store.getBinding(bindingId)?.sessionCwd ?? null;
+  }
+
+  /**
    * Members failing the most recent rounds consecutively, across every live run.
    *
    * Read by the away watcher, which folds it into the shared alert engine. It exists because

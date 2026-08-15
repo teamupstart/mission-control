@@ -42,6 +42,7 @@ import { setLlmSpendSink } from "./llm/spend.ts";
 import { recordSpendReport } from "./spend-ledger.ts";
 import { startGoalRefiner } from "./goal/refiner.ts";
 import { startAwayWatcher } from "./away/watcher.ts";
+import { createUnpushedObserver } from "./away/unpushed-observer.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
 import { reportMissionMcpDrift } from "./mission-mcp.ts";
@@ -334,6 +335,12 @@ const stopGoalRefiner = startGoalRefiner(registry);
 // so it reaches the alert engine on its own channel rather than by widening the SSE summary.
 const away = startAwayWatcher(registry, undefined, {
   workflowRepeatOffenders: () => workflows.repeatOffenderSignals(),
+  // Same channel, same reason: resolving a run to the checkout it reviews means reading its
+  // binding, which the watcher cannot do without importing this store. The observer keeps the
+  // git read off the watcher's tick as well - see `unpushed-observer.ts`.
+  unpushedObserver: createUnpushedObserver({
+    checkoutFor: (run) => workflows.bindingCheckout(run.bindingId),
+  }),
 });
 const stopHeadlessPruner = startHeadlessPruner();
 // The reclamation pass rides the reaper's tick: same cadence, same lock, and it collects

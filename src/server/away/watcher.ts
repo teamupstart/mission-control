@@ -2,8 +2,9 @@ import { envVar } from "../config.ts";
 import { unref } from "../util/timers.ts";
 import { detectAlerts, stuckAlert } from "@shared/alerts.ts";
 import type { AlertScope } from "@shared/alerts.ts";
-import { detectStalls } from "@shared/stall.ts";
+import { detectStalls, NO_UNPUSHED } from "@shared/stall.ts";
 import type { Stall } from "@shared/stall.ts";
+import type { UnpushedObserver } from "./unpushed-observer.ts";
 import {
   closeBuffer,
   emptyBuffer,
@@ -51,6 +52,21 @@ export interface AwaySource {
  */
 export interface AwayDeps {
   workflowRepeatOffenders?: () => WorkflowRunRepeatOffender[];
+  /**
+   * Commits the parked runs' checkouts have never pushed, so a parked-run stall can name the
+   * missing step instead of only naming the wait.
+   *
+   * Injected for the reason above it is: resolving a run to its checkout means reading the
+   * binding, and this module must not import the Workflow store. It is also the only way the
+   * git read can be kept OFF this tick - `observe` starts reads and returns, `snapshot` reads
+   * what already came back - which matters because `pass()` is synchronous and a hung git must
+   * never be able to stop stall detection for the rest of the fleet.
+   *
+   * Optional, and its absence is not a special case anywhere: an embedder that wires no
+   * observer, and every existing test, gets an empty map, which `unpushedClause` already
+   * renders as no claim at all.
+   */
+  unpushedObserver?: UnpushedObserver;
 }
 
 export interface AwayWatcher {
@@ -121,9 +137,22 @@ export function startAwayWatcher(
       // daemon disagreeing with itself about one snapshot.
       const workflowRuns = snap.workflowRunSummaries ?? [];
 
-      stalls = cfg.detectStalls
-        ? detectStalls(snap.sessions, workflowRuns, t, stallThresholds(cfg))
-        : [];
+      // Start any git read that is due and take what has already landed. Both halves are
+      // synchronous; the reads themselves happen between ticks. On the very first tick the
+      // snapshot is empty, which is why the observation may only ever ADD a clause to a
+      // sentence that already stands on its own.
+      //
+      // Inside the `detectStalls` check rather than beside it: an operator who turned stall
+      // detection off has asked for no stall sentences, and the only consumer of this read is
+      // the sentence. Observing anyway would spend a git subprocess a minute, for ever, on an
+      // answer with nowhere to go.
+      if (cfg.detectStalls) {
+        deps.unpushedObserver?.observe(workflowRuns);
+        const unpushed = deps.unpushedObserver?.snapshot() ?? NO_UNPUSHED;
+        stalls = detectStalls(snap.sessions, workflowRuns, unpushed, t, stallThresholds(cfg));
+      } else {
+        stalls = [];
+      }
 
       const scope: AlertScope = {
         sessions: snap.sessions,

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "../src/shared/workflow.ts";
 import type { EnsembleSummary } from "../src/shared/ensemble.ts";
+import type { UnpushedCommits } from "../src/shared/unpushed.ts";
 
 // The away watcher's buffer lifecycle: when a window opens, what lands in it, and
 // how it survives the moment of return. Real db for the config (as
@@ -344,6 +345,122 @@ test("a session parked on a workflow run stalls, and the digest names the run", 
   assert.deepEqual(stalls.map((s) => s.kind), ["workflow-parked"]);
   assert.equal(stalls[0]?.workflowRunId, "run");
   assert.match(stalls[0]!.reason, /Review repair round 2 never reopened/);
+  w.stop();
+});
+
+// ---- naming the unpushed head ----
+//
+// The watcher is where the async git read meets a synchronous tick, so these cover the SEAM
+// rather than the sentence (`test/stall.test.ts`) or the bookkeeping
+// (`test/unpushed-observer.test.ts`): that the observer is asked, that what it returns reaches
+// the stall reason, and that a watcher wired without one behaves exactly as it did before.
+
+/** A stand-in observer whose map the test sets directly. */
+function fakeObserver(map: Map<string, UnpushedCommits> = new Map()) {
+  const observed: string[][] = [];
+  return {
+    observed,
+    map,
+    observer: {
+      observe: (runs: readonly WorkflowRunSummary[]) => observed.push(runs.map((r) => r.id)),
+      snapshot: () => map,
+    },
+  };
+}
+
+const AHEAD: UnpushedCommits = {
+  state: "ahead",
+  commits: 2,
+  branch: "fix/thing",
+  upstream: "origin/fix/thing",
+};
+
+test("an unpushed count reaches the parked-run stall reason", async () => {
+  const reg = fakeRegistry(
+    [mkSession({ id: "session", state: "idle", lastActivity: 0 })],
+    [],
+    [workflowRun({ status: "waiting_for_new_head", round: 2 })],
+  );
+  const fake = fakeObserver(new Map([["run", AHEAD]]));
+  const w = startAwayWatcher(reg.src, () => 30 * MIN, { unpushedObserver: fake.observer });
+  w.tick();
+
+  const stalls = w.stalls();
+  assert.deepEqual(stalls.map((s) => s.kind), ["workflow-parked"]);
+  assert.match(stalls[0]!.reason, /waiting for a pushed head and you have 2 commits that are not pushed/);
+  // The runs it was handed, so the observer can scope its reads to what is actually parked.
+  // Asserted per pass rather than by count: the watcher runs one pass on start and another on
+  // `tick`, and how many passes have happened is not what this test is about.
+  assert.ok(fake.observed.length > 0);
+  for (const seen of fake.observed) assert.deepEqual(seen, ["run"]);
+  w.stop();
+});
+
+test("a watcher wired with NO observer says exactly what it said before", () => {
+  // Every existing caller, every embedder, and the first tick of a real one. The clause is an
+  // addition to a sentence that has to stand without it.
+  const reg = fakeRegistry(
+    [mkSession({ id: "session", state: "idle", lastActivity: 0 })],
+    [],
+    [workflowRun({ status: "waiting_for_new_head", round: 2 })],
+  );
+  const w = startAwayWatcher(reg.src, () => 30 * MIN);
+  w.tick();
+  assert.equal(w.stalls()[0]?.reason, "idle 30m - Review is waiting for a pushed head");
+  w.stop();
+});
+
+test("an observer that has not answered yet adds nothing", () => {
+  // The real first tick: `observe` has started a git read that has not come back, so the
+  // snapshot is empty. An empty map must read as no claim rather than as nothing unpushed.
+  const reg = fakeRegistry(
+    [mkSession({ id: "session", state: "idle", lastActivity: 0 })],
+    [],
+    [workflowRun({ status: "waiting_for_new_head", round: 2 })],
+  );
+  const fake = fakeObserver();
+  const w = startAwayWatcher(reg.src, () => 30 * MIN, { unpushedObserver: fake.observer });
+  w.tick();
+  assert.equal(w.stalls()[0]?.reason, "idle 30m - Review is waiting for a pushed head");
+  assert.doesNotMatch(w.stalls()[0]!.reason, /not pushed/);
+  w.stop();
+});
+
+test("the observer is asked on every tick, so a push that lands is picked up", () => {
+  const reg = fakeRegistry(
+    [mkSession({ id: "session", state: "idle", lastActivity: 0 })],
+    [],
+    [workflowRun({ status: "waiting_for_new_head", round: 2 })],
+  );
+  const fake = fakeObserver(new Map([["run", AHEAD]]));
+  const w = startAwayWatcher(reg.src, () => 30 * MIN, { unpushedObserver: fake.observer });
+  w.tick();
+  assert.match(w.stalls()[0]!.reason, /not pushed/);
+
+  // The session pushed. The next tick's snapshot says so, and the accusation has to stop.
+  const before = fake.observed.length;
+  fake.map.set("run", { state: "pushed", branch: "fix/thing", upstream: "origin/fix/thing" });
+  w.tick();
+  assert.equal(w.stalls()[0]?.reason, "idle 30m - Review is waiting for a pushed head");
+  // Re-asked rather than answered once and cached forever - the reason the wording can change.
+  assert.equal(fake.observed.length, before + 1);
+  w.stop();
+});
+
+test("stall detection OFF asks the observer nothing - no git for an answer nobody wants", () => {
+  // The read exists to word a stall sentence. With sentences turned off it is a subprocess a
+  // minute, for ever, against every parked checkout in the fleet.
+  setAwayConfig({ detectStalls: false });
+  const reg = fakeRegistry(
+    [mkSession({ id: "session", state: "idle", lastActivity: 0 })],
+    [],
+    [workflowRun({ status: "waiting_for_new_head", round: 2 })],
+  );
+  const fake = fakeObserver(new Map([["run", AHEAD]]));
+  const w = startAwayWatcher(reg.src, () => 30 * MIN, { unpushedObserver: fake.observer });
+  w.tick();
+  assert.deepEqual(w.stalls(), []);
+  assert.deepEqual(fake.observed, []);
   w.stop();
 });
 

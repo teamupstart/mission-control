@@ -113,21 +113,33 @@ and `waiting_for_new_head` is counted in the away digest. Detection stayed off F
 deliberately: `sweepResumptions` records why a Foreman claim cannot be the general answer, and
 `decideReviewFollowup`'s gate 6 already stands down when a workflow owns the session.
 
-#### 6a. Name the unpushed head — still open
+#### 6a. Name the unpushed head — shipped
 Tracked as [issue #576](https://github.com/mancej-cyc/ai-harness/issues/576), and in the Mission
-Control backlog as `4c9bea06-f8f3-4164-8c55-d8f30b4431bf`. This is the "unpushed branch" signal
-named above, now scoped to the one status that most needs it.
+Control backlog as `4c9bea06-f8f3-4164-8c55-d8f30b4431bf`. This was the "unpushed branch" signal
+named above, scoped to the one status that most needed it.
 
 `waiting_for_new_head` is where the shipped No-Mistakes Review parks Inspector findings under
 `onFindings: "inspector_only"`, and it clears **only** when the Inspector poller observes a head
-on the remote. So a session that fixes the findings and commits, but never pushes, is
-indistinguishable from one that did nothing - see the comment on `parkedReason` in
-`src/shared/stall.ts`, which is where that ambiguity is currently written down rather than
-resolved.
+on the remote. So a session that fixed the findings and committed was indistinguishable from one
+that did nothing.
 
-Deliver a local, read-only observation that the bound checkout's branch holds a commit the
-remote does not (roughly `git rev-list --count @{upstream}..HEAD`), so the stall can say "you
-have N commits that are not pushed" instead of "waiting for a pushed head".
+It now says which. `src/server/git/unpushed.ts` counts commits no remote-tracking ref holds,
+`src/server/away/unpushed-observer.ts` keeps that read off the watcher's 5s tick, and
+`parkedReason` appends the clause - "waiting for a pushed head **and you have 2 commits that are
+not pushed**". Three properties are load-bearing and each has its own test:
+
+- **Unknown is silence, never an accusation.** A branch tracking nothing, a detached HEAD, a
+  git call that errored, and an observation that has not come back yet all leave the original
+  sentence exactly as it was. Telling a session it forgot to push when its branch simply has no
+  remote sends a person hunting a mistake nobody made.
+- **It never acts.** No push, no fetch, no resubmission - the Inspector still has to observe the
+  head, and this only names the missing step. `waiting_for_new_head` stays out of
+  `sweepResumptions` for the reason `resumableRun` already records.
+- **It is scoped per run, not per session.** A multi-repo task holds one run per repository on
+  its own checkout, so the count is resolved through `WorkflowBinding.sessionCwd`.
+
+What remains of item 6 is the recovery playbook and the other two signals it named: uncommitted
+changes and a failing gate.
 
 Constraints, all load-bearing:
 

@@ -98,6 +98,21 @@ same distinction the Line uses to decide whether the run is counted as yours:
   link is context rather than a remedy, and the useful next move is to get that branch
   pushed.
 
+For that second case the daemon goes one step further and says whether the push is
+actually the missing step. It reads the bound checkout locally - never fetching, never
+pushing, never typing - and counts commits that no remote-tracking ref holds. When there
+are any, the sentence names them: *"waiting for a pushed head **and you have 2 commits
+that are not pushed**"*. That is the difference between a session that fixed the findings
+and forgot the last step and one that did nothing at all, which is otherwise invisible
+from the daemon's side.
+
+When it cannot make that claim it says nothing extra, and the wording falls back to the
+plain wait. A branch that tracks no remote, a detached HEAD, and a git call that failed
+are all *unknown* rather than *not pushed* - being told you forgot to push a branch that
+was never meant to be pushed sends you looking for a mistake you did not make. A checkout
+that is level with its upstream is also silent, for a subtler reason: that only proves a
+push is not the missing step, not that the head the Inspector wants exists.
+
 ![The run a stuck parked-run notification opens, showing the parked round and its state](images/line-review-parked-toast-run.png)
 
 The same sentence is what the return digest prints if the stall happened while you were

@@ -4,8 +4,11 @@ import {
   DEFAULT_STALL_THRESHOLDS,
   detectStall,
   detectStalls,
+  NO_UNPUSHED,
   type StallThresholds,
+  type UnpushedByRun,
 } from "../src/shared/stall.ts";
+import type { UnpushedCommits } from "../src/shared/unpushed.ts";
 import type {
   Session,
   SessionNoteSummary,
@@ -146,7 +149,19 @@ const one = (
   now: number,
   th: StallThresholds = TH,
   runs: WorkflowRunSummary[] = [],
-) => detectStall(s, [s], runs, now, th);
+  unpushed: UnpushedByRun = NO_UNPUSHED,
+) => detectStall(s, [s], runs, unpushed, now, th);
+
+/** One observation, keyed to the run `mkRun` builds by default. */
+const observed = (obs: UnpushedCommits, runId = "run"): UnpushedByRun =>
+  new Map([[runId, obs]]);
+
+const AHEAD: UnpushedCommits = {
+  state: "ahead",
+  commits: 2,
+  branch: "fix/thing",
+  upstream: "origin/fix/thing",
+};
 
 // ---- not stuck ----
 
@@ -261,6 +276,130 @@ test("a run parked in waiting_for_new_head names the PUSH as the missing step", 
   assert.doesNotMatch(stall!.reason, /never reopened/);
 });
 
+// ---- workflow-parked: naming the unpushed head ----
+//
+// "Waiting for a pushed head" describes the wait; it does not say which of the two sessions
+// this is. The local count of commits no remote holds is the only thing that separates the
+// session that fixed the findings and forgot to push from the one that did nothing, and every
+// test below exists to pin ONE direction of that: it may be said when a count supports it,
+// and it may never be said otherwise.
+
+test("an unpushed count names the missing step beside the wait", () => {
+  const s = mkSession({ state: "idle", lastActivity: 0 });
+  const stall = one(
+    s,
+    TH.unfinishedMs,
+    TH,
+    [mkRun({ status: "waiting_for_new_head" })],
+    observed(AHEAD),
+  );
+  assert.equal(stall?.kind, "workflow-parked");
+  assert.equal(
+    stall?.reason,
+    "idle 20m - No-Mistakes Review is waiting for a pushed head"
+      + " and you have 2 commits that are not pushed",
+  );
+  // The workflow still gets named. The alert deep-links to the run, and a sentence that had
+  // dropped the name would strand a person on a Runs page with nothing to match it against.
+  assert.match(stall!.reason, /No-Mistakes Review/);
+});
+
+test("one unpushed commit is spoken in the singular", () => {
+  const s = mkSession({ state: "idle", lastActivity: 0 });
+  const stall = one(
+    s,
+    TH.unfinishedMs,
+    TH,
+    [mkRun({ status: "waiting_for_new_head" })],
+    observed({ ...AHEAD, commits: 1 }),
+  );
+  assert.match(stall!.reason, /you have 1 commit that is not pushed/);
+});
+
+test("a checkout that IS pushed says nothing extra - the missing step is something else", () => {
+  // `pushed` is a positive observation and still licenses no clause: HEAD being level with its
+  // upstream does not prove the head the Inspector waits for exists. It only rules a push out.
+  const s = mkSession({ state: "idle", lastActivity: 0 });
+  const stall = one(
+    s,
+    TH.unfinishedMs,
+    TH,
+    [mkRun({ status: "waiting_for_new_head" })],
+    observed({ state: "pushed", branch: "fix/thing", upstream: "origin/fix/thing" }),
+  );
+  assert.equal(stall?.reason, "idle 20m - No-Mistakes Review is waiting for a pushed head");
+});
+
+test("every UNKNOWN reason claims nothing at all", () => {
+  // The load-bearing one. A branch with no upstream is the ordinary state of work nobody has
+  // pushed yet, and accusing it of a forgotten step sends a person hunting a mistake that was
+  // never made. Enumerated rather than sampled so a new reason cannot default into speech.
+  const reasons = [
+    "no_checkout",
+    "not_a_repo",
+    "detached_head",
+    "no_upstream",
+    "git_failed",
+    "unreadable",
+  ] as const;
+  for (const why of reasons) {
+    const s = mkSession({ state: "idle", lastActivity: 0 });
+    const stall = one(
+      s,
+      TH.unfinishedMs,
+      TH,
+      [mkRun({ status: "waiting_for_new_head" })],
+      observed({ state: "unknown", why }),
+    );
+    assert.equal(
+      stall?.reason,
+      "idle 20m - No-Mistakes Review is waiting for a pushed head",
+      `${why} must add no clause`,
+    );
+  }
+});
+
+test("no observation yet reads as no claim, not as nothing unpushed", () => {
+  // The first watcher tick, and every embedder that wired no observer. An empty map has to be
+  // indistinguishable from the behaviour before any of this existed.
+  const s = mkSession({ state: "idle", lastActivity: 0 });
+  const stall = one(s, TH.unfinishedMs, TH, [mkRun({ status: "waiting_for_new_head" })], new Map());
+  assert.equal(stall?.reason, "idle 20m - No-Mistakes Review is waiting for a pushed head");
+});
+
+test("an observation keyed to a DIFFERENT run is never borrowed", () => {
+  // A multi-repo task holds one run per repository, each on its own checkout. Reading another
+  // run's count would report one repository's commits against a different repository's run.
+  const s = mkSession({ state: "idle", lastActivity: 0 });
+  const stall = one(
+    s,
+    TH.unfinishedMs,
+    TH,
+    [mkRun({ id: "run-here", status: "waiting_for_new_head" })],
+    observed(AHEAD, "run-elsewhere"),
+  );
+  assert.equal(stall?.reason, "idle 20m - No-Mistakes Review is waiting for a pushed head");
+});
+
+test("waiting_for_session never quotes a push - it is un-parked by a resubmission", () => {
+  // Even with commits genuinely unpushed, "push the branch" is the wrong instruction for a
+  // round that never reopened, and the two must not blur into one sentence.
+  const s = mkSession({ state: "idle", lastActivity: 0 });
+  const stall = one(s, TH.unfinishedMs, TH, [mkRun()], observed(AHEAD));
+  assert.match(stall!.reason, /repair round 2 never reopened/);
+  assert.doesNotMatch(stall!.reason, /not pushed/);
+});
+
+test("an unpushed count does not make a healthy session stall", () => {
+  // The observation only ever changes the WORDING of a stall the clock already decided on. It
+  // is not itself evidence of being stuck - a session that just reported is still fine.
+  const s = mkSession({ state: "idle", lastActivity: 0 });
+  assert.equal(
+    one(s, TH.unfinishedMs - 1, TH, [mkRun({ status: "waiting_for_new_head" })], observed(AHEAD)),
+    null,
+  );
+});
+
 test("a parked run belonging to ANOTHER session is not this session's stall", () => {
   const s = mkSession({ id: "mine", state: "idle", lastActivity: 0 });
   assert.equal(one(s, 999 * MIN, TH, [mkRun({ sessionId: "theirs" })]), null);
@@ -357,7 +496,7 @@ test("detectStalls returns at most one entry per session and skips healthy ones"
   const stuck = mkSession({ id: "a", state: "working", lastActivity: 0 });
   const fine = mkSession({ id: "b", state: "working", lastActivity: 100 * MIN });
   const done = mkSession({ id: "c", state: "idle", lastActivity: 0, task: mkTask({ status: "done" }) });
-  const stalls = detectStalls([stuck, fine, done], [], 100 * MIN + 30_000);
+  const stalls = detectStalls([stuck, fine, done], [], NO_UNPUSHED, 100 * MIN + 30_000);
   assert.deepEqual(
     stalls.map((x) => x.sessionId),
     ["a"],
@@ -374,6 +513,7 @@ test("detectStalls matches each parked run to the session it is bound to", () =>
       mkRun({ id: "run-a", sessionId: "a" }),
       mkRun({ id: "run-b", sessionId: "b", status: "waiting_for_new_head" }),
     ],
+    NO_UNPUSHED,
     999 * MIN,
   );
   assert.deepEqual(

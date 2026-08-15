@@ -14,6 +14,28 @@ import type { Session } from "./types.ts";
 import { reportBucket } from "./session.ts";
 import { workflowRunParkedOnSession } from "./workflow.ts";
 import type { WorkflowRunSummary } from "./workflow.ts";
+import { unpushedClause } from "./unpushed.ts";
+import type { UnpushedCommits } from "./unpushed.ts";
+
+/**
+ * What the daemon observed about each parked run's checkout, keyed by RUN id.
+ *
+ * A parameter rather than a field on `WorkflowRunSummary`, for the same reason `runs` is a
+ * parameter rather than a field on `Session`: this is a local git read, it belongs to the
+ * daemon, and shared code stays pure. Keying by run rather than by session is what keeps a
+ * multi-repo task honest - one session can hold a run per repository, each bound to a
+ * DIFFERENT checkout, and a session-keyed map would report one repository's commits against
+ * another's run.
+ *
+ * A MISSING key means "not observed", which `unpushedClause` already renders as no claim. So
+ * an empty map is the correct pre-observation state and needs no special case: the first
+ * watcher tick, an embedder that wired no observer, and a run whose read is still in flight
+ * all say exactly what they said before this existed.
+ */
+export type UnpushedByRun = ReadonlyMap<string, UnpushedCommits>;
+
+/** The shared empty observation, so callers with nothing to say need not allocate one. */
+export const NO_UNPUSHED: UnpushedByRun = new Map();
 
 /**
  * Why a session is stuck. Ordered by how explicitly it is waiting on a human:
@@ -143,14 +165,38 @@ function workOutstanding(s: Session, runs: readonly WorkflowRunSummary[]): Outst
  * steps, and saying so is most of this rule's value: "resubmit it" and "push the branch" are
  * not interchangeable advice, and a single sentence covering both would be right about
  * neither.
+ *
+ * `waiting_for_new_head` gets a second clause when, and only when, a local observation
+ * positively supports one. The Inspector poller clears that status by observing a head ON THE
+ * REMOTE, so from the daemon's side a session that fixed the findings and committed is
+ * indistinguishable from one that did nothing - both are quiet, both hold the parked run. A
+ * count of commits the remote has never seen is the one fact that separates them, and it
+ * turns a description of the wait into the missing step.
+ *
+ * It APPENDS rather than replaces, which is the contract `unpushedClause` documents: the
+ * clause names the step, and the caller keeps saying which workflow is waiting, because the
+ * alert this feeds deep-links to that run and a sentence that dropped the workflow name would
+ * strand a person on a Runs page with nothing to match. Every non-`ahead` observation - a
+ * branch tracking nothing, a detached HEAD, a git call that errored, or no observation yet -
+ * returns null from `unpushedClause` and leaves the original sentence exactly as it was.
+ * Silence is the required direction here: telling a session it forgot to push when its branch
+ * simply has no remote sends a person hunting for a mistake nobody made.
  */
-function parkedReason(run: WorkflowRunSummary, age: number): string {
+function parkedReason(
+  run: WorkflowRunSummary,
+  age: number,
+  unpushed: UnpushedByRun,
+): string {
   const what = run.status === "waiting_for_new_head"
-    // The Inspector poller clears this by observing a head ON THE REMOTE. A session that
-    // fixed the findings and committed looks identical from here to one that did nothing.
     ? `${run.workflowName} is waiting for a pushed head`
+      + suffix(unpushedClause(unpushed.get(run.id)))
     : `${run.workflowName} repair round ${run.round} never reopened`;
   return `idle ${mins(age)}m - ${what}`;
+}
+
+/** " and <clause>", or nothing at all. Kept here so the null case has one spelling. */
+function suffix(clause: string | null): string {
+  return clause ? ` and ${clause}` : "";
 }
 
 /** The clock a silence is measured against. `firstSeen` is the floor, as settledIdle does. */
@@ -172,12 +218,15 @@ function mins(ms: number): number {
  * `sessions` is used by shared report bucketing so the detector and dashboard
  * agree about whether the session is working or idle. `runs` is the fleet's open workflow
  * runs, for the same reason and on the same terms: the rule needs to know what is still
- * expected of this session, and a parked run is one of the things that can be.
+ * expected of this session, and a parked run is one of the things that can be. `unpushed`
+ * arrives the same way and for the same reason again - it is a git read, so the daemon makes
+ * it and this module only decides what it licenses saying.
  */
 export function detectStall(
   s: Session,
   sessions: Session[],
   runs: readonly WorkflowRunSummary[],
+  unpushed: UnpushedByRun,
   now: number,
   th: StallThresholds = DEFAULT_STALL_THRESHOLDS,
 ): Stall | null {
@@ -241,7 +290,7 @@ export function detectStall(
           sessionId: s.id,
           kind: "workflow-parked",
           forMs: age,
-          reason: parkedReason(outstanding.run, age),
+          reason: parkedReason(outstanding.run, age, unpushed),
           workflowRunId: outstanding.run.id,
         }
         : {
@@ -260,12 +309,13 @@ export function detectStall(
 export function detectStalls(
   sessions: Session[],
   runs: readonly WorkflowRunSummary[],
+  unpushed: UnpushedByRun,
   now: number,
   th: StallThresholds = DEFAULT_STALL_THRESHOLDS,
 ): Stall[] {
   const out: Stall[] = [];
   for (const s of sessions) {
-    const stall = detectStall(s, sessions, runs, now, th);
+    const stall = detectStall(s, sessions, runs, unpushed, now, th);
     if (stall) out.push(stall);
   }
   return out;

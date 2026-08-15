@@ -345,6 +345,65 @@ test("a replacement ledger of the SAME length is still a replacement", async () 
   );
 });
 
+test("an upgraded row rebuilds its spend from the ledger instead of trusting it", async () => {
+  // The whole point of treating an unverifiable cursor as a restart, seen from the outside:
+  // a row written by a build that could not tell a replaced ledger from an appended one has
+  // its figure RECOMPUTED from the file rather than carried forward. The stored 9999 below
+  // is a total no ledger on disk supports, standing in for one accumulated across a
+  // replacement the old build could not see.
+  reset();
+  const root = repo("upgraded-cursor");
+  const worktree = seedConductorRun(root, "feat", {
+    steps: { build: "done" },
+    events: [
+      { type: "step_completed", step: "a", tokenUsage: { input: 30 } },
+      { type: "step_completed", step: "b", tokenUsage: { input: 12 } },
+    ],
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+
+  // A pre-upgrade row: a real offset, no identity, and a spend the ledger does not justify.
+  const size = statSync(join(worktree, ".pipeline", "events.jsonl")).size;
+  db.prepare(
+    `INSERT INTO pipeline_runs
+       (provider, repo_root, slug, run_json, events_offset, events_identity, updated_at)
+     VALUES (?, ?, ?, ?, ?, '', ?)`,
+  ).run(
+    "ai-conductor",
+    root,
+    "feat",
+    JSON.stringify({
+      provider: "ai-conductor",
+      repoRoot: root,
+      slug: "feat",
+      worktree,
+      tier: null,
+      track: null,
+      steps: [],
+      lastStep: null,
+      halt: null,
+      group: "eligible",
+      prUrl: null,
+      costTokens: 9999,
+      updatedAt: 1,
+    }),
+    size,
+    1,
+  );
+
+  const registry = new Registry();
+  restorePipelineProjection(registry);
+  assert.equal(registry.listPipelineRuns()[0]?.costTokens, 9999, "the stored figure, at boot");
+
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(
+    registry.listPipelineRuns()[0]?.costTokens,
+    42,
+    "recomputed from the ledger on the first upgraded pass, not carried forward",
+  );
+});
+
 test("a run whose worktree is gone leaves the projection", async () => {
   reset();
   const root = repo("torn-down");

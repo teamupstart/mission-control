@@ -500,6 +500,44 @@ test("a replacement is detected even when the filesystem hands back the same ino
   assert.equal(replaced.records[0]?.body.step, "cccc");
 });
 
+test("a stored offset with no recorded identity is rebuilt, not resumed", () => {
+  // The upgrade case. A row written before identities were recorded carries an offset and an
+  // empty identity, and there is no way to tell that cursor from one pointing into a ledger
+  // that has since been replaced by an equal-or-larger file - so it is not trusted. The pass
+  // restarts at zero and recomputes from the whole ledger, which costs one extra read per
+  // projected run, once, and cannot silently resume in the middle of a different file.
+  const root = repo("tail-unverifiable");
+  const worktree = seedConductorRun(root, "feat", {
+    events: [
+      { type: "step_completed", step: "a", tokenUsage: { input: 5 } },
+      { type: "step_completed", step: "b", tokenUsage: { input: 7 } },
+    ],
+  });
+
+  const whole = tailConductorEvents(worktree, 0, null);
+  assert.equal(whole.records.length, 2);
+
+  // An offset past zero with no identity beside it: unverifiable, so read it all again.
+  const upgraded = tailConductorEvents(worktree, whole.offset, "");
+  assert.equal(upgraded.restarted, true, "an uncheckable cursor is not a cursor");
+  assert.equal(upgraded.records.length, 2, "and the whole ledger is re-read");
+  assert.equal(tokensIn(upgraded.records), 12, "so the total is recomputed, not lost");
+
+  // Offset ZERO with no identity is not unverifiable - there is nothing to verify, and a
+  // first pass must not be reported as a restart or every new run would claim to be one.
+  const fresh = tailConductorEvents(worktree, 0, "");
+  assert.equal(fresh.restarted, false);
+
+  // And once an identity IS recorded, an append resumes normally rather than re-reading.
+  appendFileSync(
+    join(worktree, ".pipeline", "events.jsonl"),
+    `${JSON.stringify({ type: "step_completed", step: "c", tokenUsage: { input: 1 } })}\n`,
+  );
+  const resumed = tailConductorEvents(worktree, upgraded.offset, upgraded.identity);
+  assert.equal(resumed.restarted, false);
+  assert.equal(resumed.records.length, 1);
+});
+
 test("token totals sum every numeric leaf, and stay null when nothing reported any", () => {
   // Summed rather than named field by field, because the engine's usage shape varies by
   // provider - a reader that named `input`/`output` would silently under-count a third one.

@@ -2287,8 +2287,9 @@ export function openDb(): DatabaseSync {
       -- the path is re-created. An offset without it is meaningless across a worktree being
       -- cut again under the same slug, because the replacement is a different file that
       -- happens to sit at the same path. Empty string means "not recorded", which is what
-      -- every row written before this column carries and is treated as no evidence rather
-      -- than as a change.
+      -- every row written before this column carries - and a nonzero offset beside one is
+      -- treated as UNVERIFIABLE rather than as an append: the first pass over such a row
+      -- rebuilds from byte zero, because a cursor that cannot be checked is not a cursor.
       events_identity TEXT NOT NULL DEFAULT '',
       updated_at    INTEGER NOT NULL
     );
@@ -2323,9 +2324,11 @@ function inFlightIndexSql(): string {
 function migrate(d: DatabaseSync): void {
   // Which file each pipeline run's events offset indexes into. Added after `pipeline_runs`
   // shipped, so an existing row carries the empty-string default - which is exact: those
-  // rows were written by a build that recorded no identity, and an unknown identity is
-  // treated as no evidence rather than as a change. The alternative, treating it as a
-  // mismatch, would reset every projected run's accumulated token total once on upgrade.
+  // rows were written by a build that recorded no identity. The tail treats an empty
+  // identity beside a NONZERO offset as an unverifiable cursor and rebuilds that run from
+  // byte zero once, which costs one extra read and recomputes the token total from the
+  // ledger rather than trusting a figure accumulated by a build that could not tell a
+  // replaced ledger from an appended one.
   addColumn(d, "pipeline_runs", "events_identity", "TEXT NOT NULL DEFAULT ''");
 
   // An embedded driver can be relaunched from `status` plus `agent_session_id`, but those

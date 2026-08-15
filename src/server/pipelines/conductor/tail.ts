@@ -146,10 +146,12 @@ export function tailConductorEvents(
   worktree: string,
   from: number,
   /**
-   * The identity this caller last saw at this path, or null/empty when it has none - a run
-   * projected before identities were recorded, or a first pass. No evidence is NOT evidence
-   * of a change: an unknown identity is adopted silently rather than forcing a restart, or
-   * every existing row would reset its accumulated spend once on upgrade.
+   * The identity this caller last saw at this path.
+   *
+   * `null` means there is no stored cursor at all - a run being projected for the first time,
+   * whose offset is 0 anyway. The empty string means there IS a stored cursor but the build
+   * that wrote it recorded no identity, which is every row written before this column
+   * existed.
    */
   knownIdentity: string | null = null,
 ): TailReading {
@@ -181,8 +183,22 @@ export function tailConductorEvents(
     // at the same path is a replacement whatever its length, which a size comparison cannot
     // see; a file shorter than where we stopped is one rewritten in place, which an identity
     // comparison cannot see.
+    // Three ways one condition is reached, and the third is the one that is easy to argue
+    // away. An identity that DIFFERS is a replacement. A file SHORTER than where we stopped
+    // is one rewritten in place. And an UNVALIDATABLE resume point - a stored offset past
+    // zero whose build recorded no identity - is one too, because there is no way to tell it
+    // from a cursor into a ledger that has since been replaced by an equal-or-larger one.
+    //
+    // That last arm reverses an earlier judgement here, which adopted an unknown identity
+    // silently to avoid "resetting every projected run's accumulated total once on upgrade".
+    // That reasoning was wrong about what a reset costs: restarting re-reads the whole ledger
+    // and recomputes the total from it, so the figure is not lost - it is replaced by one
+    // derived directly from the file rather than accumulated across passes. The price is one
+    // extra full read per projected run, once, and the thing it buys is that no cursor this
+    // build cannot verify is ever trusted.
+    const unverifiable = knownIdentity === "" && start > 0;
     const replaced = knownIdentity !== null && knownIdentity !== "" && knownIdentity !== identity;
-    restarted = replaced || size < start;
+    restarted = replaced || unverifiable || size < start;
     begin = restarted ? 0 : start;
     if (size <= begin) return { records: [], offset: begin, identity, restarted };
     const want = Math.min(size - begin, MAX_TAIL_BYTES);

@@ -55,6 +55,14 @@ function isMarkdown(artifact: ArchiveArtifactView): boolean {
     || artifact.archivePath.endsWith(".md");
 }
 
+/** A delivered follow-up's timestamp in the operator's locale. */
+function promptTimeLabel(at: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(at));
+}
+
 /** What an artifact's bytes turned into, once fetched. */
 type Loaded =
   | { kind: "html"; text: string }
@@ -240,8 +248,14 @@ export function ScoutReader({
               <span aria-hidden>←</span> All scouts
             </button>
           </Tooltip>
-          <p className="scouts-eyebrow">{scoutLabel(detail)}</p>
-          <h1 className="scouts-question">{detail.question ?? scoutLabel(detail)}</h1>
+          <p className="scouts-eyebrow">Scout report</p>
+          <h1 className="scouts-question">{scoutLabel(detail)}</h1>
+          {!detail.prompts && detail.question ? (
+            // Bundles from before prompt trails still carry the question preview. Keep it
+            // visible here instead of making a concise title erase the only request context
+            // that older archive can provide.
+            <p className="scouts-legacy-question">{detail.question}</p>
+          ) : null}
           <div className="scouts-provenance">
             {/*
               `danger`, not `exited`. Everywhere else this page marks unreadable it uses
@@ -319,6 +333,40 @@ export function ScoutReader({
             </ul>
           ) : null}
         </header>
+
+        {detail.prompts ? (
+          // Archive metadata, deliberately outside the report iframe. React owns every text
+          // node here, so prompt-looking markup stays escaped text and receives none of the
+          // Markdown or HTML preview behavior used by report artifacts below.
+          <section className="scouts-prompt-context" aria-labelledby="scouts-prompt-context-heading">
+            <h2 id="scouts-prompt-context-heading" className="scouts-prompt-context-heading">
+              Prompt context
+            </h2>
+            {detail.prompts.truncated ? (
+              <p className="scouts-prompt-truncated">
+                This trail is incomplete. Older or oversized prompt text was omitted when the
+                archive was created.
+              </p>
+            ) : null}
+            <ol className="scouts-prompt-list">
+              {detail.prompts.entries.map((entry, index) => (
+                <li className="scouts-prompt-entry" key={`${entry.kind}-${index}`}>
+                  <div className="scouts-prompt-entry-meta">
+                    <span className="scouts-prompt-label">
+                      {entry.kind === "initial" ? "Original request" : "Follow-up"}
+                    </span>
+                    {entry.kind === "follow_up" && entry.at ? (
+                      <time className="scouts-prompt-time" dateTime={entry.at}>
+                        {promptTimeLabel(entry.at)}
+                      </time>
+                    ) : null}
+                  </div>
+                  <p className="scouts-prompt-text">{entry.text}</p>
+                </li>
+              ))}
+            </ol>
+          </section>
+        ) : null}
 
         <div className="scouts-doc">
           {active ? (

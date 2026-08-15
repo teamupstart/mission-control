@@ -64,6 +64,18 @@ const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
 const SLOW_WORKFLOW_CONTEXT_MS = 5_000;
 /**
+ * A reviewer that takes its time before objecting, so a spec can watch one REPORT.
+ *
+ * Every other verdict here answers instantly, which makes the pending state unobservable from a
+ * browser: by the time the run detail is open the reviewer has already spoken. This one holds
+ * the fail long enough to select the row while it still reads "No verdict in this round yet"
+ * and then watch the worklist carry that selection to the change it raises. Generous rather
+ * than tight, because the window has to survive a loaded CI runner opening a page in it, and
+ * the spec waits on the outcome rather than on the clock.
+ */
+const SLOW_FAIL_VERDICT = "E2E_SLOW_FAIL_VERDICT";
+const SLOW_FAIL_VERDICT_MS = 15_000;
+/**
  * An ensemble comparison that never answers, so a spec can kill the daemon while one is
  * genuinely in flight.
  *
@@ -256,6 +268,47 @@ function headlessAnswer(prompt) {
       confidence: 0.95,
     });
   }
+  /*
+   * The same reviewer, still objecting, but in different words.
+   *
+   * A reviewer that rewords a title it keeps raising retires the old change key and opens a new
+   * one, and the worklist has to say what is actually known about the retired half: its reviewer
+   * looked again and did not pass, so nothing confirmed the fix. That state is unreachable from
+   * a fixture whose fail verdict is a fixed string, which is what this second title is for.
+   */
+  if (
+    prompt.startsWith("# EXTREMELY CRITICAL OPERATOR DIRECTIVE")
+    && prompt.includes("E2E_DIRECTIVE_REWORD_VERDICT")
+  ) {
+    return JSON.stringify({
+      verdict: "fail",
+      summary: "Deterministic e2e objection, restated",
+      requestedChanges: [
+        {
+          title: "E2E reworded change",
+          rationale: "This reviewer is scripted to restate its objection",
+          evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
+        },
+      ],
+      confidence: 0.9,
+    });
+  }
+  /* The slow reviewer's answer, once its delay has elapsed. Its own title, so a spec can tell
+     the change it raises from the instant reviewers' one. */
+  if (prompt.includes(SLOW_FAIL_VERDICT)) {
+    return JSON.stringify({
+      verdict: "fail",
+      summary: "Deterministic e2e objection, after a wait",
+      requestedChanges: [
+        {
+          title: "E2E slow requested change",
+          rationale: "This reviewer is scripted to object after a delay",
+          evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
+        },
+      ],
+      confidence: 0.9,
+    });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",
@@ -377,6 +430,8 @@ function runHeadlessSdk() {
       && prompt.includes("Compact workflow intent without rewriting it.")
     ) {
       setTimeout(() => finish(prompt), SLOW_WORKFLOW_CONTEXT_MS);
+    } else if (prompt.includes(SLOW_FAIL_VERDICT)) {
+      setTimeout(() => finish(prompt), SLOW_FAIL_VERDICT_MS);
     } else {
       finish(prompt);
     }
@@ -483,6 +538,10 @@ const SCOUT_FINDING = "the resume path never replayed the repository grant";
 const SCOUT_INVALID = "E2E_SCOUT_INVALID_REPORT";
 /** An intent word that tells the fake to write the page but never submit it. */
 const SCOUT_NO_SUBMIT = "E2E_SCOUT_NO_SUBMIT";
+/** A natural-language intent that stages the report so a spec can deliver later context. */
+const SCOUT_DEFER_SUBMISSION = "wait for follow-up context before submitting the report";
+/** An attributed fixture turn that tells the staged scout to publish through its real route. */
+const SCOUT_SUBMIT_STAGED = "E2E_SCOUT_SUBMIT_STAGED_REPORT";
 
 function scoutReportHtml(valid) {
   const body = valid
@@ -538,6 +597,9 @@ async function runScout(prompt) {
 
   if (prompt.includes(SCOUT_NO_SUBMIT)) {
     return `Report written to ${relative} but deliberately not submitted.`;
+  }
+  if (prompt.toLowerCase().includes(SCOUT_DEFER_SUBMISSION)) {
+    return `Report staged at ${relative}; waiting for follow-up context before submission.`;
   }
   const port = process.env.MISSION_PORT ?? "7317";
   try {
@@ -704,6 +766,26 @@ function answer(prompts) {
   emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
 }
 
+/** Run the fake scout's file write and real submission while its SDK turn stays open. */
+function beginScoutTurn(prompt) {
+  const held = { prompts: [] };
+  openTurn = held;
+  // Tracked so a stdin close cannot exit the process out from under a submission that is
+  // already in flight - the answer would never be written and the card would go from
+  // working straight to exited, which reads as a crash rather than as a race.
+  scoutTurn = runScout(prompt).then((text) => {
+    openTurn = null;
+    appendTurn("assistant", [{ type: "text", text }]);
+    emit({
+      type: "assistant",
+      session_id: SESSION_ID,
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    });
+    for (const queued of held.prompts) appendTurn("user", queued);
+    emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
+  });
+}
+
 const rl = createInterface({ input: process.stdin });
 
 rl.on("line", (line) => {
@@ -805,23 +887,8 @@ rl.on("line", (line) => {
     // spec wrote - which is what makes the requirement's delivery the thing under test. The
     // turn is held open across the write and the submission because both are real I/O; the
     // card stays "working" until the archive exists, exactly as a real one would.
-    if (prompt.includes(SCOUT_MARKER)) {
-      const held = { prompts: [] };
-      openTurn = held;
-      // Tracked so a stdin close cannot exit the process out from under a submission that is
-      // already in flight - the answer would never be written and the card would go from
-      // working straight to exited, which reads as a crash rather than as a race.
-      scoutTurn = runScout(prompt).then((text) => {
-        openTurn = null;
-        appendTurn("assistant", [{ type: "text", text }]);
-        emit({
-          type: "assistant",
-          session_id: SESSION_ID,
-          message: { role: "assistant", content: [{ type: "text", text }] },
-        });
-        for (const queued of held.prompts) appendTurn("user", queued);
-        emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
-      });
+    if (prompt.includes(SCOUT_MARKER) || prompt === SCOUT_SUBMIT_STAGED) {
+      beginScoutTurn(prompt);
       return;
     }
 

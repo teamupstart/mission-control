@@ -180,6 +180,7 @@ import {
   workEpisodePromptIdentities,
 } from "./db.ts";
 import type { ForemanInviteRow, SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
+import { refreshScoutPromptContextName } from "./scouts/prompt-context.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
@@ -2368,6 +2369,13 @@ export class Registry extends EventEmitter {
     };
     this.sessions.set(sessionId, next);
     this.emitSession(next);
+    // Keep a scout's frozen episode title level with the card. Capture reads the live
+    // `session.name` when the session is still there and this stored copy when it is not,
+    // so letting the two drift would archive the same scout under two different titles
+    // depending only on whether it was captured before or after its session was evicted.
+    // Hung off the one rename path rather than off a second mechanism, which is also why
+    // it is here and not in the route: `renameForTask` and the rename route both land here.
+    refreshScoutPromptContextName(sessionId, name);
 
     const hostedCwds = new Set<string>();
     if (s.cwd) hostedCwds.add(s.cwd);

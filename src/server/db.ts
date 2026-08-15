@@ -2119,6 +2119,84 @@ export function openDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_task ON archive_capture_jobs(task_id);
     CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_status ON archive_capture_jobs(status);
+
+    -- ---- scout prompt context ----
+
+    -- Where a scout's conversation STARTED, frozen at the instant its task prompt crossed
+    -- into the runtime, plus the session name that was on the card at that instant.
+    --
+    -- Local capture coordination, exactly like archive_capture_jobs above and on the same
+    -- (task, episode) key, so a re-dispatch of the same task is genuinely new work with its
+    -- own boundary rather than a second write onto the first attempt's. Not a read model:
+    -- nothing renders these rows, and the portable manifest is the durable answer once
+    -- capture freezes one.
+    --
+    -- The two nullable locators are nullable for one reason each, and both mean "the walk
+    -- starts at the beginning" rather than "this went missing". transcript_path is null for
+    -- a harness whose file is not locatable yet - an embedded session is created BY this
+    -- delivery, so there is no file to name until it writes one. transcript_offset is null
+    -- with it, and zero when the prompt itself travelled in the launch message (pi), where
+    -- the whole file belongs to this episode.
+    --
+    -- session_name is NOT NULL because it is the archive's title of last resort: a session
+    -- that has since been evicted cannot be asked, and a null here would mean the archive
+    -- silently falls back to the long task title this whole feature exists to stop showing.
+    --
+    -- No foreign keys, for the reason archive_capture_jobs states: sessions are disposable
+    -- and this row has to outlive the one it names.
+    CREATE TABLE IF NOT EXISTS scout_prompt_contexts (
+      task_id           TEXT NOT NULL,
+      episode_id        TEXT NOT NULL,
+      session_id        TEXT,
+      session_name      TEXT NOT NULL,
+      transcript_path   TEXT,
+      transcript_offset INTEGER,
+      -- Whether any bound below was reached, so a collector reports an incomplete trail as
+      -- incomplete instead of presenting what survived as the whole conversation.
+      truncated         INTEGER NOT NULL DEFAULT 0,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      PRIMARY KEY (task_id, episode_id)
+    );
+    -- The rename path refreshes the frozen name by session, not by task.
+    CREATE INDEX IF NOT EXISTS idx_scout_prompt_contexts_session
+      ON scout_prompt_contexts(session_id);
+
+    -- One user-role turn this daemon SAW DELIVERED into a scout episode, in delivery order.
+    --
+    -- The point of persisting it is attribution that survives a restart. src/server/injections.ts
+    -- remembers who typed what in memory only, so a daemon restarted between a Foreman
+    -- instruction and the capture that reads the transcript would archive that instruction as
+    -- if a human had written it. That is the one failure this table exists to prevent, which
+    -- is why a non-human row keeps only the fingerprint: its payload is needed to EXCLUDE a
+    -- transcript turn, never to archive one. Human rows keep their exact text, because they
+    -- are also the fallback when the transcript is rotated, missing or not yet flushed.
+    --
+    -- id is the delivery's own id where one exists (PendingTurn.id) and a generated one
+    -- otherwise, and the insert is ON CONFLICT DO NOTHING against it. That is what makes a
+    -- pending turn retried after an uncertain delivery one prompt rather than two.
+    --
+    -- seq is assigned per episode at insert and is what orders the trail. It is not a
+    -- timestamp: two turns can share a millisecond, and delivered_at is what was observed
+    -- rather than what came first.
+    CREATE TABLE IF NOT EXISTS scout_prompt_turns (
+      id           TEXT PRIMARY KEY,
+      task_id      TEXT NOT NULL,
+      episode_id   TEXT NOT NULL,
+      seq          INTEGER NOT NULL,
+      -- human | foreman | workflow | harness. Append-only, and read defensively: an origin
+      -- this build does not know reads as null, which excludes the turn from a human trail
+      -- rather than admitting it. That is the safe direction for a privacy bound.
+      origin       TEXT NOT NULL,
+      -- Null for every non-human row, by design rather than by omission.
+      text         TEXT,
+      fingerprint  TEXT NOT NULL,
+      delivered_at INTEGER NOT NULL,
+      UNIQUE (task_id, episode_id, seq)
+    );
+    -- Every read of this table is "one episode's trail, in order".
+    CREATE INDEX IF NOT EXISTS idx_scout_prompt_turns_episode
+      ON scout_prompt_turns(task_id, episode_id, seq);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);

@@ -139,6 +139,7 @@ import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
 import { recordInjection } from "./injections.ts";
+import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -2778,6 +2779,14 @@ export function buildApp(
     // Only once it landed: a refused or failed delivery is not a turn anybody will read,
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
+    // A human turn reaches this arm only when the caller opted out of the editable outbox,
+    // or there is no outbox to reach - so it has no `PendingTurn.id` and no acceptance to
+    // wait for, and `r.ok` IS its delivery boundary. The non-human origins are journaled
+    // through `observeInjections` on the line above rather than here, so that every
+    // automated path reports once and this one does not report twice.
+    if (r.ok && parsed.data.origin === "human") {
+      journalScoutPrompt(registry, session.id, parsed.data.text, "human");
+    }
     return c.json(r, r.ok ? 200 : 500);
   });
 

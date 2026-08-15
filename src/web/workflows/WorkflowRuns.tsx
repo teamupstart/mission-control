@@ -573,11 +573,24 @@ function stalledReviewer(attempt: WorkflowNodeAttempt): boolean {
   return attempt.state === "error" || attempt.state === "completed";
 }
 
+/**
+ * The file a change cites, or null - and EMPTY IS ABSENT.
+ *
+ * `WorkflowRequestedChangeSchema.path` is `.optional()` with no `.min(1)`, so a reviewer may
+ * legally emit `path: ""`, and `change.path ?? null` keeps it: `??` coalesces null and undefined,
+ * not the empty string. Read directly, the row and the copy text called it absent while the
+ * detail pane drew an `Open file` button with nothing in its tooltip that revealed an empty path
+ * in the Files tab. One rule in one place, so the four readers cannot disagree again.
+ */
+const citedPath = (row: ChangeWorklistRow): string | null =>
+  row.path === null || row.path === "" ? null : row.path;
+
 /** The exact repair text one change copies, so a session gets the ask rather than the page. */
 function changeCopyText(row: ChangeWorklistRow): string {
+  const path = citedPath(row);
   return [
     row.title,
-    row.path ? `${row.path}${row.line === null ? "" : `:${row.line}`}` : null,
+    path === null ? null : `${path}${row.line === null ? "" : `:${row.line}`}`,
     "",
     row.rationale,
   ].filter((part) => part !== null).join("\n");
@@ -636,12 +649,13 @@ function WorklistRailRow({
     switch (item.kind) {
       case "change": {
         const { row } = item;
+        const path = citedPath(row);
         return {
           chip: CHANGE_STATE_CHIPS[row.state],
           title: row.title,
           hint: `Show what ${row.personaName} asked for, in full`,
           lines: [
-            ...(row.path ? [row.path] : []),
+            ...(path === null ? [] : [path]),
             row.state === "resolved" && row.resolvedRound !== null
               ? `Resolved in round ${row.resolvedRound}`
               : row.state === "unconfirmed"
@@ -1191,7 +1205,7 @@ function ChangeDetail({
   const chip = CHANGE_STATE_CHIPS[row.state];
   const meta = attempt ? verdictMeta(attempt, calls) : null;
   const summary = attempt ? verdictOf(attempt)?.summary ?? null : null;
-  const path = row.path;
+  const path = citedPath(row);
   return (
     <article className={`wf-run-card wf-run-change is-${row.state}`}>
       <header className="wf-run-card-head">
@@ -1208,9 +1222,9 @@ function ChangeDetail({
         <div>
           <dt>File</dt>
           <dd>
-            {row.path
-              ? <code>{row.path}{row.line === null ? "" : `:${row.line}`}</code>
-              : "No file cited"}
+            {path === null
+              ? "No file cited"
+              : <code>{path}{row.line === null ? "" : `:${row.line}`}</code>}
           </dd>
         </div>
         <div>

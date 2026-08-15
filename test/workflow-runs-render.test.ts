@@ -2425,3 +2425,39 @@ test("following gives up rather than guessing", () => {
   // And a reviewer whose result is nowhere on this round leaves the fallback to the caller.
   assert.equal(followSelection("attempt:attempt-slow", [waiting], segments), null);
 });
+
+test("a change citing an EMPTY path is treated as citing none, everywhere", () => {
+  /*
+   * `WorkflowRequestedChangeSchema.path` is `.optional()` with no `.min(1)`, so `path: ""` is a
+   * legal verdict, and `change.path ?? null` keeps it - `??` coalesces null and undefined, not
+   * the empty string. Read directly, the row and the copy text called it absent while the detail
+   * pane drew an `Open file` button with nothing in its tooltip, which revealed an empty path in
+   * the Files tab.
+   */
+  const base = runningDetail();
+  const empty = {
+    ...failVerdict,
+    requestedChanges: [{
+      title: "Attach the completed test output",
+      rationale: "The reply cites no run.",
+      path: "",
+      evidence: [{ kind: "goal", quote: "the task asked for the transcript" }],
+    }],
+  };
+  const html = render({
+    ...base,
+    attempts: base.attempts.map((item) => item.id === "attempt-1"
+      ? { ...item, verdict: empty }
+      : item),
+  } as WorkflowRunDetail, {
+    roundId: "submission-1",
+    onOpenFile: () => {},
+    onCopyChange: () => {},
+  });
+
+  assert.match(html, /Attach the completed test output/);
+  assert.match(html, /No file cited/);
+  // The control that would have opened it, and the tooltip that would have named nothing.
+  assert.doesNotMatch(html, /Open file/);
+  assert.doesNotMatch(html, /Open  in the bound session/);
+});

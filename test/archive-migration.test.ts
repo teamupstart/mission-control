@@ -204,12 +204,22 @@ test("every capture job survives, with a kind of scout", () => {
   for (const job of jobs) {
     assert.equal(job.kind, "scout", "a row written before the discriminator is a scout's, and says so");
     assert.equal(job.producerId, PRODUCER, "the reserved producer namespace is not re-minted");
+    assert.equal(job.prompts, null, "an old job does not invent prompt history during migration");
     assert.deepEqual(
       job.repos.map((repo) => repo.root),
       ["/tmp/worktree-that-is-going-away"],
       "the retained checkout roots are the whole reason this table is copied rather than dropped",
     );
   }
+});
+
+test("the additive prompt projection columns exist after upgrade", () => {
+  const columns = (table: string): string[] =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+  assert.ok(columns("archive_capture_jobs").includes("prompts_json"));
+  assert.ok(columns("archives").includes("prompts_json"));
 });
 
 test("the reserved job keeps the identity a resumed capture must publish under", () => {

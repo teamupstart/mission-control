@@ -3,6 +3,7 @@ import {
   ARCHIVE_KINDS,
   ARCHIVE_SEARCH_LIMITS,
   ARCHIVE_TEXT_LIMITS,
+  parseArchivePromptTrail,
   encodeArchiveCursor,
   archiveKey,
   type ArchiveIdentity,
@@ -12,6 +13,7 @@ import {
   type ArchiveIndexStatus,
   type ArchiveListCursor,
   type ArchiveManifestMissing,
+  type ArchiveManifestPromptTrail,
   type ArchiveManifestRepository,
   type ArchiveSearchQuery,
   type ArchiveSearchSegmentKind,
@@ -44,6 +46,7 @@ export interface ArchiveRow {
   captureStatus: "complete" | "partial" | null;
   title: string;
   question: string | null;
+  prompts: ArchiveManifestPromptTrail | null;
   summary: string | null;
   tags: string[];
   agent: string | null;
@@ -117,6 +120,7 @@ interface ArchiveRowShape {
   capture_status: string | null;
   title: string;
   question: string | null;
+  prompts_json: string | null;
   summary: string | null;
   tags_json: string | null;
   agent: string | null;
@@ -156,7 +160,7 @@ interface ArtifactRowShape {
 }
 
 const ARCHIVE_COLUMNS = `key, producer_id, archive_id, producer_label, kind, format_version, status,
-  capture_status, title, question, summary, tags_json, agent, model, source, repositories_json,
+  capture_status, title, question, prompts_json, summary, tags_json, agent, model, source, repositories_json,
   repo_labels, missing_json, primary_artifact_id, content_digest, manifest_digest, library_root,
   relative_path, manifest_bytes, manifest_mtime_ns, artifact_count, bytes, error, created_at,
   completed_at, sort_at, indexed_at, last_seen_epoch`;
@@ -210,6 +214,7 @@ export class ArchiveStore {
         manifest.archive.captureStatus,
         clip(manifest.archive.title, ARCHIVE_TEXT_LIMITS.title) ?? "",
         clip(manifest.archive.question, ARCHIVE_TEXT_LIMITS.question),
+        manifest.archive.prompts ? JSON.stringify(manifest.archive.prompts) : null,
         clip(manifest.archive.summary, ARCHIVE_TEXT_LIMITS.summary),
         manifest.archive.tags.length > 0 ? JSON.stringify(manifest.archive.tags) : null,
         clip(manifest.origin.agent, ARCHIVE_TEXT_LIMITS.label),
@@ -280,6 +285,7 @@ export class ArchiveStore {
         "unreadable",
         null,
         "",
+        null,
         null,
         null,
         null,
@@ -546,6 +552,12 @@ function searchSegments(bundle: VerifiedArchiveBundle): Array<{ kind: ArchiveSea
   }
   const overlap = ARCHIVE_TEXT_LIMITS.snippet;
   const stride = ARCHIVE_TEXT_LIMITS.segment - overlap;
+  for (const prompt of manifest.archive.prompts?.entries ?? []) {
+    for (let start = 0; start < prompt.text.length; start += stride) {
+      push("prompt", prompt.text.slice(start, start + ARCHIVE_TEXT_LIMITS.segment));
+      if (start + ARCHIVE_TEXT_LIMITS.segment >= prompt.text.length) break;
+    }
+  }
   for (let start = 0; start < bundle.reportText.length; start += stride) {
     push("report_text", bundle.reportText.slice(start, start + ARCHIVE_TEXT_LIMITS.segment));
     if (start + ARCHIVE_TEXT_LIMITS.segment >= bundle.reportText.length) break;
@@ -580,6 +592,7 @@ function rowToArchive(row: ArchiveRowShape): ArchiveRow {
     captureStatus: row.capture_status === "complete" || row.capture_status === "partial" ? row.capture_status : null,
     title: row.title,
     question: row.question,
+    prompts: parsePromptTrail(row.prompts_json),
     summary: row.summary,
     tags: parseJsonArray<string>(row.tags_json) ?? [],
     agent: row.agent,
@@ -653,6 +666,7 @@ function readSegmentKind(raw: string): ArchiveSearchSegmentKind {
     case "provenance":
     case "report_text":
     case "artifact_path":
+    case "prompt":
       return raw;
     default:
       return "provenance";
@@ -664,6 +678,15 @@ function parseJsonArray<T>(raw: string | null): T[] | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
     return Array.isArray(parsed) ? (parsed as T[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function parsePromptTrail(raw: string | null): ArchiveManifestPromptTrail | null {
+  if (!raw) return null;
+  try {
+    return parseArchivePromptTrail(JSON.parse(raw) as unknown);
   } catch {
     return null;
   }

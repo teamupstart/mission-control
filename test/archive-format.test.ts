@@ -13,6 +13,8 @@ import {
   ARCHIVE_INDEX_STATUSES,
   ARCHIVE_LIMITS,
   ARCHIVE_MISSING_KINDS,
+  ARCHIVE_PROMPT_KINDS,
+  ARCHIVE_PROMPT_LIMITS,
   ARCHIVE_SEARCH_SEGMENT_KINDS,
   canonicalArchiveContentPayload,
   decodeArchiveCursor,
@@ -106,6 +108,7 @@ test("a representative version 1 manifest parses into its camelCase form", () =>
   assert.equal(parsed.manifest.producer.id, PRODUCER);
   assert.equal(parsed.manifest.archive.captureStatus, "complete");
   assert.deepEqual(parsed.manifest.archive.tags, ["permissions", "resume"]);
+  assert.equal(parsed.manifest.archive.prompts, null, "an older v1 archive has no inferred trail");
   assert.equal(parsed.manifest.primaryArtifactId, "report");
   assert.equal(parsed.manifest.artifacts[0]?.archivePath, "report/report.html");
   assert.equal(parsed.manifest.origin.repositories[0]?.label, "mission-control");
@@ -122,6 +125,70 @@ test("a manifest round-trips through serialization without changing meaning", ()
   assert.equal(again.ok, true);
   if (!again.ok) return;
   assert.deepEqual(again.manifest, parsed.manifest);
+});
+
+test("a complete prompt trail parses and round-trips inside additive version 1", () => {
+  const value = manifestValue();
+  (value.archive as Record<string, unknown>).prompts = {
+    entries: [
+      { kind: "initial", text: "Find why resume loses permissions", at: null },
+      { kind: "follow_up", text: "Also check Pi", at: "2026-08-12T18:46:00.000Z" },
+    ],
+    truncated: false,
+  };
+  const parsed = parseArchiveManifest(value);
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  assert.deepEqual(parsed.manifest.archive.prompts?.entries.map((entry) => entry.kind), [
+    "initial",
+    "follow_up",
+  ]);
+  const serialized = serializeArchiveManifest(parsed.manifest);
+  assert.match(serialized, /"follow_up"/);
+  const again = parseArchiveManifest(JSON.parse(serialized));
+  assert.equal(again.ok, true);
+  if (!again.ok) return;
+  assert.deepEqual(again.manifest.archive.prompts, parsed.manifest.archive.prompts);
+});
+
+test("prompt ordering and UTF-8 byte bounds are manifest compatibility checks", () => {
+  const promptManifest = (entries: Array<{ kind: string; text: string; at: string | null }>) => {
+    const value = manifestValue();
+    (value.archive as Record<string, unknown>).prompts = { entries, truncated: false };
+    return value;
+  };
+  assert.equal(
+    parseArchiveManifest(promptManifest([{ kind: "follow_up", text: "not first", at: null }])).ok,
+    false,
+  );
+  assert.equal(
+    parseArchiveManifest(
+      promptManifest([
+        { kind: "initial", text: "first", at: null },
+        { kind: "initial", text: "again", at: null },
+      ]),
+    ).ok,
+    false,
+  );
+
+  const within = "界".repeat(Math.floor(ARCHIVE_PROMPT_LIMITS.entryBytes / 3));
+  assert.equal(
+    parseArchiveManifest(promptManifest([{ kind: "initial", text: within, at: null }])).ok,
+    true,
+    "a multibyte value inside the byte ceiling parses",
+  );
+  assert.equal(
+    parseArchiveManifest(promptManifest([{ kind: "initial", text: `${within}界`, at: null }])).ok,
+    false,
+    "the same character count can cross the UTF-8 byte ceiling",
+  );
+
+  const full = "x".repeat(ARCHIVE_PROMPT_LIMITS.entryBytes);
+  const tooManyBytes = [
+    { kind: "initial", text: full, at: null },
+    ...Array.from({ length: 12 }, () => ({ kind: "follow_up", text: full, at: null })),
+  ];
+  assert.equal(parseArchiveManifest(promptManifest(tooManyBytes)).ok, false, "the total text cap is enforced");
 });
 
 test("unknown fields are ignored inside a known version rather than refused", () => {
@@ -427,9 +494,10 @@ test("the persisted vocabularies are append-only and contain what this build wri
   assert.deepEqual([...ARCHIVE_INDEX_STATUSES], ["ready", "partial", "unreadable"]);
   assert.deepEqual([...ARCHIVE_ARTIFACT_ROLES], ["primary_report", "report_companion", "supporting"]);
   assert.deepEqual([...ARCHIVE_MISSING_KINDS], ["primary_report", "report_companion", "supporting_artifact"]);
+  assert.deepEqual([...ARCHIVE_PROMPT_KINDS], ["initial", "follow_up"]);
   assert.deepEqual(
     [...ARCHIVE_SEARCH_SEGMENT_KINDS],
-    ["title", "question", "summary", "tag", "provenance", "report_text", "artifact_path"],
+    ["title", "question", "summary", "tag", "provenance", "report_text", "artifact_path", "prompt"],
   );
   assert.equal(
     ARCHIVE_CAPTURE_STATUSES.includes("unreadable" as never),

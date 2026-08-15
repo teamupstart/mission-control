@@ -96,11 +96,14 @@ folder, its contents go wherever that folder goes.
   slot per repository.
 - `manifest.json` - a versioned, self-describing snapshot: the archive key, its **kind**, the
   producer, the display and search metadata, timing, completeness, artifact provenance, byte
-  sizes, and SHA-256 digests.
+  sizes, and SHA-256 digests. A new scout also carries a bounded human prompt trail: the exact
+  stored task intent plus later human follow-ups that Mission Control could attribute to that
+  work episode.
 
-The conversation is **not** archived. Neither are hidden reasoning, system prompts, raw tool
-protocol, or vendor bookkeeping. The useful output of a scout is the finding and its
-evidence, not the turns spent reaching it.
+The prompt trail is provenance and search context, not a transcript and not the scout's
+answer. Assistant prose, hidden reasoning, system text, tool calls and results, vendor
+bookkeeping, the generated scout appendix, and turns attributed to Foreman, Workflow or the
+harness are not archived. The useful output of a scout remains the report and its evidence.
 
 Task ids, session ids, absolute home paths, and worktree paths are deliberately absent from
 the portable manifest. An archive is meant to be readable on a machine that has never heard
@@ -123,6 +126,30 @@ append-only identifiers - added at the end, never renamed and never reordered. A
 **newer** Mission Control is listed as unreadable rather than parsed as the current format,
 and so is one declaring a kind this build has no name for.
 
+The prompt extension is additive inside version 1. Its wire shape is:
+
+```json
+{
+  "archive": {
+    "title": "Resume permission loss",
+    "question": "Why did a resumed agent lose repository permissions?",
+    "prompts": {
+      "entries": [
+        { "kind": "initial", "text": "Why did a resumed agent lose repository permissions?", "at": null },
+        { "kind": "follow_up", "text": "Also compare Pi.", "at": "2026-08-14T15:18:00.000Z" }
+      ],
+      "truncated": false
+    }
+  }
+}
+```
+
+When `prompts` is present, exactly one `initial` entry comes first. `initial` and `follow_up`
+are append-only identifiers. `question` remains the bounded list preview for compatibility;
+new local captures derive it from the initial prompt, while the prompt entry retains the
+longer source text within the explicit byte limits. Older bundles omit `prompts`, parse with no
+trail, and are never rewritten.
+
 ### Honest completeness
 
 `capture_status` is `complete` or `partial`. A partial archive lists what is missing and why,
@@ -141,9 +168,13 @@ Applied before a bundle is published locally and again before an imported one is
 | files declared by one manifest | 512 |
 | one bundle's content | 512 MiB |
 | `manifest.json` | 4 MiB |
+| prompt entries | 256, including the initial request |
+| one prompt entry | 256 KiB of UTF-8 text |
+| prompt text in one manifest | 3 MiB |
 
-Crossing one is refused by name. Mission Control does not publish a green archive that
-silently omitted evidence.
+Content-file limits are refused by name. Prompt limits instead keep the initial request and
+the newest follow-ups that fit, and set `prompts.truncated` so the surviving trail is never
+presented as complete. The 4 MiB manifest limit remains the final publication guard.
 
 ## How a scout produces one
 
@@ -194,6 +225,12 @@ time is unknown the two cannot be ordered, and the disk check stands on its own.
 | `reportPath` | `report/report.html`, byte for byte |
 | every file beside it, recursively | `report/…`, keeping its relative layout so the page's own links still resolve |
 | `supporting: [{ repoSlot, path }]` | `artifacts/<repo-slot>/…` |
+
+The archive title is the short `session.name` shown on the live card. If the session has
+already gone, capture uses the name frozen for that work episode, then the task title only as
+a legacy fallback. Capture does not call a title model or derive another name. The initial
+prompt entry is the stored task intent before the 1,000-character `question` preview is
+clipped. Later entries are positively delivered human user turns in conversation order.
 
 `repoSlot` is a generated name (`repo-01`) that the task's own prompt hands out, one per
 attached checkout. An absolute path, a path that leaves the checkout, a path that resolves
@@ -343,9 +380,10 @@ does not need, when the plan is already committed and on its way to a pull reque
 
 `archive_capture_jobs` in the database coordinates all of this: one row per archive a task
 work episode owes - one for a scout, one per plan directory for a plan - carrying the reserved
-archive identity, the directory it covers, and the checkout locators recovery needs. What a row
-covers is frozen when it is reserved, so a capture resumed after a restart writes the archive
-that was reserved rather than whatever the checkout holds by then. It is **not**
+archive identity, the directory it covers, and the checkout locators recovery needs. A scout
+row also freezes the selected title and bounded prompt trail. What a row covers is frozen when
+it is reserved, so a capture resumed after a restart writes the archive that was reserved
+rather than rereading a later session, task or transcript. It is **not**
 evidence. A published bundle needs none of it to be read, and deleting the database loses the
 ability to resume an unfinished capture, never the ability to open a finished archive.
 On startup, a job with a recorded submission resumes even if its scout is still running. Only
@@ -384,8 +422,9 @@ and synchronised directories - which is exactly where foreign bundles come from.
 ### Deleting the database
 
 Delete `harness.db` and restart. The index has no fingerprints, so every bundle looks new and
-the whole catalog - summaries, artifact metadata, and full report-text search - is rebuilt in
-the background. Nothing prompts, nothing blocks, and no archive is lost.
+the whole catalog - summaries, prompt detail, artifact metadata, prompt search and full
+report-text search - is rebuilt in the background. Nothing prompts, nothing blocks, and no
+archive is lost.
 
 ### Copying an archive in
 
@@ -445,10 +484,13 @@ file; the daemon generates the path from the decoded key and re-checks containme
 read.
 
 Search is server-side, bounded, and literal: it scans normalized segments built at index time
-from the title, question, summary, tags, provenance labels, artifact paths, and the visible
-text of `report.html`, extracted by a non-executing HTML parser that never loads the page or
-follows a link. Results are newest first and cursor-paginated; an out-of-range limit or a
-malformed cursor is refused rather than quietly reinterpreted.
+from the title, question, summary, tags, provenance labels, artifact paths, every retained
+human prompt, and the visible text of `report.html`, extracted by a non-executing HTML parser
+that never loads the page or follows a link. Prompt text uses the same bounded overlapping
+segments as report text, and a matching snippet reports `prompt` as its source. Results are
+newest first and cursor-paginated; an out-of-range limit or a malformed cursor is refused
+rather than quietly reinterpreted. The detail response carries the ordered prompt trail when
+the manifest has one; list rows do not carry the full trail.
 
 Artifact bodies are served as attachments with a content type derived from the archive path
 through a closed table - never from the manifest's claim - plus `nosniff` and a
@@ -525,7 +567,8 @@ Two different things can be wrong with a key, and they are answered differently:
 ### Three panes
 
 - **The rail** searches. Results are newest first under day headings, each row carrying its
-  title, time, artifact count and size, plus the daemon's snippet saying *why* it matched.
+  title, time, artifact count and size, plus the daemon's snippet saying *why* it matched. For
+  a newly captured scout, that title is the same short name its live session card showed.
 - **The reader** opens the primary report by default, in the same sandbox the Files tab uses:
   no scripts beyond the two hashed bridges, no network, and never `allow-same-origin`. A
   relative link inside a report resolves only to a verified companion artifact in the same

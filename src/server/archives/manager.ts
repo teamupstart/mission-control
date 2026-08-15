@@ -20,7 +20,11 @@ import type { Session } from "@shared/types.ts";
 import { archiveReconcileMs } from "../config.ts";
 import { openFile, type OpenFileOutcome } from "../open-targets/index.ts";
 import { captureArchive, type ArchiveCaptureOutcome } from "./capture.ts";
-import { ArchiveCaptureStore, type ArchiveCaptureJob } from "./capture-store.ts";
+import {
+  archiveOperationKey,
+  ArchiveCaptureStore,
+  type ArchiveCaptureJob,
+} from "./capture-store.ts";
 import { resolveRoots } from "./checkout.ts";
 import { ArchiveLibrary } from "./library.ts";
 import { ArchivePathError, archiveDir, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
@@ -28,6 +32,7 @@ import { loadArchiveProducer, type ArchiveProducerIdentity } from "./producer.ts
 import { ArchiveReconciler, type ArchiveReconcilePass } from "./reconciler.ts";
 import { ArchiveStore, type ArchiveRow } from "./store.ts";
 import { discoverPlanCaptureScopes } from "../plans/capture-scopes.ts";
+import { clearScoutPromptContext } from "../scouts/prompt-context.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
 import type { ArchiveSubject, ArchiveTaskGateway } from "./task-gateway.ts";
@@ -567,6 +572,7 @@ export class ArchiveManager {
         // the task title alone would give two bundles from one task the same name.
         title: scope.title ?? subject.title,
         question: subject.question,
+        prompts: null,
         origin: subject.origin,
         repos: subject.repos,
         scope: { slot: scope.slot, directory: scope.directory },
@@ -575,7 +581,16 @@ export class ArchiveManager {
   }
 
   private reserve(subject: ArchiveSubject): ArchiveCaptureJob {
-    return this.captureStore.reserve({
+    const existing = this.captureStore.get(
+      archiveOperationKey(subject.taskId, subject.episodeId),
+    );
+    // Prompt collection can walk a long transcript. A reservation is immutable, so an
+    // existing row already holds the only trail this operation may publish and must never
+    // trigger a fresh read whose result would be discarded by the store's CAS.
+    const prompts = existing
+      ? existing.prompts
+      : (subject.prompts ?? this.tasks?.scoutPromptTrailFor(subject) ?? null);
+    const job = this.captureStore.reserve({
       // Scout-only, deliberately. A second kind arrived with its own entry point
       // (`reservePlanJobs`) and its own planner rather than by widening this one, because the
       // two answer different questions: a scout reserves ONE job for its episode, before it
@@ -588,9 +603,25 @@ export class ArchiveManager {
       producerId: this.producer.id,
       title: subject.title,
       question: subject.question,
+      prompts,
       origin: subject.origin,
       repos: subject.repos,
     });
+    // Recovery now reads the exact frozen trail from the job. The Phase 1 coordination rows
+    // have served their purpose and can be removed without making a failed publication lose
+    // anything it needs to retry.
+    if (subject.episodeId) {
+      try {
+        clearScoutPromptContext(subject.taskId, subject.episodeId);
+      } catch (error) {
+        this.log("could not clean frozen scout prompt context", {
+          taskId: subject.taskId,
+          episodeId: subject.episodeId,
+          error: describeError(error),
+        });
+      }
+    }
+    return job;
   }
 
   private submissionKey(subject: Pick<ArchiveSubject, "taskId" | "episodeId">): string {
@@ -715,6 +746,7 @@ export class ArchiveManager {
       bundlePath: join(row.libraryRoot, identity.producerId, identity.archiveId),
       relativePath: row.relativePath,
       primaryArtifactId: row.primaryArtifactId,
+      prompts: row.prompts,
       artifacts: this.store.artifacts(key),
       missing: row.missing,
     };

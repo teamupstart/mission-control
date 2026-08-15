@@ -129,6 +129,15 @@ both are rendered from the alert the stall produced:
 
 ![The away digest naming the parked run and the round that never reopened](images/line-review-parked-digest.png)
 
+That one is a `waiting_for_session` run, so the line ends "repair round 1 never reopened" -
+the missing step is a resubmit. Here is the same card for a run parked on
+`waiting_for_new_head` whose checkout is holding work the upstream has not received:
+
+![The away digest for a run parked on waiting_for_new_head, reading "No-Mistakes Review is waiting for a pushed head and you have 2 commits that are not pushed"](images/line-review-parked-unpushed-digest.png)
+
+Same card, same rollup, same clock. The only thing that differs is the half of the sentence
+that says what to do next - and that half is the whole feature.
+
 Runs that will never resume themselves do not wait for that clock at all. A run on a
 `manual` version or a Preview binding is counted as **needing you** on the Line's Review
 strip, in the Review drawer and in the palette from the moment it parks, because nothing

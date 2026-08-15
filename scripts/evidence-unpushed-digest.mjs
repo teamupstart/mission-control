@@ -7,10 +7,19 @@
 // the real away buffer, and the real `AwayDigestCard` component with the app's own stylesheet.
 // Nothing here hand-writes the sentence being demonstrated - it comes back out of the daemon.
 //
-// Writes into `e2e/.artifacts/`, which is gitignored: evidence attaches to the pull request
-// and is never committed.
+// Run it with:
 //
 //   node --import tsx scripts/evidence-unpushed-digest.mjs
+//
+// The HTML lands in `e2e/.artifacts/`, which is gitignored - a proof-of-work capture attaches
+// to a pull request rather than being committed.
+//
+// ONE committed output comes from it, and it is documentation rather than evidence:
+// `docs/images/line-review-parked-unpushed-digest.png`, which
+// `docs/attention-and-alerts.md` places beside the `waiting_for_session` digest so the two
+// sentences can be read against each other. Regenerate it by loading the HTML this writes at
+// exactly 1280x300 and screenshotting the viewport - the frame is sized in the page itself, so
+// any browser at that viewport reproduces it. Do not hand-edit the PNG; change this script.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -237,11 +246,20 @@ const markup = renderToStaticMarkup(
 const css = readFileSync(join(import.meta.dirname, "..", "src", "web", "styles.css"), "utf8");
 const out = join(import.meta.dirname, "..", "e2e", ".artifacts", "unpushed-digest");
 mkdirSync(out, { recursive: true });
+// 1280 wide, to match every other image in `docs/images/`, but cropped to the card rather
+// than padded out to their 720. The siblings fill that height with the dimmed dashboard
+// behind the overlay; this has no dashboard to show, so the same height would be two thirds
+// empty - and since markdown scales an image to the column width, a shorter frame renders the
+// sentence being documented LARGER, which is the entire point of the picture.
 writeFileSync(
   join(out, "digest.html"),
   `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style>
-<style>body{margin:0;padding:32px;display:flex;justify-content:center;align-items:flex-start}
-.away-digest{position:static!important;transform:none!important;inset:auto!important}</style>
+<style>
+  html,body{margin:0;padding:0;width:1280px;height:300px;overflow:hidden}
+  body{display:flex;justify-content:center;align-items:center;
+       background:var(--bg,#0b0d10)}
+  .away-digest{position:static!important;transform:none!important;inset:auto!important}
+</style>
 </head><body class="theme-dark">${markup}</body></html>`,
 );
 writeFileSync(join(out, "reason.txt"), `${stalls[0].reason}\n${digest.lines.join("\n")}\n`);

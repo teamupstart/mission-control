@@ -733,6 +733,11 @@ required, and a bounded preview of the exact instruction that was sent.
 Below the pipeline, the reader pane is a worklist: **the changes the run is asking for on the
 left, the selected one in full on the right.** A segmented control divides them.
 
+![The review worklist: the Blocking segment carrying two objections about one file from two
+different reviewers, and the selected one in full - its reviewer, confidence, runner and model,
+the file it cites, the round it was raised in, its rationale and evidence, and the four things a
+person can do about it](images/workflow-run-worklist.png)
+
 | Segment | What is in it |
 |---|---|
 | **Blocking** | Failed Commands first, then reviewers that could not report, then every requested change still outstanding. This is the agenda. |
@@ -759,6 +764,15 @@ the last two only while the run can still be affected. Previous and Next walk th
 
 A **stalemate card** sits at the foot of the rail when a reviewer has failed consecutive rounds,
 in the ladder's own words: *"Code Risk Reviewer has failed 10 rounds running."*
+
+![The Archive segment: a green Resolved row naming the round its own reviewer confirmed in, an
+amber Unconfirmed row saying the reviewer that raised it has not passed since, and the stalemate
+card below them naming that same reviewer](images/workflow-run-worklist-archive.png)
+
+The two rows and the card are the reason the third state exists. Green on that top row would
+tell an operator a reviewer is satisfied on the same rail as a card calling it a repeat
+offender; wording it as *rephrased* would be the opposite error, since a reviewer that stops
+raising a change because it is fixed lands in the same state.
 
 Everything in this section answers for **the round the scrubber points at**, the stalemate card
 included. Scrubbing back moves all three counts together and never states a fact from a later

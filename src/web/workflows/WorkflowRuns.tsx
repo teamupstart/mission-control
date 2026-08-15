@@ -966,13 +966,28 @@ function RunWorklist({
     archive,
   };
   /*
-   * A selection that no longer resolves ANYWHERE has not been navigated away from - the row it
-   * named stopped existing, which on this surface means the reviewer it belonged to reported.
-   * Follow it to whatever now represents that reviewer; only then may the rail change segment.
+   * A selection that no longer resolves ANYWHERE is followed to whatever now represents its
+   * reviewer - but only inside THIS ROUND, and the scoping is the whole correctness of it.
+   *
+   * A key stops resolving for two unrelated reasons, and only one of them is a reviewer
+   * reporting. The other is the reader scrubbing: `selectedKey` deliberately carries no round,
+   * so a row selected in round 10 names nothing in round 4. Handed every attempt in the run, the
+   * follow resolved that stale id to its node anyway and matched it against whatever that node
+   * owns in the round now on screen - dropping the reader onto a row and a segment they never
+   * chose there, as though a verdict had just landed, when all they did was scrub.
+   *
+   * Scoped to the viewed round, an id from another round simply is not found, so the follow says
+   * nothing and the round's own rules decide. Every attempt of the round is included rather than
+   * the newest per node, so a row superseded by a retry is still followed to its successor.
    */
+  const viewedSubmissions = new Set(detail.submissions
+    .filter((submission) => submission.round === round)
+    .map((submission) => submission.id));
+  const roundAttempts = detail.attempts
+    .filter((attempt) => viewedSubmissions.has(attempt.submissionId));
   const followed = selectedKey !== null
     && !SEGMENTS.some((entry) => bySegment[entry].some((item) => item.key === selectedKey))
-    ? followSelection(selectedKey, detail.attempts, bySegment)
+    ? followSelection(selectedKey, roundAttempts, bySegment)
     : null;
   const segment = followed?.segment ?? picked;
   const items = bySegment[segment];

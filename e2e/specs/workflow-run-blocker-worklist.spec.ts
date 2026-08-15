@@ -422,6 +422,30 @@ test("a second round sorts each change by what its own reviewer said, and names 
     "true",
   );
   await expect(worklist).toContainText("No change has stopped being raised as of this round.");
+
+  /*
+   * And a scrub is not a reviewer reporting, however alike the two look from the key.
+   *
+   * `selectedKey` deliberately carries no round, so a row selected in round 2 names nothing in
+   * round 1 - the same "resolves nowhere" the follow exists for. The settling reviewer is the
+   * shape that tells them apart: an `attempt`-keyed PASS row in round 2, an open change in round
+   * 1. Followed across the scrub it would drop the reader into `Blocking`, onto a change they
+   * never selected, as though a verdict had just landed. Only a reviewer reporting inside the
+   * round on screen may move the rail.
+   */
+  await dashboard.locator(".wf-run-scrubber").getByRole("button", { name: /^Round 2/ }).click();
+  await segments.getByRole("button", { name: /^Passed/ }).click();
+  const settledRow = worklist.locator("button.wf-run-worklist-row.is-verdict")
+    .filter({ hasText: REVIEWER.settling });
+  await expect(settledRow).toHaveCount(1);
+  await settledRow.click();
+  await expect(settledRow).toHaveAttribute("aria-current", "true");
+
+  await dashboard.locator(".wf-run-scrubber").getByRole("button", { name: /^Round 1/ }).click();
+  await expect(segments.getByRole("button", { name: /^Passed/ }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(worklist.locator("button.wf-run-worklist-row.is-change[aria-current='true']"))
+    .toHaveCount(0);
 });
 
 /**

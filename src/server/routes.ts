@@ -190,7 +190,7 @@ import {
   probeAllPipelineProviders,
   reconcilePipelineConsent,
 } from "./pipelines/index.ts";
-import type { PipelinesView } from "@shared/pipeline.ts";
+import { pipelineRepoKey, type PipelinesView } from "@shared/pipeline.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
@@ -3942,9 +3942,20 @@ export function buildApp(
     const parsed = await parseBody(c, PipelinesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     const repos = [];
+    // Resolution is what makes duplicates possible, so the duplicate check has to happen
+    // after it. The schema rejects two entries naming the same path, but a symlink and its
+    // target - or a repository root and a subdirectory of it - are two different paths that
+    // land on one root. Left to `setPipelinesConfig`, that throws out of an unguarded
+    // handler and the operator loses the edit behind a generic error instead of being told
+    // which repository they listed twice.
+    const seen = new Set<string>();
     for (const repo of parsed.data.repos) {
       const repoRoot = await resolveRepoRoot(repo.repoRoot);
       if (!repoRoot) return c.json({ error: `not a git repository: ${repo.repoRoot}` }, 400);
+      const key = pipelineRepoKey(repo.provider, repoRoot);
+      if (seen.has(key))
+        return c.json({ error: `listed twice, as the same repository: ${repoRoot}` }, 400);
+      seen.add(key);
       repos.push({ ...repo, repoRoot });
     }
     setPipelinesConfig({ enabled: parsed.data.enabled, repos });

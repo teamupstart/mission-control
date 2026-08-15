@@ -40,6 +40,16 @@ function repoLabel(repoRoot: string): string {
 }
 
 /**
+ * Why one repository is or is not being read.
+ *
+ * Three states rather than a boolean, because "off" has two causes with two different
+ * remedies and the row has to name the right control. A single flag collapses them, and the
+ * collapse always fails the same way: a repository whose own switch is checked, sitting
+ * under a master switch that is off, gets told to switch itself on.
+ */
+export type RepoObservation = "on" | "repo-off" | "master-off";
+
+/**
  * One repository row's health, as one readable sentence.
  *
  * Never composed from an absent reading. A repository nobody has looked at yet says so
@@ -47,8 +57,18 @@ function repoLabel(repoRoot: string): string {
  * nothing observed is not the same claim as nothing there, and the second one would have
  * an operator debugging an engine that is working perfectly.
  */
-export function repoHealthLine(status: PipelineRepoStatus | undefined, enabled: boolean): string {
-  if (!enabled) return "Not observed - switch this repository on to project its pipelines.";
+export function repoHealthLine(
+  status: PipelineRepoStatus | undefined,
+  observation: RepoObservation,
+): string {
+  // Named separately because the two ways of being off need different instructions, and a
+  // row whose own switch is visibly checked must never be told to switch it on. The master
+  // switch wins when both are off: it is what blocks the read either way, and an operator
+  // who flips it then gets the row's own sentence next.
+  if (observation === "master-off")
+    return "Not observed - Observe pipelines is off, so no repository is read.";
+  if (observation === "repo-off")
+    return "Not observed - switch this repository on to project its pipelines.";
   if (!status || status.lastReadAt === null) return "Enabled - not read yet.";
   const daemon =
     status.daemon === "running"
@@ -258,7 +278,11 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
               {repos.map((repo) => {
                 const key = pipelineRepoKey(repo.provider, repo.repoRoot);
                 const status = statusByRepo.get(key);
-                const on = repo.enabled && (config?.enabled ?? false);
+                const observation: RepoObservation = !(config?.enabled ?? false)
+                  ? "master-off"
+                  : repo.enabled
+                    ? "on"
+                    : "repo-off";
                 return (
                   <li className="conductor-repo" key={key}>
                     <label className="skill-switch">
@@ -282,7 +306,7 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
                       <span className="conductor-repo-name">{repoLabel(repo.repoRoot)}</span>
                       <code className="conductor-repo-path">{repo.repoRoot}</code>
                       <span className="conductor-repo-health">
-                        {repoHealthLine(status, on)}
+                        {repoHealthLine(status, observation)}
                       </span>
                       {status?.error && (
                         <span className="settings-error conductor-repo-error">

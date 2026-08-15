@@ -156,6 +156,32 @@ test("a path that is not a git repository is refused by name", async () => {
   assert.deepEqual(getPipelinesConfig().repos, [], "a refused write persists nothing");
 });
 
+test("two paths that resolve to one repository are refused, not thrown over", async () => {
+  // The schema rejects two entries naming the same PATH, which is not the same check: the
+  // route resolves each entry to a git root first, so a repository root and a subdirectory
+  // of it are two legal-looking paths that land on one root. Left to `setPipelinesConfig`,
+  // its own refine throws out of an unguarded handler - a 500 where the operator has an
+  // editable mistake, and the whole edit lost behind a generic error.
+  const { request } = fixture();
+  const repo = gitRepo("dupe");
+  const inside = join(repo, "src", "deep");
+  mkdirSync(inside, { recursive: true });
+
+  const res = await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [
+        { provider: "ai-conductor", repoRoot: repo, enabled: true },
+        { provider: "ai-conductor", repoRoot: inside, enabled: true },
+      ],
+    }),
+  });
+  assert.equal(res.status, 400, "the same 400 the git-root check gives, not a 500");
+  assert.match(await res.text(), /listed twice/);
+  assert.deepEqual(getPipelinesConfig().repos, [], "a refused write persists nothing");
+});
+
 test("a repository is stored at its resolved root, and arrives off unless asked", async () => {
   const { request } = fixture();
   const repo = gitRepo("resolved");

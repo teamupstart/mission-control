@@ -57,11 +57,11 @@ async function readConductorRepo(
   const now = Date.now();
   try {
     const daemon = readDaemon(repoRoot);
-    const worktrees = readWorktrees(repoRoot, INFO.worktreesDir);
+    const listing = readWorktrees(repoRoot, INFO.worktreesDir);
     // Could not look. Reported as an error with the offsets handed straight back, so the
     // caller retires nothing: an unlistable directory is not an empty one, and treating it
     // as empty would delete a repository's whole projection over a transient `EACCES`.
-    if (worktrees === null) {
+    if (listing === null) {
       return {
         runs: [],
         cursors,
@@ -73,7 +73,7 @@ async function readConductorRepo(
     const runs: PipelineRun[] = [];
     const nextCursors = new Map<string, { offset: number; identity: string }>();
     const restarted = new Set<string>();
-    for (const worktree of worktrees) {
+    for (const worktree of listing.worktrees) {
       const state = readConductState(worktree.path);
       const held = cursors.get(worktree.slug);
       const tail = tailConductorEvents(
@@ -106,10 +106,12 @@ async function readConductorRepo(
       cursors: nextCursors,
       restarted,
       daemon: daemonState(daemon),
-      error:
-        worktrees.length >= MAX_RUNS_PER_REPO
-          ? `only the first ${MAX_RUNS_PER_REPO} worktrees in this repository are projected`
-          : null,
+      // Asked of the reader rather than inferred from the count: a repository sitting at
+      // exactly the cap has lost nothing, and calling that an error would stop the caller
+      // retiring stale runs there for good.
+      error: listing.truncated
+        ? `only the first ${MAX_RUNS_PER_REPO} worktrees in this repository are projected`
+        : null,
     };
   } catch (err) {
     // Belt and braces. Every reader below is already total, so reaching this means

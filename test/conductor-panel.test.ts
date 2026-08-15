@@ -193,31 +193,51 @@ test("the health line distinguishes not-read-yet from nothing-there", () => {
   // The distinction the Inspector panel's "unknown" state makes, applied per repository. A
   // just-enabled repository reporting `0 pipelines` sends an operator to debug an engine
   // that is working perfectly.
-  assert.match(repoHealthLine(undefined, true), /not read yet/);
+  assert.match(repoHealthLine(undefined, "on"), /not read yet/);
   assert.match(
     repoHealthLine(
       { provider: "ai-conductor", repoRoot: "/w/a", daemon: "running", runs: 0, halted: 0, lastReadAt: null, error: null },
-      true,
+      "on",
     ),
     /not read yet/,
   );
   assert.match(
     repoHealthLine(
       { provider: "ai-conductor", repoRoot: "/w/a", daemon: "running", runs: 0, halted: 0, lastReadAt: 1, error: null },
-      true,
+      "on",
     ),
     /0 pipelines/,
   );
-  // And a repository the master switch has turned off says THAT, rather than reporting the
-  // last figures it happened to hold.
-  assert.match(repoHealthLine(undefined, false), /Not observed/);
+  // And a repository that is off says THAT, rather than reporting the last figures it
+  // happened to hold.
+  assert.match(repoHealthLine(undefined, "repo-off"), /Not observed/);
+});
+
+test("an off repository is told which switch is the one that is off", () => {
+  // The row draws its own checkbox from `repo.enabled`, so a repository switched on under a
+  // master switch that is off renders a CHECKED box. Telling that operator to "switch this
+  // repository on" names a control that is already on, and they go looking for a second one
+  // that does not exist. The master switch is the blocker whenever it is off, so it is what
+  // the sentence names - and only once it is on does the row's own switch become the ask.
+  assert.match(
+    repoHealthLine(undefined, "master-off"),
+    /Observe pipelines is off/,
+  );
+  assert.doesNotMatch(
+    repoHealthLine(undefined, "master-off"),
+    /switch this repository on/,
+  );
+  assert.match(
+    repoHealthLine(undefined, "repo-off"),
+    /switch this repository on/,
+  );
 });
 
 test("the daemon state is named in words, per repository", () => {
   const line = (daemon: "running" | "paused" | "stopped" | "unknown"): string =>
     repoHealthLine(
       { provider: "ai-conductor", repoRoot: "/w/a", daemon, runs: 1, halted: 0, lastReadAt: 1, error: null },
-      true,
+      "on",
     );
   assert.match(line("running"), /engine daemon running/);
   assert.match(line("paused"), /engine daemon paused/);

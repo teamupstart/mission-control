@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  MAX_RUNS_PER_REPO,
   readConductState,
   readDaemon,
   readDone,
@@ -276,10 +277,54 @@ test("only directories holding a .pipeline are runs, and the slug is the directo
   seedConductorRun(root, "alpha", {});
   mkdirSync(join(root, ".worktrees", "engineer-something"), { recursive: true });
 
+  const listing = readWorktrees(root, ".worktrees");
   assert.deepEqual(
-    readWorktrees(root, ".worktrees")?.map((w) => w.slug),
+    listing?.worktrees.map((w) => w.slug),
     ["alpha", "beta"],
   );
+  // Two pipelines and a non-pipeline directory is not a truncated read, and saying it was
+  // would stop the caller retiring stale runs in this repository.
+  assert.equal(listing?.truncated, false);
+});
+
+test("sitting exactly at the cap is not a truncated read; one over it is", () => {
+  // `truncated` is what makes the caller call a pass incomplete, and an incomplete pass
+  // stops retiring runs whose worktrees are gone. Inferred from `worktrees.length >= cap`
+  // it cannot tell "cut off" from "exactly at it", so a repository holding precisely 200
+  // pipelines would have stopped pruning permanently while reporting a truncation that
+  // never happened.
+  const pipelines = (root: string, count: number): void => {
+    for (let i = 0; i < count; i++) {
+      // Zero-padded so readdir's sort order is the numeric one and `n` names the entry
+      // actually dropped rather than whichever sorted last.
+      mkdirSync(join(root, ".worktrees", `feat-${String(i).padStart(4, "0")}`, ".pipeline"), {
+        recursive: true,
+      });
+    }
+  };
+
+  const atCap = repo("worktrees-at-cap");
+  pipelines(atCap, MAX_RUNS_PER_REPO);
+  const at = readWorktrees(atCap, ".worktrees");
+  assert.equal(at?.worktrees.length, MAX_RUNS_PER_REPO);
+  assert.equal(at?.truncated, false);
+
+  const overCap = repo("worktrees-over-cap");
+  pipelines(overCap, MAX_RUNS_PER_REPO + 1);
+  const over = readWorktrees(overCap, ".worktrees");
+  assert.equal(over?.worktrees.length, MAX_RUNS_PER_REPO);
+  assert.equal(over?.truncated, true);
+
+  // And directories that are not pipelines never count toward the cap, however many the
+  // engine has cut beside them - so its spec-authoring worktrees cannot manufacture one.
+  const mixed = repo("worktrees-mixed-at-cap");
+  pipelines(mixed, MAX_RUNS_PER_REPO);
+  for (let i = 0; i < 20; i++) {
+    mkdirSync(join(mixed, ".worktrees", `engineer-${i}`), { recursive: true });
+  }
+  const both = readWorktrees(mixed, ".worktrees");
+  assert.equal(both?.worktrees.length, MAX_RUNS_PER_REPO);
+  assert.equal(both?.truncated, false);
 });
 
 test("a repository with no .worktrees reads as no runs, and an unlistable one as null", () => {
@@ -287,7 +332,10 @@ test("a repository with no .worktrees reads as no runs, and an unlistable one as
   // driving nothing here, and the caller retires everything it was projecting; null means we
   // could not look, and the same response would delete a whole projection over a transient
   // permission error. Absent must be the first of those, not the second.
-  assert.deepEqual(readWorktrees(repo("no-worktrees"), ".worktrees"), []);
+  assert.deepEqual(readWorktrees(repo("no-worktrees"), ".worktrees"), {
+    worktrees: [],
+    truncated: false,
+  });
 
   // A `.worktrees` that is a FILE cannot be listed, and is not an empty directory.
   const broken = repo("unlistable-worktrees");

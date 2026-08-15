@@ -59,8 +59,19 @@ export function classifyGroup(input: NormalizeInput): PipelineRunGroup {
   if (daemon.parked.has(slug)) return "parked";
   if (halt !== null) return "halted";
   if (done || state.complete || daemon.processed.has(slug)) return "processed";
-  for (const status of state.steps.values()) {
-    if (status === "in_progress") return "building";
+  // An `in_progress` step is only evidence of live work when something is alive to be
+  // doing it. With no engine daemon in this repository the marker is a leftover from one
+  // that crashed or was killed mid-step, and nothing will ever advance it - so it reads as
+  // `waiting`, which is the state that sends an operator to start their daemon rather than
+  // to wait out a step that is not running.
+  //
+  // A PAUSED daemon is deliberately not the same case. The engine honours a pause between
+  // steps, so a step already in flight when the marker landed really is still running, and
+  // calling it `waiting` would be the same lie in the other direction.
+  if (daemon.pid !== null) {
+    for (const status of state.steps.values()) {
+      if (status === "in_progress") return "building";
+    }
   }
   if (daemon.paused || daemon.pid === null) return "waiting";
   return "eligible";

@@ -62,6 +62,31 @@ test("a run with a step in progress under a live daemon is building", () => {
   assert.equal(classifyGroup(inputFor(root, "feat", worktree)), "building");
 });
 
+test("a step left in progress by a daemon that died is waiting, not building", () => {
+  // The marker in `conduct-state.json` outlives the process that wrote it, so an engine
+  // daemon killed mid-step leaves `in_progress` behind forever. Reading that as `building`
+  // shows an operator a run that is working when nothing is going to advance it - the exact
+  // "give it a moment" / "your daemon is not running" confusion the waiting group exists to
+  // resolve. No daemon written at all here: `readDaemon` reports pid null.
+  const dead = repo("in-progress-no-daemon");
+  const worktree = seedConductorRun(dead, "feat", {
+    steps: { worktree: "done", build: "in_progress" },
+    lastStep: "build",
+  });
+  assert.equal(classifyGroup(inputFor(dead, "feat", worktree)), "waiting");
+
+  // A PAUSED daemon is deliberately the other way. The engine honours a pause between
+  // steps, so a step already in flight really is still running, and calling it waiting
+  // would be the same lie pointed the other direction.
+  const paused = repo("in-progress-paused");
+  const pausedWorktree = seedConductorRun(paused, "feat", {
+    steps: { worktree: "done", build: "in_progress" },
+    lastStep: "build",
+  });
+  seedConductorDaemon(paused, { pid: process.pid, paused: true });
+  assert.equal(classifyGroup(inputFor(paused, "feat", pausedWorktree)), "building");
+});
+
 test("nothing running under a live daemon is eligible; under none, or paused, it is waiting", () => {
   // The distinction this whole classification exists for. Both look identical in the state
   // file; only `.daemon/` tells them apart, which is why the daemon reading is an input to

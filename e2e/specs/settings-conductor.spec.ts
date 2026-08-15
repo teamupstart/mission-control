@@ -153,6 +153,17 @@ test("the engine is detected, arrives off, and one switch starts observing it", 
   await expect(page.getByText("Off - no pipeline state is being read.")).toBeVisible();
   await expect(repoSwitch).toBeChecked();
 
+  // This exact state is where one boolean for "observed" reads as a lie: the row's own
+  // switch is VISIBLY CHECKED, and the reason nothing is read is the master switch above
+  // it. The row has to name that control, because an operator sent to switch on a
+  // repository that is already on finds nothing to do.
+  await expect(
+    page.getByText("Not observed - Observe pipelines is off, so no repository is read."),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Not observed - switch this repository on to project its pipelines."),
+  ).toHaveCount(0);
+
   // And it survives a fresh page, which is what an operator comes back to tomorrow.
   //
   // The daemon's own answer is waited for first, and that is not belt and braces: saves are

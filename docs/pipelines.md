@@ -66,6 +66,9 @@ operator who sees no pipelines has to be able to tell which:
   *without forgetting which ones you chose*, so turning it back on restores exactly that set.
 - **Repositories** - one row per repository, each with its own switch and a health line
   naming the engine daemon's state and the number of pipelines found, halted ones called out.
+  A row that is not being read names the control that would change that, and the two ways of
+  being off are not the same sentence: with the master switch off it says so, because a row
+  whose own switch is visibly checked must never be told to switch it on.
 
 Listing a repository is configuration; switching it on is consent. Withdrawing it takes
 effect in the same request: the projection rows, the live catalog entries and the health line
@@ -104,7 +107,7 @@ Each run is classified into one group, and the precedence is deliberate:
 | `halted` | A gate refused and the engine stopped. Outranks an in-progress step, because a run that halted mid-step is not still working. |
 | `processed` | It converged, was marked complete, or the engine daemon recorded it shipped. Below `halted`: finished and then refused is not finished. |
 | `building` | A step is running now. |
-| `waiting` | Nothing is running and nothing will be - the engine daemon is paused, or none is running in this repository. |
+| `waiting` | Nothing is running and nothing will be - the engine daemon is paused, or none is running in this repository. A step still marked `in_progress` counts as waiting when no daemon is alive, because that marker outlives the process that wrote it and a crashed daemon leaves one behind for good. A *paused* daemon is the exception: pause is honoured between steps, so a step already in flight really is still `building`. |
 | `eligible` | Nothing is running and something could start. |
 
 The last two look identical in the state file and differ only by what `.daemon/` says. That

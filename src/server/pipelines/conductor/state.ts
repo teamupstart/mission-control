@@ -361,6 +361,12 @@ export interface WorktreeReading {
   path: string;
 }
 
+/** One repository's worktrees, and whether the cap cut any of them off. */
+export interface WorktreesReading {
+  worktrees: WorktreeReading[];
+  truncated: boolean;
+}
+
 /**
  * Every feature worktree in one repository, or null when the directory could not be listed.
  *
@@ -378,14 +384,20 @@ export interface WorktreeReading {
  * response is to retire every run it was projecting. A `null` means we could not look, and
  * the same response would delete a repository's whole projection over a transient `EACCES` -
  * the Inspector's rule that "a `gh` that errored is not an answer", applied to a directory.
+ *
+ * `truncated` is reported rather than inferred from the length for the same reason. A
+ * caller comparing `worktrees.length` against the cap cannot tell a repository that was cut
+ * off from one sitting at exactly the cap with nothing dropped - and since a truncated read
+ * is an incomplete one, that caller stops retiring stale runs. A repository with exactly
+ * 200 pipelines would have stopped pruning forever.
  */
 export function readWorktrees(
   repoRoot: string,
   worktreesDir: string,
-): WorktreeReading[] | null {
+): WorktreesReading | null {
   const base = join(repoRoot, worktreesDir);
   // Absent is a real answer: a repository the engine has never cut a worktree in.
-  if (!exists(base)) return [];
+  if (!exists(base)) return { worktrees: [], truncated: false };
   let entries: string[];
   try {
     entries = readdirSync(base).sort();
@@ -393,12 +405,19 @@ export function readWorktrees(
     return null;
   }
   const out: WorktreeReading[] = [];
+  let truncated = false;
   for (const entry of entries) {
     if (entry.startsWith(".")) continue;
-    if (out.length >= MAX_RUNS_PER_REPO) break;
     const path = join(base, entry);
     if (!exists(join(path, ".pipeline"))) continue;
+    // Counted only against entries that ARE pipelines, and only after one has been cut.
+    // Testing the cap before the `.pipeline` filter would blame the engine's own
+    // spec-authoring and autoresolve worktrees for a truncation they are not part of.
+    if (out.length >= MAX_RUNS_PER_REPO) {
+      truncated = true;
+      break;
+    }
     out.push({ slug: entry, path });
   }
-  return out;
+  return { worktrees: out, truncated };
 }

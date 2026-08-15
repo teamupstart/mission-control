@@ -359,4 +359,30 @@ test("a second round sorts each change by what its own reviewer said, and names 
   await expect(worklist).not.toContainText("E2E reworded change");
   // One failing round is not a stalemate, and round 1 is never told round 2's streak.
   await expect(worklist.locator(".wf-run-worklist-stalemate")).toHaveCount(0);
+
+  /*
+   * And the RAIL followed the scrub, not just the counts.
+   *
+   * `Archive` was the segment selected a moment ago, and round 1 has nothing in it. Carried
+   * across unconditionally, the reader lands on an empty pane beside a tab reading `Blocking 2`
+   * and can only conclude round 1 asked for nothing - on the one control built to say what a
+   * round is asking for. So a pick survives a scrub only while it still has something to show.
+   */
+  await expect(segments.getByRole("button", { name: "Blocking 2" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(worklist.getByRole("button", { name: /^Blocker/ })).toHaveCount(2);
+
+  /*
+   * Within the round the reader is looking at, though, the pick is theirs. Clicking an empty
+   * segment has to do what it says rather than bouncing straight back - the fallback above is
+   * about a round changing underneath a choice, not about overruling one.
+   */
+  await segments.getByRole("button", { name: "Archive 0" }).click();
+  await expect(segments.getByRole("button", { name: "Archive 0" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(worklist).toContainText("No change has stopped being raised as of this round.");
 });

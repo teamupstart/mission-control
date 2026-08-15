@@ -844,9 +844,17 @@ function RunWorklist({
   const archive: WorklistItem[] = archived
     .map((row): WorklistItem => ({ kind: "change", key: `change:${row.key}`, row }));
 
-  const [chosenSegment, setChosenSegment] = useState<WorklistSegment | null>(null);
+  /** The reader's own pick, and the round they made it in. Both, for the scrub rule below. */
+  const [chosenSegment, setChosenSegment] = useState<
+    { segment: WorklistSegment; round: number | null } | null
+  >(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const counts: Record<WorklistSegment, number> = {
+    blocking: blocking.length,
+    passed: passed.length + pending.length,
+    archive: archive.length,
+  };
   /*
    * The first segment that has anything in it, and then whatever the reader picked.
    *
@@ -854,15 +862,29 @@ function RunWorklist({
    * whose reviewers have all gone quiet opens on `Archive` rather than on two empty panes. The
    * final fallback is `Passed`, which is where the three empty-state sentences live.
    *
+   * A PICK HOLDS IN THE ROUND IT WAS MADE IN, and survives a scrub only while it still has
+   * something to show. Held unconditionally it strands the reader: pick `Archive` on round 10,
+   * scrub to round 1, and the counts beside them update while the pane stays empty - which
+   * reads as "round 1 asked for nothing" on the very control built to say what a round is
+   * asking for. Cleared unconditionally it would break comparing one segment across rounds,
+   * which is what the scrubber is for. Scoping it to the round keeps both, and keeps clicking
+   * an empty segment doing exactly what it says - the reader who wants to look at `Archive 0`
+   * gets `Archive 0`, and only a scrub can overrule them.
+   *
+   * This is the same shape `selectedKey` already has: the reader's choice, with a fallback for
+   * when the round it belongs to no longer holds it.
+   *
    * Selection is LOCAL state, exactly like the round - there is no precedent for a sub-run
    * selection in `MissionRoute`, and deep-linking one change is a deliberate non-goal.
    */
-  const segment = chosenSegment
-    ?? (blocking.length > 0
-      ? "blocking"
-      : passed.length + pending.length > 0
-        ? "passed"
-        : archive.length > 0 ? "archive" : "passed");
+  const autoSegment: WorklistSegment = counts.blocking > 0
+    ? "blocking"
+    : counts.passed > 0 ? "passed" : counts.archive > 0 ? "archive" : "passed";
+  const segment = chosenSegment === null
+    ? autoSegment
+    : chosenSegment.round === round || counts[chosenSegment.segment] > 0
+      ? chosenSegment.segment
+      : autoSegment;
   const items = segment === "blocking"
     ? blocking
     : segment === "archive" ? archive : [...passed, ...pending];
@@ -906,7 +928,7 @@ function RunWorklist({
                 className={segment === entry.id ? "active" : ""}
                 aria-pressed={segment === entry.id}
                 onClick={() => {
-                  setChosenSegment(entry.id);
+                  setChosenSegment({ segment: entry.id, round });
                   setSelectedKey(null);
                 }}
               >

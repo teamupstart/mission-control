@@ -2131,12 +2131,22 @@ export function openDb(): DatabaseSync {
     -- nothing renders these rows, and the portable manifest is the durable answer once
     -- capture freezes one.
     --
-    -- The two nullable locators are nullable for one reason each, and both mean "the walk
-    -- starts at the beginning" rather than "this went missing". transcript_path is null for
-    -- a harness whose file is not locatable yet - an embedded session is created BY this
-    -- delivery, so there is no file to name until it writes one. transcript_offset is null
-    -- with it, and zero when the prompt itself travelled in the launch message (pi), where
-    -- the whole file belongs to this episode.
+    -- The two locators are nullable independently, and they answer different questions.
+    --
+    -- transcript_path is null when no file could be located at freeze time - an embedded
+    -- session is created BY this delivery, so there is nothing to name until it writes one.
+    -- A collector re-locates it from the live session later; the null is "not yet", not
+    -- "gone".
+    --
+    -- transcript_offset is where this episode BEGINS, and its two values are a real
+    -- distinction rather than a fallback. Zero means the episode owns the file from its
+    -- first byte, which is the truth whenever the prompt travelled with the process (pi's
+    -- positional argument, an embedded session's opening turn) - true whether or not the
+    -- path is known yet, so it is recorded either way rather than thrown away for want of a
+    -- filename. Null means NO anchor could be established: a delivery into a session that
+    -- already held a conversation whose transcript could not be located or measured. A
+    -- collector may page from a zero; it must treat a null as completeness it cannot
+    -- establish, and say so.
     --
     -- session_name is NOT NULL because it is the archive's title of last resort: a session
     -- that has since been evicted cannot be asked, and a null here would mean the archive

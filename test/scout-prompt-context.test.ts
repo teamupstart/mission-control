@@ -612,6 +612,30 @@ test("a launch-time prompt anchors at zero, because the whole file is this episo
   assert.equal(frozen?.transcriptOffset, 0);
 });
 
+test("a launch anchor keeps its zero even when no transcript can be named yet", () => {
+  reset();
+  // An embedded session is created BY the delivery, so at freeze time there is no file to
+  // locate. Zero is still the truth - the episode owns that file from its first byte - and a
+  // collector that re-locates it later can page all of it. Nulling the offset for want of a
+  // filename would report every embedded scout's trail as incomplete for no reason.
+  const session = mkSession({ id: "s1", agentSessionId: null, transcriptPath: null, cwd: null });
+  const frozen = freezeScoutPromptBoundary(source({ session, task: SCOUT }), SCOUT, "s1", "launch");
+  assert.equal(frozen?.transcriptPath, null, "precondition: nothing was locatable");
+  assert.equal(frozen?.transcriptOffset, 0);
+});
+
+test("a current anchor with no locatable transcript records no anchor at all", () => {
+  reset();
+  // The opposite case, and the reason the two are not one value with a fallback. Here the
+  // session may already hold a conversation and nothing separates it from this task's turns,
+  // so null is the honest answer and a collector must treat it as completeness it cannot
+  // establish.
+  const session = mkSession({ id: "s1", agentSessionId: null, transcriptPath: null, cwd: null });
+  const frozen = freezeScoutPromptBoundary(source({ session, task: SCOUT }), SCOUT, "s1", "current");
+  assert.equal(frozen?.transcriptPath, null);
+  assert.equal(frozen?.transcriptOffset, null);
+});
+
 test("a ship task freezes no boundary at either seam", () => {
   reset();
   const session = mkSession({ id: "s1" });
@@ -649,9 +673,19 @@ test("both task-delivery seams freeze a boundary, not just the dispatcher", () =
   const src = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
   assert.match(src("src/server/dispatcher.ts"), /freezeScoutPromptBoundary\(/);
   assert.match(src("src/server/tasks.ts"), /freezeScoutPromptBoundary\(/);
-  // And both undo it when the delivery they were freezing for did not happen.
-  assert.match(src("src/server/dispatcher.ts"), /discardScoutPromptBoundary\(/);
-  assert.match(src("src/server/tasks.ts"), /discardScoutPromptBoundary\(/);
+  // And both undo it when the delivery they were freezing for did not happen - including
+  // when the delivery THROWS rather than resolving a refusal, which is a separate arm at
+  // both seams because `inject` is an injected dependency and nothing binds it to reject
+  // through a value rather than an exception.
+  assert.equal(src("src/server/dispatcher.ts").match(/discardScoutPromptBoundary\(/g)?.length, 1);
+  assert.equal(src("src/server/tasks.ts").match(/discardScoutPromptBoundary\(/g)?.length, 2);
+  for (const path of ["src/server/dispatcher.ts", "src/server/tasks.ts"]) {
+    assert.match(
+      src(path),
+      /catch \(err\) \{\n\s+(\/\/[^\n]*\n\s+)*discardScoutPromptBoundary\(boundary\);\n\s+throw err;/,
+      `${path} discards the boundary before a thrown delivery propagates`,
+    );
+  }
 });
 
 test("an unverified terminal submit is not proof a human prompt was delivered", () => {

@@ -80,10 +80,19 @@ export function freezeScoutPromptBoundary(
   if (!episode) return null;
 
   const located = sessionMessages(session);
-  // `size` can still answer null for a file that vanished between locating and measuring.
-  // Null offset means "no anchor was established", which a collector reports as an
-  // incomplete trail - the honest answer, and distinct from the zero that says the episode
-  // owns the file from its first byte.
+  // Zero and null are different answers, not a value and its fallback.
+  //
+  // A `launch` anchor is zero whether or not a path was found. The prompt travelled with the
+  // process, so the episode owns the file from its first byte - that is true of an embedded
+  // session whose transcript does not exist YET, and a collector that re-locates the file
+  // later can page all of it. Writing null there because the name was not available at this
+  // instant would discard a fact that is true, and would make every embedded scout's trail
+  // report as incomplete for no reason.
+  //
+  // A `current` anchor is null when nothing could be located or measured, because then
+  // nothing separates this task's turns from the conversation the session was already
+  // having. `size` can also answer null for a file that vanished between locating and
+  // measuring, which is the same "no anchor" and reads as it.
   const offset =
     anchor === "launch" ? 0 : located ? (located.read.size(located.path) ?? null) : null;
   return openScoutPromptContext(

@@ -36,6 +36,7 @@ import {
   validateSessionName,
   validateSessionNameAgainstTasks,
   type ActionResult,
+  type InjectResult,
 } from "./actions.ts";
 import {
   getTask as getDurableTask,
@@ -2162,15 +2163,26 @@ export class TaskManager {
     // holds a conversation, so the offset recorded now is the only thing that later
     // separates this scout's follow-ups from whatever the agent was doing beforehand.
     const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
-    const r = await inject(
-      this.registry.getSession(s.id) ?? s,
-      withTaskKindContract(ready, ready.intent, {
-        fallbackRoot: s.cwd,
-        planSkills: planSkills?.ok ? planSkills.commands : null,
-      }),
-      undefined,
-      () => this.registry.promptResourceBlockerForSession(s.id),
-    );
+    // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
+    // a refusal does - the task stays in the backlog, so a surviving row would claim an
+    // episode saw a task nobody has been given. `inject` is injectable here and the guard
+    // callback runs inside it, so neither is bound to resolve `{ ok: false }` rather than
+    // reject; the dispatcher's seam guards the same risk the same way.
+    let r: InjectResult;
+    try {
+      r = await inject(
+        this.registry.getSession(s.id) ?? s,
+        withTaskKindContract(ready, ready.intent, {
+          fallbackRoot: s.cwd,
+          planSkills: planSkills?.ok ? planSkills.commands : null,
+        }),
+        undefined,
+        () => this.registry.promptResourceBlockerForSession(s.id),
+      );
+    } catch (err) {
+      discardScoutPromptBoundary(boundary);
+      throw err;
+    }
     if (!r.ok) {
       // Nothing was typed, and the task stays droppable. A boundary left behind would claim
       // an episode saw a task that is still sitting in the backlog.

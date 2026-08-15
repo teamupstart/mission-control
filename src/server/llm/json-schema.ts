@@ -164,8 +164,11 @@ function strictify(node: unknown): unknown {
   if ("items" in out) {
     out.items = Array.isArray(out.items) ? out.items.map(strictify) : strictify(out.items);
   }
-  // Only recurse when it carries a schema; `false` and `true` are values, not sub-schemas.
-  if (isSchemaObject(out.additionalProperties)) {
+  // A DECLARED catchall: `.catchall()` and `z.record()` both render a schema here, where an
+  // ordinary object renders `false`. Recurse only in that case - `false` and `true` are
+  // values, not sub-schemas.
+  const declaredCatchall = isSchemaObject(out.additionalProperties);
+  if (declaredCatchall) {
     out.additionalProperties = strictify(out.additionalProperties);
   }
 
@@ -189,6 +192,13 @@ function strictify(node: unknown): unknown {
   }
   out.properties = next;
   out.required = Object.keys(next);
-  out.additionalProperties = false;
+  // `.catchall()` is the same problem as `z.record()` wearing a different shape: it has
+  // `properties` AND a schema-valued `additionalProperties`, so it reaches this line where a
+  // bare record returns above. Overwriting that schema with `false` would silently delete the
+  // author's catchall contract - exactly the rewrite the record guard exists to prevent, just
+  // harder to notice. So leave it, and let the contract assertion be what says strict mode
+  // will not take this shape. Nothing here uses `.catchall()` today; this is written so the
+  // first schema that does fails loudly instead of quietly losing a constraint.
+  if (!declaredCatchall) out.additionalProperties = false;
   return out;
 }

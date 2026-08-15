@@ -287,6 +287,40 @@ test("objects inside array items are strictified", () => {
   assert.equal(items.additionalProperties, false);
 });
 
+// Two shapes strict mode cannot express. Neither exists in this codebase today, and the point
+// of pinning them is that the first one to arrive must FAIL LOUDLY rather than be quietly
+// rewritten into something that validates but means less than the author wrote.
+test("a record's catchall is left alone rather than replaced with a closed object", () => {
+  const rendered = providerJsonSchema(z.object({ bag: z.record(z.string()) }));
+  const bag = at(rendered, "bag");
+  // Forcing `additionalProperties: false` here would leave a map that can hold nothing.
+  assert.deepEqual(bag.additionalProperties, { type: "string" });
+  assert.equal("properties" in bag, false, "a record has no properties to require");
+  assert.throws(
+    () => assertStrictJsonSchema(rendered, "record"),
+    "the assertion, not a silent rewrite, is what reports a shape strict mode will not take",
+  );
+});
+
+test("a catchall object keeps its catchall, and is still reported as non-strict", () => {
+  // `.catchall()` has BOTH `properties` and a schema-valued `additionalProperties`, so it
+  // reaches the closing lines of `strictify` where a bare record returns early. Overwriting
+  // that schema with `false` would delete the author's contract without a word.
+  const rendered = providerJsonSchema(
+    z.object({ a: z.string() }).catchall(z.object({ n: z.number().optional() })),
+  );
+  assert.deepEqual(
+    rendered.additionalProperties,
+    { type: "object", properties: { n: { type: ["number", "null"] } }, required: ["n"], additionalProperties: false },
+    "the catchall survives AND is itself strictified, rather than being discarded",
+  );
+  assert.deepEqual(rendered.required, ["a"], "declared properties are still required");
+  assert.throws(
+    () => assertStrictJsonSchema(rendered, "catchall"),
+    "strict mode will not take this shape, and the assertion has to be the one to say so",
+  );
+});
+
 test("an optional enum gains null in the enum, not only in the type", () => {
   // `"type": ["string","null"]` beside `"enum": ["a","b"]` reads as nullable and is not:
   // `enum` alone still rejects null, so the model would have no legal way to decline.

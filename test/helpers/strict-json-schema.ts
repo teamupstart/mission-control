@@ -47,6 +47,16 @@ function walk(node: unknown, ctx: Ctx): void {
   if (!isObj(node)) return;
   const where = `${ctx.label} at ${ctx.path}`;
 
+  // Checked BEFORE the `properties` block and independently of it. An open map declared as a
+  // schema here - `z.record()`, or a `.catchall()` object - is a shape strict mode will not
+  // take, and a record carries no `properties` at all, so folding this into the block below
+  // would let exactly that case through unexamined.
+  assert.equal(
+    isObj(node.additionalProperties),
+    false,
+    `${where}: strict mode has no way to express an open map; additionalProperties must be false`,
+  );
+
   const properties = node.properties;
   if (isObj(properties)) {
     const keys = Object.keys(properties);

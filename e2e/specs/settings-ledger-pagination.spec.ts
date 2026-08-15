@@ -1,11 +1,10 @@
 import { mkdirSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * The three settings ledgers - Inspector, Shipping, Foreman - as one table with one set of
@@ -89,8 +88,7 @@ const SERVED = 50;
  * row rather than "some row".
  */
 function seedPullRequests(daemon: DaemonHandle, count: number): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
-  try {
+  withDaemonDb(daemon, (db) => {
     const insert = db.prepare(
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
@@ -120,9 +118,7 @@ function seedPullRequests(daemon: DaemonHandle, count: number): void {
         base - i * 60_000,
       );
     }
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /** The ledger column of a settings panel, once the daemon's first poll has filled it. */
@@ -335,8 +331,7 @@ test("paging returns to the top of the rows rather than keeping the last offset"
  * SAYS. This one is about the table around it.
  */
 function seedEpisodes(daemon: DaemonHandle, count: number): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
-  try {
+  withDaemonDb(daemon, (db) => {
     const insert = db.prepare(
       `INSERT INTO foreman_episodes
          (note_key, session_id, marker, situation, surface, question, pane, purpose, brief,
@@ -357,9 +352,7 @@ function seedEpisodes(daemon: DaemonHandle, count: number): void {
         base - i * 60_000,
       );
     }
-  } finally {
-    db.close();
-  }
+  });
 }
 
 test("the Foreman ledger pages by the same rules, in the same words", async ({ page, daemon }) => {

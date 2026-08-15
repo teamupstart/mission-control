@@ -206,6 +206,24 @@ test("prose ABOUT the operator's instructions survives; only the frame is redact
   assert.match(stripPrefsMarkers("The operator's standing instructions -----"), /redacted/);
 });
 
+/**
+ * The fastest of `runs` samples, in milliseconds.
+ *
+ * The MINIMUM rather than a mean, because the noise being rejected is one-sided: the scheduler
+ * can steal a sample and inflate it without bound, but nothing makes the work finish faster
+ * than it is. On a contended machine the mean tracks the contention and the minimum tracks the
+ * algorithm, and the algorithm is what is under test.
+ */
+function fastestMs(runs: number, work: () => void): number {
+  let best = Infinity;
+  for (let index = 0; index < runs; index += 1) {
+    const started = performance.now();
+    work();
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
 test("a long rule cannot stall the worker - the matcher stays linear", () => {
   // `dressing` used an unbounded `RULE_CHAR{2,}` inside an unanchored alternation, so the
   // engine retried every run length at every start offset. Measured on that pattern: 5k rule
@@ -214,13 +232,26 @@ test("a long rule cannot stall the worker - the matcher stays linear", () => {
   // validates only as `z.string().min(1)` and stores verbatim, so a session reporting a long
   // enough status could stall the loop that answers every other session.
   //
-  // The bound is deliberately loose - two seconds against a measured ~80ms - because this
-  // pins an ALGORITHM, not a machine. Quadratic regrowth blows past it by orders of magnitude;
-  // a slow CI box does not.
-  const t0 = Date.now();
-  stripPrefsMarkers("-".repeat(60_000));
-  const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 2_000, `matcher took ${elapsed}ms on 60k rule characters - quadratic?`);
+  // Asserted as GROWTH rather than against a deadline, because the deadline version was a real
+  // flake: it failed at 3324ms against its 2s ceiling on a machine running three other test
+  // suites. That ceiling described itself as "two seconds against a measured ~80ms", but 60k
+  // characters actually cost ~300ms here, so the true headroom was about 6.6x and contention
+  // ate it. A wall-clock ceiling cannot tell a quadratic matcher from a busy box; a ratio can,
+  // because a uniform slowdown scales both terms and cancels. Four times the input costs about
+  // four times as long if the matcher is linear and about sixteen if it is quadratic - measured
+  // here across eight trials the ratio sat between 3.4 and 4.5, so 8 splits the two cleanly.
+  const small = fastestMs(5, () => stripPrefsMarkers("-".repeat(15_000)));
+  const large = fastestMs(5, () => stripPrefsMarkers("-".repeat(60_000)));
+  const growth = large / small;
+  assert.ok(
+    growth < 8,
+    `4x the input cost ${growth.toFixed(1)}x the time ` +
+      `(${small.toFixed(0)}ms -> ${large.toFixed(0)}ms) - quadratic?`,
+  );
+  // The backstop a ratio cannot provide: something uniformly pathological, or an outright
+  // hang, keeps its shape while growing. An order of magnitude above the ~300ms this really
+  // costs, and still below the ~12s the old quadratic pattern would reach at this size.
+  assert.ok(large < 10_000, `60k rule characters took ${large.toFixed(0)}ms - stalled?`);
 
   // And bounding the run did not cost coverage: a rule longer than the bound still reads as a
   // frame, because the flank swallows whatever the quantifier does not.

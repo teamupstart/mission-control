@@ -1216,7 +1216,7 @@ story is worthless if the daemon under test is not the one it thinks it is:
 
 There are no `data-testid` attributes and none should be added - there are 229 `aria-label`s
 and 155 `role`s, so `getByRole`/`getByLabel`/`getByPlaceholder` already work and stay
-correct through refactors. Seven traps, all of which have cost time already:
+correct through refactors. Eight traps, all of which have cost time already:
 
 1. **Never use `{ exact: true }` on a button name.** Keyboard hints render as `<kbd>` inside
    the label and are part of the accessible name: the dispatch button is `"+Dispatch"`.
@@ -1249,6 +1249,20 @@ correct through refactors. Seven traps, all of which have cost time already:
    on a build with the fix reverted, which is the only way to find that out. `git stash push`
    the fix, rebuild, run the case, see it red, then restore. If it cannot be made red, it is
    not pinning anything.
+8. **Never open the daemon's database with `new DatabaseSync`.** Use `withDaemonDb` from
+   `fixtures/daemon-db.ts`. Twelve call sites across ten specs reach the file directly. Ten of
+   them **write**, seeding state nothing here can produce for real - a review round is a model
+   call, an observed head is a `gh` call - and those are the ones that need a `busy_timeout`,
+   which none of them had. WAL is not the whole story: it buys concurrent *readers*, but two
+   writers still serialize on one write lock, and a connection with no timeout does not wait
+   for it at all - SQLite returns `SQLITE_BUSY` immediately and you get `Error: database is
+   locked`. That is a contention failure, so it is invisible alone and shows up only when two
+   suites share a machine. The other two call sites only **read** (`dispatch-and-converse` and
+   `sdk-idle-restore` poll `sdk_sessions.turn_in_progress`); a reader never blocks under WAL,
+   so they were never at risk and route through the helper for the single entry point and the
+   guaranteed close, not for the timeout. `test/e2e-daemon-db-access.test.ts` fails the build
+   if any spec opens the file directly, because the author who does will not see it any other
+   way.
 
 Each test gets its own daemon (`fixtures/test.ts`). That costs about a second and a half and
 buys independence: a spec asserting "exactly one session on the fleet" must not silently

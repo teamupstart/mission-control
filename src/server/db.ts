@@ -478,6 +478,31 @@ export function openDb(): DatabaseSync {
   mkdirSync(dirname(DB_PATH), { recursive: true });
   db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL;");
+  // No `busy_timeout` beside it, and that is a decision rather than an omission.
+  //
+  // This process is the only one that writes here. Everything else that needs state reaches
+  // it over loopback HTTP and never links `node:sqlite`: the Foreman worker (`foreman/
+  // client.ts`, whose outbox is a FILE for exactly this reason), the MCP server, both agent
+  // hooks, the statusline, and the Electron main process - which runs the daemon as a forked
+  // utility process rather than in-process. `scripts/db-shell.mjs` opens the file `-readonly`,
+  // which in WAL never blocks a writer. Within this process there is one connection, cached
+  // below, and `DatabaseSync` is fully synchronous, so two statements cannot interleave.
+  // There is nobody to wait for, and a timeout would buy nothing.
+  //
+  // What ENFORCES that is only the port bind, and it is weaker than it looks - worth knowing
+  // before trusting the paragraph above. `openDb` runs at module load, so a second daemon
+  // opens this file and runs `migrate` before `serve` discovers the port is taken; there is
+  // no listen-error handler, no lockfile, and `PORT` and the state dir are independent
+  // settings, so `MISSION_PORT=7318` against the same `MISSION_HOME` is two live writers and
+  // no error at all. Every transaction here is `BEGIN IMMEDIATE`, which takes the write lock
+  // up front and, with no timeout, fails on the spot instead of retrying.
+  //
+  // A timeout would turn those into a wait, which is why it reads as the missing line. It is
+  // deliberately not added: it would make a second writer look supported when the answer is
+  // to not have one, and it would hide the collision rather than the fix. The place a second
+  // writer IS legitimate is the e2e suite, which seeds this database beside a running daemon
+  // - `e2e/fixtures/daemon-db.ts` sets the pragma there, on that connection, where it belongs.
+
   // SQLite parses REFERENCES clauses whatever this says and enforces them only when it is
   // on, so declaring a foreign key without this line is a comment that looks like a
   // constraint. It is safe to switch on for the whole file because the ensemble family

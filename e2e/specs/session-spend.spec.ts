@@ -1,12 +1,12 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * What a driven session's work COSTS, from the turn that spent it to the figure in the topbar.
@@ -169,14 +169,11 @@ test("the session's own card carries what that session cost", async ({ dashboard
  * of setup (see `settings-ledger-pagination.spec.ts`).
  */
 function backdateTelemetryEnabledAt(daemon: DaemonHandle, daysAgo: number): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
-  try {
+  withDaemonDb(daemon, (db) => {
     db.prepare(`UPDATE app_config SET value = ? WHERE key = 'costTelemetryEnabledAt'`).run(
       JSON.stringify(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
     );
-  } finally {
-    db.close();
-  }
+  });
 }
 
 test("Cost settings names the sessions telemetry is not covering", async ({

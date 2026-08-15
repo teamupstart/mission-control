@@ -8,6 +8,7 @@ import {
 } from "@shared/workflow-stages.ts";
 import { workflowRunLabel, workflowRunTone } from "../components/session-bits.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { isDragSelection } from "../lib/pointer.ts";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import type { InheritedPass } from "./run-model.ts";
 import {
@@ -312,6 +313,10 @@ function followRunLink(
   onOpenRun: () => void,
 ): void {
   event.stopPropagation();
+  if (isDragSelection(window.getSelection())) {
+    event.preventDefault();
+    return;
+  }
   if (
     event.button !== 0
     || event.metaKey

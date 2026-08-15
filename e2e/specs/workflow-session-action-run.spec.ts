@@ -463,9 +463,25 @@ test("Board workflow controls expand in place and open the exact run", async ({
   // neither drills into session detail nor lands on a merely related run in the Runs list.
   await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
   await dashboard.reload();
-  await dashboard
-    .getByRole("link", { name: /Open E2E action run preview v\d+ workflow run/ })
-    .click();
+  const workflowRunLink = dashboard.getByRole("link", {
+    name: /Open E2E action run preview v\d+ workflow run/,
+  });
+  const boardUrl = dashboard.url();
+  await workflowRunLink.evaluate((link) => {
+    const name = link.querySelector(".wf-tile-peek-name");
+    if (!name) throw new Error("workflow preview name is missing");
+    const range = document.createRange();
+    range.selectNodeContents(name);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    link.click();
+  });
+  await expect(dashboard).toHaveURL(boardUrl);
+  await expect.poll(() => dashboard.evaluate(() => window.getSelection()?.toString() ?? ""))
+    .not.toBe("");
+  await dashboard.evaluate(() => window.getSelection()?.removeAllRanges());
+  await workflowRunLink.click();
   await expect(dashboard).toHaveURL(`${daemon.baseURL}/#/runs/${runId}`);
   await expect(dashboard.locator(".wf-run-reader")).toContainText("E2E action run preview");
 });

@@ -1,6 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -8,6 +7,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { settled } from "../fixtures/settle.ts";
 
 /**
@@ -271,16 +271,12 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   const [{ id: sessionId }] = await api<Array<{ id: string }>>(daemon, "/api/sessions");
   const waitForDriverIdle = async (): Promise<void> => {
     await expect.poll(async () => {
-      const db = new DatabaseSync(join(daemon.home, "harness.db"));
-      let turnInProgress: number | null;
-      try {
+      const turnInProgress = withDaemonDb(daemon, (db) => {
         const row = db.prepare(
           "SELECT turn_in_progress FROM sdk_sessions WHERE id = ?",
         ).get(sessionId) as { turn_in_progress: number } | undefined;
-        turnInProgress = row?.turn_in_progress ?? null;
-      } finally {
-        db.close();
-      }
+        return row?.turn_in_progress ?? null;
+      });
       const current = (await api<Array<{ id: string; pendingTurns: unknown[] }>>(
         daemon,
         "/api/sessions",

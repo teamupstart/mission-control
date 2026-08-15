@@ -1,12 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * A real Pull Request action run, read in the browser: parked on each of the two
@@ -89,17 +89,15 @@ async function announcePullRequest(daemon: DaemonHandle, sessionId: string, url:
 /**
  * Write what a poll would have observed about the adopted pull request.
  *
- * The one thing this file fabricates, and it fabricates only the provider's answer. WAL is on,
- * so a second writer is safe beside the running daemon, and `loadOpenInspectorPrs` is read
- * fresh on every decision - deliberately, so a cached ledger cannot leave an action waiting for
- * a head that had already arrived.
+ * The one thing this file fabricates, and it fabricates only the provider's answer.
+ * `loadOpenInspectorPrs` is read fresh on every decision - deliberately, so a cached ledger
+ * cannot leave an action waiting for a head that had already arrived.
  */
 function observePullRequest(
   daemon: DaemonHandle,
   patch: { branch: string; repoRoot?: string; headSha?: string },
 ): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
-  try {
+  withDaemonDb(daemon, (db) => {
     db.prepare(
       `UPDATE inspector_prs
           SET head_ref_name = ?, observed_head_sha = ?, observed_state = 'OPEN', observed_at = ?
@@ -111,9 +109,7 @@ function observePullRequest(
       Date.now(),
       ...(patch.repoRoot ? [patch.repoRoot] : []),
     );
-  } finally {
-    db.close();
-  }
+  });
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {

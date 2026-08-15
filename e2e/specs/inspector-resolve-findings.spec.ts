@@ -1,11 +1,10 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * The operator's way out of a finding nothing else can close.
@@ -61,14 +60,13 @@ interface SeedRow {
  *
  * Written straight to the ledger, because the only thing that mints a finding is a completed
  * review round - a model call this suite must never make. It is the same lever
- * `ship-log.spec.ts` uses to stand in for what a poll observed, and WAL is on, so a second
- * writer here is safe. Everything downstream of the seed is real: the route the click
- * reaches, the daemon that serves it, and the re-read the panel draws from.
+ * `ship-log.spec.ts` uses to stand in for what a poll observed. Everything downstream of the
+ * seed is real: the route the click reaches, the daemon that serves it, and the re-read the
+ * panel draws from.
  */
 function seedLedger(daemon: DaemonHandle, rows: SeedRow[]): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
   const now = Date.now();
-  try {
+  withDaemonDb(daemon, (db) => {
     for (const row of rows) {
       db.prepare(
         `INSERT INTO inspector_prs
@@ -103,9 +101,7 @@ function seedLedger(daemon: DaemonHandle, rows: SeedRow[]): void {
         );
       }
     }
-  } finally {
-    db.close();
-  }
+  });
 }
 
 const ledgerRow = (page: Page, name: string) =>

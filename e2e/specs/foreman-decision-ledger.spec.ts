@@ -1,8 +1,6 @@
-import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
-
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * The Foreman decision ledger, driven the way an operator meets it: a settings page opened
@@ -50,8 +48,7 @@ interface SeedEpisode {
 }
 
 function seedEpisodes(daemon: DaemonHandle, episodes: SeedEpisode[]): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
-  try {
+  withDaemonDb(daemon, (db) => {
     const insert = db.prepare(
       `INSERT INTO foreman_episodes
          (note_key, session_id, marker, situation, surface, question, pane, purpose, brief,
@@ -83,9 +80,7 @@ function seedEpisodes(daemon: DaemonHandle, episodes: SeedEpisode[]): void {
         e.resolvedBy,
       );
     }
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /**

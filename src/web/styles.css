@@ -969,8 +969,25 @@ button.wf-run-version:focus-visible {
   overflow: auto;
 }
 
-.wf-run-worklist-detail {
-  max-height: min(60vh, 560px);
+/*
+ * And only the CARD scrolls, not the whole detail column - the same rule the rail follows one
+ * block up, applied to the other half of the split.
+ *
+ * `Previous` and `Next` are a statement about the segment rather than part of the item on
+ * screen, exactly as the segment counts and the stalemate card are statements about the rail.
+ * Inside the scroller they scrolled away with the card, so selecting anything whose rationale
+ * and evidence filled the cap meant scrolling to the bottom to reach `Next` - on the control
+ * whose whole purpose is walking the list without hunting.
+ *
+ * Sticky was the other option and is worse here: the row would float over the end of a long
+ * rationale, which is the one part of the card a reader is most likely to be in the middle of.
+ */
+.wf-run-worklist-detail-body {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-width: 0;
+  max-height: min(52vh, 480px);
   overflow: auto;
 }
 
@@ -1107,11 +1124,6 @@ button.wf-run-version:focus-visible {
   line-height: 1.45;
 }
 
-.wf-run-worklist-detail-body {
-  display: grid;
-  gap: 10px;
-}
-
 .wf-run-worklist-walk {
   display: flex;
   align-items: center;
@@ -1177,7 +1189,7 @@ button.wf-run-version:focus-visible {
   }
 
   .wf-run-worklist-list,
-  .wf-run-worklist-detail {
+  .wf-run-worklist-detail-body {
     max-height: none;
     overflow: visible;
   }

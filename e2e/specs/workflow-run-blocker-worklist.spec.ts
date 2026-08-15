@@ -267,9 +267,46 @@ test("the worklist leads with what the run asks for, and a pass costs a count", 
   await dashboard.mouse.move(0, 0);
   await shoot(worklist, "02-passes-behind-the-count");
 
+  /*
+   * The paging controls stay reachable however long the selected card is.
+   *
+   * Only the CARD scrolls, not the detail column - `Previous` and `Next` are a statement about
+   * the segment rather than part of the item on screen. Inside the scroller they scrolled away
+   * with the content, so any change whose rationale and evidence filled the cap meant scrolling
+   * to the bottom to reach `Next`. Measured rather than asserted on markup: the fixture's card
+   * is short, so the viewport is squeezed until the card really does overflow, and the two
+   * facts that matter are then read off the live layout.
+   */
+  await segments.getByRole("button", { name: "Blocking 2" }).click();
+  // 52vh of 480 is 250px against a card measured at 307px, so the cap engages with ~57px to
+  // spare rather than sitting on a rounding boundary. Wide enough to stay clear of the 1080px
+  // single-column collapse, which would take the scroller away and make the check vacuous.
+  await dashboard.setViewportSize({ width: 1280, height: 480 });
+  const layout = await worklist.evaluate((el) => {
+    const column = el.querySelector<HTMLElement>(".wf-run-worklist-detail")!;
+    const body = el.querySelector<HTMLElement>(".wf-run-worklist-detail-body")!;
+    const walk = el.querySelector<HTMLElement>(".wf-run-worklist-walk")!;
+    // WHICHEVER element scrolls - the property under test is where the paging row ends up, not
+    // which box carries `overflow`, so the check survives a future change of technique.
+    const scroller = [column, body].find((node) => node.scrollHeight > node.clientHeight) ?? null;
+    // Put it back at the top, which is where a reader lands after selecting a row.
+    if (scroller) scroller.scrollTop = 0;
+    return {
+      somethingScrolls: scroller !== null,
+      walkReachableWithoutScrolling:
+        walk.getBoundingClientRect().bottom <= column.getBoundingClientRect().bottom + 1,
+    };
+  });
+  expect(layout.somethingScrolls, "squeeze the viewport until the card really scrolls").toBe(true);
+  expect(
+    layout.walkReachableWithoutScrolling,
+    "Previous/Next must stay reachable rather than scrolling away with the card",
+  ).toBe(true);
+  await expect(worklist.getByRole("button", { name: "Next item" })).toBeVisible();
+  await dashboard.setViewportSize({ width: 1280, height: 900 });
+
   // Walking the list is what a worklist is for, and it stays inside the segment. Each step
   // re-points every per-change action at the reviewer whose row is now selected.
-  await segments.getByRole("button", { name: "Blocking 2" }).click();
   await expect(worklist).toContainText("1 of 2");
   const firstDisabled = await worklist.getByRole("button", { name: /^Disable E2E / })
     .textContent();

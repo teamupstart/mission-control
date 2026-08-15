@@ -197,6 +197,72 @@ test("a run that un-parks is forgotten rather than left to go stale", async () =
   assert.equal(obs.snapshot().size, 0);
 });
 
+// ---- a read that lands after its run moved on ----
+//
+// The cleanup in `observe` can only delete entries that EXIST. A read in flight has no entry
+// yet, so a run that un-parks mid-read is not covered by it: the read resolves afterwards and
+// writes its result into a map nobody cleaned. That result then sits there, inside the TTL,
+// and the next park quotes it - which is a local commit count from before the head the
+// Inspector was waiting for was ever pushed.
+
+test("a read that resolves AFTER its run un-parks is discarded, not written back", async () => {
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const obs = createUnpushedObserver({
+    checkoutFor: () => "/work/tree",
+    read: async () => {
+      await gate;
+      return AHEAD;
+    },
+    now: () => 0,
+  });
+
+  obs.observe([mkRun()]);            // read starts, nothing in the map yet
+  obs.observe([mkRun({ status: "running" })]); // the Inspector saw the head; the run moved on
+  release!();
+  await settle();
+
+  assert.equal(
+    obs.snapshot().has("run"),
+    false,
+    "a result for a run nobody is observing must not be committed",
+  );
+});
+
+test("a stale in-flight result cannot be quoted by a LATER park", async () => {
+  // The consequence spelled out: without the guard the late write sits inside the TTL, so the
+  // next park reads it instead of re-reading, and the sentence quotes a count taken before the
+  // push that un-parked the run in the first place.
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let reads = 0;
+  const obs = createUnpushedObserver({
+    checkoutFor: () => "/work/tree",
+    read: async () => {
+      reads++;
+      if (reads === 1) await gate;
+      // The second read is the truth: the branch was pushed, so nothing is outstanding.
+      return reads === 1 ? AHEAD : { state: "pushed", branch: "b", upstream: "origin/b" };
+    },
+    now: () => 0,
+    ttlMs: 60_000,
+  });
+
+  obs.observe([mkRun()]);
+  obs.observe([mkRun({ status: "running" })]);
+  release!();
+  await settle();
+
+  // It parks again, still well inside the TTL of that abandoned read.
+  obs.observe([mkRun()]);
+  await settle();
+  assert.notDeepEqual(
+    obs.snapshot().get("run"),
+    AHEAD,
+    "the re-parked run must not be described by a count taken before it un-parked",
+  );
+});
+
 test("a reader that THROWS claims nothing and does not take the daemon down", async () => {
   const obs = createUnpushedObserver({
     checkoutFor: () => "/work/tree",

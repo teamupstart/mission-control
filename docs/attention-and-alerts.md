@@ -100,17 +100,29 @@ same distinction the Line uses to decide whether the run is counted as yours:
 
 For that second case the daemon goes one step further and says whether the push is
 actually the missing step. It reads the bound checkout locally - never fetching, never
-pushing, never typing - and counts commits that no remote-tracking ref holds. When there
-are any, the sentence names them: *"waiting for a pushed head **and you have 2 commits
-that are not pushed**"*. That is the difference between a session that fixed the findings
-and forgot the last step and one that did nothing at all, which is otherwise invisible
-from the daemon's side.
+pushing, never typing - and when it finds work the remote has not seen, the sentence names
+it: *"waiting for a pushed head **and you have 2 commits that are not pushed**"*. That is
+the difference between a session that fixed the findings and forgot the last step and one
+that did nothing at all, which is otherwise invisible from the daemon's side.
+
+The reading is two questions rather than one, and the difference between them is
+load-bearing:
+
+1. **Does the branch track an upstream at all?** This is the gate. A branch that tracks
+   nothing stays silent, because work nobody ever meant to push is not a forgotten step.
+2. **How many commits does HEAD hold that no remote-tracking ref holds?** This is the
+   count, and it is deliberately wider than the branch's own upstream. A session that
+   pushed its work under a different branch name, or to a remote not called `origin` - an
+   ordinary fork clone - has genuinely pushed it, and comparing against that one upstream
+   alone would tell somebody to push what is already there. Widening the comparison can
+   only ever make the count *smaller*, which is the direction this is allowed to be wrong
+   in.
 
 When it cannot make that claim it says nothing extra, and the wording falls back to the
 plain wait. A branch that tracks no remote, a detached HEAD, and a git call that failed
 are all *unknown* rather than *not pushed* - being told you forgot to push a branch that
 was never meant to be pushed sends you looking for a mistake you did not make. A checkout
-that is level with its upstream is also silent, for a subtler reason: that only proves a
+holding nothing the remotes lack is also silent, for a subtler reason: that only proves a
 push is not the missing step, not that the head the Inspector wants exists.
 
 ![The run a stuck parked-run notification opens, showing the parked round and its state](images/line-review-parked-toast-run.png)

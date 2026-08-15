@@ -80,11 +80,29 @@ export function createUnpushedObserver(deps: UnpushedObserverDeps): UnpushedObse
   const entries = new Map<string, Entry>();
   /** Runs with a read in flight, so a tick every 5s cannot stack reads on a slow checkout. */
   const inFlight = new Set<string>();
+  /**
+   * The runs the last `observe` saw parked. A read may only commit for a run still in here.
+   *
+   * The cleanup below can delete only entries that EXIST, and a read in flight has none yet -
+   * so without this a run that un-parks mid-read gets its result written back afterwards, into
+   * a map nobody will clean again.
+   */
+  const wanted = new Set<string>();
+  /**
+   * How many times each run has LEFT the observed set, so a read cannot land across a park.
+   *
+   * `wanted` alone is not enough: a run can un-park and park again while one read is still in
+   * flight, and that read would find its id wanted once more and commit a count measured
+   * before the push that un-parked it. The generation is captured when the read starts and
+   * re-checked when it lands, so only a read that spans no park at all may speak.
+   */
+  const generation = new Map<string, number>();
 
   const refresh = (run: WorkflowRunSummary): void => {
     const id = run.id;
     if (inFlight.has(id)) return;
     inFlight.add(id);
+    const startedAt = generation.get(id) ?? 0;
     // Deliberately not awaited, and deliberately cannot reject: `readUnpushedCommits` maps
     // every git failure to an `unknown` observation, and the catch here covers the one thing
     // it cannot - a throw from the seam itself, which a test injects and a real deps bug
@@ -92,7 +110,12 @@ export function createUnpushedObserver(deps: UnpushedObserverDeps): UnpushedObse
     void (async () => {
       try {
         const obs = await read(deps.checkoutFor(run));
-        entries.set(id, { obs, readAt: now() });
+        // Still the same run, still parked, still the same park. Anything else and this
+        // answer is about a question that has since been settled - by the very push the
+        // Inspector was waiting for, in the case that matters.
+        if (wanted.has(id) && (generation.get(id) ?? 0) === startedAt) {
+          entries.set(id, { obs, readAt: now() });
+        }
       } catch {
         // Claim nothing. Leaving the previous entry in place would let a stale `ahead` outlive
         // the checkout it described, and writing an `unknown` would be a claim we did not make.
@@ -115,6 +138,19 @@ export function createUnpushedObserver(deps: UnpushedObserverDeps): UnpushedObse
       // Forget runs that moved on. A run that un-parked has had its head observed, so its
       // count is not merely stale - it is about a question nobody is asking any more.
       for (const id of entries.keys()) if (!live.has(id)) entries.delete(id);
+      // Count the departure BEFORE `wanted` is rewritten, so a read still in flight for this
+      // run can tell that it spanned one.
+      for (const id of wanted) {
+        if (!live.has(id)) generation.set(id, (generation.get(id) ?? 0) + 1);
+      }
+      wanted.clear();
+      for (const id of live) wanted.add(id);
+      // Keep the generation map the size of the interesting set rather than of every run this
+      // daemon has ever seen. An id with a read still in flight has to keep its count, because
+      // that read has not yet checked it.
+      for (const id of generation.keys()) {
+        if (!wanted.has(id) && !inFlight.has(id)) generation.delete(id);
+      }
     },
     snapshot() {
       const out = new Map<string, UnpushedCommits>();

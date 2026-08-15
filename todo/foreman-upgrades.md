@@ -123,7 +123,10 @@ named above, scoped to the one status that most needed it.
 on the remote. So a session that fixed the findings and committed was indistinguishable from one
 that did nothing.
 
-It now says which. `src/server/git/unpushed.ts` counts commits no remote-tracking ref holds,
+It now says which. `src/server/git/unpushed.ts` gates on the branch having an upstream and then
+counts commits no remote-tracking ref holds - the gate and the count are deliberately different
+refs, because a branch tracking nothing must stay silent while a session that pushed to a
+differently-named branch or a remote not called `origin` has genuinely pushed its work.
 `src/server/away/unpushed-observer.ts` keeps that read off the watcher's 5s tick, and
 `parkedReason` appends the clause - "waiting for a pushed head **and you have 2 commits that are
 not pushed**". Three properties are load-bearing and each has its own test:

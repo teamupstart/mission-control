@@ -507,6 +507,19 @@ approved plan forbids this integration from changing the workflow surface at all
   whether any run happens to exist. Zero means no tab strip, no pipelines surface, and
   nothing on the page reading a pipelines route. Later phases must not add a second entry
   point that bypasses it.
+- **A kind tab is a statement about which surface is showing, not a reset button.**
+  `RunsKindTabs` swallows a click on the already-selected tab, because the address the caller
+  builds for a genuine switch is the BARE one - so firing it while a run is open drops that
+  run, and the router's same-hash guard cannot help since `#/runs` and `#/runs/<id>` really
+  are different hashes.
+- **Every run group must appear in `PIPELINE_GROUP_ORDER`.** `pipelineRail` emits only the
+  groups listed there, so a member missing from it is not a mis-sorted rail: it is a run that
+  is invisible, uncounted in `section.total`, and unreachable through `pipelineLeadRun`. The
+  order is derived from `PIPELINE_RUN_GROUPS` sorted by an exhaustive
+  `Record<PipelineRunGroup, number>`, which makes a new group a compile error rather than a
+  silent disappearance. Do not replace that with a hand-written list -
+  `satisfies readonly PipelineRunGroup[]` checks that every element is a group, never that
+  every group is an element.
 
 Routes, owned here and consumed by later phases: `#/runs` and `#/runs/<run-id>` keep meaning
 a workflow run; `#/runs/pipeline` and `#/runs/pipeline/<repoKey>/<slug>` address the

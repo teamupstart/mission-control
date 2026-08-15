@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  PIPELINE_RUN_GROUPS,
   PIPELINE_STEPS,
   type PipelineGateVerdict,
   type PipelineRepoStatus,
@@ -187,6 +188,32 @@ test("repository order breaks a tie inside one group, and slug order inside that
 test("a fleet with nothing in flight leads with nothing rather than throwing", () => {
   assert.equal(pipelineLeadRun(pipelineRail([], [repo()])), null);
   assert.equal(pipelineLeadRun([]), null);
+});
+
+/**
+ * The reading order has to be a PERMUTATION of the persisted vocabulary, never a subset.
+ *
+ * `pipelineRail` only emits a group that appears in `PIPELINE_GROUP_ORDER`, so a member left
+ * out of it is not a mis-sorted rail - it is a run that is invisible, uncounted, and
+ * unreachable. The derivation makes that a compile error, and this makes it a test failure
+ * as well, because the next change here might be someone replacing the derivation with a
+ * hand-written list again. The other test below walks `PIPELINE_GROUP_ORDER` itself, so it
+ * cannot see an omission from it - this is the one that can.
+ */
+test("the reading order carries every run group the vocabulary defines", () => {
+  assert.deepEqual(
+    [...PIPELINE_GROUP_ORDER].sort(),
+    [...PIPELINE_RUN_GROUPS].sort(),
+    "a group in the vocabulary but not in the reading order vanishes from the rail entirely",
+  );
+  assert.equal(
+    new Set(PIPELINE_GROUP_ORDER).size,
+    PIPELINE_GROUP_ORDER.length,
+    "a duplicated group would draw its runs twice",
+  );
+  // And the order itself is the reading order, not the vocabulary's append-only one.
+  assert.equal(PIPELINE_GROUP_ORDER[0], "halted", "halted leads: it is what wants a person");
+  assert.deepEqual(PIPELINE_GROUP_ORDER.slice(-2), ["parked", "processed"], "outcomes last");
 });
 
 test("every group can lead, in the order an operator should meet them", () => {

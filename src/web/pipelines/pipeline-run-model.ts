@@ -1,6 +1,7 @@
 import {
   PIPELINE_KICKBACK_TARGETS,
   PIPELINE_PHASES,
+  PIPELINE_RUN_GROUPS,
   pipelineRepoKey,
   pipelineStepInfo,
   sortByPipelineStep,
@@ -29,21 +30,43 @@ import type { PipelineStatus } from "../workflows/pipeline-bits.tsx";
 // Settings health line the first time one of them learned something the other had not.
 
 /**
+ * How urgently each group wants an operator, lowest first.
+ *
+ * A `Record` over the union rather than a hand-written list, and that is the whole point:
+ * `pipelineRail` shows a run only if its group appears in the reading order below, so a group
+ * added to `PipelineRunGroup` and forgotten here would not be a mis-sorted rail - it would be
+ * a run that is invisible, uncounted in `section.total`, and unreachable through
+ * `pipelineLeadRun`. `satisfies readonly PipelineRunGroup[]` on a literal list cannot catch
+ * that: it checks that every element IS a group, never that every group is an element. A
+ * `Record` inverts the obligation, so the omission is a compile error at the point of the
+ * change.
+ */
+const PIPELINE_GROUP_RANK: Record<PipelineRunGroup, number> = {
+  // The only group waiting on a person.
+  halted: 0,
+  building: 1,
+  eligible: 2,
+  waiting: 3,
+  // Outcomes rather than work, so they sort below everything still moving.
+  parked: 4,
+  processed: 5,
+};
+
+/**
  * The rail's groups, in the order an operator should meet them.
  *
  * Deliberately NOT the tuple's own order: `PIPELINE_RUN_GROUPS` is a persisted vocabulary
  * whose order is an append-only contract, and this is a reading order. Halted first because
  * it is the only group that is waiting on a person; parked and processed last because they
  * are outcomes rather than work.
+ *
+ * Derived from that tuple rather than restated, so this is a permutation of the vocabulary by
+ * construction and cannot silently lose a member. The rank above decides the order; the
+ * vocabulary decides the membership.
  */
-export const PIPELINE_GROUP_ORDER = [
-  "halted",
-  "building",
-  "eligible",
-  "waiting",
-  "parked",
-  "processed",
-] as const satisfies readonly PipelineRunGroup[];
+export const PIPELINE_GROUP_ORDER: readonly PipelineRunGroup[] = [...PIPELINE_RUN_GROUPS].sort(
+  (a, b) => PIPELINE_GROUP_RANK[a] - PIPELINE_GROUP_RANK[b],
+);
 
 /** What each group is called on the rail, and what the word claims. */
 export const PIPELINE_GROUP_LABELS: Record<PipelineRunGroup, string> = {

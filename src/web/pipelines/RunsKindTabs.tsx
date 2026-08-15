@@ -58,7 +58,17 @@ export function RunsKindTabs({
             role="tab"
             aria-selected={kind === tab.id}
             className={kind === tab.id ? "active" : ""}
-            onClick={() => onKind(tab.id)}
+            // Re-clicking the tab you are already on does NOTHING, and the guard lives here
+            // rather than in the caller so no later caller has to remember it. A tab is a
+            // statement about which surface is showing, not a reset button: without this,
+            // clicking "Workflows" while a run is open navigates to the bare `#/runs` the
+            // caller builds for a genuine switch, and the reader silently drops the run - the
+            // same for a pipeline run and `#/runs/pipeline`. The route-level same-hash guard
+            // cannot catch it, because those two hashes really are different.
+            onClick={() => {
+              if (kind === tab.id) return;
+              onKind(tab.id);
+            }}
           >
             {tab.label} {tab.count}
           </button>

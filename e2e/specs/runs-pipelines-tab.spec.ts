@@ -237,6 +237,40 @@ test("the tab is earned, and its rail groups the engine's features per repositor
   await expect(dashboard.getByRole("group", { name: /^Pipeline for/ })).toHaveCount(0);
 });
 
+/**
+ * Re-clicking the tab you are already on keeps the run you have open.
+ *
+ * A tab says which surface is showing; it is not a reset button. The bug this covers is only
+ * reachable with something OPEN, because the tab strip's two addresses (`#/runs` and
+ * `#/runs/pipeline`) are genuinely different hashes from `#/runs/<id>` and
+ * `#/runs/pipeline/<repo>/<slug>` - so the router's own same-route guard cannot see it, and
+ * the reader silently falls back to the bare list.
+ */
+test("re-clicking the active kind tab keeps the open run, on both surfaces", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedFleet(daemon);
+
+  // Pipelines: a specific run open, by address.
+  const repoKey = encodeURIComponent(pipelineRepoKey("ai-conductor", daemon.repo));
+  await dashboard.goto(`${daemon.baseURL}/#/runs/pipeline/${repoKey}/tiny-tweak`);
+  const reader = dashboard.locator("div.pipelines-reader");
+  await expect(reader.getByRole("heading", { name: "tiny-tweak" })).toBeVisible();
+
+  await dashboard.getByRole("tab", { name: /Pipelines/ }).click();
+  expect(new URL(dashboard.url()).hash).toBe(`#/runs/pipeline/${repoKey}/tiny-tweak`);
+  await expect(reader.getByRole("heading", { name: "tiny-tweak" })).toBeVisible();
+
+  // Workflows: this fleet has run none, so the bare list and a kept address are told apart by
+  // the hash rather than by the reader. A filter is what a person would lose here.
+  await dashboard.goto(`${daemon.baseURL}/#/runs?status=running`);
+  await expect(dashboard.getByRole("heading", { name: "Workflow runs", exact: true }))
+    .toBeVisible();
+  await dashboard.getByRole("tab", { name: /Workflows/ }).click();
+  expect(new URL(dashboard.url()).hash).toBe("#/runs?status=running");
+});
+
 test("one run's detail is drawn in the workflow diagram's grammar, from the engine's files", async ({
   dashboard,
   daemon,

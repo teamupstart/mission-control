@@ -57,6 +57,23 @@ function walk(node: unknown, ctx: Ctx): void {
     `${where}: strict mode has no way to express an open map; additionalProperties must be false`,
   );
 
+  // Null has to be REACHABLE, not just declared. `type` says what kind of value is allowed and
+  // `const`/`enum` say which values are, so a schema can announce `"null"` in one and forbid it
+  // in the other - and the result is a field marked nullable that no null can satisfy, which
+  // is worse than one honestly marked required. Checking `required` and `additionalProperties`
+  // alone cannot see this, because every one of those keys is perfectly well formed.
+  if (Array.isArray(node.type) && node.type.includes("null")) {
+    if ("const" in node) {
+      assert.equal(node.const, null, `${where}: type allows null but const pins a non-null value`);
+    }
+    if (Array.isArray(node.enum)) {
+      assert.ok(
+        node.enum.includes(null),
+        `${where}: type allows null but enum omits it, so null can never be sent`,
+      );
+    }
+  }
+
   const properties = node.properties;
   if (isObj(properties)) {
     const keys = Object.keys(properties);

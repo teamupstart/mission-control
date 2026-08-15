@@ -85,30 +85,47 @@ function permitsNull(schema: Record<string, unknown>): boolean {
  * Widen a rendered schema to accept `null`, in whichever way its shape allows.
  *
  * `type` gains a `"null"` member wherever there is one to extend, because that is the form
- * the strict provider documents. An `enum` gains a literal `null` beside it: a bare
- * `"type": ["string", "null"]` next to `"enum": ["escalate", "skip"]` reads as nullable but
- * is not, since `enum` alone would still reject `null`. The final wrap covers the shapes
- * with no `type` to extend (`allOf`, `$ref`, `const`), hoisting the annotations that
- * describe the property rather than the branch.
+ * the strict provider documents. That alone is never enough when a VALUE constraint sits
+ * beside it, and both of the ones rendered here have to move too:
+ *
+ *  - an `enum` gains a literal `null`, because `"type": ["string","null"]` next to
+ *    `"enum": ["escalate","skip"]` reads as nullable and is not - `enum` still rejects null;
+ *  - a `const` (what `z.literal()` renders) becomes the two-value `enum` it already is.
+ *    Widening `type` and leaving `const` pinned produces a field NO value satisfies: null is
+ *    legal by type and illegal by const, so a field marked nullable could never be declined.
+ *
+ * The final wrap covers the shapes with no `type` to extend (`allOf`, `$ref`), hoisting the
+ * annotations that describe the property rather than the branch.
  */
 function withNull(schema: Record<string, unknown>): Record<string, unknown> {
   if (permitsNull(schema)) return schema;
 
   const out = { ...schema };
-  let widened = false;
-  if (Array.isArray(out.enum)) {
-    out.enum = [...out.enum, null];
-    widened = true;
+  const hasConst = "const" in out;
+  const hasEnum = Array.isArray(out.enum);
+
+  // Both at once is an intersection no renderer here produces, and picking a winner would be
+  // guessing. The wrap below is the one reading that stays correct without deciding.
+  if (!(hasConst && hasEnum)) {
+    let widened = false;
+    if (hasConst) {
+      out.enum = [out.const, null];
+      delete out.const;
+      widened = true;
+    } else if (hasEnum) {
+      out.enum = [...(out.enum as unknown[]), null];
+      widened = true;
+    }
+    const type = out.type;
+    if (typeof type === "string") {
+      out.type = [type, "null"];
+      widened = true;
+    } else if (Array.isArray(type)) {
+      out.type = [...type, "null"];
+      widened = true;
+    }
+    if (widened) return out;
   }
-  const type = out.type;
-  if (typeof type === "string") {
-    out.type = [type, "null"];
-    widened = true;
-  } else if (Array.isArray(type)) {
-    out.type = [...type, "null"];
-    widened = true;
-  }
-  if (widened) return out;
 
   for (const key of ["anyOf", "oneOf"] as const) {
     const branches = out[key];

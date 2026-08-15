@@ -330,6 +330,52 @@ test("an optional enum gains null in the enum, not only in the type", () => {
   assert.deepEqual(pick.enum, ["a", "b", null]);
 });
 
+test("an optional literal stays satisfiable, rather than being nullable in name only", () => {
+  // `z.literal()` renders as `const`, which pins the value exactly. Widening `type` and
+  // leaving `const` alone declares null legal by type and illegal by const: a field marked
+  // nullable that NO value satisfies, so the model could never decline it.
+  const rendered = providerJsonSchema(
+    z.object({ kind: z.literal("access").optional(), n: z.literal(7).optional() }),
+  );
+  const kind = at(rendered, "kind");
+  assert.equal("const" in kind, false, "const must not survive alongside a nullable type");
+  assert.deepEqual(kind.enum, ["access", null]);
+  assert.deepEqual(kind.type, ["string", "null"]);
+  assert.ok(permitsNull(kind), "the whole point: null is reachable, not just declared");
+  // The literal is still pinned - widening must not turn it into any string.
+  assert.deepEqual(at(rendered, "n").enum, [7, null]);
+  assertStrictJsonSchema(rendered, "optional literal");
+});
+
+// The invariant behind the three cases above, asserted directly rather than shape by shape.
+// A missed widening is only visible as "this field claims to be nullable and cannot be null",
+// which is exactly what `permitsNull` answers.
+test("every field the strictifier made required is one the model can still decline", () => {
+  const schema = z.object({
+    lit: z.literal("access").optional(),
+    en: z.enum(["a", "b"]).optional(),
+    str: z.string().optional(),
+    num: z.number().optional(),
+    arr: z.array(z.string()).default([]),
+    obj: z.object({ deep: z.string() }).optional(),
+    bool: z.boolean().default(false),
+    already: z.number().nullable().default(null),
+    union: z.union([z.string(), z.number()]).optional(),
+  });
+  const rendered = providerJsonSchema(schema);
+  assertStrictJsonSchema(rendered, "every optional kind");
+  for (const name of Object.keys((rendered.properties as Record<string, unknown>) ?? {})) {
+    assert.ok(
+      permitsNull(at(rendered, name)),
+      `${name} was made required, so null must be a value it can actually take`,
+    );
+  }
+  // And required fields are left strictly alone.
+  const withRequired = providerJsonSchema(z.object({ r: z.literal("x"), o: z.string().optional() }));
+  assert.equal(permitsNull(at(withRequired, "r")), false, "a required literal is not widened");
+  assert.equal(at(withRequired, "r").const, "x", "and keeps its const");
+});
+
 test("a field that declared its own nullability is not widened twice", () => {
   const rendered = providerJsonSchema(
     z.object({ line: z.number().int().positive().nullable().default(null) }),

@@ -1,11 +1,11 @@
 import { mkdirSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { openDaemonDb } from "../fixtures/daemon-db.ts";
 
 const EVIDENCE = artifactsDir("workflow-round-limit-grant");
 
@@ -270,7 +270,7 @@ test("a run out of repair rounds offers the grant, and the grant revives it", as
  * `workflow-pull-request-mismatch.spec.ts` makes when it writes an observed head.
  */
 function pinGate(daemon: DaemonHandle, runId: string, prNumber: number): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
+  const db = openDaemonDb(daemon.home);
   try {
     db.prepare("UPDATE workflow_runs SET gate_state_json = ? WHERE id = ?").run(
       JSON.stringify({
@@ -368,7 +368,7 @@ test("the merge queue tells a spent gate apart from a working one", async ({
   dashboard,
   daemon,
 }) => {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
+  const db = openDaemonDb(daemon.home);
   try {
     const insert = db.prepare(
       `INSERT INTO inspector_prs

@@ -1,11 +1,11 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { openDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * The Ship log at `#/shipped`, driven the way an operator reaches it: a hash, or ⌘K.
@@ -131,7 +131,7 @@ function observePullRequest(
   daemon: DaemonHandle,
   patch: { branch: string; title?: string },
 ): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
+  const db = openDaemonDb(daemon.home);
   try {
     db.prepare(
       `UPDATE inspector_prs

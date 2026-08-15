@@ -1,11 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { openDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * The operator's way out of a finding nothing else can close.
@@ -66,7 +66,7 @@ interface SeedRow {
  * reaches, the daemon that serves it, and the re-read the panel draws from.
  */
 function seedLedger(daemon: DaemonHandle, rows: SeedRow[]): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
+  const db = openDaemonDb(daemon.home);
   const now = Date.now();
   try {
     for (const row of rows) {

@@ -1,5 +1,4 @@
 import { mkdirSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
@@ -7,6 +6,7 @@ import type { Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { openDaemonDb } from "../fixtures/daemon-db.ts";
 
 const EVIDENCE = artifactsDir("sdk-idle-restore");
 const TASK = "prove an idle SDK restore stays idle";
@@ -52,7 +52,7 @@ async function sdkSessions(
 }
 
 function turnInProgress(daemon: DaemonHandle, id: string): number | null {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
+  const db = openDaemonDb(daemon.home);
   try {
     const row = db.prepare(
       "SELECT turn_in_progress FROM sdk_sessions WHERE id = ?",

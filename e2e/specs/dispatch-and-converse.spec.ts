@@ -1,6 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -9,6 +8,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
+import { openDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * The path this suite exists to cover: a person dispatches an agent from the dashboard and
@@ -271,7 +271,7 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   const [{ id: sessionId }] = await api<Array<{ id: string }>>(daemon, "/api/sessions");
   const waitForDriverIdle = async (): Promise<void> => {
     await expect.poll(async () => {
-      const db = new DatabaseSync(join(daemon.home, "harness.db"));
+      const db = openDaemonDb(daemon.home);
       let turnInProgress: number | null;
       try {
         const row = db.prepare(

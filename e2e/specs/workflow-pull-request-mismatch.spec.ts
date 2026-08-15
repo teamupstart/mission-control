@@ -1,12 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { openDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * A real Pull Request action run, read in the browser: parked on each of the two
@@ -98,7 +98,7 @@ function observePullRequest(
   daemon: DaemonHandle,
   patch: { branch: string; repoRoot?: string; headSha?: string },
 ): void {
-  const db = new DatabaseSync(join(daemon.home, "harness.db"));
+  const db = openDaemonDb(daemon.home);
   try {
     db.prepare(
       `UPDATE inspector_prs

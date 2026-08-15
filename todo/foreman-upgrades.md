@@ -105,6 +105,43 @@ still open against it. What remains is the recovery playbook (re-engage or escal
 richer signals - uncommitted changes, an unpushed branch, a failing gate - that the stall rule
 does not inspect.
 
+**Update: the parked-workflow-run half of this shipped.** `workOutstanding` now counts an open
+run in `waiting_for_session` or `waiting_for_new_head` bound to the session, so a session that
+took a repair packet, made the fix and went quiet raises a `workflow-parked` stall instead of
+reporting no outstanding work at all. The alert names the missing step, deep-links to the run,
+and `waiting_for_new_head` is counted in the away digest. Detection stayed off Foreman
+deliberately: `sweepResumptions` records why a Foreman claim cannot be the general answer, and
+`decideReviewFollowup`'s gate 6 already stands down when a workflow owns the session.
+
+#### 6a. Name the unpushed head — still open
+Backlog task `4c9bea06-f8f3-4164-8c55-d8f30b4431bf`. This is the "unpushed branch" signal named
+above, now scoped to the one status that most needs it.
+
+`waiting_for_new_head` is where the shipped No-Mistakes Review parks Inspector findings under
+`onFindings: "inspector_only"`, and it clears **only** when the Inspector poller observes a head
+on the remote. So a session that fixes the findings and commits, but never pushes, is
+indistinguishable from one that did nothing - see the comment on `parkedReason` in
+`src/shared/stall.ts`, which is where that ambiguity is currently written down rather than
+resolved.
+
+Deliver a local, read-only observation that the bound checkout's branch holds a commit the
+remote does not (roughly `git rev-list --count @{upstream}..HEAD`), so the stall can say "you
+have N commits that are not pushed" instead of "waiting for a pushed head".
+
+Constraints, all load-bearing:
+
+- It **must not** resubmit, push, or type anything. The Inspector still has to observe the head;
+  this only names the missing step.
+- Do **not** add it to `sweepResumptions`. `resumableRun` documents `waiting_for_new_head` as
+  deliberately excluded and it must stay excluded.
+- Do **not** make Foreman the detector, for the reasons in the update above.
+- Shared code stays pure: git belongs in the daemon, and whatever it reads must reach the shared
+  predicate as a parameter - the way run summaries now reach `detectStalls` - rather than by
+  widening the shared `Session` type.
+- A checkout with no upstream, or a git call that errored, is **unknown** and must read as "no
+  claim", never as "not pushed". Accusing a session of forgetting to push when the branch simply
+  has no remote is worse than saying nothing.
+
 ### 7. Cross-session collision awareness
 firstmate serializes tasks touching the same files/subsystem and records `blocked-by`. Foreman
 reviews each session in a vacuum. It could detect two sessions racing on the same repo/paths and

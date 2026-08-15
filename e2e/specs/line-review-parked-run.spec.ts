@@ -30,6 +30,36 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  *
  * No model tokens: the seeded runs are held by a Persona the fake agent answers
  * deterministically.
+ *
+ * ## Verifying this against the broken build
+ *
+ * `e2e/README.md` asks that a regression spec be run against the build it was written to
+ * catch, and this is the recipe for doing it - written down because these four cases are only
+ * worth their runtime if they still FAIL without the fix, and a later refactor can quietly
+ * make them pass for the wrong reason.
+ *
+ * The fix is entirely in `src/`, and the daemon and dashboard under test are the BUILT
+ * product, so reverting the source and rebuilding is the whole procedure:
+ *
+ *     git checkout <commit-before-the-fix> -- src/
+ *     npm run build
+ *     grep -c workflowRunResumesItself dist/server/index.mjs   # expect 0
+ *     npx playwright test --config e2e/playwright.config.ts line-review-parked-run
+ *     git checkout HEAD -- src/ && npm run build               # grep now expects 2
+ *
+ * Expected on the pre-fix build: 3 failed, 1 passed. The three failures are the three
+ * defects, and the pass is the counter-example that must survive the fix:
+ *
+ * - `counts as yours on the strip and in the drawer` FAILS - the parked run is invisible to
+ *   the Line, because `workflowRunWaitsOnOperator` excluded `waiting_for_session` outright.
+ * - `the palette hoists a parked run` FAILS - same predicate, and the run provider never
+ *   called it at all.
+ * - `raises a stuck toast that opens the run` FAILS at the DAEMON's own API rather than in
+ *   the browser: `/api/away/stalls` never reports a `workflow-parked` stall, because
+ *   `workOutstanding` did not know workflow runs existed. That is the bug stated as plainly
+ *   as this suite can state it.
+ * - `an auto, live run is ... never called yours` PASSES both before and after. It is here so
+ *   that a build which simply marked every parked run cannot pass this file.
  */
 
 const EVIDENCE = artifactsDir("line-review-parked-run");
@@ -396,6 +426,23 @@ test("a parked run that goes quiet raises a stuck toast that opens the run", asy
     deliveryMode: "preview",
   });
 
+  // Go away BEFORE the clock trips, so the same stall also lands in the return digest - the
+  // one surface that RENDERS this alert's own words into the page. A desktop notification is
+  // OS chrome no screenshot can reach, but `eventLines` prints each buffered alert as
+  // "<title> - <body>", so the digest card is where a person reads the identical sentence.
+  //
+  // Driven through the switch rather than the route, because the digest is claimed off the
+  // observed away true -> false transition: the client has to have polled at least once
+  // while away was on, and clicking it is what a person does anyway.
+  // The glyph button's accessible name carries the current state ("… - muted", "… - away"),
+  // so it is matched on the stable prefix rather than on a whole string that changes when
+  // the very switch below it is flipped.
+  await dashboard.getByRole("button", { name: /^Alerts & away mode/ }).click();
+  const awaySwitch = dashboard.getByRole("switch", { name: "Away mode" });
+  await awaySwitch.click();
+  await expect(awaySwitch).toHaveAttribute("aria-checked", "true");
+  await dashboard.keyboard.press("Escape");
+
   // The daemon's own answer first, so a failure here separates "the rule never fired" from
   // "the browser never heard about it".
   await expect.poll(async () => {
@@ -424,7 +471,25 @@ test("a parked run that goes quiet raises a stuck toast that opens the run", asy
   // per 5s tick for as long as it stays parked.
   expect(toast?.tag).toMatch(/^stuck:.*:workflow-parked$/);
 
-  // Following it is the whole point: the control that clears a parked round lives on the run.
+  // ---- the same alert, RENDERED where a person can read it ----
+  //
+  // Coming back claims the window's digest, and the card prints every buffered alert as
+  // "<title> - <body>". This is the assertion that the alert's copy is legible to a human
+  // rather than merely well-formed: the identical sentence the toast carried, on screen.
+  await dashboard.getByRole("button", { name: /^Alerts & away mode/ }).click();
+  await dashboard.getByRole("switch", { name: "Away mode" }).click();
+  await dashboard.keyboard.press("Escape");
+
+  const digest = dashboard.locator(".away-digest");
+  await expect(digest).toBeVisible({ timeout: 60_000 });
+  await expect(digest).toContainText("looks stuck");
+  await expect(digest).toContainText("Quiet review repair round 1 never reopened");
+  // The deterministic rollup beneath the narrative, which counts the same stall.
+  await expect(digest.locator(".away-digest-rollup")).toContainText("stuck");
+  await shootPage(dashboard, "digest-names-the-parked-run");
+
+  // Following the toast is the other half: it lands on the run the sentence names, which is
+  // where that run's state and - for `waiting_for_session` - its resubmit control live.
   await dashboard.evaluate(() =>
     (window as unknown as { __lastToast?: { onclick?: (() => void) | null } })
       .__lastToast?.onclick?.());

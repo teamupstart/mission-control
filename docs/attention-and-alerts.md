@@ -77,13 +77,26 @@ next turn*, so a session that took the repair packet, made the fix and went idle
 work outstanding against it even though its task is done and its queue is empty. The
 alert names the missing step rather than the silence - "repair round 2 never reopened",
 or "waiting for a pushed head" for the Inspector findings that clear only when the
-poller sees a new head **on the remote** - and it deep-links to the run rather than to
-the session, because the control that clears it lives on the Runs page.
+poller sees a new head **on the remote**.
 
-Clicking that notification lands here, on the run that stopped and the control that
-restarts it, rather than on the session:
+It deep-links to the **run** rather than to the session, because the run is where that
+step is named and where its state can be read. What you can do when you arrive depends
+on which status parked it, and the two are genuinely different:
 
-![The run a stuck parked-run notification opens, showing the parked round and its controls](images/line-review-parked-toast-run.png)
+- **`waiting_for_session`** is yours to move. A `manual` version or a Preview binding
+  parks a round that only a human resubmit reopens, and that control is on this page.
+- **`waiting_for_new_head`** is *not*. Nothing on this page - or anywhere else in the
+  app - restarts it: it clears only when the Inspector poller observes a new head that
+  the bound session has **pushed**. The deep link is context rather than a remedy, and
+  the useful next move is to get that branch pushed.
+
+![The run a stuck parked-run notification opens, showing the parked round and its state](images/line-review-parked-toast-run.png)
+
+The same sentence is what the return digest prints if the stall happened while you were
+away, so the desktop toast and the digest line can never describe one stall differently -
+both are rendered from the alert the stall produced:
+
+![The away digest naming the parked run and the round that never reopened](images/line-review-parked-digest.png)
 
 Runs that will never resume themselves do not wait for that clock at all. A run on a
 `manual` version or a Preview binding is counted as **needing you** on the Line's Review

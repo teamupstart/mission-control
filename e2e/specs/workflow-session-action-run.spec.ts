@@ -475,7 +475,13 @@ test("Board workflow controls expand in place and open the exact run", async ({
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
-    link.click();
+    if (!selection?.toString()) throw new Error("workflow preview text was not selected");
+    link.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      view: window,
+    }));
   });
   await expect(dashboard).toHaveURL(boardUrl);
   await expect.poll(() => dashboard.evaluate(() => window.getSelection()?.toString() ?? ""))

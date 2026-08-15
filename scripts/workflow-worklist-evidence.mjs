@@ -1,6 +1,7 @@
 /* eslint-disable no-console */
 // Builds the review worklist's visual record: one self-contained HTML page carrying the real
-// browser captures, inline, beside the text the browser rendered at the moment of each.
+// browser captures inline, for attaching to a pull request. It is EVIDENCE, so it is written
+// into the gitignored artifacts tree and never committed.
 //
 //   MC_E2E_EVIDENCE=1 npm run test:e2e -- workflow-run-blocker-worklist
 //   node scripts/workflow-worklist-evidence.mjs
@@ -21,14 +22,22 @@ import { fileURLToPath } from "node:url";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const captures = join(repo, "e2e", ".artifacts", "workflow-run-blocker-worklist");
-const out = join(repo, "docs", "reports", "workflow-runs-blocker-worklist", "worklist-views.html");
+/*
+ * BESIDE THE CAPTURES, in the gitignored artifacts tree, and never in `docs/`.
+ *
+ * This bundle is a proof-of-work screenshot collection - the thing AGENTS.md means by an
+ * evidence artifact - so it attaches to a pull request rather than living in the repository.
+ * The `docs/images/` carve-out is for illustrative documentation drawn for its own sake, which
+ * the two images `docs/workflows.md` references are; a generated capture bundle is not, however
+ * useful it is to open.
+ */
+const out = join(captures, "worklist-views.html");
 
 /**
  * The views this record has to carry, and what each one is proof of.
  *
  * Deliberately three of the four the spec captures. The stalemate card appears in the Archive
- * view as well, so the round-2 Blocking capture would restate it, and every embedded image is
- * permanent weight in the repository.
+ * view as well, so the round-2 Blocking capture would only restate it.
  */
 const VIEWS = [
   {
@@ -132,4 +141,7 @@ ${sections}
 
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, page);
-console.log(`WROTE ${out.slice(repo.length + 1)} (${Math.round(page.length / 1024)}KB)`);
+console.log(
+  `WROTE ${out.slice(repo.length + 1)} (${Math.round(page.length / 1024)}KB)\n`
+  + "Gitignored, like every capture beside it. Attach it to the pull request.",
+);

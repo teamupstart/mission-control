@@ -2070,6 +2070,31 @@ test("a row's left accent is its own tone, never a colour fixed by its kind", ()
     { state: "error", verdict: null, error: "provider_timeout" },
   )];
   assert.match(rowTagFor(render(errored), "attempt"), /is-tone-failed/);
+
+  /*
+   * The third blocking attempt state, and the one the other two do not cover: a reply the
+   * verdict parser rejected. `stalledReviewer` files it in `Blocking` beside the errors, and
+   * `completed` is the same durable string a passing attempt carries before its verdict is
+   * read - so this row is the one place a chip could claim an outcome nobody reached.
+   *
+   * It does not. `reviewerStatus("completed")` is amber and says "No verdict", which is the
+   * honest reading, and deliberately NOT the red an exhausted provider error wears: nothing
+   * failed here, a reply arrived that could not be understood. Pinned because the distinction
+   * is invisible from the attempt state alone and easy to flatten later.
+   */
+  const unparseable = qualityRounds("none");
+  unparseable.attempts = [attempt(
+    "attempt-unparseable",
+    "submission-1",
+    NODE.quality,
+    snapshot("p-quality", "Quality reviewer"),
+    { state: "completed", verdict: null },
+  )];
+  const rejected = render(unparseable);
+  assert.match(rejected, /Blocking 1/);
+  assert.match(rowTagFor(rejected, "attempt"), /is-tone-waiting/);
+  assert.doesNotMatch(rowTagFor(rejected, "attempt"), /is-tone-passed/);
+  assert.match(rejected, />No verdict</);
 });
 
 test("an unreadable second objection is shown even when its reviewer has an open change", () => {

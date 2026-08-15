@@ -329,7 +329,14 @@ Any id the selected provider's CLI accepts works - the fields are free text, not
 
 Codex structured calls pass the same provider-neutral JSON Schema used by Claude through
 `codex exec --output-schema`. The schema is written to a private temporary file for that one
-run and removed on success, failure, spawn error, or timeout. Codex still runs ephemeral,
+run and removed on success, failure, spawn error, or timeout.
+
+That schema is rendered **strict**: every object lists every one of its properties in
+`required` and sets `additionalProperties: false`, at every depth. Codex hands it to strict
+Structured Outputs, which rejects anything less with `invalid_json_schema` and fails the whole
+call rather than degrading it. A field that is semantically optional stays optional by being
+nullable instead of absent, so the model can still decline it - it answers `null`, which the
+reading side treats exactly as it treated a missing key. Nothing is forced to be invented. Codex still runs ephemeral,
 read-only, without command tools or approvals. If `codex exec` exits nonzero, Foreman keeps a
 bounded reason from Codex's JSON failure event rather than dropping stdout or exposing the
 stream's agent messages, which can contain operator task text.

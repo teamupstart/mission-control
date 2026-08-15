@@ -893,19 +893,36 @@ export function sessionActionWaitsOnOperator(
  * surface arguing with itself - and both readings would be defensible if each carried its
  * own copy of the rule.
  *
- * `blocked` and an operator-only action wait, and deliberately nothing else.
- * `waiting_for_session` is absent because it is the workflow's ordinary repair loop: the
- * session is being told what to fix and will resubmit on its own.
+ * `blocked`, an operator-only action wait, and a parked repair round that will not resume
+ * itself.
+ *
+ * That third arm used to be absent, on the stated grounds that `waiting_for_session` is the
+ * workflow's ordinary repair loop and "the session will resubmit on its own". That is true
+ * under `auto` resumption AND `live` delivery, and false under every other posture - so the
+ * runs it excluded were not the ones the daemon was about to resume, they were precisely the
+ * ones nothing would ever resume. A manual version or a Preview binding parks a round that
+ * only a human Resubmit can clear, and this predicate is what puts it on screen; see
+ * `workflowRunResumesItself` for why an ABSENT policy still reads as self-resuming.
+ *
+ * `waiting_for_new_head` is deliberately still absent, and it is not an oversight: that run
+ * waits on a PUSHED head, which is the bound session's job and not the operator's. Nothing a
+ * person can click moves it. It is not silent, though - the stall detector counts it as
+ * outstanding work against the session (`workOutstanding` in `stall.ts`), which is the
+ * clock-based signal a status this inert actually needs.
  *
  * This predicate is the WHOLE of "does a person owe this run anything". How that total is
  * SAID - one number, or the two `workflowRunAttentionSplit` reports - is presentation, and
- * splitting the sentence must never narrow the predicate: the command palette's "waiting on
- * you" list reads this too.
+ * splitting the sentence must never narrow the predicate.
  */
 export function workflowRunWaitsOnOperator(
-  run: Pick<WorkflowRunSummary, "status" | "actionWait">,
+  run: Pick<
+    WorkflowRunSummary,
+    "status" | "actionWait" | "resumptionPolicy" | "deliveryMode"
+  >,
 ): boolean {
-  return run.status === "blocked" || sessionActionWaitsOnOperator(run.actionWait);
+  if (run.status === "blocked") return true;
+  if (sessionActionWaitsOnOperator(run.actionWait)) return true;
+  return run.status === "waiting_for_session" && !workflowRunResumesItself(run);
 }
 
 /** The two halves of `workflowRunWaitsOnOperator`, counted so they cannot overlap. */
@@ -930,7 +947,10 @@ export interface WorkflowRunAttentionSplit {
  * the way past. Answering its question would move nothing.
  */
 export function workflowRunAttentionSplit(
-  runs: readonly Pick<WorkflowRunSummary, "status" | "actionWait">[],
+  runs: readonly Pick<
+    WorkflowRunSummary,
+    "status" | "actionWait" | "resumptionPolicy" | "deliveryMode"
+  >[],
 ): WorkflowRunAttentionSplit {
   const stalled = runs.filter((run) => run.status === "blocked").length;
   const waiting = runs.filter(workflowRunWaitsOnOperator).length;
@@ -1457,6 +1477,56 @@ export const WORKFLOW_RUN_TERMINAL_STATUSES = ["completed", "cancelled", "failed
  */
 export function workflowRunIsOpen(status: WorkflowRunStatus): boolean {
   return !(WORKFLOW_RUN_TERMINAL_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * The statuses in which a run is stopped waiting for THE BOUND SESSION to do something.
+ *
+ * Both mean the same thing to a person watching: the reviewer has said its piece, the packet
+ * is in the pane, and nothing moves until that session acts. They are un-parked by different
+ * machinery - `waiting_for_session` by the resumption observer, a Foreman claim or a human
+ * Resubmit, and `waiting_for_new_head` only by the Inspector poller observing a PUSHED head -
+ * which is exactly why a surface asking "is this session still on the hook" must not pick one
+ * of them. `waiting_for_new_head` has no local observer at all, so the status a session is
+ * most likely to be stranded in is the one a hand-written list forgets.
+ *
+ * Deliberately NOT `waiting_for_pr`, `waiting_for_inspector` or `waiting_for_action`.
+ * The first two wait on machinery rather than on the session's next turn, and an action wait
+ * is already its own vocabulary with its own operator/machine split (`actionWait`) - folding
+ * it in here would count it twice.
+ */
+export const WORKFLOW_RUN_SESSION_PARKED_STATUSES = [
+  "waiting_for_session",
+  "waiting_for_new_head",
+] as const;
+
+/** True when the run is stopped waiting on its bound session's next turn. */
+export function workflowRunParkedOnSession(status: WorkflowRunStatus): boolean {
+  return (WORKFLOW_RUN_SESSION_PARKED_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * True when a round parked in `waiting_for_session` will pick itself back up.
+ *
+ * BOTH halves are required, and that is the correction this predicate exists to make. The
+ * resumption observer resumes a run only under a version whose `resumptionPolicy` is `auto`
+ * (`resumableRun`), and only after a packet was actually delivered - which a `preview`
+ * binding never does, because Preview prepares and never types. Either half missing means
+ * the run sits there until a human clicks Resubmit.
+ *
+ * ABSENCE READS AS SELF-RESUMING, which is not the reading the persisted columns use, and the
+ * difference is deliberate. A NULL `resumption_policy` COLUMN reads as `manual` because a
+ * version published before the column existed must keep standing still. An ABSENT field on
+ * this summary is a different fact entirely: a daemon that does not report the setting at
+ * all. Reading that as `manual` would take every parked run on an older daemon - including
+ * the ones it is busily resuming on its own 15-second timer - and put them on a person's
+ * plate. So absence preserves exactly the behaviour that shipped before this field existed,
+ * and the field is what changes it.
+ */
+export function workflowRunResumesItself(
+  run: Pick<WorkflowRunSummary, "resumptionPolicy" | "deliveryMode">,
+): boolean {
+  return (run.resumptionPolicy ?? "auto") === "auto" && (run.deliveryMode ?? "live") === "live";
 }
 
 /**
@@ -3054,6 +3124,34 @@ export interface WorkflowRunSummary {
    * "this came out of an ensemble" for every live run without fetching a detail per row.
    */
   externalSource?: WorkflowExternalSource | null;
+  /**
+   * Whether a round parked in `waiting_for_session` picks itself back up, from the VERSION
+   * this run is pinned to - the same row `resumableRun` reads before it resumes anything.
+   *
+   * The version's and not the workflow's, and that distinction is the whole point: a run
+   * pinned to a version published before the column existed keeps behaving as it was
+   * published, and a surface that read the workflow's current setting would promise an
+   * automatic resumption the observer is never going to perform.
+   *
+   * OPTIONAL and append-only for the reason every optional field here is - a summary written
+   * by an older daemon must still parse in a newer browser. Absent means "this daemon does
+   * not report it", which is NOT the same as `manual`: read
+   * `workflowRunResumesItself`, which treats absence as the behaviour that shipped before
+   * this field existed rather than inventing an operator obligation retroactively.
+   */
+  resumptionPolicy?: WorkflowResumptionPolicy;
+  /**
+   * Whether the BINDING types into the pane or only prepares packets for a human to read.
+   *
+   * Carried beside `resumptionPolicy` because neither answers the question on its own. A
+   * `preview` binding never types, so its packet sits `prepared` for ever and the resumption
+   * observer's in-flight check reads that as "the agent was never told what to fix" - an
+   * `auto` version on a `preview` binding is therefore just as parked as a `manual` one, and
+   * a surface reading only the policy would call it self-resuming and say nothing.
+   *
+   * OPTIONAL and append-only on the same terms as `resumptionPolicy`.
+   */
+  deliveryMode?: WorkflowDeliveryMode;
   maxRepairRounds: number;
   activePersonaNames: string[];
   failedPersonaCount: number;

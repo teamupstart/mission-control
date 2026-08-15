@@ -612,11 +612,6 @@ test("workflow transitions use the shared edge-triggered alert engine", () => {
       severity: "attention",
     },
     {
-      next: workflowRun({ status: "waiting_for_session", phase: "unchanged_evidence" }),
-      id: "workflow:workflow-run:manual-resubmit",
-      severity: "attention",
-    },
-    {
       next: workflowRun({ gate: "waiting_pr", phase: "waiting_for_pr" }),
       id: "workflow:workflow-run:missing-pr",
       severity: "attention",
@@ -642,4 +637,41 @@ test("workflow transitions use the shared edge-triggered alert engine", () => {
     assert.equal(alerts[0]?.workflowRunId, "workflow-run");
     assert.deepEqual(detectAlerts(next, next), [], `${item.id} repeated without an edge`);
   }
+});
+
+test("PARKING in waiting_for_session is not itself an alert - nothing is owed yet", () => {
+  // This transition used to fire `manual-resubmit`, at the one instant it could not be true:
+  // the packet has just been prepared and the agent has not read it, so there is nothing to
+  // resubmit and no way to know whether there ever will be. The moment a resubmit is
+  // genuinely owed is a silence, which the `workflow-parked` stall reports on a clock.
+  const parked = workflowRun({ status: "waiting_for_session", phase: "unchanged_evidence" });
+  assert.deepEqual(
+    detectAlerts(scope([], [], [], [workflowRun()]), scope([], [], [], [parked])),
+    [],
+  );
+});
+
+test("a parked run alerts through the stall detector, deep-linked to the run", () => {
+  // The retimed half of the alert above: the daemon's clock said this session went quiet
+  // with a run still parked on it, so now there IS something to say - and it names the run,
+  // so the notification lands on the control that clears it rather than on the session.
+  const session = mkSession({ id: "s1", state: "idle" });
+  const parked = workflowRun({ status: "waiting_for_session" });
+  const before = scope([session], [], [], [parked]);
+  const after = scope([session], [], [{
+    sessionId: "s1",
+    kind: "workflow-parked",
+    forMs: 22 * 60_000,
+    reason: "idle 22m - Review repair round 2 never reopened",
+    workflowRunId: "workflow-run",
+  }], [parked]);
+  const alerts = detectAlerts(before, after);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0]?.id, "stuck:s1:workflow-parked");
+  assert.equal(alerts[0]?.kind, "stuck");
+  assert.equal(alerts[0]?.workflowRunId, "workflow-run");
+  assert.equal(alerts[0]?.severity, "attention");
+  assert.match(alerts[0]?.body ?? "", /never reopened/);
+  // Edge-triggered on (session, kind), so a stall that persists across polls says it once.
+  assert.deepEqual(detectAlerts(after, after), []);
 });

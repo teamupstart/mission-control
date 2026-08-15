@@ -152,6 +152,11 @@ export function stuckAlert(st: Stall, sessions: Session[]): Alert {
     title: `${s ? sessionLabel(s) : "a session"} looks stuck`,
     body: st.reason,
     sessionId: st.sessionId,
+    // Spread, so only the one stall kind that HAS a run carries the key. The toast turns
+    // this into a `#/runs/:id` deep link, which is where the control that clears a parked
+    // round lives - landing on the session instead would leave a reader to work out which
+    // of its runs stopped.
+    ...(st.workflowRunId ? { workflowRunId: st.workflowRunId } : {}),
     severity: "attention",
   };
 }
@@ -369,16 +374,24 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         body: run.phase.replaceAll("_", " "),
         severity: "attention",
       };
-    } else if (
-      run.status === "waiting_for_session"
-      && run.status !== beforeRun?.status
-    ) {
-      transition = {
-        className: "manual-resubmit",
-        title: `${run.workflowName} needs a manual resubmit`,
-        body: run.phase.replaceAll("_", " "),
-        severity: "attention",
-      };
+    // NOTE: there is deliberately no arm here for entering `waiting_for_session`.
+    //
+    // There used to be - a `manual-resubmit` attention alert, edge-triggered the moment the
+    // run parked. It was wrong in both directions at once on the configuration this repo
+    // ships. It fired the INSTANT the packet was prepared, before the agent had read a word
+    // of it, so it named a resubmit that was not yet owed and could not yet be performed;
+    // and it fired on `auto` runs the resumption observer picks up fifteen seconds later,
+    // because the summary carried no `resumptionPolicy` to tell the two apart. Meanwhile the
+    // moment a resubmit genuinely IS owed - the agent finished, went quiet, and nothing
+    // reopened the round - is not a status change at all, so nothing fired then.
+    //
+    // Retimed, not deleted. That moment is a silence rather than a transition, which is what
+    // the stall detector is for: `workOutstanding` counts a parked run as outstanding work,
+    // and the resulting `workflow-parked` stall arrives on `AlertScope.stalls` and alerts
+    // through the `stuck` arm above - on a clock, naming the run, deep-linked to it. The
+    // runs that will never resume themselves do not wait for that clock either; they are on
+    // the Line strip and in the Review drawer from the instant they park, via
+    // `workflowRunWaitsOnOperator`.
     } else if (run.gate === "waiting_pr" && beforeRun?.gate !== "waiting_pr") {
       transition = {
         className: "missing-pr",
@@ -566,8 +579,14 @@ export function digestLine(scope: AlertScope): string {
   if (backlog > 0) parts.push(`${backlog} in backlog`);
   const stuck = (scope.stalls ?? []).length;
   if (stuck > 0) parts.push(`${stuck} stuck`);
+  // `waiting_for_new_head` belongs here for the reason the other parked statuses do, and its
+  // absence was the quietest half of the stranded-run bug: it is where the shipped
+  // No-Mistakes Review parks Inspector findings under `inspector_only`, it clears only when
+  // the Inspector poller observes a PUSHED head, and until it was counted a session that
+  // fixed the findings and forgot to push produced no digest line at all.
   const workflowAttention = (scope.workflowRuns ?? []).filter((run) =>
-    ["blocked", "failed", "waiting_for_session", "waiting_for_pr"].includes(run.status)
+    ["blocked", "failed", "waiting_for_session", "waiting_for_pr", "waiting_for_new_head"]
+      .includes(run.status)
     || (run.uncertainDeliveryCount ?? 0) > 0).length;
   if (workflowAttention > 0) parts.push(`${workflowAttention} workflow attention`);
   const ensembleAttention = (scope.ensembleSummaries ?? []).filter((e) => e.attention).length;

@@ -1290,9 +1290,14 @@ export const AwayConfigSchema = z.object({
   detectStalls: z.boolean().default(true),
   /** Minutes of silence before an instrumented, working session reads as stuck. */
   stallWorkingMinutes: z.number().int().min(1).max(240).default(10),
-  /** Minutes idle, with work still outstanding, before a session reads as stuck. */
+  /**
+   * Minutes idle, with work still outstanding, before a session reads as stuck.
+   *
+   * Covers a parked workflow run as well as an open task or queue: it is one judgement -
+   * how long to leave a quiet agent alone - and splitting it would ask an operator to hold
+   * two numbers for the same question. See `workOutstanding` in `stall.ts`.
+   */
   stallUnfinishedMinutes: z.number().int().min(1).max(240).default(20),
-  /** Minutes a parked gate may wait on you before it reads as stuck. */
   /** Minutes an unanswered Foreman escalation may sit before it reads as stuck. */
   stallEscalationMinutes: z.number().int().min(1).max(240).default(5),
 });

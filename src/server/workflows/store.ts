@@ -70,6 +70,7 @@ import type {
   WorkflowBinding,
   WorkflowBindingSummary,
   WorkflowBindingClaim,
+  WorkflowDeliveryMode,
   WorkflowCaptureExpectation,
   WorkflowDefinition,
   WorkflowDelivery,
@@ -161,7 +162,17 @@ const WORKFLOW_RUN_SUMMARY_SELECT = `
          (SELECT COUNT(*) FROM workflow_deliveries wd
            WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count,
          c.source_kind AS claim_kind, c.source_id AS claim_source_id,
-         c.created_at AS claim_created_at
+         c.created_at AS claim_created_at,
+         -- Whether a round parked in waiting_for_session picks itself back up. Aliased
+         -- rather than taken bare because r.* is spread above and a future column of
+         -- either name on workflow_runs would silently shadow one of these.
+         --
+         -- Read off the pinned VERSION and the binding, which is exactly the pair
+         -- resumableRun consults before it resumes anything - so a surface reading these
+         -- cannot promise an automatic resumption the observer will not perform. Both are
+         -- already in scope on the existing joins; neither costs a new one.
+         v.resumption_policy AS version_resumption_policy,
+         b.delivery_mode AS binding_delivery_mode
     FROM workflow_runs r
     JOIN workflow_bindings b ON b.id = r.binding_id
     LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
@@ -337,6 +348,21 @@ function readResumptionPolicy(raw: string | null): WorkflowResumptionPolicy {
   return (WORKFLOW_RESUMPTION_POLICIES as readonly string[]).includes(raw ?? "")
     ? (raw as WorkflowResumptionPolicy)
     : LEGACY_WORKFLOW_RESUMPTION_POLICY;
+}
+
+/**
+ * A binding's delivery mode, read off a summary join rather than a parsed binding row.
+ *
+ * `preview` is the unreadable-value answer for the reason `manual` is above: Preview is the
+ * posture that never types, so a value this build cannot read degrades to the one that
+ * cannot act on a pane it does not understand. The column is `NOT NULL` and
+ * `parseWorkflowBindingRow` reads it strictly, so this only ever fires on a value written by
+ * a newer build.
+ */
+function readDeliveryMode(raw: unknown): WorkflowDeliveryMode {
+  return typeof raw === "string" && (WORKFLOW_DELIVERY_MODES as readonly string[]).includes(raw)
+    ? (raw as WorkflowDeliveryMode)
+    : "preview";
 }
 
 const PersonaRowSchema = z.object({
@@ -3460,6 +3486,26 @@ export class WorkflowStore {
         // overwhelming majority of them are operator- or Foreman-started - a `null` on each
         // of those is bytes per run per event bought for nothing.
         ...(claim ? { externalSource: claim } : {}),
+        // SET rather than spread, unlike every optional field above, and the difference is
+        // the point. Those are absent when they have nothing to say; these two are absent
+        // only when the DAEMON cannot say - which readers treat as "behave as you did before
+        // this field existed". Emitting them always is what stops a run this build knows to
+        // be manual from being read as one it is about to resume.
+        //
+        // A built-in ships no `workflow_versions` row, so `v` joins to NULL for every run of
+        // the No-Mistakes Review. Falling through to the column reading here would report
+        // shipped versions 1-6 - all of them manual - as the absent case, which is the exact
+        // silence this change exists to end. The catalog is the version record for those.
+        resumptionPolicy: shipped
+          ? shipped.resumptionPolicy
+          : readResumptionPolicy(
+            typeof row.version_resumption_policy === "string"
+              ? row.version_resumption_policy
+              : null,
+          ),
+        // The binding join is an inner JOIN and the column is NOT NULL, so this is only ever
+        // absent on a row that failed to parse - which returns null from this method anyway.
+        deliveryMode: readDeliveryMode(row.binding_delivery_mode),
         gate: compactGate(run, gateState),
         gatePrNumber: Number.isInteger(gatePrNumber) ? gatePrNumber : null,
         gateHeadShort: (gateState?.targetHeadSha ?? gateState?.observedHeadSha)?.slice(0, 8) ?? null,

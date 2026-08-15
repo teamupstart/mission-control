@@ -62,16 +62,19 @@ test("workflow attention transitions alert once with stable deep-link ids", () =
   ), []);
 });
 
-test("completion and resumed transitions are digest-only while manual waits need attention", () => {
+test("completion and resumed transitions are digest-only, and parking is not an alert", () => {
   const completed = detectAlerts(scope(run()), scope(run({ status: "completed", phase: "complete" })));
   assert.equal(completed[0]?.id, "workflow:run-1:completed");
   assert.equal(completed[0]?.severity, "info");
   assert.equal(deliverable(completed[0]!), false);
 
+  // Parking says nothing. The packet has only just been prepared, so a `manual-resubmit`
+  // alert here would name a resubmit the agent has not yet made necessary - and on the
+  // shipped `auto` + `live` posture the observer reopens the round about fifteen seconds
+  // later, with nobody having had to do anything. See `stall.ts`'s `workflow-parked` kind
+  // for where this moved to, and `alerts.test.ts` for the two halves asserted together.
   const waitingRun = run({ status: "waiting_for_session", phase: "unchanged_evidence" });
-  const waiting = detectAlerts(scope(run()), scope(waitingRun));
-  assert.equal(waiting[0]?.id, "workflow:run-1:manual-resubmit");
-  assert.equal(waiting[0]?.severity, "attention");
+  assert.deepEqual(detectAlerts(scope(run()), scope(waitingRun)), []);
 
   const resumed = detectAlerts(
     scope(run({ status: "blocked", phase: "infrastructure_error" })),

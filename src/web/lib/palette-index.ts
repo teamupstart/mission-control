@@ -27,6 +27,7 @@ import type { MissionSchedule } from "@shared/schedules.ts";
 import {
   sessionActionCompletionLabel,
   workflowRunIsOpen,
+  workflowRunWaitsOnOperator,
   type PersonaView,
   type SessionAction,
   type WorkflowRunSummary,
@@ -337,6 +338,12 @@ const runProvider: PaletteProvider = {
             `v${run.workflowVersion}`,
             ...(run.externalSource ? ["ensemble handoff"] : []),
           ],
+          // The empty-query preview hoists `attention` rows, and this is the predicate that
+          // decides which runs are yours - the same one the Line strip's Review fold and the
+          // Review drawer read, so the palette cannot offer a different answer to "what do I
+          // owe" than the strip above it. `workflowRunWaitsOnOperator`'s own docstring has
+          // always claimed this list reads it; until now it did not.
+          ...(workflowRunWaitsOnOperator(run) ? { attention: true } : {}),
           target: { kind: "route" as const, route: { page: "runs", runId: run.id } },
         };
       }),

@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Native image evidence for workflow reviewers</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#edf1ed; --paper:#fbfcf8; --ink:#15201d; --muted:#64716c; --line:#ced7d1; --accent:#176f5d; --accent2:#c45e38; --soft:#deeee8; --warn:#f6e1d3; --code:#e9eeea; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#111715; --paper:#19211e; --ink:#edf4ef; --muted:#a5b1ab; --line:#35423d; --accent:#6ed0b4; --accent2:#f09168; --soft:#17362e; --warn:#412b23; --code:#222c28; } }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15.5px/1.58 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    main { width:min(1160px,calc(100% - 32px)); margin:auto; padding:34px 0 72px; }
+    article { background:var(--paper); border:1px solid var(--line); border-radius:20px; overflow:hidden; box-shadow:0 18px 55px rgba(10,30,24,.08); }
+    .hero { padding:36px 42px 30px; border-top:8px solid var(--accent); background:linear-gradient(145deg,var(--paper),var(--soft)); }
+    .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:.12em; font-size:.76rem; font-weight:800; }
+    h1 { max-width:900px; margin:8px 0 12px; font:760 clamp(2.2rem,5vw,4.2rem)/1 ui-serif,Georgia,serif; }
+    .lede { max-width:850px; font-size:1.1rem; }
+    .status { display:inline-block; margin-top:12px; padding:5px 10px; border:1px solid var(--accent2); border-radius:99px; color:var(--accent2); font-weight:700; font-size:.78rem; }
+    section { padding:28px 42px; border-top:1px solid var(--line); }
+    h2 { margin:0 0 14px; font:730 1.5rem/1.2 ui-serif,Georgia,serif; }
+    h3 { margin:24px 0 8px; font-size:1rem; color:var(--accent); }
+    p { margin:0 0 12px; }
+    ul,ol { margin:8px 0 0; padding-left:23px; }
+    li { margin:7px 0; }
+    code { background:var(--code); padding:.13em .36em; border-radius:5px; font-size:.9em; }
+    pre { background:var(--code); border:1px solid var(--line); border-radius:12px; padding:16px; overflow:auto; }
+    .decision { border-left:5px solid var(--accent2); background:var(--warn); border-radius:10px; padding:16px 18px; margin:12px 0; }
+    .decision strong { color:var(--accent2); }
+    .flow { overflow-x:auto; margin:16px 0 6px; }
+    svg { display:block; width:100%; min-width:980px; height:auto; }
+    .node { fill:var(--paper); stroke:var(--accent); stroke-width:2; }
+    .store { fill:var(--soft); stroke:var(--accent); stroke-width:2; }
+    .edge { stroke:var(--muted); stroke-width:2; fill:none; marker-end:url(#arr); }
+    svg text { fill:var(--ink); font:14px ui-sans-serif,system-ui,sans-serif; }
+    svg .sub { fill:var(--muted); font-size:11.5px; }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; min-width:780px; }
+    th,td { text-align:left; vertical-align:top; padding:10px 12px; border-bottom:1px solid var(--line); }
+    th { color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.07em; }
+    .checks { columns:2; column-gap:36px; }
+    .checks li { break-inside:avoid; }
+    .done { background:var(--soft); border:1px solid var(--accent); border-radius:14px; padding:20px 22px; }
+    @media (max-width:760px) { main{width:min(100% - 16px,1160px);padding-top:12px}.hero,section{padding:22px 20px}.checks{columns:1}article{border-radius:14px} }
+  </style>
+</head>
+<body>
+<main><article>
+  <div class="hero">
+    <div class="eyebrow">Workflow evidence plan</div>
+    <h1>Native image evidence for workflow reviewers</h1>
+    <p class="lede">Let every Persona inspect and cite screenshots from the exact immutable submission it reviews, without moving the pull-request stage or committing proof-of-work images.</p>
+    <span class="status">Approved for implementation</span>
+  </div>
+
+  <section>
+    <h2>Objective</h2>
+    <p>Success means a Test Evidence Auditor receives pixels, caption, provenance, and a stable image id in round 1 or a repair round, and a human can inspect the same retained image from run history.</p>
+  </section>
+
+  <section>
+    <h2>Scope correction</h2>
+    <p>The transcript is already review evidence. <code>readWorkflowContextRaw</code> captures a bounded window and clips each turn to 3,000 UTF-8 bytes while setting <code>transcriptTruncated</code>. Text results should continue to be concise counts and verdicts.</p>
+    <p>The missing channel is binary image evidence. The context contract has no image metadata, submit and resubmit accept no attachments, and <code>LlmRunner.run</code> accepts one prompt string for a tool-less Persona. A path in the transcript reaches the reviewer only as characters.</p>
+    <p>This plan does not move the pull-request stage, make PR comments a prerequisite, or bless <code>docs/images/</code> as a proof-of-work destination.</p>
+  </section>
+
+  <section>
+    <h2>Product decisions</h2>
+    <div class="decision"><strong>Intake surface.</strong> Decision: ship dashboard upload and session-attributed agent registration together in the first complete feature.</div>
+    <h3>Supported artifact type</h3>
+    <p>V1 accepts PNG, JPEG, GIF, and WebP. PDFs, video, arbitrary binary attachments, OCR, and image generation are out of scope.</p>
+    <h3>Lifetime</h3>
+    <p>Image bytes follow raw workflow evidence retention. Metadata, digest, caption, id, citations, counts, and pruning time remain after bytes are pruned. Full run-family deletion removes the rest.</p>
+    <h3>Repository scope</h3>
+    <p>Every image targets one issued repository slot or all repositories in a multi-repository submission. Dashboard submission defaults to the selected binding's repository. The daemon resolves scope from its own records.</p>
+    <h3>Implementation scheduling</h3>
+    <p>Any implementation tasks created from this plan use <code>gpt-5.6-sol</code> with <code>xhigh</code> reasoning, per the operator's instruction.</p>
+  </section>
+
+  <section>
+    <h2>Proposed flow</h2>
+    <div class="flow" aria-label="Proposed image evidence flow">
+      <svg viewBox="0 0 1120 390" role="img">
+        <defs><marker id="arr" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="currentColor"/></marker></defs>
+        <rect class="node" x="18" y="38" width="176" height="72" rx="12"/><text x="106" y="67" text-anchor="middle">Dashboard drop</text><text class="sub" x="106" y="88" text-anchor="middle">caption + scope</text>
+        <rect class="node" x="18" y="148" width="176" height="72" rx="12"/><text x="106" y="177" text-anchor="middle">Agent MCP</text><text class="sub" x="106" y="198" text-anchor="middle">relative path + caption</text>
+        <path class="edge" d="M194 74 H236 V144"/><path class="edge" d="M194 184 H236 V144"/>
+        <rect class="node" x="236" y="104" width="188" height="80" rx="12"/><text x="330" y="134" text-anchor="middle">Evidence intake</text><text class="sub" x="330" y="155" text-anchor="middle">contain, sniff, bound</text>
+        <path class="edge" d="M424 144 H464"/>
+        <rect class="store" x="464" y="104" width="188" height="80" rx="12"/><text x="558" y="134" text-anchor="middle">Immutable copy</text><text class="sub" x="558" y="155" text-anchor="middle">submission rows + SHA-256</text>
+        <path class="edge" d="M652 144 H692"/>
+        <rect class="node" x="692" y="104" width="188" height="80" rx="12"/><text x="786" y="134" text-anchor="middle">Persona call</text><text class="sub" x="786" y="155" text-anchor="middle">prompt metadata + pixels</text>
+        <path class="edge" d="M880 144 H920"/>
+        <rect class="node" x="920" y="104" width="182" height="80" rx="12"/><text x="1011" y="134" text-anchor="middle">Citable verdict</text><text class="sub" x="1011" y="155" text-anchor="middle">kind: image</text>
+        <path class="edge" d="M558 184 V252 H430"/>
+        <rect class="store" x="236" y="252" width="194" height="80" rx="12"/><text x="333" y="282" text-anchor="middle">Run evidence view</text><text class="sub" x="333" y="303" text-anchor="middle">thumbnail + caption</text>
+        <path class="edge" d="M430 292 H506"/>
+        <rect class="node" x="506" y="252" width="214" height="80" rx="12"/><text x="613" y="282" text-anchor="middle">Raw evidence pruning</text><text class="sub" x="613" y="303" text-anchor="middle">bytes removed, metadata kept</text>
+      </svg>
+    </div>
+    <p>The copy is complete before any Persona attempt can be claimed. Reviewers never read a mutable checkout path and receive no filesystem grant.</p>
+  </section>
+
+  <section>
+    <h2>Contract and limit changes</h2>
+    <h3>Shared workflow evidence</h3>
+    <ul>
+      <li>Add <code>WorkflowEvidenceImage</code> with stable id, ordinal, display name, required caption, repository scope, sniffed MIME type, bytes, SHA-256, and retained/pruned availability.</li>
+      <li>Add <code>images</code> to the context schema with an empty default for older snapshots. Extend retention counts with image count and bytes.</li>
+      <li>Append <code>image</code> to <code>EVIDENCE_REF_KINDS</code>. Its <code>path</code> is the stable image id and its <code>quote</code> is the observed visual fact.</li>
+    </ul>
+    <h3>Intake schemas</h3>
+    <p>Use one bounded locator shape for upload reference or checkout-relative path, caption, repository scope, and a client item id. Mirror agent-tool validation in <code>src/mcp/server.ts</code>. Centralize per-image, count, caption, and aggregate-byte limits, with final count and aggregate limits set by a live compatibility check against both providers.</p>
+    <h3>Provider-neutral runner input</h3>
+    <p>Add optional immutable local images to <code>LlmRunOptions</code>. Codex adds repeatable <code>--image</code> arguments. Claude SDK uses one user message with base64 image blocks. Claude print uses one fresh stream-json message. Every text-only caller remains unchanged, and image-bearing calls fail before provider invocation if a retained file cannot be opened.</p>
+  </section>
+
+  <section>
+    <h2>Durable intake and capture</h2>
+    <h3>Dashboard uploads</h3>
+    <p>Reuse the existing upload endpoint and image-drop components, adding evidence caption and scope. The browser sends opaque upload references. The daemon re-sniffs and copies them into submission-owned storage before upload expiry.</p>
+    <h3>Agent registration</h3>
+    <p>Add <code>submit_workflow_evidence</code> as a session-attributed Mission MCP tool. Resolve issued repository roots server-side. Accept relative ordinary files inside those roots, including gitignored evidence. Reject absolute paths, traversal, control characters, symlinked components, unsupported types, and limit violations. Stage valid items for the next eligible submission and expose them for human removal before capture.</p>
+    <h3>Submission ownership</h3>
+    <p>Add <code>workflow_submission_images</code> beside <code>workflow_submissions</code>. Reserve staged items when the submission is created. Inside the existing capture lock, open without following links, read once, sniff, hash, atomically copy, persist rows and context, compute the final fingerprint, then activate the graph. A failure blocks before Persona tokens are spent.</p>
+    <h3>Fresh-evidence semantics</h3>
+    <p>A new digest or caption is fresh evidence. Extend the cheap probe with staged-image generation so an automatic repair can resume on a new screenshot even when code is unchanged. Transcript growth alone remains insufficient. Normal repair rounds do not silently carry old screenshots forward.</p>
+  </section>
+
+  <section>
+    <h2>Persona execution and citations</h2>
+    <p>The prompt gains an untrusted image manifest with id, caption, display name, repository scope, MIME type, bytes, and digest. Runner images use the same order. Every Persona receives the same immutable set. The Test Evidence Auditor may cite <code>kind: "image"</code>; an unavailable image is infrastructure failure, not a verdict against the work. Context compaction remains text-only.</p>
+  </section>
+
+  <section>
+    <h2>Dashboard and audit history</h2>
+    <p>Add the evidence composer to Bind and submit, Preview, Ship it, Resume review, Preview fresh evidence, and Run this review again. Block capture while upload is in flight or a caption is missing. Confirmations state image count and aggregate size.</p>
+    <p>Run detail shows thumbnail, caption, scope, digest prefix, size, and retained/pruned state per submission. An authenticated id-based route opens retained files with <code>O_NOFOLLOW</code>; the browser renders a blob URL. Run JSON exports metadata and digests, not base64.</p>
+  </section>
+
+  <section>
+    <h2>Retention, reset, and deletion</h2>
+    <p>Extend raw-evidence compaction to prune image bodies and record count and bytes. Use retryable cleanup or atomic trash rename so database and filesystem state cannot disagree. Session reset and full run deletion remove rows and files through existing owners. Startup reconciliation repairs interrupted cleanup. Active and otherwise ineligible runs retain images under the current retention rules.</p>
+  </section>
+
+  <section>
+    <h2>Security and privacy invariants</h2>
+    <ul class="checks">
+      <li>No arbitrary browser or MCP absolute path is read.</li>
+      <li>Relative evidence cannot escape by traversal or symlink.</li>
+      <li>MIME comes from bytes, never names or headers.</li>
+      <li>Reviewers stay tool-less.</li>
+      <li>Bytes never enter prompt text, transcript, SSE, events, or context JSON.</li>
+      <li>Logs contain ids and bounded diagnostics, not base64 or private paths.</li>
+      <li>Every image collection and byte surface is bounded.</li>
+      <li>Proof-of-work images are never committed automatically.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation map</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Area</th><th>Planned change</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/shared/workflow.ts</code>, <code>protocol.ts</code></td><td>Metadata, locators, limits, context schema, retention counts, image evidence references</td></tr>
+        <tr><td><code>src/shared/llm.ts</code></td><td>Optional provider-neutral image inputs</td></tr>
+        <tr><td><code>db.ts</code>, workflow store</td><td>Submission image rows, migration, strict reads, reservation, pruning, deletion</td></tr>
+        <tr><td>Workflow context and image module</td><td>Secure resolution, immutable copy, fingerprint and probe integration</td></tr>
+        <tr><td>Manager, engine, prompt, verdict</td><td>Capture orchestration, multimodal execution, citations, byte accounting</td></tr>
+        <tr><td>Codex and Claude runners</td><td>Native image transport for providers and both Claude transports</td></tr>
+        <tr><td>Mission MCP and routes</td><td>Agent registration, attribution, authenticated image body route</td></tr>
+        <tr><td>Workflow web surfaces</td><td>Composer, staged items, captions, scopes, thumbnails, pruning state</td></tr>
+        <tr><td>Product docs and E2E guide</td><td>Behavior, limits, retention, tool use, evidence regeneration</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Tests and acceptance evidence</h2>
+    <h3>Focused tests</h3>
+    <ul>
+      <li>Old snapshots default to no images; new metadata survives capture, export, and retention.</li>
+      <li>Old-database upgrade creates image storage safely.</li>
+      <li>Containment, symlink, MIME, regular-file, duplicate, count, and byte-limit refusals are pinned.</li>
+      <li>Dashboard and agent intake converge on identical metadata.</li>
+      <li>Digest or caption moves the fingerprint; transcript-only growth does not move the automatic probe.</li>
+      <li>Initial, repair, continuation, unchanged, external, multi-repo, reset, restart, prune, and delete paths preserve ownership and cleanup.</li>
+      <li>Codex gets image arguments. Claude SDK and print get image blocks. Text-only calls stay unchanged.</li>
+      <li>Manifest order matches runner order and image citations parse durably.</li>
+    </ul>
+    <h3>Browser end-to-end</h3>
+    <ol>
+      <li>Drop and caption a real PNG, submit, and prove the fake reviewer received metadata and native image input.</li>
+      <li>Open run detail and reach the retained thumbnail and caption by role and label.</li>
+      <li>Fail a round, stage a new screenshot without changing code, resume, and prove its digest opens a fresh round.</li>
+      <li>Capture reviewer-visible frames under <code>e2e/.artifacts/workflow-image-evidence/</code> and do not commit them.</li>
+    </ol>
+    <h3>Validation gates</h3>
+    <p><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>, the focused Playwright spec, and <code>npm run test:e2e</code>.</p>
+  </section>
+
+  <section>
+    <h2>Documentation and memory follow-up</h2>
+    <p>Update workflow documentation and correct the repository memory whose headline says review rounds cannot see replies. Transcript text is visible but bounded; images require native evidence transport. Keep the private-PR attachment memory for the later publishing stage.</p>
+  </section>
+
+  <section>
+    <h2>Definition of done</h2>
+    <div class="done">
+      <ul>
+        <li>A dashboard user and automated session can submit a screenshot without committing it or opening a PR.</li>
+        <li>The screenshot is copied, hashed, stored, fingerprinted, and delivered to each Persona before review.</li>
+        <li>Claude and Codex see actual image content with tools disabled and can cite it.</li>
+        <li>A new screenshot advances an otherwise code-unchanged repair; incidental transcript growth does not.</li>
+        <li>Run detail renders retained evidence and clearly reports pruning.</li>
+        <li>Security, migration, recovery, retention, unit, build, smoke, and browser gates pass.</li>
+        <li>Product docs and repository memory state the corrected model.</li>
+      </ul>
+    </div>
+  </section>
+</article></main>
+</body>
+</html>

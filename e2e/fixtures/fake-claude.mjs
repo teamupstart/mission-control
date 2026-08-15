@@ -256,6 +256,31 @@ function headlessAnswer(prompt) {
       confidence: 0.95,
     });
   }
+  /*
+   * The same reviewer, still objecting, but in different words.
+   *
+   * A reviewer that rewords a title it keeps raising retires the old change key and opens a new
+   * one, and the worklist has to say what is actually known about the retired half: its reviewer
+   * looked again and did not pass, so nothing confirmed the fix. That state is unreachable from
+   * a fixture whose fail verdict is a fixed string, which is what this second title is for.
+   */
+  if (
+    prompt.startsWith("# EXTREMELY CRITICAL OPERATOR DIRECTIVE")
+    && prompt.includes("E2E_DIRECTIVE_REWORD_VERDICT")
+  ) {
+    return JSON.stringify({
+      verdict: "fail",
+      summary: "Deterministic e2e objection, restated",
+      requestedChanges: [
+        {
+          title: "E2E reworded change",
+          rationale: "This reviewer is scripted to restate its objection",
+          evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
+        },
+      ],
+      confidence: 0.9,
+    });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",

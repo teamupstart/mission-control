@@ -34,6 +34,7 @@ import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { relativeTime, repoLeaf } from "../lib/format.ts";
 import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
+import type { ChangeWorklistRow, ChangeWorklistState } from "./run-model.ts";
 import {
   actionBlockSentence,
   actionWaitSentence,
@@ -42,6 +43,7 @@ import {
   cancelGateSentence,
   cancelReleasesGate,
   checkOutcomeOf,
+  checkStatus,
   checkStatusView,
   continuationSourceAttempt,
   disabledStatusFor,
@@ -60,7 +62,10 @@ import {
   nodeStatusesForSubmission,
   readCapturedContext,
   reviewerAttempts,
+  reviewerStatus,
+  runChangeWorklist,
   runRounds,
+  runStalemates,
   runStatusLabel,
   segmentProvenanceSentence,
   selectedSubmission,
@@ -423,6 +428,739 @@ function VerdictCard({
   );
 }
 
+/**
+ * A reviewer this round produced no readable opinion for.
+ *
+ * Extracted from the old verdict list unchanged, class name included, because it is the one
+ * card that says something the pipeline strip above cannot: the durable `error` string behind
+ * a provider failure, and the runner and revision that were resolved for the attempt that
+ * failed.
+ */
+function AttemptCard({
+  attempt,
+  name,
+}: {
+  attempt: WorkflowNodeAttempt;
+  name: string;
+}): React.JSX.Element {
+  return (
+    <article className="wf-run-card wf-run-attempt">
+      <header className="wf-run-card-head">
+        <strong>{name}</strong>
+        <span>{attemptStateLabel(attempt.state)} · attempt {attempt.attempt}</span>
+      </header>
+      <p className="wf-run-meta">
+        {[
+          attempt.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null,
+          attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
+        ].filter(Boolean).join(" · ")}
+      </p>
+      <ErrorLine raw={attempt.error} />
+    </article>
+  );
+}
+
+/**
+ * One selectable line in the worklist rail.
+ *
+ * A DISCRIMINATED UNION rather than a bare key, because `Blocking` holds two unrelated id
+ * spaces at once: a `ChangeWorklistRow.key` is `nodeId + path + title`, and a check is
+ * identified by its attempt id. Nothing stops those colliding as raw strings, so the keys are
+ * namespaced by kind and every consumer branches on `kind` instead of sniffing the shape.
+ */
+type WorklistItem =
+  | { kind: "change"; key: string; row: ChangeWorklistRow }
+  | { kind: "check"; key: string; attempt: WorkflowNodeAttempt; outcome: WorkflowCheckOutcome }
+  | { kind: "verdict"; key: string; attempt: WorkflowNodeAttempt; verdict: PersonaVerdict }
+  | { kind: "attempt"; key: string; attempt: WorkflowNodeAttempt; name: string };
+
+type WorklistSegment = "blocking" | "passed" | "archive";
+
+/**
+ * What each state of a requested change CLAIMS, in a chip and a colour.
+ *
+ * `unconfirmed` is the one worth reading twice, and both halves of it are load-bearing. It is
+ * NOT green: green would tell an operator a reviewer is satisfied while the stalemate card at
+ * the foot of the same rail says that reviewer has failed every round. And it is not worded as
+ * *rephrased* either, which is the opposite error and just as wrong - a reviewer that stops
+ * raising a change BECAUSE it is fixed, while separately raising something unrelated, lands in
+ * this same state, and telling that operator their fix was merely reworded is a false claim
+ * about their own work. The state means *not known*, so the chip says not known.
+ */
+const CHANGE_STATE_CHIPS: Record<ChangeWorklistState, { label: string; tone: string }> = {
+  open: { label: "Blocker", tone: "failed" },
+  unconfirmed: { label: "Unconfirmed", tone: "waiting" },
+  resolved: { label: "Resolved", tone: "passed" },
+};
+
+/**
+ * A reviewer that produced no readable opinion and is not going to.
+ *
+ * `error` is a provider failure, and a `completed` attempt with no verdict is a reply the parser
+ * rejected - both stop the run and both carry a durable string that is the only explanation on
+ * the page. Everything else verdict-less (queued, running, retrying, cancelled) has simply not
+ * reported, which is a different claim and a different segment.
+ */
+function stalledReviewer(attempt: WorkflowNodeAttempt): boolean {
+  return attempt.state === "error" || attempt.state === "completed" || attempt.error !== null;
+}
+
+/** The exact repair text one change copies, so a session gets the ask rather than the page. */
+function changeCopyText(row: ChangeWorklistRow): string {
+  return [
+    row.title,
+    row.path ? `${row.path}${row.line === null ? "" : `:${row.line}`}` : null,
+    "",
+    row.rationale,
+  ].filter((part) => part !== null).join("\n");
+}
+
+/**
+ * The attempt that last raised one change, for the reviewer's own summary and meta line.
+ *
+ * `ChangeWorklistRow` deliberately carries the CHANGE rather than the verdict around it, so
+ * the summary has to be looked back up - at `row.lastRound`, which is the round the row's
+ * wording came from, never the viewed round: a change carried forward from round 4 into a
+ * round its reviewer has not re-run would otherwise show no summary at all.
+ *
+ * The fold matches `foldRun`'s to the letter - ascending segment, then ascending attempt, with
+ * the guard that keeps a higher-numbered attempt from an earlier segment - because a summary
+ * read off a different attempt than the one the row was accumulated from is the two-derivations
+ * disagreement this whole surface is built to avoid.
+ */
+function raisingAttempt(
+  detail: WorkflowRunDetail,
+  nodeId: string,
+  round: number,
+): WorkflowNodeAttempt | null {
+  const segmentOf = new Map(detail.submissions
+    .filter((submission) => submission.round === round)
+    .map((submission) => [submission.id, submission.segment]));
+  let newest: WorkflowNodeAttempt | null = null;
+  const ordered = detail.attempts
+    .filter((candidate) => candidate.nodeId === nodeId && segmentOf.has(candidate.submissionId))
+    .sort((left, right) =>
+      (segmentOf.get(left.submissionId) ?? 0) - (segmentOf.get(right.submissionId) ?? 0)
+      || left.attempt - right.attempt);
+  for (const candidate of ordered) {
+    if (newest && newest.attempt > candidate.attempt) continue;
+    newest = candidate;
+  }
+  return newest;
+}
+
+/** One rail line. The chip is the row's own claim; the lines under it are its provenance. */
+function WorklistRailRow({
+  item,
+  selected,
+  onSelect,
+}: {
+  item: WorklistItem;
+  selected: boolean;
+  onSelect: () => void;
+}): React.JSX.Element {
+  const view = ((): {
+    chip: { label: string; tone: string };
+    title: string;
+    lines: string[];
+    hint: string;
+  } => {
+    switch (item.kind) {
+      case "change": {
+        const { row } = item;
+        return {
+          chip: CHANGE_STATE_CHIPS[row.state],
+          title: row.title,
+          hint: `Show what ${row.personaName} asked for, in full`,
+          lines: [
+            ...(row.path ? [row.path] : []),
+            row.state === "resolved" && row.resolvedRound !== null
+              ? `Resolved in round ${row.resolvedRound}`
+              : row.state === "unconfirmed"
+                ? `Last raised in round ${row.lastRound}`
+                : `${row.personaName} · round ${row.firstRound}`,
+            // The reviewer is never dropped from an archived row either: two reviewers can ask
+            // for the same thing on the same file, so the name is what tells the two rows apart.
+            ...(row.state === "unconfirmed"
+              ? [`${row.personaName} has not passed since, so this was never confirmed fixed.`]
+              : row.state === "resolved"
+                ? [row.personaName]
+                : []),
+          ],
+        };
+      }
+      case "check": {
+        const status = checkStatus(
+          verdictOf(item.attempt)?.verdict ?? item.attempt.state,
+          item.outcome.status,
+        );
+        return {
+          chip: { label: status.label, tone: status.tone },
+          title: `Command · ${item.outcome.slot}`,
+          hint: `Show the ${item.outcome.slot} Command's result, output included`,
+          lines: [
+            item.outcome.command
+              ? formatCheckCommand(item.outcome.command)
+              : "no command configured",
+            ...(item.outcome.exitCode === null ? [] : [`exit ${item.outcome.exitCode}`]),
+          ],
+        };
+      }
+      case "verdict":
+        return {
+          chip: {
+            label: item.verdict.verdict === "pass" ? "Passed" : "Changes requested",
+            tone: item.verdict.verdict === "pass" ? "passed" : "failed",
+          },
+          title: item.attempt.persona?.name ?? "Missing persona",
+          hint: item.verdict.verdict === "pass"
+            ? "Show this reviewer's approval rationale and the evidence behind it"
+            : "Show this reviewer's whole verdict",
+          lines: [item.verdict.summary],
+        };
+      case "attempt": {
+        const status = reviewerStatus(item.attempt.state);
+        return {
+          chip: { label: status.label, tone: status.tone },
+          title: item.name,
+          hint: `Show what is recorded for ${item.name} in this round`,
+          lines: item.attempt.error ? [errorView(item.attempt.error)?.sentence ?? ""] : [],
+        };
+      }
+    }
+  })();
+  return (
+    <li>
+      <Tooltip label={view.hint}>
+        <button
+          type="button"
+          className={`wf-run-worklist-row is-${item.kind}${
+            item.kind === "change" ? ` is-${item.row.state}` : ""}${selected ? " active" : ""}`}
+          aria-current={selected}
+          onClick={onSelect}
+        >
+          <span className="wf-run-worklist-row-head">
+            <span className={`workflow-chip workflow-${view.chip.tone}`}>{view.chip.label}</span>
+            <strong>{view.title}</strong>
+          </span>
+          {view.lines.filter(Boolean).map((line) => (
+            <span className="wf-run-worklist-row-line" key={line}>{line}</span>
+          ))}
+        </button>
+      </Tooltip>
+    </li>
+  );
+}
+
+/**
+ * The Blocker Worklist: what this run is asking for, and what it is no longer asking for.
+ *
+ * This replaces a section that rendered every reviewer's whole card whether it had anything to
+ * say or not - measured at 11,445 characters to convey about 480 on a live ten-round run. The
+ * reorganisation is the point: a PASS costs one line here and its full card only when somebody
+ * asks for it, while a change gets a row of its own carrying the round it was first raised in,
+ * which no round-scoped card could say at all.
+ *
+ * Everything in here answers for the ROUND THE SCRUBBER POINTS AT, the stalemate card included.
+ * `runChangeWorklist` and `runStalemates` both take that round, so scrubbing back moves all
+ * three segment counts and the card together; nothing in this section may state a fact from a
+ * round later than the one being viewed.
+ */
+function RunWorklist({
+  detail,
+  round,
+  attempts,
+  calls,
+  nameOfNode,
+  inspectorOnly,
+  reviewerlessVersion,
+  personaNodeIds,
+  disabledNodeIds,
+  onOpenFile,
+  onCopyChange,
+  changeCopied = false,
+  onOpenPersonaDirective,
+  onToggleNodesDisabled,
+}: {
+  detail: WorkflowRunDetail;
+  /** The viewed round. `null` means the latest submission's round. */
+  round: number | null;
+  /** This round's non-action attempts, with the structural nodes already filtered out. */
+  attempts: readonly WorkflowNodeAttempt[];
+  calls: NonNullable<WorkflowRunDetail["llmCalls"]>;
+  nameOfNode: (nodeId: string) => string | null;
+  inspectorOnly: boolean;
+  reviewerlessVersion: boolean;
+  personaNodeIds: ReadonlySet<string>;
+  disabledNodeIds: readonly string[];
+  onOpenFile?: (path: string) => void;
+  onCopyChange?: (text: string) => void;
+  changeCopied?: boolean;
+  onOpenPersonaDirective?: (nodeId: string) => void;
+  onToggleNodesDisabled?: (nodeIds: string[], disabled: boolean) => void;
+}): React.JSX.Element {
+  const worklist = runChangeWorklist(detail, round);
+  const stalemates = runStalemates(detail, round);
+
+  /*
+   * Checks never flow through the change model and never will - a row keyed on a title cannot
+   * carry an exit code or an output tail. So `checkOutcomeOf` is asked FIRST, exactly as the
+   * old section asked it, and the outcome's own `status` picks the segment: `failed` is a
+   * blocker because it is why the run stopped, and `passed`, `skipped` and `unavailable` are
+   * passes - the last two degraded ones, which keep their amber chip rather than being drawn
+   * green for a command that never ran.
+   */
+  const checks: { attempt: WorkflowNodeAttempt; outcome: WorkflowCheckOutcome }[] = [];
+  const verdicts: { attempt: WorkflowNodeAttempt; verdict: PersonaVerdict }[] = [];
+  const bare: WorkflowNodeAttempt[] = [];
+  for (const attempt of attempts) {
+    // The check is asked FIRST, because a check also carries a verdict - a synthetic one, so
+    // the join and the repair packet need no special case. Asking the verdict first would draw
+    // every command gate as a Persona row with no Persona in it.
+    const outcome = checkOutcomeOf(attempt);
+    if (outcome) {
+      checks.push({ attempt, outcome });
+      continue;
+    }
+    const verdict = verdictOf(attempt);
+    if (verdict) verdicts.push({ attempt, verdict });
+    else bare.push(attempt);
+  }
+
+  const open = worklist.filter((row) => row.state === "open");
+  const archived = worklist.filter((row) => row.state !== "open");
+  /*
+   * A fail verdict this round that produced no row is not dropped on the floor.
+   *
+   * `runChangeWorklist` reads verdicts through the strict schema and skips a durable row it
+   * cannot parse, and it skips an attempt with no Persona snapshot; the display cast here is
+   * looser. Either gap would silently delete a reviewer's whole objection from the one section
+   * that is supposed to list it, so anything that failed at the viewed round without landing a
+   * row keeps its full verdict card in `Blocking`.
+   */
+  const raisedNodeIds = new Set(open.map((row) => row.nodeId));
+  const unmodelledFailures = verdicts.filter(({ attempt, verdict }) =>
+    verdict.verdict === "fail" && !raisedNodeIds.has(attempt.nodeId));
+
+  const blocking: WorklistItem[] = [
+    ...checks
+      .filter(({ outcome }) => outcome.status === "failed")
+      .map(({ attempt, outcome }): WorklistItem => ({
+        kind: "check",
+        key: `check:${attempt.id}`,
+        attempt,
+        outcome,
+      })),
+    /*
+     * A reviewer that errored, or that answered in a shape the verdict parser rejected, is a
+     * blocker with no change attached: the run cannot pass it and its durable error string is
+     * the only thing on the page saying why. It sorts up here with the failed commands for the
+     * same reason they do - a stage that could not run is why the run stopped, and the
+     * objections underneath it are from a round that is no longer moving.
+     */
+    ...bare
+      .filter(stalledReviewer)
+      .map((attempt): WorklistItem => ({
+        kind: "attempt",
+        key: `attempt:${attempt.id}`,
+        attempt,
+        name: attempt.persona?.name ?? nameOfNode(attempt.nodeId) ?? "Reviewer",
+      })),
+    ...open.map((row): WorklistItem => ({ kind: "change", key: `change:${row.key}`, row })),
+    ...unmodelledFailures.map(({ attempt, verdict }): WorklistItem => ({
+      kind: "verdict",
+      key: `verdict:${attempt.id}`,
+      attempt,
+      verdict,
+    })),
+  ];
+  const passed: WorklistItem[] = [
+    ...verdicts
+      .filter(({ verdict }) => verdict.verdict === "pass")
+      .map(({ attempt, verdict }): WorklistItem => ({
+        kind: "verdict",
+        key: `verdict:${attempt.id}`,
+        attempt,
+        verdict,
+      })),
+    ...checks
+      .filter(({ outcome }) => outcome.status !== "failed")
+      .map(({ attempt, outcome }): WorklistItem => ({
+        kind: "check",
+        key: `check:${attempt.id}`,
+        attempt,
+        outcome,
+      })),
+  ];
+  /*
+   * Reviewers this round has not heard from yet, kept OUT of the `Passed` count.
+   *
+   * They are in the `Passed` panel because they are not blocking anything - the changes still
+   * open while they re-review are already carried into `Blocking` by the model above. But a
+   * queued reviewer counted as a pass would be the surface claiming an outcome nobody reached,
+   * which is the one thing every chip in this app refuses to do, so the count is over real
+   * passes and these sit under their own label with their own chips.
+   */
+  const pending: WorklistItem[] = bare
+    .filter((attempt) => !stalledReviewer(attempt))
+    .map((attempt): WorklistItem => ({
+      kind: "attempt",
+      key: `attempt:${attempt.id}`,
+      attempt,
+      name: attempt.persona?.name ?? nameOfNode(attempt.nodeId) ?? "Reviewer",
+    }));
+  const archive: WorklistItem[] = archived
+    .map((row): WorklistItem => ({ kind: "change", key: `change:${row.key}`, row }));
+
+  const [chosenSegment, setChosenSegment] = useState<WorklistSegment | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  /*
+   * The first segment that has anything in it, and then whatever the reader picked.
+   *
+   * A run with nothing outstanding opens on `Passed` rather than on an empty agenda, and one
+   * whose reviewers have all gone quiet opens on `Archive` rather than on two empty panes. The
+   * final fallback is `Passed`, which is where the three empty-state sentences live.
+   *
+   * Selection is LOCAL state, exactly like the round - there is no precedent for a sub-run
+   * selection in `MissionRoute`, and deep-linking one change is a deliberate non-goal.
+   */
+  const segment = chosenSegment
+    ?? (blocking.length > 0
+      ? "blocking"
+      : passed.length + pending.length > 0
+        ? "passed"
+        : archive.length > 0 ? "archive" : "passed");
+  const items = segment === "blocking"
+    ? blocking
+    : segment === "archive" ? archive : [...passed, ...pending];
+  /*
+   * Resolved rather than stored, so scrubbing keeps a change that exists in both rounds
+   * selected and falls back to the head of the list when it does not - never to an empty pane.
+   */
+  const selected = items.find((item) => item.key === selectedKey) ?? items[0] ?? null;
+  const selectedIndex = selected ? items.indexOf(selected) : -1;
+
+  const terminalRun = ["completed", "cancelled", "failed"].includes(detail.run.status);
+  const segments: { id: WorklistSegment; label: string; count: number; hint: string }[] = [
+    {
+      id: "blocking",
+      label: "Blocking",
+      count: blocking.length,
+      hint: "The changes and failed commands this run is still asking for",
+    },
+    {
+      id: "passed",
+      label: "Passed",
+      count: passed.length,
+      hint: "Reviewers and commands that are not asking for anything in this round",
+    },
+    {
+      id: "archive",
+      label: "Archive",
+      count: archive.length,
+      hint: "Changes that stopped being raised, and what is known about why",
+    },
+  ];
+
+  return (
+    <div className="wf-run-worklist">
+      <div className="wf-run-worklist-rail">
+        <div className="wf-run-worklist-seg" role="group" aria-label="Worklist segment">
+          {segments.map((entry) => (
+            <Tooltip key={entry.id} label={entry.hint}>
+              <button
+                type="button"
+                className={segment === entry.id ? "active" : ""}
+                aria-pressed={segment === entry.id}
+                onClick={() => {
+                  setChosenSegment(entry.id);
+                  setSelectedKey(null);
+                }}
+              >
+                {entry.label} {entry.count}
+              </button>
+            </Tooltip>
+          ))}
+        </div>
+
+        <div className="wf-run-worklist-list">
+          {items.length === 0 && (
+            <p className="wf-run-empty">
+              {segment === "blocking"
+                ? "Nothing is blocking this run in this round."
+                : segment === "archive"
+                  ? "No change has stopped being raised as of this round."
+                  // The three arms the old section had, scoped to `Passed`, where they are
+                  // still true. "This Inspector repair round ran no Personas" is NOT true of
+                  // `Blocking`, which legitimately carries forward what is still outstanding.
+                  : inspectorOnly
+                    ? "This Inspector repair round ran no Personas."
+                    : reviewerlessVersion
+                      ? "This workflow has no reviewers - nothing in it produces a verdict."
+                      : "No reviewer has been activated in this round yet."}
+            </p>
+          )}
+          {(segment === "passed" ? passed : items).length > 0 && (
+            <ul className="wf-run-worklist-rows">
+              {(segment === "passed" ? passed : items).map((item) => (
+                <WorklistRailRow
+                  key={item.key}
+                  item={item}
+                  selected={selected?.key === item.key}
+                  onSelect={() => setSelectedKey(item.key)}
+                />
+              ))}
+            </ul>
+          )}
+          {segment === "passed" && pending.length > 0 && (
+            <>
+              <p className="wf-run-worklist-group">No verdict in this round yet</p>
+              <ul className="wf-run-worklist-rows">
+                {pending.map((item) => (
+                  <WorklistRailRow
+                    key={item.key}
+                    item={item}
+                    selected={selected?.key === item.key}
+                    onSelect={() => setSelectedKey(item.key)}
+                  />
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+
+        {/* The fact that never reached this page. `detail.repeatOffenders` is computed over the
+            run's whole submission list and anchored on its newest one, so it cannot be
+            re-scoped by the viewed round; `runStalemates` is its windowed twin, and the
+            sentence is the ladder's own so one fact is worded one way on both surfaces. */}
+        {stalemates.length > 0 && (
+          <div className="wf-run-worklist-stalemate" role="status">
+            <strong>Stalemate</strong>
+            {stalemates.map((offender) => (
+              <p key={offender.nodeId}>
+                {offender.personaName} has failed {offender.rounds} rounds running.
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Deliberately EMPTY rather than repeating the rail: an empty segment already says what
+          it is, and printing "nothing outstanding" beside "nothing is blocking this run" is one
+          fact stated twice on a surface whose whole complaint is duplication. */}
+      <div className="wf-run-worklist-detail">
+        {selected !== null && (
+          <>
+            <div className="wf-run-worklist-detail-body">
+              {selected.kind === "check" && (
+                <CheckCard attempt={selected.attempt} outcome={selected.outcome} />
+              )}
+              {selected.kind === "verdict" && (
+                <VerdictCard
+                  attempt={selected.attempt}
+                  verdict={selected.verdict}
+                  meta={verdictMeta(selected.attempt, calls)}
+                />
+              )}
+              {selected.kind === "attempt" && (
+                <AttemptCard attempt={selected.attempt} name={selected.name} />
+              )}
+              {selected.kind === "change" && (
+                <ChangeDetail
+                  row={selected.row}
+                  attempt={raisingAttempt(detail, selected.row.nodeId, selected.row.lastRound)}
+                  calls={calls}
+                  disabled={disabledNodeIds.includes(selected.row.nodeId)}
+                  copied={changeCopied && copiedKey === selected.key}
+                  onCopy={onCopyChange
+                    ? () => {
+                        setCopiedKey(selected.key);
+                        onCopyChange(changeCopyText(selected.row));
+                      }
+                    : undefined}
+                  onOpenFile={onOpenFile}
+                  onOpenPersonaDirective={!terminalRun
+                    && onOpenPersonaDirective
+                    && personaNodeIds.has(selected.row.nodeId)
+                    ? onOpenPersonaDirective
+                    : undefined}
+                  onToggleNodesDisabled={!terminalRun && onToggleNodesDisabled
+                    ? onToggleNodesDisabled
+                    : undefined}
+                />
+              )}
+            </div>
+            {/* Previous and next walk the CURRENT segment across every kind in it, so a reader
+                can page from a failed command straight into the objections underneath it
+                without changing segment. */}
+            <div className="wf-run-worklist-walk">
+              <span className="wf-run-meta">{selectedIndex + 1} of {items.length}</span>
+              <Tooltip label="Show the previous item in this segment">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  aria-label="Previous item"
+                  disabled={selectedIndex <= 0}
+                  onClick={() => setSelectedKey(items[selectedIndex - 1]?.key ?? null)}
+                >
+                  ← Previous
+                </button>
+              </Tooltip>
+              <Tooltip label="Show the next item in this segment">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  aria-label="Next item"
+                  disabled={selectedIndex < 0 || selectedIndex >= items.length - 1}
+                  onClick={() => setSelectedKey(items[selectedIndex + 1]?.key ?? null)}
+                >
+                  Next →
+                </button>
+              </Tooltip>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One requested change in full, with the four things a person can do about it.
+ *
+ * The two MUTATING actions are withheld rather than disabled once the run is terminal, matching
+ * the per-node menus on the strip: a finished run can no longer be affected, and a greyed-out
+ * button that could never become enabled is a worse answer than no button. `Open file` is
+ * withheld for the same reason when the change cites none - the type makes `path` optional and
+ * plenty of real changes carry none.
+ */
+function ChangeDetail({
+  row,
+  attempt,
+  calls,
+  disabled,
+  copied,
+  onCopy,
+  onOpenFile,
+  onOpenPersonaDirective,
+  onToggleNodesDisabled,
+}: {
+  row: ChangeWorklistRow;
+  /** The attempt that last raised it, for the reviewer's own summary and meta. */
+  attempt: WorkflowNodeAttempt | null;
+  calls: NonNullable<WorkflowRunDetail["llmCalls"]>;
+  disabled: boolean;
+  copied: boolean;
+  onCopy?: () => void;
+  onOpenFile?: (path: string) => void;
+  onOpenPersonaDirective?: (nodeId: string) => void;
+  onToggleNodesDisabled?: (nodeIds: string[], disabled: boolean) => void;
+}): React.JSX.Element {
+  const chip = CHANGE_STATE_CHIPS[row.state];
+  const meta = attempt ? verdictMeta(attempt, calls) : null;
+  const summary = attempt ? verdictOf(attempt)?.summary ?? null : null;
+  const path = row.path;
+  return (
+    <article className={`wf-run-card wf-run-change is-${row.state}`}>
+      <header className="wf-run-card-head">
+        <span className={`workflow-chip workflow-${chip.tone}`}>{chip.label}</span>
+        <strong>{row.personaName}</strong>
+        <span className="wf-run-confidence">{Math.round(row.confidence * 100)}% confident</span>
+        {meta?.runner && meta.model && (
+          <span className="wf-run-meta">{meta.runner} · {meta.model}</span>
+        )}
+      </header>
+      <h5 className="wf-run-change-title">{row.title}</h5>
+      {summary && <p className="wf-run-summary">{summary}</p>}
+      <dl className="wf-run-facts-list">
+        <div>
+          <dt>File</dt>
+          <dd>
+            {row.path
+              ? <code>{row.path}{row.line === null ? "" : `:${row.line}`}</code>
+              : "No file cited"}
+          </dd>
+        </div>
+        <div>
+          <dt>First raised</dt>
+          <dd>Round {row.firstRound}</dd>
+        </div>
+        <div>
+          {/* A count of the rounds that RAISED it, never the span between them, so it cannot
+              claim a round its reviewer stayed silent in. */}
+          <dt>Rounds open</dt>
+          <dd>{row.roundsOpen}</dd>
+        </div>
+        <div>
+          <dt>Evidence refs</dt>
+          <dd>{row.evidence.length}</dd>
+        </div>
+        {row.state === "resolved" && row.resolvedRound !== null && (
+          <div>
+            <dt>Resolved in</dt>
+            <dd>Round {row.resolvedRound}</dd>
+          </div>
+        )}
+        {row.state === "unconfirmed" && (
+          <div>
+            <dt>Last raised</dt>
+            <dd>Round {row.lastRound}</dd>
+          </div>
+        )}
+      </dl>
+      <div className="wf-run-card-body">
+        <h5>What the reviewer wants</h5>
+        <p>{row.rationale}</p>
+      </div>
+      {row.evidence.length > 0 && (
+        <div className="wf-run-card-body">
+          <h5>Cited evidence</h5>
+          <EvidenceList evidence={row.evidence} />
+        </div>
+      )}
+      <div className="wf-run-change-acts">
+        {onCopy && (
+          <Tooltip label="Copy this one change - its title, file and rationale - to the clipboard">
+            <button className="btn" type="button" onClick={onCopy}>
+              {copied ? COPY_FEEDBACK_LABEL : "Copy this change"}
+            </button>
+          </Tooltip>
+        )}
+        {onOpenFile && path !== null && (
+          <Tooltip label={`Open ${path} in the bound session's Files tab`}>
+            <button className="btn btn-ghost" type="button" onClick={() => onOpenFile(path)}>
+              Open file
+            </button>
+          </Tooltip>
+        )}
+        {onOpenPersonaDirective && (
+          <Tooltip label={`Give ${row.personaName} feedback that applies to every later round`}>
+            <button
+              className="btn btn-ghost"
+              type="button"
+              onClick={() => onOpenPersonaDirective(row.nodeId)}
+            >
+              Give this reviewer feedback
+            </button>
+          </Tooltip>
+        )}
+        {onToggleNodesDisabled && (
+          <Tooltip label={`${disabled ? "Enable" : "Disable"} ${row.personaName} for this workflow run`}>
+            <button
+              className="btn btn-ghost"
+              type="button"
+              onClick={() => onToggleNodesDisabled([row.nodeId], !disabled)}
+            >
+              {disabled ? `Enable ${row.personaName}` : `Disable ${row.personaName}`}
+            </button>
+          </Tooltip>
+        )}
+      </div>
+    </article>
+  );
+}
+
 export function WorkflowRunView({
   detail,
   roundId = null,
@@ -432,8 +1170,11 @@ export function WorkflowRunView({
   onConfirm = () => {},
   onCopyFeedback = () => {},
   onCopyRunId = () => {},
+  onCopyChange,
   feedbackCopied = false,
   runIdCopied = false,
+  changeCopied = false,
+  onOpenFile,
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
   onRestartFull = async () => {},
@@ -484,6 +1225,19 @@ export function WorkflowRunView({
    */
   feedbackCopied?: boolean;
   runIdCopied?: boolean;
+  /**
+   * Copy ONE requested change, rather than the whole repair packet the header copies.
+   *
+   * Its own callback for `onCopyFeedback`'s reason - the clipboard can refuse, and the sentence
+   * saying so belongs on the page's error surface, which the host owns.
+   */
+  onCopyChange?: (text: string) => void;
+  changeCopied?: boolean;
+  /**
+   * Reveal a cited file in the bound session's Files tab. Absent on a host with no Files
+   * surface, in which case the worklist withholds the control rather than drawing a dead one.
+   */
+  onOpenFile?: (path: string) => void;
   onOpenSession?: () => void;
   onOpenInspectorSettings?: () => void;
   onRestartFull?: (confirmation?: string) => Promise<void>;
@@ -512,6 +1266,12 @@ export function WorkflowRunView({
   // name - so the resolver is the one thing standing between "evidence 2" and "evidence 2,
   // after Open the pull request".
   const nodeById = new Map((version?.graph.nodes ?? []).map((node) => [node.id, node]));
+  // Which nodes can actually take a directive. The worklist offers "Give this reviewer
+  // feedback" off a row's own node, and a row whose node is not a Persona - an older run whose
+  // version no longer carries it - would otherwise open an editor with nothing to save to.
+  const personaNodeIds = new Set((version?.graph.nodes ?? [])
+    .filter((node) => node.kind === "persona")
+    .map((node) => node.id));
   const [directiveNodeId, setDirectiveNodeId] = useState<string | null>(null);
   useEffect(() => setDirectiveNodeId(null), [detail.run.id]);
   const directiveNode = directiveNodeId ? nodeById.get(directiveNodeId) : null;
@@ -969,56 +1729,30 @@ export function WorkflowRunView({
         </section>
       )}
 
-      <section className="wf-run-section">
-        <h4>Reviewer verdicts</h4>
-        {reviewAttempts.length === 0 ? (
-          <p className="wf-run-empty">
-            {inspectorOnly
-              ? "This Inspector repair round ran no Personas."
-              // "Not yet" is a promise, and a graph with no reviewer in it is never going to keep
-              // it. Worth its own sentence now that the structural attempts no longer fill this
-              // list: a Session-to-End workflow used to look like it had reviewed twice.
-              : reviewerlessVersion
-                ? "This workflow has no reviewers - nothing in it produces a verdict."
-                : "No reviewer has been activated in this round yet."}
-          </p>
-        ) : (
-          <div className="wf-run-cards">
-            {reviewAttempts.flatMap((attempt) => {
-              // A check is asked FIRST, because it also carries a verdict - a synthetic one,
-              // so the Join and the repair packet need no special case. Asking the verdict
-              // first would draw every check as a Persona card with no Persona in it.
-              const check = checkOutcomeOf(attempt);
-              if (check) return [(<CheckCard key={attempt.id} attempt={attempt} outcome={check} />)];
-              const verdict = verdictOf(attempt);
-              return verdict
-                ? [(
-                    <VerdictCard
-                      key={attempt.id}
-                      attempt={attempt}
-                      verdict={verdict}
-                      meta={verdictMeta(attempt, calls)}
-                    />
-                  )]
-                : [];
-            })}
-            {reviewAttempts.filter((attempt) => !verdictOf(attempt) && !checkOutcomeOf(attempt)).map((attempt) => (
-              <article className="wf-run-card wf-run-attempt" key={`attempt:${attempt.id}`}>
-                <header className="wf-run-card-head">
-                  <strong>{attempt.persona?.name ?? nameOfNode(attempt.nodeId) ?? "Reviewer"}</strong>
-                  <span>{attemptStateLabel(attempt.state)} · attempt {attempt.attempt}</span>
-                </header>
-                <p className="wf-run-meta">
-                  {[
-                    attempt.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null,
-                    attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
-                  ].filter(Boolean).join(" · ")}
-                </p>
-                <ErrorLine raw={attempt.error} />
-              </article>
-            ))}
-          </div>
-        )}
+      <section className="wf-run-section" aria-label="Review worklist">
+        <h4>Review worklist</h4>
+        {/* Keyed on the run so selecting another run resets the segment and the selected item in
+            the same commit the detail changes, rather than carrying one run's choice into the
+            next one's list. */}
+        <RunWorklist
+          key={detail.run.id}
+          detail={detail}
+          round={viewed?.round ?? null}
+          attempts={reviewAttempts}
+          calls={calls}
+          nameOfNode={nameOfNode}
+          inspectorOnly={inspectorOnly}
+          reviewerlessVersion={reviewerlessVersion}
+          personaNodeIds={personaNodeIds}
+          disabledNodeIds={detail.run.disabledNodeIds ?? []}
+          onOpenFile={onOpenFile}
+          onCopyChange={onCopyChange}
+          changeCopied={changeCopied}
+          onOpenPersonaDirective={onSetPersonaDirective && onRemovePersonaDirective
+            ? setDirectiveNodeId
+            : undefined}
+          onToggleNodesDisabled={onToggleNodesDisabled}
+        />
         {version?.graph.nodes.filter((node) => node.kind === "all_pass").map((join) => {
           const incoming = version.graph.edges.filter((edge) => edge.target === join.id);
           const received = detail.receipts.filter((receipt) =>
@@ -1543,6 +2277,7 @@ export function WorkflowRuns({
   onSelectRun,
   onFilters = () => {},
   onOpenSession = () => {},
+  onOpenSessionPath,
   onOpenInspectorSettings = () => {},
   onBindWorkflow,
 }: {
@@ -1552,6 +2287,14 @@ export function WorkflowRuns({
   onSelectRun: (id: string) => void;
   onFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onOpenSession?: (id: string) => void;
+  /**
+   * Reveal a path in the bound session's Files surface, for the worklist's "Open file".
+   *
+   * Takes the session as well as the path because the host that owns the Files tab is keyed by
+   * session, and a run names its own binding rather than whatever session happens to be
+   * selected. Optional, so a host with no Files surface simply withholds the control.
+   */
+  onOpenSessionPath?: (sessionId: string, path: string) => void;
   onOpenInspectorSettings?: () => void;
   /** Opens the binding dialog with nothing pinned - the empty state's only affordance. */
   onBindWorkflow?: () => void;
@@ -1820,6 +2563,7 @@ export function WorkflowRuns({
    */
   const feedbackCopy = useCopyFeedback({ resetOn: selected });
   const runIdCopy = useCopyFeedback({ resetOn: selected });
+  const changeCopy = useCopyFeedback({ resetOn: selected });
 
   const copyFeedback = (): void => {
     if (!detail) return;
@@ -1844,6 +2588,20 @@ export function WorkflowRuns({
     void runIdCopy.copy(() => detail.run.id)
       .then(({ error: caught }) => {
         if (caught !== null) setError(`Could not copy the run id. ${caught}`);
+      });
+  };
+
+  /**
+   * The worklist's per-change copy, kept apart from the header's repair packet.
+   *
+   * Its own `useCopyFeedback` because the two confirmations are independent controls that can
+   * be up at once, and sharing one would flip `Copied` on a button nobody pressed.
+   */
+  const copyChange = (text: string): void => {
+    setError(null);
+    void changeCopy.copy(text)
+      .then(({ error: caught }) => {
+        if (caught !== null) setError(`Could not copy this change. ${caught}`);
       });
   };
 
@@ -2097,8 +2855,16 @@ export function WorkflowRuns({
             }}
             onCopyFeedback={copyFeedback}
             onCopyRunId={copyRunId}
+            onCopyChange={copyChange}
             feedbackCopied={feedbackCopy.copied}
             runIdCopied={runIdCopy.copied}
+            changeCopied={changeCopy.copied}
+            // The BINDING's session, for `onOpenSession`'s reason: it is the column that goes
+            // null when a session disappears, and a file cannot be revealed in a pane that is
+            // gone.
+            onOpenFile={onOpenSessionPath && detail.binding.sessionId
+              ? (path) => onOpenSessionPath(detail.binding.sessionId!, path)
+              : undefined}
             onLoadEvents={loadMoreEvents}
             onLoadCalls={loadMoreCalls}
             onRestartFull={async (confirmation) => {

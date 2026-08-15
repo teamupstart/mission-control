@@ -487,17 +487,34 @@ test("the round scrubber defaults to the latest round and scopes what it says", 
   // merely `waiting_for_session` - a healthy repair loop, and exactly the round an operator
   // is looking for.
   assert.match(latest, /Changes requested/);
-  // Latest round selected by default, so round 1's verdict text is not on screen.
-  assert.doesNotMatch(latest, /Fix the race/);
+  // Round 1's PASS is not on screen at round 2, because Security has not re-reported: the
+  // Passed segment is built from this round's attempts and there are none with a verdict.
+  assert.doesNotMatch(latest, /No risk found/);
+  assert.doesNotMatch(latest, /Every path is guarded/);
+  assert.match(latest, /Passed 0/);
   assert.doesNotMatch(latest, /Viewing an earlier round/);
+  /*
+   * The change round 1 asked for IS still on screen at round 2, and that is the whole point of
+   * the worklist rather than a leak in the scoping.
+   *
+   * Quality has not re-reported either, so nothing has said the change is fixed - which is
+   * exactly the state the old section rendered as an empty list. The row names the round that
+   * raised it so the carry is legible rather than looking like a fresh objection.
+   */
+  assert.match(latest, /Fix the race/);
+  assert.match(latest, /Quality reviewer · round 1/);
+  assert.match(latest, /Blocking 1/);
 
   const earlier = render(detail, { roundId: "submission-1" });
   assert.match(earlier, /Fix the race/);
   assert.match(earlier, /Restart can duplicate work/);
   assert.match(earlier, /changed line/);
-  assert.match(earlier, /No risk found/);
-  assert.match(earlier, /Every path is guarded/);
   assert.match(earlier, /claude · reviewer/);
+  // The pass costs a count and nothing else until somebody asks for it. This is the 1,984
+  // characters of approval rationale the redesign was measured against.
+  assert.match(earlier, /Passed 1/);
+  assert.doesNotMatch(earlier, /No risk found/);
+  assert.doesNotMatch(earlier, /Every path is guarded/);
   assert.match(earlier, /Viewing an earlier round/);
   // The join packet is that round's receipts, named as its stage rather than as a node id.
   assert.match(earlier, /1 of 2 reviewers reported/);
@@ -1166,7 +1183,18 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   // This gate has an adopted pull request, so Open PR is present, enabled, and a real link.
   assert.match(headerOf(html), /<a class="btn btn-ghost" href="https:\/\/github.com\/owner\/repo\/pull\/91"/);
   assert.match(html, /Open PR/);
-  assert.match(html, /This Inspector repair round ran no Personas/);
+  /*
+   * The worklist answers for the Inspector round rather than going blank on it.
+   *
+   * Round 1's objection was confirmed by round 2's pass, so nothing is blocking and nothing
+   * reported in round 3 - and the rail opens on the segment that has something in it rather
+   * than on two empty panes. "This Inspector repair round ran no Personas" is scoped to
+   * `Passed`, where it is true; it was never true of the agenda, which is exactly why it may
+   * not describe the whole section.
+   */
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Archive 1/);
+  assert.match(html, /Resolved in round 2/);
   // A stage this round did not run reads NEUTRAL, never green: the chip speaks for the round
   // on screen, where nothing executed. The pass it is carrying is claimed by the provenance
   // line instead, which names the round that earned it and links straight to the proof.
@@ -1502,13 +1530,21 @@ test("binding selection reuses only the requested immutable version", () => {
 const CHECK_NODE = "8a1f0b4e-1111-4000-8000-00000000000c";
 
 /** The same running run, with one check attempt in its latest round. */
+/**
+ * A run whose viewed round holds ONE check and nothing else.
+ *
+ * The Persona attempts are dropped rather than kept beside it, because the worklist shows one
+ * item in full at a time and the assertions below are about what a check's own card says. With
+ * round 1's objection still in the fixture the rail would open on that change instead, and
+ * these tests would be pinning the selection rule rather than the check vocabulary - which
+ * `workflow-run-blocker-worklist.spec.ts` and the selection tests below already do.
+ */
 function detailWithCheck(output: WorkflowJson): WorkflowRunDetail {
   const detail = runningDetail();
   const latest = detail.submissions[detail.submissions.length - 1]!;
   return {
     ...detail,
     attempts: [
-      ...detail.attempts,
       attempt("attempt-check", latest.id, CHECK_NODE, snapshot("unused", "unused"), {
         // A check attempt records no Persona, runner or model - it is not a model call.
         persona: null,
@@ -1723,20 +1759,28 @@ test("the Session, join and End attempts are not drawn as reviewer verdicts", ()
   // makes this a node-kind question rather than a "has a verdict" one: they must stay.
   const detail = runningDetail();
   const viewed = detail.submissions[1]!.id;
+  // Round 1's verdicts are dropped so the rail opens on `Passed`, which is where a reviewer
+  // that has not reported is listed. Nothing about the structural filter depends on them.
   detail.attempts = [
-    ...detail.attempts,
+    ...detail.attempts.filter((item) => item.submissionId === viewed),
     structural("attempt-session", viewed, NODE.session),
     structural("attempt-join", viewed, NODE.join),
     structural("attempt-end", viewed, NODE.end),
   ];
   const html = render(detail);
-  const cards = html.match(/wf-run-card wf-run-attempt/g) ?? [];
-  assert.equal(cards.length, 2, "only the two verdict-less REVIEWERS may render as attempt cards");
+  const rows = html.match(/wf-run-worklist-row is-attempt/g) ?? [];
+  assert.equal(rows.length, 2, "only the two verdict-less REVIEWERS may reach the worklist");
+  assert.match(html, /No verdict in this round yet/);
   assert.match(html, /Quality reviewer/);
   assert.match(html, /Security reviewer/);
+  // Selected, and shown in full - the card the old section rendered for every one of them at
+  // once still exists, for the one a reader asked about.
+  assert.equal((html.match(/wf-run-card wf-run-attempt/g) ?? []).length, 1);
   // The three structural attempts each carried this, which is the string that gave a demo run
   // three cards saying nothing.
   assert.doesNotMatch(html, /completed · attempt 1/);
+  // And a reviewer that has not reported is not counted as one that passed.
+  assert.match(html, /Passed 0/);
   assertNoGraphIds(html);
 });
 
@@ -1782,4 +1826,256 @@ test("a workflow with no reviewer in it says so instead of promising one", () =>
   const html = render(detail);
   assert.match(html, /This workflow has no reviewers/);
   assert.doesNotMatch(html, /wf-run-attempt/);
+});
+
+/*
+ * ---- the Blocker Worklist ----
+ *
+ * What is at stake here is the opposite of the file above it. Those tests guard against an
+ * affordance disappearing; these guard against the wall coming back. The section this replaced
+ * rendered every reviewer's whole card whether it had anything to say or not - measured at
+ * 11,445 characters to convey about 480 on a live ten-round run - and the two things that made
+ * it useless are both assertable from markup: a pass cost as much as a failure, and a change
+ * raised in round 1 and still open in round 10 looked exactly like one raised a minute ago.
+ *
+ * The stalemate pair mirrors `test/workflow-ladder-repeat.test.ts`, sentence for sentence,
+ * because both surfaces render one fact and it has to be worded one way on each.
+ */
+
+/**
+ * A run over the Quality reviewer alone, one round per entry.
+ *
+ * `"fail"` raises the same change again, `"pass"` confirms it, and `"none"` is a round that has
+ * opened without that reviewer reporting in it - the partial-round case, which is the one the
+ * resolution rule is most easily got wrong on.
+ */
+function qualityRounds(...verdicts: ("fail" | "pass" | "none")[]): WorkflowRunDetail {
+  const base = runningDetail();
+  const submissions: WorkflowSubmission[] = [];
+  const attempts: WorkflowNodeAttempt[] = [];
+  verdicts.forEach((outcome, index) => {
+    const round = index + 1;
+    submissions.push(submission(`submission-${round}`, round, {
+      status: "waiting_for_session",
+      completedAt: null,
+    }));
+    if (outcome === "none") return;
+    attempts.push(attempt(
+      `attempt-${round}`,
+      `submission-${round}`,
+      NODE.quality,
+      snapshot("p-quality", "Quality reviewer"),
+      { verdict: outcome === "pass" ? passVerdict : failVerdict },
+    ));
+  });
+  return {
+    ...base,
+    summary: { ...base.summary, round: submissions.at(-1)!.round },
+    submissions,
+    attempts,
+    receipts: [],
+  } as WorkflowRunDetail;
+}
+
+test("the worklist leads with what the run is asking for, and a pass costs a count", () => {
+  const html = render(runningDetail(), { roundId: "submission-1" });
+  // The agenda, selected and shown in full: the ask, the file, the round, the rationale.
+  assert.match(html, /Blocking 1/);
+  assert.match(html, /Fix the race/);
+  assert.match(html, /What the reviewer wants/);
+  assert.match(html, /Restart can duplicate work/);
+  assert.match(html, /src\/engine\.ts:42/);
+  assert.match(html, /Cited evidence/);
+  // And the pass beside it is one number. Its summary, its approval rationale and its evidence
+  // list - 1,984 characters of them on the measured run - are one click away and not on screen.
+  assert.match(html, /Passed 1/);
+  assert.doesNotMatch(html, /Approval rationale/);
+  assert.doesNotMatch(html, /No risk found/);
+  assertNoGraphIds(html);
+});
+
+test("a change carried across rounds names the round that raised it and how many did", () => {
+  const html = render(qualityRounds("fail", "fail", "fail"));
+  assert.match(html, /Blocking 1/, "three rounds of one grievance is one row, not three");
+  assert.match(html, /Quality reviewer · round 1/);
+  const facts = html.slice(html.indexOf("First raised"));
+  assert.match(facts, /First raised<\/dt><dd>Round 1/);
+  assert.match(facts, /Rounds open<\/dt><dd>3/);
+  assertNoGraphIds(html);
+});
+
+test("the worklist reports each reviewer that has failed consecutive rounds", () => {
+  const html = render(qualityRounds("fail", "fail", "fail"));
+  assert.match(html, /wf-run-worklist-stalemate/);
+  // The ladder's own sentence, unchanged, so one fact is worded one way on both surfaces.
+  assert.match(html, /Quality reviewer has failed 3 rounds running\./);
+});
+
+test("one failing round is not a stalemate, and an earlier round is not told the future", () => {
+  assert.doesNotMatch(render(qualityRounds("fail")), /rounds running/);
+  // Scrubbed back to round 1 of a three-round run, the card must not report round 3's streak:
+  // `detail.repeatOffenders` is latest-anchored and cannot be re-scoped, which is why the rail
+  // renders the windowed `runStalemates` instead.
+  const earlier = render(qualityRounds("fail", "fail", "fail"), { roundId: "submission-1" });
+  assert.doesNotMatch(earlier, /rounds running/);
+  assert.match(render(qualityRounds("fail", "fail", "fail"), { roundId: "submission-2" }),
+    /Quality reviewer has failed 2 rounds running\./);
+});
+
+test("a resolved change moves to Archive naming the round its own reviewer confirmed in", () => {
+  // Round 1 asked, round 2 passed, round 3 has opened and nobody has reported in it. Nothing is
+  // blocking and nothing has passed IN THIS ROUND, so the rail opens on the segment that has
+  // something in it rather than on two empty panes.
+  const html = render(qualityRounds("fail", "pass", "none"));
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Archive 1/);
+  assert.match(html, /wf-run-worklist-row is-change is-resolved/);
+  assert.match(html, /Resolved in round 2/);
+  assert.match(html, /Resolved in<\/dt><dd>Round 2/);
+});
+
+test("a reviewer that has not re-run leaves its change blocking, never resolved", () => {
+  // The partial-round rule: round 2 exists and Quality has not reported in it. Nothing has said
+  // the change is fixed, so it stays on the agenda rather than reading as done because time
+  // passed.
+  const html = render(qualityRounds("fail", "none"));
+  assert.match(html, /Blocking 1/);
+  assert.match(html, /Archive 0/);
+  assert.doesNotMatch(html, /Resolved in round/);
+});
+
+test("a failing check is a blocker and keeps its exit code and output tail", () => {
+  const html = render(detailWithCheck({
+    status: "failed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 3,
+    output: "1 failing",
+    truncatedBytes: 0,
+    note: "`npm test` exited 3.",
+  }));
+  assert.match(html, /Blocking 1/);
+  assert.match(html, /Passed 0/);
+  assert.match(html, /wf-run-worklist-row is-check/);
+  assert.match(html, /exit 3/);
+  assert.match(html, /1 failing/);
+  // And the run does not present as having nothing outstanding.
+  assert.doesNotMatch(html, /nothing outstanding/);
+});
+
+test("a check that never ran stays a degraded pass rather than a blocker", () => {
+  const html = render(detailWithCheck({
+    status: "skipped",
+    slot: "test",
+    command: null,
+    exitCode: null,
+    output: "",
+    truncatedBytes: 0,
+    note: "No test command is configured for this repository, so this gate was skipped.",
+  }));
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Passed 1/);
+  // The amber chip travels with it. Drawn green it would tell an operator the suite passed.
+  assert.match(html, /workflow-waiting">Skipped/);
+});
+
+test("a change citing no file says so rather than drawing an empty slot", () => {
+  const base = runningDetail();
+  const pathless = {
+    ...failVerdict,
+    requestedChanges: [{
+      title: "Attach the completed test output",
+      rationale: "The reply cites no run.",
+      evidence: [{ kind: "goal", quote: "the task asked for the transcript" }],
+    }],
+  };
+  const html = render({
+    ...base,
+    attempts: base.attempts.map((item) => item.id === "attempt-1"
+      ? { ...item, verdict: pathless }
+      : item),
+  } as WorkflowRunDetail, { roundId: "submission-1" });
+  assert.match(html, /Attach the completed test output/);
+  assert.match(html, /No file cited/);
+  // No file means no file to open, so the control is absent rather than dead.
+  assert.doesNotMatch(html, /Open file/);
+});
+
+test("a change's mutating actions are offered live and withheld once the run is over", () => {
+  const live = render(runningDetail(), {
+    roundId: "submission-1",
+    onCopyChange: () => {},
+    onOpenFile: () => {},
+    onSetPersonaDirective: () => {},
+    onRemovePersonaDirective: () => {},
+    onToggleNodesDisabled: () => {},
+  });
+  assert.match(live, /Copy this change/);
+  assert.match(live, /Open file/);
+  assert.match(live, /Give this reviewer feedback/);
+  assert.match(live, /Disable Quality reviewer/);
+
+  const base = runningDetail();
+  const finished = render({
+    ...base,
+    summary: { ...base.summary, status: "completed" },
+    run: { ...base.run, status: "completed" },
+  } as WorkflowRunDetail, {
+    roundId: "submission-1",
+    onCopyChange: () => {},
+    onOpenFile: () => {},
+    onSetPersonaDirective: () => {},
+    onRemovePersonaDirective: () => {},
+    onToggleNodesDisabled: () => {},
+  });
+  // Withheld rather than disabled: a finished run can no longer be affected, and a button that
+  // could never become enabled is a worse answer than no button.
+  assert.doesNotMatch(finished, /Give this reviewer feedback/);
+  assert.doesNotMatch(finished, /Disable Quality reviewer/);
+  // The two that only read stay.
+  assert.match(finished, /Copy this change/);
+  assert.match(finished, /Open file/);
+});
+
+test("every empty arm the old verdict list had still has its sentence", () => {
+  // An Inspector repair round with nothing outstanding: no reviewer ran, and the segment that
+  // is about reviewers says so.
+  const bypassed = qualityRounds("pass", "none");
+  bypassed.submissions = bypassed.submissions.map((entry) =>
+    entry.round === 2 ? { ...entry, mode: "inspector_only" as const } : entry);
+  const html = render(bypassed);
+  assert.match(html, /This Inspector repair round ran no Personas/);
+  assert.doesNotMatch(html, /No reviewer has been activated/);
+
+  // A round whose reviewers simply have not started. "Not yet" is a promise this arm can keep.
+  const notStarted = qualityRounds("none");
+  assert.match(render(notStarted), /No reviewer has been activated in this round yet/);
+
+  // And a graph that will never produce one, which is a different empty entirely.
+  const bare = { id: "bare-session", kind: "session" as const, position: { x: 0, y: 0 } };
+  const end = { id: "bare-end", kind: "end" as const, outcome: "Complete", position: { x: 280, y: 0 } };
+  assert.match(render({
+    ...notStarted,
+    version: {
+      ...version,
+      id: "bare-version",
+      graph: {
+        nodes: [bare, end],
+        edges: [{
+          id: "bare-edge",
+          source: bare.id,
+          sourcePort: "submitted",
+          target: end.id,
+          targetPort: "terminal",
+        }],
+      },
+    },
+  } as WorkflowRunDetail), /This workflow has no reviewers/);
+});
+
+test("a host with no clipboard or Files surface draws neither control", () => {
+  const html = render(runningDetail(), { roundId: "submission-1" });
+  assert.doesNotMatch(html, /Copy this change/);
+  assert.doesNotMatch(html, /Open file/);
+  assert.match(html, /Fix the race/);
 });

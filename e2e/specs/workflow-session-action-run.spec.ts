@@ -281,7 +281,7 @@ test("Live types the authored instruction once and resumes on a fresh child segm
   await expect(strip.locator("li.wf-pipeline-reviewer .wf-pipeline-status")).toHaveText("Complete");
 
   // Its own card, under its own heading, carrying the exact instruction the version froze.
-  // Filed under "Reviewer verdicts" it would promise a verdict that does not exist.
+  // Filed under the review worklist it would promise a verdict that does not exist.
   const actionCard = dashboard.locator("article.wf-run-action");
   await expect(actionCard).toHaveCount(1);
   await expect(actionCard).toContainText(actionName);
@@ -362,7 +362,7 @@ test("Preview prepares the identical packet and types nothing at all", async ({
   // structural attempts; those no longer render as verdict-less reviewer cards, so the claim is
   // made against the section itself rather than against cards that are gone.
   const verdicts = dashboard.locator("section.wf-run-section")
-    .filter({ has: dashboard.getByRole("heading", { name: "Reviewer verdicts" }) });
+    .filter({ has: dashboard.getByRole("heading", { name: "Review worklist" }) });
   await expect(verdicts).toContainText("This workflow has no reviewers");
   // No card of any kind under that heading, which is the claim - the action has its own card in
   // "Session actions", and this section files nothing. Asserted on CARDS rather than on the

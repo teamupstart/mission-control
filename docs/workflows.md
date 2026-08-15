@@ -724,17 +724,53 @@ only once the proof exists - offering to open a pull request nothing has verifie
 claim this whole completion refuses to make.
 
 Each waiting or blocked action also carries the sentence behind its chip, and its own card
-under **Session actions** - separate from **Reviewer verdicts**, which promises a verdict an
-action does not produce. The card names the snapshot the version froze, what the action
+under **Session actions** - separate from the **Review worklist**, which is about what the run
+decided rather than what it did. The card names the snapshot the version froze, what the action
 required, and a bounded preview of the exact instruction that was sent.
 
-**Reviewer verdicts lists what can hold an opinion, and nothing else.** Every node in a graph
-owns attempt rows, including the three kinds that are pure structure - the Session, each all-pass
-join, and the End - so a run used to list them here as cards reading `Session completed ·
-attempt 1`. Their state is already on the pipeline strip above, and a Persona or Check with no
-verdict yet (queued, retrying, errored) still appears, because that is the case a reader most
-needs. A workflow with no reviewer in it at all says so, rather than promising one that is not
-coming. A structural attempt that is anything other than quietly complete is still shown.
+### The review worklist
+
+Below the pipeline, the reader pane is a worklist: **the changes the run is asking for on the
+left, the selected one in full on the right.** A segmented control divides them.
+
+| Segment | What is in it |
+|---|---|
+| **Blocking** | Failed Commands first, then reviewers that could not report, then every requested change still outstanding. This is the agenda. |
+| **Passed** | One line per passing reviewer and per Command that did not fail, plus the reviewers this round has not heard from yet - which are counted separately, because a queued reviewer has not passed anything. |
+| **Archive** | Changes that stopped being raised, and what is known about why. |
+
+A **change carries across rounds**. Identity is the reviewer that raised it plus the file and a
+normalized title - never the line number, which the next edit moves - so a row names the round it
+was first raised in and how many rounds have raised it, rather than looking new every round. Two
+reviewers objecting in the same words about the same file are **two rows**, because they resolve
+independently and each one's actions target a different reviewer.
+
+A change leaves **Blocking** only once its own reviewer has run again. It is `Resolved`, with the
+round that confirmed it, when that reviewer passed; it is `Unconfirmed` when that reviewer ran and
+did not pass, which says only that nothing confirmed the fix - never that the finding was
+rephrased, because from the outside those two are indistinguishable. A reviewer that has not
+re-run leaves its change blocking, however many rounds have passed.
+
+The selected change shows the reviewer's summary, confidence, runner and model; the file it
+cites or "No file cited"; the round it was raised in, the rounds it has been open and its
+evidence count; the rationale in full and the quotes behind it. From there a person can **copy
+that one change, open its file, give that reviewer feedback, or switch that reviewer off** -
+the last two only while the run can still be affected. Previous and Next walk the segment.
+
+A **stalemate card** sits at the foot of the rail when a reviewer has failed consecutive rounds,
+in the ladder's own words: *"Code Risk Reviewer has failed 10 rounds running."*
+
+Everything in this section answers for **the round the scrubber points at**, the stalemate card
+included. Scrubbing back moves all three counts together and never states a fact from a later
+round.
+
+**It lists what can hold an opinion, and nothing else.** Every node in a graph owns attempt rows,
+including the three kinds that are pure structure - the Session, each all-pass join, and the End -
+so a run used to list them here as cards reading `Session completed · attempt 1`. Their state is
+already on the pipeline strip above, and a Persona or Check with no verdict yet (queued, retrying,
+errored) still appears, because that is the case a reader most needs. A workflow with no reviewer
+in it at all says so, rather than promising one that is not coming. A structural attempt that is
+anything other than quietly complete is still shown.
 
 The rail lists history newest first with a state chip, the bound conversation and a relative
 time. Four chips - **All**, **Running**, **Needs you**, **Done** - are shortcuts onto the
@@ -745,8 +781,8 @@ are part of the bookmarkable hash, and history pages 50 rows at a time.
 A run is read one **submission** at a time. The scrubber lists every one with the round it
 belongs to - Inspector-only repair rounds marked as such - and the round that asked for
 changes is marked even though its submission is a healthy `waiting for the session`.
-Selecting one scopes the pipeline statuses, the verdicts, the join packets and the timeline to
-it; the latest is selected by default. The Inspector gate, completion claims, deliveries and
+Selecting one scopes the pipeline statuses, the review worklist, the join packets and the
+timeline to it; the latest is selected by default. The Inspector gate, completion claims, deliveries and
 every recovery action always reflect the live run whatever is on screen, and a note says so
 while an earlier one is selected.
 

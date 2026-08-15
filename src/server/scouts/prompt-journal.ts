@@ -95,30 +95,35 @@ export function freezeScoutPromptBoundary(
   anchor: ScoutPromptAnchor,
   now?: number,
 ): ScoutPromptContext | null {
-  if (!isScoutTask(task)) return null;
-  const session = source.getSession(sessionId);
-  if (!session) return null;
-  const episode = source.workEpisodeForSession(sessionId);
-  if (!episode) return null;
+  // The WHOLE body, not just the write. Locating a transcript and asking the Registry who
+  // owns a session are calls into other modules, and "this cannot throw" has to be true of
+  // the function rather than of whatever its callees currently happen to do - `dispatchEmbedded`
+  // leaves this call unguarded on the strength of that claim, and a throw there is absorbed
+  // by a catch that logs nothing.
+  return bestEffort(`freeze the prompt boundary for task ${task.id}`, () => {
+    if (!isScoutTask(task)) return null;
+    const session = source.getSession(sessionId);
+    if (!session) return null;
+    const episode = source.workEpisodeForSession(sessionId);
+    if (!episode) return null;
 
-  const located = sessionMessages(session);
-  // Zero and null are different answers, not a value and its fallback.
-  //
-  // A `launch` anchor is zero whether or not a path was found. The prompt travelled with the
-  // process, so the episode owns the file from its first byte - that is true of an embedded
-  // session whose transcript does not exist YET, and a collector that re-locates the file
-  // later can page all of it. Writing null there because the name was not available at this
-  // instant would discard a fact that is true, and would make every embedded scout's trail
-  // report as incomplete for no reason.
-  //
-  // A `current` anchor is null when nothing could be located or measured, because then
-  // nothing separates this task's turns from the conversation the session was already
-  // having. `size` can also answer null for a file that vanished between locating and
-  // measuring, which is the same "no anchor" and reads as it.
-  const offset =
-    anchor === "launch" ? 0 : located ? (located.read.size(located.path) ?? null) : null;
-  return bestEffort(`freeze the prompt boundary for task ${task.id}`, () =>
-    openScoutPromptContext(
+    const located = sessionMessages(session);
+    // Zero and null are different answers, not a value and its fallback.
+    //
+    // A `launch` anchor is zero whether or not a path was found. The prompt travelled with
+    // the process, so the episode owns the file from its first byte - that is true of an
+    // embedded session whose transcript does not exist YET, and a collector that re-locates
+    // the file later can page all of it. Writing null there because the name was not
+    // available at this instant would discard a fact that is true, and would make every
+    // embedded scout's trail report as incomplete for no reason.
+    //
+    // A `current` anchor is null when nothing could be located or measured, because then
+    // nothing separates this task's turns from the conversation the session was already
+    // having. `size` can also answer null for a file that vanished between locating and
+    // measuring, which is the same "no anchor" and reads as it.
+    const offset =
+      anchor === "launch" ? 0 : located ? (located.read.size(located.path) ?? null) : null;
+    return openScoutPromptContext(
       {
         taskId: task.id,
         episodeId: episode.episodeId,
@@ -128,8 +133,8 @@ export function freezeScoutPromptBoundary(
         transcriptOffset: offset,
       },
       now,
-    ),
-  );
+    );
+  });
 }
 
 /**
@@ -190,13 +195,19 @@ export function journalScoutPrompt(
   id: string = scoutPromptTurnId(),
   now?: number,
 ): ScoutPromptTurn | null {
-  const session = source.getSession(sessionId);
-  if (!session) return null;
-  const task = source.taskForSession(sessionId, session.cwd);
-  if (!task || !isScoutTask(task)) return null;
-  const episode = source.workEpisodeForSession(sessionId);
-  if (!episode) return null;
-  return bestEffort(`journal a ${origin} prompt for task ${task.id}`, () =>
-    appendScoutPromptTurn({ id, taskId: task.id, episodeId: episode.episodeId, origin, text }, now),
-  );
+  // Whole body, for the reason `freezeScoutPromptBoundary` states: the three Registry
+  // lookups below are calls into another module, and the guarantee has to be this
+  // function's rather than theirs.
+  return bestEffort(`journal a ${origin} prompt for session ${sessionId}`, () => {
+    const session = source.getSession(sessionId);
+    if (!session) return null;
+    const task = source.taskForSession(sessionId, session.cwd);
+    if (!task || !isScoutTask(task)) return null;
+    const episode = source.workEpisodeForSession(sessionId);
+    if (!episode) return null;
+    return appendScoutPromptTurn(
+      { id, taskId: task.id, episodeId: episode.episodeId, origin, text },
+      now,
+    );
+  });
 }

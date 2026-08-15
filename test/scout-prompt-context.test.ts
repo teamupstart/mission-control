@@ -729,6 +729,37 @@ test("no seam here can break the operation it rides on", () => {
   assert.throws(() => db.exec("SELECT 1 FROM scout_prompt_contexts_hidden"));
 });
 
+test("the no-throw guarantee covers the lookups too, not just the write", () => {
+  // The store is not the only thing here that can fail. Locating a transcript and asking the
+  // Registry who owns a session are calls into other modules, and the claim has to be a
+  // property of THIS function rather than of whatever its callees currently happen to do -
+  // `dispatchEmbedded` leaves its call unguarded on the strength of it, and a throw there is
+  // absorbed by a catch that logs nothing at all.
+  reset();
+
+  // A real throw from `sessionMessages`, not a stub: `transcriptFor` indexes `HARNESSES` by
+  // agent, so an agent this build does not know dereferences undefined.
+  const unknownAgent = mkSession({ id: "s1", agent: "not-a-harness" as never });
+  assert.doesNotThrow(() =>
+    freezeScoutPromptBoundary(source({ session: unknownAgent, task: SCOUT }), SCOUT, "s1", "current"),
+  );
+
+  // And a Registry whose lookups throw, which is the other half of the body.
+  const hostile = {
+    getSession: () => {
+      throw new Error("registry unavailable");
+    },
+    taskForSession: () => {
+      throw new Error("registry unavailable");
+    },
+    workEpisodeForSession: () => {
+      throw new Error("registry unavailable");
+    },
+  };
+  assert.equal(freezeScoutPromptBoundary(hostile, SCOUT, "s1", "current"), null);
+  assert.equal(journalScoutPrompt(hostile, "s1", "a follow-up", "human", "t9"), null);
+});
+
 test("no route journals a prompt, because route behavior is a later phase's", () => {
   // This phase adds durable context and attribution and NO route behavior. Every delivery
   // it journals is reached from the runtime seams - `PendingTurnManager`'s two acceptance

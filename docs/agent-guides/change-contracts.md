@@ -142,14 +142,29 @@ needs about the conversation have to be recorded while they are still true. Both
 keyed `(task_id, episode_id)` - the same key `archiveOperationKey` uses, for the same
 reason: a re-dispatched task is new work and gets its own boundary.
 
-- **Both task-delivery seams freeze a boundary.** `dispatcher.ts` and `tasks.ts` each call
-  `freezeScoutPromptBoundary` after every preflight refusal and immediately before the
-  composed prompt crosses into the runtime, then `discardScoutPromptBoundary` if that
-  delivery throws or is refused. A dispatcher-only boundary leaves every ASSIGNED scout
-  collecting whatever its session was doing beforehand. The anchor is `launch` when turn one
-  travelled with the process (pi's positional argument, an embedded session's opening
-  prompt) and `current` otherwise; `launch` means offset zero because the whole file is that
-  episode's.
+- **Both task-delivery seams freeze a boundary**, and a dispatcher-only one would leave every
+  ASSIGNED scout collecting whatever its session was doing beforehand. `dispatcher.ts` and
+  `tasks.ts` both call `freezeScoutPromptBoundary` after every preflight refusal has passed.
+  **When** they call it differs by runtime, and the difference is forced rather than
+  incidental:
+  - **Terminal dispatch and assignment freeze immediately BEFORE the prompt crosses into the
+    runtime**, because the anchor is the transcript's size right now and that number stops
+    being true the moment the prompt lands. Both then call `discardScoutPromptBoundary` if the
+    delivery is refused or throws, so a failed task never looks like an episode the agent saw.
+  - **Embedded (SDK) dispatch freezes immediately AFTER `supervisor.start`**, because on that
+    runtime the prompt IS the start: there is no session to measure a boundary against until
+    the driver has one. Nothing is lost by being after, because its anchor is `launch` rather
+    than a measured size. It needs no discard arm either - if `start` fails there is no
+    session and no boundary, and by the time the freeze runs the prompt has already been
+    delivered. It is deliberately the LAST statement in that path: the task is already
+    `running` by then, so a throw would reach `dispatch`'s catch, find a status that is no
+    longer `dispatching`, and return silently - which is why the seam may not throw.
+
+  The anchor is `launch` when turn one travelled with the process (pi's positional argument,
+  an embedded session's opening prompt) and `current` otherwise. `launch` means offset zero,
+  and it means it whether or not a transcript path could be located yet: the episode owns the
+  file from its first byte, and an embedded session's file does not exist at freeze time.
+  `null` offset is the different answer - no anchor could be established at all.
 - **Only a POSITIVE acceptance journals a turn.** `PendingTurnManager` appends at the two
   points that retire a claimed row - an accepted SDK turn and a proven `completePickup` -
   and nowhere else. A queued row is still editable, a recalled one was never delivered, a

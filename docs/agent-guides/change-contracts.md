@@ -121,12 +121,85 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   published bundle is rewritten or moved. Adding a kind means appending to `ARCHIVE_KINDS`
   and registering a planner in `src/server/archives/planners.ts`; a kind with no planner is
   readable and not writable, which is deliberate. See [Archives](../archives.md)
+- Scout prompt origins (`SCOUT_PROMPT_ORIGINS` in `src/server/scouts/prompt-context.ts`) -
+  written into `scout_prompt_turns.origin` and read back by exact value through
+  `readPersistedEnum`, so an origin this build cannot read decodes to `null`. That is the
+  forward-compatibility seam AND the safe direction: a turn whose author cannot be
+  established is excluded from a human prompt trail rather than admitted to one. Append,
+  never reorder - `human` is the only value whose text is retained at all, and even that is
+  trimmed and clipped to `SCOUT_PROMPT_LIMITS.entryBytes` rather than kept byte-for-byte
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
   editing one rewrites the graph every existing binding pinned to it. The literal node and
   edge tables in `test/builtin-workflows.test.ts` exist to fail when that happens.
 
 Search for the owning constant and its contract tests before extending a tuple.
+
+## Scout prompt context
+
+A scout archive outlives its task, session, worktree and transcript, so the two facts it
+needs about the conversation have to be recorded while they are still true. Both live in
+`src/server/scouts/prompt-context.ts` (the tables) and `prompt-journal.ts` (the decision),
+keyed `(task_id, episode_id)` - the same key `archiveOperationKey` uses, for the same
+reason: a re-dispatched task is new work and gets its own boundary.
+
+- **Both task-delivery seams freeze a boundary**, and a dispatcher-only one would leave every
+  ASSIGNED scout collecting whatever its session was doing beforehand. `dispatcher.ts` and
+  `tasks.ts` both call `freezeScoutPromptBoundary` after every preflight refusal has passed.
+  **When** they call it differs by runtime, and the difference is forced rather than
+  incidental:
+  - **Terminal dispatch and assignment freeze immediately BEFORE the prompt crosses into the
+    runtime**, because the anchor is the transcript's size right now and that number stops
+    being true the moment the prompt lands. Both then call `discardScoutPromptBoundary` if the
+    delivery is refused or throws, so a failed task never looks like an episode the agent saw.
+  - **Embedded (SDK) dispatch freezes immediately AFTER `supervisor.start`**, because on that
+    runtime the prompt IS the start: there is no session to measure a boundary against until
+    the driver has one. Nothing is lost by being after, because its anchor is `launch` rather
+    than a measured size. It needs no discard arm either - if `start` fails there is no
+    session and no boundary, and by the time the freeze runs the prompt has already been
+    delivered. It is deliberately the LAST statement in that path: the task is already
+    `running` by then, so a throw would reach `dispatch`'s catch, find a status that is no
+    longer `dispatching`, and return silently - which is why the seam may not throw.
+
+  The anchor is `launch` when turn one travelled with the process (pi's positional argument,
+  an embedded session's opening prompt) and `current` otherwise. `launch` means offset zero,
+  and it means it whether or not a transcript path could be located yet: the episode owns the
+  file from its first byte, and an embedded session's file does not exist at freeze time.
+  `null` offset is the different answer - no anchor could be established at all.
+- **Only a POSITIVE acceptance journals a turn.** `PendingTurnManager` appends at the two
+  points that retire a claimed row - an accepted SDK turn and a proven `completePickup` -
+  and nowhere else. A queued row is still editable, a recalled one was never delivered, a
+  released one went back to the outbox, and an uncertain one is a question for the operator.
+  `PendingTurn.id` is the delivery id, so a retried uncertain turn is one prompt.
+  A `/send` with `submit: false` is a composer draft and is not a delivery at all.
+  **No route journals a prompt**, which is a phase boundary rather than an oversight: the
+  immediate `/inject` arm is a real human delivery that records nothing yet, and a turn sent
+  that way is still collected from the harness transcript, since the journal is the fallback
+  for turns a transcript cannot show rather than the primary source. Whoever adds that seam
+  must require `submitVerified` and not `ok` - `journalScoutPrompt`'s own doc says why, and
+  the difference archives a prompt the agent may never have received.
+- **Non-human attribution rides on `recordInjection`, through `observeInjections`.** One
+  observer on the existing chokepoint, wired once in `src/server/index.ts` - not a call
+  beside each site. Every automated path already reports there because that is what makes
+  its turn read as automation in the live log, so a path that forgot would be visibly wrong
+  in the dashboard; a hand-placed journal call is invisible when missed, and what it misses
+  is an automated instruction published as the operator's words. A new non-human delivery
+  path therefore needs nothing here, provided it still calls `recordInjection`.
+- **Bounds are write-time and honest.** `SCOUT_PROMPT_LIMITS` caps retained human entries,
+  per-entry UTF-8 bytes (clipped through `clipUtf8Bytes`, never `slice`) and total rows per
+  episode. Reaching any of them evicts the OLDEST row and sets `truncated` on the context.
+  An automated turn is never refused for want of room - refusing one is how that turn starts
+  reading as a human's.
+- **Nothing exported from `prompt-journal.ts` throws.** Every seam rides on an operation
+  worth more than a row - a rename that has already repainted the card and still owes its
+  siblings a rename, a dispatch that has already started an agent, a delivery that already
+  reached the runtime - so a failed write is logged and swallowed there, once, rather than
+  guarded at each of the five call sites. The store beneath it (`prompt-context.ts`) is the
+  opposite and stays that way: it reports what happened, or a test could not tell a refused
+  write from a successful one. Reach the store through the seam, not directly.
+- **Cleanup is explicit, never a timer.** The rows survive daemon restart and session
+  eviction until a capture job has frozen the trail; "old" is what a scout waiting on a slow
+  reviewer looks like.
 
 ## Workflow evidence identity
 

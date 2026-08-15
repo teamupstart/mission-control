@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InjectResult } from "../src/server/actions.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-pending-turn-manager-"));
 process.env.MISSION_HOME = home;
@@ -20,6 +20,9 @@ const {
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { resetSession } = await import("../src/server/reset.ts");
+const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
+  "../src/server/scouts/prompt-context.ts"
+);
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -1445,6 +1448,150 @@ test("an interrupt drops what is still editable and leaves what has left or is i
   // fail one request.
   assert.equal(f.manager.dropQueued("sdk:no-such-session"), 0);
 
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+// ---------------------------------------------------------------------------
+// The scout prompt journal
+//
+// A scout archive preserves the human prompts of its work episode, and the only honest
+// definition of "delivered" it can use is this manager's: an accepted SDK turn or a proven
+// terminal pickup. Everything short of that is text somebody typed into a box, which is a
+// different thing from something the agent was told - and the gap between them is where a
+// recalled prompt would otherwise be published as part of the conversation.
+// ---------------------------------------------------------------------------
+
+/** Give a fixture's session a running scout task with a frozen prompt boundary. */
+function scoutEpisode(
+  registry: InstanceType<typeof Registry>,
+  sessionId: string,
+): { taskId: string; episodeId: string } {
+  const taskId = `task-${sessionId}`;
+  registry.upsertTask(
+    mkTask({ id: taskId, kind: "scout", status: "running", sessionId, title: "Scout something" }),
+  );
+  const episode = registry.workEpisodeForSession(sessionId);
+  assert.ok(episode, "precondition: the session has a work episode to own the prompts");
+  const frozen = openScoutPromptContext({
+    taskId,
+    episodeId: episode.episodeId,
+    sessionId,
+    sessionName: registry.getSession(sessionId)?.name ?? sessionId,
+    transcriptPath: null,
+    transcriptOffset: 0,
+  });
+  assert.ok(frozen, "precondition: the boundary was frozen at delivery");
+  return { taskId, episodeId: episode.episodeId };
+}
+
+test("an accepted SDK turn becomes a durable scout prompt", async () => {
+  const f = sdkFixture("journal-sdk", async () => "started");
+  const episode = scoutEpisode(f.registry, f.id);
+  f.manager.submit(f.id, "also check whether pi behaves the same way");
+  idle(f.registry, f.id);
+  await settles(() => scoutPromptTurns(episode.taskId, episode.episodeId).length === 1);
+
+  const turns = scoutPromptTurns(episode.taskId, episode.episodeId);
+  assert.equal(turns.length, 1, "the accepted turn, once");
+  assert.equal(turns[0]?.text, "also check whether pi behaves the same way");
+  assert.equal(turns[0]?.origin, "human");
+  f.manager.stop();
+  clearPendingTurns(f.key);
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+test("a queued turn is not a prompt until it is accepted, and a recalled one never is", async () => {
+  // The exact failure this ordering prevents: `submit` creates an EDITABLE outbox row, so
+  // journaling there would archive text the operator then thought better of.
+  const f = sdkFixture("journal-recall", async () => "started");
+  const episode = scoutEpisode(f.registry, f.id);
+  working(f.registry, f.id);
+  const queued = f.manager.submit(f.id, "ignore this, I typed it by mistake");
+  await tick();
+  assert.deepEqual(
+    scoutPromptTurns(episode.taskId, episode.episodeId),
+    [],
+    "a row that is still editable has not been delivered to anything",
+  );
+
+  const pending = queued.pendingTurn!;
+  assert.ok(f.manager.recall(f.id, pending.id, pending.revision), "the operator takes it back");
+  idle(f.registry, f.id);
+  await tick(20);
+  assert.deepEqual(
+    scoutPromptTurns(episode.taskId, episode.episodeId),
+    [],
+    "and it is archived as nothing, because the agent never saw it",
+  );
+  f.manager.stop();
+  clearPendingTurns(f.key);
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+test("a refused SDK delivery journals nothing and stays re-sendable", async () => {
+  // `sendWhenIdle` answering null is a clean refusal - the agent became busy first - so the
+  // row goes back to the outbox. Nothing crossed, so nothing is archived.
+  const f = sdkFixture("journal-refused", async () => null);
+  const episode = scoutEpisode(f.registry, f.id);
+  f.manager.submit(f.id, "a turn that never lands");
+  idle(f.registry, f.id);
+  await settles(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "queued");
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "queued");
+  assert.deepEqual(scoutPromptTurns(episode.taskId, episode.episodeId), []);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+test("an unresolved uncertain delivery is not archived as a prompt", async () => {
+  // Uncertain means the daemon cannot say whether the text crossed. Archiving it would
+  // assert something nobody knows, and the operator's retry or resolution is what settles it.
+  const f = sdkFixture("journal-uncertain", async () => {
+    throw new Error("transport died after the acceptance guard");
+  });
+  const episode = scoutEpisode(f.registry, f.id);
+  f.manager.submit(f.id, "a turn whose fate is unknown");
+  idle(f.registry, f.id);
+  await settles(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "uncertain");
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "uncertain");
+  assert.deepEqual(scoutPromptTurns(episode.taskId, episode.episodeId), []);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+test("a terminal turn is journaled on proven pickup, not on a successful paste", async () => {
+  // The terminal boundary is two facts, not one: the paste succeeded AND the session was
+  // observed picking it up. `completePickup` is where both are in hand, which is why it is
+  // the journal point rather than the injection returning ok.
+  const f = terminalFixture("journal-terminal", async () => ({
+    ok: true,
+    pasted: true,
+    submitVerified: true,
+  }));
+  const episode = scoutEpisode(f.registry, f.id);
+  f.manager.submit(f.id, "read the failing spec first");
+  await settles(() => scoutPromptTurns(episode.taskId, episode.episodeId).length === 1);
+  const turns = scoutPromptTurns(episode.taskId, episode.episodeId);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]?.text, "read the failing spec first");
+  assert.equal(turns[0]?.origin, "human");
+  f.manager.stop();
+  clearPendingTurns(f.key);
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+test("a session running no scout journals nothing at all", async () => {
+  const f = sdkFixture("journal-not-a-scout", async () => "started");
+  f.registry.upsertTask(
+    mkTask({ id: "task-ship", kind: "ship", status: "running", sessionId: f.id }),
+  );
+  const episode = f.registry.workEpisodeForSession(f.id);
+  f.manager.submit(f.id, "a perfectly ordinary follow-up");
+  idle(f.registry, f.id);
+  await tick(20);
+  assert.deepEqual(scoutPromptTurns("task-ship", episode?.episodeId ?? ""), []);
   f.manager.stop();
   clearPendingTurns(f.key);
 });

@@ -17,6 +17,12 @@ import type { TurnOrigin } from "@shared/types.ts";
  * watching; a restart forgets who typed what, and those turns fall back to reading as the
  * human's own - the same thing they read as before this existed. Persisting it would mean
  * a schema, a migration and an eviction policy for a label on a log line.
+ *
+ * That trade is right for a label and wrong for an ARCHIVE, which is what `observeInjections`
+ * is for. A scout's prompt trail outlives this process, so a turn that read as automation
+ * before a restart and as the human's own after it would be published as something the
+ * operator wrote. The observer is how a delivery reaches the durable, scout-scoped journal
+ * without this module learning what a scout is.
  */
 
 /** Fingerprint -> who typed it, per session. Hashes rather than the payloads themselves:
@@ -44,6 +50,32 @@ function fingerprint(text: string): string {
   return createHash("sha1").update(text.trim()).digest("base64");
 }
 
+/** Told about every recorded non-human delivery, after it is remembered here. */
+export type InjectionObserver = (sessionId: string, text: string, origin: TurnOrigin) => void;
+
+let observer: InjectionObserver | null = null;
+
+/**
+ * Watch every non-human delivery this module is told about. Pass null to stop.
+ *
+ * One observer on the existing chokepoint rather than a call beside each of the five
+ * `recordInjection` sites, and the difference is what happens to the SIXTH. Every
+ * non-human path that exists - the inject route, two workflow delivery points, the skills
+ * broadcast, the retro packet - already reports here because reporting here is what makes
+ * the turn read as automation in the live log. A path that forgot would be visibly wrong
+ * in the dashboard, so the set stays complete on its own; hand-placed journal calls would
+ * be invisible when missed, and the thing they would miss is an automated instruction
+ * archived as a human's words.
+ *
+ * Wired once by the daemon. It is deliberately not an injected dependency of this module's
+ * callers: `workflows/manager.ts` and `retro.ts` already take `recordInjection` itself as a
+ * dep, so threading a second one through them would let a caller wire the label without the
+ * journal - the exact pair that must not come apart.
+ */
+export function observeInjections(fn: InjectionObserver | null): void {
+  observer = fn;
+}
+
 /** Remember that `origin` - not the human - typed `text` into this session. */
 export function recordInjection(sessionId: string, text: string, origin: TurnOrigin): void {
   let byText = seen.get(sessionId);
@@ -66,6 +98,15 @@ export function recordInjection(sessionId: string, text: string, origin: TurnOri
     const oldest = byText.keys().next();
     if (oldest.done) break;
     byText.delete(oldest.value);
+  }
+  // After the live label, never instead of it. An observer that threw would otherwise be
+  // able to stop a delivery being attributed in the conversation the operator is watching,
+  // and a durable journal is not worth that: a scout with no prompt row publishes a
+  // truncated trail, while a session with no label misreads automation as a person.
+  try {
+    observer?.(sessionId, text, origin);
+  } catch {
+    /* a journal that cannot write must not break the delivery it was told about */
   }
 }
 

@@ -204,6 +204,44 @@ export interface TranscriptPage {
   atStart: boolean;
 }
 
+/**
+ * A contiguous run of turns read FORWARD from a byte anchor, and the range they came from.
+ *
+ * `TranscriptPage`'s mirror, and the two differ in which edge the caller supplies. A
+ * backward page is handed its `end` and discovers its `start`; a forward page is handed
+ * its `start` and discovers its `end`. Chaining either one walks a whole file with the
+ * same no-gap, no-overlap guarantee, because each page's discovered edge is the next
+ * call's anchor.
+ *
+ * The direction matters for what a walk can promise. Backward paging exists to show an
+ * operator history that scrolled off, so stopping early is a cosmetic loss. Forward paging
+ * exists to COLLECT - to reach every turn after a recorded boundary without reading the
+ * remainder of the file into memory - so a walk that silently stopped short would archive
+ * an incomplete record of what a session was told.
+ */
+export interface TranscriptForwardPage {
+  /** Turns in chronological order; empty when this page crossed no complete turn. */
+  messages: TranscriptMessage[];
+  /** Byte offset the page began at. Equals the requested anchor, clamped to the file. */
+  start: number;
+  /**
+   * Byte offset just past the last COMPLETE record this page read - the anchor for the
+   * next page forward.
+   *
+   * Always a line boundary, and never inside a record a writer is still appending: a
+   * partial trailing line is left for the next call, exactly as `appended` leaves it.
+   */
+  end: number;
+  /**
+   * True when no complete record remains after `end`, so the walk is finished.
+   *
+   * Not the same as `end === size`. A file whose final line has no newline yet has bytes
+   * past `end` that are not a turn, and reporting that as more to read would spin a
+   * collector against a record that may never be completed.
+   */
+  atEnd: boolean;
+}
+
 /** A live stream's opening history: turns, where to resume, and where to page back from. */
 export interface TranscriptInitialRead extends TranscriptStreamRead {
   /**
@@ -256,6 +294,23 @@ export interface TranscriptMessages {
    * Returns an empty page with `atStart` when `before` is already the top of the file.
    */
   before(path: string, before: number, wantTurns?: number): TranscriptPage;
+  /**
+   * The turns immediately AFTER a byte offset - `before` run the other way, and the only
+   * bounded read that can reach EVERY turn past an anchor.
+   *
+   * The other three forward reads each answer a different question and none of them
+   * answers this one. `window` keeps a head and a tail, so a long conversation's middle is
+   * elided by design. `since` keeps the NEWEST turns after the offset and drops a prefix
+   * to stay inside its budget, which is right for a prompt and wrong for a record. And
+   * `appended` reads to EOF in one allocation, which is exactly what a bounded walk must
+   * not do.
+   *
+   * Chaining it - each page's `end` becoming the next call's `after` - walks forward from
+   * a recorded boundary to the last complete turn without ever holding more than one page.
+   * Returns an empty page with `atEnd` when the anchor is already past the last complete
+   * record.
+   */
+  after(path: string, after: number, wantTurns?: number): TranscriptForwardPage;
   /** Whatever complete turns were appended since `pos`. Throws if unreadable. */
   appended(path: string, pos: number): TranscriptStreamRead;
   /**

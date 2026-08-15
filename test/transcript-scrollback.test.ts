@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { TranscriptMessage } from "../src/shared/types.ts";
 import { claudeTranscript, toMessage } from "../src/server/harness/claude/transcript.ts";
 import { codexTranscript, parseCodexMessages } from "../src/server/harness/codex/transcript.ts";
+import { piMessages, piToMessage } from "../src/server/harness/pi/transcript.ts";
+import type { TranscriptForwardPage } from "../src/server/harness/types.ts";
 
 // What is at stake: whether the operator can read a conversation they can see the agent
 // having.
@@ -99,8 +101,98 @@ function writeCodex(name: string, turns: number): { path: string; texts: string[
   return { path, texts };
 }
 
+/** A pi transcript of the same shape - the third harness on the shared JSONL reader. */
+function writePi(name: string, turns: number): { path: string; texts: string[] } {
+  const path = join(dir, name);
+  const lines: string[] = [];
+  const texts: string[] = [];
+  const filler = "x".repeat(TOOL_BYTES);
+  for (let i = 0; i < turns; i++) {
+    const ask = `ASK ${i}`;
+    const say = `SAY ${i}`;
+    texts.push(ask, say);
+    const timestamp = new Date(i * 1000).toISOString();
+    lines.push(
+      JSON.stringify({ type: "message", id: `u${i}`, timestamp, message: { role: "user", content: ask } }),
+    );
+    lines.push(
+      JSON.stringify({
+        type: "message",
+        id: `a${i}`,
+        timestamp,
+        message: { role: "assistant", content: [{ type: "text", text: say }] },
+      }),
+    );
+    lines.push(
+      JSON.stringify({
+        type: "message",
+        id: `t${i}`,
+        timestamp,
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_call", name: `tool-${i}`, arguments: { blob: filler } }],
+        },
+      }),
+    );
+  }
+  writeFileSync(path, `${lines.join("\n")}\n`);
+  return { path, texts };
+}
+
+/**
+ * A rollout whose tool calls come in RUNS, with bulk between them.
+ *
+ * `writeCodex` puts one command in each turn, so no page boundary can ever fall inside a
+ * run - which is exactly the case a forward page has to repair, because the whole-file
+ * parse folds consecutive commands into ONE turn and a split would emit two.
+ */
+function writeCodexRuns(
+  name: string,
+  turns: number,
+  toolsPerTurn: number,
+): { path: string; texts: string[] } {
+  const path = join(dir, name);
+  const lines: string[] = [];
+  const texts: string[] = [];
+  const filler = "x".repeat(TOOL_BYTES);
+  lines.push(
+    JSON.stringify({
+      type: "session_meta",
+      timestamp: new Date(0).toISOString(),
+      payload: { cwd: "/repo", session_id: "s1", timestamp: new Date(0).toISOString() },
+    }),
+  );
+  for (let i = 0; i < turns; i++) {
+    const ask = `ASK ${i}`;
+    const say = `SAY ${i}`;
+    texts.push(ask, say);
+    const timestamp = new Date(i * 1000).toISOString();
+    lines.push(JSON.stringify({ type: "event_msg", timestamp, payload: { type: "user_message", message: ask } }));
+    lines.push(JSON.stringify({ type: "event_msg", timestamp, payload: { type: "agent_message", message: say } }));
+    for (let t = 0; t < toolsPerTurn; t++) {
+      lines.push(
+        JSON.stringify({
+          type: "custom_tool_call",
+          timestamp,
+          payload: { call_id: `c${i}-${t}`, name: `tool-${i}-${t}`, arguments: JSON.stringify({ turn: i, step: t }) },
+        }),
+      );
+      lines.push(
+        JSON.stringify({
+          type: "response_item",
+          timestamp,
+          payload: { type: "custom_tool_call_output", call_id: `c${i}-${t}`, output: filler },
+        }),
+      );
+    }
+  }
+  writeFileSync(path, `${lines.join("\n")}\n`);
+  return { path, texts };
+}
+
 const claude = claudeTranscript.messages!;
 const codex = codexTranscript.messages!;
+const pi = piMessages;
 
 /** Only the turns that carry prose, so a boundary's synthetic tool-only row doesn't count. */
 const spoken = (messages: TranscriptMessage[]): string[] =>
@@ -129,6 +221,48 @@ function wholeCodex(path: string): TranscriptMessage[] {
     .filter(Boolean)
     .map((line) => JSON.parse(line));
   return parseCodexMessages(records);
+}
+
+function wholePi(path: string): TranscriptMessage[] {
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .flatMap((line) => {
+      if (!line) return [];
+      const message = piToMessage(JSON.parse(line));
+      return message ? [message] : [];
+    });
+}
+
+/**
+ * Walk a whole session forward by chaining `after` from a byte anchor.
+ *
+ * `walkBack`'s mirror, and it exists to answer a different question. Scroll-back is
+ * allowed to stop early - the reader simply sees less - so its walk is checked for
+ * adjacency. A forward walk is what archive collection runs, so what it has to prove is
+ * COMPLETENESS: chained pages must reconstruct the whole-file parse, or a prompt the
+ * agent was given is silently absent from the record of what it was given.
+ */
+function walkForward(
+  read: { after: (p: string, o: number, wantTurns?: number) => TranscriptForwardPage },
+  path: string,
+  from = 0,
+  wantTurns?: number,
+): { messages: TranscriptMessage[]; texts: string[]; pages: number } {
+  let messages: TranscriptMessage[] = [];
+  let anchor = from;
+  let pages = 0;
+  for (;;) {
+    const page = read.after(path, anchor, wantTurns);
+    assert.equal(page.start, anchor, "a page must begin exactly where the held history ends");
+    assert.ok(page.end >= anchor, "a page may never hand back an anchor behind the one it was given");
+    messages = [...messages, ...page.messages];
+    pages++;
+    if (page.atEnd) break;
+    assert.ok(page.end > anchor, "an unfinished page must move the anchor or the walk never ends");
+    anchor = page.end;
+    assert.ok(pages < 400, "walk did not terminate");
+  }
+  return { messages, texts: spoken(messages), pages };
 }
 
 /**
@@ -372,4 +506,177 @@ test("a page that parses to nothing still reaches back past its tool call to the
     walk.messages.map((m) => (m.text ? "prose" : "run")),
     ["prose", "prose", "run"],
   );
+});
+
+// ---------------------------------------------------------------------------
+// Forward paging (`after`)
+//
+// Scroll-back and archive collection want opposite guarantees out of the same
+// machinery. A reader who cannot page further back sees less history, which is a
+// disappointment; a collector that cannot page further forward writes a record of what an
+// agent was told with turns missing from it, and nothing downstream can tell that record
+// from a complete one. So the walks below assert reconstruction against a whole-file
+// parse rather than adjacency alone, and they do it on all three harnesses, because all
+// three reach this one reader.
+// ---------------------------------------------------------------------------
+
+test("paging forward from the top reaches every turn of a long Claude session", () => {
+  const { path, texts } = writeClaude("forward-long.jsonl", 300);
+  assert.ok(statSync(path).size > 8 * 1024 * 1024, "fixture must dwarf the byte windows");
+
+  const walk = walkForward(claude, path);
+  assert.ok(walk.pages > 1, "a session this long takes several pages to walk");
+  assert.deepEqual(walk.texts, texts, "the walk reconstructs the conversation exactly");
+  assert.deepEqual(complete(walk.messages), complete(wholeClaude(path)));
+  assert.equal(new Set(walk.texts).size, walk.texts.length, "no turn appears twice");
+});
+
+test("paging forward through a rollout keeps runs whole across the page seam", () => {
+  // The case `writeCodex` cannot produce: consecutive commands, with bulk between them, so
+  // a page boundary lands INSIDE a run. A whole-file parse folds that run into one turn.
+  // Without the trailing-edge repair the two halves arrive as two turns, which is the same
+  // class of bug an overlap would be - a windowed read disagreeing with the file.
+  //
+  // The small turn budget is what makes the seam exist at all, and it is the point of the
+  // case rather than a convenience: at the default budget `grow` widens until it holds 80
+  // turns, which on a fixture this size is the whole file in one page - a walk that never
+  // pages cannot demonstrate anything about a page boundary. Asserted below, so this stays
+  // a seam test if the constants move.
+  const { path, texts } = writeCodexRuns("forward-runs.jsonl", 60, 4);
+  const walk = walkForward(codex, path, 0, 4);
+  assert.ok(walk.pages > 4, "precondition: the budget must actually produce several seams");
+  assert.deepEqual(walk.texts, texts, "every turn, once, in order");
+  assert.deepEqual(
+    complete(walk.messages),
+    complete(wholeCodex(path)),
+    "a forward walk agrees with a whole-file parse, runs included",
+  );
+});
+
+test("paging forward reaches every turn of a long pi session", () => {
+  const { path, texts } = writePi("forward-pi.jsonl", 200);
+  const walk = walkForward(pi, path);
+  assert.ok(walk.pages > 1, "a session this long takes several pages to walk");
+  assert.deepEqual(walk.texts, texts, "every turn, once, in order");
+  assert.deepEqual(complete(walk.messages), complete(wholePi(path)));
+});
+
+test("a forward page anchored mid-file reaches exactly the turns after it", () => {
+  // The shape archive collection actually runs: the anchor is a byte offset recorded when
+  // a task was delivered, and what must come back is everything after it and nothing
+  // before it.
+  const { path, texts } = writeClaude("forward-anchor.jsonl", 40);
+  const first = claude.after(path, 0);
+  assert.ok(first.messages.length > 0, "precondition: the first page carries turns");
+  assert.equal(first.start, 0);
+
+  const rest = walkForward(claude, path, first.end);
+  assert.deepEqual(
+    [...spoken(first.messages), ...rest.texts],
+    texts,
+    "the anchored remainder plus the first page is the whole conversation, with no seam",
+  );
+  for (const message of rest.messages) {
+    assert.equal(
+      first.messages.some((m) => m.id === message.id),
+      false,
+      `turn ${message.id} was served by both the first page and the walk after it`,
+    );
+  }
+});
+
+test("forward and backward walks of the same file agree", () => {
+  // The strongest statement of the seam property available: two independent chained reads
+  // over one file, from opposite ends, landing on the same conversation.
+  const { path } = writeClaude("forward-both.jsonl", 120);
+  const forward = walkForward(claude, path);
+  const backward = walkBack(claude, path);
+  assert.deepEqual(complete(forward.messages), complete(backward.messages));
+});
+
+test("a forward page over pure tool output is empty but still advances", () => {
+  // The forward twin of the stranded-history case. A stretch of records that parse to no
+  // turns must not read as the end of the conversation, or a collector stops at the first
+  // long command and calls the rest of the session absent.
+  const path = join(dir, "forward-oversized.jsonl");
+  const early = JSON.stringify({
+    type: "user",
+    uuid: "early",
+    timestamp: new Date(0).toISOString(),
+    message: { role: "user", content: "EARLY" },
+  });
+  const oversized = JSON.stringify({
+    type: "user",
+    uuid: "oversized",
+    timestamp: new Date(1000).toISOString(),
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "huge", content: "x".repeat(17 * 1024 * 1024) }],
+    },
+  });
+  const recent = JSON.stringify({
+    type: "assistant",
+    uuid: "recent",
+    timestamp: new Date(2000).toISOString(),
+    message: { role: "assistant", content: [{ type: "text", text: "RECENT" }] },
+  });
+  writeFileSync(path, `${early}\n${oversized}\n${recent}\n`);
+
+  const walk = walkForward(claude, path);
+  assert.deepEqual(walk.texts, ["EARLY", "RECENT"], "the record fatter than the ceiling is stepped over");
+  assert.ok(walk.pages > 1, "and it took more than one page to step over it");
+});
+
+test("a trailing partial record is not a turn, and does not stall the walk", () => {
+  // A writer caught mid-append. The bytes after the last newline are not a record yet, so
+  // they must neither be parsed nor reported as more to read - a collector that trusted
+  // `end === size` here would spin on a line that may never be completed.
+  const path = join(dir, "forward-partial.jsonl");
+  const done = JSON.stringify({
+    type: "user",
+    uuid: "done",
+    timestamp: new Date(0).toISOString(),
+    message: { role: "user", content: "DONE" },
+  });
+  writeFileSync(path, `${done}\n{"type":"user","uuid":"half"`);
+
+  const page = claude.after(path, 0);
+  assert.deepEqual(spoken(page.messages), ["DONE"], "only the complete record is a turn");
+  assert.equal(page.atEnd, true, "the walk ends rather than offering the half-written line");
+  assert.ok(page.end < statSync(path).size, "and the anchor stops at the last complete record");
+
+  // The same anchor once the writer finishes: the partial line becomes a turn, and the
+  // page that ended the walk did not consume the bytes it sat on.
+  writeFileSync(path, `${done}\n${JSON.stringify({
+    type: "user",
+    uuid: "half",
+    timestamp: new Date(1000).toISOString(),
+    message: { role: "user", content: "LATER" },
+  })}\n`);
+  const resumed = claude.after(path, page.end);
+  assert.deepEqual(spoken(resumed.messages), ["LATER"]);
+  assert.equal(resumed.atEnd, true);
+});
+
+test("an anchor at or past EOF ends the walk instead of throwing", () => {
+  const { path } = writeClaude("forward-eof.jsonl", 5);
+  const size = statSync(path).size;
+  assert.deepEqual(claude.after(path, size), { messages: [], start: size, end: size, atEnd: true });
+  // Past EOF is a rotated or cleared file, and it is clamped rather than thrown, exactly
+  // as `before` clamps an anchor above the file.
+  const rotated = claude.after(path, size + 10_000);
+  assert.deepEqual(rotated, { messages: [], start: size, end: size, atEnd: true });
+});
+
+test("a missing file answers an empty terminal page instead of throwing", () => {
+  const page = claude.after(join(dir, "forward-nope.jsonl"), 4096);
+  assert.deepEqual(page, { messages: [], start: 4096, end: 4096, atEnd: true });
+});
+
+test("a short session comes back in one page that says the walk is over", () => {
+  const { path, texts } = writePi("forward-short.jsonl", 3);
+  const page = pi.after(path, 0);
+  assert.deepEqual(spoken(page.messages), texts);
+  assert.equal(page.start, 0);
+  assert.equal(page.atEnd, true, "so a collector stops after one read");
 });

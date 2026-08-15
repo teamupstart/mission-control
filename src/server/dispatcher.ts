@@ -46,6 +46,10 @@ import { isPlanTask } from "./plans/prompt.ts";
 import { planSkillsForAgent } from "./plans/skills.ts";
 import { withTaskKindContract } from "./task-contract.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
+import {
+  discardScoutPromptBoundary,
+  freezeScoutPromptBoundary,
+} from "./scouts/prompt-journal.ts";
 import { withRepoMemoryPointer } from "./memory.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
@@ -479,11 +483,30 @@ export class Dispatcher {
       // race the process exiting or a launch-time dialog to read it off. Re-read the
       // session at the send boundary so a lingered exited snapshot cannot lend its pane.
       const deliverySession = this.requireLiveSession(session.id);
+      // Freeze the scout's title and transcript boundary here, after every preflight has
+      // passed and before the prompt crosses into the runtime - the last instant at which
+      // "what the agent had already been told" is still measurable. Pi anchors at `launch`
+      // because its turn one travelled in the argv below, so the whole file is this
+      // episode's; everything else anchors at the transcript's current size.
+      const boundary = freezeScoutPromptBoundary(
+        this.registry,
+        provisioned,
+        deliverySession.id,
+        piLaunch.sessionId ? "launch" : "current",
+      );
       // Pi received turn one through its positional launch message. That native path calls
       // `session.prompt()` only after the TUI is initialized, so injecting it here would run
       // the task twice. Other terminal harnesses still need the pane delivery below.
       if (!piLaunch.sessionId) {
-        await this.deliverIntent(deliverySession.id, intent, wt.path, instrumented);
+        try {
+          await this.deliverIntent(deliverySession.id, intent, wt.path, instrumented);
+        } catch (err) {
+          // A boundary with no delivery behind it claims the agent saw a task it never
+          // received, and a later capture would anchor into a conversation that never
+          // started. Discard it before the failure propagates.
+          discardScoutPromptBoundary(boundary);
+          throw err;
+        }
       }
 
       if (await this.abortIfSettled(taskId)) return;
@@ -636,6 +659,17 @@ export class Dispatcher {
     // exists and this binds it; if it has not, `applyDriverBinding` binds it when it does,
     // because the task now records this session id. Neither can be relied on alone.
     this.registry.bindTaskToWorkEpisode(taskId, session.id);
+    // AFTER the start rather than before it, because on this runtime the prompt IS the
+    // start: there is no session to measure a boundary against until the driver has one.
+    // The anchor is `launch` for the same reason - turn one travelled with the process, so
+    // every byte the transcript will ever hold belongs to this episode.
+    //
+    // Being last is what makes it safe to be unguarded here. The task is already `running`
+    // by this line, so a throw would reach `dispatch`'s catch, find a status that is no
+    // longer `dispatching`, and take the branch that assumes somebody else settled the task
+    // - returning with no log and no trace of what went wrong. It cannot throw: the seam
+    // logs and swallows, which turns exactly that invisible loss into a visible one.
+    freezeScoutPromptBoundary(this.registry, task, session.id, "launch");
   }
 
   /**

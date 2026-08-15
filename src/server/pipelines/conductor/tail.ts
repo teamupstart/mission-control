@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -53,24 +54,56 @@ export interface TailReading {
   restarted: boolean;
 }
 
+/** How far in to look for the end of the ledger's first line. One event line is far less. */
+const IDENTITY_HEAD_BYTES = 512;
+
 /**
- * A signal that changes whenever this path becomes a different file.
+ * A signal that changes whenever this path becomes a different ledger.
  *
- * `dev` and `ino` are the POSIX file identity, and `birthtime` discriminates the case they
- * cannot: a filesystem that reuses an inode number for the next file created. Together they
- * survive an append (which changes only size and mtime) and change on a delete-and-recreate,
- * which is exactly what cutting a worktree again produces.
+ * The load-bearing part is the CONTENT of the head, not the inode, and that is a correction
+ * rather than belt-and-braces: `dev:ino` alone is wrong on Linux, where deleting a file and
+ * creating another immediately reuses the inode number - so a re-cut worktree produced an
+ * identical identity, and this whole check silently did nothing on the platform CI runs on.
+ * Caught by CI failing where macOS passed.
  *
- * A FALSE positive here is cheap and safe - the pass re-reads the ledger from zero and the
- * running total is rebuilt from the whole file, which is the right number arrived at the
- * long way. A false negative is the expensive one, so this is deliberately biased toward
- * noticing. Birthtime is included even though some filesystems report it as 0; a constant
- * 0 simply reduces this to `dev:ino`, which is still correct.
+ * The head works because the ledger is APPEND-ONLY: its first bytes are fixed for the life
+ * of the file, so an append leaves this identical while a replacement written by a different
+ * run changes it (conductor's first record carries a step name and a writer-stamped `ts`).
+ * The stat fields stay in front of it as extra discriminators, free from the stat that has
+ * already happened, and harmless where they are unstable.
+ *
+ * A FALSE positive is cheap and safe - the pass re-reads from zero and rebuilds the running
+ * total from the whole file, which is the right number arrived at the long way. A false
+ * negative is the expensive one, so this is deliberately biased toward noticing.
  */
-function ledgerIdentity(stat: { dev: number; ino: number; birthtimeMs: number }): string {
+function ledgerIdentity(
+  fd: number,
+  stat: { dev: number; ino: number; birthtimeMs: number; size: number },
+): string {
   const birth =
     Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0 ? Math.round(stat.birthtimeMs) : 0;
-  return `${stat.dev}:${stat.ino}:${birth}`;
+  const want = Math.min(stat.size, IDENTITY_HEAD_BYTES);
+  let head = "";
+  if (want > 0) {
+    const buffer = Buffer.allocUnsafe(want);
+    try {
+      const read = readSync(fd, buffer, 0, want, 0);
+      const chunk = buffer.subarray(0, read);
+      // The first LINE, not the first N bytes. A ledger shorter than the window would
+      // otherwise have its whole content as its "head", so every append would change the
+      // identity and every tick would re-read the file from zero - correct totals reached by
+      // doing all the work, for ever. The first line of an append-only file never moves.
+      // A first line still being written has no terminator yet; hashing what is there is
+      // fine, because the only pass that can see it is one whose offset is still ~0.
+      const newline = chunk.indexOf(0x0a);
+      const line = newline >= 0 ? chunk.subarray(0, newline + 1) : chunk;
+      head = createHash("sha1").update(line).digest("hex").slice(0, 16);
+    } catch {
+      // An unreadable head degrades to the stat fields alone rather than failing the pass.
+      head = "";
+    }
+  }
+  return `${stat.dev}:${stat.ino}:${birth}:${head}`;
 }
 
 /**
@@ -124,31 +157,36 @@ export function tailConductorEvents(
   const start = Number.isInteger(from) && from >= 0 ? from : 0;
 
   let size: number;
-  let identity: string;
+  let stat: ReturnType<typeof statSync>;
   try {
-    const stat = statSync(path);
+    stat = statSync(path);
     if (!stat.isFile()) return { records: [], offset: start, identity: "", restarted: false };
     size = stat.size;
-    identity = ledgerIdentity(stat);
   } catch {
     return { records: [], offset: start, identity: "", restarted: false };
   }
 
-  // Two independent signals for one condition - see the header. A different file at the same
-  // path is a replacement whatever its length, which is the case a size comparison alone
-  // cannot see; a file shorter than where we stopped is one rewritten in place, which is the
-  // case an identity comparison alone cannot see.
-  const replaced = knownIdentity !== null && knownIdentity !== "" && knownIdentity !== identity;
-  const restarted = replaced || size < start;
-  const begin = restarted ? 0 : start;
-  if (size <= begin) return { records: [], offset: begin, identity, restarted };
-
-  const want = Math.min(size - begin, MAX_TAIL_BYTES);
-  const buffer = Buffer.allocUnsafe(want);
-  let read = 0;
+  // One descriptor for both reads - the head that anchors identity, and the chunk itself -
+  // because the identity has to be known before `begin` can be decided.
   let fd: number | null = null;
+  let identity = "";
+  let read = 0;
+  let buffer: Buffer = Buffer.alloc(0);
+  let restarted = false;
+  let begin = start;
   try {
     fd = openSync(path, "r");
+    identity = ledgerIdentity(fd, stat);
+    // Two independent signals for one condition - see `ledgerIdentity`. A different ledger
+    // at the same path is a replacement whatever its length, which a size comparison cannot
+    // see; a file shorter than where we stopped is one rewritten in place, which an identity
+    // comparison cannot see.
+    const replaced = knownIdentity !== null && knownIdentity !== "" && knownIdentity !== identity;
+    restarted = replaced || size < start;
+    begin = restarted ? 0 : start;
+    if (size <= begin) return { records: [], offset: begin, identity, restarted };
+    const want = Math.min(size - begin, MAX_TAIL_BYTES);
+    buffer = Buffer.allocUnsafe(want);
     read = readSync(fd, buffer, 0, want, begin);
   } catch {
     return { records: [], offset: begin, identity, restarted };

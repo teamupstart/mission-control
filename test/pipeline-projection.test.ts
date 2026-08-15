@@ -1,6 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
@@ -305,6 +313,7 @@ test("a replacement ledger of the SAME length is still a replacement", async () 
   assert.equal(registry.listPipelineRuns()[0]?.costTokens, 700);
   const ledger = join(worktree, ".pipeline", "events.jsonl");
   const before = statSync(ledger);
+  const beforeBytes = readFileSync(ledger, "utf8");
 
   // Delete and recreate with a body of exactly the same length: a different file, same size.
   // A DIFFERENT figure of the same byte width, so the three outcomes are distinguishable:
@@ -316,8 +325,17 @@ test("a replacement ledger of the SAME length is still a replacement", async () 
     `${JSON.stringify({ type: "step_completed", step: "bbbb", tokenUsage: { input: 701 } })}\n`,
   );
   const after = statSync(ledger);
+  // The two things this fixture must actually guarantee, both of which the test controls:
+  // the same byte length (so it cannot pass on the size check) and different content (so it
+  // is a real replacement). Deliberately NOT an assertion about the inode - Linux reuses the
+  // inode number when a file is deleted and immediately recreated, which is how CI caught
+  // that `dev:ino` was the wrong signal in the first place.
   assert.equal(after.size, before.size, "the fixture must be the same length, or it proves nothing");
-  assert.notEqual(after.ino, before.ino, "and must genuinely be a different file");
+  assert.notEqual(
+    readFileSync(ledger, "utf8"),
+    beforeBytes,
+    "and must genuinely be a different ledger",
+  );
 
   await refreshPipelineRepo(registry, "ai-conductor", root);
   assert.equal(

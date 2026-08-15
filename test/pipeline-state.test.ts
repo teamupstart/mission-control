@@ -463,6 +463,43 @@ test("a missing ledger is an empty pass at the offset it was handed", () => {
   assert.equal(reading.offset, 128);
 });
 
+test("a replacement is detected even when the filesystem hands back the same inode", () => {
+  // The case CI caught and macOS could not: Linux reuses an inode number when a file is
+  // deleted and another is created immediately, so `dev:ino` reported the replacement as the
+  // same file and the whole check silently did nothing there. The identity is anchored in
+  // the ledger's HEAD instead, which an append never changes and a different run's ledger
+  // always does.
+  //
+  // Simulated rather than waited for, so this holds on any filesystem: the identity is asked
+  // for the SAME file at the same size with different content, which is exactly what an
+  // inode-reusing recreate looks like to `stat`.
+  const root = repo("tail-identity");
+  const worktree = seedConductorRun(root, "feat", {});
+  const path = join(worktree, ".pipeline", "events.jsonl");
+  const line = (step: string, tokens: number) =>
+    `${JSON.stringify({ type: "step_completed", step, tokenUsage: { input: tokens } })}\n`;
+
+  writeFileSync(path, line("aaaa", 700));
+  const first = tailConductorEvents(worktree, 0, null);
+  assert.equal(first.records.length, 1);
+  assert.ok(first.identity.length > 0, "a readable ledger always has an identity");
+
+  // An APPEND must not look like a replacement, or every tick would re-read the whole file.
+  appendFileSync(path, line("bbbb", 1));
+  const appended = tailConductorEvents(worktree, first.offset, first.identity);
+  assert.equal(appended.restarted, false, "an append is not a replacement");
+  assert.equal(appended.identity, first.identity, "the head is unchanged, so the identity is");
+  assert.equal(appended.records.length, 1);
+
+  // A different ledger of the same length at the same path IS one, whatever the inode says.
+  writeFileSync(path, line("cccc", 701));
+  const replaced = tailConductorEvents(worktree, appended.offset, appended.identity);
+  assert.equal(replaced.restarted, true, "a different head is a different ledger");
+  assert.notEqual(replaced.identity, first.identity);
+  assert.equal(replaced.records.length, 1, "and it is read from the start");
+  assert.equal(replaced.records[0]?.body.step, "cccc");
+});
+
 test("token totals sum every numeric leaf, and stay null when nothing reported any", () => {
   // Summed rather than named field by field, because the engine's usage shape varies by
   // provider - a reader that named `input`/`output` would silently under-count a third one.

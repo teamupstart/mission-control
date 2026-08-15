@@ -80,6 +80,11 @@ or "waiting for a pushed head" for the Inspector findings that clear only when t
 poller sees a new head **on the remote** - and it deep-links to the run rather than to
 the session, because the control that clears it lives on the Runs page.
 
+Clicking that notification lands here, on the run that stopped and the control that
+restarts it, rather than on the session:
+
+![The run a stuck parked-run notification opens, showing the parked round and its controls](images/line-review-parked-toast-run.png)
+
 Runs that will never resume themselves do not wait for that clock at all. A run on a
 `manual` version or a Preview binding is counted as **needing you** on the Line's Review
 strip, in the Review drawer and in the palette from the moment it parks, because nothing

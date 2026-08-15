@@ -67,6 +67,21 @@ async function shoot(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/line-review-parked-run/${name}.png`);
 }
 
+/**
+ * The same capture, unclipped.
+ *
+ * The alert case ends on the Runs page rather than on the Line, and there is no strip to
+ * measure there - the subject is the whole screen the toast delivered a person to.
+ */
+async function shootPage(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/line-review-parked-run/${name}.png`);
+}
+
 async function api<T>(
   daemon: DaemonHandle,
   path: string,
@@ -317,4 +332,104 @@ test("the palette hoists a parked run into what is waiting on you", async ({
   const parked = palette.getByRole("option", { name: /Palette parked/ });
   await expect(parked).toBeVisible();
   await expect(parked).toContainText("Waiting for the session");
+});
+
+/**
+ * The retimed alert, driven all the way through the browser.
+ *
+ * This is the one case that can see defect 3's actual fix. The unit tests prove
+ * `detectAlerts` emits nothing on entry to `waiting_for_session` and emits a `stuck` alert
+ * when the stall arrives, but they cannot see whether the daemon ever COMPUTES that stall for
+ * a real parked run, whether the browser's separate `/api/away/stalls` poll carries it back,
+ * or whether the toast it raises reaches the run a person has to act on. Those are three
+ * different processes and a shared-module test sees none of them.
+ *
+ * The desktop notification is OS chrome that no browser screenshot can capture, so the
+ * assertion follows it to the place a person actually ends up: `notify()` wires the toast's
+ * `onclick` to the run's own hash route, and clicking it must land on the parked run.
+ */
+test("a parked run that goes quiet raises a stuck toast that opens the run", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The stall is elapsed silence measured by the daemon, and `stallUnfinishedMinutes` floors
+  // at 1 - so this case genuinely waits out a minute of quiet. It is the only way to prove
+  // the clock, and the reason this is one case rather than a pattern repeated per surface.
+  test.setTimeout(240_000);
+
+  // `canNotify()` needs a granted permission and `alerts.notifications` is shipped OFF, so
+  // both halves are arranged explicitly rather than assumed. The stub records what the app
+  // constructed and keeps the instance, because the deep link lives on its `onclick`.
+  await dashboard.addInitScript(() => {
+    const raised: Array<{ title: string; body: string; tag: string }> = [];
+    class FakeNotification {
+      onclick: (() => void) | null = null;
+      static permission = "granted";
+      static requestPermission = async (): Promise<string> => "granted";
+      constructor(title: string, options?: { body?: string; tag?: string }) {
+        raised.push({ title, body: options?.body ?? "", tag: options?.tag ?? "" });
+        (window as unknown as { __lastToast?: FakeNotification }).__lastToast = this;
+      }
+      // `notify()` dismisses the toast at the end of its own click handler. A stub without
+      // this throws from inside the handler, which reads in the failure as a routing bug
+      // rather than as a missing method on the fake.
+      close(): void {}
+    }
+    (window as unknown as { Notification: unknown }).Notification = FakeNotification;
+    (window as unknown as { __toasts: typeof raised }).__toasts = raised;
+  });
+  await api(
+    daemon,
+    "/api/ui/config",
+    { alerts: { notifications: true, sound: false } },
+    "PUT",
+  );
+  // One minute of silence is stuck, and detection is on. `PUT /api/away` derives `awaySince`
+  // itself, so this only has to say what the thresholds are.
+  await api(daemon, "/api/away", { detectStalls: true, stallUnfinishedMinutes: 1 }, "PUT");
+  await dashboard.reload();
+  await expect(dashboard.getByRole("button", { name: "Dispatch" })).toBeVisible();
+
+  const seeded = await seedParkedRun(dashboard, daemon, {
+    name: "Quiet review",
+    resumptionPolicy: "manual",
+    deliveryMode: "preview",
+  });
+
+  // The daemon's own answer first, so a failure here separates "the rule never fired" from
+  // "the browser never heard about it".
+  await expect.poll(async () => {
+    const stalls = await api<Array<{ kind: string; workflowRunId?: string; reason: string }>>(
+      daemon,
+      "/api/away/stalls",
+    );
+    return stalls.find((s) => s.kind === "workflow-parked")?.workflowRunId ?? "";
+  }, { timeout: 150_000, intervals: [2_000] }).toBe(seeded.runId);
+
+  // Then the browser's, which polls that route on its own 5s cadence.
+  await expect.poll(
+    async () => await dashboard.evaluate(() =>
+      (window as unknown as { __toasts: Array<{ title: string; body: string }> }).__toasts),
+    { timeout: 60_000 },
+  ).toContainEqual(expect.objectContaining({
+    // The copy a person reads: it names the run and the step that never happened, rather
+    // than reporting that a session is quiet and leaving them to work out why.
+    body: expect.stringContaining("Quiet review repair round 1 never reopened"),
+  }));
+  const toast = (await dashboard.evaluate(() =>
+    (window as unknown as { __toasts: Array<{ title: string; tag: string }> }).__toasts))
+    .find((t) => t.tag.startsWith("stuck:"));
+  expect(toast?.title).toMatch(/looks stuck$/);
+  // Keyed by (session, kind) so a stall that persists across polls raises one toast, not one
+  // per 5s tick for as long as it stays parked.
+  expect(toast?.tag).toMatch(/^stuck:.*:workflow-parked$/);
+
+  // Following it is the whole point: the control that clears a parked round lives on the run.
+  await dashboard.evaluate(() =>
+    (window as unknown as { __lastToast?: { onclick?: (() => void) | null } })
+      .__lastToast?.onclick?.());
+  await expect.poll(async () => new URL(dashboard.url()).hash, { timeout: 20_000 })
+    .toContain(`#/runs/${seeded.runId}`);
+  await expect(dashboard.getByRole("heading", { name: /Quiet review/ }).first()).toBeVisible();
+  await shootPage(dashboard, "toast-opens-the-run");
 });

@@ -5,9 +5,10 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session } from "../src/shared/types.ts";
-import { isDragSelection, SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
+import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
 import { PrTileFlag } from "../src/web/components/session-bits.tsx";
 import { Tooltip } from "../src/web/components/Tooltip.tsx";
+import { isDragSelection } from "../src/web/lib/pointer.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 /**

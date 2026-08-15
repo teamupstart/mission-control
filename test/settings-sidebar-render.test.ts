@@ -106,6 +106,7 @@ const INSPECTOR_ONLY = /Run the Inspector/; // the inspector master toggle label
 const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
 const MODELS_ONLY = /Background jobs/; // the LLM panel's per-job group label
+const CONDUCTOR_ONLY = /never starts or stops a pipeline/; // the Conductor panel's read-only claim
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -335,6 +336,33 @@ test("Task sources is a category of its own: its panel shows, the others don't",
   assert.doesNotMatch(html, KEYBOARD_ONLY);
   assert.doesNotMatch(html, HARNESSES_ONLY);
   assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⇊<\/span>Task sources/);
+});
+
+// Conductor is the category that lets Mission Control READ another program's state files.
+// Reachability matters for a version of the Inspector's reason turned inside out: a panel
+// that silently fails to render is one whose repository switches nobody can see or turn off,
+// while the daemon goes on reading whatever was last consented to. It is the only consent in
+// the app whose subject is somebody else's software.
+test("Conductor is a category of its own: its panel shows, the others don't", () => {
+  const html = render("conductor");
+  assert.match(html, CONDUCTOR_ONLY);
+  assert.doesNotMatch(html, TASK_SOURCES_ONLY);
+  assert.doesNotMatch(html, MODELS_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⇶<\/span>Conductor/);
+});
+
+// A static render runs no effects, so this is the pre-poll state - the state a first-run
+// user sees. It must not draw an empty repository list, which asserts that the engine
+// manages nothing on a machine where it may manage six.
+test("with no answer from the daemon, the Conductor panel says so rather than showing an empty list", () => {
+  const html = render("conductor");
+  assert.match(html, /conductor-unknown/);
+  assert.match(html, /is unknown/);
+  assert.doesNotMatch(
+    html,
+    /No repositories registered with the engine/,
+    "an unanswered panel must not assert an empty list",
+  );
 });
 
 // Models is the category that decides which provider does the app's own offline work and on

@@ -335,6 +335,15 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
+    id: "conductor-repos",
+    label: "Conductor repositories",
+    description: "Which repositories an external SDLC engine's pipelines are observed in.",
+    category: "conductor",
+    anchor: "conductor/repos",
+    keywords: ["ai-conductor", "pipeline", "sdlc", "engine", "repository", "consent", "observe"],
+    kind: "jump",
+  },
+  {
     id: "llm-jobs",
     label: "Background job models",
     description: "The provider and models behind the app's own titling, goals, and digests.",

@@ -16,6 +16,7 @@ import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
 import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
+import type { PipelineProviderId, PipelineRun } from "./pipeline.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
@@ -622,6 +623,27 @@ export interface Session {
    * offer rather than making Retro permanent chrome.
    */
   retro?: RetroSummary;
+  /**
+   * The pipeline run this session is doing the work of, or null - which is every session
+   * on a fleet with no pipeline provider enabled, and so the overwhelmingly common case.
+   *
+   * Denormalized onto the session, like `note` and `inspector`, rather than looked up per
+   * card - and for a reason particular to this one: the correlation is a fact about the
+   * PROCESS. An engine-driven agent is spawned into the provider's own worktree, so its
+   * cwd is what identifies it, and the cwd is a thing only the discovery sweep holds.
+   *
+   * It carries the three coordinates the run is keyed by plus the step that was running
+   * when the session was last observed, which is everything a badge and a deep link need
+   * and nothing more: a whole `PipelineRun` on every session frame would ship the run's
+   * 22 step states once per correlated card per sweep, to say one word on a chip.
+   *
+   * Null-by-default is load-bearing rather than incidental. An uncorrelated session must
+   * behave EXACTLY as it does today, so every consumer of this field fails open. Phase 1
+   * defines the contract and stamps nothing; the correlation pass that fills it in - and
+   * the composer suppression that hangs off it, because an engine-driven agent runs in
+   * `--print` mode and reads no input at all - is phase 3's.
+   */
+  pipeline: { provider: PipelineProviderId; slug: string; step: string | null } | null;
   /**
    * The option dialog this session's pane is showing right now - a permission prompt, an
    * `AskUserQuestion` clarification menu, the folder-trust check - or null when it isn't
@@ -2407,6 +2429,16 @@ export type ServerEvent =
        */
       schedules: MissionSchedule[];
       /**
+       * Every pipeline run the daemon is projecting, for the repositories an operator has
+       * consented to. EMPTY on every fleet with no pipeline provider enabled, which is the
+       * shipped state - so this collection costs an ordinary installation one `[]`.
+       *
+       * Bounded by consent rather than by history: a repository holds one run per feature
+       * currently in its provider's worktrees, and a run that leaves those worktrees leaves
+       * the collection through `pipeline_remove`. Nothing accumulates here.
+       */
+      pipelineRuns: PipelineRun[];
+      /**
        * Fleet cost estimate at connect time. Carried in the snapshot rather than waited for,
        * or the topbar strip would sit blank until the next export happened to change
        * something - up to a whole export interval of a dashboard that looks broken.
@@ -2468,6 +2500,28 @@ export type ServerEvent =
    */
   | { type: "schedule_upsert"; schedule: MissionSchedule }
   | { type: "schedule_remove"; id: string }
+  /**
+   * A pipeline run's projection moved - a step changed state, a gate answered, the engine
+   * halted, or the run appeared for the first time. Carries the WHOLE run, like
+   * `schedule_upsert` and unlike the two content-free invalidation frames: the projection
+   * is small, bounded, and read as one picture of one feature, so a patch would let a
+   * browser draw a strip in which four steps came from one instant and two from another.
+   *
+   * Emitted only when a field a human can see actually changed. The watch loop re-reads
+   * the provider's files on a cadence and would otherwise emit a frame per repository per
+   * tick for a fleet where nothing is happening.
+   */
+  | { type: "pipeline_upsert"; run: PipelineRun }
+  /**
+   * A run left the projection: its worktree is gone, or its repository's consent was
+   * withdrawn. Keyed rather than carrying the run, because there is nothing left to carry.
+   */
+  | {
+      type: "pipeline_remove";
+      provider: PipelineProviderId;
+      repoRoot: string;
+      slug: string;
+    }
   /**
    * Fleet-wide API-equivalent estimate and subscription rate limits. A top-level collection,
    * not a per-session field: the rate limits are account-global, so hanging them off each

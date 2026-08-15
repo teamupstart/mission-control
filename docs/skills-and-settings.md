@@ -207,7 +207,7 @@ these stays in this browser, and which of them acts publicly under your account.
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout + message formatting), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
-| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Models** |
+| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor**, **Models** |
 | **Leaves the machine** | Acts on GitHub | **Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
@@ -221,6 +221,16 @@ requests. And **Task sources is master-detail** - the directory of configured so
 the one you are editing, instead of a drill-in that hid the other three while you repaired
 the one that failed. Adding a source is an inline form above that list; it still resolves the
 repo before the source exists, and the source still starts switched off.
+
+**Conductor** is the newest, and it is the one category whose subject is somebody else's
+software. It is the consent surface for observing an external SDLC engine - see
+[Pipelines](pipelines.md) - and it is built out of three cards because three different things
+can be false: the engine may not be installed, the master switch may be off, and a repository
+may not be switched on. An operator who sees no pipelines has to be able to tell which,
+without opening anything, so each card carries its own sentence rather than sharing one
+"not configured". Detection is automatic; consent is not, and it is per repository. Nothing
+is read until a switch is on, and turning the master switch off stops every repository at
+once *without forgetting which ones were chosen*.
 
 **Workflows** joined the rail later, from a floating drawer on the page the run list used to
 share with the builder. It carries

@@ -216,6 +216,31 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["github issues", "sweep", "backlog", "import", "upstream"],
   },
   {
+    id: "conductor",
+    label: "Conductor",
+    // Three arrows: a fixed sequence being walked. Deliberately NOT the app's own workflow
+    // baton (`⌁`, which the ladder, the peek tile and the Library all wear) - a pipeline is
+    // a SECOND engine's run, and borrowing that glyph would say the one thing this whole
+    // integration is careful not to: that these are Mission Control workflows.
+    icon: "⇶",
+    blurb: "Watch an external SDLC engine's pipelines, per repository",
+    // `background` / `machine`: everything here is daemon-backed and local. It reads files
+    // an engine owns on this machine and writes none of them, so it is neither `home`
+    // (nothing touches ~/) nor `github` (nothing leaves the machine).
+    group: "background",
+    scope: "machine",
+    keywords: [
+      "ai-conductor",
+      "conduct",
+      "pipeline",
+      "sdlc",
+      "gate",
+      "halt",
+      "worktree",
+      "engine",
+    ],
+  },
+  {
     id: "models",
     label: "Models",
     icon: "◈",

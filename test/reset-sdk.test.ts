@@ -84,6 +84,7 @@ function sdkSess(cwd: string | null, over: Partial<Session> = {}): Session {
     queue: null,
     pendingTurns: [],
     orphanedQueue: null,
+    pipeline: null,
     paneDialog: null,
     ...over,
   };

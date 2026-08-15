@@ -19,6 +19,13 @@ For the shared wire types that must evolve with both server and client, use the
 [Shared types and events contract](agent-guides/change-contracts.md#shared-types-and-events).
 The user-facing dashboard context is in [User interface](ui.md).
 
+A collection may also be bounded by CONSENT rather than by size. `pipelineRuns` - the
+projection of an external SDLC engine's work, see [Pipelines](pipelines.md) - is empty on
+every fleet that has enabled no repository, which is the shipped configuration: the daemon
+emits no pipeline frame, and the browser holds an array it never renders. Enabling a
+repository is what starts the traffic, and withdrawing consent retires it through
+`pipeline_remove` in the same request rather than on a later tick.
+
 Not everything crosses this stream. Detailed or unbounded history - the Ship log's day feed,
 Workflow runs, [archives](archives.md) - stays out of both the snapshot and the
 incremental frames, and is fetched on demand by the view that owns it. Where the daemon still

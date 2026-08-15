@@ -85,6 +85,17 @@ and review state visible beside the work that produced it.
 
 ![Mission Control Inspector settings](docs/images/inspector.png)
 
+## Watch a pipeline engine you already use
+
+Some work is driven by an external SDLC engine rather than by a single agent.
+[ai-conductor](docs/pipelines.md) is one: it walks a feature through a gated 22-step pipeline
+in its own worktree and halts for a human when a gate refuses. **Settings → Conductor**
+detects it and lets you consent, per repository, to Mission Control reading its state.
+
+Detection is automatic and consent is not. Nothing is read until a repository is switched on,
+Mission Control never writes a file the engine owns, and with the switch off - or with no
+engine installed - the dashboard is exactly what it was.
+
 ## Quick start
 
 Mission Control needs Node.js 24 or newer.

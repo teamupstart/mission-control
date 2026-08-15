@@ -641,6 +641,14 @@ LIMIT 20;
               </div>
               <p class="section-note">The first three are the one exception to "durable, not live" in the other direction: they are a cache of directories on disk, carry no foreign key to a task or a session, hold no evidence bytes, and are rebuilt from the library by a background reconciler if the database is deleted. That is why the rename to these names dropped and rebuilt them rather than copying rows. <code>archive_capture_jobs</code> is the opposite kind of row again - purely local bookkeeping about work in flight, referring to task and session ids as values with no foreign key or cascade, because a published archive has to outlive both, and its rows were MIGRATED rather than dropped because an interrupted capture cannot rebuild them from anywhere.</p>
             </details>
+
+            <details class="family">
+              <summary><strong>Pipelines (disposable projection)</strong><span>1 table</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>pipeline_runs</code><p>One row per feature an external SDLC engine is driving in a repository an operator consented to, keyed by that engine's own identity for it: the provider id, the repository root, and the plan-stem slug. Holds the serialized projection the dashboard reads plus the byte offset the engine's event ledger was last tailed to. Rows arrive only for a repository switched on in Settings, and go the moment that consent is withdrawn.</p></div>
+              </div>
+              <p class="section-note">A cache, in the same family as the three archive index tables above and for the same reason: every column is derived from files the engine owns and rewrites, so deleting this table - or the whole database - costs one refresh pass and nothing else. Nothing may be stored here that is not already on disk under the engine's control; a label, an annotation or an operator's own note would be lost the first time the projection was rebuilt, and belongs on a task. It exists so a dashboard connecting before the watcher's first pass sees the last known truth rather than an empty page, and so the events tail can resume at the byte it stopped at rather than re-reading a feature's whole ledger on every daemon start. It declares no foreign key and holds no reference to any other table.</p>
+            </details>
           </div>
         </section>
 

@@ -11,6 +11,7 @@ import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
 import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
+import { ConductorPanel } from "./ConductorPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
 import { checksArmedReading } from "../lib/trust.ts";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
@@ -22,6 +23,7 @@ import { AppearancePanel } from "./AppearancePanel.tsx";
 import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useTaskSources } from "../useTaskSources.ts";
+import { useConductor } from "../useConductor.ts";
 import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindings.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
@@ -251,6 +253,8 @@ export function SettingsPage({
   // than merely tidy: it is what keeps each source's last-swept line and its error moving
   // while you watch the panel, including for a sweep the background loop ran.
   const taskSources = useTaskSources();
+  // Only while its own category is on screen - see the hook for why this one is gated.
+  const conductor = useConductor(category === "conductor");
   // Owned here for the same reason as the four above: nothing outside this page reads the
   // Workflow config, so it polls only while the page is open. Its poll is load-bearing
   // rather than tidy - the health strip, retention readout and health card are what it
@@ -494,6 +498,8 @@ export function SettingsPage({
         return <HarnessesPanel state={harnesses} />;
       case "task-sources":
         return <TaskSourcesPanel state={taskSources} />;
+      case "conductor":
+        return <ConductorPanel state={conductor} />;
       case "models":
         return <LlmSettingsPanel state={llm} />;
       case "foreman":

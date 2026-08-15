@@ -49,6 +49,7 @@ import type {
   SkillsConfigPatch,
   UiConfigPatch,
   UiConfigView,
+  PipelinesConfigPatch,
   TaskSourcesConfigPatch,
   UpdateTask,
   TaskDependencyInput,
@@ -80,6 +81,7 @@ import type {
   ScheduleValidationField,
 } from "@shared/schedules.ts";
 import type { SweepReport, TaskSourceRef, TaskSourcesView } from "@shared/task-source.ts";
+import type { PipelinesView } from "@shared/pipeline.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type {
   ArchiveDetail,
@@ -218,6 +220,16 @@ export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shippin
  * rendered together.
  */
 export const fetchTaskSources = () => fetchJson<TaskSourcesView>("/api/task-sources/config");
+/**
+ * The Conductor panel in one read: consent, detection, and per-repository health.
+ *
+ * One route rather than a config/detection pair for `fetchTaskSources`' reason - nothing
+ * else reads any half of it. `refresh` forces the daemon to re-run its engine probe rather
+ * than answer from its TTL cache; the poll never sets it, because a probe is a subprocess
+ * and only an operator pressing "Check again" is asking for a fresh one.
+ */
+export const fetchPipelines = (refresh = false) =>
+  fetchJson<PipelinesView>(`/api/pipelines/config${refresh ? "?refresh=1" : ""}`);
 /** Away mode: whether you're away, since when, and the stall thresholds. */
 export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
 /**
@@ -1179,6 +1191,9 @@ export const api = {
 
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
+
+  // --- Pipelines (observing an external SDLC engine) ---
+  setPipelines: (cfg: PipelinesConfigPatch) => put(`/api/pipelines/config`, cfg),
 
   // --- Task sources (pulling work into the backlog) ---
   setTaskSources: (cfg: TaskSourcesConfigPatch) => put(`/api/task-sources/config`, cfg),

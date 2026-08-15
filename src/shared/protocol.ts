@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
+import { PipelinesConfigSchema } from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
@@ -1683,6 +1684,18 @@ export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
  */
 export const TaskSourcesConfigPatchSchema = TaskSourcesConfigSchema;
 export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema>;
+
+/**
+ * Which repositories an external SDLC engine may be observed in, as the panel sends it back.
+ *
+ * A whole-object PUT for `TaskSourcesConfigPatchSchema`'s reason: adding a repository,
+ * enabling one and removing one are the same edit to the same panel, and the list is small
+ * and bounded by its schema. The master switch rides the same write because a panel that
+ * could save one without the other would let a browser hold a picture in which the master
+ * is off and a repository is on, which is not a state the daemon can be in.
+ */
+export const PipelinesConfigPatchSchema = PipelinesConfigSchema;
+export type PipelinesConfigPatch = z.infer<typeof PipelinesConfigPatchSchema>;
 
 // ---- dashboard UI preferences ----
 

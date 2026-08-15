@@ -122,6 +122,15 @@ export function tailConductorEvents(worktree: string, from: number): TailReading
   const complete = text.slice(0, lastNewline + 1);
   const records: ConductorEventRecord[] = [];
   let cursor = begin;
+  /**
+   * Where the record cap stopped this pass, when it did.
+   *
+   * The offset MUST come back to this byte rather than to the end of what was read, or the
+   * records past the cap are never seen by anything: the next pass resumes after them, and
+   * their token usage is silently absent from the run's cost for ever. A cap is a bound on
+   * how much one pass does, not a licence to skip work.
+   */
+  let cappedAt: number | null = null;
   for (const line of complete.split("\n")) {
     const at = cursor;
     // Byte length, not character length: the offset is a file position, and a multi-byte
@@ -130,7 +139,10 @@ export function tailConductorEvents(worktree: string, from: number): TailReading
     cursor += Buffer.byteLength(line, "utf8") + 1;
     const trimmed = line.trim();
     if (trimmed === "") continue;
-    if (records.length >= MAX_TAIL_RECORDS) break;
+    if (records.length >= MAX_TAIL_RECORDS) {
+      cappedAt = at;
+      break;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(trimmed);
@@ -147,7 +159,13 @@ export function tailConductorEvents(worktree: string, from: number): TailReading
     });
   }
 
-  return { records, offset: begin + Buffer.byteLength(complete, "utf8"), restarted };
+  // The cap's byte when it fired, and the end of the complete lines otherwise. Never both:
+  // advancing past a record this pass declined to read loses it permanently.
+  return {
+    records,
+    offset: cappedAt ?? begin + Buffer.byteLength(complete, "utf8"),
+    restarted,
+  };
 }
 
 /**

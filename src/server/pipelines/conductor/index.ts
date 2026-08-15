@@ -65,16 +65,19 @@ async function readConductorRepo(
       return {
         runs: [],
         offsets,
+        restarted: new Set(),
         daemon: daemonState(daemon),
         error: `could not list ${INFO.worktreesDir}/ in this repository`,
       };
     }
     const runs: PipelineRun[] = [];
     const nextOffsets = new Map<string, number>();
+    const restarted = new Set<string>();
     for (const worktree of worktrees) {
       const state = readConductState(worktree.path);
       const tail = tailConductorEvents(worktree.path, offsets.get(worktree.slug) ?? 0);
       nextOffsets.set(worktree.slug, tail.offset);
+      if (tail.restarted) restarted.add(worktree.slug);
       runs.push(
         normalizeConductorRun({
           repoRoot,
@@ -96,6 +99,7 @@ async function readConductorRepo(
     return {
       runs,
       offsets: nextOffsets,
+      restarted,
       daemon: daemonState(daemon),
       error:
         worktrees.length >= MAX_RUNS_PER_REPO
@@ -109,6 +113,7 @@ async function readConductorRepo(
     return {
       runs: [],
       offsets,
+      restarted: new Set(),
       daemon: "unknown",
       error: err instanceof Error ? err.message : String(err),
     };

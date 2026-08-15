@@ -21,6 +21,16 @@ export interface PipelineRepoReading {
   runs: PipelineRun[];
   /** Byte offset into each run's event ledger, keyed by slug. Resumes the next pass. */
   offsets: Map<string, number>;
+  /**
+   * Slugs whose event ledger was REPLACED rather than appended to - a worktree torn down and
+   * re-cut under the same slug, or a ledger rewritten - so this pass read one from byte zero.
+   *
+   * Carried rather than left inside the tail because the consequence is the CALLER's: a
+   * running token total that kept accumulating across a replacement would add the new
+   * ledger's spend to the old ledger's and report a cost the run never had. The tail can see
+   * the replacement; only the thing holding the total can act on it.
+   */
+  restarted: Set<string>;
   daemon: PipelineDaemonState;
   /**
    * A bounded sentence about why this pass saw less than it should have, or null.

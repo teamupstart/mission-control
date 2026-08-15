@@ -20,10 +20,13 @@ Three rules, and each of them is load-bearing rather than cautious:
   state is lease- and CAS-guarded by the engine itself, and its CLI is the only sanctioned
   way to change it. Control verbs - pause, park, grant, resume - arrive in a later phase and
   will spawn that CLI rather than edit its files.
-- **Off by default.** Detection is automatic; consent is not. With nothing switched on, a
-  watch tick reads one config value and returns: no probe spawns, no file is opened, no
-  event crosses the stream. An operator with no engine installed sees a Settings panel that
-  says so and nothing else anywhere.
+- **Absent by default, then off by default.** An operator with no engine installed sees **no
+  Conductor UI at all** - no Settings row, no panel, no command-palette entry, and
+  `#/settings/conductor` falls back the way an unknown category does. Once the engine is
+  found on the daemon's `PATH` the category appears, and everything in it is still off:
+  detection is automatic, consent is not. With nothing switched on, a watch tick reads one
+  config value and a `PATH` walk once a minute, and no probe spawns, no file is opened and no
+  event crosses the stream.
 - **The engine's files are the source of truth.** The `pipeline_runs` table is a cache, in
   the same family as the archive index: every column is derived from files still on disk, so
   deleting it costs one refresh pass. Nothing may be stored there that is not already under

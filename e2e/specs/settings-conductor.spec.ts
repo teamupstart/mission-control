@@ -213,6 +213,11 @@ test.describe("with no engine installed", () => {
     );
     await expect(page.getByRole("tab", { name: /Conductor/ })).toHaveCount(0);
     await expect(page.getByText(/never starts or stops a pipeline/)).toHaveCount(0);
+    // The headline artifact, taken HERE: the rail an operator without the engine actually
+    // gets, after the stale hash has resolved, with nothing overlaying it. Captured before
+    // the palette below opens - an earlier cut of this spec shot it afterwards and produced
+    // a frame of a dimmed page behind a dialog, which shows the reviewer nothing.
+    await shoot(page, "04-no-conductor-row");
 
     // And it is absent from the one other place a panel is reachable from. The palette may
     // only target routes the app publishes, so a hidden category offered here would be the
@@ -226,6 +231,8 @@ test.describe("with no engine installed", () => {
     await expect(page.getByRole("option", { name: /Display settings/ })).toBeVisible();
     await query.fill("conductor");
     await expect(page.getByRole("option", { name: /Conductor/ })).toHaveCount(0);
-    await shoot(page, "04-not-installed");
+    // The second artifact, and the palette IS its subject - so this one is taken with the
+    // dialog open on purpose.
+    await shoot(page, "05-not-in-the-palette");
   });
 });

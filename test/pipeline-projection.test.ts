@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
@@ -183,6 +183,58 @@ test("the events offset survives a restart, so a run's token spend is not counte
     125,
     "the restarted daemon must add to the carried total, not re-read the whole ledger",
   );
+});
+
+test("a replaced ledger restarts the token total instead of adding to it", async () => {
+  // A worktree torn down and re-cut under the same slug gets a fresh ledger, which the tail
+  // reads from byte zero - so what it reports is already the whole of the NEW run's spend.
+  // Adding the old run's total to it reports a cost that never happened, and goes on
+  // reporting it for as long as the row lives.
+  reset();
+  const root = repo("replaced-ledger");
+  const worktree = seedConductorRun(root, "feat", {
+    // Three records, so the replacement below is unambiguously SHORTER in bytes - which is
+    // the signal the tail detects. A same-length replacement is not detectable by offset
+    // alone and is out of this repair's scope.
+    steps: { build: "done" },
+    events: [
+      { type: "step_completed", step: "build", tokenUsage: { input: 300 } },
+      { type: "step_completed", step: "test_suite", tokenUsage: { input: 300 } },
+      { type: "step_completed", step: "build_review", tokenUsage: { input: 300 } },
+    ],
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+
+  const registry = new Registry();
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(registry.listPipelineRuns()[0]?.costTokens, 900);
+  const before = statSync(join(worktree, ".pipeline", "events.jsonl")).size;
+
+  // The re-cut: a shorter ledger at the same path.
+  writeFileSync(
+    join(worktree, ".pipeline", "events.jsonl"),
+    `${JSON.stringify({ type: "step_completed", step: "w", tokenUsage: { input: 5 } })}\n`,
+  );
+  assert.ok(
+    statSync(join(worktree, ".pipeline", "events.jsonl")).size < before,
+    "the fixture must actually shrink, or it is not exercising the signal",
+  );
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(
+    registry.listPipelineRuns()[0]?.costTokens,
+    5,
+    "the new ledger's spend, not the old run's plus the new one's",
+  );
+
+  // And it accumulates normally again from there - the reset is for the replacement, not a
+  // permanent switch to last-batch-only.
+  appendFileSync(
+    join(worktree, ".pipeline", "events.jsonl"),
+    `${JSON.stringify({ type: "step_completed", step: "build", tokenUsage: { input: 7 } })}\n`,
+  );
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(registry.listPipelineRuns()[0]?.costTokens, 12);
 });
 
 test("a run whose worktree is gone leaves the projection", async () => {

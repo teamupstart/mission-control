@@ -384,6 +384,46 @@ test("an unparseable line is dropped without stopping the pass or losing the off
   );
 });
 
+test("the record cap holds the offset at the first record it declined to read", () => {
+  // The cap bounds how much ONE pass does; it must not skip work. An offset that advanced to
+  // the end of the chunk would leave every record past the cap unread for ever - and their
+  // token usage permanently absent from the run's cost, which is a number an operator reads.
+  const root = repo("tail-capped");
+  const worktree = seedConductorRun(root, "busy", {});
+  const path = join(worktree, ".pipeline", "events.jsonl");
+  const total = 5200; // above MAX_TAIL_RECORDS
+  writeFileSync(
+    path,
+    `${Array.from({ length: total }, (_, i) =>
+      JSON.stringify({ type: "step_completed", step: `s${i}`, tokenUsage: { input: 1 } }),
+    ).join("\n")}\n`,
+  );
+
+  const first = tailConductorEvents(worktree, 0);
+  assert.equal(first.records.length, 5000, "the cap bounds one pass");
+  // The offset is the START of the first record it did not read, so nothing is skipped.
+  assert.equal(
+    first.offset,
+    first.records.at(-1)!.offset +
+      Buffer.byteLength(
+        JSON.stringify({ type: "step_completed", step: "s4999", tokenUsage: { input: 1 } }),
+        "utf8",
+      ) +
+      1,
+  );
+
+  // And the rest arrives on the next pass rather than being lost.
+  const second = tailConductorEvents(worktree, first.offset);
+  assert.equal(second.records.length, total - 5000);
+  assert.equal(second.records[0]?.body.step, "s5000");
+  // Every record, exactly once, across the two passes.
+  assert.equal(
+    (tokensIn(first.records) ?? 0) + (tokensIn(second.records) ?? 0),
+    total,
+    "no record is read twice and none is skipped",
+  );
+});
+
 test("a missing ledger is an empty pass at the offset it was handed", () => {
   const root = repo("tail-missing");
   const worktree = seedConductorRun(root, "silent", {});

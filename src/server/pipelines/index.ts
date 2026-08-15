@@ -270,7 +270,12 @@ export async function refreshPipelineRepo(
     // The ledger is incremental, so a pass reports only what IT read. Carrying the running
     // total here rather than in the reader is what keeps a live run's spend from falling
     // back to null the moment its ledger goes quiet for one tick.
-    const carried = costTotals.get(key) ?? null;
+    //
+    // Unless the ledger was REPLACED. A worktree torn down and re-cut under the same slug
+    // gets a fresh ledger that this pass read from byte zero, so what it reports is already
+    // the whole of the new run's spend - adding the old run's total to it would report a
+    // cost that never happened, and would keep reporting it for as long as the row lived.
+    const carried = reading.restarted.has(run.slug) ? null : (costTotals.get(key) ?? null);
     const total =
       run.costTokens === null ? carried : (carried ?? 0) + run.costTokens;
     if (total !== null) costTotals.set(key, total);

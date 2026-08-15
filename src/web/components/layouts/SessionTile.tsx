@@ -6,6 +6,7 @@ import { liveActivity } from "@shared/session.ts";
 import { relativeTime, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
 import { useInterrupting } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
+import { isDragSelection } from "../../lib/pointer.ts";
 import {
   AgentDot,
   CostChip,
@@ -22,18 +23,6 @@ import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
 import type { WorkflowDisclosureHandle } from "./types.ts";
-
-/**
- * Whether a click only marks the end of a drag-select rather than a click on the thing
- * underneath it. Copying a branch name off a tile is a fair thing to want on a triage
- * board, and the mouseup that ends that drag lands on the tile as a click - which should
- * not navigate you into a session you were only reading.
- *
- * Takes the selection rather than reading it, so the decision can be tested without a DOM.
- */
-export function isDragSelection(sel: { isCollapsed: boolean } | null): boolean {
-  return sel != null && !sel.isCollapsed;
-}
 
 /**
  * A session shrunk to what you'd triage by, without opening it: who it is, what it's
@@ -221,7 +210,8 @@ export function SessionTile({
       {/* D′ is a cropped rung of the same Stage Ladder the Console detail draws. The summary
           arrives over SSE; this panel loads the existing run detail, shows the consequential rung
           while collapsed, and reuses the real actionable ladder when disclosed. Its wrapper owns
-          click propagation so using it never drills into the Console or leaves for Runs. */}
+          click propagation so neither action accidentally drills into the Console: the compact
+          preview opens the exact run, while the disclosure control expands in place. */}
       {workflowRun && (
         <WorkflowLadderPanel
           run={workflowRun}

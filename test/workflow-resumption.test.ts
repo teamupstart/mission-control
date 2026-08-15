@@ -31,6 +31,10 @@ import type {
   WorkflowCompletionPolicy,
   WorkflowResumptionPolicy,
 } from "../src/shared/workflow.ts";
+import {
+  workflowRunResumesItself,
+  workflowRunWaitsOnOperator,
+} from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // MISSION_HOME *is* the state dir. Set before anything that resolves it is imported, which is
@@ -438,6 +442,47 @@ test("legacy: a version row written before the column existed reads as manual", 
 
   assert.equal(h.store.listSubmissions(h.runId).length, 1);
   await h.manager.stop();
+});
+
+test("the run summary carries the two facts that decide whether anyone is owed a turn", async () => {
+  // A parked run is invisible unless a surface can tell "the daemon will reopen this in
+  // fifteen seconds" from "only a human ever will". Neither fact was on the summary, so no
+  // surface could, and every parked run was silently read as the first kind.
+  //
+  // Read off the pinned VERSION and the BINDING - the same pair `resumableRun` consults - so
+  // the summary cannot promise a resumption the observer will not perform.
+  const auto = await personaFeedbackRun("summary-auto", "v-summary-auto", "auto");
+  const autoSummary = auto.store.runSummary(auto.runId);
+  assert.equal(autoSummary?.status, "waiting_for_session");
+  assert.equal(autoSummary?.resumptionPolicy, "auto");
+  assert.equal(autoSummary?.deliveryMode, "live");
+  assert.equal(workflowRunResumesItself(autoSummary!), true);
+  assert.equal(
+    workflowRunWaitsOnOperator(autoSummary!),
+    false,
+    "an auto+live run is the daemon's to reopen, not a person's",
+  );
+  await auto.manager.stop();
+
+  const manual = await personaFeedbackRun("summary-manual", "v-summary-manual", "manual");
+  const manualSummary = manual.store.runSummary(manual.runId);
+  assert.equal(manualSummary?.resumptionPolicy, "manual");
+  assert.equal(workflowRunResumesItself(manualSummary!), false);
+  assert.equal(
+    workflowRunWaitsOnOperator(manualSummary!),
+    true,
+    "nothing but a human Resubmit moves a manual run, so it is owed to a person",
+  );
+  await manual.manager.stop();
+
+  // NULL reads as `manual` here too, and for the same reason the version row does: a version
+  // published before the column existed is standing still, and a summary that reported it as
+  // self-resuming would leave it out of the very counts that exist to find it.
+  const legacy = await personaFeedbackRun("summary-legacy", "v-summary-legacy", null);
+  const legacySummary = legacy.store.runSummary(legacy.runId);
+  assert.equal(legacySummary?.resumptionPolicy, "manual");
+  assert.equal(workflowRunWaitsOnOperator(legacySummary!), true);
+  await legacy.manager.stop();
 });
 
 test("unchanged evidence leaves the run WAITING, and never blocks or re-captures", async () => {

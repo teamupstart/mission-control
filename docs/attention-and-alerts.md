@@ -67,8 +67,69 @@ The daemon also watches for sessions that have **gone quiet**, which no state
 transition can announce - a stall is defined by nothing happening. Four rules, all
 deterministic: an instrumented session that claims to be working but hasn't reported
 in ~10 minutes; a session idle ~20 minutes with a task or queue still open against it
-(the "died with work unfinished" case); and a Foreman escalation nobody answered. A stuck session is attention-level, so
-it breaks through even while you're away.
+(the "died with work unfinished" case); a session idle that long with a **workflow run
+parked on it**; and a Foreman escalation nobody answered. A stuck session is
+attention-level, so it breaks through even while you're away.
+
+The parked-run rule is the backstop for a review loop that quietly stopped. A run
+waiting in `waiting_for_session` or `waiting_for_new_head` is waiting on *that session's
+next turn*, so a session that took the repair packet, made the fix and went idle has
+work outstanding against it even though its task is done and its queue is empty. The
+alert names the missing step rather than the silence - "repair round 2 never reopened",
+or "waiting for a pushed head" for the Inspector findings that clear only when the
+poller sees a new head **on the remote**.
+
+It deep-links to the **run** rather than to the session, because the run is where that
+step is named and where its state can be read. What you can do when you arrive is not a
+property of the status alone - it depends on the run's resumption posture, which is the
+same distinction the Line uses to decide whether the run is counted as yours:
+
+- **`waiting_for_session` on a `manual` version or a Preview binding** is yours to move.
+  Nothing but a human resubmit reopens it, and that control is on this page. These are
+  the runs counted as **needing you** from the moment they park.
+- **`waiting_for_session` on an `auto` version delivering `live`** is *not* yours, and is
+  never counted as such: the resumption observer reopens it seconds after the agent
+  settles. Reaching this page from a stuck alert means that observer has been retrying
+  and failing for the whole threshold, so the run's own state is the thing to read. A
+  manual resubmit is still available; it is simply not the expected move.
+- **`waiting_for_new_head`** has no such control at all, under any posture. Nothing on
+  this page - or anywhere else in the app - restarts it: it clears only when the
+  Inspector poller observes a new head that the bound session has **pushed**. The deep
+  link is context rather than a remedy, and the useful next move is to get that branch
+  pushed.
+
+![The run a stuck parked-run notification opens, showing the parked round and its state](images/line-review-parked-toast-run.png)
+
+The same sentence is what the return digest prints if the stall happened while you were
+away, so the desktop toast and the digest line can never describe one stall differently -
+both are rendered from the alert the stall produced:
+
+![The away digest naming the parked run and the round that never reopened](images/line-review-parked-digest.png)
+
+Runs that will never resume themselves do not wait for that clock at all. A run on a
+`manual` version or a Preview binding is counted as **needing you** on the Line's Review
+strip, in the Review drawer and in the palette from the moment it parks, because nothing
+but a person moves it.
+
+This is what that rule changed. Both pictures are the same parked run - a `manual` version
+on a Preview binding, one failed reviewer, `Waiting for the session`. Before, the Review
+stage counted it and said nothing else, and the drawer listed it unmarked, so a run only a
+human could move was indistinguishable from one the daemon had in hand:
+
+![The Review stage and drawer before the rule, listing a parked run with no marking at all](images/line-review-parked-before.png)
+
+After, the same run is counted as yours, on the stage and in the drawer, and the row is
+marked amber for "your turn":
+
+![The Review stage and drawer marking a parked run that only a person can move](images/line-review-parked-needs-you.png)
+
+An `auto` version delivering `live` is the daemon's own to reopen and is never called
+yours - the resumption observer picks it up seconds after the agent settles, and saying
+otherwise would be telling you to do by hand something already in hand. The run below is
+in the identical state, down to the failed reviewer and the "Waiting for the session"
+line, and is deliberately left unmarked:
+
+![The same parked state on an auto, live run, counted but not marked](images/line-review-parked-auto.png)
 
 ### Away mode
 

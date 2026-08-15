@@ -12,6 +12,8 @@ import { HOST, PORT } from "./config.ts";
 import { openDb } from "./db.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
+import { observeInjections } from "./injections.ts";
+import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { claudeTransportChoice, getLlmConfig, llmRunnerChoice } from "./llm/config.ts";
 import { configureClaudeRunnerTransport } from "./llm/claude.ts";
@@ -91,6 +93,14 @@ try {
 // and record nothing.
 warnIfSessionAttributionDisabled();
 const registry = new Registry();
+// Durable attribution for the scout prompt trail, wired to the one chokepoint every
+// non-human delivery already reports through. In-memory attribution is enough to colour a
+// live conversation, but a scout archive outlives this process: without this, a daemon
+// restarted between a Foreman instruction and the capture that reads the transcript
+// publishes that instruction as something the operator wrote.
+observeInjections((sessionId, text, origin) => {
+  journalScoutPrompt(registry, sessionId, text, origin);
+});
 const reviews = new ReviewManager(registry);
 // Embedded (SDK-runtime) sessions. Constructed HERE, above `TaskManager`, because the
 // dispatcher branches on it and the startup reconciliation below asks it whether an

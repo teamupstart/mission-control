@@ -21933,8 +21933,8 @@ span.line-run-prov {
 }
 /* ---- board tile: workflow disclosure (D′) ----
    The compact state is a cropped rung of the full ladder, not a second progress diagram.
-   It owns pointer interaction inside the otherwise-clickable tile; disclosure stays on the
-   Board, while the full ladder's explicit Open run action remains the route to Runs. */
+   It owns pointer interaction inside the otherwise-clickable tile: the preview opens the exact
+   run, while disclosure stays on the Board and expands the full ladder in place. */
 .tile-workflow-disclosure {
   position: relative;
   z-index: 1;
@@ -21969,11 +21969,34 @@ span.line-run-prov {
 }
 .wf-tile-peek {
   --wf-tile-peek-tone: var(--dim);
+  display: block;
+  width: 100%;
   min-width: 0;
+  box-sizing: border-box;
   padding: 8px 9px 8px 31px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: color-mix(in oklab, var(--panel-2) 88%, var(--bg));
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.wf-tile-peek:hover {
+  border-color: color-mix(in oklab, var(--working) 52%, var(--border));
+  background: color-mix(in oklab, var(--panel-2) 94%, var(--working));
+}
+.wf-tile-peek:focus-visible {
+  border-color: var(--working);
+  outline: 2px solid color-mix(in oklab, var(--working) 72%, transparent);
+  outline-offset: 2px;
+}
+.wf-tile-peek:hover .wf-tile-peek-name,
+.wf-tile-peek:focus-visible .wf-tile-peek-name {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .wf-tile-peek.workflow-running {
   --wf-tile-peek-tone: var(--working);

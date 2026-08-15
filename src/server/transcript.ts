@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import type { TranscriptMessage } from "@shared/types.ts";
 import type {
+  TranscriptForwardPage,
   TranscriptInitialRead,
   TranscriptMessages,
   TranscriptPage,
@@ -70,6 +71,34 @@ function previousRecordStart(path: string, end: number): number | null {
       cursor = start;
     }
     return 0;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The offset just past the first complete record at or after `from`, or null when the
+ * rest of the file holds no newline at all.
+ *
+ * `previousRecordStart` run the other way, and it exists for the same one reason: a single
+ * record fatter than a page's whole byte budget must still ADVANCE the walk. Without it a
+ * forward page over such a record returns nothing and reports the same anchor it was
+ * given, and a collector chaining pages spins on it forever.
+ *
+ * Null means "no complete record here", not "unreadable". Both answers end a forward walk,
+ * and a trailing line a writer has not finished is the ordinary cause of the first.
+ */
+function nextRecordEnd(path: string, from: number, size: number): number | null {
+  try {
+    let cursor = Math.max(0, from);
+    while (cursor < size) {
+      const end = Math.min(size, cursor + BOUNDARY_SCAN_BYTES);
+      const buf = readRange(path, cursor, end);
+      const nl = buf.indexOf(NL);
+      if (nl >= 0) return cursor + nl + 1;
+      cursor = end;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -233,6 +262,57 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       later = [...joined.earlier, ...joined.later];
     }
     return { start: begin, messages: later };
+  };
+
+  /**
+   * `repairLeadingBatch` for a forward page, which has to repair the OTHER edge.
+   *
+   * Which edge gets repaired follows from which edge the caller supplied, and getting that
+   * backwards is a real bug rather than a stylistic choice. A backward page discovers its
+   * `start`, so widening it there costs nothing. A forward page is HANDED its `start` by
+   * the previous page's `end`; moving it back would return turns that page already
+   * returned, and since most rollout records carry no id of their own (see `parseSeq` in
+   * the Codex parser) nothing downstream could de-duplicate them.
+   *
+   * So a forward page grows at its far edge instead, absorbing the rest of a tool run that
+   * the byte budget cut in half. The loop stops as soon as a join absorbs nothing, which
+   * is `joinBatches` reporting that the next records are a DIFFERENT turn - that turn
+   * belongs to the next page, and swallowing it here would make the pages overlap in the
+   * other direction. A batch that parses to no turns is stepped over rather than stopped
+   * at, exactly as the leading repair steps over one, because it can hold no turn to lose.
+   */
+  const repairTrailingBatch = (
+    path: string,
+    size: number,
+    end: number,
+    messages: TranscriptMessage[],
+  ): { end: number; messages: TranscriptMessage[] } => {
+    if (!spec.joinBatches || end >= size) return { end, messages };
+    let finish = end;
+    let scanned = 0;
+    let earlier = messages;
+    while (finish < size && scanned < MAX_SCAN_BYTES) {
+      const next = nextRecordEnd(path, finish, size);
+      if (next === null || next <= finish) break;
+      const bytes = next - finish;
+      if (scanned + bytes > MAX_SCAN_BYTES) break;
+      const text = readRange(path, finish, next).toString("utf8");
+      const later = parseMany(text ? text.split("\n") : []);
+      if (later.length === 0) {
+        finish = next;
+        scanned += bytes;
+        continue;
+      }
+      const joined = spec.joinBatches(earlier, later);
+      // A join that absorbed nothing is the signal to stop: `joinBatches` returns the two
+      // halves unchanged when they are adjacent but separate turns, and null when they are
+      // unrelated. Only a shrunken `later` means the seam ran through one turn.
+      if (!joined || joined.later.length >= later.length) break;
+      finish = next;
+      scanned += bytes;
+      earlier = [...joined.earlier, ...joined.later];
+    }
+    return { end: finish, messages: earlier };
   };
 
   /**
@@ -457,6 +537,74 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     return { messages, start: begin, end, atStart: begin === 0 };
   };
 
+  /**
+   * Read the page of turns immediately AFTER a byte offset.
+   *
+   * `before` in the other direction, with the anchored and moving edges swapped: `start`
+   * is the caller's and needs no partial-line trim, and `end` is discovered and does. The
+   * pair of them is what lets a collector reach every turn after a recorded boundary
+   * without ever allocating the remainder of the file - which `appended`, the only other
+   * read that reaches the last turn, does by definition.
+   *
+   * Two failure shapes are deliberately the same answer here. An anchor past EOF means the
+   * file was rotated or cleared since the boundary was recorded, and an unreadable file
+   * means it is gone; both end the walk with an empty terminal page rather than throwing,
+   * because a collector's honest response to either is to keep what it already has. That
+   * is the same choice `before` makes and the opposite of `initial`/`appended`, which a
+   * live stream needs to hear about.
+   */
+  const after = (path: string, offset: number, wantTurns = PAGE_LIMIT): TranscriptForwardPage => {
+    let size: number;
+    try {
+      size = statSync(path).size;
+    } catch {
+      const at = Math.max(0, offset);
+      return { messages: [], start: at, end: at, atEnd: true };
+    }
+    const start = Math.max(0, Math.min(offset, size));
+    if (start >= size) return { messages: [], start, end: start, atEnd: true };
+    let finish = start;
+    let reachedEof = false;
+    const read = (bytes: number): TranscriptMessage[] => {
+      const far = Math.min(size, start + bytes);
+      const buf = readRange(path, start, far);
+      reachedEof = far >= size;
+      // Parse only up to the last newline. The far edge is the MOVING one here, so a
+      // trailing partial line is either the next page's or a record still being written;
+      // either way it is not a turn yet. The near edge needs no such care - `start` is a
+      // boundary the caller got from a previous page, or zero.
+      const lastNl = buf.lastIndexOf(NL);
+      const to = lastNl >= 0 ? lastNl + 1 : 0;
+      finish = start + to;
+      const text = buf.subarray(0, to).toString("utf8");
+      return parseMany(text ? text.split("\n") : []);
+    };
+    let messages: TranscriptMessage[];
+    try {
+      ({ messages } = grow(size - start, wantTurns, PAGE_TAIL_BYTES, read));
+    } catch {
+      return { messages: [], start, end: start, atEnd: true };
+    }
+    if (finish <= start) {
+      // No complete record inside the budget. Reaching EOF means the remainder is a
+      // partial line and the walk is over; otherwise one record is fatter than the budget,
+      // so step over it in fixed-size reads and return an empty page that still advances.
+      // An empty page is not an empty conversation - a long stretch of tool output fills
+      // one routinely - so only EOF or an unreadable file may end the walk.
+      if (reachedEof) return { messages: [], start, end: start, atEnd: true };
+      const boundary = nextRecordEnd(path, start, size);
+      if (boundary === null) return { messages: [], start, end: start, atEnd: true };
+      return { messages: [], start, end: boundary, atEnd: false };
+    }
+    const repaired = repairTrailingBatch(path, size, finish, messages);
+    return {
+      messages: repaired.messages,
+      start,
+      end: repaired.end,
+      atEnd: reachedEof || repaired.end >= size,
+    };
+  };
+
   /** Read whatever complete lines were appended since `pos`. */
   const appended = (path: string, pos: number): TranscriptStreamRead => {
     const size = statSync(path).size;
@@ -468,5 +616,5 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     return { messages: parseMany(text.split("\n")), pos: pos + lastNl + 1 };
   };
 
-  return { window, since, size: transcriptSize, initial, before, appended, narration };
+  return { window, since, size: transcriptSize, initial, before, after, appended, narration };
 }

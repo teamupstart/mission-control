@@ -327,6 +327,40 @@ test("stalls are detected even at the desk - being told an agent is wedged alway
   w.stop();
 });
 
+test("a session parked on a workflow run stalls, and the digest names the run", () => {
+  // The stranded-session bug, at the seam where it was actually invisible. The watcher holds
+  // both halves of one snapshot - the sessions and the run summaries - and until it handed
+  // the runs to the detector, an idle session with a parked run reported no outstanding work
+  // at all: a review session's task has usually already reached `done` and its queue is
+  // empty, so nothing else in `workOutstanding` could see it either.
+  const reg = fakeRegistry(
+    [mkSession({ id: "session", state: "idle", lastActivity: 0 })],
+    [],
+    [workflowRun({ status: "waiting_for_session", round: 2 })],
+  );
+  const w = startAwayWatcher(reg.src, () => 30 * MIN);
+  w.tick();
+
+  const stalls = w.stalls();
+  assert.deepEqual(stalls.map((s) => s.kind), ["workflow-parked"]);
+  assert.equal(stalls[0]?.workflowRunId, "run");
+  assert.match(stalls[0]!.reason, /Review repair round 2 never reopened/);
+  w.stop();
+});
+
+test("a parked run whose session is still WORKING is not stalled", () => {
+  // The signal is the silence after the repair, not the repair itself.
+  const reg = fakeRegistry(
+    [mkSession({ id: "session", state: "working", lastActivity: 29 * MIN })],
+    [],
+    [workflowRun({ status: "waiting_for_session" })],
+  );
+  const w = startAwayWatcher(reg.src, () => 30 * MIN);
+  w.tick();
+  assert.deepEqual(w.stalls(), []);
+  w.stop();
+});
+
 test("turning stall detection off silences it", () => {
   const reg = fakeRegistry([mkSession({ id: "a", state: "working", lastActivity: 0 })]);
   const w = startAwayWatcher(reg.src, () => 30 * MIN);

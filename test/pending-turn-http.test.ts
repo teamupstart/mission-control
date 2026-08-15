@@ -10,6 +10,10 @@ process.env.MISSION_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
+const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
+  "../src/server/scouts/prompt-context.ts"
+);
+const { mkTask } = await import("./helpers/session-fixture.ts");
 
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 type TaskManager = import("../src/server/tasks.ts").TaskManager;
@@ -148,4 +152,79 @@ test("pending-turn mutations reject malformed revisions before touching state", 
   assert.equal(response.status, 400);
   assert.equal(f.registry.getSession(f.session.id)?.pendingTurns[0]?.text, "keep me");
   f.pending.stop();
+});
+
+/** Give a fixture's session a running scout task with a frozen prompt boundary. */
+function scoutEpisode(
+  registry: InstanceType<typeof Registry>,
+  sessionId: string,
+): { taskId: string; episodeId: string } {
+  const taskId = `task-${sessionId}`;
+  registry.upsertTask(
+    mkTask({ id: taskId, kind: "scout", status: "running", sessionId, title: "Scout something" }),
+  );
+  const episode = registry.workEpisodeForSession(sessionId);
+  assert.ok(episode, "precondition: the session has a work episode to own the prompts");
+  assert.ok(
+    openScoutPromptContext({
+      taskId,
+      episodeId: episode.episodeId,
+      sessionId,
+      sessionName: "pending routes",
+      transcriptPath: null,
+      transcriptOffset: 0,
+    }),
+    "precondition: the boundary was frozen at delivery",
+  );
+  return { taskId, episodeId: episode.episodeId };
+}
+
+test("a human turn that skips the outbox journals nothing in this phase", async () => {
+  // Route behavior belongs to a later phase, so the immediate `/inject` arm deliberately
+  // records no prompt yet even though it is a real human delivery. The consequence is
+  // bounded rather than a correctness hole: a turn delivered this way still reaches the
+  // harness transcript, which is where a collector reads human prompts from - the journal
+  // is the fallback for turns the transcript cannot show, not the primary source.
+  const f = fixture();
+  const episode = scoutEpisode(f.registry, f.session.id);
+  const response = await post(f.app, `/api/sessions/${f.session.id}/inject`, {
+    text: "and check whether pi behaves the same way",
+    buffer: false,
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(scoutPromptTurns(episode.taskId, episode.episodeId), []);
+  f.pending.stop();
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+test("a composer draft is not a prompt, however successfully it is typed", async () => {
+  // `submit: false` is Foreman leaving text in the composer for a person to read and send.
+  // The agent has not been given it, and archiving it would put words in its ears - which is
+  // the same mistake as archiving a recalled turn, arriving one Enter earlier.
+  const f = fixture();
+  const episode = scoutEpisode(f.registry, f.session.id);
+  const response = await post(f.app, `/api/sessions/${f.session.id}/send`, {
+    text: "a draft nobody has sent",
+    submit: false,
+    origin: "foreman",
+  });
+  assert.notEqual(response.status, 404);
+  assert.deepEqual(scoutPromptTurns(episode.taskId, episode.episodeId), []);
+  f.pending.stop();
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+test("a submitted human turn waits for acceptance rather than journaling on the response", async () => {
+  // The route answers as soon as the row is in the durable outbox, which is BEFORE any
+  // runtime has seen it. Journaling here would archive every queued row, recalls included.
+  const f = fixture();
+  const episode = scoutEpisode(f.registry, f.session.id);
+  const response = await post(f.app, `/api/sessions/${f.session.id}/send`, {
+    text: "queued, not yet delivered",
+    submit: true,
+  });
+  assert.equal(((await response.json()) as { delivery: string }).delivery, "pending");
+  assert.deepEqual(scoutPromptTurns(episode.taskId, episode.episodeId), []);
+  f.pending.stop();
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
 });

@@ -5,7 +5,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { openDaemonDb } from "../fixtures/daemon-db.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * The Ship log at `#/shipped`, driven the way an operator reaches it: a hash, or ⌘K.
@@ -126,21 +126,18 @@ async function announcePullRequest(daemon: DaemonHandle, session: SessionRow, ur
   if (!response.ok) throw new Error(`hook answered ${response.status}: ${await response.text()}`);
 }
 
-/** Write what a poll would have observed. WAL is on, so a second writer is safe here. */
+/** Write what a poll would have observed, beside the running daemon. */
 function observePullRequest(
   daemon: DaemonHandle,
   patch: { branch: string; title?: string },
 ): void {
-  const db = openDaemonDb(daemon.home);
-  try {
+  withDaemonDb(daemon, (db) => {
     db.prepare(
       `UPDATE inspector_prs
           SET head_ref_name = ?, title = ?, observed_state = 'OPEN', observed_at = ?
         WHERE state = 'open'`,
     ).run(patch.branch, patch.title ?? null, Date.now());
-  } finally {
-    db.close();
-  }
+  });
 }
 
 const page2 = (page: Page) => page.getByRole("heading", { level: 2, name: "Ship log" });

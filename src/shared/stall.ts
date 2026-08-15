@@ -12,13 +12,26 @@
 
 import type { Session } from "./types.ts";
 import { reportBucket } from "./session.ts";
+import { workflowRunParkedOnSession } from "./workflow.ts";
+import type { WorkflowRunSummary } from "./workflow.ts";
 
 /**
  * Why a session is stuck. Ordered by how explicitly it is waiting on a human:
- * an escalation was handed to you deliberately, while the two silence kinds are
+ * an escalation was handed to you deliberately, while the three silence kinds are
  * inferred from a clock.
+ *
+ * `workflow-parked` is its own kind rather than a flavour of `unfinished-work` because it is
+ * the one whose cause can be NAMED. The others report that something is open; this one knows
+ * which run is parked, on which status, and therefore what the missing step is - and the
+ * alert it produces deep-links to that run instead of to the session. Keeping it separate is
+ * also what lets its copy say "round N+1 never opened" while `unfinished-work` keeps the
+ * wording its own tests pin.
  */
-export type StallKind = "escalated" | "silent-working" | "unfinished-work";
+export type StallKind =
+  | "escalated"
+  | "silent-working"
+  | "unfinished-work"
+  | "workflow-parked";
 
 export interface StallThresholds {
   /** Instrumented + working, but no hook event for this long. */
@@ -48,6 +61,14 @@ export interface Stall {
   forMs: number;
   /** One line naming the stall, for the alert body and the digest. */
   reason: string;
+  /**
+   * The parked run this stall is about, on a `workflow-parked` stall only.
+   *
+   * Present so the alert can deep-link to the run rather than to the session: the fix for a
+   * parked round is a control on the Runs page, and a notification that lands you on the
+   * session leaves you to find which of its runs stopped.
+   */
+  workflowRunId?: string;
 }
 
 /** Terminal task states - work that is over, however it ended. */
@@ -57,8 +78,39 @@ function taskOpen(s: Session): boolean {
 }
 
 /**
- * True when work is still outstanding against this session: a task that never
- * reached a terminal state, or a queue with un-drained items.
+ * The parked workflow run this session owes a turn to, or null.
+ *
+ * Runs arrive as a PARAMETER rather than on `Session`, and that is the whole design of this
+ * change. A run is not a property of a session - it outlives one, a session can have several,
+ * and `orphanBinding` nulls the link when the session goes - so denormalising it onto the
+ * shared `Session` type would put a fleet-wide collection behind every session that crosses
+ * the SSE wire. The daemon already holds both halves at the one call site that matters:
+ * `registry.snapshot()` returns `workflowRunSummaries` beside `sessions`, and the away
+ * watcher reads them together.
+ *
+ * The first match wins rather than the newest. A session with two parked runs is stuck for
+ * one reason, and naming either of them gets a person to the same place.
+ */
+function parkedRunFor(
+  s: Session,
+  runs: readonly WorkflowRunSummary[],
+): WorkflowRunSummary | null {
+  return runs.find((run) => run.sessionId === s.id && workflowRunParkedOnSession(run.status))
+    ?? null;
+}
+
+/**
+ * What is still expected of a session, in the two flavours the stall rule can SAY.
+ *
+ * A discriminated result rather than the boolean this used to return, because the two
+ * outcomes produce different sentences and the caller cannot re-derive which it got.
+ */
+type Outstanding =
+  | { kind: "workflow-parked"; run: WorkflowRunSummary }
+  | { kind: "unfinished-work" };
+
+/**
+ * What is still outstanding against this session, or null when it is genuinely done.
  *
  * This is what separates "stuck" from "done". A finished session is idle forever,
  * so a plain idle-timeout would eventually flag every session that ever completed
@@ -67,11 +119,38 @@ function taskOpen(s: Session): boolean {
  * against itself before away mode existed - see the "Turn-end safety" row of the
  * capability comparison in todo/foreman-upgrades.md, which is what this rule
  * partially closes.
+ *
+ * A PARKED WORKFLOW RUN counts, and is reported ahead of the other two. Until it did, a
+ * session that received a repair packet, made the fix and went quiet reported no outstanding
+ * work at all - its task had usually already reached `done`, and its queue was empty - so the
+ * one rule built for exactly this silence never fired, and a run could sit parked for ever
+ * with nothing anywhere saying so. It is reported FIRST because it is the most specific: it
+ * names a run, so its sentence can say which step is missing, where an open task can only say
+ * that something is.
  */
-function workOutstanding(s: Session): boolean {
-  if (taskOpen(s)) return true;
+function workOutstanding(s: Session, runs: readonly WorkflowRunSummary[]): Outstanding | null {
+  const parked = parkedRunFor(s, runs);
+  if (parked) return { kind: "workflow-parked", run: parked };
+  if (taskOpen(s)) return { kind: "unfinished-work" };
   const q = s.queue;
-  return Boolean(q && q.openCount > 0 && !q.drained);
+  return q && q.openCount > 0 && !q.drained ? { kind: "unfinished-work" } : null;
+}
+
+/**
+ * What a person has to do about a parked run, named per status.
+ *
+ * The two statuses are un-parked by different machinery and therefore by different missing
+ * steps, and saying so is most of this rule's value: "resubmit it" and "push the branch" are
+ * not interchangeable advice, and a single sentence covering both would be right about
+ * neither.
+ */
+function parkedReason(run: WorkflowRunSummary, age: number): string {
+  const what = run.status === "waiting_for_new_head"
+    // The Inspector poller clears this by observing a head ON THE REMOTE. A session that
+    // fixed the findings and committed looks identical from here to one that did nothing.
+    ? `${run.workflowName} is waiting for a pushed head`
+    : `${run.workflowName} repair round ${run.round} never reopened`;
+  return `idle ${mins(age)}m - ${what}`;
 }
 
 /** The clock a silence is measured against. `firstSeen` is the floor, as settledIdle does. */
@@ -91,11 +170,14 @@ function mins(ms: number): number {
  * fire two notifications for one cause.
  *
  * `sessions` is used by shared report bucketing so the detector and dashboard
- * agree about whether the session is working or idle.
+ * agree about whether the session is working or idle. `runs` is the fleet's open workflow
+ * runs, for the same reason and on the same terms: the rule needs to know what is still
+ * expected of this session, and a parked run is one of the things that can be.
  */
 export function detectStall(
   s: Session,
   sessions: Session[],
+  runs: readonly WorkflowRunSummary[],
   now: number,
   th: StallThresholds = DEFAULT_STALL_THRESHOLDS,
 ): Stall | null {
@@ -139,15 +221,35 @@ export function detectStall(
   //    in prose is indistinguishable by state from one that ended having finished,
   //    so neither nags. Scoping to sessions with open work is what makes this
   //    signal rather than noise - see workOutstanding.
-  if (reportBucket(s, sessions) === "idle" && workOutstanding(s)) {
+  //
+  //    A parked workflow run is the third kind of outstanding work and shares this clock
+  //    rather than getting one of its own. It is the same rule - idle this long with
+  //    something still expected - and the operator knob it would otherwise need
+  //    (`stallUnfinishedMinutes`) is set by a human reasoning about how long to leave a quiet
+  //    agent alone, which is one judgement and not two. 20 minutes is also the right ORDER
+  //    here rather than merely the convenient one: the resumption observer retries every 15
+  //    seconds, so a run still parked twenty minutes later is one that observer has already
+  //    failed to move some eighty times, and firing sooner would announce runs it is on the
+  //    point of resuming. The runs that will never resume do not wait for this clock at all -
+  //    `workflowRunWaitsOnOperator` puts them on the Line the moment they park.
+  const outstanding = reportBucket(s, sessions) === "idle" ? workOutstanding(s, runs) : null;
+  if (outstanding) {
     const age = now - quietSince(s);
     if (age >= th.unfinishedMs) {
-      return {
-        sessionId: s.id,
-        kind: "unfinished-work",
-        forMs: age,
-        reason: `idle ${mins(age)}m with work unfinished`,
-      };
+      return outstanding.kind === "workflow-parked"
+        ? {
+          sessionId: s.id,
+          kind: "workflow-parked",
+          forMs: age,
+          reason: parkedReason(outstanding.run, age),
+          workflowRunId: outstanding.run.id,
+        }
+        : {
+          sessionId: s.id,
+          kind: "unfinished-work",
+          forMs: age,
+          reason: `idle ${mins(age)}m with work unfinished`,
+        };
     }
   }
 
@@ -157,12 +259,13 @@ export function detectStall(
 /** Every currently-stuck session, at most one stall each. */
 export function detectStalls(
   sessions: Session[],
+  runs: readonly WorkflowRunSummary[],
   now: number,
   th: StallThresholds = DEFAULT_STALL_THRESHOLDS,
 ): Stall[] {
   const out: Stall[] = [];
   for (const s of sessions) {
-    const stall = detectStall(s, sessions, now, th);
+    const stall = detectStall(s, sessions, runs, now, th);
     if (stall) out.push(stall);
   }
   return out;

@@ -1,12 +1,11 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { openDaemonDb } from "../fixtures/daemon-db.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 const EVIDENCE = artifactsDir("sdk-idle-restore");
 const TASK = "prove an idle SDK restore stays idle";
@@ -52,15 +51,12 @@ async function sdkSessions(
 }
 
 function turnInProgress(daemon: DaemonHandle, id: string): number | null {
-  const db = openDaemonDb(daemon.home);
-  try {
+  return withDaemonDb(daemon, (db) => {
     const row = db.prepare(
       "SELECT turn_in_progress FROM sdk_sessions WHERE id = ?",
     ).get(id) as { turn_in_progress: number } | undefined;
     return row?.turn_in_progress ?? null;
-  } finally {
-    db.close();
-  }
+  });
 }
 
 test("an idle SDK session remains idle on the Board and outside the working count after restart", async ({

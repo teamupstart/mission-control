@@ -186,6 +186,7 @@ import {
   workEpisodePromptIdentities,
 } from "./db.ts";
 import type { ForemanInviteRow, SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
+import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
@@ -2455,6 +2456,22 @@ export class Registry extends EventEmitter {
     };
     this.sessions.set(sessionId, next);
     this.emitSession(next);
+    // Keep a scout's frozen episode title level with the card. Capture reads the live
+    // `session.name` when the session is still there and this stored copy when it is not,
+    // so letting the two drift would archive the same scout under two different titles
+    // depending only on whether it was captured before or after its session was evicted.
+    // Hung off the one rename path rather than off a second mechanism, which is also why
+    // it is here and not in the route: `renameForTask` and the rename route both land here.
+    //
+    // It cannot throw - see the note on `prompt-journal.ts`. That matters here rather than
+    // being belt and braces: the card has already been repainted and broadcast above, and
+    // the sibling-pane rename and the task resource re-pointing below have not run yet, so
+    // an exception escaping this line would leave a renamed session whose siblings and
+    // bound tasks are silently stale.
+    // The session's CURRENT episode, read rather than ensured: a rename must not mint an
+    // episode as a side effect. Scoping to it is what stops a reused agent's next task
+    // renaming the frozen title of the finished scout still waiting to be captured.
+    refreshScoutPromptTitle(sessionId, sessionWorkEpisodeFor(sessionId)?.episodeId ?? null, name);
 
     const hostedCwds = new Set<string>();
     if (s.cwd) hostedCwds.add(s.cwd);
@@ -2473,6 +2490,14 @@ export class Registry extends EventEmitter {
         };
         this.sessions.set(id, renamed);
         this.emitSession(renamed);
+        // A sibling pane whose name follows the multiplexer's has just been renamed too, so
+        // its frozen scout title has to move with it for the same reason the direct rename's
+        // does. Guarded on the name actually changing rather than fired unconditionally: a
+        // sibling that carries its own name keeps it here, and refreshing that one would
+        // overwrite a scout's frozen title with a heading its card never showed.
+        if (renamed.name !== other.name) {
+          refreshScoutPromptTitle(id, sessionWorkEpisodeFor(id)?.episodeId ?? null, renamed.name);
+        }
       }
     }
 

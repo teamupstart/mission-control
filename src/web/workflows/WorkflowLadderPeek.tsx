@@ -7,6 +7,8 @@ import {
   stageSummary,
 } from "@shared/workflow-stages.ts";
 import { workflowRunLabel, workflowRunTone } from "../components/session-bits.tsx";
+import { Tooltip } from "../components/Tooltip.tsx";
+import { isDragSelection } from "../lib/pointer.ts";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import type { InheritedPass } from "./run-model.ts";
 import {
@@ -301,91 +303,128 @@ function splitSentence(sentence: string): { lead: string | null; rest: string } 
   };
 }
 
+/**
+ * Keep an ordinary primary click on App's single run opener, while preserving the native link
+ * contract for opening a run in another tab. The href is the durable fallback; the callback is
+ * the in-app path that owns navigation history and any route state worth carrying forward.
+ */
+function followRunLink(
+  event: React.MouseEvent<HTMLAnchorElement>,
+  onOpenRun: () => void,
+): void {
+  event.stopPropagation();
+  if (isDragSelection(window.getSelection())) {
+    event.preventDefault();
+    return;
+  }
+  if (
+    event.button !== 0
+    || event.metaKey
+    || event.ctrlKey
+    || event.shiftKey
+    || event.altKey
+  ) return;
+  event.preventDefault();
+  onOpenRun();
+}
+
 export function WorkflowLadderPeek({
   summary,
   detail,
+  onOpenRun,
 }: {
   summary: WorkflowRunSummary;
   detail: WorkflowRunDetail;
+  onOpenRun: () => void;
 }): React.JSX.Element {
   const view = workflowLadderPeekView(summary, detail);
   const sentence = view?.sentence ? splitSentence(view.sentence) : null;
   return (
-    <section
-      className={`wf-tile-peek workflow-${view?.status.tone ?? workflowRunTone(summary)}`}
-      aria-label={`${summary.workflowName}: ${workflowRunLabel(summary)}`}
-    >
-      <header className="wf-tile-peek-head">
-        <span className="wf-tile-peek-name">⌁ {summary.workflowName}</span>
-        <span className="wf-tile-peek-version">v{summary.workflowVersion}</span>
-        <span className={`wf-tile-peek-runstate workflow-${workflowRunTone(summary)}`}>
-          {workflowRunLabel(summary)}
-        </span>
-        <span className="wf-tile-peek-round">R{summary.round} / {summary.maxRepairRounds}</span>
-      </header>
-      {view ? (
-        <div className="wf-tile-peek-rung">
-          <div className="wf-tile-peek-row">
-            <span className="wf-tile-peek-title">
-              <strong>{view.name}</strong>
-              {view.sub && <span>{view.sub}</span>}
-            </span>
-            <span className="wf-tile-peek-state">{view.status.label}</span>
-          </div>
-          {view.members.length > 0 && (
-            <div className="wf-tile-peek-members">
-              {view.members.map((member) => (
-                <span className={`workflow-${member.status.tone}`} key={member.key}>
-                  <span aria-hidden>{glyph(member.status)}</span> {member.name}
-                </span>
-              ))}
+    <Tooltip label={`Open ${summary.workflowName} v${summary.workflowVersion} in Runs`}>
+      <a
+        href={`#/runs/${encodeURIComponent(summary.id)}`}
+        className={`wf-tile-peek workflow-${view?.status.tone ?? workflowRunTone(summary)}`}
+        aria-label={`Open ${summary.workflowName} v${summary.workflowVersion} workflow run: ${workflowRunLabel(summary)}`}
+        onClick={(event) => followRunLink(event, onOpenRun)}
+      >
+        <header className="wf-tile-peek-head">
+          <span className="wf-tile-peek-name">⌁ {summary.workflowName}</span>
+          <span className="wf-tile-peek-version">v{summary.workflowVersion}</span>
+          <span className={`wf-tile-peek-runstate workflow-${workflowRunTone(summary)}`}>
+            {workflowRunLabel(summary)}
+          </span>
+          <span className="wf-tile-peek-round">R{summary.round} / {summary.maxRepairRounds}</span>
+        </header>
+        {view ? (
+          <div className="wf-tile-peek-rung">
+            <div className="wf-tile-peek-row">
+              <span className="wf-tile-peek-title">
+                <strong>{view.name}</strong>
+                {view.sub && <span>{view.sub}</span>}
+              </span>
+              <span className="wf-tile-peek-state">{view.status.label}</span>
             </div>
-          )}
-          {sentence && (
-            <p className="wf-tile-peek-sentence">
-              {sentence.lead && <strong>{sentence.lead}</strong>}{" "}
-              {sentence.rest}
-            </p>
-          )}
-          {/* Last, and outside the rung's own reading: it is about the stages this tile is
-              NOT showing, so putting it above the active rung would answer a question the
-              reader has not asked yet. */}
-          {view.carried && (
-            <p className="wf-tile-peek-carried">
-              <span className="wf-carried-tick" aria-hidden>✓</span> {view.carried}
-            </p>
-          )}
-        </div>
-      ) : (
-        <p className="wf-tile-peek-unavailable">This workflow has no stage-shaped preview.</p>
-      )}
-    </section>
+            {view.members.length > 0 && (
+              <div className="wf-tile-peek-members">
+                {view.members.map((member) => (
+                  <span className={`workflow-${member.status.tone}`} key={member.key}>
+                    <span aria-hidden>{glyph(member.status)}</span> {member.name}
+                  </span>
+                ))}
+              </div>
+            )}
+            {sentence && (
+              <p className="wf-tile-peek-sentence">
+                {sentence.lead && <strong>{sentence.lead}</strong>}{" "}
+                {sentence.rest}
+              </p>
+            )}
+            {/* Last, and outside the rung's own reading: it is about the stages this tile is
+                NOT showing, so putting it above the active rung would answer a question the
+                reader has not asked yet. */}
+            {view.carried && (
+              <p className="wf-tile-peek-carried">
+                <span className="wf-carried-tick" aria-hidden>✓</span> {view.carried}
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="wf-tile-peek-unavailable">This workflow has no stage-shaped preview.</p>
+        )}
+      </a>
+    </Tooltip>
   );
 }
 
 export function WorkflowLadderPeekPlaceholder({
   summary,
   error = false,
+  onOpenRun,
 }: {
   summary: WorkflowRunSummary;
   error?: boolean;
+  onOpenRun: () => void;
 }): React.JSX.Element {
   return (
-    <section
-      className={`wf-tile-peek workflow-${workflowRunTone(summary)} is-placeholder`}
-      aria-label={`${summary.workflowName}: ${workflowRunLabel(summary)}`}
-    >
-      <header className="wf-tile-peek-head">
-        <span className="wf-tile-peek-name">⌁ {summary.workflowName}</span>
-        <span className="wf-tile-peek-version">v{summary.workflowVersion}</span>
-        <span className={`wf-tile-peek-runstate workflow-${workflowRunTone(summary)}`}>
-          {workflowRunLabel(summary)}
-        </span>
-        <span className="wf-tile-peek-round">R{summary.round} / {summary.maxRepairRounds}</span>
-      </header>
-      <p className="wf-tile-peek-unavailable">
-        {error ? "Stage detail is unavailable." : "Loading the current stage…"}
-      </p>
-    </section>
+    <Tooltip label={`Open ${summary.workflowName} v${summary.workflowVersion} in Runs`}>
+      <a
+        href={`#/runs/${encodeURIComponent(summary.id)}`}
+        className={`wf-tile-peek workflow-${workflowRunTone(summary)} is-placeholder`}
+        aria-label={`Open ${summary.workflowName} v${summary.workflowVersion} workflow run: ${workflowRunLabel(summary)}`}
+        onClick={(event) => followRunLink(event, onOpenRun)}
+      >
+        <header className="wf-tile-peek-head">
+          <span className="wf-tile-peek-name">⌁ {summary.workflowName}</span>
+          <span className="wf-tile-peek-version">v{summary.workflowVersion}</span>
+          <span className={`wf-tile-peek-runstate workflow-${workflowRunTone(summary)}`}>
+            {workflowRunLabel(summary)}
+          </span>
+          <span className="wf-tile-peek-round">R{summary.round} / {summary.maxRepairRounds}</span>
+        </header>
+        <p className="wf-tile-peek-unavailable">
+          {error ? "Stage detail is unavailable." : "Loading the current stage…"}
+        </p>
+      </a>
+    </Tooltip>
   );
 }

@@ -1,11 +1,10 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { openDaemonDb } from "../fixtures/daemon-db.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 const EVIDENCE = artifactsDir("workflow-round-limit-grant");
 
@@ -270,8 +269,7 @@ test("a run out of repair rounds offers the grant, and the grant revives it", as
  * `workflow-pull-request-mismatch.spec.ts` makes when it writes an observed head.
  */
 function pinGate(daemon: DaemonHandle, runId: string, prNumber: number): void {
-  const db = openDaemonDb(daemon.home);
-  try {
+  withDaemonDb(daemon, (db) => {
     db.prepare("UPDATE workflow_runs SET gate_state_json = ? WHERE id = ?").run(
       JSON.stringify({
         prKey: `owner/repo#${prNumber}`,
@@ -287,9 +285,7 @@ function pinGate(daemon: DaemonHandle, runId: string, prNumber: number): void {
       }),
       runId,
     );
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /**
@@ -368,8 +364,7 @@ test("the merge queue tells a spent gate apart from a working one", async ({
   dashboard,
   daemon,
 }) => {
-  const db = openDaemonDb(daemon.home);
-  try {
+  withDaemonDb(daemon, (db) => {
     const insert = db.prepare(
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
@@ -380,9 +375,7 @@ test("the merge queue tells a spent gate apart from a working one", async ({
     const at = 1_700_000_000_000;
     insert.run("owner/repo#486", "https://github.example/owner/repo/pull/486", 486, at, "workflow-gate-spent", at, at);
     insert.run("owner/repo#487", "https://github.example/owner/repo/pull/487", 487, at - 1000, "workflow-gate-pending", at - 1000, at - 1000);
-  } finally {
-    db.close();
-  }
+  });
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
   const ledger = dashboard.locator(".sc-ledger");

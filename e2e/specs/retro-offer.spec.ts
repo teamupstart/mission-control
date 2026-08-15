@@ -6,7 +6,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { openDaemonDb } from "../fixtures/daemon-db.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * The retro OFFER: when the dashboard proposes a retrospective, and what one click delivers.
@@ -154,21 +154,17 @@ async function announcePullRequest(daemon: DaemonHandle, session: SessionRow, ur
 /**
  * Write the review the Inspector's poll would have recorded: one round, nothing outstanding.
  *
- * WAL is on, so a second writer is safe here - the same lever `ship-log.spec.ts` uses for the
- * columns only a `gh` call can fill. A real round is a real model call against a real GitHub,
- * and this suite reaches neither.
+ * The same lever `ship-log.spec.ts` uses for the columns only a `gh` call can fill. A real
+ * round is a real model call against a real GitHub, and this suite reaches neither.
  */
 function observeCleanReview(daemon: DaemonHandle): void {
-  const db = openDaemonDb(daemon.home);
-  try {
+  withDaemonDb(daemon, (db) => {
     db.prepare(
       `UPDATE inspector_prs
           SET round = 1, last_reviewed_at = ?, observed_state = 'OPEN', observed_at = ?
         WHERE state = 'open'`,
     ).run(Date.now(), Date.now());
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /**

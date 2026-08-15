@@ -36,6 +36,7 @@ import {
   validateSessionName,
   validateSessionNameAgainstTasks,
   type ActionResult,
+  type InjectResult,
 } from "./actions.ts";
 import {
   getTask as getDurableTask,
@@ -55,6 +56,10 @@ import { isPlanTask } from "./plans/prompt.ts";
 import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
+import {
+  discardScoutPromptBoundary,
+  freezeScoutPromptBoundary,
+} from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
 
 /**
@@ -2152,16 +2157,48 @@ export class TaskManager {
     // assigned plan with no idea which skill to reach for. `assign` refuses a multi-repo task,
     // so the one repository slot this resolves is the session's own checkout - which is also
     // the tree the capture path will read.
-    const r = await inject(
-      this.registry.getSession(s.id) ?? s,
-      withTaskKindContract(ready, ready.intent, {
-        fallbackRoot: s.cwd,
-        planSkills: planSkills?.ok ? planSkills.commands : null,
-      }),
-      undefined,
-      () => this.registry.promptResourceBlockerForSession(s.id),
-    );
+    // The scout boundary is frozen here rather than at dispatch's seam for the same reason
+    // the contract is composed here: this is where the prompt crosses into the runtime on
+    // this path. It matters more on an assignment than on a dispatch - the session already
+    // holds a conversation, so the offset recorded now is the only thing that later
+    // separates this scout's follow-ups from whatever the agent was doing beforehand.
+    const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
+    // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
+    // a refusal does - the task stays in the backlog, so a surviving row would claim an
+    // episode saw a task nobody has been given. `inject` is injectable here and the guard
+    // callback runs inside it, so neither is bound to resolve `{ ok: false }` rather than
+    // reject; the dispatcher's seam guards the same risk the same way.
+    let r: InjectResult;
+    try {
+      r = await inject(
+        this.registry.getSession(s.id) ?? s,
+        withTaskKindContract(ready, ready.intent, {
+          fallbackRoot: s.cwd,
+          planSkills: planSkills?.ok ? planSkills.commands : null,
+        }),
+        undefined,
+        () => this.registry.promptResourceBlockerForSession(s.id),
+      );
+    } catch (err) {
+      discardScoutPromptBoundary(boundary);
+      throw err;
+    }
+    // The boundary is discarded on anything short of a VERIFIED submit, which is a wider
+    // refusal than the task's own. `injectPrompt` returns `{ ok: true, submitVerified: false }`
+    // on two reachable paths - a harness that renders no pending-paste placeholder, and a run
+    // of unreadable captures - and both mean the Enter went out while the text may still be
+    // sitting in the composer. The task still proceeds on `ok` alone, exactly as it always
+    // has: reversing that would change what assignment MEANS, which is not archive
+    // bookkeeping's call to make. But a boundary is a claim that this episode was handed this
+    // prompt, and an unconfirmed paste cannot support that claim.
+    //
+    // The cost of being wrong this way is a scout that loses its frozen title and anchor and
+    // falls back to the legacy task title with an honestly truncated trail. The cost of being
+    // wrong the other way is an archive anchored into a conversation that never started.
+    if (!r.ok || !r.submitVerified) discardScoutPromptBoundary(boundary);
     if (!r.ok) {
+      // Nothing was typed, and the task stays droppable. A boundary left behind would claim
+      // an episode saw a task that is still sitting in the backlog.
       return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
     }
 

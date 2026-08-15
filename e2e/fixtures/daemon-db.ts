@@ -1,34 +1,68 @@
-import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+import type { DaemonHandle } from "./daemon.ts";
 
 /**
- * The daemon's own SQLite database, opened as a SECOND writer, for a spec that has to seed
- * durable state no route can produce.
+ * How long a spec's write waits for the daemon to finish one of its own.
  *
- * The one thing this exists to add is a busy timeout, and it is not decoration.
- *
- * The daemon holds the database in WAL mode, which lets readers and one writer proceed at
- * once - but two WRITERS still serialize, and SQLite's default behaviour for the loser is to
- * fail IMMEDIATELY with `SQLITE_BUSY` ("database is locked") rather than wait. A spec seeding
- * rows is by definition a second writer racing a daemon that writes on its own schedule
- * (pending turns, the workflow sweep, the retro scan), so every direct `new DatabaseSync`
- * was a coin flip weighted by how loaded the machine was.
- *
- * That is exactly what it looked like in practice: a `foreman-decision-ledger` seed died with
- * `database is locked` 838ms into a full-suite run, having passed the previous run and every
- * isolated one - the signature of a collision window, not of a broken assertion. Waiting five
- * seconds costs a green run nothing (the daemon's writes are sub-millisecond) and converts
- * that failure into a pause nobody sees.
- *
- * Read-only openers do not need this and are welcome to keep using `DatabaseSync` directly;
- * WAL readers never block. This is for the writers.
+ * Generous by three orders of magnitude, deliberately. The competing writer is a local
+ * daemon doing single-statement writes that take milliseconds, so a wait anywhere near this
+ * number means something is wedged rather than busy - and a wedged daemon should fail the
+ * spec on its own assertion timeout, which says what it was waiting for, rather than here.
  */
-export function openDaemonDb(home: string): DatabaseSync {
-  const db = new DatabaseSync(join(home, "harness.db"));
-  // Five seconds, matched to the daemon's fastest background writer rather than picked
-  // round: nothing in an e2e daemon holds the write lock for anything like that long, so a
-  // timeout that is reached at all means something is genuinely wedged and the spec should
-  // fail rather than hang.
-  db.exec("PRAGMA busy_timeout = 5000;");
-  return db;
+const BUSY_TIMEOUT_MS = 5_000;
+
+/**
+ * Run `use` against the daemon's own database, with a busy timeout, and close the handle.
+ *
+ * Twelve call sites across ten specs reach the file directly, and they split two ways.
+ *
+ * **Ten of them WRITE**, seeding state nothing in this suite can produce for real - a review
+ * round is a model call, an observed head is a `gh` call, an aged `costTelemetryEnabledAt` is
+ * a week of elapsed time. They write behind the daemon's back and let everything downstream
+ * of the seed stay real. Those are the ones that need the pragma below, and the reason it
+ * exists: **WAL is not the whole story, and four of these specs said it was.** WAL buys
+ * concurrent readers alongside one writer; two WRITERS still serialize on a single write
+ * lock, and a connection with no `busy_timeout` does not wait for that lock for even a
+ * moment. SQLite returns `SQLITE_BUSY` on the spot and `node:sqlite` throws it as `Error:
+ * database is locked`. Observed for real, in `seedEpisodes` in
+ * `foreman-decision-ledger.spec.ts`, when two full `npm run test:e2e` runs shared a machine -
+ * the spec passes 5/5 alone, because alone it never loses the race.
+ *
+ * **The other two only READ** - `dispatch-and-converse` and `sdk-idle-restore` both poll
+ * `sdk_sessions.turn_in_progress` for a turn boundary the HTTP API does not expose. Under WAL
+ * a reader never blocks on the writer, so those two were never at risk and the timeout does
+ * nothing for them. They route through here anyway, because one way to open this file is
+ * worth more than a second entry point that happens to be safe today - and they get the
+ * guaranteed `close()` either way.
+ *
+ * Nothing in `src/` sets this pragma; see the note over `openDb` in `src/server/db.ts` for
+ * why the daemon itself correctly does not need one.
+ *
+ * A scope function rather than an `openDaemonDb()` that hands back a configured handle,
+ * because the argument for centralising the pragma is exactly the argument for centralising
+ * the `close()`: the NEXT spec to want direct access is the one that forgets. Every call
+ * site this replaced was already `open; try { … } finally { db.close() }`, so the shape is
+ * unchanged - it just cannot be got wrong now.
+ *
+ * `use` must be synchronous. `DatabaseSync` has no awaitable operation, and an `async`
+ * callback would have its handle closed out from under it the moment it first suspended,
+ * so returning a thenable is refused rather than left to fail later as a use-after-close.
+ */
+export function withDaemonDb<T>(daemon: DaemonHandle, use: (db: DatabaseSync) => T): T {
+  const db = new DatabaseSync(join(daemon.home, "harness.db"));
+  try {
+    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`);
+    const result = use(db);
+    if (typeof (result as { then?: unknown } | null | undefined)?.then === "function") {
+      throw new Error(
+        "withDaemonDb: the callback returned a promise. It must be synchronous - the handle " +
+          "closes when it returns, which would be before an async callback had finished.",
+      );
+    }
+    return result;
+  } finally {
+    db.close();
+  }
 }

@@ -18,6 +18,7 @@ import {
 } from "./db.ts";
 import { noteKeyFor, type Registry } from "./registry.ts";
 import type { SdkTurn } from "./harness/types.ts";
+import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 
 const DEFAULT_IDLE_SETTLE_MS = 1_500;
@@ -589,6 +590,7 @@ export class PendingTurnManager {
         );
       } else {
         deleteClaimedPendingTurn(turn.id, turn.revision);
+        this.journalDelivered(session.id, turn);
       }
     } catch (err) {
       if (
@@ -831,7 +833,28 @@ export class PendingTurnManager {
     });
     this.pickup.delete(turn.noteKey);
     deleteClaimedPendingTurn(turn.id, turn.revision);
+    this.journalDelivered(sessionId, turn);
     this.registry.refreshPendingTurns(turn.noteKey);
+  }
+
+  /**
+   * Tell the scout prompt journal that this row positively reached the agent.
+   *
+   * Called from the two places that RETIRE a claimed row - an accepted SDK turn and a
+   * proven terminal pickup - and from nowhere else, which is the whole contract. A queued
+   * row is still editable, a recalled one was never delivered, a released one went back to
+   * the outbox, and an uncertain one is a question for the operator; archiving any of them
+   * would put words in the agent's ears it never heard.
+   *
+   * `PendingTurn.id` is the delivery id, so a row that went out, could not be confirmed and
+   * was retried is one prompt rather than two. Non-scout sessions write nothing.
+   */
+  private journalDelivered(sessionId: string, turn: PendingTurn): void {
+    // No try/catch: `journalScoutPrompt` cannot throw, and the reason is stated once on
+    // `prompt-journal.ts` rather than re-argued at each of its callers. A local guard here
+    // would read as though this site were special, and the two sites that turned out to
+    // need one had not copied it.
+    journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, this.deps.now());
   }
 
   private armPickupTimeout(sessionId: string, turn: PendingTurn): void {

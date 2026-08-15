@@ -80,15 +80,23 @@ or "waiting for a pushed head" for the Inspector findings that clear only when t
 poller sees a new head **on the remote**.
 
 It deep-links to the **run** rather than to the session, because the run is where that
-step is named and where its state can be read. What you can do when you arrive depends
-on which status parked it, and the two are genuinely different:
+step is named and where its state can be read. What you can do when you arrive is not a
+property of the status alone - it depends on the run's resumption posture, which is the
+same distinction the Line uses to decide whether the run is counted as yours:
 
-- **`waiting_for_session`** is yours to move. A `manual` version or a Preview binding
-  parks a round that only a human resubmit reopens, and that control is on this page.
-- **`waiting_for_new_head`** is *not*. Nothing on this page - or anywhere else in the
-  app - restarts it: it clears only when the Inspector poller observes a new head that
-  the bound session has **pushed**. The deep link is context rather than a remedy, and
-  the useful next move is to get that branch pushed.
+- **`waiting_for_session` on a `manual` version or a Preview binding** is yours to move.
+  Nothing but a human resubmit reopens it, and that control is on this page. These are
+  the runs counted as **needing you** from the moment they park.
+- **`waiting_for_session` on an `auto` version delivering `live`** is *not* yours, and is
+  never counted as such: the resumption observer reopens it seconds after the agent
+  settles. Reaching this page from a stuck alert means that observer has been retrying
+  and failing for the whole threshold, so the run's own state is the thing to read. A
+  manual resubmit is still available; it is simply not the expected move.
+- **`waiting_for_new_head`** has no such control at all, under any posture. Nothing on
+  this page - or anywhere else in the app - restarts it: it clears only when the
+  Inspector poller observes a new head that the bound session has **pushed**. The deep
+  link is context rather than a remedy, and the useful next move is to get that branch
+  pushed.
 
 ![The run a stuck parked-run notification opens, showing the parked round and its state](images/line-review-parked-toast-run.png)
 

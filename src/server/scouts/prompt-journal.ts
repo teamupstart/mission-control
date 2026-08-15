@@ -1,4 +1,5 @@
 import type { Session, Task } from "@shared/types.ts";
+import type { InjectResult } from "../actions.ts";
 import type { SessionWorkEpisode } from "../db.ts";
 import { sessionMessages } from "../harness/index.ts";
 import { isScoutTask } from "./prompt.ts";
@@ -107,6 +108,26 @@ export function freezeScoutPromptBoundary(
  */
 export function discardScoutPromptBoundary(context: ScoutPromptContext | null): void {
   if (context) clearScoutPromptContext(context.taskId, context.episodeId);
+}
+
+/**
+ * Whether an immediate delivery result is proof enough to archive a HUMAN prompt.
+ *
+ * `ok` is not that proof on a terminal session. `awaitPasteSubmitted` returns
+ * `{ ok: true, submitVerified: false }` on two reachable paths - a harness that renders no
+ * pending-paste placeholder, so one Enter is spent and the outcome is honestly unverified,
+ * and a run of unreadable captures that ends the wait with the Enter already sent. In both
+ * the text may still be sitting in the composer, which is the same doubt `PendingTurnManager`
+ * records as `uncertain` and refuses to journal. An embedded session always reports a
+ * verified submit (`deliverToDriver` has no ambiguous states), so this costs it nothing.
+ *
+ * Only human prompts are held to it. An automated row EXCLUDES a transcript turn rather than
+ * archiving one, so a doubtful one excludes a turn that never appears and costs nothing,
+ * while a missing one publishes a machine's words as a person's - the failure runs the other
+ * way, and so does the guard.
+ */
+export function acceptedHumanDelivery(result: Pick<InjectResult, "ok" | "submitVerified">): boolean {
+  return result.ok && result.submitVerified;
 }
 
 /**

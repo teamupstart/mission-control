@@ -86,9 +86,12 @@ const {
   scoutPromptFingerprint,
   scoutPromptTurns,
 } = await import("../src/server/scouts/prompt-context.ts");
-const { discardScoutPromptBoundary, freezeScoutPromptBoundary, journalScoutPrompt } = await import(
-  "../src/server/scouts/prompt-journal.ts"
-);
+const {
+  acceptedHumanDelivery,
+  discardScoutPromptBoundary,
+  freezeScoutPromptBoundary,
+  journalScoutPrompt,
+} = await import("../src/server/scouts/prompt-journal.ts");
 const { forgetInjections, observeInjections, originOf, recordInjection } = await import(
   "../src/server/injections.ts"
 );
@@ -649,6 +652,29 @@ test("both task-delivery seams freeze a boundary, not just the dispatcher", () =
   // And both undo it when the delivery they were freezing for did not happen.
   assert.match(src("src/server/dispatcher.ts"), /discardScoutPromptBoundary\(/);
   assert.match(src("src/server/tasks.ts"), /discardScoutPromptBoundary\(/);
+});
+
+test("an unverified terminal submit is not proof a human prompt was delivered", () => {
+  // `ok` alone is not the boundary on a terminal session. `awaitPasteSubmitted` returns
+  // `{ ok: true, submitVerified: false }` for a harness that renders no pending-paste
+  // placeholder, and again after a run of unreadable captures - the Enter went out, and the
+  // text may still be sitting in the composer. Reachable today through `WorkQueue`'s
+  // wrap-up answer, which sends with `buffer: false` and can land on a scout's terminal
+  // session. Archiving that as delivered is the same mistake as archiving a recalled turn.
+  assert.equal(acceptedHumanDelivery({ ok: true, submitVerified: false }), false);
+  // What the two definite outcomes say. An embedded session always reports the first:
+  // `deliverToDriver` has no ambiguous state, so this guard costs it nothing.
+  assert.equal(acceptedHumanDelivery({ ok: true, submitVerified: true }), true);
+  assert.equal(acceptedHumanDelivery({ ok: false, submitVerified: false }), false);
+  // A refusal that somehow claimed verification is still a refusal: nothing was typed.
+  assert.equal(acceptedHumanDelivery({ ok: false, submitVerified: true }), false);
+});
+
+test("the inject route gates its human journal on the verified submit, not on ok", () => {
+  // The route owns this call and has no injectable delivery seam, so the guard is pinned
+  // where it is written. `ok`-only here is the regression: it archived an unverified paste.
+  const routes = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");
+  assert.match(routes, /origin === "human" && acceptedHumanDelivery\(r\)/);
 });
 
 test("the routes journal a human turn in exactly one place", () => {

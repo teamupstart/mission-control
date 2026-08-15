@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Investigation and engineering plan for native Mission Control worktree management">
+  <title>Native worktree management</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --canvas: #e9ece7;
+      --paper: #fffdf7;
+      --ink: #1d2926;
+      --muted: #65706c;
+      --line: #c8d0ca;
+      --forest: #173f34;
+      --moss: #3d765b;
+      --mint: #dcebe1;
+      --copper: #b76536;
+      --copper-pale: #f4dfd1;
+      --blue: #396b79;
+      --blue-pale: #dce9ec;
+      --red: #a34943;
+      --red-pale: #f3dedb;
+      --code-bg: #17231f;
+      --code-ink: #edf5f0;
+      --shadow: 0 24px 70px rgba(25, 54, 43, .14);
+      --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 0, rgba(61, 118, 91, .12), transparent 34rem),
+        linear-gradient(rgba(23, 63, 52, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 63, 52, .035) 1px, transparent 1px),
+        var(--canvas);
+      background-size: auto, 28px 28px, 28px 28px, auto;
+      font: 16px/1.66 var(--body);
+    }
+    a { color: var(--moss); text-underline-offset: .2em; }
+    a:hover { color: var(--copper); }
+    a:focus-visible { outline: 3px solid #79b89a; outline-offset: 4px; }
+    code, pre, .eyebrow, .pill, th { font-family: var(--mono); }
+    .shell {
+      width: min(1220px, calc(100% - 28px));
+      margin: 22px auto 72px;
+      overflow: hidden;
+      background: var(--paper);
+      border-top: 7px solid var(--moss);
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(44px, 8vw, 92px) clamp(24px, 7vw, 84px) 64px;
+      color: #f1f7f3;
+      background: linear-gradient(125deg, #12352d 0%, #1d5141 62%, #2d6950 100%);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -130px;
+      top: -190px;
+      width: 500px;
+      height: 500px;
+      border: 82px solid rgba(191, 222, 202, .11);
+      border-radius: 48% 52% 47% 53%;
+      transform: rotate(18deg);
+    }
+    .hero > * { position: relative; z-index: 1; }
+    .eyebrow {
+      margin: 0 0 20px;
+      color: #a9d7be;
+      font-size: .74rem;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, h4 { font-family: var(--display); font-weight: 600; }
+    h1 {
+      max-width: 880px;
+      margin: 0;
+      font-size: clamp(3rem, 7vw, 6.3rem);
+      line-height: .92;
+      letter-spacing: -.047em;
+    }
+    .lede { max-width: 820px; margin: 29px 0 0; color: #d8e9df; font-size: 1.14rem; }
+    .verdict {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 15px;
+      max-width: 920px;
+      margin-top: 34px;
+      padding: 19px 22px;
+      color: #173e32;
+      background: #dceee3;
+      border-left: 6px solid #78b58f;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, .17);
+    }
+    .verdict .mark { font: 800 1.2rem var(--mono); }
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      padding: 16px clamp(22px, 6vw, 72px);
+      background: #e0ebe3;
+      border-bottom: 1px solid var(--line);
+    }
+    nav a { font: 700 .74rem var(--mono); text-decoration: none; text-transform: uppercase; letter-spacing: .03em; }
+    main { padding: 25px clamp(22px, 6vw, 72px) 80px; }
+    h2 {
+      margin: 70px 0 18px;
+      padding-top: 10px;
+      color: var(--forest);
+      font-size: clamp(2rem, 4vw, 3.25rem);
+      line-height: 1.04;
+      letter-spacing: -.032em;
+      scroll-margin-top: 20px;
+    }
+    h3 { margin: 36px 0 10px; color: var(--forest); font-size: 1.55rem; scroll-margin-top: 20px; }
+    h4 { margin: 24px 0 7px; font-size: 1.18rem; }
+    p, li { max-width: 87ch; }
+    p { margin: 12px 0; }
+    li { margin: 6px 0; }
+    blockquote { margin: 22px 0; padding: 12px 20px; background: var(--mint); border-left: 5px solid var(--moss); }
+    strong { color: var(--forest); }
+    hr { margin: 48px 0; border: 0; border-top: 1px solid var(--line); }
+    .status-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .status-strip div { padding: 16px 20px; background: var(--paper); }
+    .status-strip span { display: block; color: var(--muted); font: .69rem var(--mono); text-transform: uppercase; letter-spacing: .1em; }
+    .status-strip strong { display: block; margin-top: 3px; font-size: .97rem; }
+    .table-wrap, .code-wrap, .diagram { max-width: 100%; overflow-x: auto; margin: 25px 0; }
+    table { width: 100%; min-width: 780px; border-collapse: collapse; font-size: .94rem; }
+    th, td { padding: 11px 13px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: #f0f7f2; background: var(--forest); font-size: .72rem; letter-spacing: .05em; text-transform: uppercase; }
+    tbody tr:nth-child(even) { background: #eef2ed; }
+    :not(pre) > code { padding: .12em .34em; color: #1e4a3d; background: #e2ece5; border-radius: 4px; font-size: .9em; }
+    pre { margin: 0; padding: 19px 21px; color: var(--code-ink); background: var(--code-bg); font-size: .84rem; line-height: 1.58; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .diagram { padding: 18px; background: #edf3ef; border: 1px solid var(--line); }
+    .diagram svg { display: block; width: 100%; min-width: 930px; height: auto; }
+    .diagram.compact svg { min-width: 870px; }
+    .diagram text { font: 700 13px var(--mono); fill: var(--ink); text-anchor: middle; }
+    .diagram .sub { font-size: 10.5px; font-weight: 500; fill: var(--muted); }
+    .diagram .node rect { fill: var(--paper); stroke: var(--moss); stroke-width: 2; }
+    .diagram .node.old rect { fill: var(--copper-pale); stroke: var(--copper); }
+    .diagram .node.new rect { fill: var(--mint); stroke: var(--moss); stroke-width: 2.5; }
+    .diagram .diagram-kicker { font-size: 12px; letter-spacing: .11em; text-anchor: start; }
+    .diagram .old-text { fill: var(--copper); }
+    .diagram .new-text { fill: var(--moss); }
+    .diagram .diagram-note { font-size: 10.5px; font-weight: 500; text-anchor: start; fill: var(--muted); }
+    .diagram .divider { stroke: var(--line); stroke-width: 2; stroke-dasharray: 7 8; }
+    .diagram .old-arrow, .diagram .new-arrow { fill: none; stroke-width: 2.3; }
+    .diagram .old-arrow { stroke: var(--copper); marker-end: url(#arch-arrow-old); }
+    .diagram .new-arrow { stroke: var(--moss); marker-end: url(#arch-arrow-new); }
+    .diagram .new-arrow.migration { marker-end: url(#migration-arrow); }
+    .diagram .dotted { stroke-dasharray: 5 5; }
+    .diagram .old-fill { fill: var(--copper); }
+    .diagram .new-fill { fill: var(--moss); }
+    .review {
+      margin: 48px 0 8px;
+      padding: 22px 24px;
+      background: var(--blue-pale);
+      border: 1px solid color-mix(in srgb, var(--blue) 45%, transparent);
+      border-left: 6px solid var(--blue);
+    }
+    .review strong { color: var(--blue); }
+    footer { padding: 25px clamp(22px, 6vw, 72px); color: var(--muted); background: #e0ebe3; border-top: 1px solid var(--line); font-size: .84rem; }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 14px, 1220px); margin-top: 7px; }
+      .status-strip { grid-template-columns: 1fr; }
+      .verdict { grid-template-columns: 1fr; }
+      main { padding-bottom: 58px; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: #101614; --paper: #18221e; --ink: #e7eee9; --muted: #aab7b0;
+        --line: #394941; --forest: #8bc7a6; --moss: #7fbd9d; --mint: #203a2d;
+        --copper: #e29a6f; --copper-pale: #3a2a22; --blue: #82bac8; --blue-pale: #20343a;
+        --red: #da827a; --red-pale: #3b2524; --code-bg: #0d1512; --code-ink: #edf5f0;
+        --shadow: 0 24px 70px rgba(0, 0, 0, .42);
+      }
+      nav, footer { background: #172b22; }
+      tbody tr:nth-child(even) { background: #202d27; }
+      :not(pre) > code { color: #dff1e5; background: #294036; }
+      .status-strip div { background: #18221e; }
+      .verdict { color: #e3f3e9; background: #203b2e; }
+      .diagram { background: #15271f; }
+      .diagram .node rect { fill: #1a2721; }
+      .diagram .node.old rect { fill: #3a2a22; }
+      .diagram .node.new rect { fill: #203a2d; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <p class="eyebrow">Investigation and engineering plan · 15 August 2026</p>
+      <h1>Native worktree management</h1>
+      <p class="lede">Absorb Treehouse's pooled-worktree mechanics into Mission Control, consolidate overlapping ownership logic, and retire the runtime dependency without losing fail-closed safety.</p>
+      <div class="verdict"><span class="mark">→</span><span><strong>Recommended direction:</strong> one daemon-owned, SQLite-backed worktree manager, with a staged read/return-only bridge for existing Treehouse leases.</span></div>
+    </header>
+      <div class="status-strip" aria-label="Plan status">
+      <div><span>Status</span><strong>Approved for phased planning</strong></div>
+      <div><span>Scope</span><strong>Plan only, no application changes</strong></div>
+      <div><span>Evidence</span><strong>Mission Control + Treehouse v2.1.1</strong></div>
+    </div>
+    <nav aria-label="Plan sections">
+      <a href="#executive-recommendation">Recommendation</a>
+      <a href="#what-treehouse-actually-provides">Treehouse</a>
+      <a href="#redundant-and-conflicting-implementations">Overlap</a>
+      <a href="#target-architecture">Architecture</a>
+      <a href="#legacy-migration-and-dependency-removal">Migration</a>
+      <a href="#delivery-sequence">Delivery</a>
+      <a href="#adopted-decisions">Decisions</a>
+      <a href="#success-criteria">Success</a>
+    </nav>
+    <main>
+      <ul>
+<li><strong>Status:</strong> Approved for phased implementation planning</li>
+<li><strong>Date:</strong> 2026-08-15</li>
+<li><strong>Scope:</strong> Planning only. This document proposes no application changes by itself.</li>
+<li><strong>Decision record:</strong> All four recommended plan choices and the phased implementation follow-up were
+submitted in Mission Control on 2026-08-15.</li>
+</ul>
+<h2 id="executive-recommendation">Executive recommendation</h2>
+<p>Replace Treehouse as a runtime dependency with one daemon-owned, SQLite-backed worktree manager
+implemented in Mission Control. Route task dispatch, workflow checks, and manual development
+sessions through that manager. Keep the existing task and check lifecycle rules above it, reuse the
+Git and process primitives Mission Control already has, and add an operator-facing worktree inventory
+with conservative return, prune, and destroy actions.</p>
+<p>Do not port Treehouse wholesale and do not create another state file beside Mission Control&#x27;s
+database. Treehouse is deliberately a small, local CLI primitive. Mission Control has already built
+most of the application-specific policy around it: provider selection, exact-commit pinning,
+multi-repository rollback, durable check ownership, leaked-lease recovery, session pins, and explicit
+task cleanup. A native manager can consolidate those layers while preserving the fail-closed safety
+properties that make pooled worktrees trustworthy.</p>
+<p>The safest transition is a staged drain. New acquisitions move to a new persisted provider while the
+existing Treehouse adapter remains only as a compatibility bridge for durable rows and leases that
+already say <code>treehouse</code>. Mission Control must never adopt, reset, or delete a legacy lease merely
+because its path looks idle.</p>
+<h2 id="investigation-basis">Investigation basis</h2>
+<p>This investigation covered:</p>
+<ul>
+<li>Mission Control at commit <code>aa0928d2</code> on 2026-08-15, including the dispatcher, pooled-lease reaper,
+workflow check leases, process discovery, Git utilities, setup scripts, database schema, UI, and
+existing worktree plans and contracts.</li>
+<li>The locally installed Treehouse <code>v2.1.1</code> command surface and a read-only JSON status snapshot of
+this repository&#x27;s live pool.</li>
+<li>Treehouse&#x27;s current upstream README, vision, changelog, configuration, pool, Git, process, state,
+and license sources. Treehouse is MIT-licensed, but an independent TypeScript implementation is
+preferable to copying Go source. Any substantial copied source would require retaining its license
+notice.</li>
+</ul>
+<p>The live pool snapshot is operational evidence, not a cleanup authorization. It contained 54 slots:
+46 leased and 8 available. Only 5 leased entries reported a process. The repository currently asks
+for <code>max_trees = 32</code>, so the pool also demonstrates a lifecycle gap: lowering the configured ceiling
+does not right-size an already-grown pool. An idle-looking lease can still be intentional, so none of
+these leases should be reclaimed without correlating Mission Control ownership and applying the
+safety checks in this plan.</p>
+<h2 id="what-treehouse-actually-provides">What Treehouse actually provides</h2>
+<p>Treehouse&#x27;s design is narrower than Mission Control&#x27;s. It is a no-daemon CLI that owns reusable Git
+worktree allocation and local safety, while intentionally avoiding agent orchestration.</p>
+<div class="table-wrap"><table><thead><tr><th>Treehouse capability</th><th>Current behavior</th><th>Native disposition</th></tr></thead><tbody><tr><td>Pool identity</td><td>A directory under the configured root, keyed by repository name plus a hash of remote URL or repository path</td><td>Key a pool by the canonical Git common directory. This avoids making separate local clones with the same remote share worktree bookkeeping.</td></tr><tr><td>Acquire</td><td><code>get --lease --json</code> chooses an available slot or creates one up to <code>max_trees</code>, resets it, and returns a random lease ID, holder, and timestamp</td><td>Implement as a durable daemon transaction plus a Git materialization step. Return <code>{ path, leaseId, owner, baseSha }</code>.</td></tr><tr><td>Return</td><td><code>return --if-lease-id --if-lease-holder</code> checks lease identity under the same cross-process lock, then resets and clears the lease</td><td>Use a random lease ID and conditional SQLite transition. A stale caller cannot release a newer lease.</td></tr><tr><td>Status</td><td><code>status --json</code> reports slot state, lease metadata, and processes whose current directory is under a worktree</td><td>Expose structured daemon status and a dashboard inventory. Reuse Mission Control&#x27;s process inventory and cwd resolution.</td></tr><tr><td>Dirty protection</td><td>Untracked files count as dirty. Reset uses <code>git reset --hard</code> and <code>git clean -fd</code>, preserving ignored caches</td><td>Reuse <code>resetWorktreeToCommit</code> and the existing snapshot/dirty helpers. Never use <code>clean -fdx</code>.</td></tr><tr><td>Process protection</td><td>Scans every process cwd before reuse or destructive actions</td><td>Build a generic bounded occupancy service from existing <code>ps</code>, <code>lsof</code>, terminal, and check process identity code. Unknown occupants fail closed.</td></tr><tr><td>Recovery</td><td>Atomic state writes under a file lock; corrupt state is reconstructed and every uncertain slot is quarantined</td><td>SQLite is the authoritative state store. Reconcile database rows, Git registrations, and domain owners at startup, quarantining uncertainty.</td></tr><tr><td>Prune</td><td>Dry-run by default; removes only clean, merged, idle, unleased slots unless risk flags are given</td><td>Provide preview-first reclaim and right-sizing. Safe prune is limited to available, clean, merged, process-free slots.</td></tr><tr><td>Destroy</td><td>Narrow target, preview by default, explicit flags for unlanded, in-use, or leased work</td><td>Provide exact-scope preview and explicit risk acknowledgements. No implicit global destroy.</td></tr><tr><td>Enter</td><td>Prints or opens an existing named worktree without changing ownership</td><td>Keep the existing open-terminal action and make every inventory path copyable/openable.</td></tr><tr><td>Init/config</td><td>User config controls roots and hooks; repository <code>treehouse.toml</code> controls safe settings but not executable hooks</td><td>Move capacity and enablement into Mission Control settings. Setup/warm commands remain explicit operator configuration, never repository-controlled execution.</td></tr><tr><td>Update/completion</td><td>Installs and operates the standalone CLI</td><td>These disappear with the external runtime dependency. They are distribution features, not worktree-domain behavior.</td></tr></tbody></table></div>
+<p>Treehouse <code>v2.1.1</code> is safer than the contract Mission Control currently codes against. In particular,
+it now exposes JSON lease identity and conditional return. Mission Control&#x27;s adapter still describes
+and parses an older text-only protocol. Updating that bridge can make the migration safer, but it
+should not become another long-lived abstraction that must later be replaced.</p>
+<h2 id="what-mission-control-already-owns">What Mission Control already owns</h2>
+<p>Mission Control is already more than a Treehouse caller:</p>
+<ul>
+<li><code>src/server/dispatcher.ts</code> chooses Treehouse or a throwaway Git provider, pins every checkout to an
+exact base commit, provisions multiple repositories all-or-nothing, records the provider, and
+unwinds partial failures with the matching cleanup mechanism.</li>
+<li><code>src/server/pool.ts</code> discovers relevant repositories, parses Treehouse status, correlates task,
+session, and check pins, verifies no process, dirt, or unmerged work, and performs background and
+dry-pool leak recovery.</li>
+<li><code>src/server/pool-lease.ts</code> centralizes most daemon Treehouse calls, serializes per-repository call
+sequences, and maintains in-memory acquisition generations and pending-lease timestamps to reduce
+status-then-return races.</li>
+<li><code>src/server/workflows/check-lease.ts</code> has its own durable lease table and state machine, startup
+recovery, supervisor identity, retry/backoff behavior, and a Git fallback. These are workflow
+execution semantics, not generic pool semantics.</li>
+<li><code>src/server/discovery/processes.ts</code>, <code>src/server/discovery/proc-cwd.ts</code>,
+<code>src/server/workflows/check-identity.ts</code>, and <code>src/server/workflows/check-group.ts</code> already provide
+process enumeration, cwd lookup, stable process identity, and guarded termination for processes
+Mission Control owns.</li>
+<li><code>src/server/util/git.ts</code>, <code>src/server/actions.ts</code>, and
+<code>src/server/git/ensemble-snapshot.ts</code> already resolve repository identity, calculate remote/default
+refs, inspect changes, create snapshots, and perform exact reset/clean operations.</li>
+<li><code>scripts/new-session.mjs</code> independently acquires a Treehouse lease for <code>make session</code>, while
+<code>scripts/worktree-setup.mjs</code> warms dependencies after acquisition.</li>
+<li>The database already persists <code>worktree_path</code>, exact base SHA, and provider for task and check
+ownership. The daemon is the only permitted SQLite writer.</li>
+</ul>
+<p>The current fallback prevents Treehouse absence from blocking isolation, but it is intentionally
+cold and disposable. It does not provide pooling, inventory, capacity management, recovery, or a
+manual session lease.</p>
+<h2 id="redundant-and-conflicting-implementations">Redundant and conflicting implementations</h2>
+<div class="table-wrap"><table><thead><tr><th>Area</th><th>Current duplication or conflict</th><th>Consolidation</th></tr></thead><tbody><tr><td>Provider decision</td><td>Dispatch requires both Treehouse and committed <code>treehouse.toml</code>; checks use Treehouse whenever the binary exists</td><td>Give the native manager one enablement/capacity policy used by tasks, checks, and manual sessions.</td></tr><tr><td>Lease identity</td><td>Treehouse now has stable lease IDs; Mission Control instead uses holder history, path equality, an in-process mutex, acquisition generations, and a pending-registration TTL</td><td>Make a persisted random lease ID the compare-and-swap identity. Keep the compatibility bridge conditional on Treehouse&#x27;s real lease ID when available.</td></tr><tr><td>Status parsing</td><td><code>pool.ts</code> and check ownership parse human-readable Treehouse output independently of the structured protocol now available</td><td>Remove text parsing from native paths. Legacy reads use <code>status --json</code> in one adapter.</td></tr><tr><td>Ownership state</td><td>Treehouse state, task rows, check rows, in-memory pending maps, live registry state, and worktree paths all carry partial ownership facts</td><td>Make the native slot/lease row allocator authority. Task and check rows remain domain authority and are reconciled against it.</td></tr><tr><td>Repository locking</td><td>Mission Control has an in-process per-repository mutex because Treehouse calls are separate processes; Treehouse also takes a cross-process state lock</td><td>Route all new allocations through the single daemon and serialize with SQLite transactions plus per-pool asynchronous work queues.</td></tr><tr><td>Process safety</td><td>Treehouse scans cwd with <code>gopsutil</code>; Mission Control separately runs <code>ps</code>, <code>lsof</code>, terminal tracking, and check identity logic</td><td>Add one occupancy query over the existing process substrate. Never copy a second process scanner into the pool.</td></tr><tr><td>Git reset and safety</td><td>Treehouse owns reset/clean/merged checks; Mission Control repeats exact pinning, dirty checks, default-branch checks, and snapshots</td><td>Reuse Mission Control&#x27;s existing Git functions, then extract shared helpers only where the native manager and current callers need the same operation.</td></tr><tr><td>Cleanup lifecycles</td><td>Generic leaked-lease reaping and check-specific lease reclaiming each contain Treehouse ownership and return rules</td><td>Put acquisition, conditional release, status, quarantine, and safe reclaim in the native manager. Keep task retention and check retry/supervisor state in their domain managers.</td></tr><tr><td>Manual acquisition</td><td><code>scripts/new-session.mjs</code> shells out directly and duplicates holder conventions because bare Node cannot import TypeScript</td><td>Make the script a daemon client or retire it. It must not become a second database writer or native allocator.</td></tr><tr><td>Configuration</td><td><code>treehouse.toml</code>, Treehouse user config, <code>MISSION_POOL_REAP_MS</code>, setup installation logic, and code-level defaults influence different slices</td><td>Introduce one Mission Control pool configuration model and a documented migration for the existing repository opt-in.</td></tr><tr><td>Operations UI</td><td>Task cleanup and open-terminal actions exist, but there is no pool capacity, status, quarantine, prune, destroy, or legacy-drain surface</td><td>Add one worktree operations surface backed by daemon APIs and SSE invalidation.</td></tr></tbody></table></div>
+<p>The largest consolidation opportunity is not deleting the check lease manager. It is narrowing it.
+Checks still need durable attempt ownership, supervisor identity, retries, and provider-authoritative
+cleanup. The generic manager should supply a leased checkout; the check manager should decide what a
+workflow attempt means and when it may release that checkout.</p>
+<h2 id="target-architecture">Target architecture</h2>
+<h3 id="ownership-boundary">Ownership boundary</h3>
+<p>Create a <code>WorktreeManager</code> under the daemon with one provider registry:</p>
+<ul>
+<li><strong>Native pooled provider:</strong> default target for new tasks, checks, and manual sessions.</li>
+<li><strong>Git disposable provider:</strong> retained as an explicit emergency/degraded provider and for rollback
+during rollout. It remains cold and provider-authoritative.</li>
+<li><strong>Treehouse legacy provider:</strong> read/return compatibility only for records created before cutover.
+It cannot serve new native acquisitions after the cutover flag is enabled.</li>
+</ul>
+<p>Dispatcher, check execution, and manual session entry call the same manager API. Ensemble dispatch
+continues to call the ordinary dispatcher, so this plan does not create an ensemble-specific
+provisioner.</p>
+<div>
+<div class="diagram" role="img" aria-label="Before and after worktree ownership flow">
+  <svg viewBox="0 0 1120 510" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arch-arrow-old" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="old-fill"/></marker>
+      <marker id="arch-arrow-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="new-fill"/></marker>
+    </defs>
+    <text x="30" y="34" class="diagram-kicker old-text">TODAY: SPLIT AUTHORITY</text>
+    <text x="590" y="34" class="diagram-kicker new-text">TARGET: ONE NATIVE ALLOCATOR</text>
+    <line x1="560" y1="12" x2="560" y2="492" class="divider"/>
+
+    <g class="node"><rect x="34" y="72" width="142" height="58" rx="10"/><text x="105" y="96">Task</text><text x="105" y="115" class="sub">dispatcher</text></g>
+    <g class="node"><rect x="34" y="164" width="142" height="58" rx="10"/><text x="105" y="188">Check lease</text><text x="105" y="207" class="sub">manager</text></g>
+    <g class="node"><rect x="34" y="256" width="142" height="58" rx="10"/><text x="105" y="280">Manual</text><text x="105" y="299" class="sub">session script</text></g>
+    <g class="node old"><rect x="235" y="145" width="150" height="86" rx="12"/><text x="310" y="177">Treehouse CLI</text><text x="310" y="197" class="sub">allocator + reset</text><text x="310" y="216" class="sub">process scan</text></g>
+    <g class="node"><rect x="414" y="79" width="118" height="62" rx="10"/><text x="473" y="104">State file</text><text x="473" y="123" class="sub">+ file lock</text></g>
+    <g class="node"><rect x="414" y="179" width="118" height="62" rx="10"/><text x="473" y="204">Git</text><text x="473" y="223" class="sub">worktrees</text></g>
+    <g class="node"><rect x="235" y="321" width="150" height="74" rx="10"/><text x="310" y="347">Mission DB</text><text x="310" y="366" class="sub">tasks + checks</text><text x="310" y="385" class="sub">partial ownership</text></g>
+    <g class="node"><rect x="34" y="359" width="142" height="58" rx="10"/><text x="105" y="383">Pool reaper</text><text x="105" y="402" class="sub">text status parser</text></g>
+
+    <path d="M176 101 H216 Q235 101 235 145" class="old-arrow"/>
+    <path d="M176 193 H235" class="old-arrow"/>
+    <path d="M176 285 H216 Q235 285 235 231" class="old-arrow"/>
+    <path d="M385 170 Q402 170 414 119" class="old-arrow"/>
+    <path d="M385 205 H414" class="old-arrow"/>
+    <path d="M176 388 H214 Q235 388 235 231" class="old-arrow"/>
+    <path d="M176 118 Q206 340 235 350" class="old-arrow dotted"/>
+    <path d="M176 210 Q205 342 235 358" class="old-arrow dotted"/>
+
+    <g class="node"><rect x="600" y="63" width="142" height="58" rx="10"/><text x="671" y="87">Task</text><text x="671" y="106" class="sub">dispatcher</text></g>
+    <g class="node"><rect x="600" y="146" width="142" height="58" rx="10"/><text x="671" y="170">Check lease</text><text x="671" y="189" class="sub">manager</text></g>
+    <g class="node"><rect x="600" y="229" width="142" height="58" rx="10"/><text x="671" y="253">Manual</text><text x="671" y="272" class="sub">session client</text></g>
+    <g class="node"><rect x="600" y="312" width="142" height="58" rx="10"/><text x="671" y="336">Worktrees UI</text><text x="671" y="355" class="sub">status + actions</text></g>
+    <g class="node new"><rect x="798" y="157" width="168" height="110" rx="14"/><text x="882" y="190">WorktreeManager</text><text x="882" y="212" class="sub">lease identity</text><text x="882" y="232" class="sub">state + safety</text><text x="882" y="252" class="sub">provider registry</text></g>
+    <g class="node"><rect x="994" y="65" width="102" height="62" rx="10"/><text x="1045" y="90">SQLite</text><text x="1045" y="109" class="sub">slots + leases</text></g>
+    <g class="node"><rect x="994" y="181" width="102" height="62" rx="10"/><text x="1045" y="206">Git</text><text x="1045" y="225" class="sub">worktrees</text></g>
+    <g class="node"><rect x="994" y="297" width="102" height="62" rx="10"/><text x="1045" y="322">Existing</text><text x="1045" y="341" class="sub">process scan</text></g>
+
+    <path d="M742 92 H770 Q798 92 798 171" class="new-arrow"/>
+    <path d="M742 175 H798" class="new-arrow"/>
+    <path d="M742 258 H798" class="new-arrow"/>
+    <path d="M742 341 H770 Q798 341 798 253" class="new-arrow"/>
+    <path d="M966 184 Q985 168 994 119" class="new-arrow"/>
+    <path d="M966 212 H994" class="new-arrow"/>
+    <path d="M966 240 Q985 255 994 306" class="new-arrow"/>
+    <text x="30" y="452" class="diagram-note">Treehouse owns slot state; Mission Control reconstructs app ownership</text>
+    <text x="30" y="470" class="diagram-note">across DB rows, holders, pins, and in-memory race guards.</text>
+    <text x="590" y="452" class="diagram-note">Domain owners call one daemon allocator.</text>
+    <text x="590" y="470" class="diagram-note">SQLite records every native transition; Git and process safety sit below.</text>
+  </svg>
+</div></div>
+<p>The before-state has two partially overlapping authorities connected through a text-oriented CLI.
+The after-state has one allocator authority inside the daemon, with domain-specific owners above it
+and Git/process mechanisms below it.</p>
+<h3 id="persisted-model-and-state-machine">Persisted model and state machine</h3>
+<p>Add append-only schema rather than repurposing existing rows:</p>
+<ul>
+<li><code>worktree_pools</code>: stable pool ID, canonical Git common directory, display repository root, pool
+path, enabled flag, maximum slots, optional operator-approved setup profile, timestamps, and last
+reconciliation result.</li>
+<li><code>worktree_slots</code>: stable slot ID and ordinal, pool ID, path, lifecycle state, exact HEAD, lease ID,
+owner kind, owner key, lease timestamps, last-used timestamp, quarantine reason, and last error.</li>
+</ul>
+<p>The main lifecycle is:</p>
+<div class="code-wrap"><pre><code class="language-text">provisioning -&gt; available -&gt; leased -&gt; returning -&gt; available
+       |             |          |          |
+       +-------------+----------+----------+-&gt; quarantined
+
+available -&gt; pruning -&gt; removed
+</code></pre></div>
+<p>Every filesystem mutation is bracketed by a durable intent state. A reservation is committed before
+<code>git worktree add</code>; a return is committed before reset; a prune is committed before removal. On
+restart, reconciliation compares each intent with Git&#x27;s registered worktree list and the filesystem.
+Missing, mismatched, or ambiguous resources are quarantined instead of guessed back into service.</p>
+<p>Each acquisition creates a cryptographically random lease ID and an owner tuple such as
+<code>task:&lt;task-id&gt;:&lt;repo-slot&gt;</code>, <code>check:&lt;attempt-id&gt;</code>, or <code>manual:&lt;session-id&gt;</code>. Release is a conditional
+transition on slot ID, lease ID, and owner. This replaces the current holder-label and in-memory ABA
+mitigations for native worktrees.</p>
+<p>Keep <code>WorktreeProvider</code> append-only. Add a new value such as <code>mission</code>; never rename or reinterpret
+the persisted <code>treehouse</code> and <code>git</code> values. Existing task and check rows continue to select their
+original cleanup provider.</p>
+<h3 id="repository-identity-and-paths">Repository identity and paths</h3>
+<p>Resolve every input path to the owning main repository and canonical Git common directory before
+looking up a pool. Hash that common directory for the on-disk pool path, for example:</p>
+<div class="code-wrap"><pre><code class="language-text">$MISSION_HOME/worktree-pools/&lt;repo-name&gt;-&lt;common-dir-hash&gt;/&lt;slot&gt;/&lt;repo-name&gt;
+</code></pre></div>
+<p>Treehouse can key by remote URL. That is convenient across clones but unsafe for native Git
+bookkeeping because worktrees belong to one Git common directory. Separate clones of the same remote
+must therefore have separate native pools.</p>
+<h3 id="acquisition-and-return">Acquisition and return</h3>
+<p>Acquisition must:</p>
+<ol>
+<li>Resolve the repository and pool configuration.</li>
+<li>Serialize allocation for that pool.</li>
+<li>Reserve an available clean slot or a new slot below the maximum.</li>
+<li>Materialize/reset outside the database transaction while the durable state says <code>provisioning</code> or
+an existing slot is unavailable to other callers.</li>
+<li>Reset to the requested exact commit and verify <code>HEAD</code> byte-for-byte.</li>
+<li>Run only an operator-approved setup profile, if configured.</li>
+<li>Commit the random lease ID and owner, then return the lease.</li>
+</ol>
+<p>Return must:</p>
+<ol>
+<li>Compare slot, lease ID, and owner in the database.</li>
+<li>Refuse if the domain owner still pins the checkout.</li>
+<li>Ask the owning terminal/check supervisor to close only processes Mission Control can identify.</li>
+<li>Scan cwd occupancy. Any unknown process keeps the slot quarantined or leased unless an exact,
+explicitly confirmed force operation targets it.</li>
+<li>Preserve task work until the existing explicit cleanup action authorizes release.</li>
+<li>Snapshot where the existing task contract requires it, then reset with <code>clean -fd</code>, verify, and
+mark the slot available.</li>
+</ol>
+<h3 id="status-prune-and-destroy">Status, prune, and destroy</h3>
+<p>The manager&#x27;s status projection should include pool capacity, slot state, owner and age, linked task,
+check, or session, process occupants, dirty/untracked state, exact HEAD, ahead/unmerged status against
+the fetched default branch, disk use, and quarantine/error detail.</p>
+<p>Operational actions are preview-first:</p>
+<ul>
+<li><strong>Return</strong> targets one leased slot and requires matching ownership. Force is available only after a
+preview identifies the exact process and Git risks.</li>
+<li><strong>Safe prune</strong> considers only available, clean, merged, process-free slots. It can also right-size a
+pool whose current slot count exceeds its new maximum.</li>
+<li><strong>Destroy</strong> targets one slot or one named pool. A preview classifies leased, in-use, dirty, and
+unlanded worktrees; separate acknowledgements gate each risk class. There is no global one-click
+destroy.</li>
+<li><strong>Repair/reconcile</strong> never deletes uncertainty. It restores provably safe rows and quarantines the
+rest with an actionable explanation.</li>
+</ul>
+<h3 id="operator-surface">Operator surface</h3>
+<p>The recommended first-class surface is <strong>Settings &gt; Worktrees</strong>, because capacity, pool roots,
+warmup profiles, and legacy migration are operational settings rather than day-to-day task content.
+It should show:</p>
+<ul>
+<li>a repository summary with used/available/quarantined/over-capacity counts;</li>
+<li>expandable slot inventory with ownership, age, process, Git, and disk signals;</li>
+<li>Enable/disable, maximum slots, and setup profile controls;</li>
+<li>Preview Return, Prune, Destroy, and Reconcile actions with explicit confirmations;</li>
+<li>a legacy Treehouse section that distinguishes Mission Control leases from foreign/user leases and
+tracks drain progress;</li>
+<li>Open terminal and Copy path actions for a slot.</li>
+</ul>
+<p>The UI should fetch detail on demand and refresh through a new exhaustive SSE invalidation event,
+rather than stuffing volatile process and Git status into the global snapshot or polling from the
+browser. Every visible behavior needs an end-to-end Playwright specification.</p>
+<p>Treehouse command concepts map into the application as follows:</p>
+<div class="table-wrap"><table><thead><tr><th>Treehouse command</th><th>Mission Control surface</th></tr></thead><tbody><tr><td><code>get</code></td><td>Dispatch, check acquire, or manual session acquire through the daemon</td></tr><tr><td><code>return</code></td><td>Task cleanup or an exact Return action in the worktree inventory</td></tr><tr><td><code>status</code></td><td>Worktree inventory and structured API</td></tr><tr><td><code>prune</code></td><td>Preview and safe prune/right-size action</td></tr><tr><td><code>destroy</code></td><td>Scoped destructive preview with risk acknowledgements</td></tr><tr><td><code>enter</code></td><td>Open terminal and Copy path</td></tr><tr><td><code>init</code></td><td>Enable/configure a repository pool</td></tr><tr><td>hooks</td><td>Operator-approved setup profile</td></tr><tr><td><code>update</code>, completion</td><td>Removed with the standalone CLI dependency</td></tr></tbody></table></div>
+<h2 id="legacy-migration-and-dependency-removal">Legacy migration and dependency removal</h2>
+<p>The migration must avoid dual ownership of any checkout.</p>
+<div>
+<div class="diagram compact" role="img" aria-label="Staged migration from Treehouse to the native worktree manager">
+  <svg viewBox="0 0 1120 300" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="migration-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="new-fill"/></marker></defs>
+    <text x="30" y="35" class="diagram-kicker new-text">STAGED CUTOVER: NEVER DUAL-OWN A WORKTREE</text>
+    <g class="node new"><rect x="32" y="72" width="168" height="68" rx="12"/><text x="116" y="100">New acquisition</text><text x="116" y="121" class="sub">task, check, manual</text></g>
+    <g class="node"><rect x="264" y="72" width="180" height="68" rx="12"/><text x="354" y="100">Native pool</text><text x="354" y="121" class="sub">new paths + SQLite</text></g>
+    <path d="M200 106 H264" class="new-arrow migration"/>
+
+    <g class="node old"><rect x="32" y="188" width="168" height="68" rx="12"/><text x="116" y="216">Legacy record</text><text x="116" y="237" class="sub">provider = treehouse</text></g>
+    <g class="node old"><rect x="264" y="188" width="180" height="68" rx="12"/><text x="354" y="216">Compatibility bridge</text><text x="354" y="237" class="sub">JSON + conditional return</text></g>
+    <path d="M200 222 H264" class="new-arrow migration"/>
+
+    <g class="node"><rect x="516" y="72" width="190" height="68" rx="12"/><text x="611" y="100">Native operations</text><text x="611" y="121" class="sub">one allocator authority</text></g>
+    <path d="M444 106 H516" class="new-arrow migration"/>
+
+    <g class="node"><rect x="516" y="188" width="190" height="68" rx="12"/><text x="611" y="216">Prove exact lease</text><text x="611" y="237" class="sub">or leave untouched</text></g>
+    <path d="M444 222 H516" class="new-arrow migration"/>
+
+    <g class="node new"><rect x="778" y="130" width="180" height="68" rx="12"/><text x="868" y="158">Legacy MC count: 0</text><text x="868" y="179" class="sub">foreign leases remain</text></g>
+    <path d="M706 222 Q746 222 778 181" class="new-arrow migration"/>
+    <g class="node"><rect x="988" y="130" width="106" height="68" rx="12"/><text x="1041" y="158">Remove</text><text x="1041" y="179" class="sub">dependency</text></g>
+    <path d="M958 164 H988" class="new-arrow migration"/>
+  </svg>
+</div></div>
+<p>Recommended migration sequence:</p>
+<ol>
+<li>Add the native provider and schema behind a reversible acquisition setting. Legacy rows continue
+to resolve through their recorded provider.</li>
+<li>Stop creating new Treehouse leases. The compatibility adapter uses <code>status --json</code> and conditional
+return on Treehouse <code>v2.1.1</code> when the persisted lease can be proven. Older rows without a lease ID
+retain the current full safety ladder and are never force-returned from path/holder alone.</li>
+<li>Inventory legacy pools read-only. Correlate paths with task, check, and session state; label foreign
+leases and dirty/unmerged work; let the operator drain or explicitly abandon them.</li>
+<li>Remove Treehouse installation from <code>scripts/init.mjs</code>, Treehouse PATH assumptions, direct script
+shell-outs, <code>treehouse.toml</code> as an active gate, and ordinary documentation only after new
+acquisitions no longer depend on the binary.</li>
+<li>Retain the <code>treehouse</code> provider value and a fail-closed diagnostic/cleanup bridge while any durable
+database row can still reference it. If the binary is missing, report the blocked legacy cleanup;
+never substitute <code>git worktree remove</code> behind Treehouse bookkeeping.</li>
+<li>Once legacy Mission Control ownership reaches zero, document how operators can remove Treehouse
+and its external pool. Foreign leases remain the operator&#x27;s property.</li>
+</ol>
+<p>Directly importing Treehouse&#x27;s existing pool into the new tables is not recommended. It creates a
+window where two state stores believe they own the same worktree, and Treehouse&#x27;s pool key can join
+clones that the native common-directory key intentionally separates.</p>
+<h2 id="delivery-sequence">Delivery sequence</h2>
+<h3 id="1-native-manager-foundation">1. Native manager foundation</h3>
+<ul>
+<li>Add the append-only provider value, pool/slot schema, repository identity, state machine, conditional
+lease transitions, reconciliation, and focused contract tests.</li>
+<li>Extract shared Git reset/merged/dirty operations from current code without changing task cleanup
+semantics.</li>
+<li>Build the occupancy query over existing process discovery and identity services.</li>
+<li>Provide structured status and preview APIs before enabling acquisition.</li>
+</ul>
+<h3 id="2-one-acquisition-path">2. One acquisition path</h3>
+<ul>
+<li>Route dispatcher provisioning through <code>WorktreeManager</code> while preserving exact base SHA,
+multi-repository all-or-nothing rollback, and provider-authoritative teardown.</li>
+<li>Route check acquisition through the same manager while keeping <code>workflow_check_leases</code> as the
+check-domain recovery record.</li>
+<li>Route or retire <code>scripts/new-session.mjs</code> according to the selected manual-session decision.</li>
+<li>Keep the Git disposable provider as a reversible rollout/degradation path.</li>
+</ul>
+<h3 id="3-operations-surface">3. Operations surface</h3>
+<ul>
+<li>Add the selected UI location, repository summaries, slot details, configuration, legacy status, and
+preview-first actions.</li>
+<li>Add exhaustive SSE handling and browser coverage for every visible state and action.</li>
+<li>Document pool behavior, safety, capacity, setup profiles, manual sessions, and recovery.</li>
+</ul>
+<h3 id="4-legacy-drain">4. Legacy drain</h3>
+<ul>
+<li>Update the compatibility adapter to structured Treehouse <code>v2.1.1</code> reads and conditional returns
+where identity is available.</li>
+<li>Show drain progress and refuse foreign, dirty, occupied, or uncertain leases.</li>
+<li>Validate upgrade behavior against databases containing <code>treehouse</code> tasks and check leases.</li>
+</ul>
+<h3 id="5-retire-the-dependency-and-duplicated-code">5. Retire the dependency and duplicated code</h3>
+<ul>
+<li>Remove Treehouse from bootstrap and new-acquisition probes.</li>
+<li>Remove text status parsing, holder-history ownership, pending TTL/generation maps, the in-process
+Treehouse call mutex, duplicated check parsing, and direct <code>new-session</code> Treehouse calls once their
+compatibility duties are gone.</li>
+<li>Remove or migrate <code>treehouse.toml</code> and reframe <code>MISSION_POOL_REAP_MS</code> under the native configuration
+model.</li>
+<li>Keep only the fail-closed legacy cleanup/diagnostic code required by persisted provider history.</li>
+</ul>
+<p>This sequence is intentionally merge-aware: each step leaves a working provider-authoritative system
+and does not require a flag day across task dispatch, checks, scripts, and UI.</p>
+<h2 id="expected-file-and-contract-impact">Expected file and contract impact</h2>
+<div class="table-wrap"><table><thead><tr><th>Area</th><th>Expected change</th></tr></thead><tbody><tr><td><code>src/shared/types.ts</code></td><td>Append native provider, pool/status/action contracts, and SSE invalidation event.</td></tr><tr><td><code>src/server/db.ts</code></td><td>Add pool/slot schema and migrations beside their upgrade path. Preserve legacy provider defaults and rows.</td></tr><tr><td><code>src/server/worktrees/</code></td><td>New manager, repository identity, provider registry, state machine, occupancy, reconciliation, and action previews.</td></tr><tr><td><code>src/server/dispatcher.ts</code></td><td>Delegate provisioning/teardown to the manager; preserve multi-repository rollback and exact pinning.</td></tr><tr><td><code>src/server/workflows/check-lease.ts</code></td><td>Delegate tree acquisition/release while retaining attempt lifecycle and supervisor semantics.</td></tr><tr><td><code>src/server/pool.ts</code>, <code>src/server/pool-lease.ts</code></td><td>Shrink to a temporary legacy bridge, then remove code that no longer serves persisted Treehouse rows.</td></tr><tr><td><code>src/server/routes.ts</code>, <code>src/web/</code></td><td>Add settings/status/action routes and the selected worktree UI.</td></tr><tr><td><code>scripts/new-session.mjs</code>, <code>scripts/init.mjs</code>, <code>scripts/worktree-setup.mjs</code>, <code>Makefile</code></td><td>Remove direct Treehouse ownership, route manual sessions through the daemon if retained, and preserve explicit warmup behavior.</td></tr><tr><td><code>docs/README.md</code>, setup/configuration/worktree docs</td><td>Describe native ownership, safety, migration, and removal of the external prerequisite.</td></tr><tr><td><code>test/</code>, <code>e2e/</code></td><td>Add state-machine, crash-recovery, migration, concurrency, provider, route, and browser behavior coverage.</td></tr></tbody></table></div>
+<h2 id="verification-strategy">Verification strategy</h2>
+<h3 id="unit-and-contract-coverage">Unit and contract coverage</h3>
+<ul>
+<li>Two concurrent acquires cannot receive the same slot.</li>
+<li>A stale lease ID or owner cannot return a newly re-leased slot.</li>
+<li>Crash points before/after Git add, reset, lease commit, return, and prune reconcile deterministically
+or quarantine.</li>
+<li>Canonical main repository/common-directory identity separates distinct clones of one remote and
+joins paths inside one linked-worktree family.</li>
+<li>Dirty, untracked, unmerged, occupied, pinned, unknown, and missing-path states fail closed.</li>
+<li>Reset preserves ignored caches and removes untracked non-ignored files.</li>
+<li>Task cleanup remains explicit after a session exits.</li>
+<li>Check attempt rows remain recoverable and select their persisted provider even when availability or
+configuration changes.</li>
+<li>Mixed Treehouse/Git/native task repositories unwind only through their recorded provider.</li>
+<li>Old databases with <code>treehouse</code> task/check rows migrate and open safely.</li>
+<li>Capacity decreases produce a safe right-size preview, not surprise deletion.</li>
+</ul>
+<h3 id="integration-and-end-to-end-coverage">Integration and end-to-end coverage</h3>
+<ul>
+<li>Dispatch, check, and manual acquisition share one slot inventory and exact-commit behavior.</li>
+<li>Multi-repository provisioning rolls back a partial native allocation.</li>
+<li>Settings changes update status through SSE invalidation.</li>
+<li>The browser renders available, leased, occupied, dirty, quarantined, legacy, and over-capacity
+states with accessible controls and no <code>data-testid</code> selectors.</li>
+<li>Return, prune, destroy, reconcile, and legacy drain show previews and require the correct
+confirmations.</li>
+<li>Fake agents remain mandatory so end-to-end work spends no model tokens.</li>
+<li>Runtime verification proves layout, scrolling, confirmation focus, and large-pool performance.</li>
+</ul>
+<p>Run focused tests while developing, then the repository gates required by the touched surfaces:
+<code>npm test</code>, <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm run build</code>, <code>npm run smoke</code>, and
+<code>npm run test:e2e</code> after the build.</p>
+<h2 id="safety-invariants">Safety invariants</h2>
+<ul>
+<li>The daemon remains the only SQLite writer and the only allocator for native slots.</li>
+<li>Persisted provider IDs are append-only. Cleanup always uses the provider that created the worktree.</li>
+<li>A session reaching <code>exited</code> never implies durable task cleanup. The existing explicit task cleanup
+and <code>session_remove</code> contracts remain authoritative.</li>
+<li>No second session-eviction or process-termination path is introduced.</li>
+<li>Unknown processes are not killed automatically.</li>
+<li>Ignored caches survive reuse; <code>git clean -fdx</code> is forbidden.</li>
+<li>No repository-controlled executable hook runs merely because a repository was opened.</li>
+<li>No uncertain legacy lease is adopted, reset, or deleted.</li>
+<li>No production, signing, release, or CI configuration is in scope.</li>
+</ul>
+<h2 id="risks-and-mitigations">Risks and mitigations</h2>
+<div class="table-wrap"><table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody><tr><td>Reimplementing mature pool safety introduces data loss</td><td>Port behavior as explicit invariants and adversarial tests, reuse existing Git/process primitives, and quarantine ambiguity.</td></tr><tr><td>Two allocators touch one checkout during migration</td><td>New pools use separate paths and state. Legacy provider rows never switch identity in place.</td></tr><tr><td>SQLite state and Git registrations diverge across crashes</td><td>Persist intent before mutation and reconcile every transitional state at startup.</td></tr><tr><td>Pooling every repository consumes unexpected disk</td><td>Create slots only on demand, expose a ceiling and disk use, and support preview-first right-sizing.</td></tr><tr><td>Process scanning is expensive or platform-sensitive</td><td>Reuse batched process discovery, perform detailed occupancy on demand/before mutation, cache only within a bounded operation, and fail closed on unsupported evidence.</td></tr><tr><td>Native worktree setup executes untrusted code</td><td>Setup profiles are operator-authored, explicit, visible, and disabled by default for unknown repositories.</td></tr><tr><td>Legacy cleanup cannot prove ownership</td><td>Leave the lease untouched and surface the exact manual remediation.</td></tr><tr><td>A large operations UI delays dependency removal</td><td>Keep the API/manager boundary independent; the selected UI scope can land after native acquisition while legacy cleanup remains available.</td></tr></tbody></table></div>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li>Replacing task lifecycle, workflow check semantics, terminal backends, or session eviction.</li>
+<li>Creating a second dispatcher or an ensemble-specific worktree path.</li>
+<li>Managing arbitrary worktrees that Mission Control did not create, except read-only discovery and an
+exact operator-requested import/destroy flow added by a later plan.</li>
+<li>Automatically killing unknown processes or deleting dirty/unlanded work.</li>
+<li>Copying Treehouse&#x27;s updater, shell completion, Go process scanner, or file-state implementation.</li>
+<li>Changing release, signing, deployment, or CI configuration.</li>
+</ul>
+<h2 id="adopted-decisions">Adopted decisions</h2>
+<h3 id="1-native-pool-activation">1. Native pool activation</h3>
+<p><strong>Adopted: default on for Mission Control acquisitions, with per-repository disable and capacity
+controls.</strong> Native slots are created only on demand. This resolves today&#x27;s dispatch/check policy
+split and ensures the application no longer silently loses pooling when Treehouse is absent.</p>
+<h3 id="2-legacy-treehouse-transition">2. Legacy Treehouse transition</h3>
+<p><strong>Adopted: staged drain through a read/return-only compatibility bridge.</strong> This preserves
+provider-authoritative cleanup and gives operators visibility into foreign or uncertain leases.</p>
+<h3 id="3-operations-ui-scope">3. Operations UI scope</h3>
+<p><strong>Adopted: a full Settings &gt; Worktrees panel in the first initiative.</strong> This keeps
+configuration, inventory, status, legacy drain, and destructive previews together without adding a
+new primary navigation destination.</p>
+<h3 id="4-manual-development-sessions">4. Manual development sessions</h3>
+<p><strong>Adopted: keep <code>make session</code>, but make it a daemon client and release its durable lease from
+the Worktrees panel or a companion client command.</strong> This preserves the current workflow while making
+the daemon the only allocator and state writer.</p>
+<h3 id="5-implementation-follow-up">5. Implementation follow-up</h3>
+<p><strong>Adopted: create a phased implementation plan and dependency-linked Mission Control tasks.</strong> The
+phase artifacts must be committed and pushed before their tasks are scheduled, and every task remains
+gated on this planning session until the plan pull request merges.</p>
+<h2 id="success-criteria">Success criteria</h2>
+<ul>
+<li>A clean installation can provision warm, isolated task, check, and approved manual-session
+worktrees without installing Treehouse.</li>
+<li>One daemon-owned inventory explains every native slot&#x27;s repository, owner, age, process state, Git
+safety, disk use, and next safe action.</li>
+<li>Concurrent and crash-interrupted operations cannot double-lease, release a newer lease, or make an
+uncertain checkout available.</li>
+<li>Dispatch and checks use one activation policy and one acquisition implementation.</li>
+<li>Existing <code>treehouse</code> and <code>git</code> records retain correct provider-authoritative cleanup across upgrade.</li>
+<li>Operators can safely drain legacy Mission Control leases while foreign leases remain untouched.</li>
+<li>The old text parser, holder heuristics, in-memory ABA maps, duplicate Treehouse shell-outs, and
+bootstrap dependency are removable after the drain.</li>
+<li>Task retention, exact-commit pinning, multi-repository rollback, check recovery, and ignored-cache
+warmth behave exactly as before.</li>
+</ul>
+<h2 id="primary-sources">Primary sources</h2>
+<ul>
+<li><a href="https://github.com/kunchenguid/treehouse">Treehouse repository and README</a></li>
+<li><a href="https://github.com/kunchenguid/treehouse/blob/main/VISION.md">Treehouse product boundary and safety vision</a></li>
+<li><a href="https://github.com/kunchenguid/treehouse/blob/main/CHANGELOG.md">Treehouse changelog, including v2.1.1 lease identity</a></li>
+<li><a href="https://github.com/kunchenguid/treehouse/blob/main/internal/pool/pool.go">Treehouse pool and lease implementation</a></li>
+<li><a href="https://github.com/kunchenguid/treehouse/blob/main/internal/pool/state.go">Treehouse state locking and recovery</a></li>
+<li><a href="https://github.com/kunchenguid/treehouse/blob/main/internal/git/git.go">Treehouse Git safety implementation</a></li>
+<li><a href="https://github.com/kunchenguid/treehouse/blob/main/internal/config/config.go">Treehouse configuration and pool identity</a></li>
+<li><a href="https://github.com/kunchenguid/treehouse/blob/main/internal/process/detect.go">Treehouse process occupancy detection</a></li>
+<li><a href="https://github.com/kunchenguid/treehouse/blob/main/LICENSE">Treehouse MIT license</a></li>
+</ul>
+      <div class="review"><strong>Decision record.</strong> Mission Control recorded all four recommended architecture choices and authorized the phased implementation follow-up on 15 August 2026.</div>
+    </main>
+    <footer>Source of truth: docs/plans/native-worktree-management/plan.md · Offline render: plan.html · Generated by render-plan.mjs</footer>
+  </div>
+</body>
+</html>

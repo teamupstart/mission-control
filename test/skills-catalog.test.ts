@@ -295,6 +295,14 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   assert.match(text, /dependsOnCurrentSession` to `true` on every call/);
   assert.match(text, /Do not flatten\s+the graph into a serial chain/);
 
+  // Small work stays one-shot even when it crosses layers. Larger work is split only when the
+  // effort, complexity, and execution order make another merge unit safer for a mid-tier model.
+  assert.match(text, /200 or fewer non-test implementation lines/);
+  assert.match(text, /exactly one phase and\s+schedule exactly one one-shot implementation task/);
+  assert.match(text, /An application-layer boundary is not by itself a phase boundary/);
+  assert.match(text, /mid-tier model/);
+  assert.match(text, /sizing estimate and phase-count rationale/);
+
   // The task text is the agent's prompt and is judged as the human's requirement, so the skill must
   // keep it at goal altitude and point at the phase file instead of pasting it in.
   assert.match(text, /Keep the task text at goal altitude/);

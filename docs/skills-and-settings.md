@@ -86,9 +86,11 @@ The procedure lives in [`skills/retro/SKILL.md`](../skills/retro/SKILL.md).
 
 The opt-in **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
-phase. The HTML Plans review always offers this as its final selectable follow-up; choosing it
-passes the approved plan and submitted decisions into
-[`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
+phase. It estimates total non-test implementation effort and complexity before choosing the fewest
+viable phases. Work estimated at 200 implementation lines or fewer becomes one phase and one
+one-shot task, even when that work crosses application layers. The HTML Plans review always offers
+this as its final selectable follow-up; choosing it passes the approved plan and submitted decisions
+into [`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
 
 **A `plan` task depends on both of those rows, and this is where it differs from a scout.** The
 contract a [plan task](dispatch-and-backlog.md) is delivered *points at* HTML Plans and Phased

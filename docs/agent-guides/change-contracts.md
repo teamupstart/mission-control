@@ -156,6 +156,12 @@ reason: a re-dispatched task is new work and gets its own boundary.
   released one went back to the outbox, and an uncertain one is a question for the operator.
   `PendingTurn.id` is the delivery id, so a retried uncertain turn is one prompt.
   A `/send` with `submit: false` is a composer draft and is not a delivery at all.
+  **No route journals a prompt**, which is a phase boundary rather than an oversight: the
+  immediate `/inject` arm is a real human delivery that records nothing yet, and a turn sent
+  that way is still collected from the harness transcript, since the journal is the fallback
+  for turns a transcript cannot show rather than the primary source. Whoever adds that seam
+  must require `submitVerified` and not `ok` - `journalScoutPrompt`'s own doc says why, and
+  the difference archives a prompt the agent may never have received.
 - **Non-human attribution rides on `recordInjection`, through `observeInjections`.** One
   observer on the existing chokepoint, wired once in `src/server/index.ts` - not a call
   beside each site. Every automated path already reports there because that is what makes

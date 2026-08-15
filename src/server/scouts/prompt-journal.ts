@@ -1,5 +1,4 @@
 import type { Session, Task } from "@shared/types.ts";
-import type { InjectResult } from "../actions.ts";
 import type { SessionWorkEpisode } from "../db.ts";
 import { sessionMessages } from "../harness/index.ts";
 import { isScoutTask } from "./prompt.ts";
@@ -120,33 +119,23 @@ export function discardScoutPromptBoundary(context: ScoutPromptContext | null): 
 }
 
 /**
- * Whether an immediate delivery result is proof enough to archive a HUMAN prompt.
- *
- * `ok` is not that proof on a terminal session. `awaitPasteSubmitted` returns
- * `{ ok: true, submitVerified: false }` on two reachable paths - a harness that renders no
- * pending-paste placeholder, so one Enter is spent and the outcome is honestly unverified,
- * and a run of unreadable captures that ends the wait with the Enter already sent. In both
- * the text may still be sitting in the composer, which is the same doubt `PendingTurnManager`
- * records as `uncertain` and refuses to journal. An embedded session always reports a
- * verified submit (`deliverToDriver` has no ambiguous states), so this costs it nothing.
- *
- * Only human prompts are held to it. An automated row EXCLUDES a transcript turn rather than
- * archiving one, so a doubtful one excludes a turn that never appears and costs nothing,
- * while a missing one publishes a machine's words as a person's - the failure runs the other
- * way, and so does the guard.
- */
-export function acceptedHumanDelivery(result: Pick<InjectResult, "ok" | "submitVerified">): boolean {
-  return result.ok && result.submitVerified;
-}
-
-/**
  * Record one user-role delivery that positively reached the runtime.
  *
  * Every caller is a POSITIVE acceptance point - a verified terminal pickup, an accepted
- * SDK turn, an injection whose response said ok. A queued draft, a recalled row, a refused
- * paste and an unresolved uncertain delivery all reach this function never, and that is
- * the difference between a record of what the agent was told and a record of what somebody
- * typed into a box.
+ * SDK turn. A queued draft, a recalled row, a refused paste and an unresolved uncertain
+ * delivery all reach this function never, and that is the difference between a record of
+ * what the agent was told and a record of what somebody typed into a box.
+ *
+ * **For whoever adds the immediate `/inject` seam**, which is a route change and therefore
+ * a later phase's: `r.ok` is NOT its acceptance boundary on a terminal session. `injectPrompt`
+ * returns `{ ok: true, submitVerified: false }` on two reachable paths - a harness that
+ * renders no pending-paste placeholder, so one Enter is spent and the outcome is honestly
+ * unverified, and a run of unreadable captures that ends the wait with the Enter already
+ * sent. In both, the text may still be sitting in the composer, which is the same doubt
+ * `PendingTurnManager` records as `uncertain` and refuses to journal. Require
+ * `submitVerified` as well. Embedded sessions are unaffected either way: `deliverToDriver`
+ * has no ambiguous state. This is written down because it is not visible from the route,
+ * and getting it wrong archives a prompt the agent may never have received.
  *
  * Non-scout sessions, sessions with no episode, and episodes with no frozen boundary all
  * return null and write nothing.

@@ -139,7 +139,6 @@ import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
 import { recordInjection } from "./injections.ts";
-import { acceptedHumanDelivery, journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -2779,23 +2778,6 @@ export function buildApp(
     // Only once it landed: a refused or failed delivery is not a turn anybody will read,
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
-    // A human turn reaches this arm only when the caller opted out of the editable outbox
-    // (`WorkQueue`'s wrap-up answer) or there is no outbox to reach, so it has no
-    // `PendingTurn.id` and no pickup to wait for. `submitVerified`, NOT `ok`, is its
-    // acceptance boundary: `awaitPasteSubmitted` returns `{ ok: true, submitVerified: false }`
-    // for a harness that renders no pending-paste placeholder and after too many unreadable
-    // captures, and both mean the Enter went out while the text may still be sitting in the
-    // composer. That is the same doubt `PendingTurnManager` records as `uncertain` and
-    // refuses to journal, so this refuses it too. An embedded session is unaffected -
-    // `deliverToDriver` has no ambiguous states and always reports a verified submit.
-    //
-    // The asymmetry with the non-human line above is deliberate and runs the other way. A
-    // human row ARCHIVES a prompt, so a doubtful one must not be written; an automated row
-    // only EXCLUDES a transcript turn, so a doubtful one costs nothing (it excludes a turn
-    // that never appears) while a missing one publishes a machine's words as a person's.
-    if (parsed.data.origin === "human" && acceptedHumanDelivery(r)) {
-      journalScoutPrompt(registry, session.id, parsed.data.text, "human");
-    }
     return c.json(r, r.ok ? 200 : 500);
   });
 

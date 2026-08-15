@@ -86,12 +86,9 @@ const {
   scoutPromptFingerprint,
   scoutPromptTurns,
 } = await import("../src/server/scouts/prompt-context.ts");
-const {
-  acceptedHumanDelivery,
-  discardScoutPromptBoundary,
-  freezeScoutPromptBoundary,
-  journalScoutPrompt,
-} = await import("../src/server/scouts/prompt-journal.ts");
+const { discardScoutPromptBoundary, freezeScoutPromptBoundary, journalScoutPrompt } = await import(
+  "../src/server/scouts/prompt-journal.ts"
+);
 const { forgetInjections, observeInjections, originOf, recordInjection } = await import(
   "../src/server/injections.ts"
 );
@@ -688,36 +685,16 @@ test("both task-delivery seams freeze a boundary, not just the dispatcher", () =
   }
 });
 
-test("an unverified terminal submit is not proof a human prompt was delivered", () => {
-  // `ok` alone is not the boundary on a terminal session. `awaitPasteSubmitted` returns
-  // `{ ok: true, submitVerified: false }` for a harness that renders no pending-paste
-  // placeholder, and again after a run of unreadable captures - the Enter went out, and the
-  // text may still be sitting in the composer. Reachable today through `WorkQueue`'s
-  // wrap-up answer, which sends with `buffer: false` and can land on a scout's terminal
-  // session. Archiving that as delivered is the same mistake as archiving a recalled turn.
-  assert.equal(acceptedHumanDelivery({ ok: true, submitVerified: false }), false);
-  // What the two definite outcomes say. An embedded session always reports the first:
-  // `deliverToDriver` has no ambiguous state, so this guard costs it nothing.
-  assert.equal(acceptedHumanDelivery({ ok: true, submitVerified: true }), true);
-  assert.equal(acceptedHumanDelivery({ ok: false, submitVerified: false }), false);
-  // A refusal that somehow claimed verification is still a refusal: nothing was typed.
-  assert.equal(acceptedHumanDelivery({ ok: false, submitVerified: true }), false);
-});
-
-test("the inject route gates its human journal on the verified submit, not on ok", () => {
-  // The route owns this call and has no injectable delivery seam, so the guard is pinned
-  // where it is written. `ok`-only here is the regression: it archived an unverified paste.
+test("no route journals a prompt, because route behavior is a later phase's", () => {
+  // This phase adds durable context and attribution and NO route behavior. Every delivery
+  // it journals is reached from the runtime seams - `PendingTurnManager`'s two acceptance
+  // points, and `observeInjections` for the automated paths - so `routes.ts` gains nothing.
+  //
+  // Stated over the whole file rather than over one handler, because the thing worth
+  // catching is a journal call appearing at ANY route, whichever one grows it. The
+  // immediate `/inject` seam is the one this most obviously wants and the one that has to
+  // wait; `journalScoutPrompt`'s own doc carries the acceptance rule it will need.
   const routes = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");
-  assert.match(routes, /origin === "human" && acceptedHumanDelivery\(r\)/);
-});
-
-test("the routes journal a human turn in exactly one place", () => {
-  // An answer to an option list or a form is a decision, not a prose prompt, and neither
-  // route types a user turn at all - so neither may grow a journal call. Stated as a count
-  // rather than as a search of each handler, because the thing worth catching is a SECOND
-  // entry point appearing anywhere in the file, whichever route grows it. The non-human
-  // paths are journaled through `observeInjections`, not here, which is why one is right
-  // rather than two.
-  const routes = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");
-  assert.equal(routes.match(/journalScoutPrompt\(/g)?.length, 1);
+  assert.equal(routes.includes("journalScoutPrompt"), false);
+  assert.equal(routes.includes("scoutPrompt"), false);
 });

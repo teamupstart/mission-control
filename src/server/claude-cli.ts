@@ -2,6 +2,9 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { unwrapEnvelope } from "./llm/structured.ts";
 import { resolveAgentBin } from "./harness/index.ts";
+import { claudeImageUserMessage } from "./llm/claude-input.ts";
+import { validateLlmImages } from "./llm/images.ts";
+import type { LlmImageInput } from "@shared/llm.ts";
 
 // Runs ONE headless `claude -p` and hands back its output, so every caller starts
 // from a clean context. Two very different callers share it, which is why it lives
@@ -133,10 +136,20 @@ export interface ClaudeRunOptions {
   cwd?: string;
   /** A `--settings` JSON string - how a tool-granting caller passes permission rules. */
   settings?: string;
+  /** Ordered native images. Omit or pass empty to retain the historical text input. */
+  images?: readonly LlmImageInput[];
 }
 
 export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Promise<string> {
   return new Promise((resolve, reject) => {
+    let images: ReturnType<typeof validateLlmImages>;
+    try {
+      // Refuse a missing, changed, spoofed, or oversized file before argv reaches spawn.
+      images = validateLlmImages(opts.images);
+    } catch (error) {
+      reject(error);
+      return;
+    }
     // `--tools` with an empty value is a valid Claude Code CLI flag (verified to exit 0)
     // that sets the available-tool list to empty, disabling every built-in tool. That is
     // the DEFAULT here and the reason this module is safe to hand untrusted text: the
@@ -183,7 +196,9 @@ export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Prom
     // answer, and this flag would quietly make it dead code. (A caller that overrides
     // `cwd` writes outside what that sweep walks, which is a gap in the pruner rather
     // than an argument for this flag.)
-    const args = ["-p", "--output-format", "json", "--tools", opts.tools ?? ""];
+    const args = ["-p", "--output-format", "json"];
+    if (images.length > 0) args.push("--input-format", "stream-json");
+    args.push("--tools", opts.tools ?? "");
     // Unlike the deliberately absent resume flags above, this constrains only the reply
     // shape. It cannot connect this fresh invocation to any previous conversation.
     if (opts.schema) args.push("--json-schema", opts.schema);
@@ -243,7 +258,11 @@ export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Prom
     // `close` handler already reports the real exit code and stderr, which is what
     // the caller should retry-then-escalate on.
     child.stdin.on("error", () => {});
-    child.stdin.write(prompt);
+    child.stdin.write(
+      images.length === 0
+        ? prompt
+        : `${JSON.stringify(claudeImageUserMessage(prompt, images))}\n`,
+    );
     child.stdin.end();
   });
 }

@@ -22,6 +22,7 @@
 
 import type { LlmSpendModelUsage, LlmSpendPrice, LlmSpendRole } from "./llm-spend.ts";
 import type { ModelSource } from "./model-choice.ts";
+import { RASTER_IMAGE_MIME_TYPES, type RasterImageMimeType } from "./images.ts";
 
 /**
  * Every provider that can do the app's offline work.
@@ -173,6 +174,62 @@ export interface LlmToolGrant {
   denyPaths: readonly string[];
 }
 
+/**
+ * One immutable local image attached to a fresh headless model call.
+ *
+ * This is an internal runner contract, not a browser wire shape. The daemon owns the
+ * absolute path and records the other fields when it freezes the bytes. A runner verifies
+ * every field against the open file before it starts a provider process.
+ */
+export interface LlmImageInput {
+  /** Stable evidence identity used in bounded diagnostics and later audit records. */
+  readonly id: string;
+  /** Absolute daemon-owned path on the provider process's host. */
+  readonly path: string;
+  /** MIME type already established by sniffing the immutable bytes. */
+  readonly mimeType: RasterImageMimeType;
+  /** Raw file bytes, before Claude's base64 transport expansion. */
+  readonly bytes: number;
+  /** Lowercase hexadecimal SHA-256 of the exact file bytes. */
+  readonly sha256: string;
+}
+
+/**
+ * Conservative limits shared by every headless provider and by the next intake phase.
+ *
+ * The installed Codex CLI accepts repeated `exec --image` inputs. Claude accepts the same
+ * four raster MIME types, with base64 image blocks capped below its request envelope. Five
+ * MiB raw expands to at most 6,990,508 base64 bytes, and 20 MiB raw expands to at most
+ * 27,962,028 bytes, leaving room inside Claude's 32 MB standard request limit for the prompt
+ * and JSON framing. Eight images is deliberately well below both providers' count ceilings.
+ */
+export const LLM_IMAGE_LIMITS = {
+  maxCount: 8,
+  maxBytesPerImage: 5 * 1024 * 1024,
+  maxAggregateBytes: 20 * 1024 * 1024,
+  maxIdChars: 128,
+  base64ExpansionNumerator: 4,
+  base64ExpansionDenominator: 3,
+  allowAnimatedGif: false,
+  mimeTypes: RASTER_IMAGE_MIME_TYPES,
+} as const;
+
+/** Exact encoded byte count for standard padded base64. */
+export function base64EncodedBytes(rawBytes: number): number {
+  return 4 * Math.ceil(rawBytes / 3);
+}
+
+/** Prompt bytes plus raw attached image bytes, for provider-neutral call accounting. */
+export function llmRunInputBytes(
+  prompt: string,
+  images: readonly Pick<LlmImageInput, "bytes">[] = [],
+): number {
+  return images.reduce(
+    (total, image) => total + image.bytes,
+    new TextEncoder().encode(prompt).byteLength,
+  );
+}
+
 export interface LlmRunOptions {
   /**
    * The model id. Omit to inherit whatever the provider defaults to, which is both the
@@ -196,6 +253,11 @@ export interface LlmRunOptions {
    * widening it for the one caller that argued for it must not widen it for the rest.
    */
   grant?: LlmToolGrant | null;
+  /**
+   * Ordered native image inputs for this fresh call. Omit for the exact historical
+   * text-only provider shape. An empty list is treated identically to omission.
+   */
+  images?: readonly LlmImageInput[];
   /**
    * A JSON Schema the provider validates the reply against, when it can.
    *

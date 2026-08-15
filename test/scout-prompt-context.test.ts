@@ -306,7 +306,7 @@ test("a turn with no frozen context writes nothing", () => {
   assert.deepEqual(scoutPromptTurns(SCOUT.id, "episode-1"), []);
 });
 
-test("a human turn keeps its exact text; an automated one keeps only its fingerprint", () => {
+test("a human turn keeps its text, trimmed; an automated one keeps only its fingerprint", () => {
   reset();
   context();
   appendScoutPromptTurn({
@@ -314,7 +314,10 @@ test("a human turn keeps its exact text; an automated one keeps only its fingerp
     taskId: SCOUT.id,
     episodeId: "episode-1",
     origin: "human",
-    text: "Also check whether Pi behaves the same way",
+    // Deliberately padded: what comes back is trimmed and byte-bounded, not the exact input.
+    // The documentation says so in the same words, because promising byte-for-byte
+    // preservation and then quietly normalizing is how a reader stops trusting the rest.
+    text: "\n  Also check whether Pi behaves the same way  \n",
   });
   appendScoutPromptTurn({
     id: "f1",

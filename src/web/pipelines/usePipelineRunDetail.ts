@@ -28,7 +28,12 @@ import { fetchPipelineRunDetail } from "../lib/api.ts";
  */
 export type PipelineRunDetailState =
   | { state: "loading" }
-  /** The run is gone, or its repository is no longer observed. A stale link, not an error. */
+  /**
+   * The evidence could not be read: the run is gone, its repository is no longer observed,
+   * OR the daemon did not answer. `fetchJson` is total and returns null for all three, so
+   * this state deliberately does not claim to know which - and it is recoverable rather than
+   * terminal, because the next projection frame for this run re-runs the read.
+   */
   | { state: "missing" }
   | { state: "ready"; detail: PipelineRunDetail };
 

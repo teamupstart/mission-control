@@ -361,6 +361,15 @@ test("a tier-S run draws what it skipped, and an unknown step is drawn rather th
   const unknown = dashboard.locator("li.wf-pipeline-reviewer", { hasText: "vibe_check" });
   await expect(unknown.getByText("Unknown step")).toBeVisible();
   await expect(unknown.getByText("Running")).toBeVisible();
+
+  // Scroll the strip to its end before photographing it. Everything this test just asserted
+  // lives in the phase cards to the RIGHT of the fold - the strip scrolls horizontally - so a
+  // frame taken here would show SETUP, UNDERSTAND and none of the degradation the caption
+  // claims. Playwright can assert on what it cannot see; a person reading the picture cannot.
+  await dashboard.locator("div.wf-pipeline-strip").evaluate((strip) => {
+    strip.scrollLeft = strip.scrollWidth;
+  });
+  await expect(unknown).toBeInViewport();
   await shoot(dashboard, "03-tier-s-and-unknown");
 });
 

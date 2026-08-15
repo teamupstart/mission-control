@@ -163,10 +163,17 @@ function GateVerdicts({
     <section className="pipelines-section" aria-label="Gate verdicts">
       <h4>Gate verdicts</h4>
       {state.state === "loading" && <p className="pipelines-note">Reading the engine's gates…</p>}
+      {/* Deliberately does NOT claim the worktree is gone. The browser cannot tell a 404
+          from a daemon it could not reach - `fetchJson` answers null for both - so naming
+          one of them would be a guess printed as a fact, and the wrong guess is the one that
+          tells somebody their run was torn down when their laptop dropped a packet. It says
+          what is true of both, and that it heals itself: the read runs again on the run's
+          next projection frame. */}
       {state.state === "missing" && (
         <p className="pipelines-note">
-          This run's worktree is no longer readable, so its gate evidence is gone. The strip
-          above is the last projection of it.
+          The gate evidence could not be read just now - the worktree may be gone, or the
+          daemon may not have answered. This retries as the run moves; the strip above is the
+          last projection of it.
         </p>
       )}
       {state.state === "ready" && verdicts.length === 0 && (

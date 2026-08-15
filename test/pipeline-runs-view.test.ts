@@ -25,6 +25,7 @@ import {
   pipelineVerdictStatus,
 } from "../src/web/pipelines/pipeline-run-model.ts";
 import { PipelineRunView } from "../src/web/pipelines/PipelineRunView.tsx";
+import { fetchPipelineRepos, fetchPipelineRunDetail } from "../src/web/lib/api.ts";
 
 // What is at stake: the Pipelines detail is a picture of a run somebody is about to act on,
 // drawn from an engine Mission Control does not own. Three things have to hold whatever that
@@ -559,6 +560,49 @@ test("two runs whose repo and slug run together are still two runs", () => {
     [1, 1],
     "one run under each repository, not two under one and none under the other",
   );
+});
+
+// ---- what the two hooks rest on: both reads are TOTAL ------------------------------------
+
+/**
+ * Neither Pipelines read may reject, because both callers rely on that in their own way.
+ *
+ * `usePipelineRepos` awaits its read with no catch, on the documented promise that a failed
+ * one leaves the previous rail standing. `usePipelineRunDetail` fires a detached
+ * `void ...then(...)`. If either read could reject, the first would leave the poll's promise
+ * unhandled and the second would raise an unhandled rejection and strand the reader on
+ * "Reading the engine's gates...". Both are safe only because `fetchJson` is total - so that
+ * totality is the thing to pin, rather than adding a catch at each call site that would be
+ * dead code today and would hide the change if it ever stopped being true.
+ */
+test("a dropped connection resolves both pipeline reads to null rather than rejecting", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.reject(new TypeError("Failed to fetch"))) as typeof fetch;
+  try {
+    assert.equal(await fetchPipelineRepos(), null, "the rail's read survives a dead socket");
+    assert.equal(
+      await fetchPipelineRunDetail("ai-conductor", "/repo/demo", "add-widgets"),
+      null,
+      "the detail's read survives a dead socket",
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a 5xx from the daemon resolves to null too, rather than throwing on the body", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response("<html>gateway</html>", {
+      status: 502,
+      headers: { "content-type": "text/html" },
+    })) as typeof fetch;
+  try {
+    assert.equal(await fetchPipelineRepos(), null);
+    assert.equal(await fetchPipelineRunDetail("ai-conductor", "/repo/demo", "add-widgets"), null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 // ---- the styling discipline this surface inherits ---------------------------------------

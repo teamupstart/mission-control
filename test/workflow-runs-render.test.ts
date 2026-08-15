@@ -24,7 +24,13 @@ import type {
 } from "../src/shared/workflow.ts";
 import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
 import { PersonaDirectiveEditor } from "../src/web/workflows/PersonaDirectiveEditor.tsx";
-import { WorkflowRunView, WorkflowRunsEmpty } from "../src/web/workflows/WorkflowRuns.tsx";
+import type { ChangeWorklistRow } from "../src/web/workflows/run-model.ts";
+import type { WorklistItem, WorklistSegment } from "../src/web/workflows/WorkflowRuns.tsx";
+import {
+  WorkflowRunView,
+  WorkflowRunsEmpty,
+  followSelection,
+} from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   carriedStatus,
   workflowRunLoadError,
@@ -487,17 +493,34 @@ test("the round scrubber defaults to the latest round and scopes what it says", 
   // merely `waiting_for_session` - a healthy repair loop, and exactly the round an operator
   // is looking for.
   assert.match(latest, /Changes requested/);
-  // Latest round selected by default, so round 1's verdict text is not on screen.
-  assert.doesNotMatch(latest, /Fix the race/);
+  // Round 1's PASS is not on screen at round 2, because Security has not re-reported: the
+  // Passed segment is built from this round's attempts and there are none with a verdict.
+  assert.doesNotMatch(latest, /No risk found/);
+  assert.doesNotMatch(latest, /Every path is guarded/);
+  assert.match(latest, /Passed 0/);
   assert.doesNotMatch(latest, /Viewing an earlier round/);
+  /*
+   * The change round 1 asked for IS still on screen at round 2, and that is the whole point of
+   * the worklist rather than a leak in the scoping.
+   *
+   * Quality has not re-reported either, so nothing has said the change is fixed - which is
+   * exactly the state the old section rendered as an empty list. The row names the round that
+   * raised it so the carry is legible rather than looking like a fresh objection.
+   */
+  assert.match(latest, /Fix the race/);
+  assert.match(latest, /Quality reviewer · round 1/);
+  assert.match(latest, /Blocking 1/);
 
   const earlier = render(detail, { roundId: "submission-1" });
   assert.match(earlier, /Fix the race/);
   assert.match(earlier, /Restart can duplicate work/);
   assert.match(earlier, /changed line/);
-  assert.match(earlier, /No risk found/);
-  assert.match(earlier, /Every path is guarded/);
   assert.match(earlier, /claude · reviewer/);
+  // The pass costs a count and nothing else until somebody asks for it. This is the 1,984
+  // characters of approval rationale the redesign was measured against.
+  assert.match(earlier, /Passed 1/);
+  assert.doesNotMatch(earlier, /No risk found/);
+  assert.doesNotMatch(earlier, /Every path is guarded/);
   assert.match(earlier, /Viewing an earlier round/);
   // The join packet is that round's receipts, named as its stage rather than as a node id.
   assert.match(earlier, /1 of 2 reviewers reported/);
@@ -1166,7 +1189,18 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   // This gate has an adopted pull request, so Open PR is present, enabled, and a real link.
   assert.match(headerOf(html), /<a class="btn btn-ghost" href="https:\/\/github.com\/owner\/repo\/pull\/91"/);
   assert.match(html, /Open PR/);
-  assert.match(html, /This Inspector repair round ran no Personas/);
+  /*
+   * The worklist answers for the Inspector round rather than going blank on it.
+   *
+   * Round 1's objection was confirmed by round 2's pass, so nothing is blocking and nothing
+   * reported in round 3 - and the rail opens on the segment that has something in it rather
+   * than on two empty panes. "This Inspector repair round ran no Personas" is scoped to
+   * `Passed`, where it is true; it was never true of the agenda, which is exactly why it may
+   * not describe the whole section.
+   */
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Archive 1/);
+  assert.match(html, /Resolved in round 2/);
   // A stage this round did not run reads NEUTRAL, never green: the chip speaks for the round
   // on screen, where nothing executed. The pass it is carrying is claimed by the provenance
   // line instead, which names the round that earned it and links straight to the proof.
@@ -1502,13 +1536,21 @@ test("binding selection reuses only the requested immutable version", () => {
 const CHECK_NODE = "8a1f0b4e-1111-4000-8000-00000000000c";
 
 /** The same running run, with one check attempt in its latest round. */
+/**
+ * A run whose viewed round holds ONE check and nothing else.
+ *
+ * The Persona attempts are dropped rather than kept beside it, because the worklist shows one
+ * item in full at a time and the assertions below are about what a check's own card says. With
+ * round 1's objection still in the fixture the rail would open on that change instead, and
+ * these tests would be pinning the selection rule rather than the check vocabulary - which
+ * `workflow-run-blocker-worklist.spec.ts` and the selection tests below already do.
+ */
 function detailWithCheck(output: WorkflowJson): WorkflowRunDetail {
   const detail = runningDetail();
   const latest = detail.submissions[detail.submissions.length - 1]!;
   return {
     ...detail,
     attempts: [
-      ...detail.attempts,
       attempt("attempt-check", latest.id, CHECK_NODE, snapshot("unused", "unused"), {
         // A check attempt records no Persona, runner or model - it is not a model call.
         persona: null,
@@ -1723,20 +1765,28 @@ test("the Session, join and End attempts are not drawn as reviewer verdicts", ()
   // makes this a node-kind question rather than a "has a verdict" one: they must stay.
   const detail = runningDetail();
   const viewed = detail.submissions[1]!.id;
+  // Round 1's verdicts are dropped so the rail opens on `Passed`, which is where a reviewer
+  // that has not reported is listed. Nothing about the structural filter depends on them.
   detail.attempts = [
-    ...detail.attempts,
+    ...detail.attempts.filter((item) => item.submissionId === viewed),
     structural("attempt-session", viewed, NODE.session),
     structural("attempt-join", viewed, NODE.join),
     structural("attempt-end", viewed, NODE.end),
   ];
   const html = render(detail);
-  const cards = html.match(/wf-run-card wf-run-attempt/g) ?? [];
-  assert.equal(cards.length, 2, "only the two verdict-less REVIEWERS may render as attempt cards");
+  const rows = html.match(/wf-run-worklist-row is-attempt/g) ?? [];
+  assert.equal(rows.length, 2, "only the two verdict-less REVIEWERS may reach the worklist");
+  assert.match(html, /No verdict in this round yet/);
   assert.match(html, /Quality reviewer/);
   assert.match(html, /Security reviewer/);
+  // Selected, and shown in full - the card the old section rendered for every one of them at
+  // once still exists, for the one a reader asked about.
+  assert.equal((html.match(/wf-run-card wf-run-attempt/g) ?? []).length, 1);
   // The three structural attempts each carried this, which is the string that gave a demo run
   // three cards saying nothing.
   assert.doesNotMatch(html, /completed · attempt 1/);
+  // And a reviewer that has not reported is not counted as one that passed.
+  assert.match(html, /Passed 0/);
   assertNoGraphIds(html);
 });
 
@@ -1782,4 +1832,686 @@ test("a workflow with no reviewer in it says so instead of promising one", () =>
   const html = render(detail);
   assert.match(html, /This workflow has no reviewers/);
   assert.doesNotMatch(html, /wf-run-attempt/);
+});
+
+/*
+ * ---- the Blocker Worklist ----
+ *
+ * What is at stake here is the opposite of the file above it. Those tests guard against an
+ * affordance disappearing; these guard against the wall coming back. The section this replaced
+ * rendered every reviewer's whole card whether it had anything to say or not - measured at
+ * 11,445 characters to convey about 480 on a live ten-round run - and the two things that made
+ * it useless are both assertable from markup: a pass cost as much as a failure, and a change
+ * raised in round 1 and still open in round 10 looked exactly like one raised a minute ago.
+ *
+ * The stalemate pair mirrors `test/workflow-ladder-repeat.test.ts`, sentence for sentence,
+ * because both surfaces render one fact and it has to be worded one way on each.
+ */
+
+/**
+ * A run over the Quality reviewer alone, one round per entry.
+ *
+ * `"fail"` raises the same change again, `"pass"` confirms it, and `"none"` is a round that has
+ * opened without that reviewer reporting in it - the partial-round case, which is the one the
+ * resolution rule is most easily got wrong on.
+ */
+function qualityRounds(...verdicts: ("fail" | "pass" | "none")[]): WorkflowRunDetail {
+  const base = runningDetail();
+  const submissions: WorkflowSubmission[] = [];
+  const attempts: WorkflowNodeAttempt[] = [];
+  verdicts.forEach((outcome, index) => {
+    const round = index + 1;
+    submissions.push(submission(`submission-${round}`, round, {
+      status: "waiting_for_session",
+      completedAt: null,
+    }));
+    if (outcome === "none") return;
+    attempts.push(attempt(
+      `attempt-${round}`,
+      `submission-${round}`,
+      NODE.quality,
+      snapshot("p-quality", "Quality reviewer"),
+      { verdict: outcome === "pass" ? passVerdict : failVerdict },
+    ));
+  });
+  return {
+    ...base,
+    summary: { ...base.summary, round: submissions.at(-1)!.round },
+    submissions,
+    attempts,
+    receipts: [],
+  } as WorkflowRunDetail;
+}
+
+test("the worklist leads with what the run is asking for, and a pass costs a count", () => {
+  const html = render(runningDetail(), { roundId: "submission-1" });
+  // The agenda, selected and shown in full: the ask, the file, the round, the rationale.
+  assert.match(html, /Blocking 1/);
+  assert.match(html, /Fix the race/);
+  assert.match(html, /What the reviewer wants/);
+  assert.match(html, /Restart can duplicate work/);
+  assert.match(html, /src\/engine\.ts:42/);
+  assert.match(html, /Cited evidence/);
+  // And the pass beside it is one number. Its summary, its approval rationale and its evidence
+  // list - 1,984 characters of them on the measured run - are one click away and not on screen.
+  assert.match(html, /Passed 1/);
+  assert.doesNotMatch(html, /Approval rationale/);
+  assert.doesNotMatch(html, /No risk found/);
+  assertNoGraphIds(html);
+});
+
+test("a change carried across rounds names the round that raised it and how many did", () => {
+  const html = render(qualityRounds("fail", "fail", "fail"));
+  assert.match(html, /Blocking 1/, "three rounds of one grievance is one row, not three");
+  assert.match(html, /Quality reviewer · round 1/);
+  const facts = html.slice(html.indexOf("First raised"));
+  assert.match(facts, /First raised<\/dt><dd>Round 1/);
+  assert.match(facts, /Rounds open<\/dt><dd>3/);
+  assertNoGraphIds(html);
+});
+
+test("the worklist reports each reviewer that has failed consecutive rounds", () => {
+  const html = render(qualityRounds("fail", "fail", "fail"));
+  assert.match(html, /wf-run-worklist-stalemate/);
+  // The ladder's own sentence, unchanged, so one fact is worded one way on both surfaces.
+  assert.match(html, /Quality reviewer has failed 3 rounds running\./);
+});
+
+test("one failing round is not a stalemate, and an earlier round is not told the future", () => {
+  assert.doesNotMatch(render(qualityRounds("fail")), /rounds running/);
+  // Scrubbed back to round 1 of a three-round run, the card must not report round 3's streak:
+  // `detail.repeatOffenders` is latest-anchored and cannot be re-scoped, which is why the rail
+  // renders the windowed `runStalemates` instead.
+  const earlier = render(qualityRounds("fail", "fail", "fail"), { roundId: "submission-1" });
+  assert.doesNotMatch(earlier, /rounds running/);
+  assert.match(render(qualityRounds("fail", "fail", "fail"), { roundId: "submission-2" }),
+    /Quality reviewer has failed 2 rounds running\./);
+});
+
+test("a resolved change moves to Archive naming the round its own reviewer confirmed in", () => {
+  // Round 1 asked, round 2 passed, round 3 has opened and nobody has reported in it. Nothing is
+  // blocking and nothing has passed IN THIS ROUND, so the rail opens on the segment that has
+  // something in it rather than on two empty panes.
+  const html = render(qualityRounds("fail", "pass", "none"));
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Archive 1/);
+  assert.match(html, /wf-run-worklist-row is-change is-resolved/);
+  assert.match(html, /Resolved in round 2/);
+  assert.match(html, /Resolved in<\/dt><dd>Round 2/);
+});
+
+test("a reviewer that has not re-run leaves its change blocking, never resolved", () => {
+  // The partial-round rule: round 2 exists and Quality has not reported in it. Nothing has said
+  // the change is fixed, so it stays on the agenda rather than reading as done because time
+  // passed.
+  const html = render(qualityRounds("fail", "none"));
+  assert.match(html, /Blocking 1/);
+  assert.match(html, /Archive 0/);
+  assert.doesNotMatch(html, /Resolved in round/);
+});
+
+test("a failing check is a blocker and keeps its exit code and output tail", () => {
+  const html = render(detailWithCheck({
+    status: "failed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 3,
+    output: "1 failing",
+    truncatedBytes: 0,
+    note: "`npm test` exited 3.",
+  }));
+  assert.match(html, /Blocking 1/);
+  assert.match(html, /Passed 0/);
+  assert.match(html, /wf-run-worklist-row is-check/);
+  assert.match(html, /exit 3/);
+  assert.match(html, /1 failing/);
+  // And the run does not present as having nothing outstanding.
+  assert.doesNotMatch(html, /nothing outstanding/);
+});
+
+test("a check that never ran stays a degraded pass rather than a blocker", () => {
+  const html = render(detailWithCheck({
+    status: "skipped",
+    slot: "test",
+    command: null,
+    exitCode: null,
+    output: "",
+    truncatedBytes: 0,
+    note: "No test command is configured for this repository, so this gate was skipped.",
+  }));
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Passed 1/);
+  // The amber chip travels with it. Drawn green it would tell an operator the suite passed.
+  assert.match(html, /workflow-waiting">Skipped/);
+});
+
+/**
+ * The left accent and the chip beside it are one claim, so they are read from one value.
+ *
+ * Keyed on the row's KIND, which is how this shipped for a round, a fixed colour per kind says
+ * things the kind cannot know: every Command red including the skipped one sitting in `Passed`,
+ * every reviewer verdict green including the failing one that reaches `Blocking` through the
+ * unparseable-verdict path, every verdict-less reviewer red including one that has simply not
+ * reported. The chip was right in all three cases, which is what made it two marks on one row
+ * disagreeing rather than a uniform mistake.
+ *
+ * Asserted as a SLICE of the row's own opening tag rather than as a substring of the page: the
+ * tone class has to be on the element that carries the border, and `assert.match` over the whole
+ * markup would be satisfied by it appearing on any row at all.
+ */
+function rowTagFor(html: string, kind: string): string {
+  const at = html.indexOf(`wf-run-worklist-row is-${kind}`);
+  assert.notEqual(at, -1, `no ${kind} row rendered`);
+  const opens = html.lastIndexOf("<button", at);
+  return html.slice(opens, html.indexOf(">", at) + 1);
+}
+
+test("a row's left accent is its own tone, never a colour fixed by its kind", () => {
+  // A Command that never ran is a DEGRADED pass. Red would say the suite failed.
+  const skipped = render(detailWithCheck({
+    status: "skipped",
+    slot: "test",
+    command: null,
+    exitCode: null,
+    output: "",
+    truncatedBytes: 0,
+    note: "No test command is configured for this repository, so this gate was skipped.",
+  }));
+  assert.match(rowTagFor(skipped, "check"), /is-tone-waiting/);
+  assert.doesNotMatch(rowTagFor(skipped, "check"), /is-tone-failed/);
+
+  // And one that ran and exited non-zero is the blocker it says it is.
+  const failed = render(detailWithCheck({
+    status: "failed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 1,
+    output: "1 failing",
+    truncatedBytes: 0,
+    note: "`npm test` exited 1.",
+  }));
+  assert.match(rowTagFor(failed, "check"), /is-tone-failed/);
+
+  // A fail verdict the strict schema could not read still reaches `Blocking`, and must not wear
+  // the green a passing reviewer does.
+  const base = runningDetail();
+  const unreadable = render({
+    ...base,
+    attempts: base.attempts.map((item) => item.id === "attempt-1"
+      ? {
+          ...item,
+          verdict: {
+            ...failVerdict,
+            requestedChanges: [{ title: "No evidence attached", rationale: "why", evidence: [] }],
+          },
+        }
+      : item),
+  } as WorkflowRunDetail, { roundId: "submission-1" });
+  assert.match(rowTagFor(unreadable, "verdict"), /is-tone-failed/);
+  // The three change states keep the colours the plan argued for, now through the same route.
+  const round1 = render(runningDetail(), { roundId: "submission-1" });
+  assert.match(rowTagFor(round1, "change is-open"), /is-tone-failed/);
+  const settled = render(qualityRounds("fail", "pass", "none"));
+  assert.match(rowTagFor(settled, "change is-resolved"), /is-tone-passed/);
+
+  // A reviewer that has not reported has not failed anything either.
+  const pending = qualityRounds("none");
+  pending.attempts = [attempt(
+    "attempt-pending",
+    "submission-1",
+    NODE.quality,
+    snapshot("p-quality", "Quality reviewer"),
+    { state: "queued", verdict: null, startedAt: null, finishedAt: null },
+  )];
+  assert.match(rowTagFor(render(pending), "attempt"), /is-tone-waiting/);
+  assert.doesNotMatch(rowTagFor(render(pending), "attempt"), /is-tone-failed/);
+
+  // And one that errored has, so it keeps the blocker's colour.
+  const errored = qualityRounds("none");
+  errored.attempts = [attempt(
+    "attempt-errored",
+    "submission-1",
+    NODE.quality,
+    snapshot("p-quality", "Quality reviewer"),
+    { state: "error", verdict: null, error: "provider_timeout" },
+  )];
+  assert.match(rowTagFor(render(errored), "attempt"), /is-tone-failed/);
+
+  /*
+   * The third blocking attempt state, and the one the other two do not cover: a reply the
+   * verdict parser rejected. `stalledReviewer` files it in `Blocking` beside the errors, and
+   * `completed` is the same durable string a passing attempt carries before its verdict is
+   * read - so this row is the one place a chip could claim an outcome nobody reached.
+   *
+   * It does not. `reviewerStatus("completed")` is amber and says "No verdict", which is the
+   * honest reading, and deliberately NOT the red an exhausted provider error wears: nothing
+   * failed here, a reply arrived that could not be understood. Pinned because the distinction
+   * is invisible from the attempt state alone and easy to flatten later.
+   */
+  const unparseable = qualityRounds("none");
+  unparseable.attempts = [attempt(
+    "attempt-unparseable",
+    "submission-1",
+    NODE.quality,
+    snapshot("p-quality", "Quality reviewer"),
+    { state: "completed", verdict: null },
+  )];
+  const rejected = render(unparseable);
+  assert.match(rejected, /Blocking 1/);
+  assert.match(rowTagFor(rejected, "attempt"), /is-tone-waiting/);
+  assert.doesNotMatch(rowTagFor(rejected, "attempt"), /is-tone-passed/);
+  assert.match(rejected, />No verdict</);
+});
+
+test("an unreadable second objection is shown even when its reviewer has an open change", () => {
+  /*
+   * The round-scoped half of the unparseable-verdict fallback.
+   *
+   * Keyed on the node alone, the dedupe also matched a row CARRIED FORWARD from an earlier
+   * round: Quality's round-1 objection is still open because Quality never passed, so its
+   * round-2 reply - which the strict schema rejects and the display cast accepts - was excluded
+   * as already represented. It is not represented. The model cannot read that verdict either,
+   * so the round-1 row keeps saying `round 1`, and the page showed a stale objection with no
+   * sign the reviewer had answered again.
+   */
+  const base = runningDetail();
+  const first = base.attempts.find((item) => item.id === "attempt-1")!;
+  const second = base.attempts.find((item) => item.id === "attempt-3")!;
+  const html = render({
+    ...base,
+    attempts: [
+      first,
+      {
+        ...second,
+        state: "completed" as const,
+        verdict: {
+          ...failVerdict,
+          summary: "The reviewer answered again",
+          // Empty evidence: legal to the loose display cast, refused by `PersonaVerdictSchema`.
+          requestedChanges: [{ title: "Second look", rationale: "no evidence attached", evidence: [] }],
+        },
+      },
+    ],
+  } as WorkflowRunDetail);
+
+  assert.match(html, /Blocking 2/);
+  // Round 1's objection, still carried and still saying which round raised it.
+  assert.match(html, /Fix the race/);
+  assert.match(html, /Quality reviewer · round 1/);
+  // And round 2's reply, kept rather than swallowed, wearing the blocker's tone.
+  assert.match(html, /The reviewer answered again/);
+  assert.match(rowTagFor(html, "verdict"), /is-tone-failed/);
+  assertNoGraphIds(html);
+});
+
+/**
+ * One node, one row - however many attempts a round took to get there.
+ *
+ * A retry does not replace the row it retries. `engine.ts` marks the failed row `error` and
+ * INSERTS a successor at `attempt + 1` in the same submission, so both survive, and a surface
+ * that classifies every row puts one reviewer in two segments at once: the dead attempt under
+ * `Blocking`, its own successor under `Passed`. Reading only the newest attempt per node is the
+ * rule the pipeline strip above already follows, and for the same reason - it is the only one
+ * whose state is current.
+ */
+function retriedQualityDetail(
+  first: Partial<WorkflowNodeAttempt>,
+  second: Partial<WorkflowNodeAttempt>,
+): WorkflowRunDetail {
+  const base = runningDetail();
+  const round = base.submissions[1]!.id;
+  const persona = snapshot("p-quality", "Quality reviewer");
+  return {
+    ...base,
+    attempts: [
+      attempt("attempt-try-1", round, NODE.quality, persona, {
+        attempt: 1,
+        verdict: null,
+        ...first,
+      }),
+      attempt("attempt-try-2", round, NODE.quality, persona, {
+        attempt: 2,
+        verdict: null,
+        ...second,
+      }),
+    ],
+  } as WorkflowRunDetail;
+}
+
+test("a reviewer that errored and passed on retry is a pass, not a pass AND a blocker", () => {
+  const html = render(retriedQualityDetail(
+    { state: "error", error: "provider_timeout" },
+    { state: "completed", verdict: passVerdict },
+  ));
+  // The superseded attempt does not out-vote its own retry.
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Passed 1/);
+  // And the dead attempt's card is not on the page at all - the strip above carries node state.
+  assert.doesNotMatch(html, /provider_timeout/);
+  assert.doesNotMatch(html, /wf-run-worklist-row is-attempt/);
+  assertNoGraphIds(html);
+});
+
+test("a reviewer waiting on its own retry is pending, not a blocker", () => {
+  // The engine inserts the successor `retry_wait` WITH an error string, so a rule that tested
+  // for one would file every node that is about to try again under the heading for the ones
+  // that cannot.
+  const html = render(retriedQualityDetail(
+    { state: "error", error: "provider_timeout" },
+    { state: "retry_wait", error: "Retry scheduled after infrastructure failure: provider_timeout" },
+  ));
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Passed 0/);
+  // Its reason still reaches the reader, under the chip that says it is coming back.
+  assert.match(html, /No verdict in this round yet/);
+  assert.match(html, />Retrying</);
+  assert.match(html, /Retry scheduled after infrastructure failure/);
+});
+
+test("a reviewer whose retries are exhausted is still a blocker", () => {
+  // The other side of the same rule: once the engine stops scheduling successors, the newest
+  // attempt IS the errored one, and nothing else on this page says why the run stopped.
+  const html = render(retriedQualityDetail(
+    { state: "error", error: "provider_timeout" },
+    { state: "error", error: "provider_timeout" },
+  ));
+  assert.match(html, /Blocking 1/);
+  assert.match(html, /wf-run-worklist-row is-attempt/);
+  assert.match(html, /Provider timeout\./);
+  assert.match(html, /provider_timeout/);
+});
+
+/**
+ * A worklist row's key is its ID SPACE, never its kind.
+ *
+ * Asserted on the SOURCE rather than the markup because a React key never reaches the DOM, and
+ * the failure it guards is a live-state one no single render can show: an attempt keeps its id
+ * for its whole lifecycle - `store.ts` writes the verdict with `UPDATE workflow_node_attempts
+ * ... WHERE id = ?`, and only a retry inserts a new row - so a reviewer is kind `attempt` while
+ * it reports nothing and kind `verdict` the moment it does, and a Command is `attempt` until its
+ * outcome lands and `check` after. Keyed by kind, `selectedKey` stopped resolving at exactly
+ * that moment and selection snapped to the head of the list, losing the row a reader was
+ * watching resolve.
+ *
+ * What this pins is the thing a render test cannot: that both keys come from one builder each,
+ * so a future kind cannot quietly reintroduce a per-kind prefix.
+ */
+test("worklist keys are built from the id space, never from the row's kind", () => {
+  const source = readFileSync(
+    new URL("../src/web/workflows/WorkflowRuns.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /const attemptKey = \(attempt: WorkflowNodeAttempt\): string =>/);
+  assert.match(source, /const changeKey = \(row: ChangeWorklistRow\): string =>/);
+  // Every item is keyed through one of the two, and nothing builds a key inline.
+  const built = source.match(/key: (attemptKey\(attempt\)|changeKey\(row\))/g) ?? [];
+  assert.equal(built.length, 8, "every worklist item is keyed through a shared builder");
+  assert.doesNotMatch(
+    source,
+    /key: `(verdict|check|attempt|change):\$\{/,
+    "a key that encodes the kind loses the selection when a row changes kind under the reader",
+  );
+});
+
+test("a change citing no file says so rather than drawing an empty slot", () => {
+  const base = runningDetail();
+  const pathless = {
+    ...failVerdict,
+    requestedChanges: [{
+      title: "Attach the completed test output",
+      rationale: "The reply cites no run.",
+      evidence: [{ kind: "goal", quote: "the task asked for the transcript" }],
+    }],
+  };
+  const html = render({
+    ...base,
+    attempts: base.attempts.map((item) => item.id === "attempt-1"
+      ? { ...item, verdict: pathless }
+      : item),
+  } as WorkflowRunDetail, { roundId: "submission-1" });
+  assert.match(html, /Attach the completed test output/);
+  assert.match(html, /No file cited/);
+  // No file means no file to open, so the control is absent rather than dead.
+  assert.doesNotMatch(html, /Open file/);
+});
+
+test("a change's mutating actions are offered live and withheld once the run is over", () => {
+  const live = render(runningDetail(), {
+    roundId: "submission-1",
+    onCopyChange: () => {},
+    onOpenFile: () => {},
+    onSetPersonaDirective: () => {},
+    onRemovePersonaDirective: () => {},
+    onToggleNodesDisabled: () => {},
+  });
+  assert.match(live, /Copy this change/);
+  assert.match(live, /Open file/);
+  assert.match(live, /Give this reviewer feedback/);
+  assert.match(live, /Disable Quality reviewer/);
+
+  const base = runningDetail();
+  const finished = render({
+    ...base,
+    summary: { ...base.summary, status: "completed" },
+    run: { ...base.run, status: "completed" },
+  } as WorkflowRunDetail, {
+    roundId: "submission-1",
+    onCopyChange: () => {},
+    onOpenFile: () => {},
+    onSetPersonaDirective: () => {},
+    onRemovePersonaDirective: () => {},
+    onToggleNodesDisabled: () => {},
+  });
+  // Withheld rather than disabled: a finished run can no longer be affected, and a button that
+  // could never become enabled is a worse answer than no button.
+  assert.doesNotMatch(finished, /Give this reviewer feedback/);
+  assert.doesNotMatch(finished, /Disable Quality reviewer/);
+  // The two that only read stay.
+  assert.match(finished, /Copy this change/);
+  assert.match(finished, /Open file/);
+});
+
+test("every empty arm the old verdict list had still has its sentence", () => {
+  // An Inspector repair round with nothing outstanding: no reviewer ran, and the segment that
+  // is about reviewers says so.
+  const bypassed = qualityRounds("pass", "none");
+  bypassed.submissions = bypassed.submissions.map((entry) =>
+    entry.round === 2 ? { ...entry, mode: "inspector_only" as const } : entry);
+  const html = render(bypassed);
+  assert.match(html, /This Inspector repair round ran no Personas/);
+  assert.doesNotMatch(html, /No reviewer has been activated/);
+
+  // A round whose reviewers simply have not started. "Not yet" is a promise this arm can keep.
+  const notStarted = qualityRounds("none");
+  assert.match(render(notStarted), /No reviewer has been activated in this round yet/);
+
+  // And a graph that will never produce one, which is a different empty entirely.
+  const bare = { id: "bare-session", kind: "session" as const, position: { x: 0, y: 0 } };
+  const end = { id: "bare-end", kind: "end" as const, outcome: "Complete", position: { x: 280, y: 0 } };
+  assert.match(render({
+    ...notStarted,
+    version: {
+      ...version,
+      id: "bare-version",
+      graph: {
+        nodes: [bare, end],
+        edges: [{
+          id: "bare-edge",
+          source: bare.id,
+          sourcePort: "submitted",
+          target: end.id,
+          targetPort: "terminal",
+        }],
+      },
+    },
+  } as WorkflowRunDetail), /This workflow has no reviewers/);
+});
+
+test("a host with no clipboard or Files surface draws neither control", () => {
+  const html = render(runningDetail(), { roundId: "submission-1" });
+  assert.doesNotMatch(html, /Copy this change/);
+  assert.doesNotMatch(html, /Open file/);
+  assert.match(html, /Fix the race/);
+});
+
+/*
+ * ---- selection continuity when a reviewer reports ----
+ *
+ * A row's key is its id space, which holds a selection through a reviewer's PASS: the attempt is
+ * `attempt:<id>` before and after. A FAIL is the case that key alone cannot carry. The attempt
+ * stops being an item at all - a parseable fail verdict is represented by the changes it raised,
+ * not by itself - so the row moves into the change id space AND into another segment, and no key
+ * rewrite can bridge that, because the successor genuinely is a different thing.
+ *
+ * `followSelection` is the thread between them: the attempt survives in `detail.attempts` with
+ * its node, and the changes it raised carry that node too. Tested directly because the transition
+ * needs a live re-render with different data, which `renderToStaticMarkup` cannot produce and a
+ * browser can only produce by racing a reviewer.
+ */
+const REVIEWER_NODE = NODE.quality;
+
+function pendingAttempt(id: string): WorkflowNodeAttempt {
+  return attempt(id, "submission-1", REVIEWER_NODE, snapshot("p-quality", "Quality reviewer"), {
+    state: "queued",
+    verdict: null,
+  });
+}
+
+/** A `change` item carrying only the two fields the follow reads: its key and its reviewer. */
+function changeItem(key: string, nodeId: string): WorklistItem {
+  const row = { key, nodeId, title: key } as Partial<ChangeWorklistRow> as ChangeWorklistRow;
+  return { kind: "change", key: `change:${key}`, row };
+}
+
+const emptySegments = (): Record<WorklistSegment, WorklistItem[]> =>
+  ({ blocking: [], passed: [], archive: [] });
+
+test("a selected reviewer that reports a failing verdict is followed to the change it raised", () => {
+  const waiting = pendingAttempt("attempt-slow");
+  const segments = emptySegments();
+  // What the round looks like a moment later: the attempt is gone from the rail, and the change
+  // it raised stands in `Blocking` while the reader is still looking at `Passed`.
+  segments.blocking = [
+    changeItem("other-node\n\nsomething else", "another-node"),
+    changeItem(`${REVIEWER_NODE}\n\nattach the test output`, REVIEWER_NODE),
+  ];
+
+  const followed = followSelection("attempt:attempt-slow", [waiting], segments);
+  assert.equal(followed?.segment, "blocking", "the rail goes where the reviewer's result landed");
+  assert.equal(followed?.item.key, `change:${REVIEWER_NODE}\n\nattach the test output`);
+});
+
+test("a selection that still resolves somewhere is never dragged back to it", () => {
+  // The caller only asks when the key resolves NOWHERE, and this pins the other half of that
+  // rule: a reviewer with rows in two segments is followed to the first, not to whichever the
+  // reader happens to be standing in - the guard against overruling a reader who moved segments
+  // lives at the call site, and this function is what it would otherwise fight.
+  const waiting = pendingAttempt("attempt-slow");
+  const segments = emptySegments();
+  segments.passed = [changeItem(`${REVIEWER_NODE}\n\nlater`, REVIEWER_NODE)];
+  segments.blocking = [changeItem(`${REVIEWER_NODE}\n\nfirst`, REVIEWER_NODE)];
+  assert.equal(followSelection("attempt:attempt-slow", [waiting], segments)?.segment, "blocking");
+});
+
+test("following gives up rather than guessing", () => {
+  const waiting = pendingAttempt("attempt-slow");
+  const segments = emptySegments();
+  segments.blocking = [changeItem("someone-else\n\nnot yours", "someone-else")];
+
+  // A change key is not an attempt key, so a change that vanished is not chased into a reviewer.
+  assert.equal(followSelection("change:whatever", [waiting], segments), null);
+  // An attempt that is no longer in the run at all - a round the reader scrubbed away from.
+  assert.equal(followSelection("attempt:gone", [waiting], segments), null);
+  // And a reviewer whose result is nowhere on this round leaves the fallback to the caller.
+  assert.equal(followSelection("attempt:attempt-slow", [waiting], segments), null);
+});
+
+test("a change citing an EMPTY path is treated as citing none, everywhere", () => {
+  /*
+   * `WorkflowRequestedChangeSchema.path` is `.optional()` with no `.min(1)`, so `path: ""` is a
+   * legal verdict, and `change.path ?? null` keeps it - `??` coalesces null and undefined, not
+   * the empty string. Read directly, the row and the copy text called it absent while the detail
+   * pane drew an `Open file` button with nothing in its tooltip, which revealed an empty path in
+   * the Files tab.
+   */
+  const base = runningDetail();
+  const empty = {
+    ...failVerdict,
+    requestedChanges: [{
+      title: "Attach the completed test output",
+      rationale: "The reply cites no run.",
+      path: "",
+      evidence: [{ kind: "goal", quote: "the task asked for the transcript" }],
+    }],
+  };
+  const html = render({
+    ...base,
+    attempts: base.attempts.map((item) => item.id === "attempt-1"
+      ? { ...item, verdict: empty }
+      : item),
+  } as WorkflowRunDetail, {
+    roundId: "submission-1",
+    onOpenFile: () => {},
+    onCopyChange: () => {},
+  });
+
+  assert.match(html, /Attach the completed test output/);
+  assert.match(html, /No file cited/);
+  // The control that would have opened it, and the tooltip that would have named nothing.
+  assert.doesNotMatch(html, /Open file/);
+  assert.doesNotMatch(html, /Open  in the bound session/);
+});
+
+test("a gate that never ran is amber in the row AND in the card it opens", () => {
+  /*
+   * The row and the card derived the chip separately and disagreed. The card asked
+   * `outcome.status === "failed" ? failed : passed`, which paints a gate that never executed in
+   * the green of one that ran and succeeded - so a reader clicked an amber "Skipped" row and
+   * opened a green "Skipped" chip claiming the run had passed a gate nobody spawned.
+   */
+  for (const status of ["skipped", "unavailable"] as const) {
+    const html = render(detailWithCheck({
+      status,
+      slot: "test",
+      command: null,
+      exitCode: null,
+      output: "",
+      truncatedBytes: 0,
+      note: "Nothing is configured for this slot on this machine.",
+    }));
+    assert.match(rowTagFor(html, "check"), /is-tone-waiting/, `${status} row`);
+    // The card's own chip, sliced out of the card rather than matched anywhere on the page.
+    const card = html.slice(html.indexOf(`wf-run-check is-${status}`));
+    assert.match(card, /workflow-chip workflow-waiting/, `${status} card chip`);
+    assert.doesNotMatch(
+      card.slice(0, card.indexOf("</header>")),
+      /workflow-passed/,
+      `${status} must not wear the green of a command that ran`,
+    );
+  }
+
+  // And the two that DID run keep their own colours, in both places.
+  const failed = render(detailWithCheck({
+    status: "failed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 1,
+    output: "1 failing",
+    truncatedBytes: 0,
+    note: "`npm test` exited 1.",
+  }));
+  assert.match(rowTagFor(failed, "check"), /is-tone-failed/);
+  assert.match(failed.slice(failed.indexOf("wf-run-check is-failed")), /workflow-chip workflow-failed/);
+
+  const passed = render(detailWithCheck({
+    status: "passed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 0,
+    output: "",
+    truncatedBytes: 0,
+    note: "`npm test` passed.",
+  }));
+  assert.match(rowTagFor(passed, "check"), /is-tone-passed/);
+  assert.match(passed.slice(passed.indexOf("wf-run-check is-passed")), /workflow-chip workflow-passed/);
 });

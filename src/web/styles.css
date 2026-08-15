@@ -920,6 +920,281 @@ button.wf-run-version:focus-visible {
   gap: 10px;
 }
 
+/* ---- the Blocker Worklist (the agenda on the left, one item in full on the right) ----
+
+   The split is BOUNDED rather than full-height, and that is the one decision this block is
+   really making. `.wf-run-reader` already owns the page's only vertical scroll and this sits
+   inside it under an already-tall pipeline, so the flex chain the Library rails use - `height:
+   100dvh - chrome` plus `grid-template-rows: minmax(0, 1fr)` - has nothing to resolve against
+   here. `.rm-catalog-layout` solved the same problem the same way: cap each pane's height and
+   let it scroll inside a page that is already scrolling. Without the cap the rail and the pane
+   both grow to their content and the "two independent scroll regions" the design asked for
+   become one very long page.
+
+   The rail is a FIXED width rather than a fraction, for `.rm-catalog-layout`'s reason: a row
+   holds a title and two short lines, while the pane holds a rationale and its evidence, so
+   every pixel the reader gains should go to the pane. */
+.wf-run-worklist {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.wf-run-worklist > * {
+  min-width: 0;
+}
+
+.wf-run-worklist-rail,
+.wf-run-worklist-detail {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+/*
+ * Only the ROWS scroll, not the whole rail.
+ *
+ * The segmented control and the stalemate card sit outside this box on purpose. Both are
+ * statements about the rail rather than entries in it - the counts say what each segment holds,
+ * and the card is the fact the design keeps insisting must not disagree with the rows above it,
+ * so scrolling either of them out of view is exactly the failure they exist to prevent. A
+ * sticky control would have kept the counts but drawn rows sliding through the gap beneath it.
+ */
+.wf-run-worklist-list {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+
+/*
+ * And only the CARD scrolls, not the whole detail column - the same rule the rail follows one
+ * block up, applied to the other half of the split.
+ *
+ * `Previous` and `Next` are a statement about the segment rather than part of the item on
+ * screen, exactly as the segment counts and the stalemate card are statements about the rail.
+ * Inside the scroller they scrolled away with the card, so selecting anything whose rationale
+ * and evidence filled the cap meant scrolling to the bottom to reach `Next` - on the control
+ * whose whole purpose is walking the list without hunting.
+ *
+ * Sticky was the other option and is worse here: the row would float over the end of a long
+ * rationale, which is the one part of the card a reader is most likely to be in the middle of.
+ */
+.wf-run-worklist-detail-body {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-width: 0;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+
+.wf-run-worklist-seg {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.wf-run-worklist-seg button {
+  flex: 1;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-run-worklist-seg button.active {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--working) 18%, var(--panel));
+}
+
+.wf-run-worklist-group {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.wf-run-worklist-rows {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wf-run-worklist-row {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  border: 1px solid transparent;
+  /* The left rail is the row's state, which is why it is a border rather than a background:
+     an `unconfirmed` row has to be visibly NOT the green a resolved one wears, on a rail whose
+     stalemate card may be calling that same reviewer a repeat offender. */
+  border-left: 3px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.wf-run-worklist-row:hover {
+  border-color: var(--border);
+}
+
+.wf-run-worklist-row.active {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  background: color-mix(in oklab, var(--working) 10%, var(--panel-2));
+}
+
+/*
+ * The accent is the row's OWN TONE, never its kind.
+ *
+ * It was keyed on kind first, and a fixed colour per kind is a claim the kind cannot make: a
+ * skipped Command in `Passed` wore the same red as a failed one, a fail verdict that reached
+ * `Blocking` through the unparseable-verdict path wore the green of a resolved change, and a
+ * reviewer that had merely not reported yet wore red. The chip beside them was right the whole
+ * time, which is exactly what made it a lie worth fixing - two marks on one row disagreeing.
+ *
+ * `is-{kind}` and `is-{state}` stay on the element as the selectors specs read; only the colour
+ * moved to the tone the chip is already computed from, so the stripe and the chip cannot part.
+ * These sit AFTER `.active` on purpose: that rule sets `border-color` on every side, so at equal
+ * specificity source order is what keeps a selected row's left edge saying what it is.
+ */
+.wf-run-worklist-row.is-tone-failed { border-left-color: var(--danger); }
+.wf-run-worklist-row.is-tone-passed { border-left-color: var(--idle); }
+.wf-run-worklist-row.is-tone-waiting { border-left-color: var(--attention); }
+.wf-run-worklist-row.is-tone-running { border-left-color: var(--working); }
+.wf-run-worklist-row.is-tone-stopped { border-left-color: var(--exited); }
+
+.wf-run-worklist-row-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wf-run-worklist-row-head strong {
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-worklist-row-line {
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* Amber-as-attention, the tone this app already uses for a gate a human has to clear.
+   Deliberately not the danger red: nothing here has failed, the run has stopped converging. */
+.wf-run-worklist-stalemate {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--attention) 40%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));
+}
+
+.wf-run-worklist-stalemate strong {
+  color: var(--attention);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.wf-run-worklist-stalemate p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.wf-run-worklist-walk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.wf-run-worklist-walk .wf-run-meta {
+  margin-right: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-run-change.is-open { border-left-color: var(--danger); }
+.wf-run-change.is-resolved { border-left-color: var(--idle); }
+.wf-run-change.is-unconfirmed { border-left-color: var(--attention); }
+
+.wf-run-change-title {
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-change-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+/* Four controls in a pane that is already the narrow half of a split. At the shared `.btn`
+   size they wrap after two and leave a ragged second row on every ordinary window; at 11.5px
+   they fit one line down to the point the split itself collapses. */
+.wf-run-change-acts .btn {
+  font-size: 11.5px;
+  padding: 4px 9px;
+}
+
+/* A card body's heading is a LABEL over its prose, and it was rendering SMALLER than the prose
+   it labels: `h5` defaults to `0.83em` while the paragraph under it inherits `1em`, so
+   "Approval rationale" sat under its own text. Both are pinned against `.wf-run-summary`'s
+   12px, so a verdict, a finding, a delivery and a requested change all read at one size. */
+.wf-run-card-body h5 {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.wf-run-card-body p {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* The same mismatch one level up, kept to the worklist: the Inspector gate's own fact list is
+   a different density question and is left alone. */
+.wf-run-change .wf-run-facts-list dd {
+  font-size: 12px;
+}
+
+/* One column below the width where a 300px rail leaves the pane too narrow to hold a
+   rationale. The rail leads, because the agenda is what a person came here for. */
+@media (max-width: 1080px) {
+  .wf-run-worklist {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wf-run-worklist-list,
+  .wf-run-worklist-detail-body {
+    max-height: none;
+    overflow: visible;
+  }
+}
+
 /* Font size lives on the head rather than on its children so a `.workflow-chip` inside it
    keeps its own size instead of losing a specificity race to a descendant selector. */
 .wf-run-card-head {
@@ -973,8 +1248,11 @@ button.wf-run-version:focus-visible {
 .wf-run-action-pr a { font-variant-numeric: tabular-nums; }
 .wf-run-check.is-passed { border-left-color: var(--idle); }
 .wf-run-check.is-failed { border-left-color: var(--danger); }
+/* Amber, matching the chip inside the card and the rail row that opened it. Grey was a third
+   colour for one fact: it read as neutral-and-fine for a gate that never ran, which is the
+   claim `CHECK_OUTCOME_STATUSES` marks `degraded` precisely so nothing makes. */
 .wf-run-check.is-skipped,
-.wf-run-check.is-unavailable { border-left-color: var(--muted); }
+.wf-run-check.is-unavailable { border-left-color: var(--attention); }
 .wf-run-check-sentence { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); }
 .wf-run-check-output {
   margin: 4px 0 0;
@@ -1101,6 +1379,15 @@ button.wf-run-version:focus-visible {
 .wf-run-changes p,
 .wf-run-decisions small {
   color: var(--muted);
+}
+
+/* A cited quote is evidence, not the claim, and it was rendering a size larger than the
+   heading above it and the code reference beside it. Both lists live only in the worklist's
+   detail pane, so this is the same 12px the rest of that card now reads at. */
+.wf-run-evidence li,
+.wf-run-changes li {
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .wf-run-facts-list {

@@ -64,6 +64,18 @@ const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
 const SLOW_WORKFLOW_CONTEXT_MS = 5_000;
 /**
+ * A reviewer that takes its time before objecting, so a spec can watch one REPORT.
+ *
+ * Every other verdict here answers instantly, which makes the pending state unobservable from a
+ * browser: by the time the run detail is open the reviewer has already spoken. This one holds
+ * the fail long enough to select the row while it still reads "No verdict in this round yet"
+ * and then watch the worklist carry that selection to the change it raises. Generous rather
+ * than tight, because the window has to survive a loaded CI runner opening a page in it, and
+ * the spec waits on the outcome rather than on the clock.
+ */
+const SLOW_FAIL_VERDICT = "E2E_SLOW_FAIL_VERDICT";
+const SLOW_FAIL_VERDICT_MS = 15_000;
+/**
  * An ensemble comparison that never answers, so a spec can kill the daemon while one is
  * genuinely in flight.
  *
@@ -256,6 +268,47 @@ function headlessAnswer(prompt) {
       confidence: 0.95,
     });
   }
+  /*
+   * The same reviewer, still objecting, but in different words.
+   *
+   * A reviewer that rewords a title it keeps raising retires the old change key and opens a new
+   * one, and the worklist has to say what is actually known about the retired half: its reviewer
+   * looked again and did not pass, so nothing confirmed the fix. That state is unreachable from
+   * a fixture whose fail verdict is a fixed string, which is what this second title is for.
+   */
+  if (
+    prompt.startsWith("# EXTREMELY CRITICAL OPERATOR DIRECTIVE")
+    && prompt.includes("E2E_DIRECTIVE_REWORD_VERDICT")
+  ) {
+    return JSON.stringify({
+      verdict: "fail",
+      summary: "Deterministic e2e objection, restated",
+      requestedChanges: [
+        {
+          title: "E2E reworded change",
+          rationale: "This reviewer is scripted to restate its objection",
+          evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
+        },
+      ],
+      confidence: 0.9,
+    });
+  }
+  /* The slow reviewer's answer, once its delay has elapsed. Its own title, so a spec can tell
+     the change it raises from the instant reviewers' one. */
+  if (prompt.includes(SLOW_FAIL_VERDICT)) {
+    return JSON.stringify({
+      verdict: "fail",
+      summary: "Deterministic e2e objection, after a wait",
+      requestedChanges: [
+        {
+          title: "E2E slow requested change",
+          rationale: "This reviewer is scripted to object after a delay",
+          evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
+        },
+      ],
+      confidence: 0.9,
+    });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",
@@ -377,6 +430,8 @@ function runHeadlessSdk() {
       && prompt.includes("Compact workflow intent without rewriting it.")
     ) {
       setTimeout(() => finish(prompt), SLOW_WORKFLOW_CONTEXT_MS);
+    } else if (prompt.includes(SLOW_FAIL_VERDICT)) {
+      setTimeout(() => finish(prompt), SLOW_FAIL_VERDICT_MS);
     } else {
       finish(prompt);
     }

@@ -6,7 +6,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
- * "Reviewer verdicts" lists reviewers, and only reviewers.
+ * The review worklist lists reviewers, and only reviewers.
  *
  * Every node in a graph owns attempt rows, including the three that are pure structure: the
  * engine writes a `completed` attempt for the Session when evidence is captured, one for each
@@ -16,9 +16,14 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * verdicts nobody gave, sitting under the two that somebody did, on the page a person opens to
  * find out who approved a change. Their real state is already drawn on the strip above the list.
  *
+ * The section that held them is now the Blocker Worklist, and the requirement survived the
+ * rebuild intact: a structural attempt is still not a thing a reviewer said, and it must not
+ * appear in any of the three segments. This spec follows it there rather than being deleted with
+ * the markup it used to read.
+ *
  * Only a browser can prove it. The markup test pins the rendered shape from a hand-built detail;
  * this drives a real dispatch, a real published workflow, a real review run to completion, and
- * reads the section a person actually lands on from the card's own chip.
+ * reads the rail a person actually lands on from the card's own chip.
  *
  * No model tokens: the reviewers are answered by `e2e/fixtures/fake-agents.ts`, which returns a
  * schema-valid pass verdict for any Persona whose published guidance carries `E2E_PASS_VERDICT`.
@@ -160,29 +165,41 @@ test("a completed run lists its reviewers and no structural attempts", async ({
   await chip.click();
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${runId}$`));
 
-  const verdicts = dashboard.locator("section.wf-run-section")
-    .filter({ has: dashboard.getByRole("heading", { name: "Reviewer verdicts" }) });
-  await expect(verdicts).toBeVisible();
+  const section = dashboard.locator("section.wf-run-section")
+    .filter({ has: dashboard.getByRole("heading", { name: "Review worklist" }) });
+  // The widget, not the section: the join packet under it prints the runtime's raw JSON, stage
+  // name and all, so a negative assertion made against the section would be answered by that.
+  const worklist = section.locator(".wf-run-worklist");
+  await expect(worklist).toBeVisible();
 
-  // Both reviewers, each with the verdict it gave.
+  // An approved run asks for nothing, so the rail opens on the segment that has something in it.
+  const segments = worklist.getByRole("group", { name: "Worklist segment" });
+  await expect(segments.getByRole("button", { name: "Blocking 0" })).toBeVisible();
+  await expect(segments.getByRole("button", { name: "Passed 2" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  // Both reviewers, each with the verdict it gave, and nothing else. The Session, the join and
+  // the End each used to produce a card here, which is the regression this pins.
+  const rows = worklist.locator("button.wf-run-worklist-row");
+  await expect(rows).toHaveCount(2);
   for (const name of [REVIEWER.risk, REVIEWER.evidence]) {
-    const card = verdicts.locator("article.wf-run-card").filter({ hasText: name });
-    await expect(card).toHaveCount(1);
-    await expect(card.locator(".workflow-chip")).toHaveText("Passed");
+    const row = rows.filter({ hasText: name });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator(".workflow-chip")).toHaveText("Passed");
   }
-
-  // And nothing else. `wf-run-attempt` is the verdict-less fallback card: the Session, the join
-  // and the End each used to produce one here, which is the regression this pins.
-  await expect(verdicts.locator("article.wf-run-card")).toHaveCount(2);
-  await expect(verdicts.locator("article.wf-run-attempt")).toHaveCount(0);
-  await expect(verdicts).not.toContainText("completed · attempt");
+  await expect(worklist.locator("article.wf-run-attempt")).toHaveCount(0);
+  await expect(worklist).not.toContainText("completed · attempt");
+  await expect(worklist).not.toContainText("Stage 1");
+  await expect(worklist).not.toContainText("No verdict in this round yet");
 
   // Nothing was hidden, only moved out of a list of opinions: the strip above still says what the
   // Session, the stage and the End each did, and the stage's own join packet is still here.
   const strip = dashboard.locator(".wf-pipeline-strip");
   await expect(strip).toContainText("Session");
   await expect(strip).toContainText(OUTCOME);
-  await expect(verdicts.locator("details.wf-run-packet").first())
+  await expect(section.locator("details.wf-run-packet").first())
     .toContainText("2 of 2 reviewers reported");
 
   if (process.env.MC_E2E_EVIDENCE) {

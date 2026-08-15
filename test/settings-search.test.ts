@@ -16,6 +16,7 @@ import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
+import type { SettingsStatus } from "../src/shared/types.ts";
 
 // What is at stake: the palette is the only way to reach a control by half-remembering it,
 // and it reaches it by ANCHOR. An index entry whose anchor names a control the page does
@@ -52,6 +53,22 @@ const LLM: LlmState = {
   error: null,
 };
 
+/**
+ * A status with every conditional category AVAILABLE.
+ *
+ * This file asks whether the panel that owns an anchor renders it - a question about the
+ * panels, not about which of them a particular operator has. Rendering with `null` here
+ * would silently exclude every conditional category from the sweeps below, so a control
+ * pointing at an anchor no panel renders would pass for the wrong reason.
+ * `settings-sidebar-render.test.ts` is where availability itself is pinned.
+ */
+const EVERY_CATEGORY: SettingsStatus = {
+  inspector: { enabled: false, mode: "dry-run" },
+  shipping: { autoMerge: false },
+  taskSources: { failing: 0 },
+  pipelines: { present: true },
+};
+
 function renderCategory(category: SettingsCategoryId): string {
   return renderToStaticMarkup(
     createElement(SettingsPage, {
@@ -63,7 +80,7 @@ function renderCategory(category: SettingsCategoryId): string {
       llm: LLM,
       layout: "grid",
       onLayoutChange: () => {},
-      settingsStatus: null,
+      settingsStatus: EVERY_CATEGORY,
     }),
   );
 }

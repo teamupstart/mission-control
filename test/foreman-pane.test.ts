@@ -190,6 +190,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     task: null, prUrl: null, prNumber: null, prState: null,
     prChecks: null, meta: null, effortBaselineReady: false, note: null, cost: null, goal: null, queue: null, pendingTurns: [], orphanedQueue: null,
     inspector: null,
+    pipeline: null,
     paneDialog: null,
     ...over,
   };

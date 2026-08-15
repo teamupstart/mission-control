@@ -96,6 +96,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     queue: null,
     pendingTurns: [],
     orphanedQueue: null,
+    pipeline: null,
     paneDialog: null,
     ...over,
   };

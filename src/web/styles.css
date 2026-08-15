@@ -16753,7 +16753,14 @@ select.foreman-model-input {
   text-transform: uppercase;
   color: var(--muted);
 }
-.sc-card-head .sc-switch {
+/* A card's action sits at the head's TRAILING edge, whatever it is.
+   `.sc-switch` was the only action for as long as the master switch was the only kind, and
+   naming it alone was fine until Conductor's detection card put a button there: two cards
+   in one panel, one action against the title and one against the far edge, which reads as
+   a mistake because it is one. Both selectors, rather than a `:not(.sc-card-title)` that
+   would also catch `Tooltip`'s clip-hidden description span. */
+.sc-card-head .sc-switch,
+.sc-card-head > .btn {
   margin-left: auto;
 }
 .sc-card-body {
@@ -17688,10 +17695,63 @@ button.sc-row:focus-visible {
 /* The daemon has not answered yet, so the panel is showing nothing rather than the safe
    posture. Muted, because it is an absence of information and not a finding. */
 .inspector-unknown,
-.ship-unknown {
+.ship-unknown,
+.conductor-unknown {
   color: var(--muted);
   background: var(--panel-2);
   border-color: color-mix(in oklab, var(--muted) 28%, transparent);
+}
+
+/* ---- Conductor (observing an external SDLC engine) ----
+   Built entirely from the settings console's leaves (`sc-card`, `sc-switch`, `sc-state`,
+   `sc-health-row`), because it is the same shape as its neighbours: a posture, a switch,
+   and a list of repositories the switch applies to. Only the repository row is new, and it
+   is new because it carries three lines - a name, a path, and a health sentence - where
+   Trust's allowlist rows carry one. */
+.conductor-repos {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.conductor-repo {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.conductor-repo-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* `min-width: 0` so the path below can ellipsize rather than force the row wide. A
+     conductor checkout is an absolute path and several are long enough to push the switch
+     off the card without it. */
+  min-width: 0;
+}
+.conductor-repo-name {
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.conductor-repo-path {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  /* `break-word`, never `break-all`: a path chopped between any two characters is the
+     defect `inspector-brief-location.spec.ts` exists to pin, and this cell is nothing but
+     paths. */
+  overflow-wrap: break-word;
+}
+.conductor-repo-health {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.conductor-repo-error {
+  margin: 2px 0 0;
+}
+.conductor-empty {
+  margin-top: 10px;
 }
 
 

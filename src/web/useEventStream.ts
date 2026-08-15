@@ -18,6 +18,7 @@ import type {
   WorkflowSummary,
 } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import { pipelineRunKey, pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { dropSessionView } from "./lib/conversation-view.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
@@ -65,6 +66,16 @@ export interface MissionState {
    * Non-archived schedules only; occurrence history is fetched on demand elsewhere.
    */
   schedules: MissionSchedule[];
+  /**
+   * Every pipeline run an external SDLC engine is driving, for the repositories this
+   * operator has consented to. The SOLE source of these facts, on the same terms as
+   * `schedules`: the snapshot and the two incremental frames are the only refresh
+   * mechanism, and nothing here polls a pipelines route.
+   *
+   * EMPTY on the shipped configuration, where no provider is enabled anywhere - so a
+   * dashboard with no conductor installed carries this array and never renders it.
+   */
+  pipelineRuns: PipelineRun[];
   /**
    * Fleet spend and the subscription's rate limits, for the topbar strip. A single
    * value rather than a per-session field because that is the shape of the fact: the
@@ -152,6 +163,11 @@ export function useEventStream(): MissionState {
   const [workflowBindings, setWorkflowBindings] = useState<Map<string, WorkflowBindingSummary>>(new Map());
   const [ensembles, setEnsembles] = useState<Map<string, EnsembleSummary>>(new Map());
   const [schedules, setSchedules] = useState<Map<string, MissionSchedule>>(new Map());
+  // Keyed `provider repoRoot slug` through `pipelineRunKey` - the engine's own identity for
+  // a feature. Never a Mission Control id: nothing mints one, because this whole projection
+  // is rebuildable from the engine's files and an id of ours is the one field a rebuild
+  // could not reproduce.
+  const [pipelineRuns, setPipelineRuns] = useState<Map<string, PipelineRun>>(new Map());
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
@@ -220,6 +236,14 @@ export function useEventStream(): MissionState {
           // reconnect after a gap must drop schedules archived while we were away, not merge
           // them back in.
           setSchedules(new Map(msg.schedules.map((schedule) => [schedule.id, schedule])));
+          // Replaced wholesale for the reason above, with one extra edge this collection
+          // has: consent can be withdrawn while a tab is disconnected, and a merge would
+          // leave that repository's runs on screen for the rest of the session. The `?? []`
+          // is the version-skew guard the keep-awake field carries - an older daemon sends
+          // no such field, and `undefined` must read as "none" rather than crash the arm.
+          setPipelineRuns(
+            new Map((msg.pipelineRuns ?? []).map((run) => [pipelineRunKeyOf(run), run])),
+          );
           // Carried in the snapshot rather than waited for: the strip would otherwise sit
           // blank until the next export happened to change a figure.
           setFleetCost(msg.fleetCost);
@@ -359,6 +383,18 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        // The whole run, replaced: it is read as one picture of one feature, so a merge
+        // could draw a strip whose steps came from two different instants.
+        case "pipeline_upsert":
+          setPipelineRuns((prev) => new Map(prev).set(pipelineRunKeyOf(msg.run), msg.run));
+          break;
+        case "pipeline_remove":
+          setPipelineRuns((prev) => {
+            const next = new Map(prev);
+            next.delete(pipelineRunKey(msg.provider, msg.repoRoot, msg.slug));
+            return next;
+          });
+          break;
         case "cost_fleet":
           setFleetCost(msg.fleet);
           break;
@@ -425,6 +461,7 @@ export function useEventStream(): MissionState {
     workflowBindingSummaries: [...workflowBindings.values()],
     ensembleSummaries: [...ensembles.values()],
     schedules: [...schedules.values()],
+    pipelineRuns: [...pipelineRuns.values()],
     fleetCost,
     lineSummary,
     settingsStatus,

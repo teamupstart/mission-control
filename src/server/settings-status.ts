@@ -3,6 +3,7 @@ import { getInspectorConfig } from "./inspector/config.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { getTaskSourcesConfig } from "./task-sources/config.ts";
 import { taskSourceStatuses } from "./task-sources/sweeper.ts";
+import { pipelinesPresent } from "./pipelines/index.ts";
 
 // The one place the Settings status tuple is composed, and the one helper that emits it.
 //
@@ -30,6 +31,10 @@ export function settingsStatus(): SettingsStatus {
     inspector: { enabled: inspector.enabled, mode: inspector.mode },
     shipping: { autoMerge: shipping.autoMerge },
     taskSources: { failing },
+    // Whether the Conductor category is DRAWN at all, which is a different kind of fact from
+    // its three neighbours: they tint a dot on a row that always exists. Cheap enough to
+    // recompute here - see `pipelinesPresent`, which spawns nothing.
+    pipelines: { present: pipelinesPresent() },
   };
 }
 

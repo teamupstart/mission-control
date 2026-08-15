@@ -5,6 +5,11 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
 import { DB_PATH, envVar } from "./config.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
+import {
+  isPipelineProviderId,
+  type PipelineProviderId,
+  type PipelineRun,
+} from "@shared/pipeline.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
@@ -2243,6 +2248,54 @@ export function openDb(): DatabaseSync {
     -- Every read of this table is "one episode's trail, in order".
     CREATE INDEX IF NOT EXISTS idx_scout_prompt_turns_episode
       ON scout_prompt_turns(task_id, episode_id, seq);
+
+    -- The pipeline projection: what an external SDLC engine's own files say about each
+    -- feature it is driving, in the shape the dashboard reads.
+    --
+    -- A CACHE, in the same family as the three archive index tables above and for the same
+    -- reason: every column here is derived from files the engine owns and rewrites, so
+    -- deleting this table - or the whole database - costs one refresh pass and nothing else.
+    -- Nothing may be stored here that is not already on disk under the engine's control. A
+    -- label, an annotation or an operator's own note would be lost the first time the
+    -- projection was rebuilt, which is why none may be added: they belong on a task.
+    --
+    -- It exists at all so that a dashboard connecting before the watcher's first pass sees
+    -- the last known truth instead of an empty page, and so that the events tail can resume
+    -- at the byte it stopped at rather than re-reading a feature's whole ledger on every
+    -- daemon start.
+    --
+    -- The key is (provider, repo_root, slug): the engine's own identity for a feature. All
+    -- three are NOT NULL because the UNIQUE index below is an ON CONFLICT target and SQLite
+    -- treats nulls as distinct - two rows for one feature would each be half its history.
+    -- The slug is the plan stem, which is the engine's canonical key and not ours; nothing
+    -- here mints an id, because a rebuild could not reproduce one.
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+      -- An id from PIPELINE_PROVIDER_IDS. Append-only: a row written under a spelling this
+      -- build does not know is dropped and re-projected, never guessed at.
+      provider      TEXT NOT NULL,
+      repo_root     TEXT NOT NULL,
+      slug          TEXT NOT NULL,
+      -- The serialized PipelineRun. A blob rather than a column per field because every one
+      -- of them is re-derived whole on each pass; there is no partial update to express, and
+      -- no query here selects on a step's state.
+      run_json      TEXT NOT NULL,
+      -- Where the events tail stopped in this feature's events.jsonl, in bytes. NOT NULL with
+      -- a 0 default, which is exact: a row written before anything was tailed has read none
+      -- of it. A file shorter than this offset is a rewritten ledger and restarts at 0.
+      events_offset INTEGER NOT NULL DEFAULT 0,
+      -- Which FILE that offset is an offset into - dev:ino:birthtime - which changes when
+      -- the path is re-created. An offset without it is meaningless across a worktree being
+      -- cut again under the same slug, because the replacement is a different file that
+      -- happens to sit at the same path. Empty string means "not recorded", which is what
+      -- every row written before this column carries - and a nonzero offset beside one is
+      -- treated as UNVERIFIABLE rather than as an append: the first pass over such a row
+      -- rebuilds from byte zero, because a cursor that cannot be checked is not a cursor.
+      events_identity TEXT NOT NULL DEFAULT '',
+      updated_at    INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_key
+      ON pipeline_runs(provider, repo_root, slug);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_repo ON pipeline_runs(provider, repo_root);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -2269,6 +2322,15 @@ function inFlightIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  // Which file each pipeline run's events offset indexes into. Added after `pipeline_runs`
+  // shipped, so an existing row carries the empty-string default - which is exact: those
+  // rows were written by a build that recorded no identity. The tail treats an empty
+  // identity beside a NONZERO offset as an unverifiable cursor and rebuilds that run from
+  // byte zero once, which costs one extra read and recomputes the token total from the
+  // ledger rather than trusting a figure accumulated by a build that could not tell a
+  // replaced ledger from an appended one.
+  addColumn(d, "pipeline_runs", "events_identity", "TEXT NOT NULL DEFAULT ''");
+
   // An embedded driver can be relaunched from `status` plus `agent_session_id`, but those
   // facts cannot say whether the old process died in the middle of a turn. Existing rows
   // default idle: no older build recorded proof that they owe an automatic continuation.
@@ -4984,6 +5046,199 @@ export function forgetTaskSourceSeen(sourceId: string): number {
   const before = countTaskSourceSeen(sourceId);
   openDb().prepare(`DELETE FROM task_source_seen WHERE source_id = ?`).run(sourceId);
   return before;
+}
+
+// ---- pipelines: the projection of an external engine's own files ----
+//
+// Read the `pipeline_runs` CREATE TABLE above before touching any of this. Two rules, and
+// both are about the same thing: this table holds nothing that is not already on disk under
+// the engine's control, and nothing here ever writes an engine-owned file.
+
+/** One projection row as it is stored: the run, plus where its events tail stopped. */
+export interface PipelineRunRow {
+  run: PipelineRun;
+  eventsOffset: number;
+  /** Identity of the file `eventsOffset` indexes into. Empty when never recorded. */
+  eventsIdentity: string;
+}
+
+/**
+ * Whether a stored blob is still a run this build can read.
+ *
+ * Deliberately strict on the KEY fields and lenient on everything else. The key is what a
+ * row is addressed by, and a row whose provider this build does not know cannot be matched
+ * against anything - so it is dropped and re-projected from files, which is always possible
+ * and is exactly the guarantee this table is built on. Being lenient about the rest would
+ * be lenient about display, and the next pass overwrites the display anyway.
+ */
+function readPipelineRun(json: string): PipelineRun | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const run = parsed as Partial<PipelineRun>;
+  if (typeof run.provider !== "string" || !isPipelineProviderId(run.provider)) return null;
+  if (typeof run.repoRoot !== "string" || run.repoRoot === "") return null;
+  if (typeof run.slug !== "string" || run.slug === "") return null;
+  if (!Array.isArray(run.steps)) return null;
+  return run as PipelineRun;
+}
+
+/**
+ * Every projected run, for the boot-time seed of the live catalog.
+ *
+ * A row this build cannot read is DELETED rather than skipped. Skipping would leave it to
+ * shadow the next write's `ON CONFLICT` under a key nothing can address, and the cost of
+ * being wrong is one refresh - the whole reason this is a cache.
+ */
+export function loadPipelineRuns(): PipelineRunRow[] {
+  const d = openDb();
+  const rows = d
+    .prepare(
+      `SELECT provider, repo_root, slug, run_json, events_offset, events_identity
+         FROM pipeline_runs`,
+    )
+    .all() as unknown as Array<{
+    provider: string;
+    repo_root: string;
+    slug: string;
+    run_json: string;
+    events_offset: number;
+    events_identity: string;
+  }>;
+  const out: PipelineRunRow[] = [];
+  const unreadable: Array<[string, string, string]> = [];
+  for (const row of rows) {
+    const run = readPipelineRun(row.run_json);
+    if (run === null) {
+      unreadable.push([row.provider, row.repo_root, row.slug]);
+      continue;
+    }
+    out.push({
+      run,
+      eventsOffset: row.events_offset,
+      eventsIdentity: row.events_identity ?? "",
+    });
+  }
+  for (const [provider, repoRoot, slug] of unreadable) {
+    d.prepare(
+      `DELETE FROM pipeline_runs WHERE provider = ? AND repo_root = ? AND slug = ?`,
+    ).run(provider, repoRoot, slug);
+  }
+  if (unreadable.length > 0) {
+    console.warn(
+      `[pipelines] dropped ${unreadable.length} unreadable projection row(s); they will be re-read from the engine's files`,
+    );
+  }
+  return out;
+}
+
+/** Where the events tail stopped, and in WHICH file, for each run in one repository. */
+export interface PipelineEventCursor {
+  offset: number;
+  /** `dev:ino:birthtime` of the file that offset indexes. Empty when never recorded. */
+  identity: string;
+}
+
+/**
+ * The resume cursor per slug.
+ *
+ * Offset and identity travel together and are never read apart: an offset is a promise about
+ * a position in a particular file, and handing one back without saying which file it came
+ * from is how a re-cut worktree gets read from the middle of its new ledger.
+ */
+export function pipelineEventCursors(
+  provider: PipelineProviderId,
+  repoRoot: string,
+): Map<string, PipelineEventCursor> {
+  const rows = openDb()
+    .prepare(
+      `SELECT slug, events_offset, events_identity
+         FROM pipeline_runs WHERE provider = ? AND repo_root = ?`,
+    )
+    .all(provider, repoRoot) as unknown as Array<{
+    slug: string;
+    events_offset: number;
+    events_identity: string;
+  }>;
+  return new Map(
+    rows.map((r) => [r.slug, { offset: r.events_offset, identity: r.events_identity ?? "" }]),
+  );
+}
+
+/** Store one run's projection. Upsert on the engine's own key. */
+export function upsertPipelineRunRow(row: PipelineRunRow): void {
+  openDb()
+    .prepare(
+      `INSERT INTO pipeline_runs
+         (provider, repo_root, slug, run_json, events_offset, events_identity, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(provider, repo_root, slug) DO UPDATE SET
+         run_json=excluded.run_json,
+         events_offset=excluded.events_offset,
+         events_identity=excluded.events_identity,
+         updated_at=excluded.updated_at`,
+    )
+    .run(
+      row.run.provider,
+      row.run.repoRoot,
+      row.run.slug,
+      JSON.stringify(row.run),
+      row.eventsOffset,
+      row.eventsIdentity,
+      row.run.updatedAt,
+    );
+}
+
+/** Forget one run - its worktree is gone, so there is nothing left to project. */
+export function deletePipelineRunRow(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string,
+): void {
+  openDb()
+    .prepare(`DELETE FROM pipeline_runs WHERE provider = ? AND repo_root = ? AND slug = ?`)
+    .run(provider, repoRoot, slug);
+}
+
+/**
+ * Forget a whole repository's runs, and say which slugs went.
+ *
+ * What withdrawing consent means on disk: an operator who switches a repository off is
+ * owed a dashboard with nothing of that repository left on it, and the caller needs the
+ * slugs to emit a `pipeline_remove` for each.
+ */
+export function deletePipelineRunsForRepo(
+  provider: PipelineProviderId,
+  repoRoot: string,
+): string[] {
+  const d = openDb();
+  const rows = d
+    .prepare(`SELECT slug FROM pipeline_runs WHERE provider = ? AND repo_root = ?`)
+    .all(provider, repoRoot) as unknown as Array<{ slug: string }>;
+  d.prepare(`DELETE FROM pipeline_runs WHERE provider = ? AND repo_root = ?`).run(
+    provider,
+    repoRoot,
+  );
+  return rows.map((r) => r.slug);
+}
+
+/** Every (provider, repoRoot) pair the projection currently holds rows for. */
+export function pipelineProjectedRepos(): Array<{
+  provider: PipelineProviderId;
+  repoRoot: string;
+}> {
+  const rows = openDb()
+    .prepare(`SELECT DISTINCT provider, repo_root FROM pipeline_runs`)
+    .all() as unknown as Array<{ provider: string; repo_root: string }>;
+  return rows
+    .filter((r): r is { provider: PipelineProviderId; repo_root: string } =>
+      isPipelineProviderId(r.provider),
+    )
+    .map((r) => ({ provider: r.provider, repoRoot: r.repo_root }));
 }
 
 /**

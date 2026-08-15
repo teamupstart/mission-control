@@ -216,6 +216,31 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["github issues", "sweep", "backlog", "import", "upstream"],
   },
   {
+    id: "conductor",
+    label: "Conductor",
+    // Three arrows: a fixed sequence being walked. Deliberately NOT the app's own workflow
+    // baton (`⌁`, which the ladder, the peek tile and the Library all wear) - a pipeline is
+    // a SECOND engine's run, and borrowing that glyph would say the one thing this whole
+    // integration is careful not to: that these are Mission Control workflows.
+    icon: "⇶",
+    blurb: "Watch an external SDLC engine's pipelines, per repository",
+    // `background` / `machine`: everything here is daemon-backed and local. It reads files
+    // an engine owns on this machine and writes none of them, so it is neither `home`
+    // (nothing touches ~/) nor `github` (nothing leaves the machine).
+    group: "background",
+    scope: "machine",
+    keywords: [
+      "ai-conductor",
+      "conduct",
+      "pipeline",
+      "sdlc",
+      "gate",
+      "halt",
+      "worktree",
+      "engine",
+    ],
+  },
+  {
     id: "models",
     label: "Models",
     icon: "◈",
@@ -302,11 +327,60 @@ export function isSettingsCategory(id: string): id is SettingsCategoryId {
   return SETTINGS_CATEGORIES.some((c) => c.id === id);
 }
 
-/** The categories in one group, in registry order. The rail's only way to draw a group. */
+/**
+ * What the rail needs to know beyond the registry itself: which conditional categories this
+ * particular operator has.
+ *
+ * Exactly one category is conditional today, and the reason is worth stating because it is
+ * the exception rather than the pattern. Every other category configures Mission Control,
+ * so it exists for everyone whether or not they have switched it on. **Conductor configures
+ * somebody else's software.** The plan's criterion is that "an operator without conductor
+ * installed sees nothing new", and a rail row offering to observe an engine they do not have
+ * is a new thing on their screen however off it ships - so the row is drawn only once the
+ * daemon has seen the engine (or the operator has already configured a repository for it).
+ *
+ * Null while the daemon has not answered, which is NOT the same as false: a rail that
+ * assumed absence during the first paint would flash a category in for anyone who has the
+ * engine, on every load. Unknown draws nothing and waits, because the snapshot is one round
+ * trip away and a row appearing a moment late is invisible where a row appearing and
+ * vanishing is not.
+ */
+export interface SettingsAvailability {
+  /** `SettingsStatus.pipelines.present`, or null before the first snapshot. */
+  pipelinesPresent: boolean | null;
+}
+
+/**
+ * Whether one category exists for this operator at all.
+ *
+ * One implementation, because five surfaces ask it - the rail, the arrow-key walk, the
+ * panel the route resolves to, the search index, and the deep-link fallback - and a second
+ * copy is how a category comes to be reachable from search but absent from the rail.
+ */
+export function settingsCategoryAvailable(
+  id: SettingsCategoryId,
+  availability: SettingsAvailability,
+): boolean {
+  if (id === "conductor") return availability.pipelinesPresent === true;
+  return true;
+}
+
+/** Every category this operator has, in registry order. */
+export function availableSettingsCategories(
+  availability: SettingsAvailability,
+): readonly (typeof SETTINGS_CATEGORIES)[number][] {
+  return SETTINGS_CATEGORIES.filter((c) => settingsCategoryAvailable(c.id, availability));
+}
+
+/**
+ * The categories in one group that this operator has, in registry order. The rail's only
+ * way to draw a group.
+ */
 export function settingsCategoriesIn(
   group: SettingsGroupId,
+  availability: SettingsAvailability = { pipelinesPresent: null },
 ): readonly (typeof SETTINGS_CATEGORIES)[number][] {
-  return SETTINGS_CATEGORIES.filter((c) => c.group === group);
+  return availableSettingsCategories(availability).filter((c) => c.group === group);
 }
 
 /** One category's entry, by id. */

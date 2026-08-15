@@ -87,6 +87,9 @@ const ALL_OFF: SettingsStatus = {
   inspector: { enabled: false, mode: "dry-run" },
   shipping: { autoMerge: false },
   taskSources: { failing: 0 },
+  // No engine on this test's PATH and nothing configured, which is what an ordinary
+  // installation looks like - and the state in which the Conductor rail row does not exist.
+  pipelines: { present: false },
 };
 
 // ---- compose ----

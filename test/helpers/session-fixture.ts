@@ -113,6 +113,9 @@ export function mkSession(over: Partial<Session> = {}): Session {
     pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
+    // Uncorrelated, which is what every session on a fleet with no pipeline provider
+    // enabled is - and what every test written before pipelines existed assumes.
+    pipeline: null,
     paneDialog: null,
     ...over,
   };

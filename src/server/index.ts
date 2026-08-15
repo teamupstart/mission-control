@@ -53,6 +53,7 @@ import { warnIfSessionAttributionDisabled } from "./cost.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
 import { startTaskSourceSweeper } from "./task-sources/sweeper.ts";
+import { restorePipelineProjection, startPipelineWatcher } from "./pipelines/index.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
@@ -360,6 +361,17 @@ const stopSkillsReloader = startSkillsReloader(registry);
 // ingest writes to the DB and the daemon is the only writer; needs none of the reload
 // loop's pane gate because it never types (see src/shared/task-source.ts).
 const stopTaskSources = startTaskSourceSweeper(tasks, () => publishSettingsStatus(registry));
+// Observes an external SDLC engine's own state files for the repositories an operator has
+// consented to, and projects them. In the daemon for the sweeper's two reasons: it writes
+// to the DB, and the port bind guarantees exactly one of it.
+//
+// The restore runs BEFORE the watcher and before the server accepts traffic, so a dashboard
+// connecting in the first tick gets the last known projection rather than an empty page -
+// and so a repository whose consent was withdrawn while the daemon was down never comes
+// back as a frame about a repository nobody enabled. Inert on the shipped configuration:
+// with no repository consented to, the restore prunes nothing and each tick is one KV read.
+restorePipelineProjection(registry);
+const stopPipelines = startPipelineWatcher(registry, () => publishSettingsStatus(registry));
 // Recurring Missions, for the same two reasons as the sweeper above: it writes to the DB,
 // and the port bind guarantees exactly one of it. It files backlog tasks and stops there -
 // Foreman is still the only autonomous path to a running agent. Inert until an operator
@@ -527,6 +539,7 @@ async function shutdown(): Promise<void> {
   stopPoolReaper();
   stopSkillsReloader();
   stopTaskSources();
+  stopPipelines();
   stopSchedules();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to
   // finish or be abandoned with the process: every write it makes is an idempotent replace of

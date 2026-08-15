@@ -15,6 +15,15 @@ When adding a `ServerEvent`:
 
 1. Add an exhaustive case in `src/web/useEventStream.ts`.
 2. If it adds a top-level collection, update `MissionState`, the snapshot event, and `registry.snapshot()`.
+3. Decide `LINE_INPUT_EVENTS` (`src/server/registry.ts`) explicitly. It is a `Set` literal, so
+   the compiler cannot ask, and it is the one place a new kind can be silently wrong: a frame
+   that names a store the Line reads and is missing from that set leaves the strip stale until
+   something unrelated moves it. Membership is not the default - `pipeline_upsert` is
+   deliberately absent, and the comment beside the set says why.
+4. Say what BOUNDS the collection, in its own doc comment, and pin it. Every collection here
+   rides every reconnect, so "how large can this get" has to have an answer before it ships;
+   `test/pipeline-sse.test.ts` measures one run and states the fleet arithmetic, which is the
+   shape that tells a later change what it broke.
 
 When adding a dashboard preference to `UiConfig`, three edits are one obligation:
 
@@ -121,6 +130,18 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   published bundle is rewritten or moved. Adding a kind means appending to `ARCHIVE_KINDS`
   and registering a planner in `src/server/archives/planners.ts`; a kind with no planner is
   readable and not writable, which is deliberate. See [Archives](../archives.md)
+- Pipeline provider ids (`PIPELINE_PROVIDER_IDS` in `src/shared/pipeline.ts`) - these are
+  written into the `pipelines` blob in `app_config` and into `pipeline_runs.provider`, so a
+  rename orphans every repository an operator consented to under the old spelling: the row
+  stops matching a registered provider and its runs silently stop being projected. Appending
+  one does not compile until it has an entry in `PIPELINE_PROVIDER_INFO`, a step table in
+  `PIPELINE_STEPS`, and an implementation in `PIPELINE_PROVIDERS` (`src/server/pipelines/`) -
+  three exhaustive `Record`s, which is deliberate: a provider the Settings panel offers and
+  the watcher skips in silence is the failure this shape prevents. The `pipeline_runs`
+  PROJECTION is not on this list and is not durable state - it is a cache of files the engine
+  owns, and a row this build cannot read is dropped and re-projected rather than migrated.
+  The engine's own step names are NOT append-only here either: MC keeps a frozen display copy
+  and tolerates any name it does not know. See [Pipelines](../pipelines.md)
 - Scout prompt origins (`SCOUT_PROMPT_ORIGINS` in `src/server/scouts/prompt-context.ts`) -
   written into `scout_prompt_turns.origin` and read back by exact value through
   `readPersistedEnum`, so an origin this build cannot read decodes to `null`. That is the
@@ -543,7 +564,16 @@ A copy control that reports nothing is incomplete. Confirm the success and say s
 
 Extend existing registries instead of adding parallel lists:
 
-- Settings: `SETTINGS_CATEGORIES`, `renderCategory`, panel component, and search anchors
+- Settings: `SETTINGS_CATEGORIES`, `renderCategory`, panel component, and search anchors.
+  A category is normally unconditional - it configures Mission Control, so it exists for
+  everyone whether or not they have switched it on. A category that configures SOMEBODY
+  ELSE'S software is the exception and goes through `settingsCategoryAvailable`, which five
+  surfaces read: the rail, the arrow-key walk, the route's fallback, the ⌘K palette, and the
+  render test. Adding a second one means an arm there and a field on
+  `SettingsStatus` - never a local check in the panel, because a category reachable from
+  search but absent from the rail is the failure this shape exists to prevent. Availability
+  is a tri-state: `null` (the daemon has not answered) draws nothing and waits, because a
+  rail that guessed would flash a row in or out on every load
 - ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new
   searchable kind is a provider over an existing client SSE store, never a second index, a
   server-side search endpoint, or a fetch. Its rows may target only routes the router already
@@ -553,6 +583,8 @@ Extend existing registries instead of adding parallel lists:
 - Terminal backends: ID tuples and `MULTIPLEXERS` or `EMULATORS`
 - Open targets: `OPEN_TARGET_INFO` and `OPEN_TARGETS`
 - Task sources: `TASK_SOURCE_KIND_INFO` and `TASK_SOURCES`
+- Pipeline providers: `PIPELINE_PROVIDER_INFO` / `PIPELINE_STEPS` (`src/shared/pipeline.ts`)
+  and `PIPELINE_PROVIDERS` (`src/server/pipelines/index.ts`)
 - Task kinds: `TASK_KINDS` (`src/shared/types.ts`) for the ids and their picker order, `TASK_KIND_INFO` (`src/shared/task.ts`) for how they are named and what each is for. Append, never reorder - `ship` at index 0 is what `DEFAULT_TASK_KIND` derives from, and it is the kind every automated writer takes and the one an unreadable persisted value degrades to. Anything that enumerates the SET - a `z.enum`, a check over a persisted value, an `<option>` list - reads the tuple. Comparing against one kind (`kind === "scout"`) is ordinary code and needs nothing; a rule that is really about a PROPERTY of the kind is not, and states it as a predicate over the vocabulary instead (`hasReviewableDiff`). Nothing is grandfathered any more: `TaskSourcesPanel.tsx` and `ScheduleEditor.tsx` hand-wrote their `<option>`s until adding a third kind showed what that costs - they compiled cleanly and silently kept offering two - and both now render from the registry. `test/task-kinds.test.ts` compares the offender set exactly against an empty `KNOWN_HAND_WRITTEN`, and its detector flags any TWO ids declared together, so a stale subset fails as loudly as a complete copy
 - Ensemble strategies: shared strategy info and server compiler registry
 - Shared model choice: `resolveModelChoice`

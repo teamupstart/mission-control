@@ -42,6 +42,12 @@ import type {
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
+import {
+  pipelineRunKey,
+  pipelineRunKeyOf,
+  type PipelineProviderId,
+  type PipelineRun,
+} from "@shared/pipeline.ts";
 import type {
   HookIngest,
   OtlpMetrics,
@@ -411,6 +417,14 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // Changes which model/effort/runtime the NEXT dispatch uses, so the pickers naming those
   // defaults have to re-read rather than wait out a poll.
   "harnesses_config_changed",
+  // `pipeline_upsert` / `pipeline_remove` are DELIBERATELY absent, and the question was
+  // asked rather than skipped. The Line folds Mission Control's own execution - its
+  // sessions, tasks, runs and ensembles - and a pipeline run is a second engine's, which
+  // the fold has no input for and could not count without double-counting the session the
+  // engine spawned (which the strip already sees, as a session). What a halted pipeline
+  // owes an operator is attention, not a stage figure, and that is phase 3's
+  // `pipeline_halt` item - which reaches the strip through the attention fold this set
+  // does not feed.
 ]);
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
@@ -552,6 +566,20 @@ export class Registry extends EventEmitter {
    * and fetched on demand, not live catalog state.
    */
   private schedules = new Map<string, MissionSchedule>();
+  /**
+   * The pipeline projection, keyed `provider repoRoot slug` (see `pipelineRunKey`).
+   *
+   * A cache and a notifier, exactly like `schedules`: the pipelines watcher is the only
+   * writer of `pipeline_runs`, and it calls `upsertPipelineRun` / `removePipelineRun`
+   * here AFTER its durable write returns.
+   *
+   * Bounded by operator consent rather than by history. It holds one entry per feature
+   * currently in an enabled repository's provider worktrees; a feature whose worktree is
+   * gone leaves through `pipeline_remove`, and a repository whose consent is withdrawn
+   * takes all of its entries with it. On the shipped configuration - no provider enabled
+   * anywhere - it is empty and stays empty.
+   */
+  private pipelineRuns = new Map<string, PipelineRun>();
   /**
    * How a task finds out it is an ensemble member.
    *
@@ -751,6 +779,7 @@ export class Registry extends EventEmitter {
     workflowBindingSummaries: WorkflowBindingSummary[];
     ensembleSummaries: EnsembleSummary[];
     schedules: MissionSchedule[];
+    pipelineRuns: PipelineRun[];
     fleetCost: FleetCost | null;
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
@@ -768,6 +797,10 @@ export class Registry extends EventEmitter {
       workflowBindingSummaries: [...this.workflowBindings.values()],
       ensembleSummaries: [...this.ensembles.values()],
       schedules: [...this.schedules.values()],
+      // Seeded from the projection at boot, so a dashboard connecting before the watcher's
+      // first pass is already right rather than blank for one tick. Empty on every fleet
+      // that has enabled no pipeline repository.
+      pipelineRuns: [...this.pipelineRuns.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
@@ -1258,6 +1291,51 @@ export class Registry extends EventEmitter {
     if (this.schedules.delete(id)) this.emitEvent({ type: "schedule_remove", id });
   }
 
+  // ---- pipeline projection (external SDLC engines) ----
+  //
+  // The same shape as the schedule catalog above and for the same reason: the pipelines
+  // watcher is the only writer of `pipeline_runs`, and these are the live-state adapter it
+  // notifies after each durable write. Nothing here reads a provider's files, spawns a
+  // provider's CLI, or decides what a run's group is - all three are the watcher's, so this
+  // class stays free of any knowledge that a pipeline provider exists beyond its shape.
+
+  listPipelineRuns(): PipelineRun[] {
+    return [...this.pipelineRuns.values()];
+  }
+
+  /**
+   * Boot-time install of the projection read back from SQLite. It precedes serving SSE, so
+   * it emits nothing - the same contract `initializeWorkflowCommands` holds.
+   */
+  initializePipelineRuns(runs: readonly PipelineRun[]): void {
+    this.pipelineRuns = new Map(runs.map((run) => [pipelineRunKeyOf(run), run]));
+  }
+
+  /**
+   * Adopt a run and tell every browser, unless nothing a human could see moved.
+   *
+   * The suppression is not an optimization the way `emitSettingsStatus`' is - it is what
+   * makes a polling watcher tolerable at all. The loop re-reads each enabled repository's
+   * state files on a cadence and re-derives a whole `PipelineRun` every time; without this
+   * check a quiet fleet would push one frame per run per tick, for ever.
+   *
+   * `updatedAt` is excluded from the comparison deliberately: it is the projection's own
+   * clock, not a fact about the run, so including it would defeat the check entirely.
+   */
+  upsertPipelineRun(run: PipelineRun): void {
+    const key = pipelineRunKeyOf(run);
+    const prev = this.pipelineRuns.get(key);
+    this.pipelineRuns.set(key, run);
+    if (prev && pipelineRunDisplayEqual(prev, run)) return;
+    this.emitEvent({ type: "pipeline_upsert", run });
+  }
+
+  removePipelineRun(provider: PipelineProviderId, repoRoot: string, slug: string): void {
+    if (this.pipelineRuns.delete(pipelineRunKey(provider, repoRoot, slug))) {
+      this.emitEvent({ type: "pipeline_remove", provider, repoRoot, slug });
+    }
+  }
+
   registerWorkflowReset(cleanup: (noteKey: string) => void): void {
     this.workflowReset = cleanup;
   }
@@ -1463,6 +1541,11 @@ export class Registry extends EventEmitter {
       // Carried forward like the PR fields for the same reason: discovery cannot see it.
       // Re-resolved from the ledger just below, once cwd/prUrl are settled.
       inspector: prev?.inspector ?? null,
+      // Carried forward for the SAME reason as `inspector` above, and it is the reason
+      // this field exists on a session at all: the correlation is derived from `cwd`
+      // against the enabled repositories' worktrees, which nothing in this merge holds.
+      // Null on every fleet with no pipeline provider enabled. Phase 3 stamps it.
+      pipeline: prev?.pipeline ?? null,
       retro: prev?.retro,
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
@@ -1653,6 +1736,10 @@ export class Registry extends EventEmitter {
       pendingTurns: [],
       orphanedQueue: null,
       inspector: null,
+      // Always null here, and structurally so rather than by omission: an engine-driven
+      // agent is a subprocess the ENGINE started in its own worktree, and this door is
+      // only ever taken by a session Mission Control's own supervisor launched.
+      pipeline: null,
       paneDialog: null,
     };
     s.task = this.taskSummaryFor(s.id, s.cwd);
@@ -6794,6 +6881,14 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // the tick that flips it is a tick where, on a finished session, nothing else moves at all,
   // so leaving it out would withhold the prompt until something unrelated shook the card.
   retro: byJson,
+  // byJson over a small nested object the badge renders as a unit, and the one field here
+  // whose comparison matters most while it is NULL: on a fleet with no pipeline provider
+  // enabled every session carries null and this is one `undefined === undefined` per
+  // session per sweep. When it is set, its `step` moves on its own - an engine-driven
+  // session walking from `build` to `test_suite` changes nothing else about the card - so
+  // leaving it out would freeze the chip at whichever step happened to be running when
+  // something unrelated last shook the session.
+  pipeline: byJson,
   // Load-bearing: a dialog opening is a tick where almost nothing ELSE changes.
   // `permissionMode` is sticky and so doesn't flip when the menu covers the
   // footer, and a session parked on a question is by definition not doing
@@ -6802,6 +6897,37 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // the card loose. That reads as a flaky parser rather than a missing compare.
   paneDialog: byJson,
 };
+
+/**
+ * Whether two projections of one pipeline run would draw the same thing.
+ *
+ * `updatedAt` is deliberately excluded: it is the projection's own clock rather than a
+ * fact about the run, and every re-derivation moves it, so including it would make this
+ * comparison always false and the suppression it exists for a no-op.
+ *
+ * Everything else is compared structurally, in one `JSON.stringify` over a record whose
+ * keys are written out. Written out rather than spread-and-delete so that a field added
+ * to `PipelineRun` has to be considered here - a new field silently omitted would be one
+ * the browser never sees move.
+ */
+export function pipelineRunDisplayEqual(a: PipelineRun, b: PipelineRun): boolean {
+  const display = (run: PipelineRun): string =>
+    JSON.stringify([
+      run.provider,
+      run.repoRoot,
+      run.slug,
+      run.worktree,
+      run.tier,
+      run.track,
+      run.steps,
+      run.lastStep,
+      run.halt,
+      run.group,
+      run.prUrl,
+      run.costTokens,
+    ]);
+  return display(a) === display(b);
+}
 
 /**
  * Compare the fields that decide whether the UI would look different. Only real

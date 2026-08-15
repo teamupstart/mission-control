@@ -89,6 +89,9 @@ function status(over: Partial<SettingsStatus> = {}): SettingsStatus {
     inspector: { enabled: false, mode: "dry-run" },
     shipping: { autoMerge: false },
     taskSources: { failing: 0 },
+    // Present by default so the tests that are about OTHER categories keep seeing the whole
+    // rail; the ones about Conductor's conditional row override it.
+    pipelines: { present: true },
     ...over,
   };
 }
@@ -106,12 +109,50 @@ const INSPECTOR_ONLY = /Run the Inspector/; // the inspector master toggle label
 const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
 const MODELS_ONLY = /Background jobs/; // the LLM panel's per-job group label
+const CONDUCTOR_ONLY = /never starts or stops a pipeline/; // the Conductor panel's read-only claim
 
 test("the rail lists every category exactly once", () => {
-  const html = render();
+  // With every conditional category available, so this is about the rail drawing the whole
+  // registry rather than about which categories this operator has.
+  const html = render("display", { settingsStatus: status() });
   const items = html.match(/class="settings-nav-item/g) ?? [];
   assert.equal(items.length, SETTINGS_CATEGORIES.length);
   for (const c of SETTINGS_CATEGORIES) assert.ok(html.includes(c.label), `nav missing ${c.label}`);
+});
+
+// The plan's criterion, and the sharpest thing this file asserts: "an operator without
+// conductor installed sees nothing new". It is keyed on INSTALLED, not on enabled - a rail
+// row offering to observe an engine somebody does not have is a new thing on their screen
+// however off it ships. Conductor is the only category conditional this way, because it is
+// the only one that configures somebody else's software.
+test("without an engine installed, the Conductor category does not exist at all", () => {
+  const html = render("display", { settingsStatus: status({ pipelines: { present: false } }) });
+  assert.equal(
+    (html.match(/class="settings-nav-item/g) ?? []).length,
+    SETTINGS_CATEGORIES.length - 1,
+    "the rail should be one row shorter",
+  );
+  assert.doesNotMatch(html, />Conductor</, "no rail row");
+  assert.doesNotMatch(html, CONDUCTOR_ONLY, "no panel");
+  assert.doesNotMatch(html, /data-anchor="conductor\//, "no anchored control");
+});
+
+// And the deep link is not a back door. A stale bookmark, or a link written before the
+// engine was uninstalled, must land where an unknown category lands rather than on an empty
+// pane - or the panel is reachable after all.
+test("routing to Conductor without an engine falls back rather than rendering it", () => {
+  const html = render("conductor", { settingsStatus: status({ pipelines: { present: false } }) });
+  assert.doesNotMatch(html, CONDUCTOR_ONLY);
+  assert.match(html, LAYOUT_ONLY, "falls back to the default category");
+  assert.equal((html.match(/settings-nav-item is-active/g) ?? []).length, 1);
+});
+
+// The pre-snapshot instant is UNKNOWN, and unknown draws nothing. A rail that assumed
+// absence would flash the row in on every load for anyone who has the engine; one that
+// assumed presence would flash it out for everyone who does not.
+test("before the daemon answers, the conditional category is not drawn", () => {
+  const html = render();
+  assert.doesNotMatch(html, />Conductor</);
 });
 
 // The rail groups by blast radius, and the groups come from the registry - never from a
@@ -141,7 +182,7 @@ test("the registry's order is the order the rail draws", () => {
 // The badge is the sentence the flat rail could not say: which settings stay in this
 // browser, and which act on GitHub under your account.
 test("every rail item sits under its group's scope badge", () => {
-  const html = render();
+  const html = render("display", { settingsStatus: status() });
   // Tooltip injects an `aria-describedby` and a sibling description span, so the badge is
   // matched by shape rather than by exact markup.
   const headOf = (group: (typeof SETTINGS_GROUPS)[number]): RegExp =>
@@ -167,7 +208,7 @@ test("every rail item sits under its group's scope badge", () => {
 // gets made, so it has to be there for every category, not just the ones that differ.
 test("each panel header carries its own category's scope badge", () => {
   for (const c of SETTINGS_CATEGORIES) {
-    const html = render(c.id);
+    const html = render(c.id, { settingsStatus: status() });
     assert.match(
       html,
       new RegExp(
@@ -185,7 +226,7 @@ test("every control anchor is unique and names a real category", () => {
   const ids = new Set<string>(SETTINGS_CATEGORIES.map((c) => c.id));
   const seen = new Map<string, SettingsCategoryId>();
   for (const c of SETTINGS_CATEGORIES) {
-    const html = render(c.id);
+    const html = render(c.id, { settingsStatus: status() });
     for (const match of html.matchAll(/data-anchor="([^"]+)"/g)) {
       const anchor = match[1]!;
       const prefix = anchor.split("/")[0]!;
@@ -260,7 +301,7 @@ test("every glyph in Settings declares its own size", () => {
   // so a glyph that forgets them still lays out - this is the assertion that stops the
   // stylesheet from being the only thing standing between a picture and the whole pane.
   for (const category of SETTINGS_CATEGORIES) {
-    const svgs = render(category.id).match(/<svg[^>]*>/g) ?? [];
+    const svgs = render(category.id, { settingsStatus: status() }).match(/<svg[^>]*>/g) ?? [];
     for (const svg of svgs) {
       assert.match(svg, /\swidth="/, `unsized glyph in ${category.id}: ${svg}`);
       assert.match(svg, /\sheight="/, `unsized glyph in ${category.id}: ${svg}`);
@@ -337,6 +378,35 @@ test("Task sources is a category of its own: its panel shows, the others don't",
   assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⇊<\/span>Task sources/);
 });
 
+// Conductor is the category that lets Mission Control READ another program's state files.
+// Reachability matters for a version of the Inspector's reason turned inside out: a panel
+// that silently fails to render is one whose repository switches nobody can see or turn off,
+// while the daemon goes on reading whatever was last consented to. It is the only consent in
+// the app whose subject is somebody else's software.
+test("Conductor is a category of its own: its panel shows, the others don't", () => {
+  const html = render("conductor", { settingsStatus: status() });
+  assert.match(html, CONDUCTOR_ONLY);
+  assert.doesNotMatch(html, TASK_SOURCES_ONLY);
+  assert.doesNotMatch(html, MODELS_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⇶<\/span>Conductor/);
+});
+
+// A static render runs no effects, so this is the pre-poll state - the state a first-run
+// user sees. It must not draw an empty repository list, which asserts that the engine
+// manages nothing on a machine where it may manage six.
+test("with no answer from the daemon, the Conductor panel says so rather than showing an empty list", () => {
+  // Engine present so the category exists, and the daemon has not answered the PANEL yet -
+  // which is a different unknown from "is it installed", and the one the panel speaks to.
+  const html = render("conductor", { settingsStatus: status() });
+  assert.match(html, /conductor-unknown/);
+  assert.match(html, /is unknown/);
+  assert.doesNotMatch(
+    html,
+    /No repositories registered with the engine/,
+    "an unanswered panel must not assert an empty list",
+  );
+});
+
 // Models is the category that decides which provider does the app's own offline work and on
 // which model. A panel that fails to render leaves that unanswerable from inside the app -
 // which is the exact state this whole surface exists to end: three hardcoded model ids that
@@ -409,14 +479,14 @@ test("exactly one category is active at a time", () => {
 // The rail is a tab set, not navigation: buttons swap which panel renders beside them,
 // so assistive tech should hear "tab 1 of 2, selected", not "current page".
 test("the rail is a vertical tablist of tabs", () => {
-  const html = railMarkup(render());
+  const html = railMarkup(render("display", { settingsStatus: status() }));
   assert.match(html, /role="tablist"[^>]*aria-orientation="vertical"/);
   assert.equal((html.match(/role="tab"/g) ?? []).length, SETTINGS_CATEGORIES.length);
 });
 
 test("aria-selected tracks the active category, and only it", () => {
   for (const active of SETTINGS_CATEGORIES) {
-    const html = railMarkup(render(active.id));
+    const html = railMarkup(render(active.id, { settingsStatus: status() }));
     assert.equal((html.match(/aria-selected="true"/g) ?? []).length, 1);
     assert.equal(
       (html.match(/aria-selected="false"/g) ?? []).length,
@@ -433,7 +503,7 @@ test("aria-selected tracks the active category, and only it", () => {
 // Roving tabindex: the rail is one Tab stop, and arrows (not Tab) move within it.
 test("only the active tab is in the tab order", () => {
   for (const active of SETTINGS_CATEGORIES) {
-    const html = railMarkup(render(active.id));
+    const html = railMarkup(render(active.id, { settingsStatus: status() }));
     assert.equal((html.match(/tabindex="0"/g) ?? []).length, 1);
     assert.equal((html.match(/tabindex="-1"/g) ?? []).length, SETTINGS_CATEGORIES.length - 1);
     assert.match(html, /class="settings-nav-item is-active"[^>]*tabindex="0"/);
@@ -442,7 +512,7 @@ test("only the active tab is in the tab order", () => {
 
 test("the pane is a tabpanel labelled by the active tab", () => {
   for (const active of SETTINGS_CATEGORIES) {
-    const html = render(active.id);
+    const html = render(active.id, { settingsStatus: status() });
     assert.match(
       html,
       new RegExp(`class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-${active.id}"`),

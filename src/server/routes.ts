@@ -72,6 +72,7 @@ import {
   PromptedWrapupSchema,
   WrapupAskedSchema,
   PushTaskSchema,
+  PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
   SpendReportSchema,
@@ -183,6 +184,13 @@ import { taskSourceKinds } from "./task-sources/index.ts";
 import { pushTask } from "./task-sources/push.ts";
 import { noteTaskSourceConfigChange, preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
 import type { TaskSourcesView } from "@shared/task-source.ts";
+import { getPipelinesConfig, setPipelinesConfig } from "./pipelines/config.ts";
+import {
+  pipelineRepoStatuses,
+  probeAllPipelineProviders,
+  reconcilePipelineConsent,
+} from "./pipelines/index.ts";
+import { pipelineRepoKey, type PipelinesView } from "@shared/pipeline.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
@@ -3893,6 +3901,66 @@ export function buildApp(
     const id = c.req.param("id");
     if (!taskSourceById(id)) return c.json({ error: "no such task source" }, 404);
     return c.json({ forgotten: forgetTaskSourceSeen(id) });
+  });
+
+  // --- Pipelines: observing an external SDLC engine (localhost only) ---
+  //
+  // Two reads and one write, and every one of them is about CONSENT. Nothing here starts,
+  // stops, pauses or advances anything: the projection is built from the engine's own files
+  // by the watcher, and the engine's CLI is the only thing that may change them. The verbs
+  // that spawn it arrive in a later phase and will land beside these.
+  //
+  // The probe is the one subprocess in this neighbourhood, and it is cached behind a TTL
+  // because the panel polls - `refresh=1` is the panel's own "Check again", which is an
+  // operator asking on purpose.
+
+  /** The whole panel in one read: what is consented to, what was detected, how it is doing. */
+  const pipelinesView = async (force: boolean): Promise<PipelinesView> => ({
+    config: getPipelinesConfig(),
+    probes: await probeAllPipelineProviders({ force }),
+    status: pipelineRepoStatuses(),
+  });
+
+  app.get("/api/pipelines/config", async (c) =>
+    c.json(await pipelinesView(c.req.query("refresh") === "1")),
+  );
+
+  /**
+   * Replace the consent config.
+   *
+   * Each repository is resolved to a git root here so a typo cannot enter it, using the
+   * general resolver for the same reason the task-source route does: an operator may
+   * legitimately consent to a checkout that cannot be attributed to a main checkout.
+   *
+   * The reconciliation after the write is not an optimization. Withdrawing consent has to
+   * be felt at once - the rows go, the live catalog entries go, and a `pipeline_remove`
+   * reaches every open dashboard - rather than up to one watch tick later, because an
+   * operator who switches a repository off and keeps looking at the page is entitled to
+   * see it happen.
+   */
+  app.put("/api/pipelines/config", async (c) => {
+    const parsed = await parseBody(c, PipelinesConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const repos = [];
+    // Resolution is what makes duplicates possible, so the duplicate check has to happen
+    // after it. The schema rejects two entries naming the same path, but a symlink and its
+    // target - or a repository root and a subdirectory of it - are two different paths that
+    // land on one root. Left to `setPipelinesConfig`, that throws out of an unguarded
+    // handler and the operator loses the edit behind a generic error instead of being told
+    // which repository they listed twice.
+    const seen = new Set<string>();
+    for (const repo of parsed.data.repos) {
+      const repoRoot = await resolveRepoRoot(repo.repoRoot);
+      if (!repoRoot) return c.json({ error: `not a git repository: ${repo.repoRoot}` }, 400);
+      const key = pipelineRepoKey(repo.provider, repoRoot);
+      if (seen.has(key))
+        return c.json({ error: `listed twice, as the same repository: ${repoRoot}` }, 400);
+      seen.add(key);
+      repos.push({ ...repo, repoRoot });
+    }
+    setPipelinesConfig({ enabled: parsed.data.enabled, repos });
+    reconcilePipelineConsent(registry);
+    return c.json(await pipelinesView(false));
   });
 
   // --- Dashboard UI preferences (localhost only) ---

@@ -26,6 +26,14 @@ not already in a bundle. Deleting them - or the whole database - costs a backgro
 and nothing else. A label, annotation, or ownership flag stored only in those rows would be
 lost the first time the index was rebuilt, which is why none may be added.
 
+`pipeline_runs` is in that same family and arrived with the same rule. It projects what an
+external SDLC engine's own state files say about each feature it is driving, for the
+repositories an operator consented to - so every column is derived from files still on disk
+under that engine's control, and deleting the table costs one refresh pass. Nothing may be
+stored there that is not already in those files: an operator's own note or label would be
+lost the first time the projection was rebuilt, and belongs on a task. It declares no foreign
+key, holds rows only while consent stands, and is described in [Pipelines](pipelines.md).
+
 `archive_capture_jobs` sits beside them and is a different kind of table again: local
 coordination for archives this daemon is still WRITING, one row per archive a task work episode
 owes, holding the reserved archive identity, the directory that row covers, and the checkout

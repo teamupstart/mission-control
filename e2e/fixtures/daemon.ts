@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ghPullRequestsPath, writeFakeAgents } from "./fake-agents.ts";
+import { writeFakeConductor, type FakeConductor } from "./conductor.ts";
 
 /**
  * A real Mission Control daemon, isolated from the operator's machine, for a browser to drive.
@@ -43,6 +44,14 @@ export interface DaemonHandle {
    * at spawn time - the fake reads one env var, and a spec cannot add one afterwards.
    */
   ghPrsPath: string;
+  /**
+   * The fake ai-conductor installation this daemon probes, and where a spec scripts the
+   * repositories it says it manages.
+   *
+   * On the handle for `ghPrsPath`'s reason: the fake reads one env var, set at spawn time,
+   * so a spec cannot introduce one afterwards.
+   */
+  conductor: FakeConductor;
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -168,6 +177,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
+  const conductor = writeFakeConductor(home);
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
   const secondRepo = seedRepo(workspace, "second-repo");
@@ -205,6 +215,16 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // single seam every `gh` call in the daemon goes through, so the PR poller and the Inspector
     // are covered by this one variable rather than each needing its own.
     MISSION_GH_BIN: bins.gh,
+    // The external SDLC engine, redirected at a fake. Not about cost either: the probe is
+    // a subprocess, and on a machine where the operator actually uses conductor an
+    // unfaked binary would list THEIR repositories in the Settings panel and read THEIR
+    // state files - non-deterministic against CI, where there are none, and an
+    // observation of somebody's real work. `AI_CONDUCTOR_REGISTRY` closes the other door:
+    // the probe falls back to the registry FILE when the CLI cannot answer, and that file
+    // lives in the operator's home unless it is pointed somewhere throwaway.
+    MISSION_CONDUCTOR_BIN: conductor.bin,
+    AI_CONDUCTOR_REGISTRY: conductor.registryPath,
+    MC_E2E_CONDUCTOR_PROJECTS: conductor.projectsPath,
     MC_E2E_RECORD_DIR: recordDir,
     // Where that fake reads its scripted pull requests from. Set for every daemon so a spec
     // only has to write the file; absent content simply means "no pull requests anywhere",
@@ -427,6 +447,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     repo,
     secondRepo,
     ghPrsPath: ghPullRequestsPath(home),
+    conductor,
     readLog: () => log,
     startForeman,
     crash,

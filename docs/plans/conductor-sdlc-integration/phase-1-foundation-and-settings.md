@@ -153,3 +153,28 @@ Later phases may rely on, and must not change without updating every consumer:
 - 2026-08-14: initial version. Session field and comparator placed here (contract-first) with
   stamping deferred to phase 3; `pipeline_events` deliberately not created here - it belongs to
   phase 5, which owns ingest, so this phase's upgrade path must not reference it.
+- 2026-08-14, on implementation: five conductor facts differ from what this file and
+  [plan.md](plan.md) assumed, all re-verified against ai-conductor `8b51392d`. **Later phases
+  should read these rather than the prose above.**
+  1. **`.daemon/` is per REPOSITORY, not per worktree.** The engine resolves it against the
+     main checkout through `git rev-parse --git-common-dir`, so `parked/`, `grants/` and
+     `processed/` are one namespace shared by every feature. It is read once per pass and
+     indexed by slug.
+  2. **There is no `engineer` binary.** `engineer` is a subcommand of `conduct-ts`.
+  3. **There is no `--version` flag** anywhere on the engine's CLI. The version is derived
+     from the `VERSION` file at the installation root, reached by resolving the binary's
+     symlink; `null` is an ordinary answer and gates nothing.
+  4. **`~/.ai-conductor/registry.json` is a bare ARRAY of records** with a per-record
+     `schemaVersion`, not a versioned envelope. `$AI_CONDUCTOR_REGISTRY` names the file.
+  5. **`events.jsonl` carries no sequence number, and does not carry halts.** The engine
+     persists 44 of its 71 event kinds and `loop_halt` / `gate_verdict` / `halt_cleared` are
+     not among them - so halts and verdicts come from files, and the ledger contributes token
+     spend plus the resumable BYTE OFFSET that phase 5's ingest should use as its `seq`.
+- 2026-08-14, on implementation: two decisions this phase made that consumers inherit.
+  The routes, module, config key and table are provider-generic (`/api/pipelines/*`,
+  `app_config.pipelines`, `pipeline_runs`) while the Settings CATEGORY is `conductor`,
+  because the rail row names the software an operator installed; phase 5's
+  `/ingest/conductor` stays conductor-specific because it carries conductor's own event
+  schema. And `pipeline_upsert` / `pipeline_remove` are deliberately NOT in
+  `LINE_INPUT_EVENTS` - the Line folds Mission Control's own execution, and a halted
+  pipeline reaches an operator through phase 3's `pipeline_halt` attention item instead.

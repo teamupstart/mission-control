@@ -52,6 +52,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
+    pipeline: null,
     paneDialog: null,
     ...p,
   };

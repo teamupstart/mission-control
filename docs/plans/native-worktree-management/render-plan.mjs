@@ -106,6 +106,9 @@ const migrationDiagram = `
   </svg>
 </div>`;
 
+const preparedDiagrams = [architectureDiagram, migrationDiagram];
+let mermaidIndex = 0;
+
 const rendered = renderToStaticMarkup(
   React.createElement(ReactMarkdown, {
     remarkPlugins: [remarkGfm],
@@ -116,9 +119,12 @@ const rendered = renderToStaticMarkup(
       pre: ({ children }) => {
         const child = Array.isArray(children) ? children[0] : children;
         const className = React.isValidElement(child) ? child.props.className : "";
-        const source = React.isValidElement(child) ? String(child.props.children ?? "") : "";
         if (className === "language-mermaid") {
-          const diagram = source.includes("subgraph Before") ? architectureDiagram : migrationDiagram;
+          const diagram = preparedDiagrams[mermaidIndex];
+          if (!diagram) {
+            throw new Error(`plan.md contains an unexpected Mermaid block at position ${mermaidIndex + 1}`);
+          }
+          mermaidIndex += 1;
           return React.createElement("div", { dangerouslySetInnerHTML: { __html: diagram } });
         }
         return React.createElement("div", { className: "code-wrap" }, React.createElement("pre", null, children));
@@ -127,6 +133,12 @@ const rendered = renderToStaticMarkup(
     children: bodyMarkdown,
   }),
 );
+
+if (mermaidIndex !== preparedDiagrams.length) {
+  throw new Error(
+    `plan.md rendered ${mermaidIndex} Mermaid blocks, but ${preparedDiagrams.length} prepared diagrams exist`,
+  );
+}
 
 const html = `<!doctype html>
 <html lang="en">

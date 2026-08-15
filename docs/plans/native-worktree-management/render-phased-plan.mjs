@@ -75,6 +75,9 @@ const phaseGraph = `
   <figcaption id="phase-flow-caption">The sequence first proves the allocator, then moves every caller, then retires Treehouse assumptions, and only then exposes the final operations contract.</figcaption>
 </figure>`;
 
+const preparedDiagrams = [phaseGraph];
+let mermaidIndex = 0;
+
 const rendered = renderToStaticMarkup(
   React.createElement(ReactMarkdown, {
     remarkPlugins: [remarkGfm],
@@ -91,8 +94,15 @@ const rendered = renderToStaticMarkup(
         const child = Array.isArray(children) ? children[0] : children;
         const className = React.isValidElement(child) ? child.props.className : "";
         if (className === "language-mermaid") {
+          const diagram = preparedDiagrams[mermaidIndex];
+          if (!diagram) {
+            throw new Error(
+              `phased-plan.md contains an unexpected Mermaid block at position ${mermaidIndex + 1}`,
+            );
+          }
+          mermaidIndex += 1;
           return React.createElement("div", {
-            dangerouslySetInnerHTML: { __html: phaseGraph },
+            dangerouslySetInnerHTML: { __html: diagram },
           });
         }
         return React.createElement(
@@ -105,6 +115,12 @@ const rendered = renderToStaticMarkup(
     children: bodyMarkdown,
   }),
 );
+
+if (mermaidIndex !== preparedDiagrams.length) {
+  throw new Error(
+    `phased-plan.md rendered ${mermaidIndex} Mermaid blocks, but ${preparedDiagrams.length} prepared diagrams exist`,
+  );
+}
 
 const html = `<!doctype html>
 <html lang="en">

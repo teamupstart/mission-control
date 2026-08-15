@@ -120,7 +120,10 @@ test("a bound workflow starts as an in-place Board disclosure, not a navigation 
   assert.match(html, /No-Mistakes Review/);
   assert.match(html, /Review changes/);
   assert.match(html, /Loading the current stage/);
-  assert.match(html, /aria-label="Open No-Mistakes Review v4 workflow run"/);
+  assert.match(
+    html,
+    /aria-label="Open No-Mistakes Review v4 workflow run: Review changes"/,
+  );
   assert.match(html, /aria-expanded="false"/);
   assert.match(html, /<kbd class="kb-hint">e<\/kbd>/);
   assert.match(html, /Show full workflow/);

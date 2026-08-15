@@ -27,7 +27,10 @@ function render(state: Parameters<typeof ladderDetail>[0]): string {
 test("the Board peek is one accessible control for its exact workflow run", () => {
   const html = render("reviewing");
   assert.match(html, /^<a href="#\/runs\/run"/);
-  assert.match(html, /aria-label="Open No-Mistakes Review v4 workflow run"/);
+  assert.match(
+    html,
+    /aria-label="Open No-Mistakes Review v4 workflow run: Preview · R2"/,
+  );
 });
 
 test("the Board peek spends its height on the active review rung", () => {

@@ -339,7 +339,7 @@ export function WorkflowLadderPeek({
       <a
         href={`#/runs/${encodeURIComponent(summary.id)}`}
         className={`wf-tile-peek workflow-${view?.status.tone ?? workflowRunTone(summary)}`}
-        aria-label={`Open ${summary.workflowName} v${summary.workflowVersion} workflow run`}
+        aria-label={`Open ${summary.workflowName} v${summary.workflowVersion} workflow run: ${workflowRunLabel(summary)}`}
         onClick={(event) => followRunLink(event, onOpenRun)}
       >
         <header className="wf-tile-peek-head">
@@ -405,7 +405,7 @@ export function WorkflowLadderPeekPlaceholder({
       <a
         href={`#/runs/${encodeURIComponent(summary.id)}`}
         className={`wf-tile-peek workflow-${workflowRunTone(summary)} is-placeholder`}
-        aria-label={`Open ${summary.workflowName} v${summary.workflowVersion} workflow run`}
+        aria-label={`Open ${summary.workflowName} v${summary.workflowVersion} workflow run: ${workflowRunLabel(summary)}`}
         onClick={(event) => followRunLink(event, onOpenRun)}
       >
         <header className="wf-tile-peek-head">

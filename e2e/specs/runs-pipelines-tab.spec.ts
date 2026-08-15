@@ -330,6 +330,70 @@ test("a tier-S run draws what it skipped, and an unknown step is drawn rather th
   await shoot(dashboard, "03-tier-s-and-unknown");
 });
 
+/**
+ * The bare tab opens on the run that needs somebody, wherever on the fleet it is.
+ *
+ * Its own fleet rather than `seedFleet`'s, because the arrangement IS the subject: the halted
+ * run has to live in a repository that is NOT first in the operator's list, with the earlier
+ * repository holding something merely in flight. `seedFleet` cannot catch this - its halted
+ * run is in the first repository, so a surface that simply took the first row it found would
+ * pass it - and that is exactly the gap this covers.
+ */
+test("the tab opens on the halted run even when an earlier repository is busy", async ({
+  dashboard,
+  daemon,
+}) => {
+  writeConductorProjects(daemon.home, [
+    { name: "demo-repo", path: daemon.repo },
+    { name: "second-repo", path: daemon.secondRepo },
+  ]);
+  // First in the list, and nothing here wants a person.
+  seedConductorRun(daemon.repo, "quietly-building", {
+    steps: { worktree: "done", build: "in_progress" },
+    lastStep: "build",
+  });
+  seedConductorDaemon(daemon.repo, { pid: process.pid });
+  // Second in the list, and this is the one somebody has to look at.
+  seedConductorRun(daemon.secondRepo, "stopped-for-a-human", {
+    steps: { worktree: "done", build: "done", build_review: "failed" },
+    lastStep: "build_review",
+    halt: "the build review found a blocking defect",
+    haltClass: "needs-human",
+  });
+  seedConductorDaemon(daemon.secondRepo, { pid: process.pid });
+
+  const response = await fetch(`${daemon.baseURL}/api/pipelines/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      enabled: true,
+      repos: [
+        { provider: "ai-conductor", repoRoot: daemon.repo, enabled: true },
+        { provider: "ai-conductor", repoRoot: daemon.secondRepo, enabled: true },
+      ],
+    }),
+  });
+  expect(response.ok, "the consent route should accept both seeded repositories").toBeTruthy();
+  await expect.poll(
+    async () => {
+      const view = await api<{ status: { runs: number }[] }>(daemon, "/api/pipelines/config");
+      return view.status.reduce((total, repo) => total + repo.runs, 0);
+    },
+    { message: "both seeded features should be projected", timeout: 15_000 },
+  ).toBe(2);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/pipeline`);
+
+  // The rail still lists the repositories in the operator's own order...
+  const rail = dashboard.locator("aside.pipelines-rail");
+  await expect(rail.locator("div.pipelines-repo").first()).toContainText("demo-repo");
+  // ...and the reader still opened on the one that stopped, in the second of them.
+  const reader = dashboard.locator("div.pipelines-reader");
+  await expect(reader.getByRole("heading", { name: "stopped-for-a-human" })).toBeVisible();
+  await expect(reader.getByText("the build review found a blocking defect")).toBeVisible();
+  await expect(reader.getByRole("heading", { name: "quietly-building" })).toHaveCount(0);
+});
+
 test("a link to a pipeline that is no longer observed says so", async ({ dashboard, daemon }) => {
   await seedFleet(daemon);
   const repoKey = encodeURIComponent(pipelineRepoKey("ai-conductor", daemon.repo));

@@ -152,6 +152,26 @@ export function pipelineRail(
   return [...sections.values()];
 }
 
+/**
+ * The run the bare tab opens on: the most urgent one on the FLEET, not in the first section.
+ *
+ * Group-major rather than section-major, and that is the whole point of it existing. The rail
+ * is grouped per repository because that is how an operator reads it, but urgency does not
+ * stop at a repository boundary: flattening the sections in order picks the first repo's
+ * merely-building run over a second repo's halted one, and halted is the only group waiting
+ * on a person. Repository order breaks a tie WITHIN a group, and the sections already carry
+ * their runs slug-sorted, so the answer is stable as steps finish underneath it.
+ */
+export function pipelineLeadRun(sections: readonly PipelineRepoSection[]): PipelineRun | null {
+  for (const group of PIPELINE_GROUP_ORDER) {
+    for (const section of sections) {
+      const held = section.groups.find((entry) => entry.group === group);
+      if (held?.runs[0]) return held.runs[0];
+    }
+  }
+  return null;
+}
+
 /** Find one run by the identity a deep link carries, or null when it names nothing. */
 export function findPipelineRun(
   runs: readonly PipelineRun[],

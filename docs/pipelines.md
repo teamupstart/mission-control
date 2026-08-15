@@ -135,6 +135,12 @@ repository, runs are grouped by [where they sit](#where-a-run-sits) with halted 
 only group waiting on a person - and sorted by slug inside each group, so a finishing step
 never moves the row you were reaching for.
 
+Opened without naming a run, the tab lands on **the most urgent run on the fleet**, which is
+not the same as the first row of the rail. The rail is grouped per repository because that is
+how it is read, but urgency does not stop at a repository boundary: a halted run in the second
+repository outranks a merely building one in the first. Repository order breaks a tie inside a
+group, and slug order inside that.
+
 ### One run
 
 The detail is drawn in the **workflow run diagram's own grammar**, from the same components -

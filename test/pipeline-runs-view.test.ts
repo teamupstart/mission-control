@@ -11,9 +11,11 @@ import {
   type PipelineRun,
 } from "../src/shared/pipeline.ts";
 import {
+  PIPELINE_GROUP_ORDER,
   pipelineAttempts,
   pipelineEyebrow,
   pipelineKickbackRule,
+  pipelineLeadRun,
   pipelinePhaseStatus,
   pipelineRail,
   pipelineRunLine,
@@ -140,6 +142,67 @@ test("runs sort by slug inside a group, not by time", () => {
     sections[0]!.groups[0]!.runs.map((entry) => entry.slug),
     ["alpha", "middle", "zebra"],
   );
+});
+
+// ---- which run the bare tab opens on -----------------------------------------------------
+
+test("the bare tab opens on the most urgent run on the FLEET, not in the first repository", () => {
+  // The defect this exists for: the rail is grouped per repository, so flattening it in
+  // order picks the first repository's merely-building run over a second repository's
+  // halted one. Urgency does not stop at a repository boundary - halted is the only group
+  // waiting on a person, wherever it is.
+  const sections = pipelineRail(
+    [
+      run({ repoRoot: "/repo/first", slug: "just-building", group: "building" }),
+      run({
+        repoRoot: "/repo/second",
+        slug: "needs-somebody",
+        group: "halted",
+        halt: { class: "needs-human", reason: "a gate refused" },
+      }),
+    ],
+    [repo({ repoRoot: "/repo/first" }), repo({ repoRoot: "/repo/second" })],
+  );
+  assert.deepEqual(
+    sections.map((section) => section.repoRoot),
+    ["/repo/first", "/repo/second"],
+    "the rail still lists repositories in the operator's own order",
+  );
+  assert.equal(pipelineLeadRun(sections)?.slug, "needs-somebody");
+});
+
+test("repository order breaks a tie inside one group, and slug order inside that", () => {
+  const sections = pipelineRail(
+    [
+      run({ repoRoot: "/repo/second", slug: "aaa-first-alphabetically", group: "building" }),
+      run({ repoRoot: "/repo/first", slug: "zzz-last-alphabetically", group: "building" }),
+      run({ repoRoot: "/repo/first", slug: "mmm-middle", group: "building" }),
+    ],
+    [repo({ repoRoot: "/repo/first" }), repo({ repoRoot: "/repo/second" })],
+  );
+  // The earlier repository wins the tie, and inside it the slug order the rail already draws.
+  assert.equal(pipelineLeadRun(sections)?.slug, "mmm-middle");
+});
+
+test("a fleet with nothing in flight leads with nothing rather than throwing", () => {
+  assert.equal(pipelineLeadRun(pipelineRail([], [repo()])), null);
+  assert.equal(pipelineLeadRun([]), null);
+});
+
+test("every group can lead, in the order an operator should meet them", () => {
+  // Walks the whole vocabulary so a group added later cannot quietly rank above `halted`.
+  for (const [index, group] of PIPELINE_GROUP_ORDER.entries()) {
+    const rest = PIPELINE_GROUP_ORDER.slice(index);
+    const sections = pipelineRail(
+      rest.map((each) => run({ slug: `run-${each}`, group: each })),
+      [repo()],
+    );
+    assert.equal(
+      pipelineLeadRun(sections)?.slug,
+      `run-${group}`,
+      `${group} should lead a fleet holding ${rest.join(", ")}`,
+    );
+  }
 });
 
 test("a rail row says what a run is doing, or why it stopped", () => {

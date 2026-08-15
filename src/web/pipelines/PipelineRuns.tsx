@@ -9,6 +9,7 @@ import {
   PIPELINE_GROUP_LABELS,
   PIPELINE_GROUP_TONES,
   findPipelineRun,
+  pipelineLeadRun,
   pipelineRail,
   pipelineRunLine,
 } from "./pipeline-run-model.ts";
@@ -46,10 +47,10 @@ export function PipelineRuns({
   const sections = useMemo(() => pipelineRail(runs, repos ?? []), [runs, repos]);
 
   const addressed = findPipelineRun(runs, selected);
-  // The rail's own order decides the default, so the tab opens on whatever needs somebody -
-  // halted runs sort first. Selecting nothing at all would make the common case (one run in
-  // flight) a page with an empty reader beside a rail of one.
-  const fallback = sections.flatMap((section) => section.groups.flatMap((g) => g.runs))[0] ?? null;
+  // The tab opens on whatever needs somebody, across every repository rather than within the
+  // first one that has anything - see `pipelineLeadRun`. Selecting nothing at all would make
+  // the common case (one run in flight) a page with an empty reader beside a rail of one.
+  const fallback = pipelineLeadRun(sections);
   const run = addressed ?? (selected === null ? fallback : null);
   const detail = usePipelineRunDetail(
     run?.provider ?? null,

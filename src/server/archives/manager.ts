@@ -20,7 +20,11 @@ import type { Session } from "@shared/types.ts";
 import { archiveReconcileMs } from "../config.ts";
 import { openFile, type OpenFileOutcome } from "../open-targets/index.ts";
 import { captureArchive, type ArchiveCaptureOutcome } from "./capture.ts";
-import { ArchiveCaptureStore, type ArchiveCaptureJob } from "./capture-store.ts";
+import {
+  archiveOperationKey,
+  ArchiveCaptureStore,
+  type ArchiveCaptureJob,
+} from "./capture-store.ts";
 import { resolveRoots } from "./checkout.ts";
 import { ArchiveLibrary } from "./library.ts";
 import { ArchivePathError, archiveDir, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
@@ -577,6 +581,15 @@ export class ArchiveManager {
   }
 
   private reserve(subject: ArchiveSubject): ArchiveCaptureJob {
+    const existing = this.captureStore.get(
+      archiveOperationKey(subject.taskId, subject.episodeId),
+    );
+    // Prompt collection can walk a long transcript. A reservation is immutable, so an
+    // existing row already holds the only trail this operation may publish and must never
+    // trigger a fresh read whose result would be discarded by the store's CAS.
+    const prompts = existing
+      ? existing.prompts
+      : (subject.prompts ?? this.tasks?.scoutPromptTrailFor(subject) ?? null);
     const job = this.captureStore.reserve({
       // Scout-only, deliberately. A second kind arrived with its own entry point
       // (`reservePlanJobs`) and its own planner rather than by widening this one, because the
@@ -590,7 +603,7 @@ export class ArchiveManager {
       producerId: this.producer.id,
       title: subject.title,
       question: subject.question,
-      prompts: subject.prompts,
+      prompts,
       origin: subject.origin,
       repos: subject.repos,
     });

@@ -7,6 +7,7 @@ import type { Session, Task, TaskKind } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import { isScoutTask } from "../scouts/prompt.ts";
 import { collectScoutPromptTrail } from "../scouts/prompt-collector.ts";
+import { scoutPromptContext } from "../scouts/prompt-context.ts";
 import { scoutRepoSlots } from "../scouts/repos.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
 import type { ArchiveCaptureOrigin, ArchiveRepoSlot } from "./capture-store.ts";
@@ -87,6 +88,15 @@ export interface ArchiveTaskGateway {
    */
   subjectForExitingSession(session: Session): ArchiveSubjectForKind | null;
   /**
+   * Freeze the bounded prompt trail for a scout subject that is about to be reserved.
+   *
+   * Potentially expensive: unlike the subject projections above, this may walk the scout's
+   * transcript from its Phase 1 boundary. The archive manager therefore calls it only after
+   * proving that this operation has no capture job yet. Replays, readiness checks, and
+   * already-reserved cleanup paths never need to read a transcript.
+   */
+  scoutPromptTrailFor(subject: ArchiveSubject): ArchiveManifestPromptTrail | null;
+  /**
    * What this task's work would be archived as, or null when it is not archived at all.
    *
    * Cheap; every cleanup gate asks it before it reads anything from disk. A ship task answers
@@ -111,7 +121,10 @@ export interface ArchiveTaskGateway {
  * `scoutRepoSlots` so the prompt an agent read and the roots capture reads agree.
  */
 export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
-  constructor(private readonly registry: Registry) {}
+  constructor(
+    private readonly registry: Registry,
+    private readonly collectPromptTrail: typeof collectScoutPromptTrail = collectScoutPromptTrail,
+  ) {}
 
   subjectForSubmission(authority: ScoutSubmissionAuthority): ArchiveSubjectLookup {
     const task = this.registry.getTask(authority.taskId);
@@ -176,6 +189,13 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
     return { kind, subject: this.subject(task, session, kind) };
   }
 
+  scoutPromptTrailFor(subject: ArchiveSubject): ArchiveManifestPromptTrail | null {
+    const task = this.registry.getTask(subject.taskId);
+    if (!task || !isScoutTask(task)) return null;
+    const session = subject.sessionId ? this.registry.getSession(subject.sessionId) : undefined;
+    return this.collectPromptTrail(task, subject.episodeId, session ?? null).trail;
+  }
+
   captureKind(taskId: string): ArchiveKind | null {
     const task = this.registry.getTask(taskId);
     return task ? captureKindOf(task) : null;
@@ -196,18 +216,22 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
    */
   private subject(task: Task, session: Session | null, kind: ArchiveKind): ArchiveSubject {
     const episodeId = this.registry.workEpisodeForTask(task.id)?.episodeId ?? null;
-    const collected =
-      kind === "scout" ? collectScoutPromptTrail(task, episodeId, session) : null;
+    // Reading one Phase 1 row preserves the exit/restart title fallback without walking the
+    // transcript. The bounded prompt trail itself is frozen only at the reservation boundary.
+    const frozenSessionName =
+      kind === "scout" && !session?.name.trim() && episodeId
+        ? scoutPromptContext(task.id, episodeId)?.sessionName
+        : null;
     return {
       taskId: task.id,
       sessionId: session?.id ?? task.sessionId,
       episodeId,
       title:
         kind === "scout"
-          ? scoutArchiveTitle(session?.name, collected?.frozenSessionName, task.title)
+          ? scoutArchiveTitle(session?.name, frozenSessionName, task.title)
           : clip(task.title, ARCHIVE_TEXT_LIMITS.title) ?? "Plan",
       question: clip(task.intent, ARCHIVE_TEXT_LIMITS.question),
-      prompts: collected?.trail ?? null,
+      prompts: null,
       origin: {
         agent: task.agent,
         // The model the harness actually reported, when it did; the task's pin is what was

@@ -41,6 +41,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");
 const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { RegistryArchiveTaskGateway } = await import("../src/server/archives/task-gateway.ts");
+const { collectScoutPromptTrail } = await import("../src/server/scouts/prompt-collector.ts");
 const { ArchiveCaptureStore, clearArchiveCaptureJobs } = await import("../src/server/archives/capture-store.ts");
 const { clearArchiveTables } = await import("../src/server/archives/store.ts");
 const { openDb } = await import("../src/server/db.ts");
@@ -96,16 +97,20 @@ interface Harness {
   library: string;
 }
 
-function harness(options: { afterSubmissionAttribution?: (subject: ArchiveSubject) => Promise<void> } = {}): Harness {
+function harness(options: {
+  afterSubmissionAttribution?: (subject: ArchiveSubject) => Promise<void>;
+  promptCollector?: typeof collectScoutPromptTrail;
+} = {}): Harness {
   const registry = new Registry();
   const library = mkdirp(join(home, `library-${++seq}`));
+  const { promptCollector, ...managerOptions } = options;
   const scouts = new ArchiveManager({
     root: library,
-    tasks: new RegistryArchiveTaskGateway(registry),
+    tasks: new RegistryArchiveTaskGateway(registry, promptCollector),
     intervalMs: null,
     watch: false,
     log: () => {},
-    ...options,
+    ...managerOptions,
   });
   registry.onSessionExit((session) => scouts.reserveOnExit(session));
   const tasks = new TaskManager(registry, undefined, undefined, undefined, scouts);
@@ -986,13 +991,22 @@ test("a scout that already finished can no longer be archived against, and says 
   assert.match(result.problems.join(" "), /this scout is done/);
 });
 
-test("a replayed submission returns the same archive rather than a second one", async () => {
-  const h = harness();
+test("a replayed submission returns the same archive without recollecting its prompts", async () => {
+  let promptCollections = 0;
+  const h = harness({
+    promptCollector: (...args) => {
+      promptCollections += 1;
+      return collectScoutPromptTrail(...args);
+    },
+  });
   const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });
   const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
   h.registry.upsertTask(task);
 
   const first = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
+  assert.equal(promptCollections, 1, "the new reservation freezes its prompt trail once");
+  await h.scouts.ensureReady(task.id);
+  assert.equal(promptCollections, 1, "the completion gate only reads the frozen job");
   const second = await submit(h, task, cwd, { reportPath: "docs/reports/resume/report.html" });
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
@@ -1000,6 +1014,9 @@ test("a replayed submission returns the same archive rather than a second one", 
   assert.equal(second.replayed, true);
   assert.deepEqual(second.archive?.key, first.archive?.key);
   assert.equal(h.scouts.captureJobsForTask(task.id).length, 1);
+  assert.equal(promptCollections, 1, "a replay does not walk the transcript again");
+  assert.deepEqual(await h.scouts.settleBeforeCleanup(task.id), { ok: true });
+  assert.equal(promptCollections, 1, "settling a published job does not walk the transcript");
 });
 
 test("the daemon derives the archive's identity - a submission carries none of it", async () => {

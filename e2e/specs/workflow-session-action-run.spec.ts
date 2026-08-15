@@ -466,6 +466,7 @@ test("Board workflow controls expand in place and open the exact run", async ({
   const workflowRunLink = dashboard.getByRole("link", {
     name: /Open E2E action run preview v\d+ workflow run/,
   });
+  await expect(workflowRunLink.locator(".wf-tile-peek-rung")).toBeVisible();
   const boardUrl = dashboard.url();
   await workflowRunLink.evaluate((link) => {
     const name = link.querySelector(".wf-tile-peek-name");
@@ -475,7 +476,9 @@ test("Board workflow controls expand in place and open the exact run", async ({
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
-    if (!selection?.toString()) throw new Error("workflow preview text was not selected");
+    if (selection?.isCollapsed !== false) {
+      throw new Error("workflow preview text selection is collapsed");
+    }
     link.dispatchEvent(new MouseEvent("click", {
       bubbles: true,
       cancelable: true,
@@ -484,8 +487,8 @@ test("Board workflow controls expand in place and open the exact run", async ({
     }));
   });
   await expect(dashboard).toHaveURL(boardUrl);
-  await expect.poll(() => dashboard.evaluate(() => window.getSelection()?.toString() ?? ""))
-    .not.toBe("");
+  await expect.poll(() => dashboard.evaluate(() => window.getSelection()?.isCollapsed ?? true))
+    .toBe(false);
   await dashboard.evaluate(() => window.getSelection()?.removeAllRanges());
   await workflowRunLink.click();
   await expect(dashboard).toHaveURL(`${daemon.baseURL}/#/runs/${runId}`);

@@ -289,7 +289,10 @@ planning head **gains an uncovered item**, so a steady backlog costs nothing.
 
 Claude enforces the planner's JSON Schema through its structured-output contract. Codex
 receives the same schema through `codex exec --output-schema`, using a per-run temporary
-schema file that is always removed. The local Zod parse and its one repair attempt stay in
+schema file that is always removed. The schema is rendered strict for that reader - every
+property required at every depth, with optional values carried as nullable rather than
+absent - so a plan entry with no `reason` and a report with no `note` are still sayable. See
+[Foreman](foreman.md) for the full contract. The local Zod parse and its one repair attempt stay in
 place for Codex until a real CLI conformance test proves every shape mismatch exits nonzero;
 the fake CLI argument contract alone does not advertise that stronger guarantee. Both paths
 remain fresh, read-only, and tool-less. A failed Codex JSON stream contributes only its

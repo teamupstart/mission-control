@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { assertStrictJsonSchema } from "./helpers/strict-json-schema.ts";
 import type {
   ClaudeSdkMessage,
   ClaudeSdkOneShotDeps,
@@ -130,6 +131,28 @@ const { LLM_RUNNER_IDS, grantRefusal } = await import("../src/shared/llm.ts");
 // shape fits. Imported for its real constants: an equality asserted against a copy of them
 // would prove only that the copy matches itself.
 const { DENY_PATHS, DENY_SETTINGS, REVIEW_TOOLS } = await import("../src/server/inspector/worker.ts");
+
+const { providerJsonSchema } = await import("../src/server/llm/json-schema.ts");
+const { InspectorVerdictSchema, InspectorReplySchema } = await import(
+  "../src/server/inspector/verdict.ts"
+);
+const { BacklogReportSchema } = await import("../src/server/foreman/backlog-plan.ts");
+const { QueueVerdictSchema } = await import("../src/server/foreman/queue-verify.ts");
+const { TriageReportSchema } = await import("../src/server/foreman/triage.ts");
+
+/**
+ * The schemas real call sites hand to `LlmRunOptions.schema`, rendered the same way they
+ * render them. `providerJsonSchema` is deterministic, so this is the same object each call
+ * site holds; that every such call site is represented here is proved separately, by the
+ * source scan in `provider-json-schema.test.ts`.
+ */
+const CALL_SITE_SCHEMAS = {
+  "the Inspector verdict": providerJsonSchema(InspectorVerdictSchema),
+  "the Inspector reply": providerJsonSchema(InspectorReplySchema),
+  "the Foreman backlog plan": providerJsonSchema(BacklogReportSchema),
+  "the Foreman queue verdict": providerJsonSchema(QueueVerdictSchema),
+  "the Foreman tier-1 triage report": providerJsonSchema(TriageReportSchema),
+};
 
 /** Lines a `printf '%s\n'`-per-item file holds, without the trailing empty element. */
 function lines(path: string): string[] {
@@ -358,6 +381,25 @@ test("Codex passes a materialized schema, cleans it up, and keeps command tools 
   }
   assert.equal(lines(RUN_ENV)[2], "1");
 });
+
+// The test above proves the plumbing with a schema written by hand, which is exactly the gap
+// that let `invalid_json_schema` reach production: the hand-written literal already listed
+// every key in `required`, while every schema a REAL call site renders did not. Codex hands
+// this file to strict Structured Outputs, so a schema that omits one key of `properties` from
+// `required` fails the whole call - which is what the Inspector did on every open pull request.
+//
+// So run the real ones through the real runner and check the bytes Codex actually received.
+// Rendering them in isolation is a weaker claim; this pins the file on disk at the far end of
+// `materializeSchema`, past every place the schema could have been substituted.
+for (const [label, rendered] of Object.entries(CALL_SITE_SCHEMAS)) {
+  test(`Codex receives a strict Structured Outputs schema for ${label}`, async () => {
+    clearRecording();
+    await codexRunner.run("review this", { model: "gpt-5.6-sol", timeoutMs: 5000, schema: rendered });
+    const onDisk = JSON.parse(readFileSync(RUN_SCHEMA, "utf8")) as unknown;
+    assert.deepEqual(onDisk, rendered, "the file Codex read must be the schema we rendered");
+    assertStrictJsonSchema(onDisk, `${label} as handed to codex exec --output-schema`);
+  });
+}
 
 test("Codex omits the schema flag when none was supplied", async () => {
   clearRecording();

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { InspectorComment, InspectorMode, InspectorSeverity } from "@shared/types.ts";
+import { nullAsAbsent } from "../llm/json-schema.ts";
 import type { CommentableLines } from "./diff-lines.ts";
 import { BODY_ONLY_FINDINGS_MARKER, fingerprint } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
@@ -22,31 +23,46 @@ const SEVERITIES = ["blocker", "major", "minor", "nit"] as const;
 
 export const InspectorVerdictSchema = z.object({
   summary: z.preprocess((v) => (typeof v === "string" ? clampTo(4000)(v) : v), z.string()),
-  findings: z
-    .array(
-      z.object({
-        path: z.string().min(1),
-        // The model is asked for the NEW-file line. Null is honest and useful ("this
-        // is about the file, not a line"); a made-up number is not, so nullable rather
-        // than required.
-        line: z.number().int().positive().nullable().default(null),
-        severity: z.enum(SEVERITIES),
-        // Short, because it is half the fingerprint - a title that runs to a paragraph
-        // makes the issue's identity unstable across rounds.
-        title: z.preprocess((v) => (typeof v === "string" ? clampTo(120)(v) : v), z.string().min(1)),
-        body: z.preprocess((v) => (typeof v === "string" ? clampTo(4000)(v) : v), z.string().min(1)),
-      }),
-    )
-    .max(50)
-    .default([]),
+  // `nullAsAbsent` because the provider schema carries this as a nullable required key:
+  // "I found nothing" is a verdict the model must still be able to state, and under strict
+  // Structured Outputs it states it with `null` rather than by omitting the key. Reading
+  // that back as absence keeps `.default([])` - and so the `clean: true` below - intact.
+  findings: nullAsAbsent(
+    z
+      .array(
+        z.object({
+          path: z.string().min(1),
+          // The model is asked for the NEW-file line. Null is honest and useful ("this
+          // is about the file, not a line"); a made-up number is not, so nullable rather
+          // than required.
+          line: z.number().int().positive().nullable().default(null),
+          severity: z.enum(SEVERITIES),
+          // Short, because it is half the fingerprint - a title that runs to a paragraph
+          // makes the issue's identity unstable across rounds.
+          title: z.preprocess(
+            (v) => (typeof v === "string" ? clampTo(120)(v) : v),
+            z.string().min(1),
+          ),
+          body: z.preprocess(
+            (v) => (typeof v === "string" ? clampTo(4000)(v) : v),
+            z.string().min(1),
+          ),
+        }),
+      )
+      .max(50)
+      .default([]),
+  ),
   /**
    * Fingerprints of previously-raised findings this push has addressed.
    *
    * Model-supplied, and the only model-supplied thing that closes a thread - which is
    * why the planner treats it as strictly narrowing: it can close a thread we own and
    * already told the model about, and it can do nothing else.
+   *
+   * `nullAsAbsent` keeps that narrowing fail-closed under a strict provider schema, where
+   * the key is always present: `null` closes nothing, exactly as omitting it did.
    */
-  resolved: z.array(z.string()).max(50).default([]),
+  resolved: nullAsAbsent(z.array(z.string()).max(50).default([])),
 });
 export type InspectorVerdict = z.infer<typeof InspectorVerdictSchema>;
 
@@ -69,13 +85,15 @@ export type InspectorVerdict = z.infer<typeof InspectorVerdictSchema>;
  *
  * Defaults to false. A reply that omits the field is an answer, not a retraction - the same
  * fail-closed reading the review round gives a finding the model merely stopped mentioning.
+ * `nullAsAbsent` extends that reading to the `null` a strict provider schema sends in place
+ * of an omission, so the fail-closed direction survives the field becoming always-present.
  */
 export const InspectorReplySchema = z.object({
   reply: z.preprocess(
     (v) => (typeof v === "string" ? clampTo(4000)(v) : v),
     z.string().min(1),
   ),
-  resolved: z.boolean().default(false),
+  resolved: nullAsAbsent(z.boolean().default(false)),
 });
 export type InspectorReply = z.infer<typeof InspectorReplySchema>;
 

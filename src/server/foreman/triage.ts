@@ -10,7 +10,7 @@ import { textlessAnswer, VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import type { Pending } from "./pending.ts";
 import type { CheapAction, Divergence } from "@shared/foreman.ts";
-import { providerJsonSchema } from "../llm/json-schema.ts";
+import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
 
 // The cheap tier that sits in front of Foreman's full headless reviewer (see
 // docs/plans/foreman-watcher/plan.md). It disposes the structurally-determined and
@@ -63,8 +63,16 @@ export const TriageReportSchema = z.object({
   /** 1-2 sentence purpose, always required (shown on the card even when routed up). */
   purpose: z.string().min(1),
   bucket: z.enum(["human-only", "routine-access", "needs-judgment"]),
-  /** For human-only: escalate (needs you) or skip (can't tell what's asked). */
-  disposition: z.enum(["escalate", "skip"]).optional(),
+  /**
+   * For human-only: escalate (needs you) or skip (can't tell what's asked).
+   *
+   * `nullAsAbsent` because the provider schema carries this as a nullable required key (see
+   * `strictify`), and a router that bucketed `routine-access` has no disposition to give.
+   * Forcing one would be asking it to pick `escalate` or `skip` about a session it just
+   * said was neither. Absence keeps the safe direction: only an explicit `"skip"` takes the
+   * quiet path below, so a `null` read as absent escalates.
+   */
+  disposition: nullAsAbsent(z.enum(["escalate", "skip"]).optional()),
   /**
    * For routine-access: the one-line approval reply to deliver. A textless answer reads as
    * absent for the reason it does on the full verdict (see `AnswerField`) - the router is
@@ -72,15 +80,18 @@ export const TriageReportSchema = z.object({
    * `human-only` bucket failed the WHOLE report and threw away a perfectly good bucketing as
    * `tier1-unparseable`. Safe (a route-up), but it spent the Opus call the cheap tier exists
    * to avoid, on the very cases it was best placed to dispose.
+   *
+   * The one optional here that does NOT need `nullAsAbsent`: `textlessAnswer` already reads
+   * `null` as absent (`v == null`), which is the same normalization by a shorter route.
    */
   answer: z.preprocess(
     (v) => (textlessAnswer(v) ? undefined : v),
     z.object({ text: z.string().min(1) }).optional(),
   ),
   /** Optional short decision-brief markdown for a human-only escalation. */
-  brief: z.string().optional(),
+  brief: nullAsAbsent(z.string().optional()),
   /** Optional suggested answer for a human-only escalation. */
-  recommendation: z.string().optional(),
+  recommendation: nullAsAbsent(z.string().optional()),
   /**
    * Required: an omitted confidence must fail validation and route up as
    * `tier1-unparseable` (an honest diagnosis of a broken router), rather than defaulting

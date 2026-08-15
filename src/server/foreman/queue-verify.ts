@@ -3,7 +3,7 @@ import { buildVerifyPrompt } from "./queue-prompt.ts";
 import type { VerifyInput } from "./queue-prompt.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import { providerJsonSchema } from "../llm/json-schema.ts";
+import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
 import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
@@ -126,29 +126,38 @@ export const QueueVerdictSchema = z.object({
   // Clamped, not rejected, for the reason `clampTo` documents: a verdict that judged
   // the item correctly is not worth discarding over a verbose summary.
   summary: z.string().min(1).transform(clampTo(SUMMARY_MAX)),
-  gaps: z
-    .array(GapSchema)
-    .default([])
-    // Same reasoning as the text caps: a 4th gap is not worth discarding a verdict
-    // over. The prompt asks for "AT MOST 3, most severe first", so honour that
-    // ordering while trimming - a plain slice would let three advisory nits crowd
-    // out the blocking gap that is the only kind that drives a fix round.
-    //
-    // Ids are made unique only AFTER the trim, so a collision with a gap that didn't
-    // survive can't remint one that did.
-    .transform((gaps) =>
-      uniqueGapIds(
-        [...gaps]
-          .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9))
-          .slice(0, MAX_GAPS),
+  // `nullAsAbsent` on all three below: the provider schema carries them as nullable
+  // required keys (see `strictify`), and "no gaps", "nothing resolved" and "no confidence
+  // stated" must keep meaning what they meant when the model could omit the key. Note
+  // `confidence` in particular - it feeds a safety gate, so a `null` that failed the parse
+  // would discard a verdict that was otherwise complete.
+  gaps: nullAsAbsent(
+    z
+      .array(GapSchema)
+      .default([])
+      // Same reasoning as the text caps: a 4th gap is not worth discarding a verdict
+      // over. The prompt asks for "AT MOST 3, most severe first", so honour that
+      // ordering while trimming - a plain slice would let three advisory nits crowd
+      // out the blocking gap that is the only kind that drives a fix round.
+      //
+      // Ids are made unique only AFTER the trim, so a collision with a gap that didn't
+      // survive can't remint one that did.
+      .transform((gaps) =>
+        uniqueGapIds(
+          [...gaps]
+            .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9))
+            .slice(0, MAX_GAPS),
+        ),
       ),
-    ),
+  ),
   // Ids only ever looked up as a Set, so both bounds are cheap: clamp each to a gap
   // id's length and take the first MAX_RESOLVED. Trimming can only make the verdict
   // resolve FEWER prior gaps, which keeps them tracked for another round - the safe
   // direction, and the same reasoning the gaps cap above uses.
-  resolved: z.array(z.string().transform(clampTo(GAP_ID_MAX))).default([]).transform((r) => r.slice(0, MAX_RESOLVED)),
-  confidence: z.number().min(0).max(1).default(0.5),
+  resolved: nullAsAbsent(
+    z.array(z.string().transform(clampTo(GAP_ID_MAX))).default([]).transform((r) => r.slice(0, MAX_RESOLVED)),
+  ),
+  confidence: nullAsAbsent(z.number().min(0).max(1).default(0.5)),
 });
 const QUEUE_VERDICT_JSON_SCHEMA = providerJsonSchema(QueueVerdictSchema);
 

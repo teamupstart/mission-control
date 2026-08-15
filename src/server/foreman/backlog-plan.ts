@@ -3,7 +3,7 @@ import type { BacklogPlanInput } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import { providerJsonSchema } from "../llm/json-schema.ts";
+import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
 import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { buildBacklogPrompt } from "./backlog-prompt.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
@@ -100,11 +100,16 @@ export const BacklogReportSchema = z.object({
   tasks: z.array(
     z.object({
       id: z.string().min(1),
-      dependsOn: z.array(z.string()).default([]),
-      reason: z.string().optional(),
+      // Each optional is `nullAsAbsent` because the provider schema carries all three as
+      // nullable required keys - see `strictify`. "This task depends on nothing" and "I
+      // have no reason worth writing" have to stay sayable, and the alternative under a
+      // strict schema is a model inventing a dependency or a sentence. `sanitizePlan`
+      // then reads exactly what it read before.
+      dependsOn: nullAsAbsent(z.array(z.string()).default([])),
+      reason: nullAsAbsent(z.string().optional()),
     }),
   ),
-  note: z.string().optional(),
+  note: nullAsAbsent(z.string().optional()),
 });
 const BACKLOG_REPORT_JSON_SCHEMA = providerJsonSchema(BacklogReportSchema);
 export type BacklogReport = z.infer<typeof BacklogReportSchema>;

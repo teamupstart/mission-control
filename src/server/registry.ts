@@ -2394,6 +2394,12 @@ export class Registry extends EventEmitter {
         };
         this.sessions.set(id, renamed);
         this.emitSession(renamed);
+        // A sibling pane whose name follows the multiplexer's has just been renamed too, so
+        // its frozen scout title has to move with it for the same reason the direct rename's
+        // does. Guarded on the name actually changing rather than fired unconditionally: a
+        // sibling that carries its own name keeps it here, and refreshing that one would
+        // overwrite a scout's frozen title with a heading its card never showed.
+        if (renamed.name !== other.name) refreshScoutPromptContextName(id, renamed.name);
       }
     }
 

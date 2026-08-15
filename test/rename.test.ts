@@ -24,6 +24,9 @@ const { rename, validateSessionName, validateSessionNameAgainstTasks } = await i
   "../src/server/actions.ts"
 );
 const { Registry } = await import("../src/server/registry.ts");
+const { openScoutPromptContext, scoutPromptContext } = await import(
+  "../src/server/scouts/prompt-context.ts"
+);
 
 const PANE = mkMuxHandle({ session: "work", windowName: "0", paneId: "%3" });
 const TAB = mkEmuHandle({ paneId: "12", tabId: "4", windowId: "1", tabTitle: "old" });
@@ -723,4 +726,82 @@ test("renameSession leaves a card on an unrelated tmux session alone", () => {
 
   assert.equal(muxHandle(sessionOf(r, "s2")!)?.session, "other");
   assert.equal(sessionOf(r, "s2")?.name, "other");
+});
+
+// ---- Registry.renameSession (scout prompt context title) ----
+//
+// A scout's archive title is the live `session.name` while the session exists and the name
+// frozen here once it does not, so the two agreeing is what stops one scout publishing under
+// two different titles depending only on when it was captured. The fan-out branch below is
+// the easy half to miss: renaming a multiplexer renames every sibling pane whose name follows
+// it, and a scout in one of those has been renamed on the card without being renamed here.
+
+test("a rename carries the frozen scout title on the renamed session and its followers", () => {
+  const r = new Registry();
+  r.applyDiscovery([
+    disco(),
+    // A sibling in the same tmux session whose name follows the multiplexer's.
+    disco({
+      syntheticId: "s2",
+      name: "work",
+      nameSource: "tmux",
+      cwd: "/repo/two",
+      tty: "ttys2",
+      pid: 2,
+      terminals: [mkMuxHandle({ session: "work", windowName: "1", paneId: "%4" })],
+    }),
+    // A third in the same tmux session carrying a name of its OWN, which a rename must not
+    // reach - its card keeps saying "kept", so its archive must too.
+    disco({
+      syntheticId: "s3",
+      name: "kept",
+      nameSource: "process",
+      cwd: "/repo/three",
+      tty: "ttys3",
+      pid: 3,
+      terminals: [mkMuxHandle({ session: "work", windowName: "2", paneId: "%5" })],
+    }),
+  ]);
+
+  // A work episode needs an agent identity, which discovery alone does not carry - a hook is
+  // what binds one, exactly as it does in production.
+  for (const [id, pane] of [["s1", "%3"], ["s2", "%4"], ["s3", "%5"]] as const) {
+    r.applyHook({
+      agent: "claude",
+      event: "Stop",
+      sessionId: `agent:${id}`,
+      cwd: r.getSession(id)?.cwd ?? "/repo",
+      transcriptPath: null,
+      env: { tmuxPane: pane },
+    });
+  }
+
+  for (const id of ["s1", "s2", "s3"]) {
+    const episode = r.workEpisodeForSession(id);
+    assert.ok(episode, `precondition: ${id} has a work episode`);
+    assert.ok(
+      openScoutPromptContext({
+        taskId: `task-${id}`,
+        episodeId: episode.episodeId,
+        sessionId: id,
+        sessionName: r.getSession(id)?.name ?? id,
+        transcriptPath: null,
+        transcriptOffset: 0,
+      }),
+      `precondition: ${id} froze a boundary`,
+    );
+  }
+
+  r.renameSession("s1", "renamed");
+
+  const frozen = (id: string): string | undefined =>
+    scoutPromptContext(`task-${id}`, r.workEpisodeForSession(id)!.episodeId)?.sessionName;
+  assert.equal(sessionOf(r, "s1")?.name, "renamed");
+  assert.equal(frozen("s1"), "renamed", "the renamed session's archive title follows its card");
+  assert.equal(sessionOf(r, "s2")?.name, "renamed");
+  assert.equal(frozen("s2"), "renamed", "and so does a sibling pane that was renamed with it");
+  // The one that must not move. Refreshing every sibling unconditionally would overwrite this
+  // scout's frozen title with a heading its card never showed.
+  assert.equal(sessionOf(r, "s3")?.name, "kept");
+  assert.equal(frozen("s3"), "kept");
 });

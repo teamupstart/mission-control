@@ -187,7 +187,8 @@ function stores(over: Partial<PaletteStores> = {}): PaletteStores {
     sessionActions: [],
     schedules: [],
     sessionNames: new Map(),
-    settingsBindings: new Map(),
+    settingsAvailability: { pipelinesPresent: true },
+  settingsBindings: new Map(),
     ...over,
   };
 }

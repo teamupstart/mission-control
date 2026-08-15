@@ -6,7 +6,7 @@ import {
 
 import type { PipelineProvider, PipelineRepoReading } from "../types.ts";
 import { normalizeConductorRun } from "./normalize.ts";
-import { probeConductor } from "./probe.ts";
+import { conductorBin, probeConductor } from "./probe.ts";
 import {
   MAX_RUNS_PER_REPO,
   readConductState,
@@ -117,6 +117,7 @@ async function readConductorRepo(
 
 export const CONDUCTOR_PROVIDER: PipelineProvider = {
   provider: "ai-conductor",
+  binForPresence: conductorBin,
   probe: probeConductor,
   readRepo: readConductorRepo,
 };

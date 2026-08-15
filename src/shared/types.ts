@@ -2361,6 +2361,25 @@ export interface SettingsStatus {
   shipping: { autoMerge: boolean };
   /** How many configured task sources failed their last sweep. Nonzero is a red dot. */
   taskSources: { failing: number };
+  /**
+   * Whether this operator has anything to do with an external SDLC engine, and therefore
+   * whether the Conductor category exists in the Settings rail at all.
+   *
+   * NOT a dot fact, unlike its three neighbours - it decides whether a row is DRAWN. The
+   * plan's criterion is that "an operator without conductor installed sees nothing new", and
+   * that is keyed on INSTALLED rather than on enabled: a category offering to observe
+   * software somebody does not have is a new thing on their screen, however off it ships.
+   *
+   * True when the engine binary is on the daemon's PATH, OR when a repository has been
+   * configured for it. The second half is what stops consent becoming unwithdrawable: an
+   * operator who enabled a repository and then uninstalled the engine must still be able to
+   * find the switch and turn it off.
+   *
+   * It rides this tuple rather than a route of its own because the rail has to decide
+   * synchronously on the first paint, and this tuple is already in the connect snapshot.
+   * Computing it costs no subprocess - see `pipelinesPresent`.
+   */
+  pipelines: { present: boolean };
 }
 
 // ---- Keep Awake (transient idle-sleep inhibition) ----

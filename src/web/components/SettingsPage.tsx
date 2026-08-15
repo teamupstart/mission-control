@@ -33,11 +33,14 @@ import type { SettingsStatus } from "@shared/types.ts";
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import {
-  SETTINGS_CATEGORIES,
+  DEFAULT_SETTINGS_CATEGORY,
   SETTINGS_GROUPS,
   SETTINGS_SCOPES,
+  availableSettingsCategories,
   settingsCategoriesIn,
   settingsCategory,
+  settingsCategoryAvailable,
+  type SettingsAvailability,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
 import { settingsRailDot, type SettingsDotTone } from "../lib/settings-dots.ts";
@@ -433,8 +436,13 @@ export function SettingsPage({
   // order (see `SETTINGS_CATEGORIES`) - otherwise Down moves the selection somewhere the
   // eye is not. The stopPropagation keeps these keys inside the rail.
   function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
-    const last = SETTINGS_CATEGORIES.length - 1;
-    const idx = SETTINGS_CATEGORIES.findIndex((c) => c.id === category);
+    // The VISIBLE subset, not the whole registry: a category this operator does not have is
+    // not drawn, so walking past it would move the selection to a tab that is not there.
+    const walk = availableSettingsCategories({
+      pipelinesPresent: settingsStatus === null ? null : settingsStatus.pipelines.present,
+    });
+    const last = walk.length - 1;
+    const idx = walk.findIndex((c) => c.id === category);
     let next: number;
     switch (e.key) {
       case "ArrowUp":
@@ -456,7 +464,7 @@ export function SettingsPage({
     }
     e.preventDefault();
     e.stopPropagation();
-    const nextId = SETTINGS_CATEGORIES[next]?.id;
+    const nextId = walk[next]?.id;
     if (!nextId) return;
     onNavigate(nextId);
     tabRefs.current.get(nextId)?.focus();
@@ -554,7 +562,18 @@ export function SettingsPage({
     }
   }
 
-  const active = settingsCategory(category);
+  // Which conditional categories this operator has. Null before the first snapshot, which
+  // draws nothing and waits - see `SettingsAvailability`.
+  const availability: SettingsAvailability = {
+    pipelinesPresent: settingsStatus === null ? null : settingsStatus.pipelines.present,
+  };
+  // A category the operator does not have is not a route. Reached by a stale bookmark, by a
+  // link written before the engine was uninstalled, or by the hash being typed - and the
+  // answer is the same one an unknown category gets, rather than an empty pane.
+  const shown: SettingsCategoryId = settingsCategoryAvailable(category, availability)
+    ? category
+    : DEFAULT_SETTINGS_CATEGORY;
+  const active = settingsCategory(shown);
 
   return (
     <main className="settings-page">
@@ -601,22 +620,24 @@ export function SettingsPage({
           aria-label="Settings categories"
           onKeyDown={onTablistKey}
         >
-          {SETTINGS_GROUPS.map((group) => (
+          {SETTINGS_GROUPS.filter(
+            (group) => settingsCategoriesIn(group.id, availability).length > 0,
+          ).map((group) => (
             <div className="settings-nav-group" key={group.id}>
               <p className="settings-nav-label">
                 {group.label}
                 <ScopeBadge scope={group.scope} />
               </p>
-              {settingsCategoriesIn(group.id).map((c) => (
+              {settingsCategoriesIn(group.id, availability).map((c) => (
                 <Tooltip key={c.id} label={c.blurb}>
                   <button
                     id={tabDomId(c.id)}
                     type="button"
-                    className={`settings-nav-item${category === c.id ? " is-active" : ""}`}
+                    className={`settings-nav-item${shown === c.id ? " is-active" : ""}`}
                     role="tab"
-                    aria-selected={category === c.id}
+                    aria-selected={shown === c.id}
                     // Roving tabindex: one Tab stop for the whole rail, arrows move within it.
-                    tabIndex={category === c.id ? 0 : -1}
+                    tabIndex={shown === c.id ? 0 : -1}
                     ref={(el) => {
                       if (el) tabRefs.current.set(c.id, el);
                       else tabRefs.current.delete(c.id);
@@ -645,7 +666,7 @@ export function SettingsPage({
         </div>
       </div>
 
-      <div className="settings-pane" role="tabpanel" aria-labelledby={tabDomId(category)}>
+      <div className="settings-pane" role="tabpanel" aria-labelledby={tabDomId(shown)}>
         {/* The precise claim, beside the panel it is about. The rail's badge is its
             group's - a summary that can be gentler than a member's own, which is why the
             header repeats it rather than trusting the nav to have said it. */}
@@ -653,7 +674,7 @@ export function SettingsPage({
           <h2>{active.label}</h2>
           <ScopeBadge scope={active.scope} />
         </div>
-        {renderCategory(category)}
+        {renderCategory(shown)}
       </div>
     </main>
   );

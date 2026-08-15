@@ -175,30 +175,57 @@ test("the engine is detected, arrives off, and one switch starts observing it", 
 });
 
 test.describe("with no engine installed", () => {
-  // A daemon whose engine binary is simply not there - the state every machine without
-  // conductor is in. Reached by pointing the resolution at a missing path rather than by
-  // mocking the response, because what is under test is the PROBE: a mocked body would
-  // assert that the panel renders a shape the daemon might never produce.
+  // The plan's criterion, in a browser: "an operator without conductor installed sees
+  // nothing new". Keyed on INSTALLED rather than on enabled - a Settings row offering to
+  // observe an engine somebody does not have is a new thing on their screen however off it
+  // ships.
   //
-  // A `describe`-scoped `daemonEnv` rather than a second file: the option is read when the
-  // daemon boots, and `test.use` inside a block is how that is said per case.
+  // Reached by pointing the daemon's resolution at a path that is not there, rather than by
+  // mocking a response: what is under test is the daemon deciding this operator has nothing
+  // to do with a pipeline engine, and a mocked body would assert that the rail renders a
+  // shape the daemon might never send.
   test.use({ daemonEnv: { MISSION_CONDUCTOR_BIN: "/nonexistent/conduct-ts" } });
 
-  test("the panel says so rather than showing an empty list", async ({ page, daemon }) => {
+  test("no Conductor row, no panel, and the hash is not a back door", async ({
+    page,
+    daemon,
+  }) => {
+    await page.goto(`${daemon.baseURL}/#/settings`);
+    // Waited for rather than assumed: the rail is what proves the page has painted and the
+    // snapshot has landed, so the absences below are read after the daemon has answered
+    // rather than before it.
+    await expect(page.getByRole("tab", { name: /Task sources/ })).toBeVisible();
+
+    await expect(page.getByRole("tab", { name: /Conductor/ })).toHaveCount(0);
+    await expect(page.getByRole("checkbox", { name: "Observe conductor pipelines" })).toHaveCount(0);
+    await expect(page.getByText(/Not installed/)).toHaveCount(0);
+    await expect(page.getByText(/never starts or stops a pipeline/)).toHaveCount(0);
+
+    // A stale bookmark lands on the default category rather than on an empty pane, which is
+    // what an unknown category already does.
     await page.goto(`${daemon.baseURL}/#/settings/conductor`);
+    // Asserted on the RAIL rather than on the Display panel's contents: what is under test
+    // is where the route resolved, and the selected tab says that without depending on what
+    // any particular panel happens to render.
+    await expect(page.getByRole("tab", { name: /Display/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(page.getByRole("tab", { name: /Conductor/ })).toHaveCount(0);
+    await expect(page.getByText(/never starts or stops a pipeline/)).toHaveCount(0);
 
-    // "Not installed" is an answer somebody can act on, and it must not read as "the engine
-    // manages nothing" - which is what an empty repository list on its own would say.
-    await expect(page.getByText(/Not installed/)).toBeVisible();
-    await expect(page.getByText(/No repositories registered with the engine/)).toBeVisible();
-
-    // Said once. A missing engine's error restates its own state line word for word, and the
-    // same sentence twice - once neutral, once in the error tone - reads as two problems.
-    await expect(page.locator(".settings-error")).toHaveCount(0);
-
-    // The master switch is still reachable - a panel that hid it would leave an operator who
-    // installs the engine later with nothing to press.
-    await expect(page.getByRole("checkbox", { name: "Observe conductor pipelines" })).toBeVisible();
+    // And it is absent from the one other place a panel is reachable from. The palette may
+    // only target routes the app publishes, so a hidden category offered here would be the
+    // criterion holding everywhere except the search box.
+    await page.keyboard.press("Meta+k");
+    await expect(page.getByRole("dialog", { name: "Search everything" })).toBeVisible();
+    const query = page.getByRole("combobox", { name: "Search everything" });
+    // First a query that DOES land, so the absence below is a filtered palette rather than a
+    // broken one - "assert nothing is there" proves nothing when nothing is ever there.
+    await query.fill("display");
+    await expect(page.getByRole("option", { name: /Display settings/ })).toBeVisible();
+    await query.fill("conductor");
+    await expect(page.getByRole("option", { name: /Conductor/ })).toHaveCount(0);
     await shoot(page, "04-not-installed");
   });
 });

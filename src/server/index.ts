@@ -364,7 +364,7 @@ const stopTaskSources = startTaskSourceSweeper(tasks, () => publishSettingsStatu
 // back as a frame about a repository nobody enabled. Inert on the shipped configuration:
 // with no repository consented to, the restore prunes nothing and each tick is one KV read.
 restorePipelineProjection(registry);
-const stopPipelines = startPipelineWatcher(registry);
+const stopPipelines = startPipelineWatcher(registry, () => publishSettingsStatus(registry));
 // Recurring Missions, for the same two reasons as the sweeper above: it writes to the DB,
 // and the port bind guarantees exactly one of it. It files backlog tasks and stops there -
 // Foreman is still the only autonomous path to a running agent. Inert until an operator

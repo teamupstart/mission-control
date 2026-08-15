@@ -92,9 +92,10 @@ Some work is driven by an external SDLC engine rather than by a single agent.
 in its own worktree and halts for a human when a gate refuses. **Settings → Conductor**
 detects it and lets you consent, per repository, to Mission Control reading its state.
 
-Detection is automatic and consent is not. Nothing is read until a repository is switched on,
-Mission Control never writes a file the engine owns, and with the switch off - or with no
-engine installed - the dashboard is exactly what it was.
+Detection is automatic and consent is not. The Conductor row appears only once the engine is
+found on the daemon's `PATH`, nothing is read until a repository is switched on, and Mission
+Control never writes a file the engine owns. Without the engine installed the dashboard is
+exactly what it was - there is no row, no panel, and nothing in the command palette.
 
 ## Quick start
 

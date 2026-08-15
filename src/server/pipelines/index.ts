@@ -10,6 +10,7 @@ import {
 } from "@shared/pipeline.ts";
 
 import { envVar } from "../config.ts";
+import { onPath } from "../util/exec.ts";
 import {
   deletePipelineRunRow,
   deletePipelineRunsForRepo,
@@ -53,6 +54,14 @@ export const PIPELINE_PROVIDERS: Record<PipelineProviderId, PipelineProvider> = 
 /** How often the loop re-reads every consented repository's files. */
 const TICK_MS = Math.max(1000, Number(envVar("PIPELINE_TICK_MS") ?? 5000));
 
+/**
+ * How many ticks apart the cheap "is an engine installed" check runs.
+ *
+ * Derived from `TICK_MS` so it stays about a minute however the tick is tuned, and floored
+ * at 1 so a tick slower than a minute still checks every time rather than never.
+ */
+const PRESENCE_EVERY_TICKS = Math.max(1, Math.round(60_000 / TICK_MS));
+
 /** How long a cached probe answers the Settings route before it is re-run. */
 const PROBE_TTL_MS = Math.max(1000, Number(envVar("PIPELINE_PROBE_TTL_MS") ?? 30_000));
 
@@ -91,6 +100,32 @@ export function pipelineRepoStatuses(): PipelineRepoStatus[] {
         lastReadAt: null,
         error: null,
       },
+  );
+}
+
+/**
+ * Whether this operator has anything to do with a pipeline engine.
+ *
+ * The one question that decides whether the Conductor category exists in the Settings rail,
+ * and it is answered WITHOUT a subprocess: `onPath` walks `PATH` with `existsSync`, so this
+ * is a handful of stats rather than the `fork` + `execve` a real probe costs. That is what
+ * makes it affordable on a signal the rail needs synchronously, on every snapshot, for every
+ * operator - including the overwhelming majority who will never install an engine.
+ *
+ * It deliberately asks a WEAKER question than `probePipelineProvider`. Whether the binary
+ * exists is enough to decide that a row should be drawn; what version it is and which
+ * repositories it manages are the panel's questions, and the panel is the thing that has
+ * been opened on purpose.
+ *
+ * The `configured` half is not symmetry for its own sake. Without it, an operator who
+ * enabled a repository and then uninstalled the engine would lose the row that holds the
+ * only switch that can turn it off - consent in force with nothing on screen to withdraw it.
+ */
+export function pipelinesPresent(): boolean {
+  const config = getPipelinesConfig();
+  if (config.enabled || config.repos.length > 0) return true;
+  return PIPELINE_PROVIDER_IDS.some((provider) =>
+    onPath(PIPELINE_PROVIDERS[provider].binForPresence()),
   );
 }
 
@@ -331,17 +366,48 @@ export function reconcilePipelineConsent(sink: PipelineProjectionSink): void {
  * The config is re-read every tick rather than at construction, so consent takes effect
  * without a restart - the same discipline the sweeper holds.
  */
-export function startPipelineWatcher(sink: PipelineProjectionSink): () => void {
+export function startPipelineWatcher(
+  sink: PipelineProjectionSink,
+  /**
+   * Called when the presence answer moves, so the caller can push the settings status the
+   * Settings rail reads. Passed in rather than reached for, exactly as the task-source
+   * sweeper's `onSwept` is: this module touches neither the registry nor the rail.
+   */
+  onPresenceChanged?: () => void,
+): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * How many ticks since presence was last checked, and the answer it gave.
+   *
+   * Checked on a SLOWER sub-cadence than the projection pass because it answers a question
+   * that changes about once in an installation's life - an operator installing or removing
+   * the engine - and the whole point of `pipelinesPresent` being stat-only is undone if it
+   * runs at the cadence of a loop built for file changes. A minute is fast enough that
+   * installing conductor makes the row appear while the operator is still looking for it,
+   * and slow enough to be free.
+   */
+  let sinceCheck = Number.MAX_SAFE_INTEGER;
+  let present: boolean | null = null;
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
+      sinceCheck += 1;
+      if (sinceCheck >= PRESENCE_EVERY_TICKS) {
+        sinceCheck = 0;
+        const now = pipelinesPresent();
+        // Only on a CHANGE, and `null` on the first pass is not a change: the daemon's boot
+        // snapshot already carries the right answer, so announcing it again would wake every
+        // browser to tell it what it was handed a moment ago.
+        if (present !== null && now !== present) onPresenceChanged?.();
+        present = now;
+      }
       const repos = activePipelineRepos(getPipelinesConfig());
-      // The whole cost of this feature on a fleet that has enabled nothing: one KV read.
-      // Not even the consent reconciliation runs, because with no projected repositories
-      // there is nothing for it to find - and `pipelineProjectedRepos()` is a query.
+      // The whole cost of this feature on a fleet that has enabled nothing: one KV read,
+      // plus a handful of `existsSync` calls once a minute. Not even the consent
+      // reconciliation runs, because with no projected repositories there is nothing for it
+      // to find - and `pipelineProjectedRepos()` is a query.
       if (repos.length > 0 || statuses.size > 0) {
         reconcilePipelineConsent(sink);
         for (const repo of repos) {

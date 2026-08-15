@@ -209,7 +209,7 @@ these stays in this browser, and which of them acts publicly under your account.
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout + message formatting), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
-| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor**, **Models** |
+| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
@@ -225,7 +225,11 @@ the one that failed. Adding a source is an inline form above that list; it still
 repo before the source exists, and the source still starts switched off.
 
 **Conductor** is the newest, and it is the one category whose subject is somebody else's
-software. It is the consent surface for observing an external SDLC engine - see
+software - which is also why it is the one category that is **conditional**. It is drawn only
+once the daemon has found the engine on its `PATH` (or the operator has already configured a
+repository for it); without that there is no row, no panel, and no palette entry, and the
+hash falls back like an unknown category. Every other category configures Mission Control and
+therefore exists for everyone. It is the consent surface for observing an external SDLC engine - see
 [Pipelines](pipelines.md) - and it is built out of three cards because three different things
 can be false: the engine may not be installed, the master switch may be off, and a repository
 may not be switched on. An operator who sees no pipelines has to be able to tell which,

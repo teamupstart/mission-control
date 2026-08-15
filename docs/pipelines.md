@@ -31,8 +31,21 @@ Three rules, and each of them is load-bearing rather than cautious:
 
 ## Settings → Conductor
 
-Three cards, because three different things can be false and an operator who sees no
-pipelines has to be able to tell which:
+**The category only exists once the engine does.** Mission Control looks for the engine
+binary on the daemon's `PATH`; until it finds one, there is no Conductor row in the Settings
+rail, no panel behind it, and no palette entry - `#/settings/conductor` falls back to the
+default category the way an unknown category does. That is the plan's criterion, and it is
+keyed on *installed* rather than on *enabled*: a row offering to observe software somebody
+does not have is a new thing on their screen however off it ships.
+
+The check is a `PATH` walk rather than a probe, so it costs no subprocess, and the watch loop
+re-runs it about once a minute - installing conductor makes the row appear while you are
+still looking for it, with no restart. The row also stays for anyone who has configured a
+repository, even if the engine is later removed, because otherwise consent would be in force
+with nothing on screen able to withdraw it.
+
+Once the row exists, it holds three cards, because three different things can be false and an
+operator who sees no pipelines has to be able to tell which:
 
 - **The engine** - whether the binary was found, where, which version, and how many
   repositories it says it manages. It also prints where the registry was looked for, because

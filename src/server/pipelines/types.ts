@@ -43,6 +43,16 @@ export interface PipelineRepoReading {
  */
 export interface PipelineProvider {
   provider: PipelineProviderId;
+  /**
+   * The command whose mere PRESENCE on `PATH` means this engine is installed, after the
+   * operator's env override.
+   *
+   * Separate from `probe()` because it answers a weaker question much more cheaply: the
+   * Settings rail needs "should this row exist" synchronously, on every snapshot, for every
+   * operator - and `onPath` walks `PATH` with `existsSync` where a probe spawns. What the
+   * engine's version is and which repositories it manages are the panel's questions.
+   */
+  binForPresence(): string;
   /** Spawns. Called from the Settings route behind a cache, never from the watch loop. */
   probe(): Promise<PipelineProbe>;
   /**

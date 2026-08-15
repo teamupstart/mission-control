@@ -681,6 +681,11 @@ export function App(): React.JSX.Element {
       schedules,
       sessionNames,
       settingsBindings: paletteBindings,
+      // The palette may only reach panels the rail draws. Null before the first snapshot,
+      // which offers the conditional categories nowhere rather than guessing.
+      settingsAvailability: {
+        pipelinesPresent: settingsStatus === null ? null : settingsStatus.pipelines.present,
+      },
     }),
     [
       workflowSummaries,
@@ -691,6 +696,7 @@ export function App(): React.JSX.Element {
       schedules,
       sessionNames,
       paletteBindings,
+      settingsStatus,
     ],
   );
 

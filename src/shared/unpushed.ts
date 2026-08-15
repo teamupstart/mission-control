@@ -54,19 +54,17 @@ export type UnpushedUnknownReason =
 export type UnpushedCommits =
   | {
     state: "ahead";
-    /** How many commits HEAD holds that NO remote-tracking ref holds. Always 1 or more. */
+    /** How many commits HEAD holds that its configured upstream does not. Always 1 or more. */
     commits: number;
     /** The branch HEAD is on, for a sentence that can name it. */
     branch: string;
     /**
      * The ref that branch tracks, abbreviated the way a person writes it.
      *
-     * The GATE that allowed a claim to be made, and not the thing the count was measured
-     * against - those are two different refs on purpose, and the reader
-     * (`src/server/git/unpushed.ts`) explains why at length. In short: a branch tracking
-     * nothing must stay silent, but a session that pushed its work under another name, or to
-     * a remote not called `origin`, has still pushed it - so the count spans every
-     * remote-tracking ref while the gate does not.
+     * Both the GATE that allowed a claim to be made and the ref the count was measured
+     * against - `commits` is `@{upstream}..HEAD`. One ref rather than two because the caller
+     * speaks for an Inspector waiting on one branch, so commits that reached some other ref
+     * have not reached the one being waited on.
      */
     upstream: string;
   }

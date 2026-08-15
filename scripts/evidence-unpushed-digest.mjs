@@ -65,8 +65,12 @@ git(repo, "remote", "add", "origin", bare);
 git(repo, "push", "-q", "-u", "origin", "fix/inspector-findings");
 git(repo, "commit", "-q", "--allow-empty", "-m", "address the Inspector's findings");
 git(repo, "commit", "-q", "--allow-empty", "-m", "tighten the guard it asked for");
+// The same comparison the reader makes, so this line corroborates it rather than measuring
+// something else and appearing to agree.
 console.log(
-  `[evidence] checkout is ahead by ${git(repo, "rev-list", "--count", "HEAD", "--not", "--remotes").trim()}`,
+  `[evidence] checkout is ahead of @{upstream} by ${
+    git(repo, "rev-list", "--count", "@{upstream}..HEAD").trim()
+  }`,
 );
 
 // ---- 2. the real binding, and the real resolver over it ----

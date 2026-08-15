@@ -105,25 +105,21 @@ it: *"waiting for a pushed head **and you have 2 commits that are not pushed**"*
 the difference between a session that fixed the findings and forgot the last step and one
 that did nothing at all, which is otherwise invisible from the daemon's side.
 
-The reading is two questions rather than one, and the difference between them is
-load-bearing:
+The comparison is the branch's **configured upstream** - `@{upstream}..HEAD`, the commits
+the branch it tracks has not received. That is the ref the Inspector is watching, because
+it is the one the pull request points at, so commits that reached some other branch or
+some other remote have not reached the thing being waited on.
 
-1. **Does the branch track an upstream at all?** This is the gate. A branch that tracks
-   nothing stays silent, because work nobody ever meant to push is not a forgotten step.
-2. **How many commits does HEAD hold that no remote-tracking ref holds?** This is the
-   count, and it is deliberately wider than the branch's own upstream. A session that
-   pushed its work under a different branch name, or to a remote not called `origin` - an
-   ordinary fork clone - has genuinely pushed it, and comparing against that one upstream
-   alone would tell somebody to push what is already there. Widening the comparison can
-   only ever make the count *smaller*, which is the direction this is allowed to be wrong
-   in.
+The upstream is also the gate. A branch that tracks nothing stays silent rather than
+being counted from its first commit, because work nobody ever meant to push is not a
+forgotten step.
 
 When it cannot make that claim it says nothing extra, and the wording falls back to the
 plain wait. A branch that tracks no remote, a detached HEAD, and a git call that failed
 are all *unknown* rather than *not pushed* - being told you forgot to push a branch that
 was never meant to be pushed sends you looking for a mistake you did not make. A checkout
-holding nothing the remotes lack is also silent, for a subtler reason: that only proves a
-push is not the missing step, not that the head the Inspector wants exists.
+level with its upstream is also silent, for a subtler reason: that only proves a push is
+not the missing step, not that the head the Inspector wants exists.
 
 ![The run a stuck parked-run notification opens, showing the parked round and its state](images/line-review-parked-toast-run.png)
 

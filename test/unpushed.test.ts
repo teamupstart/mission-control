@@ -104,25 +104,31 @@ test("pushing the work clears the claim", async () => {
   });
 });
 
-test("work pushed under a DIFFERENT branch name is not reported as unpushed", async () => {
-  // The gate-vs-count split, which is the whole reason the count spans every origin ref
-  // instead of `@{upstream}..HEAD`. This session pushed its commits; they are on the remote
-  // under another name. Telling it to push again would be telling it to redo done work.
+test("work pushed under a DIFFERENT branch name has still not reached the tracked branch", async () => {
+  // The comparison is `@{upstream}..HEAD`, so a commit that reached some OTHER remote ref is
+  // still counted. That is the intended reading rather than a tolerated imprecision: the
+  // caller speaks for an Inspector waiting on one branch - the one the pull request points at,
+  // which is the one this branch tracks - and a commit parked on `review-fixes` has not
+  // reached it. Calling that "pushed" would report the wait as satisfied while the run stayed
+  // parked for ever, which is the exact silence this whole feature exists to break.
   const clone = cloneOnMain();
   commitWork(clone, "the fix, pushed somewhere else");
   gitIn(clone, "push", "-q", "origin", "HEAD:refs/heads/review-fixes");
 
   const obs = await readUnpushedCommits(clone);
 
-  assert.equal(obs.state, "pushed", "commits reachable from any origin ref are pushed");
-  assert.equal(unpushedClause(obs), null);
+  assert.equal(obs.state, "ahead", "the tracked branch has not received it, whoever else has");
+  assert.equal(obs.state === "ahead" && obs.commits, 1);
+  assert.equal(unpushedClause(obs), "you have 1 commit that is not pushed");
 });
 
 test("a clone whose remote is not named `origin` is not accused of its whole history", async () => {
-  // Regression. Scoping the count to `--remotes=origin` reported every commit in a fully
-  // pushed fork as unpushed, because a clone whose remote is called `upstream` has no
-  // `origin/*` refs for the count to find. The reader compares against EVERY remote-tracking
-  // ref for exactly this reason.
+  // Regression. Scoping the count to a HARDCODED `--remotes=origin` reported every commit in
+  // a fully pushed fork as unpushed, because a clone whose remote is called `upstream` has no
+  // `origin/*` refs for the count to find. `@{upstream}` is what closes it: it resolves to
+  // whatever the branch actually tracks, so the comparison is against a ref that exists
+  // whatever the remote is called. This is the case that must keep passing under any future
+  // change to the comparison.
   const root = mkdtempSync(join(tmpdir(), "harness-unpushed-fork-"));
   const origin = join(root, "origin");
   gitInit(origin);

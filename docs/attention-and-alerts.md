@@ -103,6 +103,16 @@ Runs that will never resume themselves do not wait for that clock at all. A run 
 strip, in the Review drawer and in the palette from the moment it parks, because nothing
 but a person moves it.
 
+This is what that rule changed. Both pictures are the same parked run - a `manual` version
+on a Preview binding, one failed reviewer, `Waiting for the session`. Before, the Review
+stage counted it and said nothing else, and the drawer listed it unmarked, so a run only a
+human could move was indistinguishable from one the daemon had in hand:
+
+![The Review stage and drawer before the rule, listing a parked run with no marking at all](images/line-review-parked-before.png)
+
+After, the same run is counted as yours, on the stage and in the drawer, and the row is
+marked amber for "your turn":
+
 ![The Review stage and drawer marking a parked run that only a person can move](images/line-review-parked-needs-you.png)
 
 An `auto` version delivering `live` is the daemon's own to reopen and is never called

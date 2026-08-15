@@ -114,8 +114,9 @@ deliberately: `sweepResumptions` records why a Foreman claim cannot be the gener
 `decideReviewFollowup`'s gate 6 already stands down when a workflow owns the session.
 
 #### 6a. Name the unpushed head — still open
-Backlog task `4c9bea06-f8f3-4164-8c55-d8f30b4431bf`. This is the "unpushed branch" signal named
-above, now scoped to the one status that most needs it.
+Tracked as [issue #576](https://github.com/mancej-cyc/ai-harness/issues/576), and in the Mission
+Control backlog as `4c9bea06-f8f3-4164-8c55-d8f30b4431bf`. This is the "unpushed branch" signal
+named above, now scoped to the one status that most needs it.
 
 `waiting_for_new_head` is where the shipped No-Mistakes Review parks Inspector findings under
 `onFindings: "inspector_only"`, and it clears **only** when the Inspector poller observes a head

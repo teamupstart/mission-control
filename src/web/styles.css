@@ -1248,8 +1248,11 @@ button.wf-run-version:focus-visible {
 .wf-run-action-pr a { font-variant-numeric: tabular-nums; }
 .wf-run-check.is-passed { border-left-color: var(--idle); }
 .wf-run-check.is-failed { border-left-color: var(--danger); }
+/* Amber, matching the chip inside the card and the rail row that opened it. Grey was a third
+   colour for one fact: it read as neutral-and-fine for a gate that never ran, which is the
+   claim `CHECK_OUTCOME_STATUSES` marks `degraded` precisely so nothing makes. */
 .wf-run-check.is-skipped,
-.wf-run-check.is-unavailable { border-left-color: var(--muted); }
+.wf-run-check.is-unavailable { border-left-color: var(--attention); }
 .wf-run-check-sentence { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); }
 .wf-run-check-output {
   margin: 4px 0 0;

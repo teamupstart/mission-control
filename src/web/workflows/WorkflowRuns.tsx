@@ -227,6 +227,19 @@ function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Elem
  * The four statuses reach the screen as sentences from `run-model.ts`, never as their
  * durable spellings.
  */
+/**
+ * One check's chip, derived from the OUTCOME - the fact that also picks its segment.
+ *
+ * Shared by the rail row and the card behind it, because they were deriving it twice and
+ * disagreeing. The card asked `outcome.status === "failed" ? failed : passed`, which paints a
+ * gate that NEVER RAN in the green of one that ran and succeeded - the exact false assurance
+ * `CHECK_OUTCOME_STATUSES` exists to prevent, and the opposite of what the row beside it said.
+ * Routed through `checkStatus`, `skipped` and `unavailable` keep the degraded amber they are
+ * entitled to, and the four labels are unchanged.
+ */
+const checkChip = (outcome: WorkflowCheckOutcome): PipelineStatus =>
+  checkStatus(outcome.status === "failed" ? "fail" : "pass", outcome.status);
+
 function CheckCard({
   attempt,
   outcome,
@@ -235,6 +248,7 @@ function CheckCard({
   outcome: WorkflowCheckOutcome;
 }): React.JSX.Element {
   const view = checkStatusView(outcome.status);
+  const chip = checkChip(outcome);
   const parts = [
     outcome.command ? formatCheckCommand(outcome.command) : "no command configured",
     outcome.exitCode === null ? null : `exit ${outcome.exitCode}`,
@@ -243,9 +257,7 @@ function CheckCard({
   return (
     <article className={`wf-run-card wf-run-check is-${outcome.status}`}>
       <header className="wf-run-card-head">
-        <span className={`workflow-chip workflow-${outcome.status === "failed" ? "failed" : "passed"}`}>
-          {view.label}
-        </span>
+        <span className={`workflow-chip workflow-${chip.tone}`}>{chip.label}</span>
         <strong>Command · {outcome.slot}</strong>
       </header>
       <p className="wf-run-summary">{outcome.note}</p>
@@ -682,10 +694,7 @@ function WorklistRailRow({
          * outcome as well, so `skipped` and `unavailable` keep their degraded amber chips
          * rather than being flattened into the green of a command that really ran.
          */
-        const status = checkStatus(
-          item.outcome.status === "failed" ? "fail" : "pass",
-          item.outcome.status,
-        );
+        const status = checkChip(item.outcome);
         return {
           chip: { label: status.label, tone: status.tone },
           title: `Command · ${item.outcome.slot}`,

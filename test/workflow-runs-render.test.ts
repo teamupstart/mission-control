@@ -2461,3 +2461,57 @@ test("a change citing an EMPTY path is treated as citing none, everywhere", () =
   assert.doesNotMatch(html, /Open file/);
   assert.doesNotMatch(html, /Open  in the bound session/);
 });
+
+test("a gate that never ran is amber in the row AND in the card it opens", () => {
+  /*
+   * The row and the card derived the chip separately and disagreed. The card asked
+   * `outcome.status === "failed" ? failed : passed`, which paints a gate that never executed in
+   * the green of one that ran and succeeded - so a reader clicked an amber "Skipped" row and
+   * opened a green "Skipped" chip claiming the run had passed a gate nobody spawned.
+   */
+  for (const status of ["skipped", "unavailable"] as const) {
+    const html = render(detailWithCheck({
+      status,
+      slot: "test",
+      command: null,
+      exitCode: null,
+      output: "",
+      truncatedBytes: 0,
+      note: "Nothing is configured for this slot on this machine.",
+    }));
+    assert.match(rowTagFor(html, "check"), /is-tone-waiting/, `${status} row`);
+    // The card's own chip, sliced out of the card rather than matched anywhere on the page.
+    const card = html.slice(html.indexOf(`wf-run-check is-${status}`));
+    assert.match(card, /workflow-chip workflow-waiting/, `${status} card chip`);
+    assert.doesNotMatch(
+      card.slice(0, card.indexOf("</header>")),
+      /workflow-passed/,
+      `${status} must not wear the green of a command that ran`,
+    );
+  }
+
+  // And the two that DID run keep their own colours, in both places.
+  const failed = render(detailWithCheck({
+    status: "failed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 1,
+    output: "1 failing",
+    truncatedBytes: 0,
+    note: "`npm test` exited 1.",
+  }));
+  assert.match(rowTagFor(failed, "check"), /is-tone-failed/);
+  assert.match(failed.slice(failed.indexOf("wf-run-check is-failed")), /workflow-chip workflow-failed/);
+
+  const passed = render(detailWithCheck({
+    status: "passed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 0,
+    output: "",
+    truncatedBytes: 0,
+    note: "`npm test` passed.",
+  }));
+  assert.match(rowTagFor(passed, "check"), /is-tone-passed/);
+  assert.match(passed.slice(passed.indexOf("wf-run-check is-passed")), /workflow-chip workflow-passed/);
+});

@@ -309,6 +309,15 @@ export function createMissionControlVisualizer(options = {}) {
   let stopped = false;
   /** Consecutive failed deliveries, for the retry backoff. Reset by any success. */
   let failures = 0;
+  /**
+   * How many events this instance currently puts in one POST.
+   *
+   * Starts at `MAX_BATCH` and halves whenever the daemon answers 413, so a run whose
+   * events are unusually large converges on a size that fits instead of losing them.
+   * Restored on the next success: the oversize is a property of those events, not of
+   * the connection, so it must not slow delivery for the rest of the run.
+   */
+  let sendLimit = MAX_BATCH;
 
   /** Complain at most `MAX_WARNINGS` times, about anything, for the life of the process. */
   const warnOnce = (message) => {
@@ -399,7 +408,7 @@ export function createMissionControlVisualizer(options = {}) {
   const flush = async () => {
     if (inFlight) return inFlight;
     if (buffer.length === 0) return;
-    const batch = buffer.slice(0, MAX_BATCH);
+    const batch = buffer.slice(0, sendLimit);
     // Held out of the buffer only while the request is open, so events arriving meanwhile
     // queue behind it and order is preserved. A failure puts it back; see `requeue`.
     buffer = buffer.slice(batch.length);
@@ -416,16 +425,32 @@ export function createMissionControlVisualizer(options = {}) {
         });
         if (res.ok) {
           failures = 0;
+          sendLimit = MAX_BATCH;
           return;
         }
-        // 413 is the one refusal this batch can never survive: it is too large, and it will
-        // be exactly as large next time. Requeueing it would put an undeliverable batch at
-        // the head of the queue for ever and block every event behind it.
+        // Too large. The events are kept and the BATCH is made smaller - retrying the same
+        // bytes unchanged would park an undeliverable request at the head of the queue for
+        // ever, and discarding them would lose the unpersisted kinds outright. Halving the
+        // send size converges in at most log2(MAX_BATCH) attempts, and `sendLimit` is
+        // restored on the next success so one oversized burst does not slow delivery for the
+        // rest of the run.
         if (res.status === 413) {
-          dropped += batch.length;
+          if (batch.length > 1) {
+            sendLimit = Math.max(1, Math.floor(batch.length / 2));
+            requeue(batch);
+            warnOnce(
+              `Mission Control refused a ${batch.length}-event batch as too large (413); ` +
+                `retrying in smaller batches`,
+            );
+            return;
+          }
+          // A single event over the daemon's 4 MB ceiling. No batch size can carry it, so
+          // this is the one case where an event is genuinely undeliverable - counted and
+          // named rather than retried for ever at the head of the queue.
+          dropped += 1;
           warnOnce(
-            `Mission Control refused a ${batch.length}-event batch as too large (413); it has ` +
-              `been dropped, and the file tail covers whatever it can`,
+            `Mission Control refused a single ${body.length}-byte event as too large (413); ` +
+              `it cannot be delivered at any batch size and has been dropped`,
           );
           failures = 0;
           return;
@@ -508,14 +533,18 @@ export function createMissionControlVisualizer(options = {}) {
       // buffer nothing had drained yet and give up on the remainder.
       if (inFlight) await inFlight;
       //
-      // The `>= before` guard is what stops this being an infinite retry loop now that a
-      // failed batch is put BACK: a flush that failed leaves the buffer exactly as long as
-      // it found it, and that is the signal to give up rather than to try again. Shutdown is
-      // the one moment retrying is wrong - there is no later flush to inherit the backlog.
+      // Give up when an attempt changed NOTHING - neither the backlog nor the strategy for
+      // sending it. A failed batch is put back, so buffer length alone would call a 413 no
+      // progress and abandon events the very next (smaller) attempt would have delivered;
+      // `sendLimit` is what makes that attempt different. Both together still terminate,
+      // because `sendLimit` strictly decreases toward 1 and at 1 a refusal shortens the
+      // buffer instead. Shutdown is the one moment an unbounded retry is wrong: there is no
+      // later flush to inherit the backlog.
       while (buffer.length > 0) {
         const before = buffer.length;
+        const limitBefore = sendLimit;
         await flush();
-        if (buffer.length >= before) break;
+        if (buffer.length >= before && sendLimit === limitBefore) break;
       }
     },
 

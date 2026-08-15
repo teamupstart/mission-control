@@ -222,10 +222,49 @@ test("a batch the daemon could not take is retried, not dropped", async () => {
   assert.equal(plugin.stats().buffered, 0);
 });
 
-test("a batch refused as too large is dropped, because retrying it can never work", async () => {
-  // The one refusal that must NOT be retried: it will be exactly as large next time, so
-  // putting it back would park an undeliverable batch at the head of the queue and block
-  // every event behind it for the life of the run.
+test("a batch refused as too large is split, not discarded", async () => {
+  // 413 says the BATCH is too big, not that the events are unwanted. Discarding it would
+  // lose the unpersisted kinds outright, and resending the same bytes would park an
+  // undeliverable request at the head of the queue. So the send size halves until it fits,
+  // and every event still arrives.
+  const delivered: Record<string, unknown>[] = [];
+  const sizes: number[] = [];
+  const fetchImpl = (async (_url: unknown, init: unknown) => {
+    const request = init as { body: string };
+    const lines = request.body.split("\n").filter((l) => l.trim() !== "");
+    sizes.push(lines.length);
+    // A daemon that will not take more than 4 events at a time.
+    if (lines.length > 4) return { ok: false, status: 413 } as Response;
+    for (const raw of lines) delivered.push(JSON.parse(raw) as Record<string, unknown>);
+    return { ok: true, status: 200 } as Response;
+  }) as unknown as typeof fetch;
+
+  const bus = stubBus();
+  const plugin = createMissionControlVisualizer({
+    worktree: WORKTREE,
+    token: "t",
+    fetchImpl,
+    warn: () => {},
+  });
+  plugin.start(bus);
+  for (let i = 0; i < 16; i += 1) bus.emit({ type: "gate_verdict", step: `s${i}` });
+  await plugin.stop();
+
+  assert.equal(plugin.stats().dropped, 0, "nothing was thrown away to make the batch fit");
+  assert.equal(delivered.length, 16, "every event arrived");
+  assert.deepEqual(
+    delivered.map((entry) => (entry.event as { step: string }).step),
+    Array.from({ length: 16 }, (_, i) => `s${i}`),
+    "and in the order the engine emitted them",
+  );
+  assert.ok(sizes.some((n) => n > 4), "it really did have to be refused first");
+  assert.ok(sizes.length < 20, `converged rather than retried blindly (${sizes.length} attempts)`);
+});
+
+test("one event too large for any batch is dropped rather than retried for ever", async () => {
+  // The floor of the split: a single event over the daemon's own 4 MB ceiling fits in no
+  // batch at all, so retrying it would block every event behind it permanently. This is the
+  // only case where an event is genuinely undeliverable, and it is counted.
   const { calls, fetchImpl } = recordingFetch({ ok: false, status: 413 });
   const bus = stubBus();
   const plugin = createMissionControlVisualizer({
@@ -237,9 +276,9 @@ test("a batch refused as too large is dropped, because retrying it can never wor
   plugin.start(bus);
   bus.emit({ type: "step_started", step: "build" });
   await plugin.stop();
-  assert.equal(plugin.stats().buffered, 0, "not requeued");
-  assert.equal(plugin.stats().dropped, 1, "and counted as dropped rather than silently gone");
-  assert.equal(calls.length, 1, "tried once, not forever");
+  assert.equal(plugin.stats().buffered, 0, "not parked at the head of the queue");
+  assert.equal(plugin.stats().dropped, 1, "counted rather than silently gone");
+  assert.ok(calls.length <= 2, `bounded attempts, got ${calls.length}`);
 });
 
 test("retrying cannot grow the buffer past its ceiling", async () => {

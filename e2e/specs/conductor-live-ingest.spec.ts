@@ -37,17 +37,24 @@ test.use({ daemonEnv: { MISSION_PIPELINE_TICK_MS: "600000" } });
 const EVIDENCE = artifactsDir("conductor-live-ingest");
 
 /**
- * Photograph a state this spec has already asserted on. Behind `MC_E2E_EVIDENCE`, so it
- * costs a normal run nothing and cannot influence one: every assertion has already been
- * made by the time this is reached.
+ * Photograph a state this spec has already asserted on.
  *
- * The taller viewport is the whole reason this is not a bare `page.screenshot`. The panel
- * is longer than the default 720px, so a shot at that height opens on a paragraph cut
- * through the middle - which reads as a rendering fault in a reviewed screenshot rather
- * than as the scroll position it is.
+ * Unconditional, and that is the point: the live-events panel is a UI change, so the
+ * screenshot that shows it working is part of what this spec OWES rather than an optional
+ * extra a reviewer has to know an environment variable to obtain. Gating it behind a flag
+ * meant the artifact existed only when somebody already knew to ask, which is precisely when
+ * evidence is least needed.
+ *
+ * Safe to make unconditional because it cannot influence a result: every assertion about a
+ * state has already been made by the time it is photographed, the files land in gitignored
+ * `e2e/.artifacts/`, and four screenshots cost about a second of a twenty-second spec.
+ *
+ * The taller viewport is the whole reason this is not a bare `page.screenshot`. The panel is
+ * longer than the default 720px, so a shot at that height opens on a paragraph cut through
+ * the middle - which reads as a rendering fault in a reviewed screenshot rather than as the
+ * scroll position it is.
  */
 async function shoot(page: Page, name: string): Promise<void> {
-  if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   const restore = page.viewportSize();
   await page.setViewportSize({ width: 1280, height: 1000 });

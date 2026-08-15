@@ -65,9 +65,11 @@ Control controls. So:
   queue and is retried with backoff (up to 30s between attempts), so a daemon restart costs
   latency rather than data. The buffer ceiling still applies to the requeue, so a daemon that
   stays down costs bounded memory - it just spends it on the oldest events instead of
-  discarding them at the door. The one exception is a `413`: that batch is too large and will
-  be exactly as large next time, so it is dropped rather than parked at the head of the queue
-  for ever.
+  discarding them at the door. A `413` is not an exception to this: it says the BATCH is too
+  large, not that the events are unwanted, so the send size halves and the events are kept.
+  The only genuinely undeliverable case is a single event over the daemon's 4 MB ceiling,
+  which fits in no batch at any size; that one is dropped and counted, because retrying it
+  would block every event behind it for ever.
 - **Delivery is otherwise best-effort, and the limit of that is worth stating.** An event
   this never delivers - the buffer ceiling dropped it, a conductor release added a kind this
   build never subscribed to - is picked up by Mission Control's file tail, which is why the

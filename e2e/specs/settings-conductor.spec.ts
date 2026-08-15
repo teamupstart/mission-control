@@ -202,7 +202,15 @@ test.describe("with no engine installed", () => {
     await expect(page.getByText(/never starts or stops a pipeline/)).toHaveCount(0);
 
     // A stale bookmark lands on the default category rather than on an empty pane, which is
-    // what an unknown category already does.
+    // what an unknown category already does - and it must not start the Conductor hook
+    // behind that fallback either. Watched from here, because "no new UI" and "no new
+    // behaviour" are different claims and only one of them is visible on screen: the hook
+    // polls the pipelines route, and that route is what starts the daemon's engine probe.
+    const pipelineReads: string[] = [];
+    page.on("request", (req) => {
+      if (req.url().includes("/api/pipelines/")) pipelineReads.push(req.url());
+    });
+
     await page.goto(`${daemon.baseURL}/#/settings/conductor`);
     // Asserted on the RAIL rather than on the Display panel's contents: what is under test
     // is where the route resolved, and the selected tab says that without depending on what
@@ -218,6 +226,11 @@ test.describe("with no engine installed", () => {
     // the palette below opens - an earlier cut of this spec shot it afterwards and produced
     // a frame of a dimmed page behind a dialog, which shows the reviewer nothing.
     await shoot(page, "04-no-conductor-row");
+
+    // Long enough to cover more than one turn of the hook's 4s poll, so this is "it never
+    // started" rather than "it had not got round to it yet".
+    await page.waitForTimeout(5000);
+    expect(pipelineReads, "a stale hash must not start the Conductor poll").toEqual([]);
 
     // And it is absent from the one other place a panel is reachable from. The palette may
     // only target routes the app publishes, so a hidden category offered here would be the

@@ -2072,6 +2072,47 @@ test("a row's left accent is its own tone, never a colour fixed by its kind", ()
   assert.match(rowTagFor(render(errored), "attempt"), /is-tone-failed/);
 });
 
+test("an unreadable second objection is shown even when its reviewer has an open change", () => {
+  /*
+   * The round-scoped half of the unparseable-verdict fallback.
+   *
+   * Keyed on the node alone, the dedupe also matched a row CARRIED FORWARD from an earlier
+   * round: Quality's round-1 objection is still open because Quality never passed, so its
+   * round-2 reply - which the strict schema rejects and the display cast accepts - was excluded
+   * as already represented. It is not represented. The model cannot read that verdict either,
+   * so the round-1 row keeps saying `round 1`, and the page showed a stale objection with no
+   * sign the reviewer had answered again.
+   */
+  const base = runningDetail();
+  const first = base.attempts.find((item) => item.id === "attempt-1")!;
+  const second = base.attempts.find((item) => item.id === "attempt-3")!;
+  const html = render({
+    ...base,
+    attempts: [
+      first,
+      {
+        ...second,
+        state: "completed" as const,
+        verdict: {
+          ...failVerdict,
+          summary: "The reviewer answered again",
+          // Empty evidence: legal to the loose display cast, refused by `PersonaVerdictSchema`.
+          requestedChanges: [{ title: "Second look", rationale: "no evidence attached", evidence: [] }],
+        },
+      },
+    ],
+  } as WorkflowRunDetail);
+
+  assert.match(html, /Blocking 2/);
+  // Round 1's objection, still carried and still saying which round raised it.
+  assert.match(html, /Fix the race/);
+  assert.match(html, /Quality reviewer · round 1/);
+  // And round 2's reply, kept rather than swallowed, wearing the blocker's tone.
+  assert.match(html, /The reviewer answered again/);
+  assert.match(rowTagFor(html, "verdict"), /is-tone-failed/);
+  assertNoGraphIds(html);
+});
+
 test("a change citing no file says so rather than drawing an empty slot", () => {
   const base = runningDetail();
   const pathless = {

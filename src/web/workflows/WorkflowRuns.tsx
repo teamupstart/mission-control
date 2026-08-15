@@ -751,10 +751,21 @@ function RunWorklist({
    * looser. Either gap would silently delete a reviewer's whole objection from the one section
    * that is supposed to list it, so anything that failed at the viewed round without landing a
    * row keeps its full verdict card in `Blocking`.
+   *
+   * The dedupe is per (NODE, VIEWED ROUND), and the round half is the load-bearing part. Keyed
+   * on the node alone it also matched a row carried forward from an EARLIER round, so a
+   * reviewer with a round-1 objection still open whose round-2 reply the strict parser rejected
+   * had that reply swallowed: no card for it, and the model cannot update the round-1 row from
+   * a verdict it could not read either, so the page showed a stale objection with no sign the
+   * reviewer had answered at all. `round` needs no clamping to compare against `lastRound` -
+   * it IS the viewed submission's round, and when it is null there are no submissions and
+   * therefore no attempts to classify.
    */
-  const raisedNodeIds = new Set(open.map((row) => row.nodeId));
+  const raisedInViewedRound = new Set(
+    worklist.filter((row) => row.lastRound === round).map((row) => row.nodeId),
+  );
   const unmodelledFailures = verdicts.filter(({ attempt, verdict }) =>
-    verdict.verdict === "fail" && !raisedNodeIds.has(attempt.nodeId));
+    verdict.verdict === "fail" && !raisedInViewedRound.has(attempt.nodeId));
 
   const blocking: WorklistItem[] = [
     ...checks

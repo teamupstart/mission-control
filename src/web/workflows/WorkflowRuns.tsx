@@ -468,13 +468,13 @@ function AttemptCard({
  * identified by its attempt id. Nothing stops those colliding as raw strings, so the keys are
  * namespaced by kind and every consumer branches on `kind` instead of sniffing the shape.
  */
-type WorklistItem =
+export type WorklistItem =
   | { kind: "change"; key: string; row: ChangeWorklistRow }
   | { kind: "check"; key: string; attempt: WorkflowNodeAttempt; outcome: WorkflowCheckOutcome }
   | { kind: "verdict"; key: string; attempt: WorkflowNodeAttempt; verdict: PersonaVerdict }
   | { kind: "attempt"; key: string; attempt: WorkflowNodeAttempt; name: string };
 
-type WorklistSegment = "blocking" | "passed" | "archive";
+export type WorklistSegment = "blocking" | "passed" | "archive";
 
 /*
  * A row's identity is its ID SPACE, never its kind.
@@ -493,6 +493,49 @@ type WorklistSegment = "blocking" | "passed" | "archive";
  */
 const attemptKey = (attempt: WorkflowNodeAttempt): string => `attempt:${attempt.id}`;
 const changeKey = (row: ChangeWorklistRow): string => `change:${row.key}`;
+
+/** The reviewer a row belongs to, whichever of the two id spaces the row came from. */
+const nodeOf = (item: WorklistItem): string =>
+  item.kind === "change" ? item.row.nodeId : item.attempt.nodeId;
+
+const SEGMENTS = ["blocking", "passed", "archive"] as const;
+
+/**
+ * Where a selection went when the row holding it stopped existing.
+ *
+ * One key namespace per id space is enough while a row stays in its own space, and a reviewer
+ * that reports a PASS does: it is `attempt:<id>` pending and `attempt:<id>` afterwards. A
+ * reviewer that reports a FAIL changes space entirely. Its attempt stops being an item at all -
+ * a parseable fail verdict is represented by the changes it raised, not by itself - so the row
+ * a reader was watching becomes one or more `change:` rows, in `Blocking` rather than `Passed`.
+ * No key rewrite can bridge that; the successor has a different identity because it IS a
+ * different thing.
+ *
+ * So the selection follows the REVIEWER. The attempt row survives in `detail.attempts` with its
+ * id and its node, and the changes it raised carry that node too, which is the thread between
+ * them. When the followed row lives in another segment the rail goes there, because a selection
+ * pointing somewhere the reader cannot see is not a selection.
+ *
+ * Only ever when the key resolves NOWHERE. A key that still resolves in another segment is a
+ * reader who moved segments with a row still selected behind them, and dragging them back would
+ * overrule a choice rather than preserve one.
+ */
+export function followSelection(
+  selectedKey: string,
+  attempts: readonly WorkflowNodeAttempt[],
+  bySegment: Record<WorklistSegment, WorklistItem[]>,
+): { segment: WorklistSegment; item: WorklistItem } | null {
+  const prefix = "attempt:";
+  if (!selectedKey.startsWith(prefix)) return null;
+  const nodeId = attempts.find((attempt) => attempt.id === selectedKey.slice(prefix.length))?.nodeId;
+  if (nodeId === undefined) return null;
+  for (const segment of SEGMENTS) {
+    // Pre-sorted, so the first row this reviewer owns is the one it leads with.
+    const item = bySegment[segment].find((candidate) => nodeOf(candidate) === nodeId);
+    if (item) return { segment, item };
+  }
+  return null;
+}
 
 /**
  * What each state of a requested change CLAIMS, in a chip and a colour.
@@ -898,19 +941,35 @@ function RunWorklist({
   const autoSegment: WorklistSegment = counts.blocking > 0
     ? "blocking"
     : counts.passed > 0 ? "passed" : counts.archive > 0 ? "archive" : "passed";
-  const segment = chosenSegment === null
+  const picked = chosenSegment === null
     ? autoSegment
     : chosenSegment.round === round || counts[chosenSegment.segment] > 0
       ? chosenSegment.segment
       : autoSegment;
-  const items = segment === "blocking"
-    ? blocking
-    : segment === "archive" ? archive : [...passed, ...pending];
+  const bySegment: Record<WorklistSegment, WorklistItem[]> = {
+    blocking,
+    passed: [...passed, ...pending],
+    archive,
+  };
+  /*
+   * A selection that no longer resolves ANYWHERE has not been navigated away from - the row it
+   * named stopped existing, which on this surface means the reviewer it belonged to reported.
+   * Follow it to whatever now represents that reviewer; only then may the rail change segment.
+   */
+  const followed = selectedKey !== null
+    && !SEGMENTS.some((entry) => bySegment[entry].some((item) => item.key === selectedKey))
+    ? followSelection(selectedKey, detail.attempts, bySegment)
+    : null;
+  const segment = followed?.segment ?? picked;
+  const items = bySegment[segment];
   /*
    * Resolved rather than stored, so scrubbing keeps a change that exists in both rounds
    * selected and falls back to the head of the list when it does not - never to an empty pane.
    */
-  const selected = items.find((item) => item.key === selectedKey) ?? items[0] ?? null;
+  const selected = items.find((item) => item.key === selectedKey)
+    ?? followed?.item
+    ?? items[0]
+    ?? null;
   const selectedIndex = selected ? items.indexOf(selected) : -1;
 
   const terminalRun = ["completed", "cancelled", "failed"].includes(detail.run.status);

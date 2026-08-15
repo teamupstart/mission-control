@@ -24,7 +24,13 @@ import type {
 } from "../src/shared/workflow.ts";
 import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
 import { PersonaDirectiveEditor } from "../src/web/workflows/PersonaDirectiveEditor.tsx";
-import { WorkflowRunView, WorkflowRunsEmpty } from "../src/web/workflows/WorkflowRuns.tsx";
+import type { ChangeWorklistRow } from "../src/web/workflows/run-model.ts";
+import type { WorklistItem, WorklistSegment } from "../src/web/workflows/WorkflowRuns.tsx";
+import {
+  WorkflowRunView,
+  WorkflowRunsEmpty,
+  followSelection,
+} from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   carriedStatus,
   workflowRunLoadError,
@@ -2346,4 +2352,76 @@ test("a host with no clipboard or Files surface draws neither control", () => {
   assert.doesNotMatch(html, /Copy this change/);
   assert.doesNotMatch(html, /Open file/);
   assert.match(html, /Fix the race/);
+});
+
+/*
+ * ---- selection continuity when a reviewer reports ----
+ *
+ * A row's key is its id space, which holds a selection through a reviewer's PASS: the attempt is
+ * `attempt:<id>` before and after. A FAIL is the case that key alone cannot carry. The attempt
+ * stops being an item at all - a parseable fail verdict is represented by the changes it raised,
+ * not by itself - so the row moves into the change id space AND into another segment, and no key
+ * rewrite can bridge that, because the successor genuinely is a different thing.
+ *
+ * `followSelection` is the thread between them: the attempt survives in `detail.attempts` with
+ * its node, and the changes it raised carry that node too. Tested directly because the transition
+ * needs a live re-render with different data, which `renderToStaticMarkup` cannot produce and a
+ * browser can only produce by racing a reviewer.
+ */
+const REVIEWER_NODE = NODE.quality;
+
+function pendingAttempt(id: string): WorkflowNodeAttempt {
+  return attempt(id, "submission-1", REVIEWER_NODE, snapshot("p-quality", "Quality reviewer"), {
+    state: "queued",
+    verdict: null,
+  });
+}
+
+/** A `change` item carrying only the two fields the follow reads: its key and its reviewer. */
+function changeItem(key: string, nodeId: string): WorklistItem {
+  const row = { key, nodeId, title: key } as Partial<ChangeWorklistRow> as ChangeWorklistRow;
+  return { kind: "change", key: `change:${key}`, row };
+}
+
+const emptySegments = (): Record<WorklistSegment, WorklistItem[]> =>
+  ({ blocking: [], passed: [], archive: [] });
+
+test("a selected reviewer that reports a failing verdict is followed to the change it raised", () => {
+  const waiting = pendingAttempt("attempt-slow");
+  const segments = emptySegments();
+  // What the round looks like a moment later: the attempt is gone from the rail, and the change
+  // it raised stands in `Blocking` while the reader is still looking at `Passed`.
+  segments.blocking = [
+    changeItem("other-node\n\nsomething else", "another-node"),
+    changeItem(`${REVIEWER_NODE}\n\nattach the test output`, REVIEWER_NODE),
+  ];
+
+  const followed = followSelection("attempt:attempt-slow", [waiting], segments);
+  assert.equal(followed?.segment, "blocking", "the rail goes where the reviewer's result landed");
+  assert.equal(followed?.item.key, `change:${REVIEWER_NODE}\n\nattach the test output`);
+});
+
+test("a selection that still resolves somewhere is never dragged back to it", () => {
+  // The caller only asks when the key resolves NOWHERE, and this pins the other half of that
+  // rule: a reviewer with rows in two segments is followed to the first, not to whichever the
+  // reader happens to be standing in - the guard against overruling a reader who moved segments
+  // lives at the call site, and this function is what it would otherwise fight.
+  const waiting = pendingAttempt("attempt-slow");
+  const segments = emptySegments();
+  segments.passed = [changeItem(`${REVIEWER_NODE}\n\nlater`, REVIEWER_NODE)];
+  segments.blocking = [changeItem(`${REVIEWER_NODE}\n\nfirst`, REVIEWER_NODE)];
+  assert.equal(followSelection("attempt:attempt-slow", [waiting], segments)?.segment, "blocking");
+});
+
+test("following gives up rather than guessing", () => {
+  const waiting = pendingAttempt("attempt-slow");
+  const segments = emptySegments();
+  segments.blocking = [changeItem("someone-else\n\nnot yours", "someone-else")];
+
+  // A change key is not an attempt key, so a change that vanished is not chased into a reviewer.
+  assert.equal(followSelection("change:whatever", [waiting], segments), null);
+  // An attempt that is no longer in the run at all - a round the reader scrubbed away from.
+  assert.equal(followSelection("attempt:gone", [waiting], segments), null);
+  // And a reviewer whose result is nowhere on this round leaves the fallback to the caller.
+  assert.equal(followSelection("attempt:attempt-slow", [waiting], segments), null);
 });

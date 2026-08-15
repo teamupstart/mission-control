@@ -423,3 +423,98 @@ test("a second round sorts each change by what its own reviewer said, and names 
   );
   await expect(worklist).toContainText("No change has stopped being raised as of this round.");
 });
+
+/**
+ * A reviewer selected while it is still reporting nothing, watched through to its objection.
+ *
+ * This is the one transition a row's key cannot carry on its own. A reviewer that PASSES keeps
+ * its identity - `attempt:<id>` before and after - but one that FAILS stops being an item at
+ * all: a parseable fail verdict is represented by the changes it raised, so the row crosses into
+ * the change id space and into another segment at the same moment. Selection has to follow the
+ * REVIEWER rather than the row, and only a browser can show that it does, because the transition
+ * needs a live re-render with different data underneath a selection a person made by clicking.
+ *
+ * `E2E_SLOW_FAIL_VERDICT` is what makes the pending state reachable at all - every other verdict
+ * in the fixture answers before the run detail can be opened. The spec waits on outcomes rather
+ * than on that delay: the pending row is awaited, and so is the change it becomes.
+ */
+test("a reviewer selected while pending is followed to the change it goes on to raise", async ({
+  dashboard,
+  daemon,
+}) => {
+  const sessionId = await dispatch(dashboard, daemon);
+  const persona = async (name: string, marker: string): Promise<string> =>
+    (await api<{ id: string }>(daemon, "/api/personas", {
+      name,
+      guidanceMarkdown: `# ${name}\n\n${marker}`,
+    })).id;
+  const slow = await persona("E2E deliberating reviewer", "E2E_SLOW_FAIL_VERDICT");
+  const quick = await persona(REVIEWER.agreeable, "E2E_PASS_VERDICT");
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E worklist selection continuity",
+    draft: {
+      nodes: [
+        { id: NODE.session, kind: "session", position: { x: 0, y: 0 } },
+        { id: NODE.restating, kind: "persona", personaId: slow, position: { x: 220, y: 0 } },
+        { id: NODE.agreeable, kind: "persona", personaId: quick, position: { x: 220, y: 140 } },
+        { id: NODE.join, kind: "all_pass", position: { x: 440, y: 70 } },
+        { id: NODE.end, kind: "end", outcome: "Approved", position: { x: 660, y: 70 } },
+      ],
+      edges: [
+        ...[NODE.restating, NODE.agreeable].flatMap((node, index) => [
+          { id: `e-activate-${index}`, source: NODE.session, sourcePort: "submitted", target: node, targetPort: "activate" },
+          { id: `e-pass-${index}`, source: node, sourcePort: "pass", target: NODE.join, targetPort: "result" },
+          { id: `e-fail-${index}`, source: node, sourcePort: "fail", target: NODE.join, targetPort: "result" },
+        ]),
+        { id: "e-join-pass", source: NODE.join, sourcePort: "pass", target: NODE.end, targetPort: "terminal" },
+        { id: "e-join-fail", source: NODE.join, sourcePort: "fail", target: NODE.session, targetPort: "return_for_changes" },
+      ],
+    },
+  });
+  const published = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/publish`,
+    { expectedDraftRevision: 1 },
+  );
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: published.version.id,
+    sessionId,
+    deliveryMode: "preview",
+  });
+  const submitted = await api<{ run: { id: string } }>(
+    daemon,
+    `/api/workflow-bindings/${binding.id}/submit`,
+    { requestId: "e2e-worklist-continuity" },
+  );
+
+  // Straight to the run, while the deliberating reviewer is still holding its answer.
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${submitted.run.id}`);
+  const worklist = worklistOf(dashboard);
+  await expect(worklist).toBeVisible({ timeout: 40_000 });
+  const segments = worklist.getByRole("group", { name: "Worklist segment" });
+
+  // It reports nothing yet, so it sits in the Passed panel under its own label - not counted as
+  // a pass, because nothing has passed.
+  await segments.getByRole("button", { name: /^Passed/ }).click();
+  await expect(worklist).toContainText("No verdict in this round yet");
+  // Scoped to the reviewer this test is about: the approving one may or may not have reported
+  // yet when the page opens, and either way it is not the row being watched.
+  const pendingRow = worklist.locator("button.wf-run-worklist-row.is-attempt")
+    .filter({ hasText: "E2E deliberating reviewer" });
+  await expect(pendingRow).toHaveCount(1);
+  await pendingRow.click();
+  await expect(pendingRow).toHaveAttribute("aria-current", "true");
+
+  /*
+   * Now it objects. The row the reader clicked ceases to exist - it is not an item in any
+   * segment any more - and the change it raised stands in `Blocking`. The selection follows the
+   * reviewer there rather than falling back to the head of a list the reader never chose.
+   */
+  const followed = worklist.locator("button.wf-run-worklist-row.is-change[aria-current='true']");
+  await expect(followed).toContainText("E2E slow requested change", { timeout: 60_000 });
+  await expect(followed).toContainText("E2E deliberating reviewer");
+  await expect(segments.getByRole("button", { name: /^Blocking/ }))
+    .toHaveAttribute("aria-pressed", "true");
+  // And the detail pane is showing that reviewer's objection, not somebody else's.
+  await expect(worklist).toContainText("This reviewer is scripted to object after a delay");
+});

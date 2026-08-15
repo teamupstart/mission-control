@@ -86,9 +86,12 @@ const {
   scoutPromptFingerprint,
   scoutPromptTurns,
 } = await import("../src/server/scouts/prompt-context.ts");
-const { discardScoutPromptBoundary, freezeScoutPromptBoundary, journalScoutPrompt } = await import(
-  "../src/server/scouts/prompt-journal.ts"
-);
+const {
+  discardScoutPromptBoundary,
+  freezeScoutPromptBoundary,
+  journalScoutPrompt,
+  refreshScoutPromptTitle,
+} = await import("../src/server/scouts/prompt-journal.ts");
 const { forgetInjections, observeInjections, originOf, recordInjection } = await import(
   "../src/server/injections.ts"
 );
@@ -683,6 +686,47 @@ test("both task-delivery seams freeze a boundary, not just the dispatcher", () =
       `${path} discards the boundary before a thrown delivery propagates`,
     );
   }
+});
+
+test("no seam here can break the operation it rides on", () => {
+  // Each of these rides on something that matters more than it does: a rename that has
+  // already repainted the card and still owes its siblings a rename, a dispatch that has
+  // already started an agent, a delivery that already reached the runtime. A throw escaping
+  // any of them trades a whole operation for a row.
+  //
+  // Driven by making the store genuinely unavailable rather than by stubbing the seam,
+  // because the failure being guarded is a real write failing - a locked handle, a closed
+  // connection, a full disk - and a test that mocked the throw would not notice the guard
+  // moving to the wrong side of the call.
+  reset();
+  const session = mkSession({ id: "s1" });
+  const src = source({ session, task: SCOUT });
+  db.exec("ALTER TABLE scout_prompt_contexts RENAME TO scout_prompt_contexts_hidden");
+  try {
+    let frozen: unknown = "not run";
+    assert.doesNotThrow(() => {
+      frozen = freezeScoutPromptBoundary(src, SCOUT, "s1", "current");
+    }, "a dispatch must not fail because its archive boundary could not be written");
+    assert.equal(frozen, null, "and it reports the failure as no context rather than as one");
+
+    assert.doesNotThrow(
+      () => refreshScoutPromptTitle("s1", "Renamed"),
+      "a rename must still reach its sibling panes and its bound tasks",
+    );
+    assert.doesNotThrow(
+      () => journalScoutPrompt(src, "s1", "a follow-up", "human", "t1"),
+      "a delivery that already landed must not be undone by its bookkeeping",
+    );
+    assert.doesNotThrow(
+      () => discardScoutPromptBoundary({ taskId: SCOUT.id, episodeId: "episode-1" } as never),
+      "and neither must the undo",
+    );
+  } finally {
+    db.exec("ALTER TABLE scout_prompt_contexts_hidden RENAME TO scout_prompt_contexts");
+  }
+  // The store itself keeps reporting the truth - the swallowing belongs to the seam alone,
+  // or a test could not tell a refused write from a successful one.
+  assert.throws(() => db.exec("SELECT 1 FROM scout_prompt_contexts_hidden"));
 });
 
 test("no route journals a prompt, because route behavior is a later phase's", () => {

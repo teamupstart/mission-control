@@ -663,6 +663,12 @@ export class Dispatcher {
     // start: there is no session to measure a boundary against until the driver has one.
     // The anchor is `launch` for the same reason - turn one travelled with the process, so
     // every byte the transcript will ever hold belongs to this episode.
+    //
+    // Being last is what makes it safe to be unguarded here. The task is already `running`
+    // by this line, so a throw would reach `dispatch`'s catch, find a status that is no
+    // longer `dispatching`, and take the branch that assumes somebody else settled the task
+    // - returning with no log and no trace of what went wrong. It cannot throw: the seam
+    // logs and swallows, which turns exactly that invisible loss into a visible one.
     freezeScoutPromptBoundary(this.registry, task, session.id, "launch");
   }
 

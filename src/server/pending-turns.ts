@@ -850,11 +850,11 @@ export class PendingTurnManager {
    * was retried is one prompt rather than two. Non-scout sessions write nothing.
    */
   private journalDelivered(sessionId: string, turn: PendingTurn): void {
-    try {
-      journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, this.deps.now());
-    } catch {
-      /* the journal is archive context; it may never fail a delivery that already landed */
-    }
+    // No try/catch: `journalScoutPrompt` cannot throw, and the reason is stated once on
+    // `prompt-journal.ts` rather than re-argued at each of its callers. A local guard here
+    // would read as though this site were special, and the two sites that turned out to
+    // need one had not copied it.
+    journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, this.deps.now());
   }
 
   private armPickupTimeout(sessionId: string, turn: PendingTurn): void {

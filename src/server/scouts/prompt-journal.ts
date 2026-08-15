@@ -6,6 +6,7 @@ import {
   appendScoutPromptTurn,
   clearScoutPromptContext,
   openScoutPromptContext,
+  refreshScoutPromptContextName,
   scoutPromptTurnId,
   type ScoutPromptContext,
   type ScoutPromptOrigin,
@@ -21,7 +22,29 @@ import {
  * scout from a repository, a session name, a worktree path or a prompt's contents: those
  * are all things an operator can make look like anything, and a wrong yes here archives a
  * conversation that was never meant to be archived.
+ *
+ * **Nothing exported here throws.** Every one of these rides on an operation that matters
+ * more than it does - a rename that has already repainted the card and still owes its
+ * siblings a rename, a dispatch that has already started an agent, a delivery that already
+ * reached the runtime. Archive bookkeeping that could abort one of those would trade a
+ * whole operation for a row, so a failure is logged and swallowed and the caller carries
+ * on. The guarantee lives HERE rather than at each call site on purpose: it is one rule,
+ * five callers, and two of them had already forgotten it.
+ *
+ * The store underneath (`prompt-context.ts`) is the opposite and stays that way - it
+ * reports what happened, because a test that could not tell a refused write from a
+ * successful one would be worthless.
  */
+
+/** Log and swallow. See the module note: no seam here may break what it rides on. */
+function bestEffort<T>(what: string, fn: () => T): T | null {
+  try {
+    return fn();
+  } catch (err) {
+    console.error(`[scout] could not ${what}:`, err);
+    return null;
+  }
+}
 
 /**
  * The slice of Registry this needs, named structurally.
@@ -94,16 +117,32 @@ export function freezeScoutPromptBoundary(
   // measuring, which is the same "no anchor" and reads as it.
   const offset =
     anchor === "launch" ? 0 : located ? (located.read.size(located.path) ?? null) : null;
-  return openScoutPromptContext(
-    {
-      taskId: task.id,
-      episodeId: episode.episodeId,
-      sessionId: session.id,
-      sessionName: session.name,
-      transcriptPath: located?.path ?? null,
-      transcriptOffset: offset,
-    },
-    now,
+  return bestEffort(`freeze the prompt boundary for task ${task.id}`, () =>
+    openScoutPromptContext(
+      {
+        taskId: task.id,
+        episodeId: episode.episodeId,
+        sessionId: session.id,
+        sessionName: session.name,
+        transcriptPath: located?.path ?? null,
+        transcriptOffset: offset,
+      },
+      now,
+    ),
+  );
+}
+
+/**
+ * Re-freeze the stored title for every episode a session owns, best-effort.
+ *
+ * Registry's rename path reaches the store through here rather than directly, so the one
+ * rule that matters at that call site is stated where every other seam states it: a rename
+ * has already repainted the card and still owes its sibling panes a rename and its tasks a
+ * re-pointing, and none of that may be lost because an archive title could not be written.
+ */
+export function refreshScoutPromptTitle(sessionId: string, sessionName: string): void {
+  bestEffort(`refresh the frozen scout title for session ${sessionId}`, () =>
+    refreshScoutPromptContextName(sessionId, sessionName),
   );
 }
 
@@ -115,7 +154,10 @@ export function freezeScoutPromptBoundary(
  * into a conversation that never started.
  */
 export function discardScoutPromptBoundary(context: ScoutPromptContext | null): void {
-  if (context) clearScoutPromptContext(context.taskId, context.episodeId);
+  if (!context) return;
+  bestEffort(`discard the prompt boundary for task ${context.taskId}`, () =>
+    clearScoutPromptContext(context.taskId, context.episodeId),
+  );
 }
 
 /**
@@ -154,8 +196,7 @@ export function journalScoutPrompt(
   if (!task || !isScoutTask(task)) return null;
   const episode = source.workEpisodeForSession(sessionId);
   if (!episode) return null;
-  return appendScoutPromptTurn(
-    { id, taskId: task.id, episodeId: episode.episodeId, origin, text },
-    now,
+  return bestEffort(`journal a ${origin} prompt for task ${task.id}`, () =>
+    appendScoutPromptTurn({ id, taskId: task.id, episodeId: episode.episodeId, origin, text }, now),
   );
 }

@@ -174,6 +174,13 @@ reason: a re-dispatched task is new work and gets its own boundary.
   episode. Reaching any of them evicts the OLDEST row and sets `truncated` on the context.
   An automated turn is never refused for want of room - refusing one is how that turn starts
   reading as a human's.
+- **Nothing exported from `prompt-journal.ts` throws.** Every seam rides on an operation
+  worth more than a row - a rename that has already repainted the card and still owes its
+  siblings a rename, a dispatch that has already started an agent, a delivery that already
+  reached the runtime - so a failed write is logged and swallowed there, once, rather than
+  guarded at each of the five call sites. The store beneath it (`prompt-context.ts`) is the
+  opposite and stays that way: it reports what happened, or a test could not tell a refused
+  write from a successful one. Reach the store through the seam, not directly.
 - **Cleanup is explicit, never a timer.** The rows survive daemon restart and session
   eviction until a capture job has frozen the trail; "old" is what a scout waiting on a slow
   reviewer looks like.

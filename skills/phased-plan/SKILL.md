@@ -33,6 +33,40 @@ requirements against the repository before deciding the phase boundaries.
 Choose the fewest coherent phases that keep each pull request reviewable and leave the repository in
 a valid, testable state. A phase is an implementation and merge unit, not a chapter split.
 
+### Size the work before splitting it
+
+Estimate the total implementation effort before drawing phase boundaries. Use gross lines of
+production code expected to be added or materially changed, excluding tests. Record the estimate as
+a range with its assumptions in `phased-plan.md`; it is a planning signal, not a promise of exact
+diff size.
+
+Judge the phase count with this rubric:
+
+- **Total effort:** estimated non-test implementation lines across the whole feature, including work
+  in shared contracts, migrations, server code, workers, and browser code. Count all layers together
+  rather than treating each layer as a separate unit.
+- **Complexity:** expected edge cases, compatibility and migration risks, state transitions,
+  concurrency concerns, uncertainty in existing contracts, and the breadth and setup cost of the
+  required tests.
+- **Execution fit and order:** the smallest coherent sequence that a mid-tier model can implement,
+  verify, and explain reliably. Prefer a vertical slice that produces working behavior over
+  horizontal layer-by-layer handoffs.
+
+Apply these rules:
+
+- When the estimate is **200 or fewer non-test implementation lines**, create exactly one phase and
+  schedule exactly one one-shot implementation task. Multiple application layers, files, test cases,
+  or review specialties do not override this threshold.
+- Above 200 lines, still default to one phase. Add a phase only when the combined task would be too
+  large or complex for a mid-tier model, or when an independently testable merge boundary materially
+  reduces implementation risk.
+- An application-layer boundary is not by itself a phase boundary. Keep schemas, persistence, routes,
+  browser state, and UI together when they form one coherent feature slice.
+- Do not create small preparation, test-only, documentation-only, or cleanup phases to make the graph
+  look balanced. Keep that work with the behavior it supports.
+- For every additional phase, state why combining it with an adjacent phase would make the work less
+  achievable, less reviewable, or less safe. If that case is weak, combine the phases.
+
 - Put shared schemas, durable storage, migrations, and foundational interfaces before consumers.
 - Keep a vertical slice together when splitting it would create a dead surface or a temporary second
   source of truth.
@@ -75,8 +109,9 @@ Two consequences for the plan you are writing:
 Create these files in the source plan's directory:
 
 - `phased-plan.md`: the implementation index, including the source plan, incorporated human
-  decisions, investigated findings, phase table, dependency graph, concurrency groups, merge order,
-  cross-phase contracts, and final verification strategy.
+  decisions, investigated findings, sizing estimate and phase-count rationale, phase table,
+  dependency graph, concurrency groups, merge order, cross-phase contracts, and final verification
+  strategy.
 - `phase-<n>-<slug>.md`: one detailed implementation plan per phase.
 
 Each phase file must contain:
@@ -137,6 +172,10 @@ not resolve carries no instructions at all.
 Then use the Mission Control MCP tool `create_task` once per phase, in the same topological order as
 the index. The tool deliberately creates a ship task in the backlog with the default agent and no
 model or effort override.
+
+For a one-shot plan, create exactly one task for Phase 1. Keep the normal index, phase file, task
+pointers, publication gate, and verification contract; one-shot changes the execution count, not the
+durability of its instructions.
 
 ### Keep the task text at goal altitude
 

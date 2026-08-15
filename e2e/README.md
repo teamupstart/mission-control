@@ -40,6 +40,25 @@ Video is off. Recording it cost 16s of every CI shard whether or not anything fa
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
 
+### Scout prompt context reader
+
+`e2e/.artifacts/scout-prompt-context/` holds the five frames from the finished-scout flow:
+the live card title, then the archived reader at desktop and 420px under dark and light OS
+preferences. Mission Control is intentionally dark-only, so the light-preference frames prove
+the existing tokenized surface remains stable. The reader frames show the same concise title,
+the prompt search result, the ordered Original request and Follow-up ledger, and the report
+remaining usable beside that metadata.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/scout-archive.spec.ts \
+  -g 'ordered human prompt context' \
+  --workers=1 --reporter=list
+```
+
 ### Full workflow graph canvas
 
 `e2e/.artifacts/workflow-graph/workflow-graph-full-canvas.png` is captured

@@ -7,6 +7,12 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
+import { writeScoutBundle } from "../../test/helpers/archive-fixture.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
+
+// This file seeds one older portable bundle after its isolated daemon has started. Keep the
+// real reconciler quick enough for that compatibility proof instead of reaching into its DB.
+test.use({ daemonEnv: { MISSION_SCOUT_RECONCILE_MS: "200" } });
 
 /**
  * A scout's answer, from the prompt that demands it to the archive that outlives it.
@@ -28,7 +34,18 @@ const SCOUT_TASK = "find out why a resumed agent lost repository permissions";
 const LONG_SCOUT_TASK =
   `${SCOUT_TASK}; inspect terminal and SDK recovery, compare Pi launch-time ` +
   "delivery, and preserve the deliberately long task wording that must never replace the short card title";
-const EVIDENCE = artifactsDir("scout-archive-title");
+const CONTEXT_SCOUT_TASK =
+  `${LONG_SCOUT_TASK}; wait for follow-up context before submitting the report`;
+const HUMAN_FOLLOW_UP =
+  "Also verify the human-only correlation marker at " +
+  "/permissions/reconnect/sessions/this-is-one-deliberately-unbroken-token-that-must-wrap-without-widening-the-page.";
+const AUTOMATED_INSTRUCTION =
+  "Workflow automation says to inspect its private retry ledger before publishing.";
+const SUBMIT_STAGED_REPORT = "E2E_SCOUT_SUBMIT_STAGED_REPORT";
+const OLDER_TITLE = "Older reconnect archive";
+const OLDER_QUESTION = "Why did the older reconnect path lose its grant?";
+const OLDER_REPORT = "The older archive report remains readable without prompt metadata.";
+const EVIDENCE = artifactsDir("scout-prompt-context");
 /** Visible text that exists ONLY inside the report the fake writes. */
 const FINDING = "the resume path never replayed the repository grant";
 /** Turns the fake into a scout that writes its page and deliberately never submits it. */
@@ -45,6 +62,14 @@ interface ArchiveRow {
   artifactCount: number;
   hasPrimaryReport: boolean;
   missingCount: number;
+}
+
+interface FleetSession {
+  id: string;
+  agentSessionId: string | null;
+  name: string;
+  runtime: string;
+  transcriptPath: string | null;
 }
 
 /** One bounded page of the library, straight off the daemon's own API. */
@@ -85,6 +110,77 @@ async function dispatchScout(page: Page, daemon: DaemonHandle, task: string): Pr
   await expect(go).toBeEnabled();
   await go.click();
   await expect(dialog).toBeHidden();
+}
+
+/** The one embedded session after its fake agent has bound a conversation. */
+async function sdkSession(daemon: DaemonHandle): Promise<FleetSession> {
+  let found: FleetSession | null = null;
+  await expect
+    .poll(async () => {
+      const res = await fetch(`${daemon.baseURL}/api/sessions`);
+      const rows = (await res.json()) as FleetSession[];
+      found = rows.find((row) => row.runtime === "sdk" && row.agentSessionId !== null) ?? null;
+      return found !== null;
+    }, { message: "the scout should bind its fake SDK conversation", timeout: 30_000 })
+    .toBe(true);
+  return found!;
+}
+
+/** Deliver through the route Foreman and Workflow use, carrying durable non-human authorship. */
+async function deliverAttributed(
+  daemon: DaemonHandle,
+  target: FleetSession,
+  text: string,
+): Promise<void> {
+  const res = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(target.id)}/inject`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text, origin: "workflow", buffer: false }),
+  });
+  expect(res.ok, `POST /inject answered ${res.status}: ${await res.text()}`).toBe(true);
+}
+
+/**
+ * Install the earlier launch-boundary prerequisite after the fake SDK session has bound.
+ *
+ * The reader phase deliberately does not change Phase 1's embedded-dispatch timing: a fresh
+ * SDK card can be registered before its detached bound event creates a work episode, so the
+ * launch-time freezer has no key at that instant. This Phase 3 case starts from the boundary
+ * contract promised by the merged phases, then keeps every behavior under test real: composer
+ * delivery and authorship journaling, transcript filtering, capture, portable manifest, indexing,
+ * API projection, search, and the React reader.
+ */
+async function establishLaunchPromptContext(
+  daemon: DaemonHandle,
+  session: FleetSession,
+  sessionName: string,
+): Promise<void> {
+  const scoutId = await taskId(daemon);
+  withDaemonDb(daemon, (db) => {
+    const binding = db
+      .prepare(
+        `SELECT episode_id
+           FROM task_work_episode_bindings
+          WHERE task_id = ? AND session_id = ?`,
+      )
+      .get(scoutId, session.id) as { episode_id?: string } | undefined;
+    if (!binding?.episode_id) throw new Error("the bound scout has no work episode");
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO scout_prompt_contexts
+         (task_id, episode_id, session_id, session_name, transcript_path, transcript_offset,
+          truncated, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)`,
+    ).run(
+      scoutId,
+      binding.episode_id,
+      session.id,
+      sessionName,
+      session.transcriptPath,
+      now,
+      now,
+    );
+  });
 }
 
 /**
@@ -286,7 +382,7 @@ function rail(page: Page) {
   return page.getByRole("complementary", { name: "Scout archives" });
 }
 
-async function captureTitleEvidence(page: Page, name: string): Promise<void> {
+async function capturePromptEvidence(page: Page, name: string): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
@@ -295,7 +391,7 @@ async function captureTitleEvidence(page: Page, name: string): Promise<void> {
     animations: "disabled",
   });
   // eslint-disable-next-line no-console
-  console.log(`CAPTURED e2e/.artifacts/scout-archive-title/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/scout-prompt-context/${name}.png`);
 }
 
 test("Scouts is reachable from the topbar, its shortcut, and the command palette", async ({
@@ -334,27 +430,85 @@ test("Scouts is reachable from the topbar, its shortcut, and the command palette
   await expect(scoutsRail).toBeVisible();
 });
 
-test("a finished scout is found by its own words and reads in the sandbox", async ({
+test("a finished scout keeps its concise title and ordered human prompt context", async ({
   dashboard,
   daemon,
 }) => {
   await disableSkills(daemon);
-  await dispatchScout(dashboard, daemon, LONG_SCOUT_TASK);
+
+  // One bundle exactly as an older build wrote it: no kind field and no prompt trail. The
+  // daemon's recurring filesystem reconciliation is intentionally slow in production, so
+  // seed before the live flow and wait for the real catalog to discover it.
+  const older = writeScoutBundle(join(daemon.home, "scouts"), {
+    legacyFormat: true,
+    title: OLDER_TITLE,
+    question: OLDER_QUESTION,
+    reportHtml: `<!doctype html><html><body><p>${OLDER_REPORT}</p></body></html>`,
+  });
+  await expect
+    .poll(() => archives(daemon).then((rows) => rows.some((row) => row.key === older.key)), {
+      timeout: 20_000,
+      message: "the daemon should discover the seeded older bundle",
+    })
+    .toBe(true);
+
+  await dispatchScout(dashboard, daemon, CONTEXT_SCOUT_TASK);
   const card = await scoutCard(dashboard);
-  await expect(card).toContainText("Submitted the scout report", {
+  await expect(card).toContainText("waiting for follow-up context before submission", {
     timeout: 30_000,
   });
   const liveTitle = card.getByRole("heading", { level: 2 }).first();
   await expect(liveTitle, "the live session card has a visible title").toBeVisible();
-  await expect.poll(() => archives(daemon).then((r) => r.length), { timeout: 20_000 }).toBe(1);
-  const [archived] = await archives(daemon);
+  const liveTitleText = (await liveTitle.locator(".card-title-name").innerText()).trim();
+  const target = await sdkSession(daemon);
+  await establishLaunchPromptContext(daemon, target, liveTitleText);
+
+  // The human path is the real composer and pending-turn delivery seam. Wait for the fake's
+  // echo, not merely for the text to appear as a queued row, so the accepted turn is durable
+  // before the automated instruction follows it.
+  const reply = card.getByPlaceholder(/Reply to this session/);
+  await reply.fill(HUMAN_FOLLOW_UP);
+  await reply.press("Enter");
+  await expect(card).toContainText(`Mock reply to: ${HUMAN_FOLLOW_UP}`, { timeout: 30_000 });
+
+  await deliverAttributed(daemon, target, AUTOMATED_INSTRUCTION);
+  await expect(card).toContainText(`Mock reply to: ${AUTOMATED_INSTRUCTION}`, { timeout: 30_000 });
+
+  // A second attributed fixture turn makes the fake submit its already-staged report through
+  // the real agent-facing route. Both automated turns must be absent from prompt context.
+  await deliverAttributed(daemon, target, SUBMIT_STAGED_REPORT);
+  await expect(card).toContainText("Submitted the scout report", { timeout: 30_000 });
+  await expect
+    .poll(() => archives(daemon).then((rows) => rows.find((row) => row.title === liveTitleText) ?? null), {
+      timeout: 20_000,
+    })
+    .not.toBeNull();
+  const archived = (await archives(daemon)).find((row) => row.title === liveTitleText);
   expect(archived?.title, "the archive API carries a title").toBeTruthy();
-  expect(archived!.title, "the card title stays shorter than the full human prompt").not.toBe(LONG_SCOUT_TASK);
-  expect(archived!.title.length).toBeLessThan(LONG_SCOUT_TASK.length);
+  expect(archived!.title, "the card title stays shorter than the full human prompt").not.toBe(CONTEXT_SCOUT_TASK);
+  expect(archived!.title.length).toBeLessThan(CONTEXT_SCOUT_TASK.length);
   await expect(liveTitle, "the archive API keeps the live card title exactly").toHaveAccessibleName(
     archived!.title,
   );
-  await captureTitleEvidence(dashboard, "01-live-session-card-title");
+  await capturePromptEvidence(dashboard, "01-live-session-card-title");
+
+  // Complete and remove the live work before reading the archive. The reader must stand on
+  // the portable bundle, not on a session, task, worktree, or source transcript that remains.
+  const complete = card.getByRole("button", { name: "Complete" });
+  await expect(complete).toBeVisible();
+  await settled(complete);
+  await complete.click();
+  const completeDialog = dashboard.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(completeDialog).toBeVisible();
+  await completeDialog.getByRole("button", { name: "Complete & close" }).click();
+  await expect(completeDialog).toBeHidden({ timeout: 10_000 });
+  const removed = await fetch(`${daemon.baseURL}/api/tasks/${await taskId(daemon)}`, {
+    method: "DELETE",
+  });
+  expect(removed.ok, await removed.text()).toBeTruthy();
+  await expect(card, "the live scout is gone before its archive is read").toBeHidden({
+    timeout: 15_000,
+  });
 
   await dashboard.getByRole("button", { name: /^Scouts/ }).click();
   const scoutsRail = rail(dashboard);
@@ -362,13 +516,26 @@ test("a finished scout is found by its own words and reads in the sandbox", asyn
   const archiveRow = scoutsRail.getByRole("button", { name: archived!.title }).first();
   await expect(archiveRow, "the archive rail keeps the exact title the live card showed").toBeVisible();
   await expect(archiveRow).toContainText(archived!.title);
-  await expect(archiveRow).not.toContainText(LONG_SCOUT_TASK);
-  await captureTitleEvidence(dashboard, "02-archive-rail-title");
+  await expect(archiveRow).not.toContainText(CONTEXT_SCOUT_TASK);
 
   // The newest archive opens by itself, and the address bar names it - so the thing on
   // screen is always a link someone else can be sent.
   await expect(dashboard).toHaveURL(/#\/scouts\/[0-9a-f-]+~[0-9a-f-]+/);
   const deepLink = dashboard.url();
+
+  const reader = dashboard.getByRole("region", { name: "Scout report" });
+  await expect(reader.getByRole("heading", { level: 1, name: archived!.title })).toBeVisible();
+  const promptContext = reader.getByRole("region", { name: "Prompt context" });
+  await expect(promptContext).toBeVisible();
+  const promptEntries = promptContext.getByRole("listitem");
+  await expect(promptEntries).toHaveCount(2);
+  await expect(promptEntries.nth(0)).toContainText("Original request");
+  await expect(promptEntries.nth(0)).toContainText(CONTEXT_SCOUT_TASK);
+  await expect(promptEntries.nth(1)).toContainText("Follow-up");
+  await expect(promptEntries.nth(1)).toContainText(HUMAN_FOLLOW_UP);
+  await expect(promptEntries.nth(1).locator("time")).toHaveAttribute("datetime");
+  await expect(promptContext).not.toContainText(AUTOMATED_INSTRUCTION);
+  await expect(promptContext).not.toContainText(SUBMIT_STAGED_REPORT);
 
   // The report renders INSIDE the sandbox, not as its own source. `FINDING` exists only in
   // report.html, so reading it here proves the bytes came out of the archive and through the
@@ -382,12 +549,34 @@ test("a finished scout is found by its own words and reads in the sandbox", asyn
   await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
   await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
 
-  // Search over text that lives only in the report body.
-  const search = scoutsRail.getByPlaceholder("Search questions, findings, reports, files...");
-  await search.fill("resume");
-  await expect(scoutsRail.getByRole("button", { name: /Resume|resume/ }).first()).toBeVisible({
+  // Search over a phrase that exists only in the human follow-up. The result explains that
+  // it matched a prompt while preserving the concise title as the row and reader identity.
+  const search = scoutsRail.getByPlaceholder("Search titles, prompts, findings, reports, files...");
+  await search.fill("human-only correlation marker");
+  const promptResult = scoutsRail.getByRole("button").filter({ hasText: liveTitleText }).first();
+  await expect(promptResult).toBeVisible({
     timeout: 10_000,
   });
+  await expect(promptResult.getByText("prompt", { exact: true })).toBeVisible();
+  await expect(promptResult).toContainText("human-only correlation marker");
+  await expect(reader.getByRole("heading", { level: 1, name: archived!.title })).toBeVisible();
+
+  // Desktop and narrow visual states under both OS color preferences. Mission Control is
+  // intentionally dark-only, so light preference must leave its tokenized dark surface
+  // stable rather than introducing an unowned light override.
+  await dashboard.setViewportSize({ width: 1440, height: 980 });
+  await dashboard.emulateMedia({ colorScheme: "dark" });
+  await capturePromptEvidence(dashboard, "02-reader-desktop-dark");
+  await dashboard.emulateMedia({ colorScheme: "light" });
+  await capturePromptEvidence(dashboard, "03-reader-desktop-light-os");
+  await dashboard.setViewportSize({ width: 420, height: 900 });
+  await reader.scrollIntoViewIfNeeded();
+  await expect
+    .poll(() => dashboard.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth))
+    .toBe(true);
+  await capturePromptEvidence(dashboard, "04-reader-narrow-light-os");
+  await dashboard.emulateMedia({ colorScheme: "dark" });
+  await capturePromptEvidence(dashboard, "05-reader-narrow-dark");
 
   // A word in no archive empties the list HONESTLY - "no match", never "no scouts yet".
   await search.fill("zzz-not-in-any-archive");
@@ -403,6 +592,19 @@ test("a finished scout is found by its own words and reads in the sandbox", asyn
 
   // The bundle directory is on screen and copyable, so the files are reachable without the app.
   await expect(dashboard.getByRole("button", { name: "Copy path" })).toBeVisible();
+
+  // The old bundle has no prompt trail. It keeps its question visible below its concise
+  // title, exposes no empty Prompt context section, and still opens its authored report.
+  await search.fill("");
+  const olderRow = scoutsRail.getByRole("button", { name: new RegExp(OLDER_TITLE) }).first();
+  await expect(olderRow).toBeVisible({ timeout: 10_000 });
+  await olderRow.click();
+  await expect(reader.getByRole("heading", { level: 1, name: OLDER_TITLE })).toBeVisible();
+  await expect(reader.getByText(OLDER_QUESTION, { exact: true })).toBeVisible();
+  await expect(reader.getByRole("region", { name: "Prompt context" })).toHaveCount(0);
+  await expect(
+    dashboard.frameLocator('iframe[title^="Report"]').getByText(OLDER_REPORT, { exact: false }),
+  ).toBeVisible({ timeout: 15_000 });
 });
 
 test("deleting a scout needs the word typed, and takes only that archive", async ({

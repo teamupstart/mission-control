@@ -476,6 +476,24 @@ type WorklistItem =
 
 type WorklistSegment = "blocking" | "passed" | "archive";
 
+/*
+ * A row's identity is its ID SPACE, never its kind.
+ *
+ * Two spaces reach this rail and nothing stops them colliding as raw strings, so each is
+ * prefixed: `ChangeWorklistRow.key` is `nodeId + path + title`, and everything else is an
+ * attempt row. That is the whole reason the prefixes exist.
+ *
+ * It has to be the SPACE and not the KIND, because a row changes kind under a reader without
+ * changing identity. An attempt keeps its id for its whole lifecycle - `store.ts` writes the
+ * verdict with `UPDATE workflow_node_attempts ... WHERE id = ?`, and only a retry ever inserts
+ * a new row - so a reviewer selected while it is still reporting nothing is `attempt` one
+ * moment and `verdict` the next, and a Command is `attempt` until its outcome lands and `check`
+ * after. Keyed by kind, the selection stopped resolving at exactly that moment and snapped to
+ * the head of the list: the reader watching a reviewer resolve lost it the instant it did.
+ */
+const attemptKey = (attempt: WorkflowNodeAttempt): string => `attempt:${attempt.id}`;
+const changeKey = (row: ChangeWorklistRow): string => `change:${row.key}`;
+
 /**
  * What each state of a requested change CLAIMS, in a chip and a colour.
  *
@@ -779,7 +797,7 @@ function RunWorklist({
       .filter(({ outcome }) => outcome.status === "failed")
       .map(({ attempt, outcome }): WorklistItem => ({
         kind: "check",
-        key: `check:${attempt.id}`,
+        key: attemptKey(attempt),
         attempt,
         outcome,
       })),
@@ -794,14 +812,14 @@ function RunWorklist({
       .filter(stalledReviewer)
       .map((attempt): WorklistItem => ({
         kind: "attempt",
-        key: `attempt:${attempt.id}`,
+        key: attemptKey(attempt),
         attempt,
         name: attempt.persona?.name ?? nameOfNode(attempt.nodeId) ?? "Reviewer",
       })),
-    ...open.map((row): WorklistItem => ({ kind: "change", key: `change:${row.key}`, row })),
+    ...open.map((row): WorklistItem => ({ kind: "change", key: changeKey(row), row })),
     ...unmodelledFailures.map(({ attempt, verdict }): WorklistItem => ({
       kind: "verdict",
-      key: `verdict:${attempt.id}`,
+      key: attemptKey(attempt),
       attempt,
       verdict,
     })),
@@ -811,7 +829,7 @@ function RunWorklist({
       .filter(({ verdict }) => verdict.verdict === "pass")
       .map(({ attempt, verdict }): WorklistItem => ({
         kind: "verdict",
-        key: `verdict:${attempt.id}`,
+        key: attemptKey(attempt),
         attempt,
         verdict,
       })),
@@ -819,7 +837,7 @@ function RunWorklist({
       .filter(({ outcome }) => outcome.status !== "failed")
       .map(({ attempt, outcome }): WorklistItem => ({
         kind: "check",
-        key: `check:${attempt.id}`,
+        key: attemptKey(attempt),
         attempt,
         outcome,
       })),
@@ -837,12 +855,12 @@ function RunWorklist({
     .filter((attempt) => !stalledReviewer(attempt))
     .map((attempt): WorklistItem => ({
       kind: "attempt",
-      key: `attempt:${attempt.id}`,
+      key: attemptKey(attempt),
       attempt,
       name: attempt.persona?.name ?? nameOfNode(attempt.nodeId) ?? "Reviewer",
     }));
   const archive: WorklistItem[] = archived
-    .map((row): WorklistItem => ({ kind: "change", key: `change:${row.key}`, row }));
+    .map((row): WorklistItem => ({ kind: "change", key: changeKey(row), row }));
 
   /** The reader's own pick, and the round they made it in. Both, for the scrub rule below. */
   const [chosenSegment, setChosenSegment] = useState<

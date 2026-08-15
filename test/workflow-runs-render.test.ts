@@ -2215,6 +2215,38 @@ test("a reviewer whose retries are exhausted is still a blocker", () => {
   assert.match(html, /provider_timeout/);
 });
 
+/**
+ * A worklist row's key is its ID SPACE, never its kind.
+ *
+ * Asserted on the SOURCE rather than the markup because a React key never reaches the DOM, and
+ * the failure it guards is a live-state one no single render can show: an attempt keeps its id
+ * for its whole lifecycle - `store.ts` writes the verdict with `UPDATE workflow_node_attempts
+ * ... WHERE id = ?`, and only a retry inserts a new row - so a reviewer is kind `attempt` while
+ * it reports nothing and kind `verdict` the moment it does, and a Command is `attempt` until its
+ * outcome lands and `check` after. Keyed by kind, `selectedKey` stopped resolving at exactly
+ * that moment and selection snapped to the head of the list, losing the row a reader was
+ * watching resolve.
+ *
+ * What this pins is the thing a render test cannot: that both keys come from one builder each,
+ * so a future kind cannot quietly reintroduce a per-kind prefix.
+ */
+test("worklist keys are built from the id space, never from the row's kind", () => {
+  const source = readFileSync(
+    new URL("../src/web/workflows/WorkflowRuns.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /const attemptKey = \(attempt: WorkflowNodeAttempt\): string =>/);
+  assert.match(source, /const changeKey = \(row: ChangeWorklistRow\): string =>/);
+  // Every item is keyed through one of the two, and nothing builds a key inline.
+  const built = source.match(/key: (attemptKey\(attempt\)|changeKey\(row\))/g) ?? [];
+  assert.equal(built.length, 8, "every worklist item is keyed through a shared builder");
+  assert.doesNotMatch(
+    source,
+    /key: `(verdict|check|attempt|change):\$\{/,
+    "a key that encodes the kind loses the selection when a row changes kind under the reader",
+  );
+});
+
 test("a change citing no file says so rather than drawing an empty slot", () => {
   const base = runningDetail();
   const pathless = {

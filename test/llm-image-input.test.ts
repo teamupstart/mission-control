@@ -64,14 +64,14 @@ test("runner image limits record raw and base64 ceilings for the next phase", ()
   assert.equal(LLM_IMAGE_LIMITS.allowAnimatedGif, false);
 });
 
-test("validation preserves order and verifies MIME, size, digest, and base64", () => {
+test("validation preserves order and the exact MIME, size, digest-checked bytes", () => {
   const dir = fixtureDir("valid");
   const png = writeImageDescriptor(dir, "one.png", PNG_IMAGE, "image/png", "one");
   const gif = writeImageDescriptor(dir, "two.gif", STATIC_GIF_IMAGE, "image/gif", "two");
   const images = validateLlmImages([png, gif]);
   assert.deepEqual(images.map((image) => image.id), ["one", "two"]);
-  assert.equal(images[0]?.base64, PNG_IMAGE.toString("base64"));
-  assert.equal(images[1]?.base64, STATIC_GIF_IMAGE.toString("base64"));
+  assert.deepEqual(images[0]?.data, PNG_IMAGE);
+  assert.deepEqual(images[1]?.data, STATIC_GIF_IMAGE);
   assert.ok(Object.isFrozen(images));
   assert.ok(images.every(Object.isFrozen));
 });

@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import {
-  base64EncodedBytes,
   LLM_IMAGE_LIMITS,
   type LlmImageInput,
 } from "@shared/llm.ts";
@@ -20,8 +19,8 @@ import {
 
 /** A descriptor whose exact file bytes were opened and verified by the runner boundary. */
 export interface ValidatedLlmImage extends LlmImageInput {
-  /** Immutable provider payload derived from the bytes used for MIME and digest checks. */
-  readonly base64: string;
+  /** Exact bytes used for MIME and digest checks; provider adapters own their encoding. */
+  readonly data: Buffer;
 }
 
 export class LlmImageValidationError extends Error {
@@ -210,11 +209,7 @@ export function validateLlmImages(
 
       const digest = createHash("sha256").update(data).digest("hex");
       if (digest !== image.sha256) refuse(`${label} SHA-256 does not match its bytes`);
-      const base64 = data.toString("base64");
-      if (base64.length !== base64EncodedBytes(data.byteLength)) {
-        refuse(`${label} could not be encoded safely`);
-      }
-      validated.push(Object.freeze({ ...image, base64 }));
+      validated.push(Object.freeze({ ...image, data }));
     } catch (error) {
       if (error instanceof LlmImageValidationError) throw error;
       refuse(`${label} could not be opened or read`);

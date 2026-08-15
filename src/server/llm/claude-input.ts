@@ -16,7 +16,7 @@ export function claudeImageUserMessage(
           source: {
             type: "base64",
             media_type: image.mimeType,
-            data: image.base64,
+            data: image.data.toString("base64"),
           },
         })),
         { type: "text", text: prompt },

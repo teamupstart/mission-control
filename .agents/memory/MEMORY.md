@@ -12,3 +12,6 @@
 - [merge-watcher-reads-the-session-branch](merge-watcher-reads-the-session-branch.md) - a
   recovery session on a differently-named branch is invisible to the merge watcher, so its
   dependents stay blocked; repair with the complete route and `satisfyDependents`.
+- [private-pr-images-need-attachments](private-pr-images-need-attachments.md) - a SHA-pinned
+  `raw.githubusercontent.com` image can still 404 in a private PR comment; attach it through
+  GitHub's signed-in comment UI and verify it in an authorized context.

@@ -738,6 +738,11 @@ different reviewers, and the selected one in full - its reviewer, confidence, ru
 the file it cites, the round it was raised in, its rationale and evidence, and the four things a
 person can do about it](images/workflow-run-worklist.png)
 
+All three segments as a browser drew them, on a real run, are in
+[the worklist's visual record](reports/workflow-runs-blocker-worklist/worklist-views.html) -
+rebuilt with `scripts/workflow-worklist-evidence.mjs` from the captures
+`e2e/specs/workflow-run-blocker-worklist.spec.ts` takes under `MC_E2E_EVIDENCE`.
+
 | Segment | What is in it |
 |---|---|
 | **Blocking** | Failed Commands first, then reviewers that could not report, then every requested change still outstanding. This is the agenda. |

@@ -140,6 +140,7 @@ export const claudeRunner: LlmRunner = {
       model: opts.model,
       timeoutMs: opts.timeoutMs,
       schema: opts.schema ? JSON.stringify(opts.schema) : undefined,
+      images: opts.images,
       ...(grant
         ? { tools: grant.tools.join(","), cwd: grant.cwd, settings: claudeGrantSettings(grant) }
         : {}),

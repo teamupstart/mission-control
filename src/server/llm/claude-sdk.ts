@@ -4,9 +4,12 @@ import { defaultClaudeSdkOneShotDeps } from "../harness/claude/sdk-deps.ts";
 import type {
   ClaudeSdkMessage,
   ClaudeSdkOneShotDeps,
+  ClaudeSdkUserMessage,
 } from "../harness/claude/sdk-types.ts";
 import { CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
 import { CLAUDE_SANDBOX, claudeGrantSettings } from "./claude-grant.ts";
+import { claudeImageUserMessage } from "./claude-input.ts";
+import { validateLlmImages } from "./images.ts";
 
 // One fresh SDK query for one app-owned model call. This is deliberately separate from
 // `harness/claude/sdk.ts`: that adapter owns a long-lived, human-reachable conversation,
@@ -88,6 +91,12 @@ function resultText(frame: ClaudeSdkMessage, structured: boolean): string {
   return frame.result;
 }
 
+async function* oneUserMessage(
+  message: ClaudeSdkUserMessage,
+): AsyncGenerator<ClaudeSdkUserMessage> {
+  yield message;
+}
+
 /**
  * Run one fresh Claude call through one Agent SDK `query()`.
  *
@@ -113,6 +122,10 @@ export async function runClaudeSdkOneShot(
   ) {
     throw new Error("Claude Agent SDK maxBudgetUsd must be a positive finite number");
   }
+  // Validation opens and hashes every descriptor before the binary is resolved or a
+  // provider query is constructed. Empty and omitted lists both leave the old string
+  // prompt untouched.
+  const images = validateLlmImages(opts.images);
 
   const controller = new AbortController();
   let cancelError: Error | null = null;
@@ -189,7 +202,9 @@ export async function runClaudeSdkOneShot(
     // resolves the same value before sweeping. Passing the unresolved spelling would make
     // the test seam and the pruner disagree about where this run belongs.
     const query = await deps.query({
-      prompt,
+      prompt: images.length === 0
+        ? prompt
+        : oneUserMessage(claudeImageUserMessage(prompt, images)),
       options: {
         tools: grant ? [...grant.tools] : [],
         ...(grant ? { settings: claudeGrantSettings(grant) } : {}),

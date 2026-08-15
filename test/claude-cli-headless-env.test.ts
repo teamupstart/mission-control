@@ -1,9 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { overlayKeyFromEnv } from "../src/server/registry.ts";
+import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
 
 // A headless `claude -p` runs Claude Code for real, so it fires the SAME hooks a human's
 // session does. `hooks/harness-hook.mjs` binds an event to a card with `captureTerminalEnv()`,
@@ -20,10 +28,16 @@ import { overlayKeyFromEnv } from "../src/server/registry.ts";
 // The fake bin reports the env it was handed, which is exactly what the hook would capture.
 const dir = mkdtempSync(join(tmpdir(), "headless-env-"));
 const fakeBin = join(dir, "fake-claude.sh");
+const runArgs = join(dir, "args");
+const runStdin = join(dir, "stdin");
+process.env.RUN_ARGS = runArgs;
+process.env.RUN_STDIN = runStdin;
 writeFileSync(
   fakeBin,
   `#!/bin/sh
-cat > /dev/null
+cat > "$RUN_STDIN"
+: > "$RUN_ARGS"
+for a in "$@"; do printf '%s\\n' "$a" >> "$RUN_ARGS"; done
 printf '{"tmuxPane":"%s","weztermPane":"%s","marker":"%s"}' \\
   "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS"
 `,
@@ -32,6 +46,10 @@ chmodSync(fakeBin, 0o755);
 process.env.MISSION_CLAUDE_BIN = fakeBin;
 
 const { runClaudeText } = await import("../src/server/claude-cli.ts");
+
+function argv(): string[] {
+  return readFileSync(runArgs, "utf8").split("\n").slice(0, -1);
+}
 
 /** Run the fake bin with a spawner env standing in for a pane-attached daemon/worker. */
 async function envSeenByHook(): Promise<Record<string, string>> {
@@ -67,4 +85,75 @@ test("a headless run is marked so the hook can decline to report it", async () =
   // from a checkout that may lag this code, so neither can be assumed present.
   const seen = await envSeenByHook();
   assert.equal(seen.marker, "1", "headless run carries no MISSION_HEADLESS marker for the hook to see");
+});
+
+test("text-only and empty-image print calls retain exact argv and raw stdin", async () => {
+  for (const images of [undefined, []] as const) {
+    await runClaudeText("text-only prompt", { timeoutMs: 5_000, images });
+    assert.deepEqual(argv(), ["-p", "--output-format", "json", "--tools", ""]);
+    assert.equal(readFileSync(runStdin, "utf8"), "text-only prompt");
+  }
+});
+
+test("image-bearing print calls use one fresh stream-json user message", async () => {
+  const first = writeImageDescriptor(dir, "first.png", PNG_IMAGE, "image/png", "first");
+  const second = writeImageDescriptor(dir, "second.png", PNG_IMAGE, "image/png", "second");
+  await runClaudeText("compare the screenshots", {
+    timeoutMs: 5_000,
+    images: [first, second],
+  });
+
+  const args = argv();
+  assert.deepEqual(args, [
+    "-p",
+    "--output-format",
+    "json",
+    "--input-format",
+    "stream-json",
+    "--tools",
+    "",
+  ]);
+  for (const forbidden of ["--resume", "--continue", "--session-id"]) {
+    assert.equal(args.includes(forbidden), false);
+  }
+  const lines = readFileSync(runStdin, "utf8").split("\n");
+  assert.equal(lines.at(-1), "", "the stream-json message must end at a frame boundary");
+  assert.equal(lines.length, 2, "the call sent more than one user message");
+  assert.deepEqual(JSON.parse(lines[0]!), {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/png",
+            data: PNG_IMAGE.toString("base64"),
+          },
+        },
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/png",
+            data: PNG_IMAGE.toString("base64"),
+          },
+        },
+        { type: "text", text: "compare the screenshots" },
+      ],
+    },
+    parent_tool_use_id: null,
+  });
+});
+
+test("print refuses an unreadable image before spawning", async () => {
+  const image = writeImageDescriptor(dir, "gone.png", PNG_IMAGE, "image/png", "gone");
+  rmSync(image.path);
+  rmSync(runArgs, { force: true });
+  await assert.rejects(
+    runClaudeText("inspect this", { timeoutMs: 5_000, images: [image] }),
+    /LLM image input refused/,
+  );
+  assert.equal(existsSync(runArgs), false, "an invalid image still spawned claude -p");
 });

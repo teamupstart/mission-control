@@ -231,7 +231,7 @@ export interface ClaudeSdkOneShotQuery extends AsyncIterable<ClaudeSdkMessage> {
 /** The same vendor seam, narrowed to the one-shot call shape. */
 export interface ClaudeSdkOneShotDeps {
   query(params: {
-    prompt: string;
+    prompt: string | AsyncIterable<ClaudeSdkUserMessage>;
     options: ClaudeSdkOneShotQueryOptions;
   }): Promise<ClaudeSdkOneShotQuery>;
   executable(): Promise<string>;

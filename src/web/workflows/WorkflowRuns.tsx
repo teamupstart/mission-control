@@ -985,6 +985,25 @@ function RunWorklist({
     ?? items[0]
     ?? null;
   const selectedIndex = selected ? items.indexOf(selected) : -1;
+  /*
+   * Moving the selection PINS the segment it moved within, and every control that moves it goes
+   * through here.
+   *
+   * A follow is transient by construction: it holds only while `selectedKey` names a row that
+   * resolves nowhere. The instant any control writes a live key the follow stops firing, and
+   * without this the segment fell back to whatever the reader had picked BEFORE the follow moved
+   * them - so `Next` from a followed row in `Blocking` wrote a real Blocking key, the rail
+   * snapped back to `Passed`, and the reader landed on an unrelated row instead of the next
+   * blocker.
+   *
+   * Pinning the DISPLAYED segment is the honest reading of the gesture: whatever moved the
+   * reader here, they are acting on the list in front of them. The segment buttons keep their
+   * own handler, because picking a segment clears the selection rather than moving it.
+   */
+  const selectIn = (key: string | null): void => {
+    setSelectedKey(key);
+    setChosenSegment({ segment, round });
+  };
 
   const terminalRun = ["completed", "cancelled", "failed"].includes(detail.run.status);
   const segments: { id: WorklistSegment; label: string; count: number; hint: string }[] = [
@@ -1053,7 +1072,7 @@ function RunWorklist({
                   key={item.key}
                   item={item}
                   selected={selected?.key === item.key}
-                  onSelect={() => setSelectedKey(item.key)}
+                  onSelect={() => selectIn(item.key)}
                 />
               ))}
             </ul>
@@ -1067,7 +1086,7 @@ function RunWorklist({
                     key={item.key}
                     item={item}
                     selected={selected?.key === item.key}
-                    onSelect={() => setSelectedKey(item.key)}
+                    onSelect={() => selectIn(item.key)}
                   />
                 ))}
               </ul>
@@ -1147,7 +1166,7 @@ function RunWorklist({
                   className="btn btn-ghost"
                   aria-label="Previous item"
                   disabled={selectedIndex <= 0}
-                  onClick={() => setSelectedKey(items[selectedIndex - 1]?.key ?? null)}
+                  onClick={() => selectIn(items[selectedIndex - 1]?.key ?? null)}
                 >
                   ← Previous
                 </button>
@@ -1158,7 +1177,7 @@ function RunWorklist({
                   className="btn btn-ghost"
                   aria-label="Next item"
                   disabled={selectedIndex < 0 || selectedIndex >= items.length - 1}
-                  onClick={() => setSelectedKey(items[selectedIndex + 1]?.key ?? null)}
+                  onClick={() => selectIn(items[selectedIndex + 1]?.key ?? null)}
                 >
                   Next →
                 </button>

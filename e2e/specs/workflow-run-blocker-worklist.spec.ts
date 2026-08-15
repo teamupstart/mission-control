@@ -450,6 +450,9 @@ test("a reviewer selected while pending is followed to the change it goes on to 
     })).id;
   const slow = await persona("E2E deliberating reviewer", "E2E_SLOW_FAIL_VERDICT");
   const quick = await persona(REVIEWER.agreeable, "E2E_PASS_VERDICT");
+  // A second blocker, so `Next` has somewhere to go once the follow has moved the reader into
+  // `Blocking` - the segment a follow lands in is exactly where paging used to snap back out of.
+  const prompt = await persona(REVIEWER.settling, "E2E_FAIL_VERDICT");
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E worklist selection continuity",
     draft: {
@@ -457,11 +460,12 @@ test("a reviewer selected while pending is followed to the change it goes on to 
         { id: NODE.session, kind: "session", position: { x: 0, y: 0 } },
         { id: NODE.restating, kind: "persona", personaId: slow, position: { x: 220, y: 0 } },
         { id: NODE.agreeable, kind: "persona", personaId: quick, position: { x: 220, y: 140 } },
+        { id: NODE.settling, kind: "persona", personaId: prompt, position: { x: 220, y: 280 } },
         { id: NODE.join, kind: "all_pass", position: { x: 440, y: 70 } },
         { id: NODE.end, kind: "end", outcome: "Approved", position: { x: 660, y: 70 } },
       ],
       edges: [
-        ...[NODE.restating, NODE.agreeable].flatMap((node, index) => [
+        ...[NODE.restating, NODE.agreeable, NODE.settling].flatMap((node, index) => [
           { id: `e-activate-${index}`, source: NODE.session, sourcePort: "submitted", target: node, targetPort: "activate" },
           { id: `e-pass-${index}`, source: node, sourcePort: "pass", target: NODE.join, targetPort: "result" },
           { id: `e-fail-${index}`, source: node, sourcePort: "fail", target: NODE.join, targetPort: "result" },
@@ -517,4 +521,20 @@ test("a reviewer selected while pending is followed to the change it goes on to 
     .toHaveAttribute("aria-pressed", "true");
   // And the detail pane is showing that reviewer's objection, not somebody else's.
   await expect(worklist).toContainText("This reviewer is scripted to object after a delay");
+
+  /*
+   * Paging straight after a follow stays in the segment the follow moved to.
+   *
+   * A follow is transient - it holds only while the selected key resolves nowhere - so the first
+   * `Next` writes a live `Blocking` key and stops it firing. Without the segment being pinned as
+   * the reader moves, the rail fell back to the segment picked BEFORE the follow (`Passed`, from
+   * the click above) and the reader landed on an unrelated row instead of the next blocker.
+   */
+  await expect(worklist).toContainText("1 of 2");
+  await worklist.getByRole("button", { name: "Next item" }).click();
+  await expect(segments.getByRole("button", { name: /^Blocking/ }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(worklist).toContainText("2 of 2");
+  await expect(worklist.locator("button.wf-run-worklist-row.is-change[aria-current='true']"))
+    .toContainText(REVIEWER.settling);
 });

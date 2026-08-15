@@ -805,3 +805,48 @@ test("a rename carries the frozen scout title on the renamed session and its fol
   assert.equal(sessionOf(r, "s3")?.name, "kept");
   assert.equal(frozen("s3"), "kept");
 });
+
+test("a reused agent's rename leaves the scout it already finished alone", () => {
+  // The Registry-level twin of the store test, and the case the sibling-pane test above
+  // cannot reach: ONE session, two sequential episodes. A session outlives its tasks - an
+  // idle agent is handed the next one and renamed for it by `renameForTask` - and nothing in
+  // this phase clears a finished scout's row, so it is still sitting there waiting to be
+  // captured under the name its own card showed.
+  const r = new Registry();
+  r.applyDiscovery([disco({ syntheticId: "reuse", name: "First scout", tty: "ttysR", pid: 9 })]);
+  r.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "agent:reuse-1",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: { tmuxPane: "%3" },
+  });
+  const first = r.workEpisodeForSession("reuse");
+  assert.ok(first, "precondition: the session is on an episode");
+  assert.ok(
+    openScoutPromptContext({
+      taskId: "task-first",
+      episodeId: first.episodeId,
+      sessionId: "reuse",
+      sessionName: "First scout",
+      transcriptPath: null,
+      transcriptOffset: 0,
+    }),
+    "precondition: the first scout froze its boundary",
+  );
+
+  // The agent is recycled: a reset rolls it onto a new work episode, and the next task
+  // renames the card.
+  const second = r.resetWorkEpisode("reuse");
+  assert.ok(second, "precondition: the reused session is on a NEW episode");
+  assert.notEqual(second.episodeId, first.episodeId);
+  r.renameSession("reuse", "Second scout");
+
+  assert.equal(r.getSession("reuse")?.name, "Second scout", "the card follows the new task");
+  assert.equal(
+    scoutPromptContext("task-first", first.episodeId)?.sessionName,
+    "First scout",
+    "but the finished scout keeps the title its own card showed",
+  );
+});

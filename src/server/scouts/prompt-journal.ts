@@ -138,16 +138,26 @@ export function freezeScoutPromptBoundary(
 }
 
 /**
- * Re-freeze the stored title for every episode a session owns, best-effort.
+ * Re-freeze the stored title for the episode a session is running RIGHT NOW, best-effort.
  *
  * Registry's rename path reaches the store through here rather than directly, so the one
  * rule that matters at that call site is stated where every other seam states it: a rename
  * has already repainted the card and still owes its sibling panes a rename and its tasks a
  * re-pointing, and none of that may be lost because an archive title could not be written.
+ *
+ * The episode is the caller's to supply and a null one is a no-op, because only the caller
+ * knows which episode a session is on. A session outlives its tasks - an idle agent is
+ * handed the next one and renamed for it - so refreshing by session alone would rewrite
+ * every finished scout's frozen title with the name of whatever that agent did next.
  */
-export function refreshScoutPromptTitle(sessionId: string, sessionName: string): void {
+export function refreshScoutPromptTitle(
+  sessionId: string,
+  episodeId: string | null,
+  sessionName: string,
+): void {
+  if (!episodeId) return;
   bestEffort(`refresh the frozen scout title for session ${sessionId}`, () =>
-    refreshScoutPromptContextName(sessionId, sessionName),
+    refreshScoutPromptContextName(sessionId, episodeId, sessionName),
   );
 }
 

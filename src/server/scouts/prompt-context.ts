@@ -230,23 +230,35 @@ export function openScoutPromptContext(
 }
 
 /**
- * Re-freeze the stored name for every episode a session owns.
+ * Re-freeze the stored name for ONE episode of a session.
  *
- * Keyed on the session rather than the task because that is what the rename path holds,
- * and because the point is agreement with the card: a normal capture reads the live
- * `session.name`, and an exit-recovery capture reads this. If they disagreed, the same
- * scout would archive under two different titles depending on how it ended.
+ * The point is agreement with the card: a normal capture reads the live `session.name` and
+ * an exit-recovery capture reads this, so a scout that drifted would archive under two
+ * different titles depending only on how it ended.
+ *
+ * Scoped to the episode, and that is the whole correctness of it. A session is REUSED - an
+ * idle agent is handed the next task and renamed for it - so a row keyed on session alone
+ * would have every finished scout's frozen title rewritten by the title of whatever that
+ * agent went on to do next. Nothing in this phase clears a row when a task ends, so those
+ * rows are still sitting there waiting for capture, and "the name the card showed when this
+ * episode was told" is exactly what they exist to hold still.
+ *
+ * Returns the number of rows moved, so a caller can tell "nothing to update" from "updated".
  */
 export function refreshScoutPromptContextName(
   sessionId: string,
+  episodeId: string,
   sessionName: string,
   now = Date.now(),
 ): number {
   const name = sessionName.trim();
-  if (!name) return 0;
+  if (!name || !episodeId) return 0;
   return openDb()
-    .prepare(`UPDATE scout_prompt_contexts SET session_name = ?, updated_at = ? WHERE session_id = ?`)
-    .run(name, now, sessionId).changes as number;
+    .prepare(
+      `UPDATE scout_prompt_contexts SET session_name = ?, updated_at = ?
+        WHERE session_id = ? AND episode_id = ?`,
+    )
+    .run(name, now, sessionId, episodeId).changes as number;
 }
 
 export function scoutPromptContext(taskId: string, episodeId: string): ScoutPromptContext | null {

@@ -250,24 +250,49 @@ test("a context with no name is refused rather than stored untitled", () => {
   assert.equal(scoutPromptContext(SCOUT.id, "episode-1"), null);
 });
 
-test("a rename re-freezes the stored title for every episode the session owns", () => {
+test("a rename re-freezes the title of the episode being renamed", () => {
   reset();
   context();
+  assert.equal(
+    refreshScoutPromptContextName("s1", "episode-1", "Permissions after reconnect"),
+    1,
+  );
+  assert.equal(scoutPromptContext(SCOUT.id, "episode-1")?.sessionName, "Permissions after reconnect");
+  // A blank rename is not a rename. The card never shows one, and accepting it here would
+  // leave capture with nothing to title the archive with.
+  assert.equal(refreshScoutPromptContextName("s1", "episode-1", "  "), 0);
+  assert.equal(scoutPromptContext(SCOUT.id, "episode-1")?.sessionName, "Permissions after reconnect");
+});
+
+test("a reused session's next task cannot rename the scout it already finished", () => {
+  reset();
+  // The shape that makes this a correctness bug rather than a tidiness one: a session
+  // OUTLIVES its tasks. An idle agent is handed the next one and renamed for it, and
+  // nothing in this phase clears a finished scout's row - Phase 2's capture does that - so
+  // the old row is still sitting there waiting to be captured under the name its own card
+  // showed.
+  context({ sessionName: "Why reconnect loses permissions" });
   openScoutPromptContext({
-    taskId: "task-other",
+    taskId: "task-next",
     episodeId: "episode-2",
     sessionId: "s1",
-    sessionName: "Reconnect permissions",
+    sessionName: "Audit the retry backoff",
     transcriptPath: null,
     transcriptOffset: 0,
   });
-  assert.equal(refreshScoutPromptContextName("s1", "Permissions after reconnect"), 2);
-  assert.equal(scoutPromptContext(SCOUT.id, "episode-1")?.sessionName, "Permissions after reconnect");
-  assert.equal(scoutPromptContext("task-other", "episode-2")?.sessionName, "Permissions after reconnect");
-  // A blank rename is not a rename. The card never shows one, and accepting it here would
-  // leave capture with nothing to title the archive with.
-  assert.equal(refreshScoutPromptContextName("s1", "  "), 0);
-  assert.equal(scoutPromptContext(SCOUT.id, "episode-1")?.sessionName, "Permissions after reconnect");
+
+  // The agent is renamed for the task it is running NOW.
+  assert.equal(refreshScoutPromptContextName("s1", "episode-2", "Audit the retry backoff v2"), 1);
+  assert.equal(
+    scoutPromptContext("task-next", "episode-2")?.sessionName,
+    "Audit the retry backoff v2",
+    "the live episode follows the card",
+  );
+  assert.equal(
+    scoutPromptContext(SCOUT.id, "episode-1")?.sessionName,
+    "Why reconnect loses permissions",
+    "and the finished scout keeps the title ITS card showed, which is the whole point",
+  );
 });
 
 test("cleanup takes the context and its whole trail", () => {
@@ -720,7 +745,7 @@ test("no seam here can break the operation it rides on", () => {
     assert.equal(frozen, null, "and it reports the failure as no context rather than as one");
 
     assert.doesNotThrow(
-      () => refreshScoutPromptTitle("s1", "Renamed"),
+      () => refreshScoutPromptTitle("s1", "episode-1", "Renamed"),
       "a rename must still reach its sibling panes and its bound tasks",
     );
     assert.doesNotThrow(

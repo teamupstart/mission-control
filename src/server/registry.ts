@@ -2381,7 +2381,10 @@ export class Registry extends EventEmitter {
     // the sibling-pane rename and the task resource re-pointing below have not run yet, so
     // an exception escaping this line would leave a renamed session whose siblings and
     // bound tasks are silently stale.
-    refreshScoutPromptTitle(sessionId, name);
+    // The session's CURRENT episode, read rather than ensured: a rename must not mint an
+    // episode as a side effect. Scoping to it is what stops a reused agent's next task
+    // renaming the frozen title of the finished scout still waiting to be captured.
+    refreshScoutPromptTitle(sessionId, sessionWorkEpisodeFor(sessionId)?.episodeId ?? null, name);
 
     const hostedCwds = new Set<string>();
     if (s.cwd) hostedCwds.add(s.cwd);
@@ -2405,7 +2408,9 @@ export class Registry extends EventEmitter {
         // does. Guarded on the name actually changing rather than fired unconditionally: a
         // sibling that carries its own name keeps it here, and refreshing that one would
         // overwrite a scout's frozen title with a heading its card never showed.
-        if (renamed.name !== other.name) refreshScoutPromptTitle(id, renamed.name);
+        if (renamed.name !== other.name) {
+          refreshScoutPromptTitle(id, sessionWorkEpisodeFor(id)?.episodeId ?? null, renamed.name);
+        }
       }
     }
 

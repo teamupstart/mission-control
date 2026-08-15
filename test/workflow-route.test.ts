@@ -6,8 +6,24 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AppPageShell } from "../src/web/components/AppPageShell.tsx";
 import type { MissionRoute } from "../src/web/workflows/useWorkflowRoute.ts";
-import { missionRouteHash, parseMissionRoute } from "../src/web/workflows/useWorkflowRoute.ts";
+import {
+  missionRouteHash,
+  parseMissionRoute,
+  pipelineRunHash,
+  pipelineRunRoute,
+} from "../src/web/workflows/useWorkflowRoute.ts";
+import { pipelineRepoKey } from "../src/shared/pipeline.ts";
 import { DEFAULT_SETTINGS_CATEGORY } from "../src/web/lib/settings-registry.ts";
+
+/**
+ * One observed repository's key, as a pipeline deep link carries it.
+ *
+ * Built through the shared helper rather than written out, so this test cannot come to
+ * disagree with the daemon about what identifies a repository - the separator inside it is a
+ * unit separator, which is unreadable here and exact there.
+ */
+const REPO_KEY = pipelineRepoKey("ai-conductor", "/repo/demo");
+const REPO_KEY_HASH = encodeURIComponent(REPO_KEY);
 
 // What is at stake: the execution surfaces must coexist with the fleet without a router or a
 // second app mount. These hashes are durable links, so unknown values must fall safely to Fleet
@@ -39,6 +55,72 @@ test("the ensembles page parses and serializes, with an id and back to the list"
     parseMissionRoute(missionRouteHash({ page: "ensembles", ensembleId: "run 7" })),
     { page: "ensembles", ensembleId: "run 7" },
   );
+});
+
+test("the Runs page's two surfaces are one page with two addresses", () => {
+  // The Pipelines tab is a KIND on the runs route rather than a page of its own, because
+  // both surfaces answer "what is executing" and a second top-level destination would make
+  // an operator remember which of two pages a piece of work landed on.
+  assert.deepEqual(parseMissionRoute("#/runs/pipeline"), { page: "runs", kind: "pipelines" });
+  assert.deepEqual(parseMissionRoute("#/runs/pipeline/"), { page: "runs", kind: "pipelines" });
+  assert.deepEqual(parseMissionRoute(`#/runs/pipeline/${REPO_KEY_HASH}/add-widgets`), {
+    page: "runs",
+    kind: "pipelines",
+    pipelineRun: { repoKey: REPO_KEY, slug: "add-widgets" },
+  });
+
+  // Both spellings round-trip, which is what the router's own canonicalization requires: it
+  // rewrites the address bar to `missionRouteHash(parseMissionRoute(hash))` on arrival, so a
+  // deep link that did not survive that pass would be silently rewritten to another page.
+  for (const hash of ["#/runs/pipeline", `#/runs/pipeline/${REPO_KEY_HASH}/add-widgets`]) {
+    assert.equal(missionRouteHash(parseMissionRoute(hash)), hash);
+  }
+
+  // The repository half carries the PROVIDER with the path, so two engines observing one
+  // checkout do not share a link - and it is one path segment, so an absolute path with
+  // spaces and slashes in it survives.
+  assert.equal(
+    missionRouteHash(
+      pipelineRunRoute({ provider: "ai-conductor", repoRoot: "/repo/demo", slug: "add-widgets" }),
+    ),
+    `#/runs/pipeline/${REPO_KEY_HASH}/add-widgets`,
+  );
+  assert.equal(
+    pipelineRunHash({ provider: "ai-conductor", repoRoot: "/repo/demo", slug: "add-widgets" }),
+    `#/runs/pipeline/${REPO_KEY_HASH}/add-widgets`,
+  );
+
+  // `pipeline` is claimed ahead of the bare `/runs/:id` rule. Nothing is lost: workflow run
+  // ids are UUIDs, so this hash never named one.
+  assert.deepEqual(parseMissionRoute("#/runs/2f1c9b4e"), { page: "runs", runId: "2f1c9b4e" });
+
+  // Half an address is no address, and a deeper path names nothing - both land on the tab
+  // rather than on a blank reader, which is the rule every unusable id in this router takes.
+  assert.deepEqual(parseMissionRoute("#/runs/pipeline/%E0%A4%A/slug"), {
+    page: "runs",
+    kind: "pipelines",
+  });
+  // A deeper path is not a runs hash at all, and takes the fleet exactly as `#/runs/a/b`
+  // already does - the fallback is the page's, not this surface's.
+  assert.deepEqual(parseMissionRoute("#/runs/pipeline/a/b/c"), { page: "fleet" });
+
+  // Workflow run filters do not follow an operator onto a surface that has none. A pipelines
+  // link carrying `?status=running` would print a parameter no control on that page clears.
+  assert.deepEqual(parseMissionRoute("#/runs/pipeline?status=running"), {
+    page: "runs",
+    kind: "pipelines",
+  });
+  assert.equal(
+    missionRouteHash({ page: "runs", kind: "pipelines", filters: { status: "running" } }),
+    "#/runs/pipeline",
+  );
+
+  // And the legacy prefix reaches it, because the two spellings of the runs page are one
+  // rule rather than a parse and a copy of it.
+  assert.deepEqual(parseMissionRoute("#/workflows/runs/pipeline"), {
+    page: "runs",
+    kind: "pipelines",
+  });
 });
 
 test("the Ship log parses and serializes, and never falls through to the ensembles tail", () => {

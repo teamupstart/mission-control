@@ -649,6 +649,12 @@ whole run, so their query count does not grow with the number of submissions.
 
 ### Watching a run
 
+Everything below describes the **Workflows** tab of the Runs page, which is the whole page
+unless an external pipeline engine is being observed. Once a repository is switched on in
+Settings the page grows a second tab, **Pipelines**, and
+[Pipelines](pipelines.md#runs--pipelines) owns it. Nothing on this tab changes when that one
+appears, and `#/runs` and `#/runs/<run-id>` keep meaning exactly what they mean here.
+
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
 ladder in the **Workflows** tab (<kbd>y</kbd>). Every stage names its members and each member's own
 status, so a stage that folded to `All passed` still says which reviewers and checks passed it,

@@ -23,7 +23,15 @@ When adding a `ServerEvent`:
 4. Say what BOUNDS the collection, in its own doc comment, and pin it. Every collection here
    rides every reconnect, so "how large can this get" has to have an answer before it ships;
    `test/pipeline-sse.test.ts` measures one run and states the fleet arithmetic, which is the
-   shape that tells a later change what it broke.
+   shape that tells a later change what it broke. When a surface needs more than the budget
+   allows, fetch it for the one thing that is open - `GET /api/pipelines/run` is that pattern
+   for gate evidence - rather than widening the number.
+
+`SettingsStatus` has one extra rule, and it fails silently: **every field of the tuple must
+appear in `Registry.emitSettingsStatus`'s comparison.** A field left out of it is not
+compared loosely, it is a field whose change never reaches a browser - the tuple that moved
+only there compares equal and no frame is sent. `test/settings-status.test.ts` walks the
+composed tuple and fails on a leaf it has no case for.
 
 When adding a dashboard preference to `UiConfig`, three edits are one obligation:
 
@@ -471,6 +479,45 @@ Two things about it are load-bearing. It reads the **version's** policy on a run
 version was published with. And `none` beneath an Inspector policy means "the run has not
 reached the gate", not "there is no gate" - `inspectorFooterStatus` exists so the footer does
 not contradict its own sentence for most of a live run's life.
+
+## The Runs page's two surfaces
+
+The Runs page hosts Mission Control's own workflow runs and an external engine's pipelines
+behind one page-level kind tab. Three rules hold them apart, and each exists because the
+approved plan forbids this integration from changing the workflow surface at all.
+
+- **The workflow rail and reader are not modified.** `WorkflowRuns.tsx`, `RunPipeline.tsx`
+  and the `wf-run-*` family belong to that surface. The pipelines surface lives in
+  `src/web/pipelines/` under its own `pipelines-` class prefix - the call `EnsembleRuns` and
+  the Ship log already made - so a change to one is never silently a change to the other.
+  `e2e/specs/runs-workflows-unchanged.spec.ts` pins that with the integration switched ON,
+  which is the only configuration in which the regression could happen.
+- **The STRIP is shared, deliberately.** `pipeline-bits.tsx` draws the cards, seams and
+  termini on both, because both are the same picture and a second stage-rendering dialect is
+  the defect that module exists to prevent. Use its slots as they are; a new prop for one
+  caller is a modification of the other's surface. A new leaf that renders a
+  `PipelineStatusChip` also has to enter `CHIP_CONTAINERS` in
+  `test/workflow-pipeline-label-width.test.ts`. Where one surface genuinely needs different
+  layout, override it under that surface's own root rather than editing the shared rule -
+  `.pipelines-run .wf-pipeline-strip` re-aligns the strip because this engine's phases are
+  1, 1, 9, 5 and 6 steps where a workflow stage holds one to three members, and
+  `test/pipeline-runs-view.test.ts` asserts both that the override is scoped and that the
+  shared rule is unchanged.
+- **The tab is keyed on `settingsStatus.pipelines.observing`**, not on `present` and not on
+  whether any run happens to exist. Zero means no tab strip, no pipelines surface, and
+  nothing on the page reading a pipelines route. Later phases must not add a second entry
+  point that bypasses it.
+
+Routes, owned here and consumed by later phases: `#/runs` and `#/runs/<run-id>` keep meaning
+a workflow run; `#/runs/pipeline` and `#/runs/pipeline/<repoKey>/<slug>` address the
+pipelines surface, where `repoKey` is `pipelineRepoKey(provider, repoRoot)` so the provider
+travels with the path. Build them through `pipelineRunRoute` / `pipelineRunHash` in
+`useWorkflowRoute.ts` rather than by hand - the shape is frozen, and `missionRouteHash` still
+ends in an unguarded ensembles return, so a hash a branch forgets to name serializes to the
+wrong page with no error anywhere.
+
+`PipelineRunView`'s header takes an `actions` slot that renders nothing today. It is the
+place the engine's control verbs go; filling it must not restructure the header around it.
 
 ## Ledger tables
 

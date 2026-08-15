@@ -11,7 +11,11 @@ session, task, or cost-estimate state. Pipeline ingest carries a second gate on 
 token, because its producer is a plugin running inside another program: a pushed event
 naming a repository the operator has not switched on in Settings is counted and dropped
 rather than stored, so the push path cannot start observing a checkout that consent did not
-already cover. See [Pipelines](pipelines.md#the-route). Cost datapoints arrive carrying `user.email`,
+already cover. Within a consented repository it may only address runs that exist: a pushed
+`slug` is checked against the worktrees the engine is actually driving, because the event
+ledger is bounded by retiring rows with the runs a pass enumerates, and rows filed under a
+slug no pass can produce are rows nothing would retire. See
+[Pipelines](pipelines.md#the-route). Cost datapoints arrive carrying `user.email`,
 `user.account_uuid`, `user.account_id` and `organization.id`; the ingest reads four
 attributes and discards the rest before anything is written, so none of it reaches the
 database. Session and task

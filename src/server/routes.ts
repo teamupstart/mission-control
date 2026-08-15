@@ -2226,13 +2226,21 @@ export function buildApp(
   // still covers whatever was dropped.
   app.post("/ingest/conductor", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const tooLarge = () =>
+      c.json({ error: `batch too large; the limit is ${MAX_INGEST_BYTES} bytes` }, 413);
+    // Refused on the DECLARED length first, so an oversized batch is turned away before it
+    // is read into this single-threaded process at all. The producer runs unattended inside
+    // another program, and a body without a ceiling is one bug upstream from a JSON.parse
+    // that owns the event loop.
+    const declared = Number(c.req.header("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_INGEST_BYTES) return tooLarge();
     const body = await c.req.text().catch(() => "");
-    // Bounded before it is parsed. The producer runs unattended in another program's
-    // process and the daemon is single-threaded; a body without a ceiling is one bug
-    // upstream away from a JSON.parse that owns the event loop.
-    if (body.length > MAX_INGEST_BYTES) {
-      return c.json({ error: `batch too large; the limit is ${MAX_INGEST_BYTES} bytes` }, 413);
-    }
+    // Then on the MEASURED length, because the header is the producer's claim rather than a
+    // fact - it can be absent entirely under chunked encoding, and wrong otherwise. Measured
+    // in BYTES: a JavaScript string is counted in UTF-16 code units, so a body of three-byte
+    // characters costs up to three times what `String.length` reports, and non-ASCII is
+    // ordinary here (step names, branch names, commit subjects all reach this stream).
+    if (Buffer.byteLength(body, "utf8") > MAX_INGEST_BYTES) return tooLarge();
     const { counts, touched } = ingestConductorEvents(body);
     // Then read exactly the runs it named, a tick early. See `schedulePipelineRefresh`.
     if (touched.length > 0) schedulePipelineRefresh(registry, touched);

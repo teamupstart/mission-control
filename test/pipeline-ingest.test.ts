@@ -21,7 +21,14 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -252,6 +259,87 @@ test("a batch past its ceiling is refused whole, rather than parsed", async () =
   // and this daemon is single-threaded.
   const res = await push("x".repeat(5 * 1024 * 1024));
   assert.equal(res.status, 413);
+});
+
+test("the size ceiling is bytes on the wire, not JavaScript string length", async () => {
+  const { push } = fixture();
+  // The ceiling exists to bound what this daemon will read into memory, and memory is paid
+  // in BYTES. A JavaScript string is counted in UTF-16 code units, so a body of three-byte
+  // characters costs three times what `String.length` reports: this one is ~1.5M units and
+  // ~4.5MB on the wire, which slips a body over the ceiling past a check that measures the
+  // string. Non-ASCII is not exotic in this stream - conductor step names, branch names and
+  // commit subjects all reach it.
+  const wide = "あ".repeat(1_500_000);
+  assert.ok(wide.length < 4 * 1024 * 1024, "under the ceiling by string length");
+  assert.ok(Buffer.byteLength(wide, "utf8") > 4 * 1024 * 1024, "over the ceiling by bytes");
+  const res = await push(wide);
+  assert.equal(res.status, 413);
+});
+
+test("a push naming a slug with no worktree is refused, and stores nothing", async () => {
+  const { push } = fixture();
+  seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
+
+  // The shape that costs nothing to repeat: well-formed envelopes for a consented
+  // repository, naming runs that do not exist. Accepting these writes ledger rows keyed to a
+  // slug no pass will ever enumerate, so nothing retires them - the table would grow for as
+  // long as a token holder cared to keep posting.
+  const res = await push(
+    [
+      line("no-such-run", { type: "step_started" }, 1),
+      line("also-not-real", { type: "step_started" }, 2),
+    ].join("\n"),
+  );
+  assert.equal(res.status, 200);
+  const counts = (await res.json()) as ConductorIngestOutcome;
+  assert.equal(counts.stored, 0, "a slug with no worktree is not a run to store for");
+  assert.equal(counts.malformed, 2, "an unaddressable target is counted, not silently dropped");
+  assert.equal(countPipelineEvents("ai-conductor", repo, "no-such-run"), 0);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "also-not-real"), 0);
+  // And no liveness for it, or one repeated push would stand the tail down over a run that
+  // does not exist.
+  assert.equal(isPipelineIngestLive("ai-conductor", repo, "no-such-run"), false);
+  assert.equal(pipelineIngestState("ai-conductor", repo), "never");
+
+  // The real run alongside them is unaffected: this is a per-line judgement, like every
+  // other rejection on this route.
+  const ok = await push(line("a-feature", { type: "step_started" }, 3));
+  assert.equal(((await ok.json()) as ConductorIngestOutcome).stored, 1);
+});
+
+test("a repository whose runs cannot be listed stores nothing, rather than trusting the slug", async () => {
+  const blocked = gitRepo("unlistable");
+  const { push } = fixture([repo, blocked]);
+  // `.worktrees` present but not a directory, so listing it throws ENOTDIR. Chosen over
+  // chmod because a suite running as root would read an unreadable directory perfectly well
+  // and this assertion would quietly stop testing anything.
+  writeFileSync(join(blocked, ".worktrees"), "not a directory\n");
+
+  const res = await push(line("a-feature", { type: "step_started" }, 1, blocked));
+  assert.equal(res.status, 200);
+  const counts = (await res.json()) as ConductorIngestOutcome;
+  assert.equal(counts.stored, 0);
+  assert.equal(counts.malformed, 1);
+  // "We could not look" is not "it is there". The projection makes the opposite call on the
+  // same reading - it declines to RETIRE what it could not see - and both follow from the
+  // same rule: an unreadable directory is not evidence for the durable act in front of you.
+  assert.equal(countPipelineEvents("ai-conductor", blocked, "a-feature"), 0);
+  assert.equal(pipelineIngestState("ai-conductor", blocked), "never");
+});
+
+test("the ledger is retired for a run whose worktree is gone, however its rows got there", async () => {
+  const { registry, push } = fixture();
+  seedConductorRun(repo, "short-lived", { steps: { build: "in_progress" } });
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  await push(line("short-lived", { type: "step_started" }, 1));
+  assert.ok(countPipelineEvents("ai-conductor", repo, "short-lived") > 0);
+
+  // The window the door check cannot close on its own: the slug was real when it was
+  // accepted and the worktree went away afterwards. Retirement has to answer for rows it
+  // did not expect, not only for the slugs it happens to be tracking a cursor for.
+  rmSync(conductorWorktree(repo, "short-lived"), { recursive: true, force: true });
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "short-lived"), 0);
 });
 
 test("a push makes the projection catch up now, without waiting for a tick", async () => {

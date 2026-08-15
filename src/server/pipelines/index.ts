@@ -23,7 +23,6 @@ import {
   upsertPipelineRunRow,
 } from "../db.ts";
 import { unref } from "../util/timers.ts";
-import { CONDUCTOR_PROVIDER } from "./conductor/index.ts";
 import { getPipelinesConfig } from "./config.ts";
 import {
   forgetPipelineIngest,
@@ -32,7 +31,8 @@ import {
   resetPipelineIngest,
   type PipelineIngestTouch,
 } from "./ingest.ts";
-import type { PipelineProvider, PipelineReadOptions } from "./types.ts";
+import { PIPELINE_PROVIDERS } from "./providers.ts";
+import type { PipelineReadOptions } from "./types.ts";
 
 // The pipeline provider registry, and the loop that keeps the projection current.
 //
@@ -48,18 +48,6 @@ import type { PipelineProvider, PipelineReadOptions } from "./types.ts";
 //
 // The daemon is still the only SQLite writer: this loop runs in it, and the port bind is
 // the mutex that makes exactly one of it.
-
-/**
- * Every provider, keyed by id.
- *
- * `Record<PipelineProviderId, PipelineProvider>` is the enforcement: an id appended to the
- * shared tuple does not compile until something can probe and read it. A lookup that could
- * return undefined would be a provider the Settings panel offers, the config accepts, and
- * this loop skips in silence.
- */
-export const PIPELINE_PROVIDERS: Record<PipelineProviderId, PipelineProvider> = {
-  "ai-conductor": CONDUCTOR_PROVIDER,
-};
 
 /** How often the loop re-reads every consented repository's files. */
 const TICK_MS = Math.max(1000, Number(envVar("PIPELINE_TICK_MS") ?? 5000));

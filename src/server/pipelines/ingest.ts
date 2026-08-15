@@ -15,6 +15,7 @@ import {
 import { envVar } from "../config.ts";
 import { appendPipelineEvents, type PipelineEventInput } from "../db.ts";
 import { getPipelinesConfig } from "./config.ts";
+import { PIPELINE_PROVIDERS } from "./providers.ts";
 
 // Pushed pipeline events: the ingest half of observation.
 //
@@ -29,6 +30,11 @@ import { getPipelinesConfig } from "./config.ts";
 //
 //  - **Consent is upstream of it.** A push naming a repository nobody switched on is counted
 //    and dropped. Ingest is not a second door into observing somebody's checkout.
+//  - **It can only address runs that exist.** A slug is not a name this route takes on the
+//    producer's word; it has to be one the provider is actually driving. What is at stake is
+//    retention rather than authenticity: the ledger is bounded by pairing its rows with the
+//    runs a pass enumerates, so a row under a slug no pass can produce is a row nothing ever
+//    retires, and posting those is free.
 //  - **Nothing is derived from a pushed event.** The ledger stores it; the projection is
 //    still folded from the engine's own files by `normalizeConductorRun`. So an event that
 //    arrives twice, out of order, or in a shape this build has never seen costs a row and
@@ -199,6 +205,28 @@ export function ingestConductorEvents(body: string, now = Date.now()): PipelineI
     unconsented: 0,
   };
   const consented = consentedByPath();
+  /**
+   * Each consented repository's real run slugs, read at most once for the whole batch.
+   *
+   * Memoised because the alternative is a directory listing per LINE, and a batch is a
+   * flush: one step boundary is several events for one run. Reading it once per POST also
+   * makes a batch internally consistent, which a per-line read would not be.
+   */
+  const runSlugs = new Map<string, ReadonlySet<string> | null>();
+  /** Whether this slug names a run the provider is actually driving. */
+  const addressable = (
+    provider: PipelineProviderId,
+    repoRoot: string,
+    slug: string,
+  ): boolean => {
+    const repoKey = pipelineRepoKey(provider, repoRoot);
+    if (!runSlugs.has(repoKey)) {
+      runSlugs.set(repoKey, PIPELINE_PROVIDERS[provider].knownRunSlugs(repoRoot));
+    }
+    // `null` is "could not look", and on a door that refuses. `?? false` is carrying that
+    // decision, not defending against a missing key.
+    return runSlugs.get(repoKey)?.has(slug) ?? false;
+  };
   /** Envelopes grouped per run, in arrival order, so one run is one ledger transaction. */
   const byRun = new Map<
     string,
@@ -233,6 +261,15 @@ export function ingestConductorEvents(body: string, now = Date.now()): PipelineI
     const match = consented.get(resolved(envelope.data.repo));
     if (!match) {
       counts.unconsented += 1;
+      continue;
+    }
+    // Counted as malformed rather than given a state of its own. The envelope is well
+    // formed and the repository is consented, so this is not `unconsented`; and from the
+    // producer's side it is the same class of mistake as a bad line - it addressed something
+    // that is not there. A separate counter would be a new field in a frozen wire contract,
+    // bought for a case a correct plugin cannot reach.
+    if (!addressable(match.provider, match.repoRoot, envelope.data.slug)) {
+      counts.malformed += 1;
       continue;
     }
     const key = pipelineRunKey(match.provider, match.repoRoot, envelope.data.slug);

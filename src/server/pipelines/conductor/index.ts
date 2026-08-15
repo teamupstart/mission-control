@@ -161,9 +161,25 @@ async function readConductorRepo(
   }
 }
 
+/**
+ * Which slugs this repository is actually driving, for the ingest door.
+ *
+ * `readWorktrees` and nothing else, so this cannot drift from what `readConductorRepo`
+ * counts as a run: same directory, same `.pipeline/` requirement, same cap. A truncated
+ * listing is treated as "could not look", because the slug being asked about may be exactly
+ * one of the entries the cap cut off, and answering "no" to it would refuse a real run's
+ * events for as long as the repository stayed over the cap.
+ */
+function conductorRunSlugs(repoRoot: string): ReadonlySet<string> | null {
+  const listing = readWorktrees(repoRoot, INFO.worktreesDir);
+  if (listing === null || listing.truncated) return null;
+  return new Set(listing.worktrees.map((worktree) => worktree.slug));
+}
+
 export const CONDUCTOR_PROVIDER: PipelineProvider = {
   provider: "ai-conductor",
   binForPresence: conductorBin,
   probe: probeConductor,
   readRepo: readConductorRepo,
+  knownRunSlugs: conductorRunSlugs,
 };

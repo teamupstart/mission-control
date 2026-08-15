@@ -116,4 +116,26 @@ export interface PipelineProvider {
     cursors: Map<string, { offset: number; identity: string }>,
     options?: PipelineReadOptions,
   ): Promise<PipelineRepoReading>;
+  /**
+   * The slugs this provider is actually driving in `repoRoot`, or null when it could not
+   * look.
+   *
+   * This is what makes a PUSHED event addressable. The tail can only ever report runs it
+   * found on disk, but ingest is told which run an event belongs to, and a slug that names
+   * no run is not merely useless: the ledger is retired by pairing rows with the runs a pass
+   * enumerates, so a row under a slug no pass will ever produce is a row nothing retires.
+   * Accepting one would trade this table's bounded retention for whatever a token holder
+   * cared to post.
+   *
+   * Same definition of "a run" as `readRepo`, deliberately - one source of truth, so the key
+   * space ingest may write into is exactly the key space retirement walks. A provider that
+   * answered a looser question here would reopen the hole in a way no test of `readRepo`
+   * could see.
+   *
+   * NULL IS NOT AN EMPTY SET, and the caller's response differs from `readRepo`'s. There,
+   * "could not look" must not retire a projection. Here, on a door, it refuses: an
+   * unreadable directory cannot license a durable write, and the file tail still backfills
+   * whatever was turned away.
+   */
+  knownRunSlugs(repoRoot: string): ReadonlySet<string> | null;
 }

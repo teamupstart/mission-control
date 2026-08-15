@@ -171,15 +171,29 @@ back is how an operator finds out whether their install works:
 | `received` | Lines the batch contained. |
 | `stored` | Events new to the ledger. |
 | `duplicate` | Already observed, by an earlier push or by the file tail. |
-| `malformed` | Not a valid envelope. Counted and dropped; one bad line never fails the batch. |
+| `malformed` | Not a valid envelope, or naming a `slug` this repository is not driving. Counted and dropped; one bad line never fails the batch. |
 | `unconsented` | For a repository this operator has not switched on. Stored nowhere. |
 
 That last row is the one worth stating plainly: **ingest is downstream of consent.** A push
 naming a repository nobody enabled is dropped, and leaves no trace on the health line. The
 push path is not a second way to start observing a checkout.
 
-A batch over 4 MB is refused with `413` before it is parsed - the producer runs unattended
-inside another program, and the daemon is single-threaded.
+**A slug has to name a run that exists.** The `slug` is checked against the worktrees the
+provider is actually driving - the same listing, with the same `.pipeline/` requirement, that
+the file tail builds runs from - and a push naming anything else is counted as `malformed` and
+stored nowhere. This is a retention rule rather than an authenticity one: the ledger is
+bounded by retiring rows alongside the runs a pass enumerates, so a row under a slug no pass
+can ever produce is a row nothing would retire. When the worktrees cannot be listed at all,
+the push is refused rather than trusted, and the file tail backfills whatever was turned away.
+That is the opposite of the call the projection makes on the same unreadable directory, where
+"we could not look" must not retire anything - and both follow from one rule: an unreadable
+directory is not evidence for the durable act in front of you.
+
+A batch over 4 MB is refused with `413`. The declared `Content-Length` is checked first, so an
+oversized batch is turned away before it is read at all; the body is then measured in **bytes**
+rather than JavaScript string length, because a body of multi-byte characters costs up to three
+times what `String.length` reports. The producer runs unattended inside another program, and
+the daemon is single-threaded.
 
 ### The ledger
 

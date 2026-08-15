@@ -5551,6 +5551,25 @@ export function deletePipelineEventsForRun(
     .run(provider, repoRoot, slug);
 }
 
+/**
+ * Every slug this repository has ledger rows under.
+ *
+ * Retirement's own question, and it has to be asked of the LEDGER rather than of the
+ * projection's cursors. A cursor exists only once a pass has read a run's files; a pushed
+ * event can be accepted for a run that is torn down before that pass ever happens. Walking
+ * cursors alone would leave those rows with nothing that could ever visit them, so this is
+ * what makes "bounded by the runs that exist" true for rows that arrived by either path.
+ */
+export function pipelineEventSlugs(
+  provider: PipelineProviderId,
+  repoRoot: string,
+): string[] {
+  return openDb()
+    .prepare(`SELECT DISTINCT slug FROM pipeline_events WHERE provider = ? AND repo_root = ?`)
+    .all(provider, repoRoot)
+    .map((row) => String((row as { slug: unknown }).slug));
+}
+
 /** Retire a whole repository's ledger - its consent was withdrawn. */
 export function deletePipelineEventsForRepo(
   provider: PipelineProviderId,

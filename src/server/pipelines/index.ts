@@ -19,6 +19,7 @@ import {
   deletePipelineRunsForRepo,
   loadPipelineRuns,
   pipelineEventCursors,
+  pipelineEventSlugs,
   pipelineProjectedRepos,
   upsertPipelineRunRow,
 } from "../db.ts";
@@ -429,7 +430,13 @@ async function runPipelineRepoPass(
   // it back on the next tick. "We could not look" is not "it is gone", which is the rule the
   // Inspector's poller holds about a `gh` that errored, applied to a directory.
   if (reading.error === null) {
-    for (const slug of cursors.keys()) {
+    // Cursors AND ledger slugs, because the two are not the same set and the difference is
+    // exactly where rows would be stranded. A cursor exists only after a pass has read a
+    // run's files; a PUSHED event is accepted the moment it arrives, for a run that was real
+    // at the door. Tear that worktree down inside the refresh debounce - or before a pass
+    // that errored, or one that hit the per-repo cap - and there is no cursor, so a loop over
+    // cursors alone would never visit those rows again for the life of the database.
+    for (const slug of new Set([...cursors.keys(), ...pipelineEventSlugs(provider, repoRoot)])) {
       if (seen.has(slug)) continue;
       deletePipelineRunRow(provider, repoRoot, slug);
       // The observed history goes with the run it describes. That pairing is the whole of

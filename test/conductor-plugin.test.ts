@@ -173,8 +173,93 @@ test("a daemon that is not there costs one warning and no exception", async () =
   await plugin.stop();
 
   assert.equal(warnings.length, 1, "a broken transport must not fill conductor's output");
-  assert.match(warnings[0] ?? "", /reads the engine's files anyway/);
+  assert.match(warnings[0] ?? "", /being retried/);
   assert.equal(plugin.stats().warnings, 1);
+  // Kept, not discarded. Everything below is about why that distinction is the whole point.
+  assert.equal(plugin.stats().buffered, 20);
+});
+
+test("a batch the daemon could not take is retried, not dropped", async () => {
+  // The case the file tail cannot rescue. Conductor persists 44 of its 74 event kinds, so
+  // for a gate verdict or a halt this plugin is the only record that will ever exist - and a
+  // daemon restart is an ordinary event, not an exotic one.
+  let down = true;
+  const delivered: Record<string, unknown>[] = [];
+  const fetchImpl = (async (_url: unknown, init: unknown) => {
+    if (down) throw new Error("ECONNREFUSED");
+    const request = init as { body: string };
+    for (const raw of request.body.split("\n").filter((l) => l.trim() !== "")) {
+      delivered.push(JSON.parse(raw) as Record<string, unknown>);
+    }
+    return { ok: true, status: 200 } as Response;
+  }) as unknown as typeof fetch;
+
+  const bus = stubBus();
+  const plugin = createMissionControlVisualizer({
+    worktree: WORKTREE,
+    token: "t",
+    fetchImpl,
+    warn: () => {},
+  });
+  plugin.start(bus);
+  bus.emit({ type: "gate_verdict", step: "build", verdict: "pass" });
+  bus.emit({ type: "loop_halt", reason: "manual" });
+  // Long enough for the scheduled flush to fire and fail against the closed daemon. Not
+  // `stop()`, which would unsubscribe the bus and end the run this test is still in.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(delivered.length, 0, "nothing reached a daemon that was not there");
+  assert.equal(plugin.stats().buffered, 2, "and nothing was thrown away either");
+
+  // The daemon comes back. The events buffered through the outage arrive, in the order the
+  // engine emitted them, ahead of the one that arrived after it recovered.
+  down = false;
+  bus.emit({ type: "halt_cleared" });
+  await plugin.stop();
+  assert.deepEqual(
+    delivered.map((entry) => (entry.event as { type: string }).type),
+    ["gate_verdict", "loop_halt", "halt_cleared"],
+  );
+  assert.equal(plugin.stats().buffered, 0);
+});
+
+test("a batch refused as too large is dropped, because retrying it can never work", async () => {
+  // The one refusal that must NOT be retried: it will be exactly as large next time, so
+  // putting it back would park an undeliverable batch at the head of the queue and block
+  // every event behind it for the life of the run.
+  const { calls, fetchImpl } = recordingFetch({ ok: false, status: 413 });
+  const bus = stubBus();
+  const plugin = createMissionControlVisualizer({
+    worktree: WORKTREE,
+    token: "t",
+    fetchImpl,
+    warn: () => {},
+  });
+  plugin.start(bus);
+  bus.emit({ type: "step_started", step: "build" });
+  await plugin.stop();
+  assert.equal(plugin.stats().buffered, 0, "not requeued");
+  assert.equal(plugin.stats().dropped, 1, "and counted as dropped rather than silently gone");
+  assert.equal(calls.length, 1, "tried once, not forever");
+});
+
+test("retrying cannot grow the buffer past its ceiling", async () => {
+  // Requeue puts a failed batch BACK, so the ceiling has to be re-applied there too or a
+  // daemon that stays down turns a bounded buffer into an unbounded one.
+  const fetchImpl = (async () => {
+    throw new Error("ECONNREFUSED");
+  }) as unknown as typeof fetch;
+  const bus = stubBus();
+  const plugin = createMissionControlVisualizer({
+    worktree: WORKTREE,
+    token: "t",
+    fetchImpl,
+    warn: () => {},
+  });
+  plugin.start(bus);
+  for (let i = 0; i < 6000; i += 1) bus.emit({ type: "step_started", step: `s${i}` });
+  await plugin.stop();
+  assert.ok(plugin.stats().buffered <= 5000, `bounded, got ${plugin.stats().buffered}`);
+  assert.ok(plugin.stats().dropped >= 1000);
 });
 
 test("a refused token says which of the two fixable things is wrong", async () => {

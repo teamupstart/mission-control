@@ -61,10 +61,19 @@ Control controls. So:
   here and expensive elsewhere. Failures are counted and warned about once per process.
 - **The buffer is bounded** at 5000 events, oldest dropped first, because a daemon that is
   not running must not grow the memory of a process that runs for days.
-- **Delivery is best-effort.** Anything undelivered - the daemon was down, the batch was
-  dropped, a conductor release added an event kind this build never subscribed to - is picked
-  up by Mission Control's file tail. That is why the tail is never switched off, only slowed
-  down while events are arriving.
+- **A failed delivery is retried, not discarded.** The batch goes back to the front of the
+  queue and is retried with backoff (up to 30s between attempts), so a daemon restart costs
+  latency rather than data. The buffer ceiling still applies to the requeue, so a daemon that
+  stays down costs bounded memory - it just spends it on the oldest events instead of
+  discarding them at the door. The one exception is a `413`: that batch is too large and will
+  be exactly as large next time, so it is dropped rather than parked at the head of the queue
+  for ever.
+- **Delivery is otherwise best-effort, and the limit of that is worth stating.** An event
+  this never delivers - the buffer ceiling dropped it, a conductor release added a kind this
+  build never subscribed to - is picked up by Mission Control's file tail, which is why the
+  tail is never switched off, only slowed down. **But the tail can only recover what conductor
+  wrote down.** For the 30 event kinds it does not persist, this plugin is the only durable
+  record, which is exactly why a failed batch is retried instead of trusted to the tail.
 
 ## Which run an event belongs to
 

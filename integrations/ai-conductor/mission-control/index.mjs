@@ -21,16 +21,20 @@ import { basename, dirname, join, sep } from "node:path";
 //  - **The buffer is bounded.** A daemon that is not running must cost a bounded amount of
 //    memory in a process that may run for days, so the buffer drops its oldest entries and
 //    says so once.
-//  - **Delivery is best-effort, and that is safe rather than sloppy.** Mission Control tails
-//    each worktree's `.pipeline/events.jsonl` independently. Anything this never delivers -
-//    because the daemon was down, because the batch was dropped, because a conductor release
-//    added an event kind nobody here subscribed to - is picked up by that tail. What this
-//    buys is LATENCY, not coverage.
+//  - **A failed delivery is RETRIED, not discarded.** This is the one place the "best-effort
+//    is safe because the tail backfills it" argument does not hold, so it is worth being
+//    exact about where it stops. Conductor persists 44 of its 74 event kinds to
+//    `events.jsonl`; `gate_verdict`, `loop_halt`, `halt_cleared`, `pipeline_closeout` and the
+//    rest of the unpersisted set reach `daemon.log` as text and nowhere else. For those, this
+//    plugin is the only durable record there is, and a batch dropped because the daemon was
+//    restarting is gone for good. So a failed batch goes back to the front of the queue and
+//    is retried with backoff; what is still bounded is the BUFFER, not the attempt.
 //
-// The one thing it delivers that the tail cannot: conductor persists 44 of its 74 event
-// kinds. `gate_verdict`, `loop_halt`, `halt_cleared`, `pipeline_closeout` and the rest of
-// the unpersisted set reach `daemon.log` as text and nowhere else. For those, this is the
-// only durable record there is.
+// For everything the engine does write down, delivery remains best-effort in the way that
+// argument does cover: an event this never delivers - because the buffer ceiling dropped it,
+// because a conductor release added a kind nobody here subscribed to - is picked up by
+// Mission Control's independent tail of `.pipeline/events.jsonl`. What that buys is LATENCY,
+// not coverage.
 
 /** Where the daemon listens, unless told otherwise. */
 const DEFAULT_URL = "http://127.0.0.1:7317";
@@ -53,6 +57,16 @@ const MAX_BUFFER = 5000;
 
 /** How many times this process will complain about anything. */
 const MAX_WARNINGS = 1;
+
+/**
+ * The longest a retry will wait after repeated failures.
+ *
+ * A failed delivery is retried rather than discarded, so the interval has to back off or a
+ * daemon that is down becomes four POSTs a second for the life of the run - inside the
+ * engine's process, on its event loop. Thirty seconds is short enough that a daemon coming
+ * back is noticed promptly and long enough to be free when it does not.
+ */
+const MAX_RETRY_MS = 30_000;
 
 /**
  * The event kinds this build forwards, frozen at ai-conductor 8b51392d.
@@ -293,6 +307,8 @@ export function createMissionControlVisualizer(options = {}) {
   let dropped = 0;
   let inFlight = null;
   let stopped = false;
+  /** Consecutive failed deliveries, for the retry backoff. Reset by any success. */
+  let failures = 0;
 
   /** Complain at most `MAX_WARNINGS` times, about anything, for the life of the process. */
   const warnOnce = (message) => {
@@ -334,13 +350,43 @@ export function createMissionControlVisualizer(options = {}) {
 
   const schedule = () => {
     if (timer !== null || stopped) return;
+    // Backoff applies only after a failed delivery. Without it a daemon that is down turns
+    // this into four POSTs a second, for the life of the run, from inside the engine's
+    // process - and the events are being retried precisely because nothing is listening.
+    const delay = failures === 0 ? FLUSH_MS : Math.min(FLUSH_MS * 2 ** failures, MAX_RETRY_MS);
     timer = setTimeout(() => {
       timer = null;
       void flush();
-    }, FLUSH_MS);
+    }, delay);
     // Never a reason for this plugin to keep conductor's process alive one millisecond
     // longer than the run needs. A pending flush is not work anybody is waiting for.
     if (typeof timer?.unref === "function") timer.unref();
+  };
+
+  /**
+   * Put a failed batch back at the FRONT of the queue, and count the failure.
+   *
+   * At the front because these events are older than anything that arrived while the request
+   * was open, and the daemon stamps arrival order. Re-capped immediately afterwards, so
+   * retrying cannot be a way for the buffer to grow past its ceiling - a daemon that stays
+   * down still costs a bounded amount of memory, it just spends it on the oldest events
+   * instead of discarding them at the door.
+   *
+   * This matters more than a retry usually would. Conductor persists 44 of its 74 event kinds
+   * to `events.jsonl`; for the other 30 - gate verdicts, halts, closeouts - a delivery this
+   * plugin gives up on is the only record that ever existed. The file tail cannot backfill
+   * what was never written to a file.
+   */
+  const requeue = (batch) => {
+    failures += 1;
+    buffer = batch.concat(buffer);
+    if (buffer.length > MAX_BUFFER) {
+      dropped += buffer.length - MAX_BUFFER;
+      buffer = buffer.slice(-MAX_BUFFER);
+      warnOnce(
+        `dropped ${dropped} buffered event(s) - is the Mission Control daemon running at ${url}?`,
+      );
+    }
   };
 
   /**
@@ -354,6 +400,8 @@ export function createMissionControlVisualizer(options = {}) {
     if (inFlight) return inFlight;
     if (buffer.length === 0) return;
     const batch = buffer.slice(0, MAX_BATCH);
+    // Held out of the buffer only while the request is open, so events arriving meanwhile
+    // queue behind it and order is preserved. A failure puts it back; see `requeue`.
     buffer = buffer.slice(batch.length);
     const body = `${batch.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
     inFlight = (async () => {
@@ -366,20 +414,40 @@ export function createMissionControlVisualizer(options = {}) {
           },
           body,
         });
-        if (!res.ok) {
-          // Named rather than generic, because the two failures an operator can actually fix
-          // look nothing alike from here and the message is the only diagnosis they get.
-          warnOnce(
-            res.status === 401
-              ? `Mission Control refused this plugin's token (401). Set MISSION_CONTROL_TOKEN, ` +
-                  `or check that ~/.mission-control/token is readable by the user conductor runs as`
-              : `Mission Control answered ${res.status} at ${url}/ingest/conductor`,
-          );
+        if (res.ok) {
+          failures = 0;
+          return;
         }
+        // 413 is the one refusal this batch can never survive: it is too large, and it will
+        // be exactly as large next time. Requeueing it would put an undeliverable batch at
+        // the head of the queue for ever and block every event behind it.
+        if (res.status === 413) {
+          dropped += batch.length;
+          warnOnce(
+            `Mission Control refused a ${batch.length}-event batch as too large (413); it has ` +
+              `been dropped, and the file tail covers whatever it can`,
+          );
+          failures = 0;
+          return;
+        }
+        // Everything else is worth retrying, 401 included: the token is re-read on each
+        // attempt, so an operator fixing ~/.mission-control/token makes the NEXT attempt
+        // succeed and the events that were buffered meanwhile still arrive.
+        requeue(batch);
+        // Named rather than generic, because the two failures an operator can actually fix
+        // look nothing alike from here and the message is the only diagnosis they get.
+        warnOnce(
+          res.status === 401
+            ? `Mission Control refused this plugin's token (401). Set MISSION_CONTROL_TOKEN, ` +
+                `or check that ~/.mission-control/token is readable by the user conductor runs as`
+            : `Mission Control answered ${res.status} at ${url}/ingest/conductor`,
+        );
       } catch (err) {
+        requeue(batch);
         warnOnce(
           `could not reach Mission Control at ${url} (${err instanceof Error ? err.message : String(err)}); ` +
-            `it reads the engine's files anyway, so this is a delay and not a loss`,
+            `these events are being retried. Most of them are also in the engine's own ` +
+            `events.jsonl, but the daemon-scope ones are not written anywhere else`,
         );
       } finally {
         inFlight = null;
@@ -439,6 +507,11 @@ export function createMissionControlVisualizer(options = {}) {
       // rather than starting a second - so a loop that did not settle it would measure a
       // buffer nothing had drained yet and give up on the remainder.
       if (inFlight) await inFlight;
+      //
+      // The `>= before` guard is what stops this being an infinite retry loop now that a
+      // failed batch is put BACK: a flush that failed leaves the buffer exactly as long as
+      // it found it, and that is the signal to give up rather than to try again. Shutdown is
+      // the one moment retrying is wrong - there is no later flush to inherit the backlog.
       while (buffer.length > 0) {
         const before = buffer.length;
         await flush();

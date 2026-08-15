@@ -327,6 +327,26 @@ test("a repository whose runs cannot be listed stores nothing, rather than trust
   assert.equal(pipelineIngestState("ai-conductor", blocked), "never");
 });
 
+test("a run removed before its FIRST pass does not leave its ledger behind", async () => {
+  const { registry, push } = fixture();
+  seedConductorRun(repo, "brief", { steps: { build: "in_progress" } });
+
+  // Accepted at the door - the worktree was real when the push arrived - and then gone
+  // before the debounced refresh could run. So the projection never held a cursor for this
+  // slug, and retirement that walks only the cursors it happens to have would never visit
+  // it. The rows would sit there for the life of the database.
+  await push(line("brief", { type: "step_started" }, 1));
+  assert.ok(countPipelineEvents("ai-conductor", repo, "brief") > 0);
+  rmSync(conductorWorktree(repo, "brief"), { recursive: true, force: true });
+
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  assert.equal(
+    countPipelineEvents("ai-conductor", repo, "brief"),
+    0,
+    "a pass that could see everything owes the ledger the same answer it gives the projection",
+  );
+});
+
 test("the ledger is retired for a run whose worktree is gone, however its rows got there", async () => {
   const { registry, push } = fixture();
   seedConductorRun(repo, "short-lived", { steps: { build: "in_progress" } });

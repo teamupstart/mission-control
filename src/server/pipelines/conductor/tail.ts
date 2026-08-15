@@ -139,10 +139,6 @@ export function tailConductorEvents(worktree: string, from: number): TailReading
     cursor += Buffer.byteLength(line, "utf8") + 1;
     const trimmed = line.trim();
     if (trimmed === "") continue;
-    if (records.length >= MAX_TAIL_RECORDS) {
-      cappedAt = at;
-      break;
-    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(trimmed);
@@ -150,6 +146,15 @@ export function tailConductorEvents(worktree: string, from: number): TailReading
       continue;
     }
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+    // The cap is checked only once a line has proved to be a RECORD, so the offset it
+    // reports always points at something a later pass will actually read. Checking before
+    // the parse would let a malformed line - one this reader is committed to dropping -
+    // become the resume point, which is a boundary that has to be re-read and re-dropped
+    // on every pass until something valid follows it.
+    if (records.length >= MAX_TAIL_RECORDS) {
+      cappedAt = at;
+      break;
+    }
     const body = parsed as Record<string, unknown>;
     records.push({
       type: typeof body.type === "string" ? body.type : null,

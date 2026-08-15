@@ -275,7 +275,14 @@ export async function refreshPipelineRepo(
     // gets a fresh ledger that this pass read from byte zero, so what it reports is already
     // the whole of the new run's spend - adding the old run's total to it would report a
     // cost that never happened, and would keep reporting it for as long as the row lived.
-    const carried = reading.restarted.has(run.slug) ? null : (costTotals.get(key) ?? null);
+    //
+    // DELETED rather than read past, and the difference is a real defect: a replacement
+    // whose first pass carries no token-bearing record at all computes a null total, which
+    // the write below skips - leaving the OLD total cached for the next ordinary append to
+    // find and add to. Dropping it here means the stale value cannot outlive the pass that
+    // learned it was stale.
+    if (reading.restarted.has(run.slug)) costTotals.delete(key);
+    const carried = costTotals.get(key) ?? null;
     const total =
       run.costTokens === null ? carried : (carried ?? 0) + run.costTokens;
     if (total !== null) costTotals.set(key, total);

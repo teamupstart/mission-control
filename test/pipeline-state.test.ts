@@ -424,6 +424,37 @@ test("the record cap holds the offset at the first record it declined to read", 
   );
 });
 
+test("the cap resumes at a real record, never at a line it is committed to dropping", () => {
+  // The cap is checked after the parse, so a malformed line sitting exactly on the boundary
+  // is consumed rather than becoming the resume point. A boundary on a dropped line is not
+  // fatal - the next pass consumes it and moves on, which a probe confirmed - but it is a
+  // resume point that has to be re-read and re-dropped, and an offset that points at
+  // something no pass will ever return is the wrong thing to persist.
+  const root = repo("tail-cap-garbage");
+  const worktree = seedConductorRun(root, "mixed", {});
+  const valid = (i: number) =>
+    JSON.stringify({ type: "step_completed", step: `s${i}`, tokenUsage: { input: 1 } });
+  writeFileSync(
+    join(worktree, ".pipeline", "events.jsonl"),
+    `${[
+      ...Array.from({ length: 5000 }, (_, i) => valid(i)),
+      "{not json at all",
+      ...Array.from({ length: 10 }, (_, i) => valid(5000 + i)),
+    ].join("\n")}\n`,
+  );
+
+  const first = tailConductorEvents(worktree, 0);
+  assert.equal(first.records.length, 5000);
+  // The resume point is the first VALID record past the cap - the malformed line before it
+  // was consumed by this pass.
+  const second = tailConductorEvents(worktree, first.offset);
+  assert.equal(second.records.length, 10);
+  assert.equal(second.records[0]?.offset, first.offset, "the offset names a real record");
+  assert.equal(second.records[0]?.body.step, "s5000");
+  // Every valid record exactly once across the two passes, and the malformed one dropped.
+  assert.equal((tokensIn(first.records) ?? 0) + (tokensIn(second.records) ?? 0), 5010);
+});
+
 test("a missing ledger is an empty pass at the offset it was handed", () => {
   const root = repo("tail-missing");
   const worktree = seedConductorRun(root, "silent", {});

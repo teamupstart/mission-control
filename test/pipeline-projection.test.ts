@@ -237,6 +237,51 @@ test("a replaced ledger restarts the token total instead of adding to it", async
   assert.equal(registry.listPipelineRuns()[0]?.costTokens, 12);
 });
 
+test("a replacement with no spend of its own does not resurrect the old total", async () => {
+  // The half of the reset that the first repair missed. A replacement ledger whose first
+  // pass carries no token-bearing record computes a null total, and the write that stores a
+  // total skips a null - so the OLD value stayed cached, and the next ordinary append found
+  // it and added to it. The stale value must not outlive the pass that learned it was stale.
+  reset();
+  const root = repo("replaced-empty");
+  const worktree = seedConductorRun(root, "feat", {
+    steps: { build: "done" },
+    events: [
+      { type: "step_completed", step: "build", tokenUsage: { input: 400 } },
+      { type: "step_completed", step: "test_suite", tokenUsage: { input: 400 } },
+      { type: "step_completed", step: "build_review", tokenUsage: { input: 400 } },
+    ],
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+
+  const registry = new Registry();
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(registry.listPipelineRuns()[0]?.costTokens, 1200);
+  const before = statSync(join(worktree, ".pipeline", "events.jsonl")).size;
+
+  // The re-cut, with a shorter ledger carrying NO token usage at all.
+  writeFileSync(
+    join(worktree, ".pipeline", "events.jsonl"),
+    `${JSON.stringify({ type: "step_started", step: "w" })}\n`,
+  );
+  assert.ok(statSync(join(worktree, ".pipeline", "events.jsonl")).size < before);
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(
+    registry.listPipelineRuns()[0]?.costTokens,
+    null,
+    "an unknown spend, not the old run's",
+  );
+
+  // The ordinary append that used to find the stale total and add to it.
+  appendFileSync(
+    join(worktree, ".pipeline", "events.jsonl"),
+    `${JSON.stringify({ type: "step_completed", step: "b", tokenUsage: { input: 9 } })}\n`,
+  );
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(registry.listPipelineRuns()[0]?.costTokens, 9, "the new ledger's spend alone");
+});
+
 test("a run whose worktree is gone leaves the projection", async () => {
   reset();
   const root = repo("torn-down");

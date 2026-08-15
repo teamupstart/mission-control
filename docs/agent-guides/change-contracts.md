@@ -126,7 +126,8 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   `readPersistedEnum`, so an origin this build cannot read decodes to `null`. That is the
   forward-compatibility seam AND the safe direction: a turn whose author cannot be
   established is excluded from a human prompt trail rather than admitted to one. Append,
-  never reorder - `human` is the only value whose text is retained at all
+  never reorder - `human` is the only value whose text is retained at all, and even that is
+  trimmed and clipped to `SCOUT_PROMPT_LIMITS.entryBytes` rather than kept byte-for-byte
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
   editing one rewrites the graph every existing binding pinned to it. The literal node and

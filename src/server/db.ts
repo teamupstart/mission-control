@@ -2122,8 +2122,11 @@ export function openDb(): DatabaseSync {
 
     -- ---- scout prompt context ----
 
-    -- Where a scout's conversation STARTED, frozen at the instant its task prompt crossed
-    -- into the runtime, plus the session name that was on the card at that instant.
+    -- Where a scout's conversation STARTED, frozen at the task-delivery seam, plus the
+    -- session name that was on the card at that instant. Terminal dispatch and assignment
+    -- freeze immediately BEFORE the prompt crosses into the runtime, because the anchor is
+    -- the transcript's size right then; embedded dispatch freezes immediately AFTER the
+    -- driver starts, because there the prompt IS the start and the anchor is byte zero.
     --
     -- Local capture coordination, exactly like archive_capture_jobs above and on the same
     -- (task, episode) key, so a re-dispatch of the same task is genuinely new work with its
@@ -2179,8 +2182,10 @@ export function openDb(): DatabaseSync {
     -- instruction and the capture that reads the transcript would archive that instruction as
     -- if a human had written it. That is the one failure this table exists to prevent, which
     -- is why a non-human row keeps only the fingerprint: its payload is needed to EXCLUDE a
-    -- transcript turn, never to archive one. Human rows keep their exact text, because they
-    -- are also the fallback when the transcript is rotated, missing or not yet flushed.
+    -- transcript turn, never to archive one. A human row keeps its text - trimmed, and
+    -- clipped to the per-entry byte bound, which marks the context truncated when it bites -
+    -- because it is also the fallback when the transcript is rotated, missing or not yet
+    -- flushed.
     --
     -- id is the delivery's own id where one exists (PendingTurn.id) and a generated one
     -- otherwise, and the insert is ON CONFLICT DO NOTHING against it. That is what makes a

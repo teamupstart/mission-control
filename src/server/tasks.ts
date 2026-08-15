@@ -2183,10 +2183,22 @@ export class TaskManager {
       discardScoutPromptBoundary(boundary);
       throw err;
     }
+    // The boundary is discarded on anything short of a VERIFIED submit, which is a wider
+    // refusal than the task's own. `injectPrompt` returns `{ ok: true, submitVerified: false }`
+    // on two reachable paths - a harness that renders no pending-paste placeholder, and a run
+    // of unreadable captures - and both mean the Enter went out while the text may still be
+    // sitting in the composer. The task still proceeds on `ok` alone, exactly as it always
+    // has: reversing that would change what assignment MEANS, which is not archive
+    // bookkeeping's call to make. But a boundary is a claim that this episode was handed this
+    // prompt, and an unconfirmed paste cannot support that claim.
+    //
+    // The cost of being wrong this way is a scout that loses its frozen title and anchor and
+    // falls back to the legacy task title with an honestly truncated trail. The cost of being
+    // wrong the other way is an archive anchored into a conversation that never started.
+    if (!r.ok || !r.submitVerified) discardScoutPromptBoundary(boundary);
     if (!r.ok) {
       // Nothing was typed, and the task stays droppable. A boundary left behind would claim
       // an episode saw a task that is still sitting in the backlog.
-      discardScoutPromptBoundary(boundary);
       return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
     }
 

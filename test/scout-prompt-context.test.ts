@@ -678,7 +678,14 @@ test("both task-delivery seams freeze a boundary, not just the dispatcher", () =
   // both seams because `inject` is an injected dependency and nothing binds it to reject
   // through a value rather than an exception.
   assert.equal(src("src/server/dispatcher.ts").match(/discardScoutPromptBoundary\(/g)?.length, 1);
+  // Two at the assignment seam, not three: one catch arm, and one combined refusal that
+  // subsumes the plain `!r.ok` case rather than discarding twice.
   assert.equal(src("src/server/tasks.ts").match(/discardScoutPromptBoundary\(/g)?.length, 2);
+  // The assignment seam additionally discards on an UNVERIFIED submit, which is wider than
+  // its own success test: the task still proceeds on `ok` alone, as it always has, but a
+  // boundary claims the episode was handed this prompt and an unconfirmed paste - the text
+  // may still be in the composer - cannot support that claim.
+  assert.match(src("src/server/tasks.ts"), /if \(!r\.ok \|\| !r\.submitVerified\) discardScoutPromptBoundary\(boundary\);/);
   for (const path of ["src/server/dispatcher.ts", "src/server/tasks.ts"]) {
     assert.match(
       src(path),

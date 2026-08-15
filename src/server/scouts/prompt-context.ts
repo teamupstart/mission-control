@@ -50,10 +50,11 @@ export type ScoutPromptOrigin = (typeof SCOUT_PROMPT_ORIGINS)[number];
  * could never be published, and the collector reads them from here so the two cannot drift.
  *
  * `entries` and `rows` are separate because the two row kinds cost different things. A human
- * row carries its exact text and is the expensive one, so it is capped at what a manifest
- * can carry anyway. A non-human row is an origin and a hash, and its cap is far looser -
- * dropping one does not lose an archived prompt, it loses the proof that a turn in the
- * transcript was NOT a human's, which is the more damaging thing to run out of.
+ * row carries its text - trimmed, and clipped to `entryBytes` - and is the expensive one, so
+ * it is capped at what a manifest could carry anyway. A non-human row is an origin and a
+ * hash, and its cap is far looser: dropping one does not lose an archived prompt, it loses
+ * the proof that a turn in the transcript was NOT a human's, which is the more damaging
+ * thing to run out of.
  */
 export const SCOUT_PROMPT_LIMITS = {
   /** Human turns retained per episode. Matches the portable per-manifest entry bound. */

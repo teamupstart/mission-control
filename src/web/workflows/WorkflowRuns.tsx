@@ -590,8 +590,18 @@ function WorklistRailRow({
         };
       }
       case "check": {
+        /*
+         * The OUTCOME decides the chip, because the outcome decides the segment.
+         *
+         * A check's attempt also carries a synthetic verdict, and reading the chip off that -
+         * which is what the pipeline strip above does, correctly, since it has no segment to
+         * agree with - would let a row sitting in `Blocking` because the command exited
+         * non-zero draw itself "Passed" whenever the two disagree. `checkStatus` still gets the
+         * outcome as well, so `skipped` and `unavailable` keep their degraded amber chips
+         * rather than being flattened into the green of a command that really ran.
+         */
         const status = checkStatus(
-          verdictOf(item.attempt)?.verdict ?? item.attempt.state,
+          item.outcome.status === "failed" ? "fail" : "pass",
           item.outcome.status,
         );
         return {
@@ -634,8 +644,12 @@ function WorklistRailRow({
       <Tooltip label={view.hint}>
         <button
           type="button"
+          /* The tone comes off the SAME chip the row draws, so the left accent and the word
+             beside it can never disagree about what this row is. `is-{kind}` and the change's
+             `is-{state}` stay for the selectors the specs read; neither carries a colour. */
           className={`wf-run-worklist-row is-${item.kind}${
-            item.kind === "change" ? ` is-${item.row.state}` : ""}${selected ? " active" : ""}`}
+            item.kind === "change" ? ` is-${item.row.state}` : ""
+          } is-tone-${view.chip.tone}${selected ? " active" : ""}`}
           aria-current={selected}
           onClick={onSelect}
         >

@@ -1979,6 +1979,99 @@ test("a check that never ran stays a degraded pass rather than a blocker", () =>
   assert.match(html, /workflow-waiting">Skipped/);
 });
 
+/**
+ * The left accent and the chip beside it are one claim, so they are read from one value.
+ *
+ * Keyed on the row's KIND, which is how this shipped for a round, a fixed colour per kind says
+ * things the kind cannot know: every Command red including the skipped one sitting in `Passed`,
+ * every reviewer verdict green including the failing one that reaches `Blocking` through the
+ * unparseable-verdict path, every verdict-less reviewer red including one that has simply not
+ * reported. The chip was right in all three cases, which is what made it two marks on one row
+ * disagreeing rather than a uniform mistake.
+ *
+ * Asserted as a SLICE of the row's own opening tag rather than as a substring of the page: the
+ * tone class has to be on the element that carries the border, and `assert.match` over the whole
+ * markup would be satisfied by it appearing on any row at all.
+ */
+function rowTagFor(html: string, kind: string): string {
+  const at = html.indexOf(`wf-run-worklist-row is-${kind}`);
+  assert.notEqual(at, -1, `no ${kind} row rendered`);
+  const opens = html.lastIndexOf("<button", at);
+  return html.slice(opens, html.indexOf(">", at) + 1);
+}
+
+test("a row's left accent is its own tone, never a colour fixed by its kind", () => {
+  // A Command that never ran is a DEGRADED pass. Red would say the suite failed.
+  const skipped = render(detailWithCheck({
+    status: "skipped",
+    slot: "test",
+    command: null,
+    exitCode: null,
+    output: "",
+    truncatedBytes: 0,
+    note: "No test command is configured for this repository, so this gate was skipped.",
+  }));
+  assert.match(rowTagFor(skipped, "check"), /is-tone-waiting/);
+  assert.doesNotMatch(rowTagFor(skipped, "check"), /is-tone-failed/);
+
+  // And one that ran and exited non-zero is the blocker it says it is.
+  const failed = render(detailWithCheck({
+    status: "failed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 1,
+    output: "1 failing",
+    truncatedBytes: 0,
+    note: "`npm test` exited 1.",
+  }));
+  assert.match(rowTagFor(failed, "check"), /is-tone-failed/);
+
+  // A fail verdict the strict schema could not read still reaches `Blocking`, and must not wear
+  // the green a passing reviewer does.
+  const base = runningDetail();
+  const unreadable = render({
+    ...base,
+    attempts: base.attempts.map((item) => item.id === "attempt-1"
+      ? {
+          ...item,
+          verdict: {
+            ...failVerdict,
+            requestedChanges: [{ title: "No evidence attached", rationale: "why", evidence: [] }],
+          },
+        }
+      : item),
+  } as WorkflowRunDetail, { roundId: "submission-1" });
+  assert.match(rowTagFor(unreadable, "verdict"), /is-tone-failed/);
+  // The three change states keep the colours the plan argued for, now through the same route.
+  const round1 = render(runningDetail(), { roundId: "submission-1" });
+  assert.match(rowTagFor(round1, "change is-open"), /is-tone-failed/);
+  const settled = render(qualityRounds("fail", "pass", "none"));
+  assert.match(rowTagFor(settled, "change is-resolved"), /is-tone-passed/);
+
+  // A reviewer that has not reported has not failed anything either.
+  const pending = qualityRounds("none");
+  pending.attempts = [attempt(
+    "attempt-pending",
+    "submission-1",
+    NODE.quality,
+    snapshot("p-quality", "Quality reviewer"),
+    { state: "queued", verdict: null, startedAt: null, finishedAt: null },
+  )];
+  assert.match(rowTagFor(render(pending), "attempt"), /is-tone-waiting/);
+  assert.doesNotMatch(rowTagFor(render(pending), "attempt"), /is-tone-failed/);
+
+  // And one that errored has, so it keeps the blocker's colour.
+  const errored = qualityRounds("none");
+  errored.attempts = [attempt(
+    "attempt-errored",
+    "submission-1",
+    NODE.quality,
+    snapshot("p-quality", "Quality reviewer"),
+    { state: "error", verdict: null, error: "provider_timeout" },
+  )];
+  assert.match(rowTagFor(render(errored), "attempt"), /is-tone-failed/);
+});
+
 test("a change citing no file says so rather than drawing an empty slot", () => {
   const base = runningDetail();
   const pathless = {

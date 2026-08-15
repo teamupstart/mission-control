@@ -1042,19 +1042,25 @@ button.wf-run-version:focus-visible {
   background: color-mix(in oklab, var(--working) 10%, var(--panel-2));
 }
 
-.wf-run-worklist-row.is-open,
-.wf-run-worklist-row.is-check,
-.wf-run-worklist-row.is-attempt { border-left-color: var(--danger); }
-.wf-run-worklist-row.is-resolved { border-left-color: var(--idle); }
-.wf-run-worklist-row.is-unconfirmed { border-left-color: var(--attention); }
-.wf-run-worklist-row.is-verdict { border-left-color: var(--idle); }
-
-.wf-run-worklist-row.active.is-open,
-.wf-run-worklist-row.active.is-check,
-.wf-run-worklist-row.active.is-attempt { border-left-color: var(--danger); }
-.wf-run-worklist-row.active.is-resolved,
-.wf-run-worklist-row.active.is-verdict { border-left-color: var(--idle); }
-.wf-run-worklist-row.active.is-unconfirmed { border-left-color: var(--attention); }
+/*
+ * The accent is the row's OWN TONE, never its kind.
+ *
+ * It was keyed on kind first, and a fixed colour per kind is a claim the kind cannot make: a
+ * skipped Command in `Passed` wore the same red as a failed one, a fail verdict that reached
+ * `Blocking` through the unparseable-verdict path wore the green of a resolved change, and a
+ * reviewer that had merely not reported yet wore red. The chip beside them was right the whole
+ * time, which is exactly what made it a lie worth fixing - two marks on one row disagreeing.
+ *
+ * `is-{kind}` and `is-{state}` stay on the element as the selectors specs read; only the colour
+ * moved to the tone the chip is already computed from, so the stripe and the chip cannot part.
+ * These sit AFTER `.active` on purpose: that rule sets `border-color` on every side, so at equal
+ * specificity source order is what keeps a selected row's left edge saying what it is.
+ */
+.wf-run-worklist-row.is-tone-failed { border-left-color: var(--danger); }
+.wf-run-worklist-row.is-tone-passed { border-left-color: var(--idle); }
+.wf-run-worklist-row.is-tone-waiting { border-left-color: var(--attention); }
+.wf-run-worklist-row.is-tone-running { border-left-color: var(--working); }
+.wf-run-worklist-row.is-tone-stopped { border-left-color: var(--exited); }
 
 .wf-run-worklist-row-head {
   display: flex;

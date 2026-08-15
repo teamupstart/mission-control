@@ -305,6 +305,16 @@ test("a second round sorts each change by what its own reviewer said, and names 
   // Resolved names the round its OWN reviewer confirmed in, not the round the run moved on.
   await expect(resolved).toContainText("Resolved in round 2");
   await expect(resolved).toContainText(REVIEWER.settling);
+  /*
+   * And the two rows' left accents say the same thing their chips do.
+   *
+   * Asserted as a class rather than left to the eye because the accent is read from the row's
+   * tone rather than from its kind, and the whole point of the amber is that an operator must
+   * not see a satisfied-looking row above a card calling that reviewer a repeat offender.
+   */
+  await expect(resolved).toHaveClass(/is-tone-passed/);
+  await expect(unconfirmed).toHaveClass(/is-tone-waiting/);
+  await expect(unconfirmed).not.toHaveClass(/is-tone-passed/);
   // Unconfirmed claims neither outcome, and says which reviewer left it unknown.
   await expect(unconfirmed).toContainText("Last raised in round 1");
   await expect(unconfirmed).toContainText(

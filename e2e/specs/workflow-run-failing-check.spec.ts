@@ -193,6 +193,10 @@ test("a failed command gate is the blocker, and keeps its exit code and output",
   await expect(row).toContainText("Command · test");
   await expect(row).toContainText("exit 3");
   await expect(row.locator(".workflow-chip")).toHaveText("Failed");
+  // The chip and the left accent are read from the same outcome, so a red gate cannot draw
+  // itself green - and a Command that never ran cannot draw itself red. The degraded half of
+  // that pair is pinned in `test/workflow-runs-render.test.ts`, which can build one directly.
+  await expect(row).toHaveClass(/is-tone-failed/);
 
   // The whole card the old section rendered, unchanged: the command, the sentence behind the
   // status, and the retained tail of what it printed.

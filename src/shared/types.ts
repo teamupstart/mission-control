@@ -1515,8 +1515,14 @@ export type TaskStatus =
   | "cancelled"
   | "failed";
 
-/** How a task's isolated worktree was provisioned - decides how it's torn down. */
-export type WorktreeProvider = "treehouse" | "git";
+/**
+ * How a task's isolated worktree was provisioned - decides how it is torn down.
+ *
+ * Persisted and append-only. `treehouse` and `git` keep their historical meanings even
+ * after native allocation becomes the default: cleanup always follows the provider that
+ * created the checkout, never whichever provider is currently available.
+ */
+export type WorktreeProvider = "treehouse" | "git" | "mission";
 
 /**
  * How urgent a task is, when somebody said. Never inferred: a task with no priority

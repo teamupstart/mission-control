@@ -14,6 +14,18 @@ this page then applies per tree: each is leased, pinned and reaped on its own. P
 all-or-nothing, so a dispatch that cannot cut one of them hands back the ones it already took
 rather than starting an agent with half its repositories.
 
+### Native allocator foundation
+
+The daemon now owns a durable native-worktree pool model keyed by Git's physical common
+directory, not by the checkout path used to reach it. Its slot records carry exact lease and
+owner identity, and startup reconciliation fails closed when process or cwd occupancy cannot be
+proved safe. Pool directories also carry a versioned Mission Control marker so a database row
+alone never authorizes filesystem maintenance.
+
+This is lifecycle infrastructure only. Dispatch, workflow checks, `make session`, and leaked
+treehouse lease cleanup still acquire and return worktrees exactly as described below. Consumer
+cutover, treehouse retirement, and the Settings surface are later work.
+
 `make session` makes treehouse a one-command "start a clean session":
 
 ```sh

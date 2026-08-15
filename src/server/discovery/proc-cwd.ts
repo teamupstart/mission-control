@@ -1,5 +1,11 @@
 import { run } from "../util/exec.ts";
 
+export interface ProcCwdSnapshot {
+  cwds: Map<number, string>;
+  /** Non-null only when lsof failed to return any usable process records. */
+  unknownReason: string | null;
+}
+
 /**
  * Resolve the real working directory of each pid via one batched `lsof`.
  *
@@ -12,10 +18,10 @@ import { run } from "../util/exec.ts";
  * lsof may exit non-zero when some pids vanish mid-call, but still prints the
  * survivors, and pids it can't resolve are simply absent from the map.
  */
-export async function readProcCwds(pids: number[]): Promise<Map<number, string>> {
+export async function readProcCwdsSnapshot(pids: number[]): Promise<ProcCwdSnapshot> {
   const out = new Map<number, string>();
   const uniq = [...new Set(pids)].filter((p) => Number.isInteger(p) && p > 0);
-  if (uniq.length === 0) return out;
+  if (uniq.length === 0) return { cwds: out, unknownReason: null };
 
   const res = await run("lsof", ["-a", "-d", "cwd", "-p", uniq.join(","), "-Fpn"], {
     timeoutMs: 4000,
@@ -29,5 +35,16 @@ export async function readProcCwds(pids: number[]): Promise<Map<number, string>>
       out.set(pid, line.slice(1));
     }
   }
-  return out;
+  // lsof exits 1 when one PID vanishes during a batched read, while still printing the
+  // survivors. That partial answer is usable and omitted PIDs are ignored. No records at
+  // all, a timeout, or an overflow is a failed observation and must fail closed.
+  const unknown =
+    res.outcomeUnknown || res.overflowed || (res.code !== 0 && out.size === 0)
+      ? `cwd listing failed: ${res.stderr.trim() || `exit ${res.code}`}`
+      : null;
+  return { cwds: out, unknownReason: unknown };
+}
+
+export async function readProcCwds(pids: number[]): Promise<Map<number, string>> {
+  return (await readProcCwdsSnapshot(pids)).cwds;
 }

@@ -1638,6 +1638,115 @@ export const HarnessesConfigSchema = z.object({
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
 
 /**
+ * Bounds for daemon-owned worktree policy. Kept beside the schemas so a later Settings
+ * surface can display the same limits the daemon enforces rather than copying numbers.
+ */
+export const WORKTREES_CONFIG_LIMITS = {
+  minSlots: 1,
+  maxSlots: 128,
+  maxRepositories: 256,
+  maxCommonDirectoryBytes: 4096,
+  maxSetupArgs: 32,
+  maxSetupArgBytes: 4096,
+} as const;
+
+const WorktreeSetupArgvSchema = z
+  .array(z.string().min(1).max(WORKTREES_CONFIG_LIMITS.maxSetupArgBytes))
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxSetupArgs);
+
+const WorktreeRepositoryConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    maxSlots: z
+      .number()
+      .int()
+      .min(WORKTREES_CONFIG_LIMITS.minSlots)
+      .max(WORKTREES_CONFIG_LIMITS.maxSlots)
+      .optional(),
+    /** Operator-authored argv. It is never read from a repository-controlled file. */
+    setupArgv: WorktreeSetupArgvSchema.optional(),
+  })
+  .strict();
+
+const WorktreeRepositoryKeySchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxCommonDirectoryBytes);
+
+/**
+ * The only policy authority for native worktrees. Operational pool/slot rows deliberately
+ * do not repeat any of these values.
+ */
+export const WorktreesConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxSlots: z
+      .number()
+      .int()
+      .min(WORKTREES_CONFIG_LIMITS.minSlots)
+      .max(WORKTREES_CONFIG_LIMITS.maxSlots)
+      .default(16),
+    repositories: z.record(WorktreeRepositoryKeySchema, WorktreeRepositoryConfigSchema).default({}),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (Object.keys(value.repositories).length > WORKTREES_CONFIG_LIMITS.maxRepositories) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repositories"],
+        message: `at most ${WORKTREES_CONFIG_LIMITS.maxRepositories} repository overrides are allowed`,
+      });
+    }
+  });
+export type WorktreesConfig = z.infer<typeof WorktreesConfigSchema>;
+
+const WorktreeRepositoryConfigPatchSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    maxSlots: z
+      .number()
+      .int()
+      .min(WORKTREES_CONFIG_LIMITS.minSlots)
+      .max(WORKTREES_CONFIG_LIMITS.maxSlots)
+      .optional(),
+    /** Null removes an existing operator-authored setup command. */
+    setupArgv: WorktreeSetupArgvSchema.nullable().optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, "repository patch must change at least one field");
+
+/** Partial update. A null repository value removes that repository's whole override. */
+export const WorktreesConfigPatchSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    maxSlots: z
+      .number()
+      .int()
+      .min(WORKTREES_CONFIG_LIMITS.minSlots)
+      .max(WORKTREES_CONFIG_LIMITS.maxSlots)
+      .optional(),
+    repositories: z
+      .record(WorktreeRepositoryKeySchema, WorktreeRepositoryConfigPatchSchema.nullable())
+      .optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, "worktrees patch must change at least one field")
+  .superRefine((value, ctx) => {
+    if (
+      value.repositories &&
+      Object.keys(value.repositories).length > WORKTREES_CONFIG_LIMITS.maxRepositories
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repositories"],
+        message: `at most ${WORKTREES_CONFIG_LIMITS.maxRepositories} repository patches are allowed`,
+      });
+    }
+  });
+export type WorktreesConfigPatch = z.infer<typeof WorktreesConfigPatchSchema>;
+
+/**
  * Partial update of the harnesses config from the dashboard.
  *
  * Spelled out rather than `HarnessesConfigSchema.partial()`, because `.partial()`

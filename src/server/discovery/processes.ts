@@ -258,7 +258,17 @@ export function daemonOwnedPids(procs: Proc[], daemonPid: number = process.pid):
  * multi-token `lstart` at the tail (pid ppid tty are single tokens before it);
  * pass B puts the multi-token `command` at the tail. We join on pid.
  */
-export async function listProcesses(): Promise<Proc[]> {
+export interface ProcessSnapshot {
+  processes: Proc[];
+  /** Non-null when either system-wide ps read did not produce a complete answer. */
+  unknownReason: string | null;
+}
+
+/**
+ * The process snapshot plus the health of the two underlying reads. Discovery may use the
+ * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
+ */
+export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
   const [a, b] = await Promise.all([
     run("ps", ["-Ao", "pid=,ppid=,tty=,lstart="]),
     run("ps", ["-Ao", "pid=,command="]),
@@ -290,5 +300,17 @@ export async function listProcesses(): Promise<Proc[]> {
       agentNative: match?.native ?? false,
     });
   }
-  return procs;
+  const failed = [a, b].find(
+    (result) => result.code !== 0 || result.outcomeUnknown || result.overflowed,
+  );
+  return {
+    processes: procs,
+    unknownReason: failed
+      ? `process listing failed: ${failed.stderr.trim() || `exit ${failed.code}`}`
+      : null,
+  };
+}
+
+export async function listProcesses(): Promise<Proc[]> {
+  return (await listProcessesSnapshot()).processes;
 }

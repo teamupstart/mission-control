@@ -22,6 +22,8 @@ export const DB_PATH = join(STATE_DIR, "harness.db");
 export const TOKEN_PATH = tokenPath();
 /** Isolated worktrees the daemon creates for dispatched tasks (git-worktree fallback). */
 export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
+/** Durable, reusable worktrees allocated by the daemon-owned native provider. */
+export const WORKTREE_POOLS_DIR = join(STATE_DIR, "worktree-pools");
 /** Isolated worktrees the daemon creates for Workflow checks when treehouse is unavailable. */
 export const CHECK_WORKTREES_DIR = join(STATE_DIR, "check-worktrees");
 

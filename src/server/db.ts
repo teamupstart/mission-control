@@ -836,6 +836,66 @@ export function openDb(): DatabaseSync {
       value TEXT NOT NULL
     );
 
+    -- Operational identity for daemon-owned native worktree pools. Policy does not live
+    -- here: app_config.worktrees is the sole source for enablement, capacity and setup argv.
+    -- The physical Git common directory is the pool identity, not a remote URL, so two local
+    -- clones of one remote can never share Git worktree bookkeeping.
+    CREATE TABLE IF NOT EXISTS worktree_pools (
+      id                     TEXT    NOT NULL PRIMARY KEY,
+      git_common_dir         TEXT    NOT NULL,
+      main_checkout_root     TEXT    NOT NULL,
+      pool_path              TEXT    NOT NULL,
+      last_reconciled_at     INTEGER,
+      reconciliation_error  TEXT,
+      created_at             INTEGER NOT NULL,
+      updated_at             INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_pools_common_dir
+      ON worktree_pools(git_common_dir);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_pools_path
+      ON worktree_pools(pool_path);
+
+    -- One durable native slot. State identifiers are intentionally unconstrained TEXT:
+    -- their vocabulary is append-only, and adding a later state must not require rebuilding
+    -- an operational table while worktrees are live.
+    --
+    -- Every filesystem mutation is preceded by provisioning/returning/pruning. The version
+    -- rises on every state transition and is part of the release compare-and-swap. Active
+    -- identity is cleared only after a proven return; last-released identity closes the
+    -- crash window before a domain owner clears its own row.
+    CREATE TABLE IF NOT EXISTS worktree_slots (
+      id                        TEXT    NOT NULL PRIMARY KEY,
+      pool_id                   TEXT    NOT NULL,
+      ordinal                   INTEGER NOT NULL,
+      path                      TEXT    NOT NULL,
+      state                     TEXT    NOT NULL,
+      version                   INTEGER NOT NULL,
+      requested_head_sha        TEXT,
+      current_head_sha          TEXT,
+      active_lease_id           TEXT,
+      active_owner_kind         TEXT,
+      active_owner_key          TEXT,
+      leased_at                 INTEGER,
+      last_released_lease_id    TEXT,
+      last_released_owner_kind  TEXT,
+      last_released_owner_key   TEXT,
+      last_used_at              INTEGER,
+      quarantine_reason         TEXT,
+      last_error                TEXT,
+      created_at                INTEGER NOT NULL,
+      updated_at                INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_slots_pool_ordinal
+      ON worktree_slots(pool_id, ordinal);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_slots_path
+      ON worktree_slots(path);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_slots_active_lease
+      ON worktree_slots(active_lease_id) WHERE active_lease_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_worktree_slots_pool_state
+      ON worktree_slots(pool_id, state, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_worktree_slots_last_release
+      ON worktree_slots(last_released_lease_id);
+
     -- Reusable workflow judges. guidance_md is exact operator-authored Markdown: no
     -- normalized copy exists and every write names this column directly.
     --

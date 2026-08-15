@@ -67,6 +67,7 @@ import { TaskManagerGateway } from "./ensembles/member-launch.ts";
 import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/finalize-deps.ts";
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 import { createCheckScheduler } from "./workflows/checks.ts";
+import { WorktreeManager } from "./worktrees/manager.ts";
 
 openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
@@ -94,6 +95,15 @@ try {
 // and record nothing.
 warnIfSessionAttributionDisabled();
 const registry = new Registry();
+// The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
+// and no Phase 1 consumer selects it yet: existing dispatch, check and make-session paths
+// remain provider-byte-identical while the durable state machine is reviewed in isolation.
+const worktrees = new WorktreeManager();
+try {
+  await worktrees.reconcile();
+} catch (err) {
+  console.error("[mission-control] could not reconcile native worktrees:", err);
+}
 // Durable attribution for the scout prompt trail, wired to the one chokepoint every
 // non-human delivery already reports through. In-memory attribution is enough to colour a
 // live conversation, but a scout archive outlives this process: without this, a daemon
@@ -356,6 +366,9 @@ const stopHeadlessPruner = startHeadlessPruner();
 const stopPoolReaper = startPoolReaper(registry, {
   reclaimLeases: () => checkLeases.reclaimLeaked(checkRuntime.groupRecovery),
 });
+// A separate native cadence, deliberately not aliased to MISSION_POOL_REAP_MS. It is inert
+// while no native pool rows exist, which is the production shape until Phase 2 cuts over.
+worktrees.startMaintenance();
 const stopSkillsReloader = startSkillsReloader(registry);
 // Pulls work INTO the backlog from systems that already hold it. In the daemon because
 // ingest writes to the DB and the daemon is the only writer; needs none of the reload
@@ -537,6 +550,7 @@ async function shutdown(): Promise<void> {
   away.stop();
   stopHeadlessPruner();
   stopPoolReaper();
+  await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();
   stopPipelines();

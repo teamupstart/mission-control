@@ -59,6 +59,11 @@ on unresolved comments or a red CI - tracks each pull request separately, so one
 feedback is never mistaken for another's or lost behind it. They share the pane, so they take
 turns in it: one instruction at a time, never two in a turn expecting neither.
 
+The daemon also carries the durable state and conservative restart reconciliation needed for
+Mission Control's native worktree pools. No dispatch or workflow-check acquisition path selects
+that allocator yet: current sessions and checks continue to use their existing treehouse or
+plain Git behavior until the later consumer cutover.
+
 ![Mission Control dispatch](docs/images/dispatch.png)
 
 ## Build the operating system around the work

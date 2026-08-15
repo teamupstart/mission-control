@@ -670,11 +670,12 @@ It names the consequential stage and its members, and keeps the first objection,
 or uncertain-delivery warning in view. A stage carried forward from an earlier round never takes
 that slot - it is finished work, so the preview keeps naming whatever is actually running - and the
 tile instead carries one line counting them, **✓ 2 stages carried from Round 1 · evidence 1**.
+Click the compact preview to open that exact run's complete evidence and timeline.
 **Show full workflow** expands that tile in place into the same actionable ladder;
 **Collapse workflow** returns to the preview. Press <kbd>e</kbd> on the selected tile to toggle
 those same controls without opening the session detail. These controls do
-not open the session or leave the Board. **Open run** inside the expanded ladder remains the explicit route
-to the complete evidence and timeline. The preview fetches run detail when its tile mounts and
+not open the session or leave the Board. **Open run** inside the expanded ladder reaches the same
+run as the compact preview. The preview fetches run detail when its tile mounts and
 refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload itself is unchanged.
 
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,

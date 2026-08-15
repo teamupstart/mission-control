@@ -381,7 +381,7 @@ test("Preview prepares the identical packet and types nothing at all", async ({
   await expect(card.getByText("Remove the stray scratch file and say so.")).toHaveCount(0);
 });
 
-test("e toggles the selected Board workflow card without opening session detail", async ({
+test("Board workflow controls expand in place and open the exact run", async ({
   dashboard,
   daemon,
 }) => {
@@ -457,4 +457,15 @@ test("e toggles the selected Board workflow card without opening session detail"
   await dashboard.keyboard.press("Escape");
   await dashboard.keyboard.press("Enter");
   await expect(card).not.toHaveClass(/expanded/);
+
+  // The compact workflow panel is the direct route to this durable run, while the separate
+  // disclosure control above remains the in-place route. Return to Board to prove the click
+  // neither drills into session detail nor lands on a merely related run in the Runs list.
+  await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  await dashboard.reload();
+  await dashboard
+    .getByRole("link", { name: /Open E2E action run preview v\d+ workflow run/ })
+    .click();
+  await expect(dashboard).toHaveURL(`${daemon.baseURL}/#/runs/${runId}`);
+  await expect(dashboard.locator(".wf-run-reader")).toContainText("E2E action run preview");
 });

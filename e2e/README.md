@@ -363,7 +363,8 @@ two full-Board captures from the same passing browser regression. `01-expanded.p
 after the selected card receives its first <kbd>e</kbd>: the full workflow ladder is visible,
 the control reads **Collapse workflow**, and the Board remains in overview mode. `02-collapsed.png`
 is taken after the second <kbd>e</kbd>: the active-rung preview and **Show full workflow** return,
-with session detail still closed.
+with session detail still closed. The same regression then clicks that compact preview and proves
+it opens the exact durable run rather than session detail or an unselected Runs list.
 
 Regenerate both frames with:
 
@@ -371,7 +372,7 @@ Regenerate both frames with:
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/workflow-session-action-run.spec.ts \
-  -g 'e toggles the selected Board workflow card' \
+  -g 'Board workflow controls expand in place and open the exact run' \
   --reporter=list
 ```
 

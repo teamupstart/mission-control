@@ -301,19 +301,44 @@ function splitSentence(sentence: string): { lead: string | null; rest: string } 
   };
 }
 
+/**
+ * Keep an ordinary primary click on App's single run opener, while preserving the native link
+ * contract for opening a run in another tab. The href is the durable fallback; the callback is
+ * the in-app path that owns navigation history and any route state worth carrying forward.
+ */
+function followRunLink(
+  event: React.MouseEvent<HTMLAnchorElement>,
+  onOpenRun: () => void,
+): void {
+  event.stopPropagation();
+  if (
+    event.button !== 0
+    || event.metaKey
+    || event.ctrlKey
+    || event.shiftKey
+    || event.altKey
+  ) return;
+  event.preventDefault();
+  onOpenRun();
+}
+
 export function WorkflowLadderPeek({
   summary,
   detail,
+  onOpenRun,
 }: {
   summary: WorkflowRunSummary;
   detail: WorkflowRunDetail;
+  onOpenRun: () => void;
 }): React.JSX.Element {
   const view = workflowLadderPeekView(summary, detail);
   const sentence = view?.sentence ? splitSentence(view.sentence) : null;
   return (
-    <section
+    <a
+      href={`#/runs/${encodeURIComponent(summary.id)}`}
       className={`wf-tile-peek workflow-${view?.status.tone ?? workflowRunTone(summary)}`}
-      aria-label={`${summary.workflowName}: ${workflowRunLabel(summary)}`}
+      aria-label={`Open ${summary.workflowName} v${summary.workflowVersion} workflow run`}
+      onClick={(event) => followRunLink(event, onOpenRun)}
     >
       <header className="wf-tile-peek-head">
         <span className="wf-tile-peek-name">⌁ {summary.workflowName}</span>
@@ -359,21 +384,25 @@ export function WorkflowLadderPeek({
       ) : (
         <p className="wf-tile-peek-unavailable">This workflow has no stage-shaped preview.</p>
       )}
-    </section>
+    </a>
   );
 }
 
 export function WorkflowLadderPeekPlaceholder({
   summary,
   error = false,
+  onOpenRun,
 }: {
   summary: WorkflowRunSummary;
   error?: boolean;
+  onOpenRun: () => void;
 }): React.JSX.Element {
   return (
-    <section
+    <a
+      href={`#/runs/${encodeURIComponent(summary.id)}`}
       className={`wf-tile-peek workflow-${workflowRunTone(summary)} is-placeholder`}
-      aria-label={`${summary.workflowName}: ${workflowRunLabel(summary)}`}
+      aria-label={`Open ${summary.workflowName} v${summary.workflowVersion} workflow run`}
+      onClick={(event) => followRunLink(event, onOpenRun)}
     >
       <header className="wf-tile-peek-head">
         <span className="wf-tile-peek-name">⌁ {summary.workflowName}</span>
@@ -386,6 +415,6 @@ export function WorkflowLadderPeekPlaceholder({
       <p className="wf-tile-peek-unavailable">
         {error ? "Stage detail is unavailable." : "Loading the current stage…"}
       </p>
-    </section>
+    </a>
   );
 }

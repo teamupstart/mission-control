@@ -627,6 +627,7 @@ export interface WorkflowTileDisclosureState {
 function WorkflowTileDisclosure({
   run,
   detail,
+  onOpenRun,
   expanded,
   onExpandedChange,
   regionId,
@@ -635,6 +636,7 @@ function WorkflowTileDisclosure({
 }: {
   run: WorkflowRunSummary;
   detail: WorkflowRunDetail | null;
+  onOpenRun: () => void;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   regionId: string;
@@ -651,8 +653,14 @@ function WorkflowTileDisclosure({
         {expanded
           ? children
           : detail
-            ? <WorkflowLadderPeek summary={run} detail={detail} />
-            : <WorkflowLadderPeekPlaceholder summary={run} error={loadError} />}
+            ? <WorkflowLadderPeek summary={run} detail={detail} onOpenRun={onOpenRun} />
+            : (
+                <WorkflowLadderPeekPlaceholder
+                  summary={run}
+                  error={loadError}
+                  onOpenRun={onOpenRun}
+                />
+              )}
       </div>
       <div className="tile-workflow-disclosure-row">
         <Tooltip label={expanded
@@ -776,6 +784,7 @@ export function WorkflowLadderPanel({
           <WorkflowTileDisclosure
             run={run}
             detail={null}
+            onOpenRun={onOpenRun}
             expanded={tileDisclosure.expanded}
             onExpandedChange={tileDisclosure.onExpandedChange}
             regionId={disclosureRegionId}
@@ -801,6 +810,7 @@ export function WorkflowLadderPanel({
           <WorkflowTileDisclosure
             run={run}
             detail={null}
+            onOpenRun={onOpenRun}
             expanded={tileDisclosure.expanded}
             onExpandedChange={tileDisclosure.onExpandedChange}
             regionId={disclosureRegionId}
@@ -944,6 +954,7 @@ export function WorkflowLadderPanel({
             <WorkflowTileDisclosure
               run={run}
               detail={detail}
+              onOpenRun={onOpenRun}
               expanded={tileDisclosure.expanded}
               onExpandedChange={tileDisclosure.onExpandedChange}
               regionId={disclosureRegionId}

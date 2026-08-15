@@ -1,7 +1,12 @@
-import { ARCHIVE_TEXT_LIMITS, type ArchiveKind } from "@shared/archives.ts";
+import {
+  ARCHIVE_TEXT_LIMITS,
+  type ArchiveKind,
+  type ArchiveManifestPromptTrail,
+} from "@shared/archives.ts";
 import type { Session, Task, TaskKind } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import { isScoutTask } from "../scouts/prompt.ts";
+import { collectScoutPromptTrail } from "../scouts/prompt-collector.ts";
 import { scoutRepoSlots } from "../scouts/repos.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
 import type { ArchiveCaptureOrigin, ArchiveRepoSlot } from "./capture-store.ts";
@@ -38,6 +43,7 @@ export interface ArchiveSubject {
   episodeId: string | null;
   title: string;
   question: string | null;
+  prompts: ArchiveManifestPromptTrail | null;
   origin: ArchiveCaptureOrigin;
   repos: ArchiveRepoSlot[];
 }
@@ -189,12 +195,19 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
    * have rotated onto whatever the agent did next.
    */
   private subject(task: Task, session: Session | null, kind: ArchiveKind): ArchiveSubject {
+    const episodeId = this.registry.workEpisodeForTask(task.id)?.episodeId ?? null;
+    const collected =
+      kind === "scout" ? collectScoutPromptTrail(task, episodeId, session) : null;
     return {
       taskId: task.id,
       sessionId: session?.id ?? task.sessionId,
-      episodeId: this.registry.workEpisodeForTask(task.id)?.episodeId ?? null,
-      title: clip(task.title, ARCHIVE_TEXT_LIMITS.title) ?? "Scout",
+      episodeId,
+      title:
+        kind === "scout"
+          ? scoutArchiveTitle(session?.name, collected?.frozenSessionName, task.title)
+          : clip(task.title, ARCHIVE_TEXT_LIMITS.title) ?? "Plan",
       question: clip(task.intent, ARCHIVE_TEXT_LIMITS.question),
+      prompts: collected?.trail ?? null,
       origin: {
         agent: task.agent,
         // The model the harness actually reported, when it did; the task's pin is what was
@@ -262,4 +275,17 @@ function clip(value: string | null | undefined, max: number): string | null {
   if (value === null || value === undefined) return null;
   const trimmed = value.trim();
   return trimmed === "" ? null : trimmed.slice(0, max);
+}
+
+/** The single title fallback chain used by normal and exit-recovery scout capture. */
+export function scoutArchiveTitle(
+  liveSessionName: string | null | undefined,
+  frozenSessionName: string | null | undefined,
+  taskTitle: string | null | undefined,
+): string {
+  for (const candidate of [liveSessionName, frozenSessionName, taskTitle]) {
+    const clipped = clip(candidate, ARCHIVE_TEXT_LIMITS.title);
+    if (clipped) return clipped;
+  }
+  return "Scout";
 }

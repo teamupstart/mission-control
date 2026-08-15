@@ -184,10 +184,12 @@ test("a bundle an older build published is still listed, and still readable, thr
     kind: string | null;
     bundlePath: string;
     formatVersion: number;
+    prompts: null;
     artifacts: Array<{ id: string }>;
   };
   assert.equal(detail.kind, "scout");
   assert.equal(detail.formatVersion, 1);
+  assert.equal(detail.prompts, null);
   assert.equal(detail.bundlePath, legacy.dir);
   assert.ok(detail.bundlePath.startsWith(LEGACY_SCOUTS_DIR), "nothing was moved into the new root");
 
@@ -249,7 +251,15 @@ test("the list route returns bounded summaries and the library path", async () =
 
 test("search returns a snippet naming why the row matched", async () => {
   const { app, root, manager } = harness();
-  writeScoutBundle(root, {});
+  writeScoutBundle(root, {
+    prompts: {
+      entries: [
+        { kind: "initial", text: "Find the resume issue", at: null },
+        { kind: "follow_up", text: "Check the prompt-only clarification", at: null },
+      ],
+      truncated: false,
+    },
+  });
   await settle(manager);
 
   const res = await app.request("/api/archives?q=" + encodeURIComponent("never replayed"), { headers: LOOPBACK });
@@ -259,6 +269,15 @@ test("search returns a snippet naming why the row matched", async () => {
   assert.equal(body.archives.length, 1);
   assert.equal(body.archives[0]?.snippet?.kind, "report_text");
   assert.match(body.archives[0]?.snippet?.text ?? "", /never replayed/);
+
+  const prompt = await app.request(
+    "/api/archives?q=" + encodeURIComponent("prompt-only clarification"),
+    { headers: LOOPBACK },
+  );
+  const promptBody = (await prompt.json()) as {
+    archives: Array<{ snippet: { kind: string; text: string } | null }>;
+  };
+  assert.equal(promptBody.archives[0]?.snippet?.kind, "prompt");
 
   const miss = await app.request("/api/archives?q=" + encodeURIComponent("nothing matches this"), { headers: LOOPBACK });
   assert.deepEqual(((await miss.json()) as { archives: unknown[] }).archives, []);
@@ -278,6 +297,13 @@ test("the detail route adds provenance, artifacts, and a copyable bundle path", 
   const written = writeScoutBundle(root, {
     companions: { "permission-events.csv": "when,what\n" },
     supporting: { "repo-01/evidence/run.log": "line\n" },
+    prompts: {
+      entries: [
+        { kind: "initial", text: "Why did resume lose permissions?", at: null },
+        { kind: "follow_up", text: "Also compare Pi.", at: "2026-08-12T18:45:00.000Z" },
+      ],
+      truncated: false,
+    },
   });
   await settle(manager);
 
@@ -288,6 +314,7 @@ test("the detail route adds provenance, artifacts, and a copyable bundle path", 
     relativePath: string;
     primaryArtifactId: string;
     contentDigest: string;
+    prompts: { entries: Array<{ kind: string; text: string; at: string | null }>; truncated: boolean };
     artifacts: Array<{ id: string; archivePath: string; mediaType: string; bytes: number }>;
     missing: unknown[];
   };
@@ -295,6 +322,8 @@ test("the detail route adds provenance, artifacts, and a copyable bundle path", 
   assert.equal(body.relativePath, `${written.producerId}/${written.archiveId}`);
   assert.equal(body.primaryArtifactId, "report");
   assert.match(body.contentDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(body.prompts.entries[1]?.text, "Also compare Pi.");
+  assert.equal(body.prompts.truncated, false);
   assert.equal(body.artifacts.length, 3);
   assert.equal(body.artifacts[0]?.mediaType, "text/html; charset=utf-8");
   assert.deepEqual(body.missing, []);

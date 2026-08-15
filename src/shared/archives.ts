@@ -110,6 +110,7 @@ export const ARCHIVE_SEARCH_SEGMENT_KINDS = [
   "provenance",
   "report_text",
   "artifact_path",
+  "prompt",
 ] as const;
 export type ArchiveSearchSegmentKind = (typeof ARCHIVE_SEARCH_SEGMENT_KINDS)[number];
 
@@ -179,6 +180,23 @@ export const ARCHIVE_TEXT_LIMITS = {
   /** A search snippet returned to the browser. */
   snippet: 240,
 } as const;
+
+/**
+ * Bounds on the human prompt context carried by a portable manifest.
+ *
+ * These are byte limits rather than character limits. Prompt text is intentionally not
+ * normalized: inside these ceilings it is evidence of what the scout was told, so a reader
+ * gets the stored text rather than a display-oriented rewrite of it.
+ */
+export const ARCHIVE_PROMPT_LIMITS = {
+  entries: 256,
+  entryBytes: 256 * 1024,
+  totalBytes: 3 * 1024 * 1024,
+} as const;
+
+/** Prompt-entry kinds are persisted in manifests and therefore append-only. */
+export const ARCHIVE_PROMPT_KINDS = ["initial", "follow_up"] as const;
+export type ArchiveManifestPromptKind = (typeof ARCHIVE_PROMPT_KINDS)[number];
 
 /** Bounds the list route enforces on its own query string. */
 export const ARCHIVE_SEARCH_LIMITS = {
@@ -388,6 +406,20 @@ export interface ArchiveManifestRepository {
   head: string | null;
 }
 
+/** One human-authored prompt in the scout work episode. */
+export interface ArchiveManifestPromptEntry {
+  kind: ArchiveManifestPromptKind;
+  text: string;
+  /** ISO-8601 delivery time, or null when the source recorded none. */
+  at: string | null;
+}
+
+/** A bounded prompt trail. When present it always begins with exactly one initial entry. */
+export interface ArchiveManifestPromptTrail {
+  entries: ArchiveManifestPromptEntry[];
+  truncated: boolean;
+}
+
 /** What the archived work was asked, what it answered, and when. */
 export interface ArchiveManifestArchive {
   id: string;
@@ -396,6 +428,8 @@ export interface ArchiveManifestArchive {
   captureStatus: ArchiveCaptureStatus;
   title: string;
   question: string | null;
+  /** Null for archives written before prompt context became portable. */
+  prompts: ArchiveManifestPromptTrail | null;
   summary: string | null;
   tags: string[];
 }
@@ -482,6 +516,61 @@ const Timestamp = z
   .max(64)
   .refine((value) => !Number.isNaN(Date.parse(value)), "must be an ISO-8601 instant");
 
+const utf8 = new TextEncoder();
+const utf8Bytes = (value: string): number => utf8.encode(value).byteLength;
+
+const ManifestPromptTrailSchema = z
+  .object({
+    entries: z
+      .array(
+        z.object({
+          kind: z.enum(ARCHIVE_PROMPT_KINDS),
+          text: z.string().refine(
+            (value) => utf8Bytes(value) <= ARCHIVE_PROMPT_LIMITS.entryBytes,
+            `must be at most ${ARCHIVE_PROMPT_LIMITS.entryBytes} UTF-8 bytes`,
+          ),
+          at: Timestamp.nullable(),
+        }),
+      )
+      .min(1)
+      .max(ARCHIVE_PROMPT_LIMITS.entries),
+    truncated: z.boolean(),
+  })
+  .superRefine((trail, ctx) => {
+    if (trail.entries[0]?.kind !== "initial") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["entries", 0, "kind"],
+        message: "must be initial",
+      });
+    }
+    if (trail.entries.slice(1).some((entry) => entry.kind === "initial")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["entries"],
+        message: "must contain exactly one initial entry",
+      });
+    }
+    const total = trail.entries.reduce((bytes, entry) => bytes + utf8Bytes(entry.text), 0);
+    if (total > ARCHIVE_PROMPT_LIMITS.totalBytes) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["entries"],
+        message: `prompt text must be at most ${ARCHIVE_PROMPT_LIMITS.totalBytes} UTF-8 bytes`,
+      });
+    }
+  });
+
+/** Parse the prompt sub-contract independently, for nullable capture and index rows. */
+export function parseArchivePromptTrail(value: unknown): ArchiveManifestPromptTrail | null {
+  const parsed = ManifestPromptTrailSchema.safeParse(value);
+  if (!parsed.success) return null;
+  return {
+    entries: parsed.data.entries.map((entry) => ({ ...entry })),
+    truncated: parsed.data.truncated,
+  };
+}
+
 /**
  * The v1 wire shape, in the snake_case the file actually uses.
  *
@@ -502,6 +591,7 @@ const ManifestV1Schema = z.object({
     capture_status: z.enum(ARCHIVE_CAPTURE_STATUSES),
     title: z.string().min(1).max(ARCHIVE_TEXT_LIMITS.title),
     question: z.string().max(ARCHIVE_TEXT_LIMITS.question).nullish(),
+    prompts: ManifestPromptTrailSchema.optional(),
     summary: z.string().max(ARCHIVE_TEXT_LIMITS.summary).nullish(),
     tags: z.array(z.string().min(1).max(ARCHIVE_TEXT_LIMITS.tag)).max(ARCHIVE_TEXT_LIMITS.tags).default([]),
   }),
@@ -765,6 +855,7 @@ export function parseArchiveManifest(value: unknown): ArchiveManifestParseResult
         captureStatus: data.archive.capture_status,
         title: data.archive.title,
         question: data.archive.question ?? null,
+        prompts: data.archive.prompts ? parseArchivePromptTrail(data.archive.prompts) : null,
         summary: data.archive.summary ?? null,
         tags: data.archive.tags,
       },
@@ -815,6 +906,7 @@ export function serializeArchiveManifest(manifest: ArchiveManifest): string {
       capture_status: manifest.archive.captureStatus,
       title: manifest.archive.title,
       question: manifest.archive.question,
+      ...(manifest.archive.prompts ? { prompts: manifest.archive.prompts } : {}),
       summary: manifest.archive.summary,
       tags: manifest.archive.tags,
     },
@@ -917,6 +1009,8 @@ export interface ArchiveDetail extends ArchiveSummary {
   /** Where it sits under the library root - what stays true when the library moves. */
   relativePath: string;
   primaryArtifactId: string | null;
+  /** Human prompt context from the manifest, or null for an older bundle. */
+  prompts: ArchiveManifestPromptTrail | null;
   artifacts: ArchiveArtifactView[];
   missing: ArchiveManifestMissing[];
 }

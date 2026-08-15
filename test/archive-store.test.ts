@@ -141,6 +141,13 @@ test("an indexed bundle round-trips its display fields and artifacts", async () 
   const written = await index(store, {
     companions: { "permission-events.csv": "when,what\n" },
     supporting: { "repo-01/evidence/run.log": "log line\n" },
+    prompts: {
+      entries: [
+        { kind: "initial", text: "Why did resume lose permissions?", at: null },
+        { kind: "follow_up", text: "Also compare the Pi launch path.", at: "2026-08-12T18:45:00.000Z" },
+      ],
+      truncated: false,
+    },
   });
   const row = store.get(written.key);
   assert.ok(row);
@@ -148,6 +155,7 @@ test("an indexed bundle round-trips its display fields and artifacts", async () 
   assert.equal(row.status, "ready");
   assert.equal(row.captureStatus, "complete");
   assert.equal(row.question, "Why did a resumed agent lose repository permissions?");
+  assert.equal(row.prompts?.entries[1]?.text, "Also compare the Pi launch path.");
   assert.deepEqual(row.tags, ["permissions", "resume"]);
   assert.equal(row.agent, "codex");
   assert.equal(row.repositories[0]?.label, "mission-control");
@@ -173,6 +181,13 @@ test("literal search finds every segment kind a bundle contributes", async () =>
     summary: "A rung-three control crossed the container pin.",
     tags: ["layout"],
     agent: "claude",
+    prompts: {
+      entries: [
+        { kind: "initial", text: "Why did the topbar wrap?", at: null },
+        { kind: "follow_up", text: "Clarify the narrow viewport hinge measurement.", at: null },
+      ],
+      truncated: false,
+    },
     reportHtml: [
       "<!doctype html><html><head><title>Header density</title></head><body>",
       "<h1>Header density</h1><p>The measured overflow was seventeen pixels.</p>",
@@ -189,6 +204,7 @@ test("literal search finds every segment kind a bundle contributes", async () =>
     ["mission-control", "provenance"],
     ["seventeen pixels", "report_text"],
     ["topbar-measurements.csv", "artifact_path"],
+    ["viewport hinge measurement", "prompt"],
   ];
   for (const [needle, kind] of hits) {
     const page = store.list({ ...EMPTY_QUERY, q: needle });

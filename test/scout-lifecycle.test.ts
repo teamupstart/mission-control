@@ -289,7 +289,7 @@ test("a scout becomes done once its archive is published and verified", async ()
   });
   assert.equal(page.archives.length, 1);
   assert.equal(page.archives[0]!.status, "ready");
-  assert.equal(page.archives[0]!.title, task.title);
+  assert.equal(page.archives[0]!.title, "agent");
 });
 
 test("completion rebuilds a deleted bundle instead of trusting its cached ready row", async () => {

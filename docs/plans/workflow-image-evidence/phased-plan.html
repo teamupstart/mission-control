@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Native image evidence: phased implementation</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#eef1ed; --paper:#fbfcf8; --ink:#15201d; --muted:#65716c; --line:#ced7d1; --accent:#176f5d; --accent2:#bd5d38; --soft:#deeee8; --warm:#f5e2d6; --code:#e9eeea; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#111715; --paper:#19211e; --ink:#edf4ef; --muted:#a7b2ac; --line:#35423d; --accent:#70d1b6; --accent2:#f19670; --soft:#17362e; --warm:#422c24; --code:#222c28; } }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15.5px/1.58 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    main { width:min(1160px,calc(100% - 32px)); margin:auto; padding:34px 0 72px; }
+    article { overflow:hidden; background:var(--paper); border:1px solid var(--line); border-radius:20px; box-shadow:0 18px 55px rgba(10,30,24,.08); }
+    header { padding:38px 42px 32px; border-top:8px solid var(--accent); background:linear-gradient(145deg,var(--paper),var(--soft)); }
+    .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:.12em; font-size:.76rem; font-weight:800; }
+    h1 { max-width:900px; margin:8px 0 12px; font:760 clamp(2.2rem,5vw,4.2rem)/1 ui-serif,Georgia,serif; }
+    h2 { margin:0 0 14px; font:730 1.5rem/1.2 ui-serif,Georgia,serif; }
+    h3 { margin:0 0 8px; font-size:1.05rem; color:var(--accent); }
+    p { margin:0 0 12px; }
+    a { color:var(--accent); text-underline-offset:3px; }
+    code { background:var(--code); padding:.13em .36em; border-radius:5px; font-size:.9em; }
+    section { padding:28px 42px; border-top:1px solid var(--line); }
+    ul,ol { margin:8px 0 0; padding-left:23px; }
+    li { margin:7px 0; }
+    .status { display:inline-flex; gap:8px; align-items:center; margin-top:12px; padding:6px 11px; border:1px solid var(--accent2); border-radius:99px; color:var(--accent2); font-weight:750; font-size:.78rem; }
+    .decision { border-left:5px solid var(--accent2); background:var(--warm); border-radius:10px; padding:15px 18px; }
+    .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:16px; }
+    .metric { padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--paper); }
+    .metric b { display:block; color:var(--accent); font-size:1.45rem; }
+    .metric span { color:var(--muted); font-size:.9rem; }
+    .flow { overflow-x:auto; margin:16px 0 4px; }
+    svg { display:block; width:100%; min-width:900px; height:auto; }
+    .node { fill:var(--paper); stroke:var(--accent); stroke-width:2; }
+    .edge { stroke:var(--muted); stroke-width:2.2; fill:none; marker-end:url(#arr); }
+    svg text { fill:var(--ink); font:14px ui-sans-serif,system-ui,sans-serif; }
+    svg .sub { fill:var(--muted); font-size:12px; }
+    .phases { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+    .phase { padding:20px; border:1px solid var(--line); border-radius:14px; background:color-mix(in srgb,var(--paper) 90%,var(--soft)); }
+    .phase .num { color:var(--accent2); font-size:.75rem; text-transform:uppercase; letter-spacing:.1em; font-weight:800; }
+    .phase p { color:var(--muted); }
+    .tag { display:inline-block; margin-top:8px; padding:4px 8px; border-radius:99px; background:var(--soft); color:var(--accent); font-size:.78rem; font-weight:700; }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; min-width:760px; border-collapse:collapse; }
+    th,td { text-align:left; vertical-align:top; padding:10px 12px; border-bottom:1px solid var(--line); }
+    th { color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.07em; }
+    .audit { padding:18px 20px; border:1px solid var(--accent); background:var(--soft); border-radius:14px; }
+    @media (max-width:820px) { main{width:min(100% - 16px,1160px);padding-top:12px}header,section{padding:23px 20px}.metrics,.phases{grid-template-columns:1fr}article{border-radius:14px} }
+  </style>
+</head>
+<body>
+<main><article>
+  <header>
+    <div class="eyebrow">Phased implementation plan</div>
+    <h1>Native image evidence for workflow reviewers</h1>
+    <p>Three serial merge units turn explicit screenshots into immutable, citable Persona evidence without moving the pull-request stage or committing proof artifacts.</p>
+    <span class="status">Approved scope · scheduling after publication</span>
+  </header>
+
+  <section>
+    <h2>Approved decisions</h2>
+    <div class="decision">
+      <p><strong>Complete V1 intake:</strong> dashboard upload and session-attributed agent registration.</p>
+      <p><strong>Formats and lifetime:</strong> PNG, JPEG, GIF, and WebP, retained and pruned with raw workflow evidence.</p>
+      <p><strong>Execution:</strong> every phase task uses Codex <code>gpt-5.6-sol</code> with <code>xhigh</code> reasoning.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why three phases</h2>
+    <p>The feature crosses provider protocols, secure local files, additive SQLite migrations, workflow state, retention, four dashboard entry points, and browser proof. Three phases isolate the riskiest contracts while keeping the agent path and dashboard path operable at their merge boundaries.</p>
+    <div class="metrics">
+      <div class="metric"><b>1,700–2,500</b><span>estimated non-test production lines</span></div>
+      <div class="metric"><b>3</b><span>serial reviewable pull requests</span></div>
+      <div class="metric"><b>2</b><span>approved intake surfaces in complete V1</span></div>
+    </div>
+    <div class="flow" aria-label="Phase dependency graph">
+      <svg viewBox="0 0 980 230" role="img">
+        <defs><marker id="arr" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="currentColor"/></marker></defs>
+        <rect class="node" x="25" y="62" width="260" height="98" rx="14"/><text x="155" y="96" text-anchor="middle">Phase 1</text><text class="sub" x="155" y="122" text-anchor="middle">Multimodal runner foundation</text><text class="sub" x="155" y="142" text-anchor="middle">Claude + Codex</text>
+        <path class="edge" d="M285 111 H355"/>
+        <rect class="node" x="355" y="62" width="270" height="98" rx="14"/><text x="490" y="96" text-anchor="middle">Phase 2</text><text class="sub" x="490" y="122" text-anchor="middle">Durable agent evidence lifecycle</text><text class="sub" x="490" y="142" text-anchor="middle">capture + storage + Persona</text>
+        <path class="edge" d="M625 111 H695"/>
+        <rect class="node" x="695" y="62" width="260" height="98" rx="14"/><text x="825" y="96" text-anchor="middle">Phase 3</text><text class="sub" x="825" y="122" text-anchor="middle">Dashboard intake and audit UI</text><text class="sub" x="825" y="142" text-anchor="middle">all human capture paths</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>Implementation phases</h2>
+    <div class="phases">
+      <article class="phase">
+        <div class="num">Phase 1</div>
+        <h3>Multimodal runner foundation</h3>
+        <p>Add one optional validated image descriptor to headless runs, encode it for Codex and both Claude transports, prove text-only compatibility, and settle conservative limits.</p>
+        <a href="phase-1-multimodal-runner-foundation.md">Read the phase source</a><br>
+        <span class="tag">Depends on planning session</span>
+      </article>
+      <article class="phase">
+        <div class="num">Phase 2</div>
+        <h3>Durable agent evidence lifecycle</h3>
+        <p>Stage contained agent files, freeze submission-owned copies, fingerprint and retain them, deliver pixels to Personas, validate citations, and expose path-free audit APIs.</p>
+        <a href="phase-2-durable-agent-evidence-lifecycle.md">Read the phase source</a><br>
+        <span class="tag">Depends on Phase 1</span>
+      </article>
+      <article class="phase">
+        <div class="num">Phase 3</div>
+        <h3>Dashboard intake and audit UI</h3>
+        <p>Reuse image drop through one evidence composer, cover every human capture entry point, render retained or pruned history, and prove actual bytes with fake providers.</p>
+        <a href="phase-3-dashboard-intake-and-audit-ui.md">Read the phase source</a><br>
+        <span class="tag">Depends on Phase 2</span>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Repository corrections</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Source assumption</th><th>Repository finding</th><th>Plan consequence</th></tr></thead>
+      <tbody>
+        <tr><td>Claude print has a separate adapter file.</td><td>The print one-shot lives in <code>src/server/llm/claude.ts</code>.</td><td>Phase 1 changes the actual transport owner and removes the stale filename.</td></tr>
+        <tr><td>The existing upload result can be a workflow locator.</td><td>It exposes an absolute path for chat prompt compatibility.</td><td>Phase 2 adds an opaque id while preserving the existing chat response.</td></tr>
+        <tr><td>Mission MCP is one implementation site.</td><td>Launch registration, bundled client tool, route, and workflow behavior have distinct owners.</td><td>Phase 2 follows all four ownership boundaries and drift checks.</td></tr>
+        <tr><td>Database pruning alone can remove images safely.</td><td>Image bytes cross SQLite and filesystem state.</td><td>Phase 2 requires recoverable trash or cleanup state plus startup reconciliation.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Cross-phase contracts</h2>
+    <h3>Runner to workflow</h3>
+    <ul>
+      <li>Omitting images leaves existing provider input byte-compatible.</li>
+      <li>Image-bearing calls validate every file and never downgrade to text-only.</li>
+      <li>Provider order, digest, MIME, byte limits, and stable ids are fixed before workflow intake ships.</li>
+    </ul>
+    <h3>Backend to dashboard</h3>
+    <ul>
+      <li>The browser sends opaque upload ids, captions, client ids, and issued repository slots, never paths.</li>
+      <li>Run detail exposes metadata and an authenticated body route; export remains metadata-only.</li>
+      <li>Normal repair does not inherit old screenshots. Historical reuse is an explicit new staged item.</li>
+      <li>A changed digest or caption is fresh evidence even when Git bytes are unchanged.</li>
+    </ul>
+    <h3>Fixed safety invariants</h3>
+    <ul>
+      <li>Personas stay tool-less and receive images only as native model inputs.</li>
+      <li>Evidence cannot escape an issued repository root and is never committed automatically.</li>
+      <li>Persona review stays before the authored pull-request action.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification and publication</h2>
+    <ol>
+      <li>Each phase runs focused Node tests with the mandatory state preload plus typecheck and lint.</li>
+      <li>Provider and runtime changes run build and smoke. Backend lifecycle changes also run the full unit suite.</li>
+      <li>The dashboard phase runs focused and full Playwright against the built daemon and fake agents.</li>
+      <li>The browser test must fail if only metadata arrives and pass only when actual PNG bytes reach both fake provider boundaries.</li>
+      <li>Generated proof screenshots stay in <code>e2e/.artifacts/workflow-image-evidence/</code> and remain uncommitted.</li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="audit">
+      <h2>Final phase audit</h2>
+      <p>Every approved requirement has one owner. Phase 1 owns transport, Phase 2 owns durable evidence and the complete agent path, and Phase 3 owns human intake, audit presentation, E2E proof, docs, and stale-memory correction. Dependencies are strictly <strong>planning session → Phase 1 → Phase 2 → Phase 3</strong>.</p>
+      <p>Authoritative source: <a href="phased-plan.md">phased-plan.md</a>. Approved product plan: <a href="plan.md">plan.md</a>.</p>
+    </div>
+  </section>
+</article></main>
+</body>
+</html>

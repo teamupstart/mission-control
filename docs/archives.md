@@ -569,10 +569,17 @@ Two different things can be wrong with a key, and they are answered differently:
 - **The rail** searches. Results are newest first under day headings, each row carrying its
   title, time, artifact count and size, plus the daemon's snippet saying *why* it matched. For
   a newly captured scout, that title is the same short name its live session card showed.
-- **The reader** opens the primary report by default, in the same sandbox the Files tab uses:
-  no scripts beyond the two hashed bridges, no network, and never `allow-same-origin`. A
-  relative link inside a report resolves only to a verified companion artifact in the same
-  bundle; every unclaimed link stays inert.
+  Search covers titles, prompts, findings, report text and file metadata; a prompt match is
+  labelled `prompt` without replacing that title.
+- **The reader** leads with the same short archive title and, for a new bundle, shows the
+  ordered **Prompt context** before the report: **Original request**, then each human
+  **Follow-up** with its recorded delivery time. Prompt text is escaped plain text outside the
+  report iframe. When capture omitted older or oversized prompt text, the reader says the
+  trail is incomplete. A bundle from before prompt trails keeps its stored question visible
+  below the title and remains readable. The primary report still opens by default in the same
+  sandbox the Files tab uses: no scripts beyond the two hashed bridges, no network, and never
+  `allow-same-origin`. A relative link inside a report resolves only to a verified companion
+  artifact in the same bundle; every unclaimed link stays inert.
 - **The evidence spine** lists every artifact as a stop on one line, with its role, repository
   slot, original checkout path, media type, byte count and SHA-256, and offers preview,
   download and registered open. Below it sits the absolute bundle directory, copyable, so the

@@ -226,7 +226,7 @@ export function ScoutsPage({
             className="field-input scouts-search-input"
             type="search"
             value={draftQuery}
-            placeholder="Search questions, findings, reports, files..."
+            placeholder="Search titles, prompts, findings, reports, files..."
             autoComplete="off"
             spellCheck={false}
             onChange={(event) => setDraftQuery(event.target.value)}
@@ -433,4 +433,3 @@ export function ScoutsPage({
     </main>
   );
 }
-

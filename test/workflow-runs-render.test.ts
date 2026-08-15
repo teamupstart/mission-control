@@ -2113,6 +2113,83 @@ test("an unreadable second objection is shown even when its reviewer has an open
   assertNoGraphIds(html);
 });
 
+/**
+ * One node, one row - however many attempts a round took to get there.
+ *
+ * A retry does not replace the row it retries. `engine.ts` marks the failed row `error` and
+ * INSERTS a successor at `attempt + 1` in the same submission, so both survive, and a surface
+ * that classifies every row puts one reviewer in two segments at once: the dead attempt under
+ * `Blocking`, its own successor under `Passed`. Reading only the newest attempt per node is the
+ * rule the pipeline strip above already follows, and for the same reason - it is the only one
+ * whose state is current.
+ */
+function retriedQualityDetail(
+  first: Partial<WorkflowNodeAttempt>,
+  second: Partial<WorkflowNodeAttempt>,
+): WorkflowRunDetail {
+  const base = runningDetail();
+  const round = base.submissions[1]!.id;
+  const persona = snapshot("p-quality", "Quality reviewer");
+  return {
+    ...base,
+    attempts: [
+      attempt("attempt-try-1", round, NODE.quality, persona, {
+        attempt: 1,
+        verdict: null,
+        ...first,
+      }),
+      attempt("attempt-try-2", round, NODE.quality, persona, {
+        attempt: 2,
+        verdict: null,
+        ...second,
+      }),
+    ],
+  } as WorkflowRunDetail;
+}
+
+test("a reviewer that errored and passed on retry is a pass, not a pass AND a blocker", () => {
+  const html = render(retriedQualityDetail(
+    { state: "error", error: "provider_timeout" },
+    { state: "completed", verdict: passVerdict },
+  ));
+  // The superseded attempt does not out-vote its own retry.
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Passed 1/);
+  // And the dead attempt's card is not on the page at all - the strip above carries node state.
+  assert.doesNotMatch(html, /provider_timeout/);
+  assert.doesNotMatch(html, /wf-run-worklist-row is-attempt/);
+  assertNoGraphIds(html);
+});
+
+test("a reviewer waiting on its own retry is pending, not a blocker", () => {
+  // The engine inserts the successor `retry_wait` WITH an error string, so a rule that tested
+  // for one would file every node that is about to try again under the heading for the ones
+  // that cannot.
+  const html = render(retriedQualityDetail(
+    { state: "error", error: "provider_timeout" },
+    { state: "retry_wait", error: "Retry scheduled after infrastructure failure: provider_timeout" },
+  ));
+  assert.match(html, /Blocking 0/);
+  assert.match(html, /Passed 0/);
+  // Its reason still reaches the reader, under the chip that says it is coming back.
+  assert.match(html, /No verdict in this round yet/);
+  assert.match(html, />Retrying</);
+  assert.match(html, /Retry scheduled after infrastructure failure/);
+});
+
+test("a reviewer whose retries are exhausted is still a blocker", () => {
+  // The other side of the same rule: once the engine stops scheduling successors, the newest
+  // attempt IS the errored one, and nothing else on this page says why the run stopped.
+  const html = render(retriedQualityDetail(
+    { state: "error", error: "provider_timeout" },
+    { state: "error", error: "provider_timeout" },
+  ));
+  assert.match(html, /Blocking 1/);
+  assert.match(html, /wf-run-worklist-row is-attempt/);
+  assert.match(html, /Provider timeout\./);
+  assert.match(html, /provider_timeout/);
+});
+
 test("a change citing no file says so rather than drawing an empty slot", () => {
   const base = runningDetail();
   const pathless = {

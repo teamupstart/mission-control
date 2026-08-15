@@ -496,13 +496,20 @@ const CHANGE_STATE_CHIPS: Record<ChangeWorklistState, { label: string; tone: str
 /**
  * A reviewer that produced no readable opinion and is not going to.
  *
- * `error` is a provider failure, and a `completed` attempt with no verdict is a reply the parser
- * rejected - both stop the run and both carry a durable string that is the only explanation on
- * the page. Everything else verdict-less (queued, running, retrying, cancelled) has simply not
- * reported, which is a different claim and a different segment.
+ * `error` is a provider failure with no retry left - the engine only leaves a row in that state
+ * once it has stopped scheduling successors - and a `completed` attempt with no verdict is a
+ * reply the parser rejected. Both stop the run, and both carry a durable string that is the only
+ * explanation on the page. Everything else verdict-less (queued, running, retrying, cancelled)
+ * has simply not reported, which is a different claim and a different segment.
+ *
+ * "Carries an error string" is deliberately NOT part of this. A scheduled retry is inserted
+ * `retry_wait` WITH one - `Retry scheduled after infrastructure failure: …` - so testing the
+ * field would file every node that is about to try again under the heading for the ones that
+ * cannot. The reason still reaches the reader: the row prints that sentence under its `Retrying`
+ * chip, and the card behind it prints the whole thing.
  */
 function stalledReviewer(attempt: WorkflowNodeAttempt): boolean {
-  return attempt.state === "error" || attempt.state === "completed" || attempt.error !== null;
+  return attempt.state === "error" || attempt.state === "completed";
 }
 
 /** The exact repair text one change copies, so a session gets the ask rather than the page. */
@@ -1359,15 +1366,26 @@ export function WorkflowRunView({
     ...(continuationSource ? [continuationSource] : []),
     ...roundAttempts.filter((attempt) => attempt.sessionAction !== null),
   ];
-  // Session actions leave; the Session, join and End attempts never belonged here at all - see
-  // `reviewerAttempts`, which is also what keeps a queued or errored reviewer in the list.
+  const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
+  /*
+   * Session actions leave; the Session, join and End attempts never belonged here at all - see
+   * `reviewerAttempts`, which is also what keeps a queued or errored reviewer in the list.
+   *
+   * ONE ATTEMPT PER NODE, the newest, which is the same rule the strip above reads and for the
+   * same reason: it is the only one whose state is current. A retry does not replace the row it
+   * retries - `engine.ts` marks that row `error` and INSERTS a successor at `attempt + 1` in
+   * the same submission - so both survive, and classifying every row put one reviewer in two
+   * segments at once. A transient provider error followed by a pass on the automatic retry
+   * counted as a blocker AND as a pass in the same round, which is the one thing `Blocking` may
+   * not say. Nothing is hidden by this: the strip carries every node's live state, the card
+   * prints which attempt it is, and the audit disclosure keeps the whole record.
+   */
   const reviewAttempts = reviewerAttempts(
-    roundAttempts.filter((attempt) => attempt.sessionAction === null),
+    [...latestAttemptByNode.values()].filter((attempt) => attempt.sessionAction === null),
     version?.graph,
   );
   /** A published graph that CANNOT produce a verdict, which is a different empty than "not yet". */
   const reviewerlessVersion = version ? !version.graph.nodes.some(isVerdictNode) : false;
-  const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
   // Every pass this round carries rather than re-earns, with the round each came from. One
   // derivation for both shapes that produce them - a continuation segment and an
   // Inspector-only round - so the two cannot drift into two ways of saying "did not run here".

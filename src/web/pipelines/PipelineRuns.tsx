@@ -1,5 +1,5 @@
 import { Fragment, useMemo } from "react";
-import { pipelineRepoKey, type PipelineRun } from "@shared/pipeline.ts";
+import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { repoLeaf } from "../lib/format.ts";
 import type { PipelineRunAddress } from "../workflows/useWorkflowRoute.ts";
@@ -58,7 +58,11 @@ export function PipelineRuns({
     run?.slug ?? null,
     run?.updatedAt ?? 0,
   );
-  const activeKey = run ? `${pipelineRepoKey(run.provider, run.repoRoot)}${run.slug}` : null;
+  // Through the shared helper rather than joined here: a repository root and a slug
+  // concatenated with nothing between them are ambiguous, so `("/repo/foo", "1-fix")` and
+  // `("/repo/foo1", "-fix")` would produce one key - two different runs sharing one React key
+  // and one "active" mark.
+  const activeKey = run ? pipelineRunKeyOf(run) : null;
 
   return (
     <section className="pipelines">
@@ -104,7 +108,7 @@ export function PipelineRuns({
                   {PIPELINE_GROUP_LABELS[group.group]} {group.runs.length}
                 </p>
                 {group.runs.map((entry) => {
-                  const key = `${section.key}${entry.slug}`;
+                  const key = pipelineRunKeyOf(entry);
                   return (
                     <Tooltip
                       key={key}

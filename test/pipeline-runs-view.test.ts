@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   PIPELINE_RUN_GROUPS,
   PIPELINE_STEPS,
+  pipelineRunKeyOf,
   type PipelineGateVerdict,
   type PipelineRepoStatus,
   type PipelineRun,
@@ -377,6 +378,23 @@ test("one refusal that re-opened several gates is one attempt, not several", () 
   assert.deepEqual(attempts[1]!.kickback?.to, ["plan", "stories", "prd"]);
 });
 
+test("two refusals whose step and time run together stay two attempts", () => {
+  // The merge key's own collision pair: `("build_review", 12)` and `("build_review1", 2)`
+  // concatenate to one string. Merging them would report a run as having gone round once
+  // when it went round twice, and step names come from an engine whose vocabulary this build
+  // does not control.
+  const attempts = pipelineAttempts([
+    verdict({ step: "plan", kickbackFrom: "build_review", checkedAt: 12 }),
+    verdict({ step: "prd", kickbackFrom: "build_review1", checkedAt: 2 }),
+  ]);
+  assert.equal(attempts.length, 3, "one for the first pass, and one per distinct refusal");
+  assert.deepEqual(
+    attempts.map((attempt) => attempt.kickback?.from ?? null),
+    [null, "build_review1", "build_review"],
+    "sorted by when each was answered, and neither swallowed the other",
+  );
+});
+
 test("an undated kickback still opens an attempt, sorted last and stably", () => {
   const attempts = pipelineAttempts([
     verdict({ step: "plan", kickbackFrom: "no-clock", checkedAt: null }),
@@ -512,6 +530,35 @@ test("attempt cards appear only once a run has been round more than once", () =>
   assert.match(kicked, /aria-label="Attempts"/);
   assert.match(kicked, /class="pipelines-attempt is-current"/);
   assert.ok(kicked.includes("Build Review sent it back to Plan"));
+});
+
+/**
+ * Two runs whose repository root and slug concatenate to the same string.
+ *
+ * `("/repo/foo", "1-fix")` and `("/repo/foo1", "-fix")` are the pair `pipelineRunKey` exists
+ * for. The rail keys its rows and its "active" mark by run identity, so a collision here is
+ * not cosmetic: one click would mark two rows active, and React would reconcile two rows
+ * under one key. The rail has to draw both, separately, and `pipelineRunKeyOf` has to tell
+ * them apart.
+ */
+test("two runs whose repo and slug run together are still two runs", () => {
+  const first = run({ repoRoot: "/repo/foo", slug: "1-fix" });
+  const second = run({ repoRoot: "/repo/foo1", slug: "-fix" });
+  assert.notEqual(
+    pipelineRunKeyOf(first),
+    pipelineRunKeyOf(second),
+    "the shared key helper is what keeps these apart; a plain join does not",
+  );
+
+  const sections = pipelineRail(
+    [first, second],
+    [repo({ repoRoot: "/repo/foo" }), repo({ repoRoot: "/repo/foo1" })],
+  );
+  assert.deepEqual(
+    sections.map((section) => section.total),
+    [1, 1],
+    "one run under each repository, not two under one and none under the other",
+  );
 });
 
 // ---- the styling discipline this surface inherits ---------------------------------------

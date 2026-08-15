@@ -408,7 +408,12 @@ export function pipelineAttempts(gates: readonly PipelineGateVerdict[]): Pipelin
   const kicked = gates.filter((gate) => gate.kickbackFrom !== null);
   const merged = new Map<string, { from: string; to: string[]; at: number | null; order: number }>();
   for (const [order, gate] of kicked.entries()) {
-    const key = `${gate.kickbackFrom}${gate.checkedAt ?? ""}`;
+    // A tuple rather than a joined string. It was joined on a LITERAL unit separator, which
+    // was correct and unreadable: an invisible 0x1F byte sitting in source that `git diff`
+    // and `grep` cannot show, which is the exact thing `src/shared/pipeline.ts` writes its own
+    // separator as an escape to avoid. `JSON.stringify` of the pair is unambiguous without
+    // putting a control character in a file people read.
+    const key = JSON.stringify([gate.kickbackFrom, gate.checkedAt]);
     const held = merged.get(key);
     if (held) {
       held.to.push(gate.step);

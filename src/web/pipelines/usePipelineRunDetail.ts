@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { PipelineProviderId, PipelineRunDetail } from "@shared/pipeline.ts";
+import {
+  pipelineRunKey,
+  type PipelineProviderId,
+  type PipelineRunDetail,
+} from "@shared/pipeline.ts";
 import { fetchPipelineRunDetail } from "../lib/api.ts";
 
 /**
@@ -35,14 +39,26 @@ interface StoredDetailState {
   value: PipelineRunDetailState;
 }
 
-/** Everything the fetch depends on, as one comparable value. */
+/**
+ * Everything the fetch depends on, as one comparable value.
+ *
+ * The run's three parts go through `pipelineRunKey` rather than being joined here, because a
+ * plain join is ambiguous: `("/repo/foo", "1-fix")` and `("/repo/foo1", "-fix")` concatenate
+ * to one string, and this key is what decides whether stored evidence belongs to the run on
+ * screen. A collision would draw one run's gate verdicts under another's name.
+ *
+ * `updatedAt` is appended after that key rather than folded into it - it is the refresh
+ * signal, not part of the run's identity - and it cannot reintroduce the ambiguity because it
+ * is a number, so no slug can end where a timestamp begins.
+ */
 function detailKey(
   provider: PipelineProviderId | null,
   repoRoot: string | null,
   slug: string | null,
   updatedAt: number,
 ): string {
-  return provider && repoRoot && slug ? `${provider}${repoRoot}${slug}${updatedAt}` : "";
+  if (!provider || !repoRoot || !slug) return "";
+  return `${pipelineRunKey(provider, repoRoot, slug)}@${updatedAt}`;
 }
 
 export function usePipelineRunDetail(

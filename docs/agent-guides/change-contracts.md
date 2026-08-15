@@ -512,6 +512,13 @@ approved plan forbids this integration from changing the workflow surface at all
   builds for a genuine switch is the BARE one - so firing it while a run is open drops that
   run, and the router's same-hash guard cannot help since `#/runs` and `#/runs/<id>` really
   are different hashes.
+- **A pipeline run's identity is `pipelineRunKey` / `pipelineRunKeyOf`, never a join.**
+  `src/shared/pipeline.ts` owns the separator and states why: a repository root and a slug
+  concatenated with nothing between them are ambiguous, so `("/repo/foo", "1-fix")` and
+  `("/repo/foo1", "-fix")` become one string. That is a React key, an "active" mark and a
+  fetch-cache key all pointing at the wrong run. The same rule covers any other composite key
+  on this surface - use a tuple through `JSON.stringify` rather than a literal separator
+  byte, which is invisible to `git diff` and `grep`.
 - **Every run group must appear in `PIPELINE_GROUP_ORDER`.** `pipelineRail` emits only the
   groups listed there, so a member missing from it is not a mis-sorted rail: it is a run that
   is invisible, uncounted in `section.total`, and unreachable through `pipelineLeadRun`. The

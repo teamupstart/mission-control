@@ -20,10 +20,11 @@ Three rules, and each of them is load-bearing rather than cautious:
   state is lease- and CAS-guarded by the engine itself, and its CLI is the only sanctioned
   way to change it. Control verbs - pause, park, grant, resume - arrive in a later phase and
   will spawn that CLI rather than edit its files.
-- **Absent by default, then off by default.** An operator with no engine installed sees **no
-  Conductor UI at all** - no Settings row, no panel, no command-palette entry, and
-  `#/settings/conductor` falls back the way an unknown category does. Once the engine is
-  found on the daemon's `PATH` the category appears, and everything in it is still off:
+- **Absent by default, then off by default.** An operator with no engine installed and
+  nothing configured sees **no Conductor UI at all** - no Settings row, no panel, no
+  command-palette entry, and `#/settings/conductor` falls back the way an unknown category
+  does. Once the engine is found on the daemon's `PATH` the category appears, and everything
+  in it is still off:
   detection is automatic, consent is not. With nothing switched on, a watch tick reads one
   config value and a `PATH` walk once a minute, and no probe spawns, no file is opened and no
   event crosses the stream.
@@ -34,18 +35,25 @@ Three rules, and each of them is load-bearing rather than cautious:
 
 ## Settings → Conductor
 
-**The category only exists once the engine does.** Mission Control looks for the engine
-binary on the daemon's `PATH`; until it finds one, there is no Conductor row in the Settings
-rail, no panel behind it, and no palette entry - `#/settings/conductor` falls back to the
-default category the way an unknown category does. That is the plan's criterion, and it is
-keyed on *installed* rather than on *enabled*: a row offering to observe software somebody
-does not have is a new thing on their screen however off it ships.
+**The category has to be earned.** Mission Control looks for the engine binary on the
+daemon's `PATH`; on a machine that has never had one and has never been configured, there is
+no Conductor row in the Settings rail, no panel behind it, and no palette entry -
+`#/settings/conductor` falls back to the default category the way an unknown category does.
+That is the plan's criterion, and it is keyed on *installed* rather than on *enabled*: a row
+offering to observe software somebody does not have is a new thing on their screen however
+off it ships.
 
 The check is a `PATH` walk rather than a probe, so it costs no subprocess, and the watch loop
 re-runs it about once a minute - installing conductor makes the row appear while you are
-still looking for it, with no restart. The row also stays for anyone who has configured a
-repository, even if the engine is later removed, because otherwise consent would be in force
-with nothing on screen able to withdraw it.
+still looking for it, with no restart.
+
+**The complete condition is "an engine on `PATH`, OR any stored Conductor configuration."**
+That second half is what keeps the row reachable after the engine is removed, and it counts
+the master switch as well as the repository list - so a fleet that once turned Conductor on
+and later uninstalled the engine keeps the surface that can turn it off again, even with no
+repository configured. Withdrawing consent must never require reinstalling software to reach
+the switch. Only the case where the engine is absent *and* nothing was ever configured
+produces no UI at all.
 
 Once the row exists, it holds three cards, because three different things can be false and an
 operator who sees no pipelines has to be able to tell which:

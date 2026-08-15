@@ -52,7 +52,7 @@ function daemonState(daemon: DaemonReading): PipelineDaemonState {
  */
 async function readConductorRepo(
   repoRoot: string,
-  offsets: Map<string, number>,
+  cursors: Map<string, { offset: number; identity: string }>,
 ): Promise<PipelineRepoReading> {
   const now = Date.now();
   try {
@@ -64,19 +64,24 @@ async function readConductorRepo(
     if (worktrees === null) {
       return {
         runs: [],
-        offsets,
+        cursors,
         restarted: new Set(),
         daemon: daemonState(daemon),
         error: `could not list ${INFO.worktreesDir}/ in this repository`,
       };
     }
     const runs: PipelineRun[] = [];
-    const nextOffsets = new Map<string, number>();
+    const nextCursors = new Map<string, { offset: number; identity: string }>();
     const restarted = new Set<string>();
     for (const worktree of worktrees) {
       const state = readConductState(worktree.path);
-      const tail = tailConductorEvents(worktree.path, offsets.get(worktree.slug) ?? 0);
-      nextOffsets.set(worktree.slug, tail.offset);
+      const held = cursors.get(worktree.slug);
+      const tail = tailConductorEvents(
+        worktree.path,
+        held?.offset ?? 0,
+        held?.identity ?? null,
+      );
+      nextCursors.set(worktree.slug, { offset: tail.offset, identity: tail.identity });
       if (tail.restarted) restarted.add(worktree.slug);
       runs.push(
         normalizeConductorRun({
@@ -98,7 +103,7 @@ async function readConductorRepo(
     }
     return {
       runs,
-      offsets: nextOffsets,
+      cursors: nextCursors,
       restarted,
       daemon: daemonState(daemon),
       error:
@@ -112,7 +117,7 @@ async function readConductorRepo(
     // over one of them would be a worse answer than a repository that says why.
     return {
       runs: [],
-      offsets,
+      cursors,
       restarted: new Set(),
       daemon: "unknown",
       error: err instanceof Error ? err.message : String(err),

@@ -21,9 +21,13 @@ import { join } from "node:path";
 //  - A PARTIAL LAST LINE. The engine appends with a single `appendFileSync`, but a reader
 //    can still arrive between the write and its flush. So the offset only ever advances to
 //    the last newline seen, and a trailing fragment is re-read on the next pass.
-//  - A REWRITTEN LEDGER. The file is append-only and never rotated, but a worktree can be
-//    cut, deleted and re-cut under the same slug, which produces a shorter file under a
-//    stored offset. Anything shorter than the offset restarts at 0.
+//  - A REPLACED LEDGER. The file is append-only and never rotated, but a worktree can be
+//    cut, deleted and re-cut under the same slug - and the replacement is a DIFFERENT FILE
+//    that happens to sit at the same path. Two signals catch that, and they catch different
+//    halves of it. The file's IDENTITY (`dev:ino:birthtime`) changes whenever the path is
+//    re-created, whatever the new file's length; a SHORTER file than the stored offset
+//    catches a truncate-and-rewrite in place, where the identity does not change. Either
+//    one restarts the read at 0 and tells the caller to drop what it had accumulated.
 
 /** How many bytes one pass will read from one ledger. */
 const MAX_TAIL_BYTES = 1024 * 1024;
@@ -37,8 +41,36 @@ export interface TailReading {
   records: ConductorEventRecord[];
   /** Where to resume - always at a line boundary. Feed it back on the next pass. */
   offset: number;
-  /** The ledger got shorter than the stored offset, so this pass restarted at 0. */
+  /**
+   * The file this pass read, as an identity that changes when the path is re-created.
+   *
+   * Persisted beside the offset and handed back on the next pass, because an offset means
+   * nothing without saying which file it is an offset INTO. Empty string when the file
+   * could not be stat'd, which is treated as "no evidence" rather than as a change.
+   */
+  identity: string;
+  /** The ledger was replaced rather than appended to, so this pass restarted at 0. */
   restarted: boolean;
+}
+
+/**
+ * A signal that changes whenever this path becomes a different file.
+ *
+ * `dev` and `ino` are the POSIX file identity, and `birthtime` discriminates the case they
+ * cannot: a filesystem that reuses an inode number for the next file created. Together they
+ * survive an append (which changes only size and mtime) and change on a delete-and-recreate,
+ * which is exactly what cutting a worktree again produces.
+ *
+ * A FALSE positive here is cheap and safe - the pass re-reads the ledger from zero and the
+ * running total is rebuilt from the whole file, which is the right number arrived at the
+ * long way. A false negative is the expensive one, so this is deliberately biased toward
+ * noticing. Birthtime is included even though some filesystems report it as 0; a constant
+ * 0 simply reduces this to `dev:ino`, which is still correct.
+ */
+function ledgerIdentity(stat: { dev: number; ino: number; birthtimeMs: number }): string {
+  const birth =
+    Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0 ? Math.round(stat.birthtimeMs) : 0;
+  return `${stat.dev}:${stat.ino}:${birth}`;
 }
 
 /**
@@ -77,23 +109,39 @@ export function conductorEventsPath(worktree: string): string {
  * the whole point is to start at a byte and stop at a bound - and a stream that resolved
  * after the tick had moved on would apply an old file's bytes to a new pass.
  */
-export function tailConductorEvents(worktree: string, from: number): TailReading {
+export function tailConductorEvents(
+  worktree: string,
+  from: number,
+  /**
+   * The identity this caller last saw at this path, or null/empty when it has none - a run
+   * projected before identities were recorded, or a first pass. No evidence is NOT evidence
+   * of a change: an unknown identity is adopted silently rather than forcing a restart, or
+   * every existing row would reset its accumulated spend once on upgrade.
+   */
+  knownIdentity: string | null = null,
+): TailReading {
   const path = conductorEventsPath(worktree);
   const start = Number.isInteger(from) && from >= 0 ? from : 0;
 
   let size: number;
+  let identity: string;
   try {
     const stat = statSync(path);
-    if (!stat.isFile()) return { records: [], offset: start, restarted: false };
+    if (!stat.isFile()) return { records: [], offset: start, identity: "", restarted: false };
     size = stat.size;
+    identity = ledgerIdentity(stat);
   } catch {
-    return { records: [], offset: start, restarted: false };
+    return { records: [], offset: start, identity: "", restarted: false };
   }
 
-  // Shorter than where we stopped means this is not the file we were reading.
-  const restarted = size < start;
+  // Two independent signals for one condition - see the header. A different file at the same
+  // path is a replacement whatever its length, which is the case a size comparison alone
+  // cannot see; a file shorter than where we stopped is one rewritten in place, which is the
+  // case an identity comparison alone cannot see.
+  const replaced = knownIdentity !== null && knownIdentity !== "" && knownIdentity !== identity;
+  const restarted = replaced || size < start;
   const begin = restarted ? 0 : start;
-  if (size <= begin) return { records: [], offset: begin, restarted };
+  if (size <= begin) return { records: [], offset: begin, identity, restarted };
 
   const want = Math.min(size - begin, MAX_TAIL_BYTES);
   const buffer = Buffer.allocUnsafe(want);
@@ -103,7 +151,7 @@ export function tailConductorEvents(worktree: string, from: number): TailReading
     fd = openSync(path, "r");
     read = readSync(fd, buffer, 0, want, begin);
   } catch {
-    return { records: [], offset: begin, restarted };
+    return { records: [], offset: begin, identity, restarted };
   } finally {
     if (fd !== null) {
       try {
@@ -117,7 +165,7 @@ export function tailConductorEvents(worktree: string, from: number): TailReading
   const text = buffer.subarray(0, read).toString("utf8");
   const lastNewline = text.lastIndexOf("\n");
   // No complete line in what we read: hold the offset and try again next pass.
-  if (lastNewline < 0) return { records: [], offset: begin, restarted };
+  if (lastNewline < 0) return { records: [], offset: begin, identity, restarted };
 
   const complete = text.slice(0, lastNewline + 1);
   const records: ConductorEventRecord[] = [];
@@ -169,6 +217,7 @@ export function tailConductorEvents(worktree: string, from: number): TailReading
   return {
     records,
     offset: cappedAt ?? begin + Buffer.byteLength(complete, "utf8"),
+    identity,
     restarted,
   };
 }

@@ -225,11 +225,12 @@ the one that failed. Adding a source is an inline form above that list; it still
 repo before the source exists, and the source still starts switched off.
 
 **Conductor** is the newest, and it is the one category whose subject is somebody else's
-software - which is also why it is the one category that is **conditional**. It is drawn only
-once the daemon has found the engine on its `PATH` (or the operator has already configured a
-repository for it); without that there is no row, no panel, and no palette entry, and the
-hash falls back like an unknown category. Every other category configures Mission Control and
-therefore exists for everyone. It is the consent surface for observing an external SDLC engine - see
+software - which is also why it is the one category that is **conditional**. An operator with
+no engine installed and no stored Conductor configuration gets no row, no panel and no palette
+entry, and the hash falls back like an unknown category; every other category configures
+Mission Control and therefore exists for everyone. The exact condition is
+in [Pipelines](pipelines.md) and not restated here - a second copy of a rule is a second thing to
+keep true. It is the consent surface for observing an external SDLC engine - see
 [Pipelines](pipelines.md) - and it is built out of three cards because three different things
 can be false: the engine may not be installed, the master switch may be off, and a repository
 may not be switched on. An operator who sees no pipelines has to be able to tell which,

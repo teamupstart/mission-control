@@ -19,8 +19,12 @@ import type {
 /** One pass over one repository: every run it holds, plus where each tail stopped. */
 export interface PipelineRepoReading {
   runs: PipelineRun[];
-  /** Byte offset into each run's event ledger, keyed by slug. Resumes the next pass. */
-  offsets: Map<string, number>;
+  /**
+   * Where to resume each run's event ledger next pass, keyed by slug - the byte offset and
+   * the identity of the file it indexes, which travel together because an offset without
+   * the file it belongs to is what lets a re-cut worktree be read from the middle.
+   */
+  cursors: Map<string, { offset: number; identity: string }>;
   /**
    * Slugs whose event ledger was REPLACED rather than appended to - a worktree torn down and
    * re-cut under the same slug, or a ledger rewritten - so this pass read one from byte zero.
@@ -72,5 +76,8 @@ export interface PipelineProvider {
    * and what makes an enabled repository cost nothing on a machine where the engine is
    * installed but not running.
    */
-  readRepo(repoRoot: string, offsets: Map<string, number>): Promise<PipelineRepoReading>;
+  readRepo(
+    repoRoot: string,
+    cursors: Map<string, { offset: number; identity: string }>,
+  ): Promise<PipelineRepoReading>;
 }

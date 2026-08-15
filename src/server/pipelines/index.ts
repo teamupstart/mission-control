@@ -15,7 +15,7 @@ import {
   deletePipelineRunRow,
   deletePipelineRunsForRepo,
   loadPipelineRuns,
-  pipelineEventOffsets,
+  pipelineEventCursors,
   pipelineProjectedRepos,
   upsertPipelineRunRow,
 } from "../db.ts";
@@ -258,8 +258,8 @@ export async function refreshPipelineRepo(
   provider: PipelineProviderId,
   repoRoot: string,
 ): Promise<void> {
-  const offsets = pipelineEventOffsets(provider, repoRoot);
-  const reading = await PIPELINE_PROVIDERS[provider].readRepo(repoRoot, offsets);
+  const cursors = pipelineEventCursors(provider, repoRoot);
+  const reading = await PIPELINE_PROVIDERS[provider].readRepo(repoRoot, cursors);
 
   const seen = new Set<string>();
   let halted = 0;
@@ -289,7 +289,12 @@ export async function refreshPipelineRepo(
     const projected: PipelineRun = { ...run, costTokens: total };
     // Durable first, then the notify - an SSE emission cannot be rolled back, and the
     // schedule catalog holds the same order for the same reason.
-    upsertPipelineRunRow({ run: projected, eventsOffset: reading.offsets.get(run.slug) ?? 0 });
+    const cursor = reading.cursors.get(run.slug);
+    upsertPipelineRunRow({
+      run: projected,
+      eventsOffset: cursor?.offset ?? 0,
+      eventsIdentity: cursor?.identity ?? "",
+    });
     sink.upsertPipelineRun(projected);
   }
 
@@ -302,7 +307,7 @@ export async function refreshPipelineRepo(
   // it back on the next tick. "We could not look" is not "it is gone", which is the rule the
   // Inspector's poller holds about a `gh` that errored, applied to a directory.
   if (reading.error === null) {
-    for (const slug of offsets.keys()) {
+    for (const slug of cursors.keys()) {
       if (seen.has(slug)) continue;
       deletePipelineRunRow(provider, repoRoot, slug);
       costTotals.delete(pipelineRunKey(provider, repoRoot, slug));

@@ -50,6 +50,51 @@ function seedPreFeatureDb(): void {
     .prepare(`INSERT INTO app_config (key, value) VALUES (?, ?)`)
     .run("taskSources", JSON.stringify({ sources: [{ id: "gh", kind: "github-issues" }] }));
   raw.prepare(`INSERT INTO app_config (key, value) VALUES (?, ?)`).run("shipping", '{"autoMerge":true}');
+
+  // A `pipeline_runs` table in the shape it FIRST shipped in - offset, no identity - with a
+  // projected run in it. This is the database of an operator who enabled a repository on the
+  // build before file identity was recorded, and the upgrade must neither lose their row nor
+  // treat "we never recorded an identity" as "the file changed": the second would reset every
+  // projected run's accumulated token total once, on upgrade, for no reason.
+  raw.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+      provider      TEXT NOT NULL,
+      repo_root     TEXT NOT NULL,
+      slug          TEXT NOT NULL,
+      run_json      TEXT NOT NULL,
+      events_offset INTEGER NOT NULL DEFAULT 0,
+      updated_at    INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_key
+      ON pipeline_runs(provider, repo_root, slug);
+  `);
+  raw
+    .prepare(
+      `INSERT INTO pipeline_runs (provider, repo_root, slug, run_json, events_offset, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "ai-conductor",
+      "/w/demo",
+      "a-feature",
+      JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: "/w/demo",
+        slug: "a-feature",
+        worktree: "/w/demo/.worktrees/a-feature",
+        tier: "M",
+        track: "product",
+        steps: [{ name: "build", state: "done" }],
+        lastStep: "build",
+        halt: null,
+        group: "eligible",
+        prUrl: null,
+        costTokens: 4242,
+        updatedAt: 1_700_000_000_000,
+      }),
+      512,
+      1_700_000_000_000,
+    );
   raw.close();
 }
 
@@ -80,11 +125,19 @@ test("an upgraded machine reads the off posture, from zod defaults rather than a
   assert.deepEqual(config.repos, []);
 });
 
-test("the projection table exists after the upgrade, and starts empty", () => {
-  // Empty, not absent, and not populated: an upgraded machine has consented to nothing, so
-  // this feature is inert until somebody switches a repository on.
-  assert.deepEqual(loadPipelineRuns(), []);
-  assert.deepEqual(pipelineProjectedRepos(), []);
+test("a projection row written before file identity existed survives, with no identity", () => {
+  // The row keeps its offset and its accumulated spend, and its identity reads as the empty
+  // string - which the tail treats as no evidence rather than as a change, so the next pass
+  // adopts whatever it finds instead of resetting the total.
+  const rows = loadPipelineRuns();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.run.slug, "a-feature");
+  assert.equal(rows[0]?.run.costTokens, 4242, "the accumulated spend is not reset by an upgrade");
+  assert.equal(rows[0]?.eventsOffset, 512, "and neither is the resume point");
+  assert.equal(rows[0]?.eventsIdentity, "", "no identity was recorded, and none is invented");
+  assert.deepEqual(pipelineProjectedRepos(), [
+    { provider: "ai-conductor", repoRoot: "/w/demo" },
+  ]);
 });
 
 test("the upgraded schema has the key the projection is addressed by", () => {
@@ -107,6 +160,12 @@ test("the upgraded schema has the key the projection is addressed by", () => {
     assert.ok(column, `pipeline_runs is missing ${key}`);
     assert.equal(column.notnull, 1, `${key} is an ON CONFLICT key and must be NOT NULL`);
   }
+
+  // Added by `migrate()` onto a table that already existed, so the upgrade path is what put
+  // it there rather than the CREATE.
+  const identity = columns.find((c) => c.name === "events_identity");
+  assert.ok(identity, "the upgrade must add events_identity to an existing pipeline_runs");
+  assert.equal(identity.notnull, 1);
 });
 
 test("this phase's schema depends on no table a later phase owns", () => {

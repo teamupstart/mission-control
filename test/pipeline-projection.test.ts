@@ -24,7 +24,7 @@ import type { PipelineRun } from "../src/shared/pipeline.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-projection-"));
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb, loadPipelineRuns, pipelineEventOffsets } = await import("../src/server/db.ts");
+const { openDb, loadPipelineRuns, pipelineEventCursors } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { setPipelinesConfig } = await import("../src/server/pipelines/config.ts");
 const {
@@ -159,7 +159,7 @@ test("the events offset survives a restart, so a run's token spend is not counte
   const first = new Registry();
   await refreshPipelineRepo(first, "ai-conductor", root);
   assert.equal(first.listPipelineRuns()[0]?.costTokens, 120);
-  const offset = pipelineEventOffsets("ai-conductor", root).get("feat");
+  const offset = pipelineEventCursors("ai-conductor", root).get("feat")?.offset;
   assert.ok(offset && offset > 0, "the offset should have advanced past the first record");
 
   // A second pass reads nothing new and must not re-add what it already counted.
@@ -280,6 +280,51 @@ test("a replacement with no spend of its own does not resurrect the old total", 
   );
   await refreshPipelineRepo(registry, "ai-conductor", root);
   assert.equal(registry.listPipelineRuns()[0]?.costTokens, 9, "the new ledger's spend alone");
+});
+
+test("a replacement ledger of the SAME length is still a replacement", async () => {
+  // The case a byte comparison cannot see, and the one a re-cut worktree actually produces:
+  // the path is deleted and created again, so the new file can be any length at all - equal
+  // or longer included. Resuming at the old offset would skip the replacement's opening
+  // records and add whatever came after them to a total belonging to a run that is gone.
+  //
+  // The identity signal (dev:ino:birthtime) is what catches it, so this test recreates the
+  // file rather than truncating it, and asserts the sizes MATCH - otherwise it would be
+  // passing on the length check and proving nothing about identity.
+  reset();
+  const root = repo("replaced-same-length");
+  const worktree = seedConductorRun(root, "feat", {
+    steps: { build: "done" },
+    events: [{ type: "step_completed", step: "aaaa", tokenUsage: { input: 700 } }],
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+
+  const registry = new Registry();
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(registry.listPipelineRuns()[0]?.costTokens, 700);
+  const ledger = join(worktree, ".pipeline", "events.jsonl");
+  const before = statSync(ledger);
+
+  // Delete and recreate with a body of exactly the same length: a different file, same size.
+  // A DIFFERENT figure of the same byte width, so the three outcomes are distinguishable:
+  // 701 is the replacement read correctly, 700 is the stale total kept because nothing was
+  // read, and 1401 would be the old total plus the new one.
+  rmSync(ledger);
+  writeFileSync(
+    ledger,
+    `${JSON.stringify({ type: "step_completed", step: "bbbb", tokenUsage: { input: 701 } })}\n`,
+  );
+  const after = statSync(ledger);
+  assert.equal(after.size, before.size, "the fixture must be the same length, or it proves nothing");
+  assert.notEqual(after.ino, before.ino, "and must genuinely be a different file");
+
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(
+    registry.listPipelineRuns()[0]?.costTokens,
+    701,
+    "the replacement's own spend - not 700 (stale, nothing read) and not 1401 (accumulated)",
+  );
 });
 
 test("a run whose worktree is gone leaves the projection", async () => {

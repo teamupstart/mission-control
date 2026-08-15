@@ -2283,6 +2283,13 @@ export function openDb(): DatabaseSync {
       -- a 0 default, which is exact: a row written before anything was tailed has read none
       -- of it. A file shorter than this offset is a rewritten ledger and restarts at 0.
       events_offset INTEGER NOT NULL DEFAULT 0,
+      -- Which FILE that offset is an offset into - dev:ino:birthtime - which changes when
+      -- the path is re-created. An offset without it is meaningless across a worktree being
+      -- cut again under the same slug, because the replacement is a different file that
+      -- happens to sit at the same path. Empty string means "not recorded", which is what
+      -- every row written before this column carries and is treated as no evidence rather
+      -- than as a change.
+      events_identity TEXT NOT NULL DEFAULT '',
       updated_at    INTEGER NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_key
@@ -2314,6 +2321,13 @@ function inFlightIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  // Which file each pipeline run's events offset indexes into. Added after `pipeline_runs`
+  // shipped, so an existing row carries the empty-string default - which is exact: those
+  // rows were written by a build that recorded no identity, and an unknown identity is
+  // treated as no evidence rather than as a change. The alternative, treating it as a
+  // mismatch, would reset every projected run's accumulated token total once on upgrade.
+  addColumn(d, "pipeline_runs", "events_identity", "TEXT NOT NULL DEFAULT ''");
+
   // An embedded driver can be relaunched from `status` plus `agent_session_id`, but those
   // facts cannot say whether the old process died in the middle of a turn. Existing rows
   // default idle: no older build recorded proof that they owe an automatic continuation.
@@ -5041,6 +5055,8 @@ export function forgetTaskSourceSeen(sourceId: string): number {
 export interface PipelineRunRow {
   run: PipelineRun;
   eventsOffset: number;
+  /** Identity of the file `eventsOffset` indexes into. Empty when never recorded. */
+  eventsIdentity: string;
 }
 
 /**
@@ -5078,13 +5094,17 @@ function readPipelineRun(json: string): PipelineRun | null {
 export function loadPipelineRuns(): PipelineRunRow[] {
   const d = openDb();
   const rows = d
-    .prepare(`SELECT provider, repo_root, slug, run_json, events_offset FROM pipeline_runs`)
+    .prepare(
+      `SELECT provider, repo_root, slug, run_json, events_offset, events_identity
+         FROM pipeline_runs`,
+    )
     .all() as unknown as Array<{
     provider: string;
     repo_root: string;
     slug: string;
     run_json: string;
     events_offset: number;
+    events_identity: string;
   }>;
   const out: PipelineRunRow[] = [];
   const unreadable: Array<[string, string, string]> = [];
@@ -5094,7 +5114,11 @@ export function loadPipelineRuns(): PipelineRunRow[] {
       unreadable.push([row.provider, row.repo_root, row.slug]);
       continue;
     }
-    out.push({ run, eventsOffset: row.events_offset });
+    out.push({
+      run,
+      eventsOffset: row.events_offset,
+      eventsIdentity: row.events_identity ?? "",
+    });
   }
   for (const [provider, repoRoot, slug] of unreadable) {
     d.prepare(
@@ -5109,28 +5133,50 @@ export function loadPipelineRuns(): PipelineRunRow[] {
   return out;
 }
 
-/** Where the events tail stopped for each run in one repository, keyed by slug. */
-export function pipelineEventOffsets(
+/** Where the events tail stopped, and in WHICH file, for each run in one repository. */
+export interface PipelineEventCursor {
+  offset: number;
+  /** `dev:ino:birthtime` of the file that offset indexes. Empty when never recorded. */
+  identity: string;
+}
+
+/**
+ * The resume cursor per slug.
+ *
+ * Offset and identity travel together and are never read apart: an offset is a promise about
+ * a position in a particular file, and handing one back without saying which file it came
+ * from is how a re-cut worktree gets read from the middle of its new ledger.
+ */
+export function pipelineEventCursors(
   provider: PipelineProviderId,
   repoRoot: string,
-): Map<string, number> {
+): Map<string, PipelineEventCursor> {
   const rows = openDb()
     .prepare(
-      `SELECT slug, events_offset FROM pipeline_runs WHERE provider = ? AND repo_root = ?`,
+      `SELECT slug, events_offset, events_identity
+         FROM pipeline_runs WHERE provider = ? AND repo_root = ?`,
     )
-    .all(provider, repoRoot) as unknown as Array<{ slug: string; events_offset: number }>;
-  return new Map(rows.map((r) => [r.slug, r.events_offset]));
+    .all(provider, repoRoot) as unknown as Array<{
+    slug: string;
+    events_offset: number;
+    events_identity: string;
+  }>;
+  return new Map(
+    rows.map((r) => [r.slug, { offset: r.events_offset, identity: r.events_identity ?? "" }]),
+  );
 }
 
 /** Store one run's projection. Upsert on the engine's own key. */
 export function upsertPipelineRunRow(row: PipelineRunRow): void {
   openDb()
     .prepare(
-      `INSERT INTO pipeline_runs (provider, repo_root, slug, run_json, events_offset, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO pipeline_runs
+         (provider, repo_root, slug, run_json, events_offset, events_identity, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(provider, repo_root, slug) DO UPDATE SET
          run_json=excluded.run_json,
          events_offset=excluded.events_offset,
+         events_identity=excluded.events_identity,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -5139,6 +5185,7 @@ export function upsertPipelineRunRow(row: PipelineRunRow): void {
       row.run.slug,
       JSON.stringify(row.run),
       row.eventsOffset,
+      row.eventsIdentity,
       row.run.updatedAt,
     );
 }

@@ -1,9 +1,10 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
 
@@ -24,6 +25,10 @@ import { settled } from "../fixtures/settle.ts";
  */
 
 const SCOUT_TASK = "find out why a resumed agent lost repository permissions";
+const LONG_SCOUT_TASK =
+  `${SCOUT_TASK}; inspect terminal and SDK recovery, compare Pi launch-time ` +
+  "delivery, and preserve the deliberately long task wording that must never replace the short card title";
+const EVIDENCE = artifactsDir("scout-archive-title");
 /** Visible text that exists ONLY inside the report the fake writes. */
 const FINDING = "the resume path never replayed the repository grant";
 /** Turns the fake into a scout that writes its page and deliberately never submits it. */
@@ -281,6 +286,18 @@ function rail(page: Page) {
   return page.getByRole("complementary", { name: "Scout archives" });
 }
 
+async function captureTitleEvidence(page: Page, name: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.screenshot({
+    path: `${EVIDENCE}${name}.png`,
+    animations: "disabled",
+  });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/scout-archive-title/${name}.png`);
+}
+
 test("Scouts is reachable from the topbar, its shortcut, and the command palette", async ({
   dashboard,
 }) => {
@@ -322,15 +339,31 @@ test("a finished scout is found by its own words and reads in the sandbox", asyn
   daemon,
 }) => {
   await disableSkills(daemon);
-  await dispatchScout(dashboard, daemon, SCOUT_TASK);
-  await expect(await scoutCard(dashboard)).toContainText("Submitted the scout report", {
+  await dispatchScout(dashboard, daemon, LONG_SCOUT_TASK);
+  const card = await scoutCard(dashboard);
+  await expect(card).toContainText("Submitted the scout report", {
     timeout: 30_000,
   });
+  const liveTitle = card.getByRole("heading", { level: 2 }).first();
+  await expect(liveTitle, "the live session card has a visible title").toBeVisible();
   await expect.poll(() => archives(daemon).then((r) => r.length), { timeout: 20_000 }).toBe(1);
+  const [archived] = await archives(daemon);
+  expect(archived?.title, "the archive API carries a title").toBeTruthy();
+  expect(archived!.title, "the card title stays shorter than the full human prompt").not.toBe(LONG_SCOUT_TASK);
+  expect(archived!.title.length).toBeLessThan(LONG_SCOUT_TASK.length);
+  await expect(liveTitle, "the archive API keeps the live card title exactly").toHaveAccessibleName(
+    archived!.title,
+  );
+  await captureTitleEvidence(dashboard, "01-live-session-card-title");
 
   await dashboard.getByRole("button", { name: /^Scouts/ }).click();
   const scoutsRail = rail(dashboard);
   await expect(scoutsRail).toBeVisible();
+  const archiveRow = scoutsRail.getByRole("button", { name: archived!.title }).first();
+  await expect(archiveRow, "the archive rail keeps the exact title the live card showed").toBeVisible();
+  await expect(archiveRow).toContainText(archived!.title);
+  await expect(archiveRow).not.toContainText(LONG_SCOUT_TASK);
+  await captureTitleEvidence(dashboard, "02-archive-rail-title");
 
   // The newest archive opens by itself, and the address bar names it - so the thing on
   // screen is always a link someone else can be sent.

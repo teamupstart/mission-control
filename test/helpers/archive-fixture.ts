@@ -14,6 +14,7 @@ import {
   type ArchiveManifest,
   type ArchiveManifestArtifact,
   type ArchiveManifestMissing,
+  type ArchiveManifestPromptTrail,
   type ArchiveManifestRepository,
 } from "../../src/shared/archives.ts";
 
@@ -54,6 +55,7 @@ export interface ScoutBundleSpec {
   archiveId?: string;
   title?: string;
   question?: string | null;
+  prompts?: ArchiveManifestPromptTrail | null;
   summary?: string | null;
   tags?: string[];
   captureStatus?: "complete" | "partial";
@@ -183,6 +185,7 @@ export function writeScoutBundle(libraryRoot: string, spec: ScoutBundleSpec = {}
       captureStatus: spec.captureStatus ?? (reportHtml === null ? "partial" : "complete"),
       title: spec.title ?? "Resume permission loss",
       question: spec.question === undefined ? "Why did a resumed agent lose repository permissions?" : spec.question,
+      prompts: spec.prompts ?? null,
       summary:
         spec.summary === undefined ? "Resume rebuilt the session without replaying the grant." : spec.summary,
       tags: spec.tags ?? ["permissions", "resume"],

@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { ARCHIVE_KINDS, ARCHIVE_TEXT_LIMITS, type ArchiveCaptureStatus, type ArchiveKind } from "@shared/archives.ts";
+import {
+  ARCHIVE_KINDS,
+  ARCHIVE_TEXT_LIMITS,
+  parseArchivePromptTrail,
+  type ArchiveCaptureStatus,
+  type ArchiveKind,
+  type ArchiveManifestPromptTrail,
+} from "@shared/archives.ts";
 import {
   SCOUT_SUBMISSION_LIMITS,
   type ScoutSubmissionInput,
@@ -105,6 +112,8 @@ export interface ArchiveCaptureJob {
   submission: ScoutSubmissionInput | null;
   title: string;
   question: string | null;
+  /** Frozen portable prompt context, or null for a pre-migration job. */
+  prompts: ArchiveManifestPromptTrail | null;
   origin: ArchiveCaptureOrigin;
   repos: ArchiveRepoSlot[];
   /** Which unit of work in those checkouts this job covers, or null for a whole episode. */
@@ -142,6 +151,7 @@ export interface ArchiveCaptureReservation {
   producerId: string;
   title: string;
   question: string | null;
+  prompts?: ArchiveManifestPromptTrail | null;
   origin: ArchiveCaptureOrigin;
   repos: ArchiveRepoSlot[];
   /** The unit of work this job covers, or null when the whole episode is one archive. */
@@ -188,6 +198,7 @@ interface JobRowShape {
   supporting_json: string | null;
   title: string | null;
   question: string | null;
+  prompts_json: string | null;
   origin_json: string | null;
   repos_json: string | null;
   scope_json: string | null;
@@ -227,7 +238,8 @@ export class ArchiveCaptureStore {
    * generating two and publishing whichever renamed last. An existing row is returned
    * UNCHANGED except for the locators, which are refreshed while they are still derivable: a
    * job reserved from an exit knows the checkout, and a later submission in the same episode
-   * must not lose it.
+   * must not lose it. Title, question and prompts are evidence frozen at the first reservation;
+   * a retry must never refresh them from a conversation that continued in the meantime.
    */
   reserve(input: ArchiveCaptureReservation): ArchiveCaptureJob {
     const key = archiveOperationKey(input.taskId, input.episodeId, input.scope ?? null);
@@ -241,13 +253,11 @@ export class ArchiveCaptureStore {
         this.db
           .prepare(
             `UPDATE archive_capture_jobs
-                SET session_id = ?, title = ?, question = ?, origin_json = ?, repos_json = ?, updated_at = ?
+                SET session_id = ?, origin_json = ?, repos_json = ?, updated_at = ?
               WHERE operation_key = ?`,
           )
           .run(
             input.sessionId ?? existing.sessionId,
-            clip(input.title, ARCHIVE_TEXT_LIMITS.title) ?? existing.title,
-            clip(input.question, ARCHIVE_TEXT_LIMITS.question),
             JSON.stringify(input.origin),
             JSON.stringify(input.repos),
             at,
@@ -260,8 +270,8 @@ export class ArchiveCaptureStore {
         .prepare(
           `INSERT INTO archive_capture_jobs
              (operation_key, task_id, session_id, episode_id, kind, status, producer_id, archive_id,
-              title, question, origin_json, repos_json, scope_json, attempts, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+              title, question, prompts_json, origin_json, repos_json, scope_json, attempts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
         )
         .run(
           key,
@@ -273,6 +283,7 @@ export class ArchiveCaptureStore {
           randomUUID(),
           clip(input.title, ARCHIVE_TEXT_LIMITS.title) ?? untitled(input.kind),
           clip(input.question, ARCHIVE_TEXT_LIMITS.question),
+          input.prompts ? JSON.stringify(input.prompts) : null,
           JSON.stringify(input.origin),
           JSON.stringify(input.repos),
           input.scope ? JSON.stringify(input.scope) : null,
@@ -411,6 +422,7 @@ function rowToJob(row: JobRowShape): ArchiveCaptureJob {
       : null,
     title: row.title ?? untitled(kind),
     question: row.question,
+    prompts: parsePromptTrail(row.prompts_json),
     origin,
     repos: parseJson<ArchiveRepoSlot[]>(row.repos_json) ?? [],
     scope: readScope(row.scope_json),
@@ -470,6 +482,11 @@ function parseJson<T>(raw: string | null): T | null {
   } catch {
     return null;
   }
+}
+
+function parsePromptTrail(raw: string | null): ArchiveManifestPromptTrail | null {
+  const parsed = parseJson<unknown>(raw);
+  return parsed === null ? null : parseArchivePromptTrail(parsed);
 }
 
 function clip(value: string | null | undefined, max: number): string | null {

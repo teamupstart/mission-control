@@ -40,7 +40,13 @@ const MAX_COMPACTION_BYTES = 160_000;
 /** One compaction attempt gets 45s; parse retry receives the same independently. */
 export const WORKFLOW_CONTEXT_TIMEOUT_MS = 45_000;
 
-const CompactionSchema = z.object({
+/**
+ * Exported for the provider-schema contract test only, which has to be able to name every
+ * schema that reaches `LlmRunOptions.schema`. This one is a CONTROL there: it already listed
+ * both keys in `required`, which is why 72 live Codex compactions succeeded while the
+ * Inspector's schema failed every call.
+ */
+export const CompactionSchema = z.object({
   constraints: z.array(z.string().max(4_000)).max(100),
   acceptanceCriteria: z.array(z.string().max(4_000)).max(100),
 });

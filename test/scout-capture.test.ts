@@ -17,6 +17,7 @@ import test, { after, beforeEach } from "node:test";
 import {
   ARCHIVE_PRIMARY_REPORT_PATH,
   parseArchiveManifest,
+  type ArchiveManifestPromptTrail,
 } from "../src/shared/archives.ts";
 import {
   SCOUT_REPORT_PATH_SHAPE,
@@ -78,6 +79,9 @@ interface JobSpec {
   supporting?: Array<{ repoSlot: string; path: string }>;
   extraRoots?: Array<{ slot: string; root: string | null; label: string }>;
   taskId?: string;
+  title?: string;
+  question?: string | null;
+  prompts?: ArchiveManifestPromptTrail | null;
 }
 
 /** A reserved job, optionally carrying a submission, exactly as the manager would build it. */
@@ -90,8 +94,9 @@ function makeJob(spec: JobSpec) {
     sessionId: "sess-1",
     episodeId: "ep-1",
     producerId: PRODUCER,
-    title: "Resume permission loss",
-    question: "Why did a resumed agent lose repository permissions?",
+    title: spec.title ?? "Resume permission loss",
+    question: spec.question === undefined ? "Why did a resumed agent lose repository permissions?" : spec.question,
+    prompts: spec.prompts ?? null,
     origin: { agent: "claude", model: "opus", source: "manual" },
     repos: [
       { slot: "repo-01", label: "demo", root: spec.root, head: null, primary: true },
@@ -132,6 +137,72 @@ test("a published manifest declares the kind its job was reserved with", async (
   assert.equal(manifest.ok, true);
   if (!manifest.ok) return;
   assert.equal(manifest.manifest.kind, "scout");
+});
+
+test("capture publishes the frozen short title and full initial prompt beyond the question preview", async () => {
+  const root = makeCheckout({ "docs/reports/resume/report.html": validReportHtml() });
+  const intent = `${"long intent ".repeat(120)}the durable ending`;
+  const prompts: ArchiveManifestPromptTrail = {
+    entries: [
+      { kind: "initial", text: intent, at: null },
+      { kind: "follow_up", text: "Also compare Pi.", at: "2026-08-14T15:18:00.000Z" },
+    ],
+    truncated: false,
+  };
+  const { job } = makeJob({
+    root,
+    reportPath: "docs/reports/resume/report.html",
+    title: "Resume permission loss",
+    question: intent.slice(0, 1_000),
+    prompts,
+  });
+  const outcome = await captureArchive(job, deps);
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  const parsed = parseArchiveManifest(
+    JSON.parse(readFileSync(join(library, job.producerId, job.archiveId, "manifest.json"), "utf8")),
+  );
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  assert.equal(parsed.manifest.archive.title, "Resume permission loss");
+  assert.equal(parsed.manifest.archive.question?.length, 1_000);
+  assert.equal(parsed.manifest.archive.prompts?.entries[0]?.text, intent);
+  assert.equal(parsed.manifest.archive.prompts?.entries[1]?.text, "Also compare Pi.");
+});
+
+test("a retry returns the title and prompt trail frozen by the first reservation", () => {
+  const store = new ArchiveCaptureStore(db);
+  const base = {
+    kind: "scout" as const,
+    taskId: "immutable-reservation",
+    sessionId: "session-1",
+    episodeId: "episode-1",
+    producerId: PRODUCER,
+    title: "First live title",
+    question: "first intent",
+    prompts: {
+      entries: [{ kind: "initial" as const, text: "first intent", at: null }],
+      truncated: false,
+    },
+    origin: { agent: "claude", model: "opus", source: "manual" },
+    repos: [],
+  };
+  const first = store.reserve(base);
+  const replay = store.reserve({
+    ...base,
+    sessionId: "session-2",
+    title: "Later renamed title",
+    question: "later intent",
+    prompts: {
+      entries: [{ kind: "initial", text: "later intent", at: null }],
+      truncated: true,
+    },
+  });
+  assert.equal(replay.archiveId, first.archiveId);
+  assert.equal(replay.sessionId, "session-2", "recoverable locators may refresh");
+  assert.equal(replay.title, "First live title");
+  assert.equal(replay.question, "first intent");
+  assert.deepEqual(replay.prompts, first.prompts);
 });
 
 test("a kind with no planner is refused by name rather than published empty", async () => {

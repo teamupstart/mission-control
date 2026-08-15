@@ -1998,6 +1998,9 @@ export function openDb(): DatabaseSync {
       capture_status     TEXT,
       title              TEXT NOT NULL DEFAULT '',
       question           TEXT,
+      -- Rebuildable prompt detail copied from the verified manifest. Null for bundles that
+      -- predate the additive v1 prompt contract and for unreadable rows.
+      prompts_json       TEXT,
       summary            TEXT,
       tags_json          TEXT,
       agent              TEXT,
@@ -2129,6 +2132,9 @@ export function openDb(): DatabaseSync {
       -- Display and provenance the manifest needs, frozen at reservation time.
       title           TEXT,
       question        TEXT,
+      -- Portable human prompt context frozen at reservation. Null on jobs written before
+      -- the prompt contract existed; recovery must not attempt to reconstruct those rows.
+      prompts_json    TEXT,
       origin_json     TEXT,
       repos_json      TEXT,
       -- WHICH unit of work in those checkouts this job captures, for a kind that can produce
@@ -2872,6 +2878,12 @@ function migrate(d: DatabaseSync): void {
   // job has always covered the whole episode, so null reads as "the episode" rather than as a
   // value that went missing.
   addColumn(d, "archive_capture_jobs", "scope_json", "TEXT");
+
+  // Prompt context is additive in both places. The capture row is immutable recovery
+  // coordination; the archive row is a disposable projection rebuilt from manifests.
+  // Null means the row predates prompt retention, never an empty conversation inferred now.
+  addColumn(d, "archive_capture_jobs", "prompts_json", "TEXT");
+  addColumn(d, "archives", "prompts_json", "TEXT");
 
   rebuildInFlightIndexIfStale(d);
 }

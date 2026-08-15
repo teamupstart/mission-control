@@ -375,7 +375,16 @@ test("a bundle that disappears is pruned after a complete pass", async () => {
 
 test("a wiped database rebuilds itself from the bundles in the background", async () => {
   const { root, store, reconciler } = harness();
-  const written = writeScoutBundle(root, { companions: { "evidence.csv": "a,b\n" } });
+  const written = writeScoutBundle(root, {
+    companions: { "evidence.csv": "a,b\n" },
+    prompts: {
+      entries: [
+        { kind: "initial", text: "Find the resume defect", at: null },
+        { kind: "follow_up", text: "Search for the rebuild-only clarification", at: null },
+      ],
+      truncated: false,
+    },
+  });
   await settleTwice(reconciler);
   assert.equal(store.count(), 1);
 
@@ -387,6 +396,7 @@ test("a wiped database rebuilds itself from the bundles in the background", asyn
   await settleTwice(restarted.reconciler);
   const row = restarted.store.get(written.key);
   assert.equal(row?.title, "Resume permission loss");
+  assert.equal(row?.prompts?.entries[1]?.text, "Search for the rebuild-only clarification");
   assert.equal(restarted.store.artifacts(written.key).length, 2);
   assert.equal(
     restarted.store.list({
@@ -403,6 +413,22 @@ test("a wiped database rebuilds itself from the bundles in the background", asyn
     }).rows.length,
     1,
     "search over the report body is rebuilt too, not just the summary row",
+  );
+  assert.equal(
+    restarted.store.list({
+      q: "rebuild-only clarification",
+      producer: null,
+      repo: null,
+      agent: null,
+      kind: null,
+      status: null,
+      from: null,
+      to: null,
+      cursor: null,
+      limit: 30,
+    }).rows.length,
+    1,
+    "prompt search is rebuilt from the manifest after the index is wiped",
   );
 });
 

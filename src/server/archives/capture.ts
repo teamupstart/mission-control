@@ -186,6 +186,7 @@ async function publish(
         captureStatus: plan.captureStatus,
         title: job.title,
         question: job.question,
+        prompts: job.prompts,
         summary: job.submission?.summary ?? null,
         tags: job.submission?.tags ?? [],
       },

@@ -1,0 +1,415 @@
+/**
+ * What is at stake: `POST /ingest/conductor` is the one door in this integration that
+ * something outside Mission Control pushes through. Everything else reads files nobody sent
+ * us. So the claims here are about a door:
+ *
+ *  - It is guarded like the rest of the ingest family, by token, on the first line.
+ *  - It is downstream of CONSENT. A push naming a repository nobody switched on is counted
+ *    and dropped, because ingest must not be a second way to start observing a checkout.
+ *  - It is TOLERANT. One malformed line costs that line; a kind this build has never seen
+ *    costs nothing at all. Conductor's event union is TypeScript-only and unversioned, so a
+ *    route that refused what it did not recognise would break on the engine's next release.
+ *  - It buys LATENCY and not authority. A push makes the daemon read the run's own files
+ *    now instead of on the next tick; the projection it produces is the same projection the
+ *    tick would have produced, from the same files.
+ *
+ * And the demotion contract, which is the half that is easy to get wrong in the dangerous
+ * direction: live ingest relaxes how often the event ledger is read and changes nothing
+ * else. State files are read on every pass whatever the plugin is doing, because they are
+ * what the projection is built from.
+ */
+import assert from "node:assert/strict";
+import test, { after } from "node:test";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type { PipelinesView } from "../src/shared/pipeline.ts";
+import type { ConductorIngestOutcome } from "../src/shared/protocol.ts";
+
+const home = mkdtempSync(join(tmpdir(), "mission-pipeline-ingest-"));
+process.env.HARNESS_HOME = join(home, "state");
+// Nothing on PATH, so no test here waits on a probe that would answer the same way anyway.
+process.env.MISSION_CONDUCTOR_BIN = join(home, "no-such-conductor");
+process.env.AI_CONDUCTOR_REGISTRY = join(home, "no-such-registry.json");
+// The backfill sweep is the demotion's own backstop, and one of the tests below is about
+// what happens BEFORE it comes due. An hour is longer than this file's wall clock.
+process.env.MISSION_PIPELINE_BACKFILL_MS = String(60 * 60 * 1000);
+// The debounce is drained explicitly by every test that needs it, so this only decides how
+// long an undrained one would sit. Small, so nothing is left pending at exit.
+process.env.MISSION_PIPELINE_INGEST_REFRESH_MS = "5";
+
+const { openDb } = await import("../src/server/db.ts");
+const { countPipelineEvents, pipelineEvents } = await import("../src/server/db.ts");
+const { ensureToken } = await import("../src/server/auth.ts");
+const { Registry } = await import("../src/server/registry.ts");
+const { buildApp } = await import("../src/server/routes.ts");
+const { setPipelinesConfig } = await import("../src/server/pipelines/config.ts");
+const {
+  drainPipelineRefreshes,
+  refreshPipelineRepo,
+  pipelineRepoStatuses,
+  restorePipelineProjection,
+} = await import("../src/server/pipelines/index.ts");
+const { isPipelineIngestLive, pipelineIngestState, resetPipelineIngest } = await import(
+  "../src/server/pipelines/ingest.ts"
+);
+const { conductorWorktree, seedConductorDaemon, seedConductorRun } = await import(
+  "../e2e/fixtures/conductor.ts"
+);
+
+const db = openDb();
+after(() => rmSync(home, { recursive: true, force: true }));
+
+/** A real git repository, because consent resolves a git root and refuses anything else. */
+function gitRepo(name: string): string {
+  const root = join(home, name);
+  mkdirSync(root, { recursive: true });
+  execFileSync("git", ["init", "-q", "-b", "main", root], { stdio: "pipe" });
+  return realpathSync(root);
+}
+
+const repo = gitRepo("demo-repo");
+const stranger = gitRepo("not-consented");
+
+/** A fresh daemon with one consented repository, and nothing observed yet. */
+function fixture(consented: readonly string[] = [repo]) {
+  db.exec("DELETE FROM pipeline_runs");
+  db.exec("DELETE FROM pipeline_events");
+  setPipelinesConfig({
+    enabled: true,
+    repos: consented.map((repoRoot) => ({ provider: "ai-conductor", repoRoot, enabled: true })),
+  });
+  const registry = new Registry();
+  restorePipelineProjection(registry);
+  resetPipelineIngest();
+  const app = buildApp(
+    registry, null as never, null as never, null as never,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, undefined,
+  );
+  /** POST one NDJSON batch, with the token unless a test is about not having one. */
+  const push = (body: string, headers: Record<string, string> = {}) =>
+    app.request("/ingest/conductor", {
+      method: "POST",
+      body,
+      headers: {
+        host: "127.0.0.1:7317",
+        "content-type": "application/x-ndjson",
+        "x-harness-token": ensureToken(),
+        ...headers,
+      },
+    });
+  const request = (path: string, init?: RequestInit) =>
+    app.request(path, {
+      ...init,
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json", ...init?.headers },
+    });
+  return { registry, push, request };
+}
+
+/** One envelope line, in the frozen wire shape. */
+function line(
+  slug: string,
+  event: Record<string, unknown>,
+  seq = 0,
+  repoRoot = repo,
+): string {
+  return JSON.stringify({
+    repo: repoRoot,
+    worktree: conductorWorktree(repoRoot, slug),
+    slug,
+    seq,
+    event,
+  });
+}
+
+test("a push with no token is refused, and stores nothing", async () => {
+  const { push } = fixture();
+  seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
+  const res = await push(line("a-feature", { type: "step_started" }), { "x-harness-token": "" });
+  assert.equal(res.status, 401);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 0);
+
+  const wrong = await push(line("a-feature", { type: "step_started" }), {
+    "x-harness-token": "not-the-token",
+  });
+  assert.equal(wrong.status, 401);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 0);
+});
+
+test("a batch stores every line, and says what it did", async () => {
+  const { push } = fixture();
+  seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
+  const res = await push(
+    [
+      line("a-feature", { type: "step_started", step: "build" }, 1),
+      line("a-feature", { type: "step_completed", step: "build" }, 2),
+      // A blank line in the middle, which a producer that flushes per event will emit.
+      "",
+      line("a-feature", { type: "gate_checked", step: "build" }, 3),
+    ].join("\n"),
+  );
+  assert.equal(res.status, 200);
+  const counts = (await res.json()) as ConductorIngestOutcome;
+  assert.deepEqual(counts, {
+    received: 3,
+    stored: 3,
+    duplicate: 0,
+    malformed: 0,
+    unconsented: 0,
+  });
+  assert.deepEqual(
+    pipelineEvents("ai-conductor", repo, "a-feature").map((r) => [r.kind, r.source, r.producerSeq]),
+    [
+      ["step_started", "ingest", 1],
+      ["step_completed", "ingest", 2],
+      ["gate_checked", "ingest", 3],
+    ],
+  );
+});
+
+test("a kind this build has never heard of is stored, not refused", async () => {
+  const { push } = fixture();
+  seedConductorRun(repo, "a-feature", {});
+  const res = await push(
+    [
+      line("a-feature", { type: "quantum_gate_entangled", extra: { anything: [1, 2, 3] } }, 1),
+      // And a record with no discriminant at all, which is the only thing "unknown" means:
+      // this build keeps no copy of the engine's union, so it cannot have an opinion about
+      // which kinds are real.
+      line("a-feature", { note: "no type field" }, 2),
+    ].join("\n"),
+  );
+  const counts = (await res.json()) as ConductorIngestOutcome;
+  assert.equal(counts.stored, 2);
+  assert.equal(counts.malformed, 0);
+  assert.deepEqual(
+    pipelineEvents("ai-conductor", repo, "a-feature").map((r) => r.kind),
+    ["quantum_gate_entangled", "unknown"],
+  );
+});
+
+test("a malformed line costs that line and nothing else", async () => {
+  const { push } = fixture();
+  seedConductorRun(repo, "a-feature", {});
+  const res = await push(
+    [
+      "{ this is not json",
+      line("a-feature", { type: "step_started" }, 1),
+      // Valid JSON, invalid envelope - the addressing fields are what this route must be
+      // able to read, so their absence is the one thing it does refuse.
+      JSON.stringify({ repo, slug: "a-feature", event: { type: "x" } }),
+      JSON.stringify({ repo, worktree: "/w", slug: "a-feature", seq: -1, event: {} }),
+      line("a-feature", { type: "step_completed" }, 2),
+    ].join("\n"),
+  );
+  assert.equal(res.status, 200, "one bad line must never fail the batch");
+  const counts = (await res.json()) as ConductorIngestOutcome;
+  assert.equal(counts.received, 5);
+  assert.equal(counts.stored, 2);
+  assert.equal(counts.malformed, 3);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 2);
+});
+
+test("a repository nobody consented to is counted and dropped", async () => {
+  const { push } = fixture([repo]);
+  seedConductorRun(stranger, "secret-feature", {});
+  const res = await push(
+    line("secret-feature", { type: "step_started" }, 1, stranger),
+  );
+  assert.equal(res.status, 200);
+  const counts = (await res.json()) as ConductorIngestOutcome;
+  assert.deepEqual(counts, {
+    received: 1,
+    stored: 0,
+    duplicate: 0,
+    malformed: 0,
+    unconsented: 1,
+  });
+  assert.equal(countPipelineEvents("ai-conductor", stranger, "secret-feature"), 0);
+  // And it left no trace on the liveness map either, so the panel cannot report a
+  // repository as pushed-to when the push was refused.
+  assert.equal(pipelineIngestState("ai-conductor", stranger), "never");
+});
+
+test("the same event pushed twice is stored once and counted as a duplicate", async () => {
+  const { push } = fixture();
+  seedConductorRun(repo, "a-feature", {});
+  const body = line("a-feature", { type: "step_started", step: "build" }, 1);
+  await push(body);
+  const again = await push(body);
+  const counts = (await again.json()) as ConductorIngestOutcome;
+  assert.equal(counts.stored, 0);
+  assert.equal(counts.duplicate, 1);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 1);
+});
+
+test("a batch past its ceiling is refused whole, rather than parsed", async () => {
+  const { push } = fixture();
+  // Bounded before it is read, because the producer runs unattended inside another program
+  // and this daemon is single-threaded.
+  const res = await push("x".repeat(5 * 1024 * 1024));
+  assert.equal(res.status, 413);
+});
+
+test("a push makes the projection catch up now, without waiting for a tick", async () => {
+  const { registry, push } = fixture();
+  // A run mid-build, already projected once - so what this test measures is the SECOND
+  // observation, which without ingest would arrive on the next tick.
+  seedConductorRun(repo, "a-feature", {
+    steps: { worktree: "done", build: "in_progress" },
+    lastStep: "build",
+  });
+  seedConductorDaemon(repo, { pid: process.pid });
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  assert.equal(registry.listPipelineRuns()[0]?.group, "building");
+
+  // The engine finishes the step: it writes its files, then emits. The push is the
+  // notification; the files are still what the projection is read from, which is why this
+  // fixture writes them.
+  seedConductorRun(repo, "a-feature", {
+    steps: { worktree: "done", build: "done" },
+    lastStep: "build",
+    halt: "the build review found two blocking defects",
+    haltClass: "needs-human",
+  });
+  await push(line("a-feature", { type: "step_completed", step: "build" }, 1));
+  await drainPipelineRefreshes(registry);
+
+  const run = registry.listPipelineRuns()[0];
+  assert.equal(run?.group, "halted", "the push should have pulled the halt marker in at once");
+  assert.equal(run?.halt?.class, "needs-human");
+});
+
+test("what the tail already read is not stored twice when it is pushed", async () => {
+  const { registry, push } = fixture();
+  // The convergence case as it actually happens: the engine appends to events.jsonl AND the
+  // plugin pushes the same record. Two observations of one event, arriving by coordinates
+  // from two unrelated spaces - a byte offset and the plugin's own counter.
+  const emitted = { type: "step_completed", step: "build", ts: "2026-08-15T10:00:00.000Z" };
+  seedConductorRun(repo, "a-feature", { steps: { build: "done" }, events: [emitted] });
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 1);
+  assert.equal(pipelineEvents("ai-conductor", repo, "a-feature")[0]?.source, "tail");
+
+  const res = await push(line("a-feature", emitted, 999));
+  const counts = (await res.json()) as ConductorIngestOutcome;
+  assert.equal(counts.stored, 0, "the plugin's copy is the same event, under a different number");
+  assert.equal(counts.duplicate, 1);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 1);
+
+  // And one projection state: the run's spend was counted once, by the tail, from the file.
+  await drainPipelineRefreshes(registry);
+  const runs = registry.listPipelineRuns();
+  assert.equal(runs.length, 1);
+});
+
+test("live ingest relaxes the ledger read and never the state files", async () => {
+  const { registry, push } = fixture();
+  seedConductorRun(repo, "a-feature", {
+    steps: { build: "in_progress" },
+    events: [{ type: "step_started", step: "build" }],
+  });
+  seedConductorDaemon(repo, { pid: process.pid });
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 1);
+  assert.equal(isPipelineIngestLive("ai-conductor", repo, "a-feature"), false);
+
+  // A push makes the run live - and reads its ledger, because a forced pass is what a push
+  // buys. So after this the tail has seen everything on disk.
+  await push(line("a-feature", { type: "step_started", step: "build" }, 1));
+  await drainPipelineRefreshes(registry);
+  assert.equal(isPipelineIngestLive("ai-conductor", repo, "a-feature"), true);
+
+  // The engine halts, which is a STATE FILE and not an event at all - conductor does not
+  // persist its halts to the ledger, which is why the tail's demotion can never be allowed
+  // to reach the state readers.
+  seedConductorRun(repo, "a-feature", {
+    steps: { build: "done" },
+    halt: "a gate refused",
+    haltClass: "mechanical",
+    events: [{ type: "step_started", step: "build" }],
+  });
+  // And it appends a record the plugin did NOT push - the case a conductor release that
+  // added an event kind produces, since its bus has no wildcard and the installed plugin
+  // subscribes to an enumerated list. Appended after the seed, which rewrites the ledger.
+  appendFileSync(
+    join(conductorWorktree(repo, "a-feature"), ".pipeline", "events.jsonl"),
+    `${JSON.stringify({ type: "a_kind_the_plugin_never_subscribed_to" })}\n`,
+  );
+
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  // The halt landed: state files are read on every pass, whatever ingest is doing. This is
+  // the load-bearing half - the projection's authority never moves to the push path.
+  assert.equal(registry.listPipelineRuns()[0]?.halt?.class, "mechanical");
+  // And the ledger read was skipped, because the run is live and the sweep is an hour away.
+  assert.equal(
+    countPipelineEvents("ai-conductor", repo, "a-feature"),
+    1,
+    "a live run's ledger should not be re-read on an ordinary tick",
+  );
+
+  // The sweep coming due is what picks the unsubscribed event up. Reached by asking for the
+  // forced read a push would have caused, rather than by waiting out an hour.
+  await refreshPipelineRepo(registry, "ai-conductor", repo, {
+    forceTail: new Set(["a-feature"]),
+  });
+  assert.equal(
+    countPipelineEvents("ai-conductor", repo, "a-feature"),
+    2,
+    "the backfill sweep is what makes demotion safe; it must actually catch up",
+  );
+});
+
+test("a quiet plugin puts the tail straight back on its ordinary cadence", async () => {
+  const { registry, push } = fixture();
+  seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
+  await push(line("a-feature", { type: "step_started" }, 1));
+  await drainPipelineRefreshes(registry);
+  assert.equal(pipelineIngestState("ai-conductor", repo), "live");
+  assert.equal(isPipelineIngestLive("ai-conductor", repo, "a-feature"), true);
+
+  // Long enough after the last push that the window has closed. Read with an explicit clock
+  // rather than by waiting, because the window is measured in minutes on purpose.
+  const later = Date.now() + 60 * 60 * 1000;
+  assert.equal(pipelineIngestState("ai-conductor", repo, later), "quiet");
+  assert.equal(isPipelineIngestLive("ai-conductor", repo, "a-feature", later), false);
+  // `quiet` and `never` are different claims, and the difference is the whole diagnostic
+  // value of the indicator: one says the plugin stopped, the other says it was never there.
+  assert.equal(pipelineIngestState("ai-conductor", join(home, "elsewhere")), "never");
+});
+
+test("the health line reports how observation is arriving, per repository", async () => {
+  const { registry, push, request } = fixture();
+  seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  assert.equal(pipelineRepoStatuses()[0]?.ingest, "never", "the shipped state: no plugin");
+
+  await push(line("a-feature", { type: "step_started" }, 1));
+  await drainPipelineRefreshes(registry);
+  assert.equal(pipelineRepoStatuses()[0]?.ingest, "live");
+
+  // And it reaches the panel through the route it actually reads.
+  const view = (await (await request("/api/pipelines/config")).json()) as PipelinesView;
+  assert.equal(view.status[0]?.ingest, "live");
+});
+
+test("withdrawing consent takes the ledger and the liveness with it", async () => {
+  const { registry, push, request } = fixture();
+  seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
+  await push(line("a-feature", { type: "step_started" }, 1));
+  await drainPipelineRefreshes(registry);
+  assert.ok(countPipelineEvents("ai-conductor", repo, "a-feature") > 0);
+
+  const res = await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({ enabled: true, repos: [] }),
+  });
+  assert.equal(res.status, 200);
+  // The one durable thing this integration keeps that is not re-derivable from the engine's
+  // files, so it is the one thing that must not outlive the permission to have written it.
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 0);
+  assert.equal(pipelineIngestState("ai-conductor", repo), "never");
+});

@@ -4,9 +4,14 @@ The daemon binds to loopback only, and every data endpoint (`/api/*`, `/events`)
 additionally requires a loopback `Host` header so a web page you visit can't reach
 it via DNS-rebinding - a defense that matters now that dispatch can launch agents
 (effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook,
-statusLine, OTLP metrics (`/v1/metrics`) and MCP ingress are authenticated with a
+statusLine, OTLP metrics (`/v1/metrics`), pipeline events (`/ingest/conductor`) and MCP
+ingress are authenticated with a
 per-machine token in `~/.mission-control/token` so other local processes can't spoof
-session, task, or cost-estimate state. Cost datapoints arrive carrying `user.email`,
+session, task, or cost-estimate state. Pipeline ingest carries a second gate on top of the
+token, because its producer is a plugin running inside another program: a pushed event
+naming a repository the operator has not switched on in Settings is counted and dropped
+rather than stored, so the push path cannot start observing a checkout that consent did not
+already cover. See [Pipelines](pipelines.md#the-route). Cost datapoints arrive carrying `user.email`,
 `user.account_uuid`, `user.account_id` and `organization.id`; the ingest reads four
 attributes and discards the rest before anything is written, so none of it reaches the
 database. Session and task

@@ -34,7 +34,7 @@
     "start": "tsx src/server/index.ts",
     "foreman": "tsx src/server/foreman/worker.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint src hooks test scripts e2e",
+    "lint": "oxlint src hooks test scripts e2e integrations",
     "test": "node --test --test-concurrency=${MISSION_TEST_CONCURRENCY:-2} --import ./test/setup-state.mjs --import tsx 'test/**/*.test.ts'",
     "test:electron": "node --test --import ./test/setup-state.mjs --import tsx 'test/*-electron.test.ts'",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",

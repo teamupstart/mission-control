@@ -5,6 +5,8 @@ import type {
   PipelineRun,
 } from "@shared/pipeline.ts";
 
+import type { PipelineEventInput } from "../db.ts";
+
 // The server-side half of the pipeline provider axis: what a provider DOES, as against
 // `@shared/pipeline.ts`, which says what one IS and what crosses the wire. The same split
 // `HARNESSES` makes against `HARNESS_CAPABILITIES` and `TASK_SOURCES` makes against
@@ -35,6 +37,19 @@ export interface PipelineRepoReading {
    * the replacement; only the thing holding the total can act on it.
    */
   restarted: Set<string>;
+  /**
+   * What each run's event ledger yielded THIS pass, keyed by slug, for the append-only
+   * `pipeline_events` ledger.
+   *
+   * Provider-neutral rather than the provider's own record type, because the ledger is one
+   * table shared by every provider - and because what it stores is the producer's record
+   * verbatim, which is a shape no provider needs to describe to get right.
+   *
+   * A run whose ledger this pass DECLINED to read (see `shouldTail`) is absent rather than
+   * present-and-empty. The two mean different things to a caller: nothing new, versus we
+   * did not look.
+   */
+  events: Map<string, PipelineEventInput[]>;
   daemon: PipelineDaemonState;
   /**
    * A bounded sentence about why this pass saw less than it should have, or null.
@@ -45,6 +60,26 @@ export interface PipelineRepoReading {
    * the same page.
    */
   error: string | null;
+}
+
+/** What one pass may be told about how much work to do. */
+export interface PipelineReadOptions {
+  /**
+   * Whether this pass should read one run's event ledger at all.
+   *
+   * The demotion contract, expressed as one predicate the CALLER owns. A provider has no way
+   * to know whether a visualizer plugin is pushing this run's events - that is a fact about
+   * Mission Control's ingest route, not about the engine - so the policy lives with the
+   * watcher and the provider only obeys it.
+   *
+   * Absent means read everything, which is what every caller that has not thought about it
+   * gets: the file tail is the primary reader and staying primary is its default.
+   *
+   * It governs the EVENT LEDGER only. State files - the step statuses, the halt marker, the
+   * DONE marker, `.daemon/` - are read on every pass whatever this says. Those are the
+   * source of truth, and no amount of pushed events makes reading them optional.
+   */
+  shouldTail?: (slug: string) => boolean;
 }
 
 /**
@@ -79,5 +114,6 @@ export interface PipelineProvider {
   readRepo(
     repoRoot: string,
     cursors: Map<string, { offset: number; identity: string }>,
+    options?: PipelineReadOptions,
   ): Promise<PipelineRepoReading>;
 }

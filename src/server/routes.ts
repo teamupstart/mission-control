@@ -191,6 +191,8 @@ import {
   reconcilePipelineConsent,
 } from "./pipelines/index.ts";
 import { pipelineRepoKey, type PipelinesView } from "@shared/pipeline.ts";
+import { schedulePipelineRefresh } from "./pipelines/index.ts";
+import { ingestConductorEvents, MAX_INGEST_BYTES } from "./pipelines/ingest.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
@@ -2206,6 +2208,35 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     registry.applyStatusLine(parsed.data);
     return c.body(null, 204);
+  });
+
+  // --- pipeline event ingest (token-guarded): an external SDLC engine's own events,
+  // pushed by the Mission Control visualizer plugin that ships from
+  // `integrations/ai-conductor/mission-control/`.
+  //
+  // In the ingest family and guarded like the rest of it - `x-harness-token` on the first
+  // line, no loopback check. That is the family's shape rather than a relaxation: these are
+  // the routes a cooperating LOCAL process posts to, and the token is what separates one
+  // from any other process on the machine. `requireLoopback` covers `/api/*` and `/events`.
+  //
+  // NDJSON rather than a JSON array, because the producer is a visualizer inside somebody
+  // else's event loop: it appends a line per event and flushes whatever it has, and a line
+  // that fails to parse costs that line. A batch is a stream of independent observations,
+  // so one bad line never fails the POST - the counts say what happened, and the file tail
+  // still covers whatever was dropped.
+  app.post("/ingest/conductor", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const body = await c.req.text().catch(() => "");
+    // Bounded before it is parsed. The producer runs unattended in another program's
+    // process and the daemon is single-threaded; a body without a ceiling is one bug
+    // upstream away from a JSON.parse that owns the event loop.
+    if (body.length > MAX_INGEST_BYTES) {
+      return c.json({ error: `batch too large; the limit is ${MAX_INGEST_BYTES} bytes` }, 413);
+    }
+    const { counts, touched } = ingestConductorEvents(body);
+    // Then read exactly the runs it named, a tick early. See `schedulePipelineRefresh`.
+    if (touched.length > 0) schedulePipelineRefresh(registry, touched);
+    return c.json(counts);
   });
 
   // --- OTLP metrics ingest (token-guarded): Claude Code's own API-equivalent cost

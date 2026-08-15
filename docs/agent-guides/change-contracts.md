@@ -142,6 +142,25 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   owns, and a row this build cannot read is dropped and re-projected rather than migrated.
   The engine's own step names are NOT append-only here either: MC keeps a frozen display copy
   and tolerates any name it does not know. See [Pipelines](../pipelines.md)
+- The pipeline event ledger key (`pipeline_events(provider, repo_root, slug, seq)`) - the one
+  thing this integration stores that files cannot re-derive, so unlike `pipeline_runs` it is
+  durable state and its key never reorders or renames. `seq` is MISSION CONTROL'S own per-run
+  ordinal, assigned on insert, and that is load-bearing rather than incidental: the file tail
+  and the visualizer plugin observe the same events by two unrelated coordinates - a byte
+  offset into `events.jsonl` and a counter of the plugin's own - because conductor stamps no
+  sequence number on anything. Keying on a producer's number would collapse two spaces into
+  one and silently drop a pushed event whose counter matched an old byte offset. Convergence
+  is by `fingerprint` (the record with its keys sorted, hashed), never by the number. Nothing
+  in the projection is derived from this table, which is what keeps a duplicate row a wart
+  rather than a wrong figure. See [Pipelines](../pipelines.md#the-ledger)
+- The pipeline ingest envelope (`ConductorIngestEnvelopeSchema` in `src/shared/protocol.ts`) -
+  `{ repo, worktree, slug, seq, event }`, posted to `POST /ingest/conductor`. FROZEN, and
+  evolvable only by appending optional fields. The producer is an artifact this repository
+  ships into `~/.ai-conductor/plugins/mission-control/`, installed by hand and upgraded on
+  nobody's schedule, so an operator can be running a plugin copied from a build months older
+  than the daemon serving it - a renamed or narrowed field silently drops every event from an
+  installation nobody re-copied. `event` is deliberately unvalidated beyond being an object.
+  See [Pipelines](../pipelines.md#the-route)
 - Scout prompt origins (`SCOUT_PROMPT_ORIGINS` in `src/server/scouts/prompt-context.ts`) -
   written into `scout_prompt_turns.origin` and read back by exact value through
   `readPersistedEnum`, so an origin this build cannot read decodes to `null`. That is the

@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -2296,6 +2297,68 @@ export function openDb(): DatabaseSync {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_key
       ON pipeline_runs(provider, repo_root, slug);
     CREATE INDEX IF NOT EXISTS idx_pipeline_runs_repo ON pipeline_runs(provider, repo_root);
+
+    -- The pipeline event ledger: every engine event Mission Control has OBSERVED, from
+    -- whichever path observed it first.
+    --
+    -- Append-only, and that is the whole of its write contract: a row is inserted or it is
+    -- ignored, never updated and never re-keyed. Rows are retired only with the run they
+    -- belong to - a worktree the engine tore down, or a repository whose consent was
+    -- withdrawn - plus a per-run cap, so the table is bounded by the runs that still exist
+    -- rather than by how long the daemon has been up.
+    --
+    -- Two writers reach it and they see the same events by two different routes: the file
+    -- tail reads each worktree's events.jsonl, and the visualizer plugin pushes over
+    -- POST /ingest/conductor. Both are the daemon (the plugin's events arrive as an HTTP
+    -- request the daemon serves), so the daemon remains the only SQLite writer.
+    --
+    -- The key is (provider, repo_root, slug, seq), all NOT NULL because the UNIQUE index is
+    -- an INSERT-OR-IGNORE target and SQLite treats nulls as distinct.
+    CREATE TABLE IF NOT EXISTS pipeline_events (
+      -- An id from PIPELINE_PROVIDER_IDS, as in pipeline_runs. Append-only.
+      provider     TEXT NOT NULL,
+      repo_root    TEXT NOT NULL,
+      slug         TEXT NOT NULL,
+      -- MISSION CONTROL'S OWN per-run ordinal, assigned on insert as max+1, never supplied
+      -- by a producer. That is a deliberate correction to the obvious design and the reason
+      -- is arithmetic: ai-conductor stamps no sequence number on its events, so the tail's
+      -- coordinate is a BYTE OFFSET and the plugin's is a counter of its own. Keying on a
+      -- producer's number would mean one space where two unrelated ones were being written,
+      -- and the failure is silent in both directions - a pushed event whose counter happened
+      -- to equal an old byte offset is dropped as a duplicate, and the same event seen twice
+      -- under two numbers is stored twice. What each producer said is kept in producer_seq
+      -- below; what makes two observations of ONE event converge is fingerprint.
+      seq          INTEGER NOT NULL,
+      -- The engine's own discriminant (type on the record), or 'unknown' for a record that
+      -- names none. Mission Control keeps NO copy of the engine's event union - it is
+      -- TypeScript-only, unversioned and 70-odd members long - so every kind is carried
+      -- through verbatim and nothing is ever refused for being unrecognised.
+      kind         TEXT NOT NULL,
+      -- The writer's own ISO-8601 instant. Null when the record carries none, which is a
+      -- real case and not a defect: received_at below is always ours.
+      ts           TEXT,
+      -- 'tail' or 'ingest' - which path saw it FIRST. Diagnostic, and the honest answer to
+      -- "is the plugin actually delivering anything".
+      source       TEXT NOT NULL,
+      -- What that path called it: the byte offset for the tail, the envelope's seq for the
+      -- plugin. Kept because it is the producer's own ordering evidence and lets a gap be
+      -- noticed; never a key, for the reason seq states.
+      producer_seq INTEGER,
+      -- sha256 of the record body with its keys in a stable order. The identity of an EVENT
+      -- as against the identity of an observation of one, and therefore what makes the two
+      -- paths converge on a single row.
+      fingerprint  TEXT NOT NULL,
+      -- The record itself, verbatim. Opaque by design: this table stores what the engine
+      -- said, not this build's reading of it.
+      body         TEXT NOT NULL,
+      received_at  INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_events_key
+      ON pipeline_events(provider, repo_root, slug, seq);
+    -- One row per event, however many times it is observed. Unique alongside the key above,
+    -- so a plain INSERT OR IGNORE satisfies both without naming a conflict target.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_events_identity
+      ON pipeline_events(provider, repo_root, slug, fingerprint);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -5239,6 +5302,263 @@ export function pipelineProjectedRepos(): Array<{
       isPipelineProviderId(r.provider),
     )
     .map((r) => ({ provider: r.provider, repoRoot: r.repo_root }));
+}
+
+// ---- the pipeline event ledger ----
+//
+// Read the `pipeline_events` CREATE TABLE above before touching any of this. The one rule
+// that is not obvious from the DDL: nothing in the projection is DERIVED from this table.
+// A run's cost, group, steps and halt all come from the engine's own files by way of the
+// tail and the state readers, exactly as they did before this table existed. That is what
+// makes a duplicate row here a wart rather than a wrong number, and it is why the ledger
+// could be dropped whole without the dashboard changing what it says.
+
+/** How many events one run keeps. Older ones are trimmed as newer ones arrive. */
+export const MAX_PIPELINE_EVENTS_PER_RUN = 2000;
+
+/** Which path first observed an event. */
+export type PipelineEventSource = "tail" | "ingest";
+
+/** One engine event, in the shape the ledger stores it. */
+export interface PipelineEventInput {
+  /** The engine's discriminant, or null for a record that names none. */
+  kind: string | null;
+  /** The writer's own ISO-8601 instant, or null. */
+  ts: string | null;
+  /** The producer's own coordinate - a byte offset, or the envelope's `seq`. */
+  producerSeq: number | null;
+  /** The record itself, as the producer wrote it. */
+  body: Record<string, unknown>;
+}
+
+/** One stored ledger row, for the readers that walk a run's history. */
+export interface PipelineEventRow {
+  seq: number;
+  kind: string;
+  ts: string | null;
+  source: PipelineEventSource;
+  producerSeq: number | null;
+  body: Record<string, unknown>;
+  receivedAt: number;
+}
+
+/**
+ * Fields a WRITER adds to an event, which are therefore not part of its identity.
+ *
+ * This is the load-bearing list, and it was measured rather than guessed: ai-conductor's
+ * `EventPersister` does not write the event it was handed. It writes
+ * `{ ...event, activeInterval?, observedIntervals?, ts }` - a stamped instant plus the
+ * durations it measured while holding the event. So the record in `events.jsonl` and the
+ * record on the bus are DIFFERENT OBJECTS describing one event, and a hash over either one
+ * whole can never match the other.
+ *
+ * Stripping them is not a workaround for that; it is the definition it forces into the open.
+ * The identity of an event is what the engine emitted. When it was written down, and how
+ * long the writer had been holding it, are facts about the observation.
+ *
+ * The cost is stated rather than hidden: two events in one run that are byte-identical once
+ * these are removed - a `step_started` for a step that was retried, say - collapse into one
+ * row. That is a diagnostic row, never a number: nothing in the projection is derived from
+ * this table, so the collapse cannot reach a figure an operator reads. If conductor ever
+ * stamps a sequence number on persisted events (proposed alongside the visualizer wiring
+ * upstream), this becomes exact and the list can go.
+ */
+const OBSERVATION_ONLY_FIELDS = ["ts", "activeInterval", "observedIntervals"] as const;
+
+/**
+ * The identity of an EVENT, as against the identity of one observation of it.
+ *
+ * Keys are sorted at every level before hashing, because the two paths do not build the
+ * object the same way: the tail gets it back from `JSON.parse` of a line the engine wrote,
+ * and the plugin hands over an object the engine's own bus constructed. Both round-trip to
+ * the same *values*; only the key order is an accident of construction, and a hash over
+ * `JSON.stringify` alone would make that accident decide whether an event is a duplicate.
+ *
+ * This is a convergence aid and never a validity check. Two observations that hash apart
+ * cost one extra row and nothing else - see the section header.
+ */
+function pipelineEventFingerprint(body: Record<string, unknown>): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (typeof value === "object" && value !== null) {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+        out[key] = canonical((value as Record<string, unknown>)[key]);
+      }
+      return out;
+    }
+    return value;
+  };
+  const stripped: Record<string, unknown> = { ...body };
+  for (const field of OBSERVATION_ONLY_FIELDS) delete stripped[field];
+  return createHash("sha256").update(JSON.stringify(canonical(stripped))).digest("hex");
+}
+
+/**
+ * Append what one path observed of one run, and say how much of it was new.
+ *
+ * `INSERT OR IGNORE` rather than a named `ON CONFLICT` target, deliberately: two UNIQUE
+ * indexes have to hold at once - the key, and the event identity - and a bare ignore is the
+ * only form that answers to both. An ignored row does not consume an ordinal, so `seq` stays
+ * gapless and means "the Nth distinct event Mission Control saw for this run".
+ *
+ * One transaction for the batch, because a first pass over an existing ledger is up to a few
+ * thousand rows and a commit each would be a few thousand fsyncs.
+ */
+export function appendPipelineEvents(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string,
+  source: PipelineEventSource,
+  events: readonly PipelineEventInput[],
+  now = Date.now(),
+): number {
+  if (events.length === 0) return 0;
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const head = d
+      .prepare(
+        `SELECT COALESCE(MAX(seq), 0) AS top FROM pipeline_events
+          WHERE provider = ? AND repo_root = ? AND slug = ?`,
+      )
+      .get(provider, repoRoot, slug) as unknown as { top: number } | undefined;
+    let next = Number(head?.top ?? 0);
+    const insert = d.prepare(
+      `INSERT OR IGNORE INTO pipeline_events
+         (provider, repo_root, slug, seq, kind, ts, source, producer_seq, fingerprint, body,
+          received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    let stored = 0;
+    for (const event of events) {
+      const result = insert.run(
+        provider,
+        repoRoot,
+        slug,
+        next + 1,
+        event.kind && event.kind !== "" ? event.kind : "unknown",
+        event.ts,
+        source,
+        event.producerSeq,
+        pipelineEventFingerprint(event.body),
+        JSON.stringify(event.body),
+        now,
+      );
+      if (Number(result.changes) > 0) {
+        next += 1;
+        stored += 1;
+      }
+    }
+    if (stored > 0) {
+      // Bounded by the runs that exist, not by uptime. The cap is per run and the trim runs
+      // only on a batch that actually stored something, so a quiet ledger costs no DELETE.
+      d.prepare(
+        `DELETE FROM pipeline_events
+          WHERE provider = ? AND repo_root = ? AND slug = ? AND seq <= ?`,
+      ).run(provider, repoRoot, slug, next - MAX_PIPELINE_EVENTS_PER_RUN);
+    }
+    if (ownsTransaction) d.exec("COMMIT");
+    return stored;
+  } catch (err) {
+    if (ownsTransaction) {
+      try {
+        d.exec("ROLLBACK");
+      } catch {}
+    }
+    throw err;
+  }
+}
+
+/** One run's observed history, oldest first. Bounded by `limit`, newest kept. */
+export function pipelineEvents(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string,
+  limit = MAX_PIPELINE_EVENTS_PER_RUN,
+): PipelineEventRow[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT seq, kind, ts, source, producer_seq, body, received_at
+         FROM pipeline_events
+        WHERE provider = ? AND repo_root = ? AND slug = ?
+        ORDER BY seq DESC LIMIT ?`,
+    )
+    .all(provider, repoRoot, slug, limit) as unknown as Array<{
+    seq: number;
+    kind: string;
+    ts: string | null;
+    source: string;
+    producer_seq: number | null;
+    body: string;
+    received_at: number;
+  }>;
+  const out: PipelineEventRow[] = [];
+  for (const row of rows.reverse()) {
+    let body: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(row.body);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+      body = parsed as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    out.push({
+      seq: row.seq,
+      kind: row.kind,
+      ts: row.ts,
+      source: row.source === "ingest" ? "ingest" : "tail",
+      producerSeq: row.producer_seq,
+      body,
+      receivedAt: row.received_at,
+    });
+  }
+  return out;
+}
+
+/** How many events one run's ledger holds. For the tests and the health line. */
+export function countPipelineEvents(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string,
+): number {
+  const row = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM pipeline_events
+        WHERE provider = ? AND repo_root = ? AND slug = ?`,
+    )
+    .get(provider, repoRoot, slug) as unknown as { n: number } | undefined;
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * Retire one run's ledger.
+ *
+ * Called wherever the run itself is retired, and that pairing is the whole retention story:
+ * the ledger describes runs, so it lives exactly as long as they do. Separate from
+ * `deletePipelineRunRow` rather than folded into it because the projection is a cache that
+ * is legitimately rebuilt from files, and a rebuild must not throw away the observed history
+ * of runs that are still there.
+ */
+export function deletePipelineEventsForRun(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string,
+): void {
+  openDb()
+    .prepare(`DELETE FROM pipeline_events WHERE provider = ? AND repo_root = ? AND slug = ?`)
+    .run(provider, repoRoot, slug);
+}
+
+/** Retire a whole repository's ledger - its consent was withdrawn. */
+export function deletePipelineEventsForRepo(
+  provider: PipelineProviderId,
+  repoRoot: string,
+): void {
+  openDb()
+    .prepare(`DELETE FROM pipeline_events WHERE provider = ? AND repo_root = ?`)
+    .run(provider, repoRoot);
 }
 
 /**

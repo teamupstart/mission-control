@@ -12,6 +12,9 @@ import {
 import { envVar } from "../config.ts";
 import { onPath } from "../util/exec.ts";
 import {
+  appendPipelineEvents,
+  deletePipelineEventsForRepo,
+  deletePipelineEventsForRun,
   deletePipelineRunRow,
   deletePipelineRunsForRepo,
   loadPipelineRuns,
@@ -22,7 +25,14 @@ import {
 import { unref } from "../util/timers.ts";
 import { CONDUCTOR_PROVIDER } from "./conductor/index.ts";
 import { getPipelinesConfig } from "./config.ts";
-import type { PipelineProvider } from "./types.ts";
+import {
+  forgetPipelineIngest,
+  isPipelineIngestLive,
+  pipelineIngestState,
+  resetPipelineIngest,
+  type PipelineIngestTouch,
+} from "./ingest.ts";
+import type { PipelineProvider, PipelineReadOptions } from "./types.ts";
 
 // The pipeline provider registry, and the loop that keeps the projection current.
 //
@@ -66,6 +76,30 @@ const PRESENCE_EVERY_TICKS = Math.max(1, Math.round(60_000 / TICK_MS));
 const PROBE_TTL_MS = Math.max(1000, Number(envVar("PIPELINE_PROBE_TTL_MS") ?? 30_000));
 
 /**
+ * How long a run whose events are being pushed may go without a full ledger read.
+ *
+ * The floor under demotion, and the reason demotion is safe to do at all. A pushed event is
+ * an event this build's plugin knew to subscribe to; conductor's bus has no wildcard, so a
+ * conductor release that adds an event kind emits something the installed plugin never asked
+ * for. That event still reaches `events.jsonl`, and this sweep is what picks it up.
+ *
+ * So the tail is never actually switched off - it is switched from "every tick" to "every
+ * minute", which is the difference between polling a file for changes and checking that
+ * nothing was missed.
+ */
+const BACKFILL_SWEEP_MS = Math.max(1000, Number(envVar("PIPELINE_BACKFILL_MS") ?? 60_000));
+
+/**
+ * How long a burst of pushed events is allowed to coalesce into one pass.
+ *
+ * Small enough that a human watching the dashboard sees a step land immediately, and large
+ * enough that a step boundary emitting six events in the same millisecond costs one pass
+ * rather than six. Debouncing is what keeps ingest from being a way for a busy engine to
+ * make the daemon read its files faster than the tick ever would.
+ */
+const INGEST_REFRESH_MS = Math.max(0, Number(envVar("PIPELINE_INGEST_REFRESH_MS") ?? 150));
+
+/**
  * Per-repository health, process-local and never persisted.
  *
  * Not in SQLite for `taskSourceStatuses`' reason and one more: every figure here is
@@ -89,18 +123,23 @@ const costTotals = new Map<string, number>();
  */
 export function pipelineRepoStatuses(): PipelineRepoStatus[] {
   const config = getPipelinesConfig();
-  return config.repos.map(
-    (repo) =>
-      statuses.get(pipelineRepoKey(repo.provider, repo.repoRoot)) ?? {
-        provider: repo.provider,
-        repoRoot: repo.repoRoot,
-        daemon: "unknown",
-        runs: 0,
-        halted: 0,
-        lastReadAt: null,
-        error: null,
-      },
-  );
+  return config.repos.map((repo) => {
+    const held = statuses.get(pipelineRepoKey(repo.provider, repo.repoRoot)) ?? {
+      provider: repo.provider,
+      repoRoot: repo.repoRoot,
+      daemon: "unknown" as const,
+      runs: 0,
+      halted: 0,
+      lastReadAt: null,
+      error: null,
+    };
+    // Read HERE rather than stamped onto the status by the pass that wrote it, because it
+    // decays with the clock: a repository whose plugin stopped pushing an hour ago has had
+    // no pass since (nothing changed), and a value frozen at the last pass would still be
+    // claiming `live`. Everything else on this line is a fact about a read that happened;
+    // this one is a fact about now.
+    return { ...held, ingest: pipelineIngestState(repo.provider, repo.repoRoot) };
+  });
 }
 
 /**
@@ -230,12 +269,17 @@ export function restorePipelineProjection(sink: PipelineProjectionSink): void {
   statuses.clear();
   costTotals.clear();
   probes.clear();
+  lastSweptAt.clear();
+  // Liveness is a claim about a plugin that is pushing to THIS process. Nothing has pushed
+  // to a process that has just started, whatever the one before it saw.
+  resetPipelineIngest();
   const consented = new Set(
     activePipelineRepos(getPipelinesConfig()).map((repo) => pipelineRepoKey(repo.provider, repo.repoRoot)),
   );
   for (const { provider, repoRoot } of pipelineProjectedRepos()) {
     if (consented.has(pipelineRepoKey(provider, repoRoot))) continue;
     deletePipelineRunsForRepo(provider, repoRoot);
+    deletePipelineEventsForRepo(provider, repoRoot);
   }
   const rows = loadPipelineRuns();
   for (const row of rows) {
@@ -253,13 +297,90 @@ export function restorePipelineProjection(sink: PipelineProjectionSink): void {
  * instead would make every assertion about the projection a race against a cadence, which
  * is how a suite comes to be full of sleeps that are too short on CI.
  */
-export async function refreshPipelineRepo(
+export function refreshPipelineRepo(
   sink: PipelineProjectionSink,
   provider: PipelineProviderId,
   repoRoot: string,
+  options: PipelinePassOptions = {},
+): Promise<void> {
+  // Serialized per repository, and that is a correctness requirement rather than a
+  // politeness. A pass is read-then-write over a resume cursor: two overlapping passes both
+  // read offset N, both tail from N, and both hand the watcher the same batch's token spend
+  // to add to the running total. Before ingest there was exactly one caller and it could not
+  // overlap itself (the tick is a self-rescheduling timeout); a pushed event is a second
+  // entry point that can arrive at any moment, including in the middle of a tick.
+  const key = pipelineRepoKey(provider, repoRoot);
+  const chained = (passes.get(key) ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => runPipelineRepoPass(sink, provider, repoRoot, options));
+  const settled = chained.catch(() => {});
+  passes.set(key, settled);
+  void settled.then(() => {
+    // Only if nothing queued behind this one, so the map holds at most one live chain per
+    // repository and does not outlive the consent that created it.
+    if (passes.get(key) === settled) passes.delete(key);
+  });
+  return chained;
+}
+
+/** What one pass may be told, beyond which repository it is reading. */
+export interface PipelinePassOptions {
+  /**
+   * Slugs whose event ledger must be read this pass, whatever their liveness says.
+   *
+   * How a pushed event becomes a projection update: the run that was pushed about is tailed
+   * NOW rather than on the next sweep. Everything else about the pass is unchanged, which is
+   * the whole design - the push says where to look, and the files still say what is true.
+   */
+  forceTail?: ReadonlySet<string>;
+}
+
+/**
+ * Passes in flight or queued, per repository. See `refreshPipelineRepo`.
+ */
+const passes = new Map<string, Promise<void>>();
+
+/** When each run's ledger was last read in full, for the backfill sweep. */
+const lastSweptAt = new Map<string, number>();
+
+/**
+ * Whether this pass should read one run's event ledger.
+ *
+ * Three ways to yes, and the ordering is the demotion contract stated as code: an explicit
+ * force (a push just arrived for it), no live ingest (the tail is primary, which is every
+ * run on every machine today), or the sweep coming due (the backstop for events the
+ * installed plugin never subscribed to).
+ */
+function tailPolicy(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  forceTail: ReadonlySet<string> | undefined,
+  now: number,
+): (slug: string) => boolean {
+  return (slug) => {
+    const key = pipelineRunKey(provider, repoRoot, slug);
+    const decided = (yes: boolean): boolean => {
+      if (yes) lastSweptAt.set(key, now);
+      return yes;
+    };
+    if (forceTail?.has(slug)) return decided(true);
+    if (!isPipelineIngestLive(provider, repoRoot, slug, now)) return decided(true);
+    const swept = lastSweptAt.get(key);
+    return decided(swept === undefined || now - swept >= BACKFILL_SWEEP_MS);
+  };
+}
+
+async function runPipelineRepoPass(
+  sink: PipelineProjectionSink,
+  provider: PipelineProviderId,
+  repoRoot: string,
+  options: PipelinePassOptions,
 ): Promise<void> {
   const cursors = pipelineEventCursors(provider, repoRoot);
-  const reading = await PIPELINE_PROVIDERS[provider].readRepo(repoRoot, cursors);
+  const readOptions: PipelineReadOptions = {
+    shouldTail: tailPolicy(provider, repoRoot, options.forceTail, Date.now()),
+  };
+  const reading = await PIPELINE_PROVIDERS[provider].readRepo(repoRoot, cursors, readOptions);
 
   const seen = new Set<string>();
   let halted = 0;
@@ -282,6 +403,19 @@ export async function refreshPipelineRepo(
     // find and add to. Dropping it here means the stale value cannot outlive the pass that
     // learned it was stale.
     if (reading.restarted.has(run.slug)) costTotals.delete(key);
+    // What this pass read of the run's own ledger, appended to the observation ledger.
+    //
+    // Deliberately NOT what the projection is built from - the fold above and below this
+    // line reads the engine's files, exactly as it did before this table existed. The ledger
+    // is a record of what was observed, and a pushed event that also lands here converges
+    // onto the same row rather than adding a second one.
+    //
+    // A replaced ledger re-reads from byte zero and re-offers events already stored; every
+    // one of them is recognised and ignored, so a re-cut worktree costs no duplicate rows.
+    const observed = reading.events.get(run.slug);
+    if (observed && observed.length > 0) {
+      appendPipelineEvents(provider, repoRoot, run.slug, "tail", observed);
+    }
     const carried = costTotals.get(key) ?? null;
     const total =
       run.costTokens === null ? carried : (carried ?? 0) + run.costTokens;
@@ -310,7 +444,12 @@ export async function refreshPipelineRepo(
     for (const slug of cursors.keys()) {
       if (seen.has(slug)) continue;
       deletePipelineRunRow(provider, repoRoot, slug);
+      // The observed history goes with the run it describes. That pairing is the whole of
+      // the ledger's retention policy: the table is bounded by the runs that still exist,
+      // not by how long this daemon has been up.
+      deletePipelineEventsForRun(provider, repoRoot, slug);
       costTotals.delete(pipelineRunKey(provider, repoRoot, slug));
+      lastSweptAt.delete(pipelineRunKey(provider, repoRoot, slug));
       sink.removePipelineRun(provider, repoRoot, slug);
     }
   }
@@ -323,7 +462,78 @@ export async function refreshPipelineRepo(
     halted,
     lastReadAt: Date.now(),
     error: reading.error,
+    ingest: pipelineIngestState(provider, repoRoot),
   });
+}
+
+/**
+ * Runs a push has touched, waiting to be read. Keyed by repository, per pass.
+ */
+const pendingIngest = new Map<
+  string,
+  { provider: PipelineProviderId; repoRoot: string; slugs: Set<string> }
+>();
+
+/** The debounce that turns a burst of pushed events into one pass. */
+let ingestRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Read the runs a batch of pushed events named, without waiting for the next tick.
+ *
+ * The whole of what ingest buys, and it is worth being exact about what it is NOT. A pushed
+ * event is not folded into the projection - `normalizeConductorRun` needs the state file,
+ * the halt marker, the DONE marker and `.daemon/`, and a single bus record carries none of
+ * them. Nor could an event-only fold be made to carry them without becoming a second,
+ * divergent answer to what a run's state is, which is the one thing `src/server/pipelines/`
+ * is built not to have.
+ *
+ * So a push means "look at this run now". The pass that follows is the ordinary pass, over
+ * the same files, producing the same `PipelineRun` - it just happens a tick early. That is
+ * why nothing downstream of it needs to know whether ingest is live, and why an operator
+ * with no plugin installed loses nothing.
+ */
+export function schedulePipelineRefresh(
+  sink: PipelineProjectionSink,
+  touched: readonly PipelineIngestTouch[],
+): void {
+  for (const { provider, repoRoot, slug } of touched) {
+    const key = pipelineRepoKey(provider, repoRoot);
+    const held = pendingIngest.get(key) ?? { provider, repoRoot, slugs: new Set<string>() };
+    held.slugs.add(slug);
+    pendingIngest.set(key, held);
+  }
+  if (pendingIngest.size === 0 || ingestRefreshTimer !== null) return;
+  ingestRefreshTimer = unref(
+    setTimeout(() => {
+      ingestRefreshTimer = null;
+      void drainPipelineRefreshes(sink);
+    }, INGEST_REFRESH_MS),
+  );
+}
+
+/**
+ * Run every pending push-triggered pass now.
+ *
+ * Exported so a test can drive the ingest path to completion instead of racing a debounce -
+ * the same reason `refreshPipelineRepo` is exported rather than reached through the tick.
+ */
+export async function drainPipelineRefreshes(sink: PipelineProjectionSink): Promise<void> {
+  if (ingestRefreshTimer !== null) {
+    clearTimeout(ingestRefreshTimer);
+    ingestRefreshTimer = null;
+  }
+  const due = [...pendingIngest.values()];
+  pendingIngest.clear();
+  for (const { provider, repoRoot, slugs } of due) {
+    try {
+      await refreshPipelineRepo(sink, provider, repoRoot, { forceTail: slugs });
+    } catch (err) {
+      // Same posture as the tick's own per-repository catch. A push is a notification, and
+      // one repository that could not be read is not a reason to drop the others in the
+      // batch - or to answer the plugin with a failure it is built to ignore anyway.
+      console.error(`[pipelines] ${provider} ${repoRoot} ingest pass failed:`, err);
+    }
+  }
 }
 
 /**
@@ -340,8 +550,15 @@ export function forgetPipelineRepo(
 ): void {
   for (const slug of deletePipelineRunsForRepo(provider, repoRoot)) {
     costTotals.delete(pipelineRunKey(provider, repoRoot, slug));
+    lastSweptAt.delete(pipelineRunKey(provider, repoRoot, slug));
     sink.removePipelineRun(provider, repoRoot, slug);
   }
+  // The observed history goes too, and it goes for the same reason the projection does: an
+  // operator who withdraws consent is owed a daemon with nothing of that repository left in
+  // it. A ledger surviving the consent that authorised writing it would be the one durable
+  // thing this integration kept without permission.
+  deletePipelineEventsForRepo(provider, repoRoot);
+  forgetPipelineIngest(provider, repoRoot);
   statuses.delete(pipelineRepoKey(provider, repoRoot));
 }
 

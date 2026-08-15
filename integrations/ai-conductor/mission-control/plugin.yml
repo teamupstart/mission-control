@@ -1,0 +1,26 @@
+# The Mission Control visualizer for ai-conductor.
+#
+# Install by copying or linking this directory to ~/.ai-conductor/plugins/mission-control/.
+# See ./README.md, and docs/pipelines.md in the Mission Control checkout.
+#
+# `name` must match [a-z0-9-]+ (conductor's manifest validator), and it is the registry key
+# alongside `kind` - a project-local plugin of the same kind and name shadows this one.
+kind: visualizer
+name: mission-control
+
+# Plain ESM JavaScript, loaded by `await import()` with no build step, because this directory
+# is COPIED into another program's plugin home and has to run exactly as it sits here. A
+# TypeScript entrypoint would work only under whatever loader conductor happened to be
+# started with; `.mjs` works under every one of them.
+entrypoint: ./index.mjs
+
+# The tested range, and it refuses loudly rather than misbehaving quietly: conductor throws
+# PluginVersionError out of discovery when this does not match, which stops the engine
+# starting rather than leaving a plugin that half-works. Two things this plugin depends on
+# live behind it - the visualizer contract ({ name, start(emitter), stop() }, per-type .on()
+# subscription) and the shape of the events it forwards.
+#
+# The upper bound is deliberate. Conductor's event union is TypeScript-only and unversioned,
+# so a major release is the only signal available that the shape this was built against has
+# moved. Raise it when a release has actually been tested against Mission Control.
+harness_version: ">=0.99.0 <1.0.0"

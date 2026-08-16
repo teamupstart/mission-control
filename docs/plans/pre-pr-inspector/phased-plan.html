@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Phased implementation: Code Quality Judge dual mode</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#eef1f4;--paper:#fff;--ink:#1c2732;--muted:#64717d;--line:#d6dde3;--accent:#3c58a8;--accent-soft:#edf1ff;--good:#126b52;--good-soft:#e8f6f0;--warn:#8b5d12;--warn-soft:#fff3d7;--code:#f2f4f6;--shadow:0 22px 60px rgba(27,39,51,.1)}
+    @media(prefers-color-scheme:dark){:root{--bg:#11161c;--paper:#192129;--ink:#edf2f6;--muted:#a8b3bd;--line:#36424d;--accent:#94b2ff;--accent-soft:#202e4e;--good:#78d5b4;--good-soft:#17382f;--warn:#efbd6b;--warn-soft:#453318;--code:#252d35;--shadow:none}}
+    *{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:radial-gradient(circle at 92% 0%,color-mix(in srgb,var(--accent) 12%,transparent),transparent 31rem),var(--bg);color:var(--ink);font:16px/1.58 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(1160px,calc(100% - 30px));margin:30px auto 70px}article{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:var(--paper);box-shadow:var(--shadow)}header,section{padding:34px 52px;border-bottom:1px solid var(--line)}header{padding-top:50px}section:last-child{border-bottom:0}.eyebrow{margin:0 0 8px;color:var(--accent);font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1,h2,h3{line-height:1.2}h1{max-width:900px;margin:0;font-size:clamp(34px,5vw,56px);letter-spacing:-.038em}h2{margin:0 0 17px;font-size:27px;letter-spacing:-.018em}h3{margin:27px 0 10px;font-size:20px}.lede{max-width:850px;margin:17px 0 0;color:var(--muted);font-size:19px}.status{display:inline-block;margin-top:18px;padding:5px 10px;border:1px solid var(--good);border-radius:999px;color:var(--good);background:var(--good-soft);font-size:12px;font-weight:780;letter-spacing:.07em;text-transform:uppercase}p{margin:10px 0}a{color:var(--accent);text-underline-offset:3px}code{padding:.12em .34em;border-radius:5px;background:var(--code);font:.9em ui-monospace,SFMono-Regular,Menlo,monospace}ul,ol{padding-left:23px}li+li{margin-top:7px}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{padding:20px;border:1px solid var(--line);border-radius:13px;background:var(--code)}.card b{display:block;margin-bottom:5px;color:var(--accent)}.finding{padding:18px 20px;border-left:4px solid var(--accent);background:var(--accent-soft)}.estimate{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0}.metric{min-width:180px;padding:13px 15px;border:1px solid var(--line);border-radius:10px}.metric b{display:block;color:var(--accent);font-size:13px}.table-wrap,.diagram{max-width:100%;overflow-x:auto}table{width:100%;min-width:790px;border-collapse:collapse}th,td{padding:12px 14px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--code);font-size:13px}.flow{margin:18px 0}.flow svg{display:block;min-width:930px;width:100%;height:auto}.flow figcaption{margin-top:9px;color:var(--muted);font-size:14px}.audit{padding:19px;border:1px solid var(--good);border-radius:13px;background:var(--good-soft)}@media(max-width:780px){header,section{padding:28px 23px}.cards{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main><article>
+  <header>
+    <p class="eyebrow">Mission Control phased plan</p>
+    <h1>Code Quality Judge dual mode</h1>
+    <p class="lede">One merge-aware implementation phase that moves local judgment before pull request creation while preserving optional GitHub Inspector behavior and Shipping proof.</p>
+    <span class="status">Approved, scheduled, publication-gated</span>
+  </header>
+
+  <section id="source">
+    <h2>Source of truth</h2>
+    <ul>
+      <li>Approved source plan: <a href="plan.html"><code>plan.md</code></a></li>
+      <li>Supporting investigation: <a href="../../reports/inspector-pre-pr-assessment/report.html"><code>report.html</code></a></li>
+      <li>Detailed phase: <a href="phase-1-code-quality-judge-dual-mode.md"><code>phase-1-code-quality-judge-dual-mode.md</code></a></li>
+    </ul>
+    <div class="cards">
+      <div class="card"><b>Architecture</b>Dual mode</div>
+      <div class="card"><b>Local role</b>Code Quality Judge</div>
+      <div class="card"><b>Remote service</b>GitHub Inspector</div>
+      <div class="card"><b>Remote behavior</b>Preserved and optional</div>
+      <div class="card"><b>Task profile</b>Codex 5.6 Sol, xhigh</div>
+      <div class="card"><b>Delivery</b>One implementation PR</div>
+    </div>
+  </section>
+
+  <section id="findings">
+    <h2>Investigated findings</h2>
+    <p class="finding">No new runtime concept, database migration, API, or Shipping rule is needed. The work is an added compiled Persona, an append-only v9 graph, and a presentation-only distinction between the local and remote roles.</p>
+    <ul>
+      <li>The existing generator compiles any eligible <code>personas/*.md</code> file into the packaged catalog.</li>
+      <li>Workflow Personas already receive intent, decisions, prior feedback, local diff, transcript, standards, dirty/untracked work, and evidence fingerprints. They remain tool-less.</li>
+      <li>v8 already verifies the Pull Request action before End, and <code>{ kind: "none" }</code> already completes End without consulting the Inspector ledger.</li>
+      <li>v9 must be appended while v1 through v8, their node/edge ids, defaults, policies, and snapshots remain unchanged.</li>
+      <li>All <code>inspector</code> routes, settings keys, database names, events, markers, and completion values remain stable. Only user-visible remote-service language becomes GitHub Inspector.</li>
+      <li>Old and custom workflows may still use the <code>inspector</code> final gate, so those rendered surfaces also adopt the GitHub Inspector name.</li>
+    </ul>
+    <div class="estimate">
+      <div class="metric"><b>Gross production estimate</b>500 to 850 lines</div>
+      <div class="metric"><b>Hand-authored estimate</b>350 to 600 lines</div>
+      <div class="metric"><b>Excluded</b>Tests and evidence</div>
+    </div>
+    <p>The refined estimate includes generated Persona output and current documentation. It assumes no worker, persistence, wire, or merge-policy changes.</p>
+  </section>
+
+  <section id="phase-count">
+    <h2>Why one phase</h2>
+    <p>The Persona, v9 graph, and product naming form one vertical contract. Splitting them would create an intermediate release where two reviewers share the same name, or where documentation describes a workflow version that does not exist. There is no independent migration or foundation whose early merge reduces risk, so one phase is safer and easier to review.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Phase</th><th>Implementation unit</th><th>Direct prerequisites</th><th>Execution</th><th>Value at merge</th></tr></thead>
+      <tbody><tr><td>1</td><td><a href="phase-1-code-quality-judge-dual-mode.md">Code Quality Judge dual mode</a></td><td>Planning session publication</td><td>Codex 5.6 Sol, xhigh</td><td>Local review precedes verified PR creation; the optional remote service is clearly GitHub Inspector</td></tr></tbody>
+    </table></div>
+    <h3>Scheduled task</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Phase</th><th>Task id</th><th>Backlog state</th><th>Direct dependency</th><th>Stored execution profile</th></tr></thead>
+      <tbody><tr><td>1</td><td><code>a59d9f2f-2786-4099-a750-f3fe86865eb9</code></td><td>Backlogged and enabled</td><td>This planning session (<code>58712017-e25f-49a6-abb1-ecaebc7f31e8</code>)</td><td>Codex, <code>gpt-5.6-sol</code>, <code>xhigh</code></td></tr></tbody>
+    </table></div>
+    <p>The task API exposes no model or effort fields during creation. With explicit human approval, the task was created behind the unfinished planning-session dependency, immediately updated through the normal backlog editor path, and read back before this planning pull request was opened. The dependency prevented dispatch during that transition.</p>
+  </section>
+
+  <section id="flows">
+    <h2>Dependency and product flows</h2>
+    <div class="diagram"><figure class="flow">
+      <svg viewBox="0 0 1040 510" role="img" aria-labelledby="flow-title flow-desc" xmlns="http://www.w3.org/2000/svg">
+        <title id="flow-title">Planning dependency and Code Quality Judge product flow</title>
+        <desc id="flow-desc">The planning pull request releases one implementation task and pull request. In the product, Code Quality Judge reviews locally before the Pull Request action, while optional GitHub Inspector continues remote review and Shipping proof.</desc>
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="currentColor"/></marker></defs>
+        <style>.box{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.accent{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.5}.good{fill:var(--good-soft);stroke:var(--good);stroke-width:1.5}.warn{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.5}.line{fill:none;stroke:var(--muted);stroke-width:1.6;color:var(--muted)}.dash{stroke-dasharray:6 5}.t{fill:var(--ink);font:650 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.s{fill:var(--muted);font:11px ui-monospace,SFMono-Regular,Menlo,monospace}.h{fill:var(--muted);font:780 11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.11em}</style>
+        <text class="h" x="12" y="24">DELIVERY DEPENDENCY</text>
+        <rect class="box" x="12" y="48" width="190" height="58" rx="9"/><text class="t" x="28" y="72">Planning PR merges</text><text class="s" x="28" y="91">publishes all paths</text>
+        <rect class="accent" x="280" y="40" width="220" height="74" rx="9"/><text class="t" x="298" y="68">Phase 1 task</text><text class="s" x="298" y="88">Codex 5.6 Sol · xhigh</text><text class="s" x="298" y="103">depends on this session</text>
+        <rect class="box" x="578" y="48" width="190" height="58" rx="9"/><text class="t" x="594" y="72">Implementation PR</text><text class="s" x="594" y="91">one vertical slice</text>
+        <rect class="good" x="846" y="48" width="170" height="58" rx="9"/><text class="t" x="862" y="72">Dual mode lands</text><text class="s" x="862" y="91">operable repository</text>
+        <path class="line" d="M202 77 H273" marker-end="url(#arrow)"/><path class="line" d="M500 77 H571" marker-end="url(#arrow)"/><path class="line" d="M768 77 H839" marker-end="url(#arrow)"/>
+        <line x1="0" y1="155" x2="1040" y2="155" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="5 5"/>
+        <text class="h" x="12" y="188">PRODUCT FLOW AFTER PHASE 1</text>
+        <rect class="box" x="12" y="218" width="140" height="58" rx="9"/><text class="t" x="28" y="242">Session work</text><text class="s" x="28" y="261">local snapshot</text>
+        <rect class="box" x="205" y="218" width="170" height="58" rx="9"/><text class="t" x="221" y="242">Existing stages</text><text class="s" x="221" y="261">checks + 4 Personas</text>
+        <rect class="accent" x="428" y="206" width="190" height="82" rx="9"/><text class="t" x="445" y="232">Code Quality Judge</text><text class="s" x="445" y="253">tool-less local verdict</text><text class="s" x="445" y="270">findings return to session</text>
+        <rect class="box" x="671" y="218" width="180" height="58" rx="9"/><text class="t" x="687" y="242">Pull Request action</text><text class="s" x="687" y="261">verified publication</text>
+        <rect class="good" x="904" y="218" width="124" height="58" rx="9"/><text class="t" x="919" y="242">Complete</text><text class="s" x="919" y="261">no final gate</text>
+        <path class="line" d="M152 247 H198" marker-end="url(#arrow)"/><path class="line" d="M375 247 H421" marker-end="url(#arrow)"/><path class="line" d="M618 247 H664" marker-end="url(#arrow)"/><path class="line" d="M851 247 H897" marker-end="url(#arrow)"/>
+        <path class="line dash" d="M523 288 C523 337 82 337 82 283" marker-end="url(#arrow)"/><text class="s" x="245" y="328">requested changes</text>
+        <rect class="warn" x="671" y="375" width="180" height="76" rx="9"/><text class="t" x="687" y="401">GitHub Inspector</text><text class="s" x="687" y="420">optional push review</text><text class="s" x="687" y="437">public threads</text>
+        <rect class="good" x="904" y="375" width="124" height="76" rx="9"/><text class="t" x="919" y="401">Shipping</text><text class="s" x="919" y="420">exact-head</text><text class="s" x="919" y="437">review proof</text>
+        <path class="line" d="M761 276 V368" marker-end="url(#arrow)"/><path class="line" d="M851 413 H897" marker-end="url(#arrow)"/>
+      </svg>
+      <figcaption>The local reviewer participates in repair. The remote service remains the optional owner of GitHub conversation and current-head Shipping proof.</figcaption>
+    </figure></div>
+  </section>
+
+  <section id="contracts">
+    <h2>Cross-phase contracts</h2>
+    <ul>
+      <li><b>Identity:</b> add only <code>builtin:code-quality-judge</code>, <code>nmr-code-quality-judge</code>, and <code>builtin-workflow:no-mistakes-review@9</code>.</li>
+      <li><b>Workflow:</b> v9 adds Code Quality Judge and completion <code>none</code>; v1 through v8 remain frozen and resolvable.</li>
+      <li><b>Execution:</b> the local role is a normal tool-less Persona selected by the graph, never injected by a setting.</li>
+      <li><b>PR proof:</b> the existing Pull Request action remains the sole v9 publication proof.</li>
+      <li><b>Remote behavior:</b> GitHub Inspector keeps its worker, settings, trust, ledger, comments, and Shipping integration.</li>
+      <li><b>Terminology:</b> user-facing local review says Code Quality Judge; user-facing remote review and legacy/custom final gates say GitHub Inspector; internal identifiers remain stable.</li>
+    </ul>
+  </section>
+
+  <section id="verification">
+    <h2>Final verification strategy</h2>
+    <ul>
+      <li>Regenerate and byte-check the built-in Persona module.</li>
+      <li>Pin v9 topology, snapshots, completion, repair-before-PR ordering, and v1 through v8 immutability.</li>
+      <li>Pin GitHub Inspector wording in render and pure-data tests without renaming internal contracts.</li>
+      <li>Use Playwright with fake agents and fake <code>gh</code> to show Code Quality Judge before Pull Request and the renamed Settings panel.</li>
+      <li>Pass typecheck, lint, full unit tests, build, smoke, and full e2e. Attach successful visual evidence to the implementation PR, never the repository.</li>
+    </ul>
+  </section>
+
+  <section id="audit">
+    <h2>Final audit</h2>
+    <div class="audit">
+      <p>Every approved requirement maps to Phase 1 exactly once. Rejected observer/attestation and privileged-stage work maps to no phase. The graph has no missing dependency, no cross-repository merge unit, and no undocumented cleanup phase.</p>
+      <p>The implementation task is gated on publication of these paths and was read back after creation as Codex 5.6 Sol with xhigh effort.</p>
+    </div>
+  </section>
+</article></main>
+</body>
+</html>

@@ -728,12 +728,11 @@ export class WorkflowManager {
   assignmentWorkflowBlock(workflowId: string | null, session: Session): string | null {
     const current = this.store.activeBindingForNote(noteKeyFor(session));
     if (!current) return null;
-    const selectedVersionId = workflowId
-      ? this.get(workflowId)?.workflow.currentVersionId ?? null
-      : null;
+    // The binding owns the immutable version. Resolve only its workflow identity here so a
+    // newer current version does not make the same task-owned binding look foreign.
+    const currentVersion = this.store.getWorkflowVersionById(current.workflowVersionId);
     if (
-      selectedVersionId
-      && current.workflowVersionId === selectedVersionId
+      currentVersion?.workflowId === workflowId
       && current.triggerMode === "foreman_complete"
     ) return null;
     return "This conversation already has a different active Workflow binding";

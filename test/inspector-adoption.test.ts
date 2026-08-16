@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // Type-only, so it is erased rather than resolved before the state-dir preamble below.
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { PipelineRun } from "../src/shared/pipeline.ts";
 
 // Isolate the state dir BEFORE any value import that can resolve it - static imports are
 // hoisted above this line, so every server module below must load dynamically. Without
@@ -22,8 +23,12 @@ const {
   updateInspectorPr,
   upsertInspectorComment,
 } = await import("../src/server/db.ts");
-const { adoptPr, pushEndsTheWait } = await import("../src/server/inspector/worker.ts");
-const { parsePrUrl } = await import("../src/server/inspector/github.ts");
+const { adoptPipelinePr, adoptPr, pushEndsTheWait } = await import(
+  "../src/server/inspector/worker.ts"
+);
+const { parseGitHubRemoteUrl, parsePrUrl } = await import(
+  "../src/server/inspector/github.ts"
+);
 const { getInspectorConfig, setInspectorConfig } = await import(
   "../src/server/inspector/config.ts"
 );
@@ -156,6 +161,70 @@ test("adopting twice is a no-op, whichever signal gets there second", () => {
   assert.equal(row?.headSha, "abc123", "progress must survive a re-sighting");
   assert.equal(row?.round, 4);
   assert.equal(row?.source, "hook", "provenance is a fact about the past");
+});
+
+test("a projected pipeline PR is adopted once when its configured remote matches", async () => {
+  const run: PipelineRun = {
+    provider: "ai-conductor",
+    repoRoot: "/repo/a",
+    slug: "pipeline-pr",
+    worktree: "/repo/a/.worktrees/pipeline-pr",
+    tier: "M",
+    track: "technical",
+    steps: [{ name: "open_pr", state: "done" }],
+    lastStep: "open_pr",
+    halt: null,
+    group: "processed",
+    prUrl: URL_1,
+    costTokens: null,
+    updatedAt: 1000,
+  };
+  const configuredRemote = async () => [{ owner: "MANCEJ", repo: "AI-HARNESS" }];
+  assert.equal(await adoptPipelinePr(run, 1000, configuredRemote), true);
+  assert.equal(await adoptPipelinePr(run, 2000, configuredRemote), false);
+  const row = getInspectorPr("mancej/ai-harness#56");
+  assert.equal(row?.source, "pipeline");
+  assert.equal(row?.repoRoot, "/repo/a");
+  assert.equal(row?.cwd, "/repo/a/.worktrees/pipeline-pr");
+  assert.equal(row?.sessionId, null);
+});
+
+test("a projected pipeline PR outside the configured repository is never adopted", async () => {
+  const run: PipelineRun = {
+    provider: "ai-conductor",
+    repoRoot: "/repo/a",
+    slug: "foreign-pr",
+    worktree: "/repo/a/.worktrees/foreign-pr",
+    tier: "S",
+    track: "technical",
+    steps: [{ name: "open_pr", state: "done" }],
+    lastStep: "open_pr",
+    halt: null,
+    group: "processed",
+    prUrl: URL_1,
+    costTokens: null,
+    updatedAt: 1000,
+  };
+
+  assert.equal(
+    await adoptPipelinePr(run, 1000, async () => [{ owner: "someone-else", repo: "other" }]),
+    false,
+  );
+  assert.equal(await adoptPipelinePr(run, 1000, async () => []), false);
+  assert.equal(loadOpenInspectorPrs().length, 0);
+});
+
+test("configured GitHub remote URLs resolve across ordinary git transports", () => {
+  for (const remote of [
+    "https://github.com/mancej/ai-harness.git",
+    "git@github.com:mancej/ai-harness.git",
+    "ssh://git@github.com/mancej/ai-harness.git",
+    "git://github.com/mancej/ai-harness",
+  ]) {
+    assert.deepEqual(parseGitHubRemoteUrl(remote), { owner: "mancej", repo: "ai-harness" });
+  }
+  assert.equal(parseGitHubRemoteUrl("https://gitlab.com/mancej/ai-harness.git"), null);
+  assert.equal(parseGitHubRemoteUrl("https://github.com/mancej/ai-harness/extra.git"), null);
 });
 
 // The loose `prUrl` sniff matches any PR link in any Bash output - `gh pr view` trips it,

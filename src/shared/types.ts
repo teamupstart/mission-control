@@ -16,7 +16,12 @@ import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
 import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
-import type { PipelineProviderId, PipelineRun, SessionPipelineLink } from "./pipeline.ts";
+import type {
+  PipelineProviderId,
+  PipelineRun,
+  PipelineRunLink,
+  SessionPipelineLink,
+} from "./pipeline.ts";
 // Type-only in the opposite direction from protocol.ts's runtime schema imports, so the wire
 // status can reuse the document contract without introducing an emitted module cycle.
 import type { ForemanInstructionsSource } from "./protocol.ts";
@@ -889,7 +894,7 @@ export interface ForemanEpisode {
   /** `Pending.marker` - the stable id of this waiting episode. */
   marker: string;
   situation: string;
-  surface: "input-review" | "terminal";
+  surface: "input-review" | "terminal" | "pipeline";
   /** The ask, verbatim: a review body, an activity line, or a framed gate. */
   question: string;
   /** The child's screen when the reviewer read it. Terminal surfaces only. */
@@ -1527,7 +1532,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -1730,6 +1735,14 @@ export interface Task {
    * no-op. A seen row deliberately outlives the task; this field dies with it.
    */
   source: TaskSourceRef | null;
+  /**
+   * The provider run this pipeline dispatch started, once a child agent proves the join.
+   *
+   * Kept separate from `sessionId`: conductor may launch several sequential agents, so no
+   * one child session owns the task lifecycle. The daemon persists this key and settles the
+   * task from the provider projection instead.
+   */
+  pipelineRun: PipelineRunLink | null;
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */
@@ -2115,7 +2128,7 @@ export interface MissionReport {
 export type InspectorMode = "dry-run" | "live";
 
 /** How a PR came to be adopted. Older persisted provenance is normalized to `legacy`. */
-export type InspectorSource = "hook" | "legacy";
+export type InspectorSource = "hook" | "legacy" | "pipeline";
 
 /** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
 export type InspectorPrState = "open" | "closed";

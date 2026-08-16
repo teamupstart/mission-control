@@ -12,6 +12,7 @@ import type {
 } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
+import type { PipelineRun } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -62,6 +63,7 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -586,6 +588,7 @@ export class TaskManager {
       // `settleIfEpisodeFinished`.
       if (e.type === "session_upsert") {
         this.rebindTaskAtCwd(e.session);
+        this.bindPipelineTask(e.session);
         this.settleIfEpisodeFinished(e.session);
         this.reopenIfWorkResumed(e.session);
         // And the rows no session can settle: a terminal task whose pull request has since
@@ -611,6 +614,83 @@ export class TaskManager {
     // And the periodic backstop for the tasks that announcement cannot reach: whatever the
     // by-URL poller recorded this tick. No timer of its own - the poller's tick is it.
     registry.onPrMergesRecorded(() => this.reconcileMergedTasks());
+    // A pipeline task belongs to the provider run rather than to any one child agent.
+    // The provider projection is therefore its durable completion authority, including
+    // the boot-time restore of a run that finished while Mission Control was down.
+    registry.onPipelineRun((run) => this.settlePipelineTask(run));
+  }
+
+  /** Persist the strong terminal-home plus projected-worktree join for a pipeline task. */
+  private bindPipelineTask(session: Session): void {
+    const link = session.pipeline;
+    if (!link || session.state === "exited") return;
+    try {
+      const task = this.registry.taskResourceOwnerForSession(
+        session.id,
+        undefined,
+        (candidate) =>
+          candidate.kind === "pipeline" &&
+          (candidate.status === "running" || candidate.status === "dispatching"),
+      );
+      if (!task || task.repoRoot !== link.repoRoot) return;
+
+      if (task.pipelineRun === null) {
+        this.registry.upsertTask({
+          ...task,
+          pipelineRun: {
+            provider: link.provider,
+            repoRoot: link.repoRoot,
+            slug: link.slug,
+          },
+          updatedAt: Date.now(),
+        });
+      } else if (
+        task.pipelineRun.provider !== link.provider ||
+        task.pipelineRun.repoRoot !== link.repoRoot ||
+        task.pipelineRun.slug !== link.slug
+      ) {
+        // One terminal home cannot be reassigned from a proven run by a later child session.
+        return;
+      }
+
+      const run = this.registry.listPipelineRuns().find(
+        (candidate) =>
+          candidate.provider === link.provider &&
+          candidate.repoRoot === link.repoRoot &&
+          candidate.slug === link.slug,
+      );
+      if (run) this.settlePipelineTask(run);
+    } catch (error) {
+      // Session discovery must survive a persistence failure. The next discovery frame or
+      // projection update retries the same idempotent join.
+      console.warn("[tasks] could not bind pipeline task:", error);
+    }
+  }
+
+  /** Settle every live task durably correlated with a provider-completed run. */
+  private settlePipelineTask(run: PipelineRun): void {
+    if (run.group !== "processed") return;
+    for (const task of this.registry.listTasks()) {
+      if (
+        task.kind !== "pipeline" ||
+        (task.status !== "running" && task.status !== "dispatching") ||
+        task.pipelineRun?.provider !== run.provider ||
+        task.pipelineRun.repoRoot !== run.repoRoot ||
+        task.pipelineRun.slug !== run.slug
+      ) {
+        continue;
+      }
+      this.completeInBackground(task.id, {
+        outcome: run.prUrl ? `pipeline opened ${run.prUrl}` : `pipeline processed ${run.slug}`,
+        outcomeUrl: run.prUrl ?? undefined,
+        // A provider finishing or opening its pull request concludes this run, but it is not
+        // evidence that the pull request merged. Declared dependencies retain the ordinary
+        // merge-only satisfaction rule.
+        satisfyDependents: false,
+        requireStopped: false,
+        inferredFrom: null,
+      });
+    }
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
@@ -1493,6 +1573,9 @@ export class TaskManager {
       // selected workflow's current immutable version there.
       workflowId,
       source: input.source ?? null,
+      // Learned only after a child agent appears inside the provider's projected worktree.
+      // The terminal launch itself has no slug to persist yet.
+      pipelineRun: null,
       repoRoot: input.repoRoot,
       worktreePath: null,
       branch: null,
@@ -1912,6 +1995,16 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
+    // Provider-owned tasks need the provider's own terminal launch. Handing one to an
+    // existing harness session would bypass that launch and type an engine idea into an
+    // agent, which is a different operation with no engine run behind it.
+    if (TASK_KIND_BEHAVIOR[t.kind].launch !== "harness") {
+      return {
+        ok: false,
+        error: `${t.title} must be dispatched so its pipeline provider can open the terminal session`,
+        scope: "task",
+      };
     }
     // Multi-repo tasks are DISPATCH-ONLY, and this is where that is enforced for every
     // caller - the board's drag, Foreman's autopilot, the HTTP route.
@@ -2923,6 +3016,7 @@ export class TaskManager {
         homeName: null,
         terminalResourceId: null,
         sessionId: null,
+        pipelineRun: null,
         outcome: null,
         outcomeUrl: null,
         error: null,
@@ -3117,6 +3211,25 @@ export class TaskManager {
       }
       return; // resource-holding tasks stay loaded; live sessions re-bind by cwd
     }
+    // A completion authority may have moved the row while the terminal probe awaited. The
+    // pipeline projection is one such authority during boot restore. Re-read before cleanup
+    // so its `done` result is preserved instead of being overwritten from the startup
+    // snapshot as a failed task.
+    const currentAfterProbe = this.registry.getTask(t.id);
+    if (!currentAfterProbe) return;
+    if (
+      currentAfterProbe.dispatchedAt !== t.dispatchedAt ||
+      currentAfterProbe.worktreePath !== t.worktreePath ||
+      currentAfterProbe.homeName !== t.homeName ||
+      currentAfterProbe.terminalResourceId !== t.terminalResourceId ||
+      currentAfterProbe.sessionId !== t.sessionId ||
+      JSON.stringify(currentAfterProbe.extraRepos) !== JSON.stringify(t.extraRepos)
+    ) {
+      // Reschedule or re-dispatch replaced the launch while this probe was in flight. Its
+      // resources belong to a different attempt and this startup job has no claim on them.
+      return;
+    }
+    t = currentAfterProbe;
     // The agent is gone - reclaim its worktree. Terminal tasks keep their status and outcome.
     //
     // This is the startup half of cleanup safety, and the one the exit listener cannot reach:

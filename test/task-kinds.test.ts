@@ -28,7 +28,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_TASK_KIND, TASK_KINDS, type TaskKind } from "../src/shared/types.ts";
-import { TASK_KIND_INFO, hasReviewableDiff } from "../src/shared/task.ts";
+import {
+  TASK_KIND_BEHAVIOR,
+  TASK_KIND_INFO,
+  hasReviewableDiff,
+} from "../src/shared/task.ts";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
@@ -85,8 +89,8 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-test("the kinds are ship then scout then plan, and the type is derived from them", () => {
-  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan"]);
+test("the kinds append pipeline after ship, scout and plan, and the type is derived", () => {
+  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline"]);
   // Order is a contract, not an accident of how they were typed: it is the order the
   // dispatch form lists the options in, and the order the guided pass offers them.
   assert.equal(TASK_KINDS[0], "ship", "ship leads - it is the default and the common case");
@@ -98,7 +102,7 @@ test("the kinds are ship then scout then plan, and the type is derived from them
   // `(typeof TASK_KINDS)[number]`, so a value the tuple does not hold is not assignable
   // and this file would not compile - which is the assertion.
   const every: readonly TaskKind[] = TASK_KINDS;
-  assert.equal(every.length, 3);
+  assert.equal(every.length, 4);
 });
 
 test("every kind says how it is offered", () => {
@@ -112,6 +116,7 @@ test("every kind says how it is offered", () => {
     assert.ok(info.label.length > 0, `${kind} has no label`);
     assert.ok(info.blurb.length > 0, `${kind} has no blurb`);
     assert.ok(info.purpose.length > 0, `${kind} has no purpose`);
+    assert.ok(TASK_KIND_BEHAVIOR[kind], `${kind} has no behavior`);
   }
   // Distinct, which the `Record` cannot check: two kinds sharing a label is a picker with
   // the same word twice, and sharing a purpose describes them to the planner as one thing.
@@ -137,6 +142,18 @@ test("the diffless kinds are the ones whose blurb promises no after-work", () =>
   assert.equal(hasReviewableDiff(DEFAULT_TASK_KIND), true);
   assert.equal(hasReviewableDiff("plan"), false);
   assert.equal(hasReviewableDiff("scout"), false);
+  assert.equal(hasReviewableDiff("pipeline"), false);
+});
+
+test("pipeline is terminal-provider work and never backlog autopilot work", () => {
+  assert.deepEqual(TASK_KIND_BEHAVIOR.pipeline, {
+    repoAvailability: "pipeline-enabled",
+    launch: "pipeline-terminal",
+    autopilot: false,
+    constraint:
+      "Pipeline tasks always launch conductor in a real terminal because it reads stdin and refuses nested SDK sessions. " +
+      "Conductor owns its agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
+  });
 });
 
 /**

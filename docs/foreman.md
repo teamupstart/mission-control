@@ -462,3 +462,18 @@ plan is successfully stored.
 Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar
 Foreman control: those are the things you reach for while watching the fleet, and the
 panel is the durable posture.
+
+### Mechanical pipeline triage
+
+**Settings → Conductor → Foreman triage** is a separate, default-off permission for external
+pipeline halts. Both it and Foreman's master switch must be on when the halt is read, when its
+episode is reserved, and when the provider action is sent. The worker may call the existing
+pipeline action route only for a halt whose class is exactly `mechanical`; today that action is
+**Unpark**, which releases the feature for the engine to retry. Every `needs-human`,
+`protected-artifact`, `legacy`, `unclassified`, or unknown class stays in the Attention inbox
+for you.
+
+This permission does not put pipeline tasks into backlog autopilot and does not grant DECIDE
+re-entry. Foreman reads the daemon's halt view and posts its episode and action over HTTP. The
+daemon remains the only SQLite writer, and each attempted provider action is reserved in the
+decision ledger before the engine is called so a lost response cannot cause a duplicate act.

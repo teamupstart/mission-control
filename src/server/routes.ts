@@ -77,6 +77,7 @@ import {
   PushTaskSchema,
   PipelineActionSchema,
   PipelineConsoleSchema,
+  PipelineForemanEpisodeSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
@@ -211,9 +212,15 @@ import {
   pipelineRepoKey,
   type PipelineActionResult,
   type PipelineConsoleResult,
+  type PipelineForemanView,
   type PipelinesView,
 } from "@shared/pipeline.ts";
 import { schedulePipelineRefresh } from "./pipelines/index.ts";
+import {
+  pipelineEpisodeKey,
+  pipelineEpisodeWrite,
+  pipelineHaltMarker,
+} from "./foreman/pipeline-triage.ts";
 import { ingestConductorEvents, MAX_INGEST_BYTES } from "./pipelines/ingest.ts";
 import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
@@ -246,7 +253,9 @@ import {
   resolveInspectorFindings,
   updateInspectorPr,
   episodeById,
+  foremanEpisodeExists,
   recentEpisodes,
+  recordEpisode as recordForemanEpisode,
 } from "./db.ts";
 import { recordSpendReport } from "./spend-ledger.ts";
 import { FOREMAN_EPISODE_LEDGER } from "@shared/foreman.ts";
@@ -4189,7 +4198,11 @@ export function buildApp(
       seen.add(key);
       repos.push({ ...repo, repoRoot });
     }
-    setPipelinesConfig({ enabled: parsed.data.enabled, repos });
+    setPipelinesConfig({
+      enabled: parsed.data.enabled,
+      foremanMechanicalTriage: parsed.data.foremanMechanicalTriage,
+      repos,
+    });
     reconcilePipelineConsent(registry);
     // The tuple carries how many repositories are being observed, and the Runs page draws
     // its Pipelines tab from that. Published here rather than waited for on the watcher's
@@ -4199,6 +4212,15 @@ export function buildApp(
     publishSettingsStatus(registry);
     return c.json(await pipelinesView(false));
   });
+
+  /** Both independent operator grants required for Foreman to touch an external pipeline. */
+  const pipelineForemanEnabled = (): boolean => {
+    const pipeline = getPipelinesConfig();
+    return getForemanConfig().enabled && pipeline.enabled && pipeline.foremanMechanicalTriage;
+  };
+
+  const pipelineForemanDisabled = (c: Context) =>
+    c.json({ error: "Foreman pipeline triage is disabled" }, 403);
 
   /**
    * Ask the engine to do one thing: start, stop, pause, resume, park, unpark, grant.
@@ -4223,7 +4245,24 @@ export function buildApp(
   app.post("/api/pipelines/action", async (c) => {
     const parsed = await parseBody(c, PipelineActionSchema);
     if (!parsed.ok) return parsed.res;
-    const { provider, repoRoot, slug, action, step, reason } = parsed.data;
+    const { provider, repoRoot, slug, action, step, reason, requestedBy } = parsed.data;
+    if (requestedBy === "foreman") {
+      if (!pipelineForemanEnabled()) return pipelineForemanDisabled(c);
+      const run = registry
+        .listPipelineRuns()
+        .find(
+          (candidate) =>
+            candidate.provider === provider &&
+            candidate.repoRoot === repoRoot &&
+            candidate.slug === slug,
+        );
+      if (action !== "unpark" || run?.halt?.class !== "mechanical") {
+        return c.json({ error: "Foreman may only unpark a current mechanical pipeline halt" }, 403);
+      }
+      if (!foremanEpisodeExists(pipelineEpisodeKey(run), pipelineHaltMarker(run))) {
+        return c.json({ error: "Foreman must reserve the pipeline halt before acting" }, 409);
+      }
+    }
     const outcome = await runPipelineAction(registry, action, {
       provider,
       repoRoot,
@@ -4233,6 +4272,68 @@ export function buildApp(
     });
     if (!outcome.ok) return c.json({ error: outcome.error }, outcome.status);
     return c.json(outcome.result satisfies PipelineActionResult);
+  });
+
+  /** Halt observations for the standalone Foreman worker, with no probe or subprocess. */
+  app.get("/api/pipelines/foreman", (c) => {
+    const enabled = pipelineForemanEnabled();
+    const items = enabled
+      ? registry
+          .listPipelineRuns()
+          .filter((run) => run.halt !== null)
+          .map((run) => {
+            const marker = pipelineHaltMarker(run);
+            return {
+              run,
+              marker,
+              handled: foremanEpisodeExists(pipelineEpisodeKey(run), marker),
+            };
+          })
+      : [];
+    return c.json({ enabled, items } satisfies PipelineForemanView);
+  });
+
+  /**
+   * Persist a pipeline triage episode for Foreman, through the daemon's only-writer boundary.
+   * A reservation re-derives its marker from the current projection so a worker cannot stamp
+   * a stale observation and then act on a newer halt under its identity. A later outcome is
+   * different: Unpark can refresh the projection and clear that halt before the worker writes
+   * its result, so the existing durable reservation is the authority for finalizing it.
+   */
+  app.post("/api/pipelines/foreman-episode", async (c) => {
+    const parsed = await parseBody(c, PipelineForemanEpisodeSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!pipelineForemanEnabled()) return pipelineForemanDisabled(c);
+    const { provider, repoRoot, slug, episode } = parsed.data;
+    const run = registry
+      .listPipelineRuns()
+      .find(
+        (candidate) =>
+          candidate.provider === provider &&
+          candidate.repoRoot === repoRoot &&
+          candidate.slug === slug,
+      );
+    if (!run) return c.json({ error: "no such pipeline run" }, 404);
+    const noteKey = pipelineEpisodeKey(run);
+    if (episode.disposition !== "pending") {
+      if (episode.classification !== "mechanical") {
+        return c.json({ error: "Foreman may only finalize mechanical pipeline triage" }, 403);
+      }
+      if (!foremanEpisodeExists(noteKey, episode.marker)) {
+        return c.json({ error: "Foreman must reserve the pipeline halt before finalizing it" }, 409);
+      }
+      recordForemanEpisode(pipelineEpisodeWrite(run, episode));
+      return c.json({ ok: true });
+    }
+    if (!run.halt) return c.json({ error: "no such halted pipeline run" }, 404);
+    if (run.halt.class !== "mechanical" || episode.classification !== "mechanical") {
+      return c.json({ error: "Foreman may only reserve a mechanical pipeline halt" }, 403);
+    }
+    if (episode.marker !== pipelineHaltMarker(run)) {
+      return c.json({ error: "the pipeline halt changed before Foreman could act" }, 409);
+    }
+    recordForemanEpisode(pipelineEpisodeWrite(run, episode));
+    return c.json({ ok: true });
   });
 
   /**

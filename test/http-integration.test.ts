@@ -461,6 +461,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     effort: null,
     workflowId: null,
     source: null,
+    pipelineRun: null,
     repoRoot: "/repo",
     baseSha: null,
     extraRepos: [],

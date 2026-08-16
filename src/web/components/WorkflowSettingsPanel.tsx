@@ -172,9 +172,9 @@ const STRIP_TILES = [
   },
   {
     id: "gates",
-    label: "Inspector gates",
+    label: "GitHub Inspector gates",
     tone: "attention",
-    hint: "Runs held at an Inspector gate. Opens the runs waiting for the Inspector.",
+    hint: "Runs held at a GitHub Inspector gate. Opens the runs waiting for GitHub Inspector.",
     filters: { status: "waiting_for_inspector" },
     count: (s: WorkflowStatus) => s.inspectorGates,
   },

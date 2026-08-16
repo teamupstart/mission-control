@@ -299,9 +299,10 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   });
 
   // Session -> upstream persona -> action(s) in order -> [downstream persona] -> End.
-  const chain = [
-    ...actionSpecs.map((spec, index) => ({ node: spec.id, actionId: actionIds[index]! })),
-  ];
+  const chain = actionSpecs.map((spec, index) => ({
+    node: spec.id,
+    actionId: actionIds[index]!,
+  }));
   const nodes: unknown[] = [
     { id: "session", kind: "session", position: { x: 0, y: 0 } },
     { id: "upstream", kind: "persona", personaId: upstreamId, position: { x: 150, y: 0 } },
@@ -1144,6 +1145,76 @@ test("a child captured but interrupted before its receipt is sealed, not re-capt
 // What these prove is the WIRING: that the manager reads the repository and the ledger at the
 // right moment, that a decision reaches the continuation, that the captured commit is held to
 // the one the pull request was proven at, and that none of it sends or completes twice.
+
+test("a Code Quality Judge repair must pass before the verified pull request action can complete locally", async () => {
+  const h = await harness("quality-judge-repair", { pullRequest: true, verdict: () => "fail" });
+  try {
+    const bound = h.manager.createBinding({
+      workflowVersionId: h.versionId,
+      sessionId: h.sessionId,
+    });
+    assert.equal(bound.ok, true, "the binding was refused");
+    const bindingId = bound.ok ? bound.value.id : "";
+    const submitted = await h.manager.submit(bindingId, { requestId: "quality-judge-fail" });
+    assert.equal(submitted.ok, true, "the first submission failed");
+    const runId = submitted.ok ? submitted.value.run.id : "";
+
+    await waitFor(
+      () => h.store.getRun(runId)?.status === "waiting_for_session",
+      "the Code Quality Judge failure never returned to the session",
+    );
+    assert.equal(
+      h.store.listSubmissions(runId)
+        .flatMap((submission) => h.store.listAttempts(submission.id))
+        .some((attempt) => attempt.sessionAction !== null),
+      false,
+      "the pull request action activated before the judge passed",
+    );
+    assert.equal(
+      h.store.listDeliveries(runId).some((delivery) => delivery.kind === "session_action"),
+      false,
+      "the pull request action prepared a packet before the judge passed",
+    );
+    assert.equal(h.injected.length, 1, "the failed judge should type only its repair packet");
+    assert.match(h.injected[0]!, /Workflow review failed/);
+
+    h.setVerdict(() => "pass");
+    h.head.sha = "head-2";
+    const repaired = await h.manager.resubmit(runId, {
+      requestId: "quality-judge-pass",
+      resubmitUnchanged: false,
+    });
+    assert.equal(repaired.ok, true, `the repaired submission was refused: ${JSON.stringify(repaired)}`);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) =>
+        delivery.kind === "session_action" && delivery.state === "delivered"),
+      "the verified pull request action never followed the passing judge",
+    );
+
+    h.runActionTurn();
+    h.adoptPr({ atHead: "head-2" });
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.getRun(runId)?.status === "completed",
+      "the verified action continuation never reached End",
+    );
+
+    const finalSubmission = h.store.listSubmissions(runId).at(-1)!;
+    assert.equal(
+      h.store.listAttempts(finalSubmission.id).some((attempt) =>
+        attempt.nodeId === "end" && attempt.state === "completed"),
+      true,
+    );
+    assert.equal(h.store.getRun(runId)?.currentPhase, "complete");
+    assert.equal(
+      h.store.listDeliveries(runId).some((delivery) => delivery.kind === "inspector_feedback"),
+      false,
+      "a local completion unexpectedly waited for GitHub Inspector",
+    );
+  } finally {
+    await h.stop();
+  }
+});
 
 test("a pull request action waits after its turn until a matching pull request is adopted", async () => {
   const h = await harness("pr-wait", { pullRequest: true, downstream: true });

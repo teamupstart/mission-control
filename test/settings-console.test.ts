@@ -404,7 +404,7 @@ test("a ledger that fits on one page draws no pager at all", () => {
 // have looked identical and been unreachable from the keyboard.
 test("the master switch is a real checkbox with an accessible name", () => {
   assert.match(inspectorHtml(), /<input type="checkbox"[^>]*checked=""/);
-  assert.match(inspectorHtml(), /class="sr-only">Run the Inspector</);
+  assert.match(inspectorHtml(), /class="sr-only">Run GitHub Inspector</);
   assert.match(shippingHtml(), /<input type="checkbox"[^>]*checked=""/);
   assert.match(shippingHtml(), /class="sr-only">YOLO mode/);
 });

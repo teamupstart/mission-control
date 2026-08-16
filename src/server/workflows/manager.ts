@@ -1673,7 +1673,7 @@ export class WorkflowManager {
       return {
         ok: false,
         reason: "run_not_waiting",
-        message: "Inspector-only repair resumes on a new head or through the confirmed full restart action",
+        message: "GitHub Inspector-only repair resumes on a new head or through the confirmed full restart action",
       };
     }
     const binding = this.store.getBinding(run.bindingId);
@@ -2429,7 +2429,7 @@ export class WorkflowManager {
     const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
     const submission = run ? this.store.latestSubmission(run.id) : null;
     if (!run || !gate || !binding || !submission || version?.completionPolicy.kind !== "inspector") {
-      return { ok: false, reason: "not_found", message: "No active Inspector gate exists" };
+      return { ok: false, reason: "not_found", message: "No active GitHub Inspector gate exists" };
     }
     const prior = this.store.listEvents(run.id).find((event) =>
       event.kind === "pr_handoff_prepared"
@@ -2513,13 +2513,13 @@ export class WorkflowManager {
   ): WorkflowRuntimeMutation<WorkflowRun> {
     const run = this.store.getRun(runId);
     if (!run || !this.gateState(run)) {
-      return { ok: false, reason: "not_found", message: "No active Inspector gate exists" };
+      return { ok: false, reason: "not_found", message: "No active GitHub Inspector gate exists" };
     }
     if (runIsTerminal(run)) {
       return {
         ok: false,
         reason: "run_not_waiting",
-        message: "This Inspector gate is already terminal",
+        message: "This GitHub Inspector gate is already terminal",
       };
     }
     const repeated = this.store.listEvents(run.id).some((event) =>
@@ -2567,7 +2567,7 @@ export class WorkflowManager {
     const gate = run ? this.gateState(run) : null;
     const latest = run ? this.store.latestSubmission(run.id) : null;
     if (!run || !gate || !binding || !latest) {
-      return { ok: false, reason: "not_found", message: "No active Inspector gate exists" };
+      return { ok: false, reason: "not_found", message: "No active GitHub Inspector gate exists" };
     }
     const abandoningBypass =
       run.status === "waiting_for_new_head"
@@ -2576,14 +2576,14 @@ export class WorkflowManager {
       return {
         ok: false,
         reason: "run_not_waiting",
-        message: "Full restart is the explicit escape from an active Inspector-only repair",
+        message: "Full restart is the explicit escape from an active GitHub Inspector-only repair",
       };
     }
     if (input.confirmation !== "RESTART FULL WORKFLOW") {
       return {
         ok: false,
         reason: "confirmation_required",
-        message: "Type RESTART FULL WORKFLOW to abandon the active Inspector-only repair",
+        message: "Type RESTART FULL WORKFLOW to abandon the active GitHub Inspector-only repair",
       };
     }
     if (latest.round > run.maxRepairRounds) {
@@ -2701,7 +2701,7 @@ export class WorkflowManager {
       return {
         ok: false,
         reason: "invalid_delivery_state",
-        message: "Inspector-only repair can be abandoned only through the confirmed full restart action",
+        message: "GitHub Inspector-only repair can be abandoned only through the confirmed full restart action",
         current: delivery,
       };
     }
@@ -3666,7 +3666,7 @@ export class WorkflowManager {
         newHeadSha: newHead,
         failedHeadSha: state.failedHeadSha,
         priorFindingFingerprints: state.findingFingerprints,
-        bypassReason: "Published Inspector-only findings policy",
+        bypassReason: "Published GitHub Inspector-only findings policy",
         expectedState: state,
         state: nextState,
         now,

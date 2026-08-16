@@ -400,7 +400,7 @@ doing* - which is the question you open its settings to ask before giving it mor
 The count strip above the table filters it: **escalated**, **drafted**, **answered**,
 **left alone**. The last 100 decisions are shown, and episodes are kept for 30 days, so the
 list reaches back only as far as the cap allows - 25 rows to a page, walked with **Newer**
-and **Older**, in the [same table](inspector-and-shipping.md#dry-run) the Inspector and Shipping panels use.
+and **Older**, in the [same table](inspector-and-shipping.md#dry-run) the GitHub Inspector and Shipping panels use.
 
 A row leads with **what the decision was for**, not with what was literally asked. The
 verbatim ask is not an identity - `Needs approval: Bash` and `running AskUserQuestion` cover

@@ -3217,7 +3217,7 @@ export const WorkflowInspectorOnlyContextSchema = z.object({
   newHeadSha: z.string().min(1).max(100),
   priorFindingFingerprints: z.array(z.string().min(1).max(200)).max(10_000),
 }).refine((value) => jsonAtMost(value, WORKFLOW_EXECUTION_LIMITS.contextJsonBytes), {
-  message: `Inspector-only context exceeds ${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} UTF-8 bytes`,
+  message: `GitHub Inspector-only context exceeds ${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} UTF-8 bytes`,
 });
 
 export const CreateWorkflowSchema = z.object({

@@ -375,7 +375,7 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
   const problems: string[] = [];
   if (fb.findings) {
     const n = pr.inspector?.postedOpen ?? 0;
-    problems.push(`the Inspector left ${n} unresolved review comment${n === 1 ? "" : "s"} on it`);
+    problems.push(`GitHub Inspector left ${n} unresolved review comment${n === 1 ? "" : "s"} on it`);
   }
   if (fb.ciFailing) problems.push("its CI checks are failing");
 
@@ -393,7 +393,7 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
   }
   if (fb.findings) {
     steps.push(
-      `Read the Inspector's review comments (\`gh pr view${num}${scope} --comments\`, and the ` +
+      `Read GitHub Inspector's review comments (\`gh pr view${num}${scope} --comments\`, and the ` +
         `line threads under Files changed) and address every one.`,
     );
   }
@@ -405,7 +405,7 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
   steps.push("Commit and push.");
   steps.push(
     "Then keep watching the PR until CI is green and the review threads are resolved - " +
-      "the Inspector re-reviews each push automatically, so wait for it and answer anything new.",
+      "GitHub Inspector re-reviews each push automatically, so wait for it and answer anything new.",
   );
 
   return (

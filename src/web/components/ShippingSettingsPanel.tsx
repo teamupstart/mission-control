@@ -159,7 +159,7 @@ export function ShippingSettingsPanel({
     <section className="settings-section sc-section">
       <p className="settings-hint sc-lede">
         What lands without you. <strong>YOLO mode</strong> merges the pull requests Mission
-        Control opened once the Inspector has reviewed the current push with nothing
+        Control opened once GitHub Inspector has reviewed the current push with nothing
         outstanding, CI is green, nobody has an unresolved thread on it, and it has been
         open for the soak window below.
       </p>
@@ -271,15 +271,15 @@ export function ShippingSettingsPanel({
                 <p className="sc-blocker">
                   <span className="sc-dot sc-dot-attention" aria-hidden="true" />
                   <span>
-                    The Inspector is switched off, so no pull request is being reviewed and none
+                    GitHub Inspector is switched off, so no pull request is being reviewed and none
                     will qualify.{" "}
-                    <Tooltip label="Open the Inspector panel and flash its master switch">
+                    <Tooltip label="Open the GitHub Inspector panel and flash its master switch">
                       <button
                         type="button"
                         className="settings-link"
                         onClick={() => onNavigate("inspector", "inspector/enabled")}
                       >
-                        Turn it on in Inspector →
+                        Turn it on in GitHub Inspector →
                       </button>
                     </Tooltip>
                   </span>
@@ -290,15 +290,15 @@ export function ShippingSettingsPanel({
                 <p className="sc-blocker">
                   <span className="sc-dot sc-dot-attention" aria-hidden="true" />
                   <span>
-                    The Inspector is in dry run, so it reviews but publishes nothing - and YOLO
+                    GitHub Inspector is in dry run, so it reviews but publishes nothing - and YOLO
                     mode will not merge on a review nobody can see.{" "}
-                    <Tooltip label="Open the Inspector panel and flash its mode control">
+                    <Tooltip label="Open the GitHub Inspector panel and flash its mode control">
                       <button
                         type="button"
                         className="settings-link"
                         onClick={() => onNavigate("inspector", "inspector/mode")}
                       >
-                        Set it to live in Inspector →
+                        Set it to live in GitHub Inspector →
                       </button>
                     </Tooltip>
                   </span>
@@ -313,7 +313,7 @@ export function ShippingSettingsPanel({
                 <p className="sc-blocker">
                   <span className="sc-dot sc-dot-attention" aria-hidden="true" />
                   <span>
-                    The Inspector is not allowed to review {untrustedByInspector.join(", ")}, so
+                    GitHub Inspector is not allowed to review {untrustedByInspector.join(", ")}, so
                     nothing there will merge.{" "}
                     <Tooltip label="Open the Trust matrix - grant the review, or revoke the merge">
                       <button
@@ -332,11 +332,11 @@ export function ShippingSettingsPanel({
           )}
 
           <ConsoleCard title="May merge in" anchor="shipping/merge-repos">
-            {/* The consent copy stays with the count: its own list, not the Inspector's -
+            {/* The consent copy stays with the count: its own list, not GitHub Inspector's -
                 letting it comment on a repo is not the same permission as letting it merge
                 there. That distinction is the whole point of a separate column in Trust. */}
             <p className="settings-hint">
-              Its own list, not the Inspector's - letting it comment on a repo is not the same
+              Its own list, not GitHub Inspector's - letting it comment on a repo is not the same
               permission as letting it merge there. Worktrees of a trusted repo count too.
             </p>
             <TrustGrantSummary

@@ -6,7 +6,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
- * The Inspector settings panel tells an operator where their brief has to live.
+ * The GitHub Inspector settings panel tells an operator where their brief has to live.
  *
  * Why this is a spec and not a comment. The brief resolves against the REVIEWED repository,
  * and a repo with no brief at either name is not an error - it is reviewed against a generic
@@ -69,7 +69,7 @@ async function shoot(page: Page, lede: Locator, name: string): Promise<void> {
   });
 }
 
-test("the Inspector panel names both places a repo may keep its brief", async ({ page, daemon }) => {
+test("the GitHub Inspector panel names both places a repo may keep its brief", async ({ page, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/inspector`);
 
   // The lede, found by the words a reader would scan for rather than by its class: this
@@ -84,9 +84,9 @@ test("the Inspector panel names both places a repo may keep its brief", async ({
   await expect(lede).toHaveText(/personas\/INSPECTOR\.md.*or its root.*INSPECTOR\.md/s);
 
   // And it is on screen without hunting: the panel's first paragraph, above the switch that
-  // turns the Inspector on, so the operator reads where the brief goes before deciding to
+  // turns GitHub Inspector on, so the operator reads where the brief goes before deciding to
   // enable anything.
-  await expect(page.getByRole("checkbox", { name: "Run the Inspector" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Run GitHub Inspector" })).toBeVisible();
 
   // Each filename renders WHOLE, on one line.
   //
@@ -107,6 +107,37 @@ test("the Inspector panel names both places a repo may keep its brief", async ({
 
   await shoot(page, lede, "inspector-settings");
 });
+
+test("Shipping and Trust name the remote reviewer as GitHub Inspector", async ({ page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/shipping`);
+  await expect(page.getByText(/once GitHub Inspector has reviewed the current push/)).toBeVisible();
+
+  // Arm YOLO only far enough to expose its unmet remote-review prerequisite. This is the
+  // sentence that must keep Shipping coupled to the unchanged GitHub reviewer rather than
+  // accidentally reading as though the local Code Quality Judge can authorize a merge.
+  const yolo = page.getByRole("checkbox", {
+    name: "YOLO mode - merge our pull requests when they come out clean",
+  });
+  await expect(yolo).toBeEnabled();
+  await yolo.locator("..").click();
+  await expect(yolo).toBeChecked();
+  await expect(page.getByText(/GitHub Inspector is switched off/)).toBeVisible();
+  await shootWholePage(page, "shipping-github-inspector-prerequisite");
+
+  await page.goto(`${daemon.baseURL}/#/settings/trust`);
+  const matrix = page.getByRole("table", { name: "Repository trust grants" });
+  await expect(matrix).toBeVisible();
+  await expect(matrix.getByText("GitHub Inspector posts reviews", { exact: true })).toBeVisible();
+  await shootWholePage(page, "trust-github-inspector-grant");
+});
+
+async function shootWholePage(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+}
 
 /** Fails with the filename in the message, since "expected 1, got 2" would not name it. */
 function assertOneLine(name: string, boxes: number): void {

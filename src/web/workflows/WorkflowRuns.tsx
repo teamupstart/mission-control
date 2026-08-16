@@ -1083,7 +1083,7 @@ function RunWorklist({
                   // still true. "This Inspector repair round ran no Personas" is NOT true of
                   // `Blocking`, which legitimately carries forward what is still outstanding.
                   : inspectorOnly
-                    ? "This Inspector repair round ran no Personas."
+                    ? "This GitHub Inspector repair round ran no Personas."
                     : reviewerlessVersion
                       ? "This workflow has no reviewers - nothing in it produces a verdict."
                       : "No reviewer has been activated in this round yet."}
@@ -1747,10 +1747,10 @@ export function WorkflowRunView({
                 className="btn btn-danger-ghost"
                 onClick={() => onConfirm({
                   title: "Restart the full workflow",
-                  body: "This abandons the Inspector-only repair and reruns every Persona against"
+                  body: "This abandons the GitHub Inspector-only repair and reruns every Persona against"
                     + " freshly captured evidence. The audited repair submissions stay in history.",
                   confirmLabel: "Restart full workflow",
-                  confirmHint: "Abandons the Inspector-only repair and reruns every Persona",
+                  confirmHint: "Abandons the GitHub Inspector-only repair and reruns every Persona",
                   danger: true,
                   requirePhrase: "RESTART FULL WORKFLOW",
                   onConfirm: () => void onRestartFull("RESTART FULL WORKFLOW"),
@@ -1900,7 +1900,7 @@ export function WorkflowRunView({
 
       {inspectorOnly && (
         <p className="wf-run-notice" role="status">
-          <strong>Persona review bypassed for Inspector repair.</strong>
+          <strong>Persona review bypassed for GitHub Inspector repair.</strong>
           {" "}The audited repair submission moved from {shortSha(bypassSourceHead) ?? "an earlier head"} to{" "}
           {shortSha(viewed.prHeadSha) ?? "a newly observed head"} without Persona attempts.
         </p>
@@ -1982,7 +1982,7 @@ export function WorkflowRunView({
       {inspectorGate && (
         <section className={`wf-run-section wf-run-gate is-${detail.summary.gate}`}>
           <header className="wf-run-section-head">
-            <h4>Inspector final gate</h4>
+            <h4>GitHub Inspector final gate</h4>
             <span className={`workflow-chip workflow-${gateSummaryStatus(detail.summary.gate).tone}`}>
               {gateSummaryStatus(detail.summary.gate).label}
             </span>
@@ -2002,7 +2002,7 @@ export function WorkflowRunView({
               </dd>
             </div>
             <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source === "hook" ? "hook" : inspectorGate.inspection ? "legacy import" : "not adopted"}</dd></div>
-            <div><dt>Inspector</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
+            <div><dt>GitHub Inspector</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
             <div><dt>Review round</dt><dd>{inspectorGate.inspection?.round ?? 0}</dd></div>
             <div><dt>Target head</dt><dd><code>{shortSha(inspectorGate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
             <div><dt>Observed head</dt><dd><code>{shortSha(inspectorGate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
@@ -2019,8 +2019,8 @@ export function WorkflowRunView({
               ? version.completionPolicy.missingPrAction.replaceAll("_", " ")
               : "wait"}</strong>
           </p>
-          <Tooltip label="Open Inspector settings to review its enablement, mode, and allowlist">
-            <button className="btn btn-ghost" onClick={onOpenInspectorSettings}>Open Inspector settings</button>
+          <Tooltip label="Open GitHub Inspector settings to review its enablement, mode, and allowlist">
+            <button className="btn btn-ghost" onClick={onOpenInspectorSettings}>Open GitHub Inspector settings</button>
           </Tooltip>
           <div className="wf-run-findings">
             {inspectorGate.findings.length === 0 ? (
@@ -2032,7 +2032,7 @@ export function WorkflowRunView({
                   <span>{finding.status}</span>
                 </header>
                 <code>{finding.path ?? "general"}{finding.line ? `:${finding.line}` : ""}</code>
-                <p>{finding.body ?? "Legacy finding: detail was not persisted by the Inspector version that created this row."}</p>
+                <p>{finding.body ?? "Legacy finding: detail was not persisted by the GitHub Inspector version that created this row."}</p>
               </article>
             ))}
           </div>
@@ -2955,7 +2955,7 @@ export function WorkflowRuns({
               )}
               {run.gate !== "none" && (
                 <span className="wf-run-row-gate">
-                  Inspector: {run.gate.replaceAll("_", " ")}
+                  GitHub Inspector: {run.gate.replaceAll("_", " ")}
                   {run.gatePrNumber ? ` · #${run.gatePrNumber}` : ""}
                   {run.gateHeadShort ? ` · ${run.gateHeadShort}` : ""}
                 </span>

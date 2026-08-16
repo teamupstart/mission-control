@@ -192,7 +192,7 @@ pane.
 | `AI_CONDUCTOR_REGISTRY` | `~/.ai-conductor/registry.json` | Read **bare**, without a `MISSION_` prefix, because it is the variable the engine itself reads - a machine already configured for conductor needs nothing new. Names the file, not its directory. |
 
 Consent itself is stored in the daemon's database (`app_config`, key `pipelines`), alongside
-the Foreman, Skills, Harnesses, Task sources, Models and Inspector settings.
+the Foreman, Skills, Harnesses, Task sources, Models and GitHub Inspector settings.
 
 ## Where this is going
 

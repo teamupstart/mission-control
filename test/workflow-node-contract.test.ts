@@ -51,7 +51,7 @@ test("the palette has no checkpoint or Inspector graph node", () => {
     "the palette's node kinds are declared once, in new-node.ts",
   );
   // Inspector approval is a workflow SETTING, on the completion policy, not a node.
-  assert.match(propertiesSource, /<option value="inspector">Inspector approval<\/option>/);
+  assert.match(propertiesSource, /<option value="inspector">GitHub Inspector approval<\/option>/);
 });
 
 test("a Command node carries a slot and never a command", () => {

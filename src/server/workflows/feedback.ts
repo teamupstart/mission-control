@@ -309,9 +309,9 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     // which remains literally true: that policy is resolved by the Inspector poller observing
     // a pushed head, not by anything the session reports.
     ? "Fix the findings, verify the work, then commit and push it."
-    : "This published policy permits bypassing Personas only for this Inspector repair. Fix the findings, verify the work, commit and push a new head, then wait for Inspector to review that new head.";
+    : "This published policy permits bypassing Personas only for this GitHub Inspector repair. Fix the findings, verify the work, commit and push a new head, then wait for GitHub Inspector to review that new head.";
   const body = [
-    "Inspector reviewed the pinned pull request head and found changes that are required.",
+    "GitHub Inspector reviewed the pinned pull request head and found changes that are required.",
     "",
     "Original user goal:",
     bounded(input.originalGoal),
@@ -320,7 +320,7 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     `Run: ${input.runId}`,
     `PR: ${bounded(input.prUrl)}`,
     `Pinned head: ${bounded(input.targetHeadSha)}`,
-    `Inspector round: ${input.inspectorRound}`,
+    `GitHub Inspector round: ${input.inspectorRound}`,
     `Review posture: ${input.reviewPosture ?? "unknown"}`,
     "",
     ...findings.flatMap((finding, index) => {
@@ -468,7 +468,7 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
   const body = [
     bounded(input.skillCommand),
     "",
-    "Prepare the reviewed work for the workflow's Inspector final gate.",
+    "Prepare the reviewed work for the workflow's GitHub Inspector final gate.",
     "",
     "Original user goal:",
     bounded(input.originalGoal),

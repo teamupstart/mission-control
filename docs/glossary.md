@@ -48,9 +48,9 @@ when configured, deliver follow-up work through the daemon.
 A harness is Mission Control's declared adapter for an agent, including its capabilities,
 status evidence, runtime options, and terminal integration.
 
-## [Inspector](inspector-and-shipping.md#inspector-automated-pr-review)
+## [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review)
 
-Inspector is the opt-in automated reviewer for pull requests Mission Control adopted from
+GitHub Inspector is the opt-in automated reviewer for pull requests Mission Control adopted from
 observed `gh pr create` activity. It only comments in repositories you explicitly trust.
 
 ## [The Library](library-and-line.md)
@@ -91,7 +91,7 @@ shipping view rather than only from a transient notification.
 ## [Shipping / YOLO mode](inspector-and-shipping.md#shipping-yolo-mode)
 
 Shipping, also called YOLO mode, is the separately armed automation that can merge an
-eligible adopted pull request after the Inspector's required gates are satisfied.
+eligible adopted pull request after the GitHub Inspector's required gates are satisfied.
 
 ## [Task](dispatch-and-backlog.md#dispatch-an-agent)
 

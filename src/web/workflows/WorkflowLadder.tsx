@@ -540,7 +540,7 @@ export function WorkflowLadder({
             Board's ~200px column at the Electron window's minimum width. */}
         {inspectorPolicy && (
           <Rung
-            name="Inspector"
+            name="GitHub Inspector"
             status={inspectorFooterStatus(summary.gate)}
             fixed
           >

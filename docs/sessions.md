@@ -1187,7 +1187,7 @@ badge** beside its model / thinking / context row, and the topbar grows a **cost
 | **Rate now** | chip and popover | the last hour of that same session estimate |
 | **Tokens today** | popover | session input, output and cache, every tier summed |
 | **Per shipped PR** | popover | today's session estimate over pull requests either agent opened today, with the count it was divided by. Counts only PRs we can [prove we opened](inspector-and-shipping.md#inspector-automated-pr-review) |
-| **Automation** | popover | API-equivalent estimated cost for the Foreman's and Inspector's own model calls since midnight, with the per-role split printed under it |
+| **Automation** | popover | API-equivalent estimated cost for the Foreman's and GitHub Inspector's own model calls since midnight, with the per-role split printed under it |
 | **Runway** | popover, and the chip's colour | per rate-limit window: how much is used and how long the rest lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
 
 The runway is the only forward-looking number in the app, and it is an average
@@ -1257,7 +1257,7 @@ panel that warns about a quiet weekend is one you learn to scroll past.
 
 #### What the app spends on itself
 
-The Foreman and the Inspector call models on their own schedule, with nobody asking them
+The Foreman and the GitHub Inspector call models on their own schedule, with nobody asking them
 to. That spend is real - on a busy fleet it is the largest thing running when you are not
 looking - and until it was attributed it was also invisible: a `codex exec --ephemeral` run
 writes no rollout file and exports nothing, while a headless Claude run *does* export
@@ -1265,14 +1265,14 @@ OpenTelemetry, but under the fresh session id every headless run mints, so it la
 ledger under a key belonging to no card and was silently counted as session spend.
 
 Both now report themselves per subsystem and role. The Foreman's triage, full review,
-work-item verification, and backlog planning are separate from the Inspector's PR reviews
+work-item verification, and backlog planning are separate from the GitHub Inspector's PR reviews
 and follow-up replies. Hover **Automation today** for that split. Keeping the roles separate
 is the point: it makes "is shadow triage worth what it costs" and "did that prompt fix
 land" questions the app can answer, which one undifferentiated automation bucket could not.
 
 **This is a separate line, not part of the fleet total.** Session cost is work you asked
 for; this is the overhead of having that work watched, and it moves while nothing else is
-happening - rolled together, a quiet morning with a busy Inspector would read as fleet
+happening - rolled together, a quiet morning with a busy GitHub Inspector would read as fleet
 activity with no way to see which half moved. The two are each independently true and can
 be added by anyone who wants one number.
 

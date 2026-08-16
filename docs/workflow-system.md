@@ -14,6 +14,13 @@ Markdown sources are compiled into generated modules by
 [`scripts/builtin-session-actions.ts`](../scripts/builtin-session-actions.ts), so installed
 defaults and operator-managed copies remain distinct.
 
+The current built-in No-Mistakes Review is version 9. It runs the compiled
+`builtin:code-quality-judge` Persona after the parallel deep reviewers and before the verified
+Pull Request action, then completes under the existing `none` policy. Older immutable versions
+and custom workflows may still use the `inspector` completion policy, which is presented as the
+GitHub Inspector final gate. GitHub Inspector remains the daemon-owned remote reviewer and the
+source of exact-head Shipping proof.
+
 Ensembles coordinate multiple agent attempts and hand a selected result back through
 workflow and task seams. The [ensemble manager](../src/server/ensembles/manager.ts) owns
 that coordination. The extension surface, strategies, and limits already have their own

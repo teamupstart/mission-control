@@ -513,17 +513,17 @@ test("a completed action reads Complete, and the stage does not claim the wave p
 test("the Inspector footer follows End, is marked fixed, and vanishes without the policy", () => {
   const withGate = runPipelineMarkup({}, {}, {
     version: version({ kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" }),
-    inspectorStatus: { tone: "waiting", label: "Waiting for Inspector" },
-    inspectorDetail: "Inspector has the pull request and has not finished reviewing it.",
+    inspectorStatus: { tone: "waiting", label: "Waiting for GitHub Inspector" },
+    inspectorDetail: "GitHub Inspector has the pull request and has not finished reviewing it.",
   });
   // Ordering is the claim: End is graph success and Inspector claims it AFTERWARDS. A footer
   // above End would say the two happen the other way round.
   const endAt = withGate.indexOf("Terminal outcome");
-  const footerAt = withGate.indexOf("Inspector, the fixed completion policy after End");
+  const footerAt = withGate.indexOf("GitHub Inspector, the fixed completion policy after End");
   assert.ok(endAt >= 0 && footerAt > endAt, "the footer follows the End card");
   assert.match(withGate, /Fixed/);
   assert.match(withGate, /workflow succeeded/, "the seam says what has to have happened");
-  assert.match(withGate, /Waiting for Inspector/);
+  assert.match(withGate, /Waiting for GitHub Inspector/);
   assert.match(withGate, /has not finished reviewing it/);
 
   // Immutable: no drag handle, no focus stop, no delete, no connection.

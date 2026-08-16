@@ -624,7 +624,7 @@ test("all three inspector surfaces show dry run, and none of them shows it when 
 // a bare "3". The tooltip's aria-describedby is a description, and only while open.
 test("the inspector chip and its tile twin have an accessible name", () => {
   const session = mkSession({ inspector: insp({ open: 0, round: 0 }) });
-  assert.match(bit(InspectorChip, { session }), /aria-label="Inspector: adopted for review/);
+  assert.match(bit(InspectorChip, { session }), /aria-label="GitHub Inspector: adopted for review/);
   const tile = renderToStaticMarkup(
     createElement(SessionTile, {
       session,
@@ -635,7 +635,7 @@ test("the inspector chip and its tile twin have an accessible name", () => {
       onDropConfirm: () => {},
     }),
   );
-  assert.match(tile, /aria-label="Inspector: adopted for review/);
+  assert.match(tile, /aria-label="GitHub Inspector: adopted for review/);
 });
 
 // Schedule provenance is the fourth session-level signal to span all four renderers, and

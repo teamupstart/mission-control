@@ -74,7 +74,7 @@ test("scrubbed detail and legacy fallback are frozen with published policy wordi
   assert.match(packet.payload, /Token: \[REDACTED\]/);
   assert.doesNotMatch(packet.payload, /\u0007/);
   assert.match(packet.payload, /Legacy finding detail is unavailable/);
-  assert.match(packet.payload, /permits bypassing Personas only for this Inspector repair/);
+  assert.match(packet.payload, /permits bypassing Personas only for this GitHub Inspector repair/);
   assert.match(packet.payload, /commit and push a new head/);
 });
 

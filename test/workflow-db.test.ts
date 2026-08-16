@@ -29,6 +29,7 @@ const {
   parseWorkflowRunRow,
   parseWorkflowSubmissionRow,
   parseWorkflowSubmissionImageRow,
+  parseWorkflowSubmissionTextArtifactRow,
   parseWorkflowVersionRow,
 } = await import("../src/server/workflows/store.ts");
 
@@ -86,6 +87,11 @@ test("the complete Phase 1 table family and required indexes exist", () => {
   );
   assert.ok(
     indexes("workflow_submission_images").some(
+      (columns) => columns.join(",") === "submission_id,ordinal",
+    ),
+  );
+  assert.ok(
+    indexes("workflow_submission_text_artifacts").some(
       (columns) => columns.join(",") === "submission_id,ordinal",
     ),
   );
@@ -328,6 +334,11 @@ test("every later-phase state parser rejects unknown durable enum values", () =>
     finished_at: null,
   };
   assert.equal(parseWorkflowNodeAttemptRow(attempt).state, "queued");
+  assert.equal(parseWorkflowNodeAttemptRow(attempt).checkEvidence, undefined);
+  assert.throws(
+    () => parseWorkflowNodeAttemptRow({ ...attempt, check_evidence_json: "[]" }),
+    WorkflowRowError,
+  );
   assert.throws(() => parseWorkflowNodeAttemptRow({ ...attempt, state: "passed" }), WorkflowRowError);
 
   const delivery = {
@@ -371,7 +382,7 @@ test("every later-phase state parser rejects unknown durable enum values", () =>
   assert.throws(() => parseWorkflowLlmCallRow({ ...call, error_code: "x".repeat(201) }), WorkflowRowError);
 });
 
-test("workflow image rows reject unknown durable states and malformed digests", () => {
+test("workflow evidence rows preserve old image defaults and validate text artifacts", () => {
   const staged = {
     id: "stage",
     note_key: "note",
@@ -392,6 +403,7 @@ test("workflow image rows reject unknown durable states and malformed digests", 
     updated_at: 1,
   };
   assert.equal(parseWorkflowEvidenceStagingRow(staged).state, "staged");
+  assert.equal(parseWorkflowEvidenceStagingRow(staged).evidence_kind, "image");
   assert.throws(
     () => parseWorkflowEvidenceStagingRow({ ...staged, state: "attached" }),
     WorkflowRowError,
@@ -431,6 +443,37 @@ test("workflow image rows reject unknown durable states and malformed digests", 
   );
   assert.throws(
     () => parseWorkflowSubmissionImageRow({ ...image, availability: "pruned", pruned_at: null }),
+    WorkflowRowError,
+  );
+
+  const artifact = {
+    id: "artifact",
+    submission_id: "submission",
+    staging_id: "stage-text",
+    ordinal: 0,
+    display_name: "focused.tap",
+    caption: "Focused test output",
+    repository_scope: "repo-01",
+    mime_type: "text/plain",
+    bytes: Buffer.byteLength("ok 13\n"),
+    sha256: "b".repeat(64),
+    content: "ok 13\n",
+    availability: "retained",
+    pruned_at: null,
+    created_at: 1,
+  };
+  assert.equal(parseWorkflowSubmissionTextArtifactRow(artifact).content, "ok 13\n");
+  assert.throws(
+    () => parseWorkflowSubmissionTextArtifactRow({ ...artifact, mime_type: "application/json" }),
+    WorkflowRowError,
+  );
+  assert.throws(
+    () => parseWorkflowEvidenceStagingRow({
+      ...staged,
+      evidence_kind: "text",
+      mime_type: "text/plain",
+      source_kind: "upload",
+    }),
     WorkflowRowError,
   );
 });

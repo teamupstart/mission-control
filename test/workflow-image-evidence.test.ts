@@ -1,13 +1,16 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import {
   existsSync,
   mkdtempSync,
   mkdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,6 +39,7 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const {
   captureSubmissionImages,
+  captureSubmissionTextArtifacts,
   readSubmissionImageBody,
   reconcileWorkflowEvidenceFiles,
   resolveSubmissionImageInputs,
@@ -53,6 +57,39 @@ const PNG = Buffer.from(
   "base64",
 );
 const IMAGE_WORKFLOW_VERSION_ID = BUILTIN_WORKFLOWS[0]!.definition.currentVersionId!;
+const mutableFs = createRequire(import.meta.url)("node:fs") as {
+  openSync: typeof import("node:fs").openSync;
+};
+
+async function withParentDirectorySwap<T>(input: {
+  targetPath: string;
+  parentPath: string;
+  outsidePath: string;
+  action: () => Promise<T>;
+}): Promise<T> {
+  const parkedPath = `${input.parentPath}-inside`;
+  const originalOpenSync = mutableFs.openSync;
+  let swapped = false;
+  mutableFs.openSync = ((...args: unknown[]) => {
+    if (!swapped && args[0] === input.targetPath) {
+      renameSync(input.parentPath, parkedPath);
+      symlinkSync(input.outsidePath, input.parentPath);
+      swapped = true;
+    }
+    return Reflect.apply(originalOpenSync, mutableFs, args);
+  }) as typeof import("node:fs").openSync;
+  syncBuiltinESMExports();
+  try {
+    return await input.action();
+  } finally {
+    mutableFs.openSync = originalOpenSync;
+    syncBuiltinESMExports();
+    if (swapped) {
+      unlinkSync(input.parentPath);
+      renameSync(parkedPath, input.parentPath);
+    }
+  }
+}
 
 function taskAt(primary: string, extras: string[] = []): ScoutRepoTask {
   return {
@@ -160,6 +197,255 @@ test("workflow image contracts default historical context and bind image citatio
   assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
     images: [{ ...duplicate, kind: "agent", path: "screen.png" }, { ...duplicate, kind: "agent", path: "other.png" }],
   }).success, false);
+  assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
+    artifacts: [{
+      kind: "text",
+      clientItemId: "focused-log",
+      path: "evidence/focused.tap",
+      caption: "Focused TAP output",
+      repositoryScope: "repo-01",
+    }],
+  }).success, true);
+  assert.equal(SubmitWorkflowEvidenceSchema.safeParse({}).success, false);
+  assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
+    images: [{ ...duplicate, kind: "agent", path: "screen.png" }],
+    artifacts: [{
+      kind: "text",
+      clientItemId: duplicate.clientItemId,
+      path: "evidence/focused.tap",
+      caption: "Focused TAP output",
+      repositoryScope: "repo-01",
+    }],
+  }).success, false);
+});
+
+test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-frozen", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-text-repo-")));
+  const original = "\uFEFFTAP version 13\nok 13 - focused regression\n";
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "evidence/\n");
+    mkdirSync(join(repo, "evidence"));
+    const logPath = join(repo, "evidence", "focused.tap");
+    writeFileSync(logPath, original);
+    writeFileSync(join(repo, "evidence", "invalid.log"), Buffer.from([0xff]));
+    writeFileSync(join(repo, "not-ignored.log"), original);
+    const store = new WorkflowStore();
+    const stageTextPath = (path: string) => stageAgentWorkflowEvidence({
+      store,
+      noteKey: "text-note",
+      task: taskAt(repo),
+      fallbackRoot: repo,
+      images: [],
+      artifacts: [{
+        kind: "text",
+        clientItemId: `invalid-${path}`,
+        path,
+        caption: "Focused TAP output",
+        repositoryScope: "repo-01",
+      }],
+      now: 1,
+    });
+    await assert.rejects(stageTextPath("evidence/invalid.log"), (error: unknown) =>
+      error instanceof WorkflowImageEvidenceError && error.code === "artifact_encoding");
+    await assert.rejects(stageTextPath("not-ignored.log"), /gitignored/);
+    const staged = await stageAgentWorkflowEvidence({
+      store,
+      noteKey: "text-note",
+      task: taskAt(repo),
+      fallbackRoot: repo,
+      images: [],
+      artifacts: [{
+        kind: "text",
+        clientItemId: "focused-log",
+        path: "evidence/focused.tap",
+        caption: "Focused TAP output",
+        repositoryScope: "repo-01",
+      }],
+      now: 1,
+    });
+    assert.deepEqual(staged.images, []);
+    assert.equal(staged.artifacts.length, 1);
+    assert.equal(staged.artifacts[0]?.bytes, Buffer.byteLength(original));
+
+    const binding = store.insertBinding({
+      id: "text-binding",
+      workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey: "text-note",
+      sessionId: "text-session",
+      sessionAgent: "codex",
+      sessionName: "text evidence",
+      sessionCwd: repo,
+      sessionRepoRoot: repo,
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 5,
+      now: 2,
+    });
+    const created = store.createInitialSubmission(
+      { id: "text-run", binding, triggerSource: "manual", triggerKey: "text-run", now: 3 },
+      {
+        id: "text-submission",
+        triggerSource: "manual",
+        triggerKey: "text-run",
+        evidenceGroupKey: "manual:text-note:text-run",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    assert.equal(store.listReservedWorkflowEvidence(created.submission.id)[0]?.evidenceKind, "text");
+
+    writeFileSync(logPath, `${original}not the staged bytes\n`);
+    await assert.rejects(
+      () => captureSubmissionTextArtifacts(store, created.submission.id, 4),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "artifact_changed",
+    );
+    assert.deepEqual(store.listSubmissionTextArtifacts(created.submission.id), []);
+
+    writeFileSync(logPath, original);
+    const captured = await captureSubmissionTextArtifacts(store, created.submission.id, 5);
+    assert.equal(captured.length, 1);
+    assert.match(captured[0]?.id ?? "", /^txt_[a-f0-9]{32}$/);
+    assert.equal(captured[0]?.content, original);
+    assert.equal(captured[0]?.sha256, staged.artifacts[0]?.sha256);
+
+    writeFileSync(logPath, "later mutable source\n");
+    const replayed = await captureSubmissionTextArtifacts(store, created.submission.id, 6);
+    assert.deepEqual(replayed, captured);
+    assert.equal(store.listSubmissionTextArtifacts(created.submission.id)[0]?.content, original);
+
+    store.resetForNoteKey("text-note");
+    assert.deepEqual(store.listSubmissionTextArtifacts(created.submission.id), []);
+    assert.deepEqual(store.listWorkflowEvidence("text-note").artifacts, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("parent-directory swaps cannot escape the issued checkout during staging or capture", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-parent-race-repo-")));
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-parent-race-outside-")));
+  const evidenceDirectory = join(repo, "evidence");
+  const targetPath = join(evidenceDirectory, "focused.log");
+  const imageTargetPath = join(evidenceDirectory, "screen.png");
+  const outsideContent = "outside checkout evidence\n";
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "evidence/\n");
+    mkdirSync(evidenceDirectory);
+    writeFileSync(targetPath, "inside checkout evidence\n");
+    writeFileSync(imageTargetPath, PNG);
+    writeFileSync(join(outside, "focused.log"), outsideContent);
+    writeFileSync(join(outside, "screen.png"), PNG);
+    const store = new WorkflowStore();
+
+    await assert.rejects(
+      () => withParentDirectorySwap({
+        targetPath,
+        parentPath: evidenceDirectory,
+        outsidePath: outside,
+        action: () => stageAgentWorkflowEvidence({
+          store,
+          noteKey: "parent-race-stage",
+          task: taskAt(repo),
+          fallbackRoot: repo,
+          images: [],
+          artifacts: [{
+            kind: "text",
+            clientItemId: "parent-race-stage",
+            path: "evidence/focused.log",
+            caption: "Focused output",
+            repositoryScope: "repo-01",
+          }],
+          now: 1,
+        }),
+      }),
+      WorkflowImageEvidenceError,
+    );
+    assert.deepEqual(store.listWorkflowEvidence("parent-race-stage").artifacts, []);
+
+    await assert.rejects(
+      () => withParentDirectorySwap({
+        targetPath: imageTargetPath,
+        parentPath: evidenceDirectory,
+        outsidePath: outside,
+        action: () => stageAgentWorkflowEvidence({
+          store,
+          noteKey: "parent-race-image-stage",
+          task: taskAt(repo),
+          fallbackRoot: repo,
+          images: [{
+            kind: "agent",
+            clientItemId: "parent-race-image-stage",
+            path: "evidence/screen.png",
+            caption: "Focused screenshot",
+            repositoryScope: "repo-01",
+          }],
+          now: 1,
+        }),
+      }),
+      WorkflowImageEvidenceError,
+    );
+    assert.deepEqual(store.listWorkflowEvidence("parent-race-image-stage").images, []);
+
+    const sha256 = (await import("node:crypto")).createHash("sha256")
+      .update(outsideContent)
+      .digest("hex");
+    store.stageWorkflowEvidence("parent-race-capture", [{
+      id: "parent-race-artifact",
+      clientItemId: "parent-race-capture",
+      sourceKind: "agent",
+      evidenceKind: "text",
+      sourceRoot: repo,
+      sourceLocator: "evidence/focused.log",
+      displayName: "focused.log",
+      caption: "Focused output",
+      repositoryScope: "repo-01",
+      mimeType: "text/plain",
+      bytes: Buffer.byteLength(outsideContent),
+      sha256,
+    }], 2);
+    const binding = store.insertBinding({
+      id: "parent-race-binding",
+      workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey: "parent-race-capture",
+      sessionId: "parent-race-session",
+      sessionAgent: "codex",
+      sessionName: "parent race",
+      sessionCwd: repo,
+      sessionRepoRoot: repo,
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 5,
+      now: 3,
+    });
+    const created = store.createInitialSubmission(
+      { id: "parent-race-run", binding, triggerSource: "manual", triggerKey: "parent-race", now: 4 },
+      {
+        id: "parent-race-submission",
+        triggerSource: "manual",
+        triggerKey: "parent-race",
+        evidenceGroupKey: "manual:parent-race-capture:parent-race",
+        context: {},
+        evidence: {},
+        now: 4,
+      },
+    );
+    await assert.rejects(
+      () => withParentDirectorySwap({
+        targetPath,
+        parentPath: evidenceDirectory,
+        outsidePath: outside,
+        action: () => captureSubmissionTextArtifacts(store, created.submission.id, 5),
+      }),
+      WorkflowImageEvidenceError,
+    );
+    assert.deepEqual(store.listSubmissionTextArtifacts(created.submission.id), []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
 });
 
 test("secure agent staging accepts only contained gitignored raster files", async () => {

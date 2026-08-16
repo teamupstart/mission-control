@@ -69,6 +69,34 @@ test("malformed model output is an infrastructure parse failure, never a fail ve
   })), null);
 });
 
+test("Persona Check citations must name a frozen upstream attempt", () => {
+  const cited = (path?: string) => JSON.stringify({
+    verdict: "pass",
+    summary: "The focused Check passed",
+    approvalDetails: {
+      reason: "The immutable Check output contains the passing result",
+      evidence: [{
+        kind: "check",
+        ...(path === undefined ? {} : { path }),
+        quote: "ok 13 - focused regression",
+      }],
+    },
+    confidence: 1,
+  });
+  const frozenAttempts = new Set(["attempt-check-2"]);
+
+  assert.equal(
+    parsePersonaVerdict(cited("attempt-check-2"), new Set(), new Set(), frozenAttempts)?.verdict,
+    "pass",
+  );
+  assert.equal(
+    parsePersonaVerdict(cited("fabricated-attempt"), new Set(), new Set(), frozenAttempts),
+    null,
+  );
+  assert.equal(parsePersonaVerdict(cited(), new Set(), new Set(), frozenAttempts), null);
+  assert.equal(parsePersonaVerdict(cited("attempt-check-2")), null);
+});
+
 test("Persona prompts put immutable human intent before exact Persona Markdown and fence evidence", () => {
   const context: WorkflowContextSnapshot = {
     primaryGoal: { rawPrompt: "RAW HUMAN GOAL", refined: "refined", sourceNoteKey: "note" },
@@ -127,4 +155,98 @@ test("Persona prompts put immutable human intent before exact Persona Markdown a
   assert.match(largePrompt, /\[section truncated\]/);
   assert.ok(largePrompt.indexOf("# Required output") > largePrompt.indexOf("workflow-diff-untrusted"));
   assert.match(largePrompt, /Reply with ONLY one JSON object/);
+});
+
+test("Persona prompts expose immutable Check outcomes and exact text artifacts as citable evidence", () => {
+  const artifactContent = "TAP version 13\nok 13 - focused regression\n";
+  const context: WorkflowContextSnapshot = {
+    primaryGoal: { rawPrompt: "Verify the implementation", refined: null, sourceNoteKey: "note" },
+    humanDecisions: [],
+    constraints: [],
+    acceptanceCriteria: [],
+    priorPersonaFeedback: [],
+    session: { agent: "codex", name: "work", cwd: "/repo", branch: "feature" },
+    evidence: {
+      headSha: "head-abc",
+      diffFingerprint: "diff",
+      diff: "patch",
+      diffTruncated: false,
+      workingTreeDirty: false,
+      workingTreeStatus: [],
+      workingTreeStatusTruncated: false,
+      transcript: [],
+      transcriptAnchor: null,
+      transcriptTruncated: false,
+      standards: [],
+      standardsTruncated: false,
+      artifacts: [{
+        id: "txt_focused",
+        ordinal: 0,
+        displayName: "focused.tap",
+        caption: "Focused regression output",
+        repositoryScope: "repo-01",
+        mimeType: "text/plain",
+        bytes: Buffer.byteLength(artifactContent),
+        sha256: "a".repeat(64),
+        content: artifactContent,
+        availability: "retained",
+        prunedAt: null,
+        createdAt: 1,
+      }],
+    },
+    compaction: { status: "fallback", runner: null, model: null, error: null },
+  };
+  const checkEvidence = [{
+    nodeId: "check-test",
+    attemptId: "attempt-check-2",
+    attempt: 2,
+    slot: "test" as const,
+    status: "passed" as const,
+    command: ["node", "--test", "test/focused.test.ts"],
+    exitCode: 0,
+    outputTail: "ok 13 - focused regression\n",
+    omittedBytes: 128,
+    headSha: "head-abc",
+    note: "The test check passed.",
+  }];
+  const prompt = buildPersonaPrompt({
+    sourcePersonaId: "auditor",
+    sourceRevision: 1,
+    name: "Test Evidence Auditor",
+    description: "",
+    guidanceMarkdown: "Inspect exact test evidence.",
+    runner: null,
+    model: null,
+  }, context, null, checkEvidence);
+
+  for (const expected of [
+    "attempt-check-2",
+    '"node",',
+    '"--test",',
+    '"test/focused.test.ts"',
+    '"exitCode": 0',
+    '"omittedBytes": 128',
+    '"headSha": "head-abc"',
+    "ok 13 - focused regression",
+    "txt_focused",
+    artifactContent,
+    '"check"|"image"|"artifact"',
+    "For Check evidence, path MUST be the immutable attemptId",
+    "Evidence-only logs do not need to be committed.",
+    "Pull-request checks, remote CI, and Inspector findings may be later workflow stages",
+  ]) {
+    assert.match(prompt, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+
+  const cited = JSON.stringify({
+    verdict: "pass",
+    summary: "Focused evidence is present",
+    approvalDetails: {
+      reason: "The submitted test completed",
+      evidence: [{ kind: "artifact", path: "txt_focused", quote: "ok 13" }],
+    },
+    confidence: 1,
+  });
+  assert.equal(parsePersonaVerdict(cited, new Set(), new Set(["txt_focused"]))?.verdict, "pass");
+  assert.equal(parsePersonaVerdict(cited, new Set(), new Set())?.verdict, undefined);
 });

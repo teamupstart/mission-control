@@ -118,6 +118,20 @@ test("the tool vocabulary matches what the MCP server actually registers", () =>
   assert.deepEqual([...MISSION_MCP_TOOLS].sort(), [...registered].sort());
 });
 
+test("submit_workflow_evidence publishes bounded text artifacts beside existing images", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
+  const registration = source.slice(
+    source.indexOf('server.registerTool(\n  "submit_workflow_evidence"'),
+    source.indexOf("// Submit this scout's finished report"),
+  );
+  assert.match(registration, /artifacts: z\.array\(z\.object/);
+  assert.match(registration, /WORKFLOW_TEXT_EVIDENCE_LIMITS\.maxCount/);
+  assert.match(registration, /WORKFLOW_TEXT_EVIDENCE_LIMITS\.locatorJsonBytes/);
+  assert.match(registration, /kind: "text"/);
+  assert.match(registration, /Do not commit evidence artifacts/);
+  assert.match(registration, /text artifact\(s\)/);
+});
+
 test("the bundle smoke can resolve every name MISSION_MCP_TOOLS is written with", () => {
   // `scripts/smoke-bundles.mjs` is plain node with no TypeScript loader, so it SCRAPES that
   // list and resolves any imported constant through a hand-written name -> module map. A name

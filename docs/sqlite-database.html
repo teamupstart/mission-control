@@ -579,7 +579,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>20 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>21 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot (test, lint, typecheck, build) holding its optional repository-neutral default argv, revision, and timestamps. Seeded on first open, so all four rows exist before anything is configured.</p></div>
                 <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
@@ -590,11 +590,12 @@ LIMIT 20;
                 <div class="table-row"><code>workflow_submissions</code><p>Immutable evidence snapshots scoped by run, repair round, and continuation segment.</p></div>
                 <div class="table-row"><code>workflow_evidence_owners</code><p>One conversation-owned generation ledger per stable session note key, including the high-water mark for evidence that applies to every repository.</p></div>
                 <div class="table-row"><code>workflow_evidence_scope_generations</code><p>Repository-specific evidence generation high-water marks, keyed by stable session note and resolved source root, so unrelated repositories do not wake each other's workflows.</p></div>
-                <div class="table-row"><code>workflow_evidence_staging</code><p>Mutable screenshot metadata staged by an agent or browser for the next eligible submission. Server-only source locators remain here and never enter model context or API responses.</p></div>
-                <div class="table-row"><code>workflow_evidence_reservations</code><p>The ordered, durable mapping from staged screenshots to each immutable submission that reserved them, written in the submission transaction so capture can resume after interruption.</p></div>
+                <div class="table-row"><code>workflow_evidence_staging</code><p>Mutable image or UTF-8 text-artifact metadata staged for the next eligible submission. Server-only source locators remain here and never enter model context or API responses.</p></div>
+                <div class="table-row"><code>workflow_evidence_reservations</code><p>The ordered, durable mapping from staged evidence to each immutable submission that reserved it, written in the submission transaction so capture can resume after interruption.</p></div>
                 <div class="table-row"><code>workflow_submission_images</code><p>Immutable submission-owned image metadata and retained body locators, including digest, order, availability, and pruning state.</p></div>
+                <div class="table-row"><code>workflow_submission_text_artifacts</code><p>Immutable submission-owned UTF-8 text and log evidence, including exact content, digest, order, repository scope, availability, and pruning state.</p></div>
                 <div class="table-row"><code>workflow_image_cleanup</code><p>A retryable database-first ledger for moving retained image bodies through trash and deletion after pruning, reset, or run removal.</p></div>
-                <div class="table-row"><code>workflow_node_attempts</code><p>Each attempt to execute one graph node against one submission, including frozen Persona or session-action snapshots and its verdict or output.</p></div>
+                <div class="table-row"><code>workflow_node_attempts</code><p>Each attempt to execute one graph node against one submission, including frozen Persona, session-action, or upstream Check evidence and its verdict or output.</p></div>
                 <div class="table-row"><code>workflow_edge_receipts</code><p>Deduplicated proof that a source attempt activated one graph edge for a submission.</p></div>
                 <div class="table-row"><code>workflow_deliveries</code><p>Durable packets sent to sessions, including payload hashes and prepared, sending, delivered, uncertain, refused, or cancelled lifecycle.</p></div>
                 <div class="table-row"><code>workflow_llm_calls</code><p>Provider/model, timing, bytes, cost, state, and error metadata for workflow-owned model calls.</p></div>

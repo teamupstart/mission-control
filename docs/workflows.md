@@ -632,21 +632,25 @@ one fresh 45-second attempt; invalid, timed-out, or unavailable compaction produ
 deterministic visible fallback.
 
 A workflow-bound ship task whose published graph contains a Persona can register optional
-visual evidence before completion. The agent names an issued repository slot, a
-checkout-relative gitignored image, a stable client item id, and a required caption through
-`submit_workflow_evidence`. The daemon resolves the slot from the task, rejects paths outside
-that checkout and symlinked or non-image sources, and stages only bounded PNG, JPEG, static
-GIF, or WebP files. Browser submission accepts the same evidence shape through an opaque
-upload id; it never accepts the absolute upload path returned for chat compatibility.
+image and text evidence before completion. Through `submit_workflow_evidence`, the agent names
+an issued repository slot, a checkout-relative gitignored file, a stable client item id, and a
+required caption. Images remain bounded PNG, JPEG, static GIF, or WebP files. Text artifacts
+are bounded, valid UTF-8 files intended for focused test output or logs. The daemon resolves
+the slot from the task and rejects paths outside that checkout, symlinks, non-files, unsupported
+images, and files that are not gitignored. Browser submission continues to accept images
+through an opaque upload id; it never accepts the absolute upload path returned for chat
+compatibility and does not upload text artifacts.
 
 Submission creation reserves the applicable staged generation. A multi-repository completion
-copies an `all` image into every sibling submission and keeps a slot-scoped image in that
+copies `all` evidence into every sibling submission and keeps slot-scoped evidence in that
 repository's run. Inside the existing conversation capture lock, each reserved source is
-opened without following symlinks, re-sniffed, re-hashed, and copied to submission-owned
-storage before context compaction or Persona spend. A changed, missing, oversized, or invalid
-source blocks the whole run in `image_evidence_capture`. Normal repair rounds take only newly
-staged images; explicit unchanged confirmation revives the same submission and therefore the
-same immutable bytes.
+opened without following symlinks and re-hashed before context compaction or Persona spend.
+Images are re-sniffed and copied to submission-owned storage. Text is decoded strictly as
+UTF-8 and copied into a submission-owned immutable row with its byte count and digest. A
+changed, missing, oversized, or invalid source blocks the whole run in the historical
+`image_evidence_capture` recovery phase. Normal repair rounds take only newly staged evidence;
+explicit retry of a capture fault revives the same submission and therefore the same reserved
+bytes.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
 before repository evidence. Prior Persona feedback is labeled as non-human input and all
@@ -655,12 +659,31 @@ details; a strict `fail` verdict requires concrete requested changes and evidenc
 Malformed output, provider failures, and timeouts are infrastructure errors, never Persona
 fail verdicts.
 
+Each transcript turn may contribute up to 8,000 UTF-8 bytes. An oversized turn keeps an
+explicitly marked head and tail with the exact omitted-byte count. The aggregate transcript
+budget is filled from newest to oldest and stays below both the 2 MB context limit and the
+240,000-character prompt-section limit, so recent verification output cannot be displaced by
+older large turns.
+
+Every downstream Persona also receives completed upstream Check outcomes routed to it in the
+same submission. The frozen record includes the Check node and attempt identity, command, exit
+code, retained output tail, exact omitted-byte count, reviewed HEAD SHA, status, and note. It is
+part of the Persona input fingerprint and cannot be replaced by a later Check attempt. A Check
+citation uses `kind: "check"` and its attempt id in `path`.
+
 Every Persona on a submission receives the same ordered native image inputs and an untrusted
 manifest containing ids, captions, display names, scopes, MIME types, sizes, and digests, but
 no local paths. Prompt accounting includes both prompt bytes and raw image bytes. An image
 citation uses `kind: "image"`, names a current manifest id in `path`, omits `line`, and records
 the visual observation in `quote`; citations to any other image id are rejected as malformed
 model output.
+
+Text artifacts reach every Persona as a metadata manifest followed by their exact retained
+content. An artifact citation uses `kind: "artifact"`, names a current artifact id in `path`,
+and omits `line`; citations to an id outside the submission manifest are rejected. These
+Persona inputs exist before any optional pull-request or Inspector stage. A Persona must judge
+the submission evidence it received, not require PR checks, remote CI, or Inspector evidence
+that can only exist later in the workflow.
 
 The durable engine records attempts and edge receipts, waits for all inputs at an all-pass
 Join, retries transient infrastructure failures with bounded backoff, and stops at the
@@ -684,6 +707,8 @@ clear pauses it. Reattachment is explicit and validates the harness and reposito
 then requires a fresh resubmit. Reset removes bindings, runs, submissions, attempts, receipts,
 captured context, retained image bodies, and model-call metadata through the same session reset
 owner. Raw-evidence retention keeps image metadata and digests while marking bodies pruned.
+It keeps the same metadata and digests for text artifacts while clearing their retained
+content.
 Filesystem removal follows a durable cleanup ledger, so restart can finish an interrupted
 trash transition without deleting a referenced retained file. Compact run
 summaries update over the existing SSE stream, while detailed evidence and timelines are
@@ -1048,8 +1073,10 @@ read as `manual`, so nothing you are already bound to changes behaviour under yo
 
 Under `auto` the daemon watches its own parked runs. When the bound session has been idle for
 the settle window, is not waiting on you, has been handed its packet, and the **repository has
-changed**, the run opens the next repair round by itself - fresh evidence, same graph, the
-round counter and `Max repair rounds` budget it always had.
+changed or new workflow evidence has been staged**, the run opens the next repair round by
+itself - fresh evidence, same graph, the round counter and `Max repair rounds` budget it always
+had. Staging a new gitignored screenshot or text artifact therefore re-arms an evidence-only
+repair without requiring an evidence commit.
 
 Four things it deliberately does not do:
 
@@ -1060,8 +1087,12 @@ Four things it deliberately does not do:
   ever produce a completion claim.
 - **It does not resume on a transcript that merely grew.** Delivering the packet is itself a
   transcript write, so the anchor moves before the agent has done anything. Resumption is
-  gated on the repository: a repair that changed no code is not a repair, and resubmitting
-  byte-identical work into the same reviewers would spend the whole budget proving nothing.
+  gated on repository bytes or the staged-evidence generation: a repair that changed neither
+  is not a repair, and resubmitting byte-identical input into the same reviewers would spend
+  the whole budget proving nothing.
+  If the transcript itself is the intended repair, such as a newly captured manual
+  verification, click **Resubmit**. Manual Resubmit performs a full capture and can accept that
+  transcript-only evidence change; the automatic observer intentionally will not infer it.
 - **It does not touch a run waiting for a new pushed head.** The `inspector_only` findings
   policy already resumes on its own, when the GitHub Inspector observes a head that is not the failed
   one, and that remains its business.
@@ -1276,10 +1307,12 @@ and comment ledgers because those records outlive a session.
 Workflow retention is configured under **Settings → Workflows**. It has two stages:
 
 1. Raw evidence is compacted from eligible completed or cancelled runs after 30 days by default.
-   The diff, transcript, status paths, standards bodies, and delivered or refused packet text are
-   removed. Their hashes, counts, truncation flags, HEAD, branch, timestamps, goals, decisions,
-   compacted constraints, immutable Persona snapshots, verdicts, GitHub Inspector fingerprints,
-   delivery state, event history, and model-call records remain.
+   The diff, transcript, status paths, standards bodies, text-artifact contents, retained image
+   bodies, and delivered or refused packet text are removed. Artifact and image ids, captions,
+   scopes, MIME types, byte counts, digests, and pruning timestamps remain, along with the other
+   hashes, counts, truncation flags, HEAD, branch, timestamps, goals, decisions, compacted
+   constraints, immutable Persona snapshots, verdicts, GitHub Inspector fingerprints, delivery state,
+   event history, and model-call records.
 2. A complete eligible run family can be removed after 180 days, but only when it is also outside
    the newest 1,000 completed or cancelled runs.
 

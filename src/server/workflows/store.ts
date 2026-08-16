@@ -29,7 +29,9 @@ import {
   WorkflowRunStatusSchema,
   WorkflowInspectorGateStateSchema,
   WorkflowContextSnapshotSchema,
+  WorkflowCheckEvidenceSchema,
   WorkflowEvidenceImageSchema,
+  WorkflowEvidenceTextArtifactSchema,
   WorkflowEvidenceRepositoryScopeSchema,
   WorkflowInspectorOnlyContextSchema,
   WorkflowSubmissionModeSchema,
@@ -45,6 +47,7 @@ import {
   WORKFLOW_DELIVERY_STATES,
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_IMAGE_LIMITS,
+  WORKFLOW_TEXT_EVIDENCE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_LLM_CALL_STATES,
   WORKFLOW_LLM_PURPOSES,
@@ -66,7 +69,10 @@ import {
   type WorkflowInspectorGateState,
   type WorkflowResumptionPolicy,
   type WorkflowEvidenceImage,
+  type WorkflowEvidenceTextArtifact,
+  type WorkflowCheckEvidence,
   type WorkflowStagedEvidenceImage,
+  type WorkflowStagedEvidenceTextArtifact,
   type WorkflowStagedEvidenceList,
 } from "@shared/workflow.ts";
 import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "@shared/workflow.ts";
@@ -281,6 +287,7 @@ export const WORKFLOW_TABLES = [
   "workflow_evidence_staging",
   "workflow_evidence_reservations",
   "workflow_submission_images",
+  "workflow_submission_text_artifacts",
   "workflow_image_cleanup",
 ] as const;
 
@@ -978,13 +985,17 @@ const WorkflowEvidenceStagingRowSchema = z.object({
   note_key: nonempty,
   client_item_id: nonempty.max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars),
   source_kind: z.enum(["agent", "upload", "retained"]),
+  evidence_kind: z.enum(["image", "text"]).optional().default("image"),
   source_root: nonempty,
   source_locator: nonempty.max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
   display_name: nonempty.max(WORKFLOW_IMAGE_LIMITS.displayNameChars),
   caption: nonempty.max(WORKFLOW_IMAGE_LIMITS.captionChars),
   repository_scope: WorkflowEvidenceRepositoryScopeSchema,
-  mime_type: z.enum(RASTER_IMAGE_MIME_TYPES),
-  bytes: positive.max(WORKFLOW_IMAGE_LIMITS.maxBytesPerImage),
+  mime_type: nonempty,
+  bytes: positive.max(Math.max(
+    WORKFLOW_IMAGE_LIMITS.maxBytesPerImage,
+    WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact,
+  )),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   generation: positive,
   state: z.enum(["staged", "reserved"]),
@@ -999,12 +1010,30 @@ const WorkflowEvidenceStagingRowSchema = z.object({
       message: "Reserved state and evidence group must be present together",
     });
   }
+  if (row.evidence_kind === "image" && !RASTER_IMAGE_MIME_TYPES.includes(
+    row.mime_type as (typeof RASTER_IMAGE_MIME_TYPES)[number],
+  )) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["mime_type"], message: "Invalid image MIME type" });
+  }
+  if (row.evidence_kind === "text" && row.mime_type !== "text/plain") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["mime_type"], message: "Invalid text artifact MIME type" });
+  }
+  if (row.evidence_kind === "text" && row.source_kind !== "agent") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["source_kind"], message: "Text evidence must come from an agent path" });
+  }
+  const byteLimit = row.evidence_kind === "image"
+    ? WORKFLOW_IMAGE_LIMITS.maxBytesPerImage
+    : WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact;
+  if (row.bytes > byteLimit) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["bytes"], message: "Evidence item exceeds its byte limit" });
+  }
 });
 
 export type WorkflowEvidenceStagingRow = z.infer<typeof WorkflowEvidenceStagingRowSchema>;
 
 export function parseWorkflowEvidenceStagingRow(value: unknown): WorkflowEvidenceStagingRow {
-  return parseShape("workflow_evidence_staging", WorkflowEvidenceStagingRowSchema, value);
+  const row = parseShape("workflow_evidence_staging", WorkflowEvidenceStagingRowSchema, value);
+  return { ...row, evidence_kind: row.evidence_kind ?? "image" };
 }
 
 const WorkflowSubmissionImageRowSchema = z.object({
@@ -1054,6 +1083,60 @@ function workflowEvidenceImageFromRow(row: WorkflowSubmissionImageRow): Workflow
   });
 }
 
+const WorkflowSubmissionTextArtifactRowSchema = z.object({
+  id: nonempty.max(200),
+  submission_id: nonempty,
+  staging_id: nonempty,
+  ordinal: integer.nonnegative(),
+  display_name: nonempty.max(WORKFLOW_TEXT_EVIDENCE_LIMITS.displayNameChars),
+  caption: nonempty.max(WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars),
+  repository_scope: WorkflowEvidenceRepositoryScopeSchema,
+  mime_type: z.literal("text/plain"),
+  bytes: positive.max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  content: z.string(),
+  availability: z.enum(["retained", "pruned"]),
+  pruned_at: nullableInteger,
+  created_at: integer,
+}).superRefine((row, ctx) => {
+  if ((row.availability === "retained") !== (row.pruned_at === null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["pruned_at"],
+      message: "Pruned availability and pruning timestamp must be present together",
+    });
+  }
+});
+
+export type WorkflowSubmissionTextArtifactRow = z.infer<typeof WorkflowSubmissionTextArtifactRowSchema>;
+
+export function parseWorkflowSubmissionTextArtifactRow(value: unknown): WorkflowSubmissionTextArtifactRow {
+  return parseShape(
+    "workflow_submission_text_artifacts",
+    WorkflowSubmissionTextArtifactRowSchema,
+    value,
+  );
+}
+
+function workflowEvidenceTextArtifactFromRow(
+  row: WorkflowSubmissionTextArtifactRow,
+): WorkflowEvidenceTextArtifact {
+  return WorkflowEvidenceTextArtifactSchema.parse({
+    id: row.id,
+    ordinal: row.ordinal,
+    displayName: row.display_name,
+    caption: row.caption,
+    repositoryScope: row.repository_scope,
+    mimeType: row.mime_type,
+    bytes: row.bytes,
+    sha256: row.sha256,
+    content: row.content,
+    availability: row.availability,
+    prunedAt: row.pruned_at,
+    createdAt: row.created_at,
+  });
+}
+
 const WorkflowNodeAttemptRowSchema = z.object({
   id: nonempty,
   submission_id: nonempty,
@@ -1063,6 +1146,7 @@ const WorkflowNodeAttemptRowSchema = z.object({
   persona_snapshot_json: nullableText,
   session_action_snapshot_json: nullableText.optional().default(null),
   operator_directive_json: nullableText.optional().default(null),
+  check_evidence_json: nullableText.optional().default(null),
   runner_id: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model_id: nullableText.optional().default(null),
   verdict_json: nullableText,
@@ -1104,6 +1188,13 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       "only a Persona attempt may carry an operator directive",
     );
   }
+  if ((row.check_evidence_json ?? null) !== null && row.persona_snapshot_json === null) {
+    throw new WorkflowRowError(
+      "workflow_node_attempts",
+      row.id,
+      "only a Persona attempt may carry frozen Check evidence",
+    );
+  }
   return {
     id: row.id,
     submissionId: row.submission_id,
@@ -1133,6 +1224,14 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       WorkflowPersonaDirectiveSnapshotSchema,
       WORKFLOW_LIMITS.personaDirectiveBytes + 1_000,
     ),
+    checkEvidence: parseNullableJson(
+      "workflow_node_attempts",
+      row.id,
+      "check_evidence_json",
+      row.check_evidence_json ?? null,
+      z.array(WorkflowCheckEvidenceSchema).max(WORKFLOW_LIMITS.graphNodes),
+      WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
+    ) ?? undefined,
     runner: row.runner_id ?? null,
     model: row.model_id ?? null,
     verdict: parseNullableJson(
@@ -1671,12 +1770,14 @@ export interface WorkflowStagedEvidenceWrite {
   id: string;
   clientItemId: string;
   sourceKind: "agent" | "upload" | "retained";
+  /** Omitted by historical/image-only callers and therefore defaults to `image`. */
+  evidenceKind?: "image" | "text";
   sourceRoot: string;
   sourceLocator: string;
   displayName: string;
   caption: string;
   repositoryScope: string;
-  mimeType: WorkflowEvidenceImage["mimeType"];
+  mimeType: WorkflowEvidenceImage["mimeType"] | "text/plain";
   bytes: number;
   sha256: string;
 }
@@ -1697,6 +1798,20 @@ export interface WorkflowSubmissionImageWrite {
   bytes: number;
   sha256: string;
   storageRelativePath: string;
+  createdAt: number;
+}
+
+export interface WorkflowSubmissionTextArtifactWrite {
+  id: string;
+  stagingId: string;
+  ordinal: number;
+  displayName: string;
+  caption: string;
+  repositoryScope: string;
+  mimeType: "text/plain";
+  bytes: number;
+  sha256: string;
+  content: string;
   createdAt: number;
 }
 
@@ -1735,6 +1850,8 @@ export interface WorkflowAttemptInsert {
   sessionAction?: SessionActionSnapshot | null;
   /** The waiting attempt's initial observation state, written with the row. */
   sessionActionState?: SessionActionAttemptState | null;
+  /** Frozen only for Persona attempts; omitted everywhere else. */
+  checkEvidence?: readonly WorkflowCheckEvidence[];
   inputFingerprint: string;
   retryAt?: number | null;
   error?: string | null;
@@ -3680,6 +3797,7 @@ export class WorkflowStore {
         const row = existing.get(item.clientItemId);
         const same = row
           && row.source_kind === item.sourceKind
+          && row.evidence_kind === (item.evidenceKind ?? "image")
           && row.source_root === item.sourceRoot
           && row.source_locator === item.sourceLocator
           && row.display_name === item.displayName
@@ -3701,17 +3819,29 @@ export class WorkflowStore {
 
       const currentStaged = existingRows.filter((row) => row.state === "staged");
       const nextIds = new Set(changedItems.map((item) => item.clientItemId));
-      const nextCount = currentStaged.filter((row) => !nextIds.has(row.client_item_id)).length
-        + changedItems.length;
-      const nextBytes = currentStaged
-        .filter((row) => !nextIds.has(row.client_item_id))
-        .reduce((sum, row) => sum + row.bytes, 0)
-        + changedItems.reduce((sum, item) => sum + item.bytes, 0);
-      if (nextCount > WORKFLOW_IMAGE_LIMITS.maxCount) {
+      const nextItems = [
+        ...currentStaged.filter((row) => !nextIds.has(row.client_item_id)).map((row) => ({
+          kind: row.evidence_kind,
+          bytes: row.bytes,
+        })),
+        ...changedItems.map((item) => ({ kind: item.evidenceKind ?? "image", bytes: item.bytes })),
+      ];
+      const imageItems = nextItems.filter((item) => item.kind === "image");
+      const textItems = nextItems.filter((item) => item.kind === "text");
+      if (imageItems.length > WORKFLOW_IMAGE_LIMITS.maxCount) {
         throw new Error(`At most ${WORKFLOW_IMAGE_LIMITS.maxCount} workflow evidence images may be staged`);
       }
-      if (nextBytes > WORKFLOW_IMAGE_LIMITS.maxAggregateBytes) {
+      if (imageItems.reduce((sum, item) => sum + item.bytes, 0) > WORKFLOW_IMAGE_LIMITS.maxAggregateBytes) {
         throw new Error("Workflow evidence images exceed the aggregate byte limit");
+      }
+      if (textItems.length > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount) {
+        throw new Error(`At most ${WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount} workflow text artifacts may be staged`);
+      }
+      if (
+        textItems.reduce((sum, item) => sum + item.bytes, 0)
+        > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes
+      ) {
+        throw new Error("Workflow text artifacts exceed the aggregate byte limit");
       }
       this.db.prepare(
         `UPDATE workflow_evidence_owners
@@ -3739,12 +3869,13 @@ export class WorkflowStore {
       }
       const write = this.db.prepare(
         `INSERT INTO workflow_evidence_staging (
-           id, note_key, client_item_id, source_kind, source_root, source_locator,
+           id, note_key, client_item_id, source_kind, evidence_kind, source_root, source_locator,
            display_name, caption, repository_scope, mime_type, bytes, sha256,
            generation, state, reserved_group_key, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
          ON CONFLICT(note_key, client_item_id) DO UPDATE SET
            source_kind = excluded.source_kind,
+           evidence_kind = excluded.evidence_kind,
            source_root = excluded.source_root,
            source_locator = excluded.source_locator,
            display_name = excluded.display_name,
@@ -3765,6 +3896,7 @@ export class WorkflowStore {
           noteKey,
           item.clientItemId,
           item.sourceKind,
+          item.evidenceKind ?? "image",
           item.sourceRoot,
           item.sourceLocator,
           item.displayName,
@@ -3793,20 +3925,36 @@ export class WorkflowStore {
     ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
     return {
       generation: Number(owner?.generation ?? 0),
-      images: rows.map((row): WorkflowStagedEvidenceImage => ({
+      images: rows.filter((row) => row.evidence_kind === "image").map((row): WorkflowStagedEvidenceImage => ({
         id: row.id,
         clientItemId: row.client_item_id,
         sourceKind: row.source_kind,
         displayName: row.display_name,
         caption: row.caption,
         repositoryScope: row.repository_scope,
-        mimeType: row.mime_type,
+        mimeType: row.mime_type as WorkflowEvidenceImage["mimeType"],
         bytes: row.bytes,
         sha256: row.sha256,
         generation: row.generation,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       })),
+      artifacts: rows.filter((row) => row.evidence_kind === "text").map(
+        (row): WorkflowStagedEvidenceTextArtifact => ({
+          id: row.id,
+          clientItemId: row.client_item_id,
+          sourceKind: "agent",
+          displayName: row.display_name,
+          caption: row.caption,
+          repositoryScope: row.repository_scope,
+          mimeType: "text/plain",
+          bytes: row.bytes,
+          sha256: row.sha256,
+          generation: row.generation,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }),
+      ),
     };
   }
 
@@ -3877,12 +4025,13 @@ export class WorkflowStore {
         id: row.id,
         clientItemId: row.client_item_id,
         sourceKind: row.source_kind,
+        evidenceKind: row.evidence_kind,
         sourceRoot: row.source_root,
         sourceLocator: row.source_locator,
         displayName: row.display_name,
         caption: row.caption,
         repositoryScope: row.repository_scope,
-        mimeType: row.mime_type,
+        mimeType: row.mime_type as WorkflowReservedEvidence["mimeType"],
         bytes: row.bytes,
         sha256: row.sha256,
         generation: row.generation,
@@ -3932,6 +4081,49 @@ export class WorkflowStore {
     ).all(submissionId) as unknown[])
       .map(parseWorkflowSubmissionImageRow)
       .map(workflowEvidenceImageFromRow);
+  }
+
+  finalizeSubmissionTextArtifacts(
+    submissionId: string,
+    artifacts: readonly WorkflowSubmissionTextArtifactWrite[],
+  ): WorkflowEvidenceTextArtifact[] {
+    return transaction(this.db, () => {
+      const existing = this.listSubmissionTextArtifacts(submissionId);
+      if (existing.length > 0) return existing;
+      const insert = this.db.prepare(
+        `INSERT INTO workflow_submission_text_artifacts (
+           id, submission_id, staging_id, ordinal, display_name, caption,
+           repository_scope, mime_type, bytes, sha256, content,
+           availability, pruned_at, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'retained', NULL, ?)`,
+      );
+      for (const artifact of artifacts) {
+        insert.run(
+          artifact.id,
+          submissionId,
+          artifact.stagingId,
+          artifact.ordinal,
+          artifact.displayName,
+          artifact.caption,
+          artifact.repositoryScope,
+          artifact.mimeType,
+          artifact.bytes,
+          artifact.sha256,
+          artifact.content,
+          artifact.createdAt,
+        );
+      }
+      return this.listSubmissionTextArtifacts(submissionId);
+    });
+  }
+
+  listSubmissionTextArtifacts(submissionId: string): WorkflowEvidenceTextArtifact[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_submission_text_artifacts
+        WHERE submission_id = ? ORDER BY ordinal ASC`,
+    ).all(submissionId) as unknown[])
+      .map(parseWorkflowSubmissionTextArtifactRow)
+      .map(workflowEvidenceTextArtifactFromRow);
   }
 
   private runSubmissionImageGroups(
@@ -5067,10 +5259,10 @@ export class WorkflowStore {
     this.db.prepare(
       `INSERT OR IGNORE INTO workflow_node_attempts (
          id, submission_id, node_id, attempt, state, persona_snapshot_json,
-         session_action_snapshot_json, operator_directive_json, runner_id,
+         session_action_snapshot_json, operator_directive_json, check_evidence_json, runner_id,
          model_id, verdict_json, output_json, retry_at, input_fingerprint, error,
          created_at, updated_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
     ).run(
       input.id,
       input.submissionId,
@@ -5079,6 +5271,7 @@ export class WorkflowStore {
       input.state,
       input.persona === null ? null : JSON.stringify(input.persona),
       input.sessionAction ? JSON.stringify(input.sessionAction) : null,
+      input.checkEvidence ? JSON.stringify(input.checkEvidence) : null,
       // The waiting attempt's observation state is written WITH the row, not after it: a
       // daemon that stopped between the two would leave an attempt nothing can tell apart
       // from one whose packet was already prepared.
@@ -5423,6 +5616,7 @@ export class WorkflowStore {
           attempt: attempt.attempt + 1,
           state: "queued",
           persona: attempt.persona,
+          checkEvidence: attempt.checkEvidence,
           inputFingerprint: attempt.inputFingerprint,
           now,
         });
@@ -6246,6 +6440,8 @@ export class WorkflowStore {
           let standardsDocuments = 0;
           let imageCount = 0;
           let imageBytes = 0;
+          let textArtifactCount = 0;
+          let textArtifactBytes = 0;
           const updates: Array<{ id: string; context: WorkflowContextSnapshot }> = [];
           for (const row of rows) {
             if (row.mode !== "full_workflow") continue;
@@ -6273,8 +6469,11 @@ export class WorkflowStore {
             transcriptMessages += parsed.evidence.transcript.length;
             standardsDocuments += parsed.evidence.standards.length;
             const submissionImages = this.listSubmissionImages(row.id);
+            const submissionArtifacts = this.listSubmissionTextArtifacts(row.id);
             imageCount += submissionImages.length;
             imageBytes += submissionImages.reduce((sum, image) => sum + image.bytes, 0);
+            textArtifactCount += submissionArtifacts.length;
+            textArtifactBytes += submissionArtifacts.reduce((sum, artifact) => sum + artifact.bytes, 0);
             parsed.evidence = {
               ...parsed.evidence,
               diff: "",
@@ -6283,6 +6482,12 @@ export class WorkflowStore {
               standards: parsed.evidence.standards.map((document) => ({ ...document, text: "" })),
               images: submissionImages.map((image) => ({
                 ...image,
+                availability: "pruned" as const,
+                prunedAt: input.now,
+              })),
+              artifacts: submissionArtifacts.map((artifact) => ({
+                ...artifact,
+                content: "",
                 availability: "pruned" as const,
                 prunedAt: input.now,
               })),
@@ -6295,6 +6500,8 @@ export class WorkflowStore {
                 standardsDocuments: parsed.evidence.standards.length,
                 imageCount: submissionImages.length,
                 imageBytes: submissionImages.reduce((sum, image) => sum + image.bytes, 0),
+                textArtifactCount: submissionArtifacts.length,
+                textArtifactBytes: submissionArtifacts.reduce((sum, artifact) => sum + artifact.bytes, 0),
               },
             };
             updates.push({ id: row.id, context: parsed });
@@ -6308,6 +6515,8 @@ export class WorkflowStore {
             standardsDocuments,
             imageCount,
             imageBytes,
+            textArtifactCount,
+            textArtifactBytes,
           }, input.now);
           const updateSubmission = this.db.prepare(
             `UPDATE workflow_submissions
@@ -6326,6 +6535,13 @@ export class WorkflowStore {
           this.db.prepare(
             `UPDATE workflow_submission_images
                 SET availability = 'pruned', pruned_at = ?
+              WHERE submission_id IN (
+                SELECT id FROM workflow_submissions WHERE run_id = ?
+              ) AND availability = 'retained'`,
+          ).run(input.now, runId);
+          this.db.prepare(
+            `UPDATE workflow_submission_text_artifacts
+                SET content = '', availability = 'pruned', pruned_at = ?
               WHERE submission_id IN (
                 SELECT id FROM workflow_submissions WHERE run_id = ?
               ) AND availability = 'retained'`,
@@ -6421,6 +6637,10 @@ export class WorkflowStore {
           ).run(runId);
           this.enqueueRunImageCleanupInTransaction(runId, input.now);
           this.deleteRunImageRowsInTransaction(runId);
+          this.db.prepare(
+            `DELETE FROM workflow_submission_text_artifacts
+              WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+          ).run(runId);
           this.db.prepare(`DELETE FROM workflow_submissions WHERE run_id = ?`).run(runId);
           this.db.prepare(`DELETE FROM workflow_events WHERE run_id = ?`).run(runId);
           this.db.prepare(`DELETE FROM workflow_runs WHERE id = ?`).run(runId);
@@ -6890,6 +7110,10 @@ export class WorkflowStore {
         this.db.prepare(`DELETE FROM workflow_events WHERE run_id = ?`).run(runId);
         this.enqueueRunImageCleanupInTransaction(runId, Date.now());
         this.deleteRunImageRowsInTransaction(runId);
+        this.db.prepare(
+          `DELETE FROM workflow_submission_text_artifacts
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+        ).run(runId);
         this.db.prepare(`DELETE FROM workflow_submissions WHERE run_id = ?`).run(runId);
         this.db.prepare(`DELETE FROM workflow_runs WHERE id = ?`).run(runId);
       }
@@ -7158,11 +7382,22 @@ export class WorkflowStore {
         ORDER BY created_at ASC, id ASC`,
     ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
       .map(parseWorkflowEvidenceStagingRow);
-    if (rows.length > WORKFLOW_IMAGE_LIMITS.maxCount) {
+    const imageRows = rows.filter((row) => row.evidence_kind === "image");
+    const textRows = rows.filter((row) => row.evidence_kind === "text");
+    if (imageRows.length > WORKFLOW_IMAGE_LIMITS.maxCount) {
       throw new Error(`At most ${WORKFLOW_IMAGE_LIMITS.maxCount} workflow evidence images apply to a submission`);
     }
-    if (rows.reduce((sum, row) => sum + row.bytes, 0) > WORKFLOW_IMAGE_LIMITS.maxAggregateBytes) {
+    if (imageRows.reduce((sum, row) => sum + row.bytes, 0) > WORKFLOW_IMAGE_LIMITS.maxAggregateBytes) {
       throw new Error("Applicable workflow evidence exceeds the aggregate byte limit");
+    }
+    if (textRows.length > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount) {
+      throw new Error(`At most ${WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount} workflow text artifacts apply to a submission`);
+    }
+    if (
+      textRows.reduce((sum, row) => sum + row.bytes, 0)
+      > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes
+    ) {
+      throw new Error("Applicable workflow text evidence exceeds the aggregate byte limit");
     }
     const reserve = this.db.prepare(
       `INSERT OR IGNORE INTO workflow_evidence_reservations

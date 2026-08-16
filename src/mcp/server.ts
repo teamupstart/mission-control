@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
-import { WORKFLOW_IMAGE_LIMITS } from "@shared/workflow.ts";
+import { WORKFLOW_IMAGE_LIMITS, WORKFLOW_TEXT_EVIDENCE_LIMITS } from "@shared/workflow.ts";
 import {
   BASE_URL,
   SCOUT_SUBMISSION_CREDENTIAL_HEADER,
@@ -429,10 +429,11 @@ server.registerTool(
 server.registerTool(
   "submit_workflow_evidence",
   {
-    title: "Register workflow screenshot evidence",
+    title: "Register workflow evidence",
     description:
-      "Register gitignored screenshots for the Persona workflow that will run when this task completes. " +
-      "Mission Control freezes the applicable pixels into the immutable submission. Do not commit them.",
+      "Register gitignored screenshots and focused UTF-8 text/log artifacts for the Persona workflow " +
+      "that will run when this task completes. Mission Control freezes applicable evidence into the " +
+      "immutable submission. Do not commit evidence artifacts.",
     inputSchema: {
       images: z.array(z.object({
         clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars)
@@ -446,7 +447,6 @@ server.registerTool(
           z.string().regex(/^repo-\d{2}$/),
         ]).describe("An issued repository slot such as repo-01, or all."),
       }))
-        .min(1)
         .max(WORKFLOW_IMAGE_LIMITS.maxCount)
         .refine(
           (value) => new Set(value.map((item) => item.clientItemId)).size === value.length,
@@ -455,16 +455,42 @@ server.registerTool(
         .refine(
           (value) => Buffer.byteLength(JSON.stringify(value)) <= WORKFLOW_IMAGE_LIMITS.locatorJsonBytes,
           `Workflow evidence locators exceed ${WORKFLOW_IMAGE_LIMITS.locatorJsonBytes} UTF-8 bytes`,
-        ),
+        )
+        .optional()
+        .describe("Optional gitignored screenshot evidence."),
+      artifacts: z.array(z.object({
+        clientItemId: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.clientItemIdChars)
+          .describe("Stable caller id used to make an identical registration idempotent."),
+        path: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.relativePathChars)
+          .describe("Path to a UTF-8 text or log file, relative to the issued repository checkout."),
+        caption: z.string().trim().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars)
+          .describe("A precise statement of what the text or log demonstrates."),
+        repositoryScope: z.union([
+          z.literal("all"),
+          z.string().regex(/^repo-\d{2}$/),
+        ]).describe("An issued repository slot such as repo-01, or all."),
+      }))
+        .max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount)
+        .refine(
+          (value) => new Set(value.map((item) => item.clientItemId)).size === value.length,
+          "Workflow evidence client item ids must be unique",
+        )
+        .refine(
+          (value) => Buffer.byteLength(JSON.stringify(value)) <= WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes,
+          `Workflow text evidence locators exceed ${WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes} UTF-8 bytes`,
+        )
+        .optional()
+        .describe("Optional gitignored focused test output or other UTF-8 text evidence."),
     },
   },
-  async ({ images }) => {
+  async ({ images, artifacts }) => {
     try {
       const res = await http("/mcp/workflow-evidence", "POST", {
         env: ENV,
         sessionId: SESSION_ID,
         cwd: process.cwd(),
-        images: images.map((image) => ({ kind: "agent", ...image })),
+        images: (images ?? []).map((image) => ({ kind: "agent", ...image })),
+        artifacts: (artifacts ?? []).map((artifact) => ({ kind: "text", ...artifact })),
       });
       if (!res.ok) {
         return textResult(
@@ -472,9 +498,11 @@ server.registerTool(
           true,
         );
       }
-      const body = (await res.json()) as { images?: unknown[]; generation?: number };
+      const body = (await res.json()) as { images?: unknown[]; artifacts?: unknown[]; generation?: number };
       return textResult(
-        `Registered ${body.images?.length ?? images.length} workflow evidence image(s) at generation ${body.generation ?? 0}.`,
+        `Registered ${body.images?.length ?? images?.length ?? 0} image(s) and `
+        + `${body.artifacts?.length ?? artifacts?.length ?? 0} text artifact(s) at workflow evidence `
+        + `generation ${body.generation ?? 0}.`,
       );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

@@ -506,9 +506,15 @@ test("Codex cleans a live schema synchronously when shutdown kills the run", asy
     schema: { type: "object" },
   });
   try {
-    await assertSoon(() => existsSync(RUN_SCHEMA_PATH));
-    const schemaPath = lines(RUN_SCHEMA_PATH)[0]!;
-    assert.equal(existsSync(schemaPath), true);
+    let schemaPath = "";
+    await assertSoon(() => {
+      if (!existsSync(RUN_SCHEMA_PATH)) return false;
+      const recordedPath = lines(RUN_SCHEMA_PATH)[0];
+      if (!recordedPath || !existsSync(recordedPath)) return false;
+      schemaPath = recordedPath;
+      return true;
+    });
+    assert.ok(schemaPath, "the live schema path was not recorded");
 
     codexRunner.killLiveRuns?.();
     assert.equal(existsSync(schemaPath), false, "shutdown left the live schema directory behind");

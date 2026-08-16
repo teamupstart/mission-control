@@ -181,6 +181,25 @@ export const WORKFLOW_IMAGE_LIMITS = {
   locatorJsonBytes: 64 * 1_024,
 } as const;
 
+/**
+ * Bounded text or log evidence registered beside workflow screenshots.
+ *
+ * The aggregate stays below one model-facing review section, even before the manifest and
+ * fence framing are added. A focused test transcript is normally a few kilobytes; 64 KiB per
+ * item leaves room for a useful failure tail without allowing one log to dominate the immutable
+ * 2 MB workflow context.
+ */
+export const WORKFLOW_TEXT_EVIDENCE_LIMITS = {
+  maxCount: 8,
+  maxBytesPerArtifact: 64 * 1_024,
+  maxAggregateBytes: 192 * 1_024,
+  captionChars: 1_000,
+  displayNameChars: 200,
+  clientItemIdChars: 200,
+  relativePathChars: 4_096,
+  locatorJsonBytes: 64 * 1_024,
+} as const;
+
 export type WorkflowEvidenceRepositoryScope = "all" | `repo-${string}`;
 export type WorkflowEvidenceImageAvailability = "retained" | "pruned";
 
@@ -194,6 +213,22 @@ export interface WorkflowEvidenceImage {
   mimeType: RasterImageMimeType;
   bytes: number;
   sha256: string;
+  availability: WorkflowEvidenceImageAvailability;
+  prunedAt: number | null;
+  createdAt: number;
+}
+
+export interface WorkflowEvidenceTextArtifact {
+  id: string;
+  ordinal: number;
+  displayName: string;
+  caption: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+  mimeType: "text/plain";
+  bytes: number;
+  sha256: string;
+  /** Exact UTF-8 text frozen at submission capture; empty only after raw-evidence pruning. */
+  content: string;
   availability: WorkflowEvidenceImageAvailability;
   prunedAt: number | null;
   createdAt: number;
@@ -215,13 +250,37 @@ export interface WorkflowStagedEvidenceImage {
   updatedAt: number;
 }
 
+export interface WorkflowStagedEvidenceTextArtifact {
+  id: string;
+  clientItemId: string;
+  sourceKind: "agent";
+  displayName: string;
+  caption: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+  mimeType: "text/plain";
+  bytes: number;
+  sha256: string;
+  generation: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface WorkflowStagedEvidenceList {
   generation: number;
   images: WorkflowStagedEvidenceImage[];
+  artifacts: WorkflowStagedEvidenceTextArtifact[];
 }
 
 export interface WorkflowAgentEvidenceLocator {
   kind: "agent";
+  clientItemId: string;
+  path: string;
+  caption: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+}
+
+export interface WorkflowAgentTextEvidenceLocator {
+  kind: "text";
   clientItemId: string;
   path: string;
   caption: string;
@@ -2885,6 +2944,11 @@ export interface WorkflowNodeAttempt {
   sessionAction: SessionActionSnapshot | null;
   /** Exact run-scoped directive this Persona attempt claimed, if any. */
   operatorDirective?: WorkflowPersonaDirectiveSnapshot | null;
+  /**
+   * Completed same-submission Check outcomes frozen when this Persona became runnable.
+   * Absent on historical attempts and every non-Persona attempt.
+   */
+  checkEvidence?: WorkflowCheckEvidence[];
   /** Actual provider/model resolved at attempt start. */
   runner: LlmRunnerId | null;
   model: string | null;
@@ -3006,6 +3070,23 @@ export interface WorkflowTranscriptMessage {
   role: "user" | "assistant";
   content: string;
   timestamp?: number;
+  /** Present when one oversized turn retains an explicit head and tail around an omission. */
+  omittedMiddleBytes?: number;
+}
+
+/** Immutable output from one completed Check attempt that is upstream of a Persona. */
+export interface WorkflowCheckEvidence {
+  nodeId: string;
+  attemptId: WorkflowNodeAttemptId;
+  attempt: number;
+  slot: WorkflowCheckSlot;
+  status: WorkflowCheckStatus;
+  command: string[] | null;
+  exitCode: number | null;
+  outputTail: string;
+  omittedBytes: number;
+  headSha: string | null;
+  note: string;
 }
 
 export interface WorkflowContextSnapshot {
@@ -3035,10 +3116,16 @@ export interface WorkflowContextSnapshot {
     transcript: WorkflowTranscriptMessage[];
     transcriptAnchor: number | null;
     transcriptTruncated: boolean;
+    /** Bytes from older retained turns dropped to keep newest transcript evidence in budget. */
+    transcriptOmittedHeadBytes?: number;
+    /** The harness supplied a non-contiguous head/tail window with a missing middle. */
+    transcriptMiddleOmitted?: boolean;
     standards: WorkflowStandardsDocument[];
     standardsTruncated: boolean;
     /** Defaults to an empty list when reading snapshots written before image evidence. */
     images?: WorkflowEvidenceImage[];
+    /** Defaults to an empty list when reading snapshots written before text evidence. */
+    artifacts?: WorkflowEvidenceTextArtifact[];
     /** Defaults to zero when reading snapshots written before image evidence. */
     stagedImageGeneration?: number;
     retention?:
@@ -3052,6 +3139,8 @@ export interface WorkflowContextSnapshot {
           standardsDocuments: number;
           imageCount?: number;
           imageBytes?: number;
+          textArtifactCount?: number;
+          textArtifactBytes?: number;
         };
   };
   compaction: {
@@ -3088,6 +3177,7 @@ export const EVIDENCE_REF_KINDS = [
   "decision",
   "check",
   "image",
+  "artifact",
 ] as const;
 export type EvidenceRefKind = (typeof EVIDENCE_REF_KINDS)[number];
 

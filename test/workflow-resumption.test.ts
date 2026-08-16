@@ -19,7 +19,8 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -29,6 +30,7 @@ import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
 import type {
   WorkflowBindingDefaults,
   WorkflowCompletionPolicy,
+  WorkflowContextSnapshot,
   WorkflowResumptionPolicy,
 } from "../src/shared/workflow.ts";
 import {
@@ -57,6 +59,7 @@ const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
+const { stageAgentWorkflowEvidence } = await import("../src/server/workflows/images.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
@@ -206,10 +209,13 @@ interface Harness {
  * `probe` is what the observer will read next, and moving `head.sha` moves both, exactly as a
  * real commit would.
  */
-function harness(sessionId: string, resumptionIntervalMs?: number): Harness {
+function harness(sessionId: string, resumptionIntervalMs?: number, cwd = "/repo"): Harness {
   const registry = new Registry();
   registry.applyDiscovery([discovered({
     syntheticId: sessionId,
+    cwd,
+    gitRoot: cwd,
+    repoRoot: cwd,
     terminals: [mkMuxHandle({ paneId: `%${sessionId.length}` })],
   })]);
   const queues = new QueueManager(registry);
@@ -245,7 +251,7 @@ function harness(sessionId: string, resumptionIntervalMs?: number): Harness {
         primaryGoal: { rawPrompt: "Ship the feature", refined: null, sourceNoteKey: binding.noteKey },
         humanDecisions: [],
         priorPersonaFeedback: [],
-        session: { agent: "claude" as const, name: sessionId, cwd: "/repo", branch: "feature" },
+        session: { agent: "claude" as const, name: sessionId, cwd, branch: "feature" },
         evidence: {
           headSha: head.sha,
           diffFingerprint: `${head.sha}:${probe.diffFingerprint}`,
@@ -313,7 +319,7 @@ function reportIdle(
     agent: "claude",
     event: "Stop",
     sessionId: agentSessionId,
-    cwd: "/repo",
+    cwd: h.registry.getSession(sessionId)?.cwd ?? "/repo",
     transcriptPath: null,
     env: { tmuxPane: paneId },
     prCreated: false,
@@ -337,13 +343,14 @@ async function personaFeedbackRun(
   resumptionPolicy: WorkflowResumptionPolicy | null,
   resumptionIntervalMs?: number,
   initialProbe?: Partial<Probe>,
+  cwd = "/repo",
 ): Promise<Harness & { runId: string; bindingId: string; agentSessionId: string; paneId: string }> {
   seedVersion(versionId, PERSONA_GRAPH, { kind: "none" }, {
     triggerMode: "manual",
     deliveryMode: "live",
     maxRepairRounds: 5,
   }, resumptionPolicy);
-  const h = harness(sessionId, resumptionIntervalMs);
+  const h = harness(sessionId, resumptionIntervalMs, cwd);
   Object.assign(h.probe, initialProbe);
   const paneId = `%${sessionId.length}`;
   const agentSessionId = `agent-${sessionId}`;
@@ -353,7 +360,7 @@ async function personaFeedbackRun(
     agent: "claude",
     event: "PreToolUse",
     sessionId: agentSessionId,
-    cwd: "/repo",
+    cwd,
     transcriptPath: null,
     env: { tmuxPane: paneId },
     prCreated: false,
@@ -973,4 +980,71 @@ test("a transcript that grew but no work that changed does not spend a round", a
   );
   assert.equal(h.store.getRun(h.runId)?.status, "waiting_for_session");
   await h.manager.stop();
+});
+
+test("new staged text evidence re-arms an auto repair without a commit", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "workflow-evidence-resumption-")));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "evidence/\n");
+    mkdirSync(join(repo, "evidence"));
+    const focusedOutput = "TAP version 13\nok 13 - evidence-only repair\n";
+    writeFileSync(join(repo, "evidence", "focused.tap"), focusedOutput);
+    setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo", repo] });
+    const h = await personaFeedbackRun(
+      "evidence-persona",
+      "v-evidence-persona",
+      "auto",
+      undefined,
+      undefined,
+      repo,
+    );
+    const binding = h.store.getBinding(h.bindingId)!;
+    const staged = await stageAgentWorkflowEvidence({
+      store: h.store,
+      noteKey: binding.noteKey,
+      task: {
+        repoRoot: repo,
+        worktreePath: repo,
+        baseSha: null,
+        extraRepos: [],
+      },
+      fallbackRoot: repo,
+      images: [],
+      artifacts: [{
+        kind: "text",
+        clientItemId: "focused-log",
+        path: "evidence/focused.tap",
+        caption: "Focused regression output",
+        repositoryScope: "repo-01",
+      }],
+    });
+    assert.equal(staged.generation, 1);
+
+    reportIdle(h, "evidence-persona", h.agentSessionId, h.paneId);
+    await h.manager.sweepResumptions(SETTLED());
+    await waitFor(
+      () => h.store.listSubmissions(h.runId).length === 2,
+      "text evidence did not open the next repair submission",
+    );
+    const submissions = h.store.listSubmissions(h.runId);
+    const repair = submissions[1]!;
+    await waitFor(
+      () => {
+        const context = h.store.getSubmission(repair.id)?.context as
+          | { evidence?: { artifacts?: unknown[] } }
+          | undefined;
+        return context?.evidence?.artifacts?.length === 1;
+      },
+      "the text artifact was not frozen into the repair submission",
+    );
+    const captured = h.store.getSubmission(repair.id)?.context as unknown as WorkflowContextSnapshot;
+    assert.equal(captured.evidence.artifacts?.[0]?.content, focusedOutput);
+    assert.equal(captured.evidence.stagedImageGeneration, 1);
+    assert.notEqual(repair.evidenceFingerprint, submissions[0]!.evidenceFingerprint);
+    await h.manager.stop();
+  } finally {
+    setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
+    rmSync(repo, { recursive: true, force: true });
+  }
 });

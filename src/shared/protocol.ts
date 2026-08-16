@@ -44,6 +44,7 @@ import {
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
   WORKFLOW_IMAGE_LIMITS,
+  WORKFLOW_TEXT_EVIDENCE_LIMITS,
   WORKFLOW_MISSING_PR_ACTIONS,
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
@@ -3216,12 +3217,20 @@ export const WorkflowEvidenceRefSchema = z.object({
   path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
   line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
 }).superRefine((value, ctx) => {
-  if (value.kind !== "image") return;
+  if (value.kind !== "image" && value.kind !== "artifact") return;
   if (!value.path) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["path"], message: "Image evidence requires an image id" });
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["path"],
+      message: `${value.kind === "image" ? "Image" : "Artifact"} evidence requires a stable id`,
+    });
   }
   if (value.line !== undefined) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["line"], message: "Image evidence has no line number" });
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["line"],
+      message: `${value.kind === "image" ? "Image" : "Artifact"} evidence has no line number`,
+    });
   }
 });
 
@@ -3253,6 +3262,44 @@ export const WorkflowEvidenceImageSchema = z.object({
   }
 });
 
+export const WorkflowEvidenceTextArtifactSchema = z.object({
+  id: z.string().min(1).max(200),
+  ordinal: z.number().int().nonnegative(),
+  displayName: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.displayNameChars),
+  caption: z.string().trim().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars),
+  repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
+  mimeType: z.literal("text/plain"),
+  bytes: z.number().int().positive().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  content: z.string(),
+  availability: z.enum(["retained", "pruned"]),
+  prunedAt: z.number().int().nonnegative().nullable(),
+  createdAt: z.number().int().nonnegative(),
+}).superRefine((artifact, ctx) => {
+  if ((artifact.availability === "retained") !== (artifact.prunedAt === null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["prunedAt"],
+      message: "Pruned text artifact availability and timestamp must be present together",
+    });
+  }
+  if (artifact.availability === "retained") {
+    if (workflowUtf8.encode(artifact.content).byteLength !== artifact.bytes) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["content"],
+        message: "Retained text artifact content does not match its byte count",
+      });
+    }
+  } else if (artifact.content !== "") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["content"],
+      message: "Pruned text artifact content must be empty",
+    });
+  }
+});
+
 const WorkflowEvidenceLocatorFields = {
   clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars),
   caption: z.string().trim().min(1).max(WORKFLOW_IMAGE_LIMITS.captionChars),
@@ -3263,6 +3310,14 @@ export const WorkflowAgentEvidenceLocatorSchema = z.object({
   kind: z.literal("agent"),
   ...WorkflowEvidenceLocatorFields,
   path: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
+});
+
+export const WorkflowAgentTextEvidenceLocatorSchema = z.object({
+  kind: z.literal("text"),
+  clientItemId: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.clientItemIdChars),
+  caption: z.string().trim().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars),
+  repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
+  path: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.relativePathChars),
 });
 
 export const WorkflowUploadEvidenceLocatorSchema = z.object({
@@ -3309,13 +3364,41 @@ export const SubmitWorkflowEvidenceSchema = z.object({
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
   images: z.array(WorkflowAgentEvidenceLocatorSchema)
-    .min(1)
     .max(WORKFLOW_IMAGE_LIMITS.maxCount)
     .refine((value) => new Set(value.map((item) => item.clientItemId)).size === value.length, {
       message: "Workflow evidence client item ids must be unique",
-    }),
-}).refine((value) => jsonAtMost(value.images, WORKFLOW_IMAGE_LIMITS.locatorJsonBytes), {
-  message: `Workflow evidence locators exceed ${WORKFLOW_IMAGE_LIMITS.locatorJsonBytes} UTF-8 bytes`,
+    }).optional().default([]),
+  artifacts: z.array(WorkflowAgentTextEvidenceLocatorSchema)
+    .max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount)
+    .refine((value) => new Set(value.map((item) => item.clientItemId)).size === value.length, {
+      message: "Workflow evidence client item ids must be unique",
+    }).optional().default([]),
+}).superRefine((value, ctx) => {
+  if (value.images.length === 0 && value.artifacts.length === 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "At least one workflow evidence item is required" });
+  }
+  const ids = [...value.images, ...value.artifacts].map((item) => item.clientItemId);
+  if (new Set(ids).size !== ids.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["artifacts"],
+      message: "Workflow evidence client item ids must be unique across images and artifacts",
+    });
+  }
+  if (!jsonAtMost(value.images, WORKFLOW_IMAGE_LIMITS.locatorJsonBytes)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["images"],
+      message: `Workflow evidence locators exceed ${WORKFLOW_IMAGE_LIMITS.locatorJsonBytes} UTF-8 bytes`,
+    });
+  }
+  if (!jsonAtMost(value.artifacts, WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["artifacts"],
+      message: `Workflow text evidence locators exceed ${WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes} UTF-8 bytes`,
+    });
+  }
 });
 export type SubmitWorkflowEvidence = z.infer<typeof SubmitWorkflowEvidenceSchema>;
 
@@ -3364,6 +3447,22 @@ export const WorkflowHumanDecisionSchema = z.object({
   }),
 });
 
+export const WorkflowCheckEvidenceSchema = z.object({
+  nodeId: z.string().min(1).max(200),
+  attemptId: z.string().min(1).max(200),
+  attempt: z.number().int().positive(),
+  slot: z.enum(WORKFLOW_CHECK_SLOTS),
+  status: z.enum(WORKFLOW_CHECK_STATUSES),
+  command: z.array(z.string().max(WORKFLOW_LIMITS.checkCommandArg))
+    .max(WORKFLOW_LIMITS.checkCommandArgs)
+    .nullable(),
+  exitCode: z.number().int().nullable(),
+  outputTail: z.string().max(WORKFLOW_EXECUTION_LIMITS.checkOutput),
+  omittedBytes: z.number().int().nonnegative(),
+  headSha: z.string().max(100).nullable(),
+  note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+});
+
 export const WorkflowContextSnapshotSchema = z.object({
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
@@ -3396,9 +3495,12 @@ export const WorkflowContextSnapshotSchema = z.object({
       role: z.enum(["user", "assistant"]),
       content: z.string().max(48_000),
       timestamp: z.number().int().nonnegative().optional(),
+      omittedMiddleBytes: z.number().int().positive().optional(),
     })).max(100),
     transcriptAnchor: z.number().int().nonnegative().nullable(),
     transcriptTruncated: z.boolean(),
+    transcriptOmittedHeadBytes: z.number().int().nonnegative().default(0),
+    transcriptMiddleOmitted: z.boolean().default(false),
     standards: z.array(z.object({
       path: z.string().max(4_000),
       text: z.string(),
@@ -3407,6 +3509,9 @@ export const WorkflowContextSnapshotSchema = z.object({
     })).max(200),
     standardsTruncated: z.boolean(),
     images: z.array(WorkflowEvidenceImageSchema).max(WORKFLOW_IMAGE_LIMITS.maxCount).default([]),
+    artifacts: z.array(WorkflowEvidenceTextArtifactSchema)
+      .max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount)
+      .default([]),
     stagedImageGeneration: z.number().int().nonnegative().default(0),
     retention: z.discriminatedUnion("state", [
       z.object({ state: z.literal("full") }),
@@ -3419,8 +3524,19 @@ export const WorkflowContextSnapshotSchema = z.object({
         standardsDocuments: z.number().int().nonnegative(),
         imageCount: z.number().int().nonnegative().default(0),
         imageBytes: z.number().int().nonnegative().default(0),
+        textArtifactCount: z.number().int().nonnegative().default(0),
+        textArtifactBytes: z.number().int().nonnegative().default(0),
       }),
     ]).default({ state: "full" }),
+  }).superRefine((evidence, ctx) => {
+    const artifactBytes = evidence.artifacts.reduce((sum, artifact) => sum + artifact.bytes, 0);
+    if (artifactBytes > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["artifacts"],
+        message: "Workflow text evidence exceeds the aggregate byte limit",
+      });
+    }
   }),
   compaction: z.object({
     status: z.enum(["model", "fallback"]),

@@ -1,6 +1,7 @@
 import type {
   PersonaFeedbackSummary,
   PersonaSnapshot,
+  WorkflowCheckEvidence,
   WorkflowContextSnapshot,
   WorkflowPersonaDirectiveSnapshot,
 } from "@shared/workflow.ts";
@@ -31,6 +32,7 @@ export function buildPersonaPrompt(
   persona: PersonaSnapshot,
   context: WorkflowContextSnapshot,
   operatorDirective: WorkflowPersonaDirectiveSnapshot | null = null,
+  checkEvidence: readonly WorkflowCheckEvidence[] = [],
 ): string {
   const decisions = context.humanDecisions.length === 0
     ? "(none recorded)"
@@ -51,7 +53,7 @@ export function buildPersonaPrompt(
     reviewContract({
       subject: "the submitted snapshot",
       guidanceLabel: "Persona guidance",
-      evidenceLabel: "diff, transcript, and standards content",
+      evidenceLabel: "diff, transcript, Check, text artifact, image, and standards content",
     }),
     "",
     "# Original human intent",
@@ -73,6 +75,11 @@ export function buildPersonaPrompt(
     "# Published Persona guidance",
     boundedSection(persona.guidanceMarkdown, REVIEW_LIMITS.guidance),
     "",
+    "# Evidence availability contract",
+    "Completed Check outcomes below come only from upstream Check nodes that receipted this same immutable submission. Their command, exit code, retained output tail, omitted-byte count, HEAD SHA, and attempt identity are evidence. Read the outcome and output together: a detailed passing run can demonstrate behavior, while a bare status cannot.",
+    "Submitted text artifacts were securely staged from the repository scope, digest-bound, and frozen into this submission. Their UTF-8 content is exact retained evidence; captions are claims to verify against that content. Evidence-only logs do not need to be committed.",
+    "Judge the evidence available at this Persona stage. Pull-request checks, remote CI, and Inspector findings may be later workflow stages, so their absence is not a failure unless the original human intent, operator directive, or published Persona guidance explicitly requires them now.",
+    "",
     "# Prior Persona feedback (non-human)",
     boundedSection(priorFeedback(context.priorPersonaFeedback)),
     "",
@@ -85,6 +92,8 @@ export function buildPersonaPrompt(
       diffFingerprint: context.evidence.diffFingerprint,
       diffTruncated: context.evidence.diffTruncated,
       transcriptTruncated: context.evidence.transcriptTruncated,
+      transcriptOmittedHeadBytes: context.evidence.transcriptOmittedHeadBytes ?? 0,
+      transcriptMiddleOmitted: context.evidence.transcriptMiddleOmitted ?? false,
       standardsTruncated: context.evidence.standardsTruncated,
     }),
     ...untrustedJsonBlock("workflow-image-manifest", (context.evidence.images ?? []).map((image) => ({
@@ -96,11 +105,34 @@ export function buildPersonaPrompt(
       bytes: image.bytes,
       sha256: image.sha256,
     }))),
+    ...untrustedJsonBlock("workflow-check-evidence", checkEvidence),
+    ...untrustedJsonBlock("workflow-text-artifact-manifest", (context.evidence.artifacts ?? []).map(
+      (artifact) => ({
+        id: artifact.id,
+        caption: artifact.caption,
+        displayName: artifact.displayName,
+        repositoryScope: artifact.repositoryScope,
+        mimeType: artifact.mimeType,
+        bytes: artifact.bytes,
+        sha256: artifact.sha256,
+        availability: artifact.availability,
+      }),
+    )),
+    ...(context.evidence.artifacts ?? []).flatMap((artifact) => [
+      ...untrustedJsonBlock(`workflow-text-artifact-${artifact.id}-metadata`, {
+        id: artifact.id,
+        caption: artifact.caption,
+        displayName: artifact.displayName,
+        bytes: artifact.bytes,
+        sha256: artifact.sha256,
+      }),
+      ...untrustedBlock(`workflow-text-artifact-${artifact.id}`, artifact.content),
+    ]),
     ...untrustedBlock("workflow-diff", context.evidence.diff),
     ...untrustedJsonBlock("workflow-transcript", context.evidence.transcript),
     ...untrustedJsonBlock("workflow-standards", context.evidence.standards),
     "",
     "# Required output",
-    "Reply with ONLY one JSON object. A pass must have {\"verdict\":\"pass\",\"summary\":string,\"approvalDetails\":{\"reason\":string,\"evidence\":[EvidenceRef]},\"confidence\":0..1}. A fail must have {\"verdict\":\"fail\",\"summary\":string,\"requestedChanges\":[{\"title\":string,\"rationale\":string,\"evidence\":[EvidenceRef],\"path\"?:string,\"line\"?:integer}],\"confidence\":0..1}, with at least one EvidenceRef for every requested change. EvidenceRef is {\"kind\":\"diff\"|\"transcript\"|\"standard\"|\"goal\"|\"decision\"|\"image\",\"quote\":string,\"path\"?:string,\"line\"?:integer}. For image evidence, path MUST be the stable image id from the manifest, quote is your visual observation, and line must be omitted. Never use a fail verdict for an infrastructure or evidence-access problem.",
+    "Reply with ONLY one JSON object. A pass must have {\"verdict\":\"pass\",\"summary\":string,\"approvalDetails\":{\"reason\":string,\"evidence\":[EvidenceRef]},\"confidence\":0..1}. A fail must have {\"verdict\":\"fail\",\"summary\":string,\"requestedChanges\":[{\"title\":string,\"rationale\":string,\"evidence\":[EvidenceRef],\"path\"?:string,\"line\"?:integer}],\"confidence\":0..1}, with at least one EvidenceRef for every requested change. EvidenceRef is {\"kind\":\"diff\"|\"transcript\"|\"standard\"|\"goal\"|\"decision\"|\"check\"|\"image\"|\"artifact\",\"quote\":string,\"path\"?:string,\"line\"?:integer}. For Check evidence, path MUST be the immutable attemptId and quote the retained output or outcome fact. For image evidence, path MUST be the stable image id from the manifest, quote is your visual observation, and line must be omitted. For text artifact evidence, path MUST be the stable artifact id from the manifest and line must be omitted. Never use a fail verdict for an infrastructure or evidence-access problem.",
   ].join("\n");
 }

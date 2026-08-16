@@ -13,6 +13,7 @@ process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const {
+  boundedWorkflowTranscript,
   captureStableWorkflowContext,
   captureBoundaryChanged,
   compactWorkflowContext,
@@ -23,6 +24,7 @@ const {
   readWorkflowContextRaw,
   workflowReviewDecision,
   workflowContextFingerprint,
+  WORKFLOW_TRANSCRIPT_LIMITS,
 } = await import("../src/server/workflows/context.ts");
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 
@@ -89,6 +91,82 @@ test("workflow context preserves raw goal and excludes every attributed non-huma
   assert.equal(context.compaction.status, "fallback");
   assert.deepEqual(context.constraints, []);
   assert.deepEqual(context.acceptanceCriteria, []);
+});
+
+test("transcript evidence retains the observed 5,393-byte TAP turn through test 13", () => {
+  const finalLine = "ok 13 - regression finishes here\n";
+  const tapPrefix = [
+    "TAP version 13",
+    ...Array.from({ length: 12 }, (_, index) => `ok ${index + 1} - focused case ${index + 1}`),
+  ].join("\n") + "\n";
+  const padding = "# captured output "
+    + "x".repeat(5_393 - Buffer.byteLength(tapPrefix) - Buffer.byteLength(finalLine) - 19)
+    + "\n";
+  const tap = `${tapPrefix}${padding}${finalLine}`;
+  assert.equal(Buffer.byteLength(tap), 5_393);
+
+  const bounded = boundedWorkflowTranscript([{
+    id: "tap-13",
+    role: "assistant",
+    text: tap,
+    tools: [],
+    ts: 13,
+  }]);
+
+  assert.equal(bounded.truncated, false);
+  assert.equal(bounded.omittedHeadBytes, 0);
+  assert.equal(bounded.transcript[0]?.content, tap);
+  assert.match(bounded.transcript[0]?.content ?? "", /ok 13 - regression finishes here/);
+});
+
+test("oversized transcript turns preserve marked heads and tails within aggregate bounds", () => {
+  const oversized = `HEAD:${"a".repeat(9_000)}:TAIL`;
+  const one = boundedWorkflowTranscript([{
+    id: "large",
+    role: "assistant",
+    text: oversized,
+    tools: [],
+    ts: 1,
+  }]);
+  const retained = one.transcript[0]!;
+  assert.ok(Buffer.byteLength(retained.content) <= WORKFLOW_TRANSCRIPT_LIMITS.perTurnBytes);
+  assert.match(retained.content, /^HEAD:/);
+  assert.match(retained.content, /\[transcript turn head retained; \d+ UTF-8 bytes omitted\]/);
+  assert.match(retained.content, /\[transcript turn tail retained\]/);
+  assert.match(retained.content, /:TAIL$/);
+  assert.ok((retained.omittedMiddleBytes ?? 0) > 0);
+
+  const many = boundedWorkflowTranscript(Array.from({ length: 30 }, (_, index) => ({
+    id: `turn-${index}`,
+    role: "assistant" as const,
+    text: `TURN-${String(index).padStart(2, "0")}:${"z".repeat(7_880)}`,
+    tools: [],
+    ts: index + 1,
+  })));
+  const contents = many.transcript.map((message) => message.content).join("\n");
+  assert.doesNotMatch(contents, /TURN-00:/);
+  assert.match(contents, /TURN-29:/);
+  assert.ok(many.omittedHeadBytes > 0);
+  assert.ok(
+    many.transcript.reduce((sum, message) => sum + Buffer.byteLength(message.content), 0)
+      <= WORKFLOW_TRANSCRIPT_LIMITS.aggregateBytes,
+  );
+  assert.ok(JSON.stringify(many.transcript).length <= WORKFLOW_TRANSCRIPT_LIMITS.jsonCharacters);
+});
+
+test("transcript omission markers match stored metadata after marker-width changes", () => {
+  const bounded = boundedWorkflowTranscript([{
+    id: "marker-boundary",
+    role: "assistant",
+    text: "x".repeat(WORKFLOW_TRANSCRIPT_LIMITS.perTurnBytes + 1),
+    tools: [],
+    ts: 1,
+  }]);
+  const retained = bounded.transcript[0]!;
+  const marker = /\[transcript turn head retained; (\d+) UTF-8 bytes omitted\]/.exec(retained.content);
+  assert.ok(marker);
+  assert.equal(Number(marker[1]), retained.omittedMiddleBytes);
+  assert.ok(Buffer.byteLength(retained.content) <= WORKFLOW_TRANSCRIPT_LIMITS.perTurnBytes);
 });
 
 test("source fingerprints are deterministic and ignore compaction prose", () => {

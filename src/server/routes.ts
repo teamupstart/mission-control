@@ -2455,7 +2455,10 @@ export function buildApp(
       return c.json({ error: "no matching active session" }, 404);
     }
     try {
-      return c.json(await manager.stageAgentEvidence(session.id, parsed.data.images));
+      return c.json(await manager.stageAgentEvidence(session.id, {
+        images: parsed.data.images,
+        artifacts: parsed.data.artifacts,
+      }));
     } catch (error) {
       const known = error instanceof WorkflowImageEvidenceError ? error : null;
       return c.json({

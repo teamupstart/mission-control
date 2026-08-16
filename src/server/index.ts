@@ -215,7 +215,29 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   tasks: {
     get: (id) => {
       const task = registry.getTask(id);
-      return task ? { id: task.id, title: task.title } : null;
+      if (!task) return null;
+      return {
+        id: task.id,
+        title: task.title,
+        resources: [
+          {
+            position: 0,
+            repoRoot: task.repoRoot,
+            path: task.worktreePath,
+            provider: task.provider,
+            leaseId: task.worktreeLeaseId,
+            branch: task.branch,
+          },
+          ...task.extraRepos.map((entry, index) => ({
+            position: index + 1,
+            repoRoot: entry.repoRoot,
+            path: entry.worktreePath,
+            provider: entry.provider,
+            leaseId: entry.worktreeLeaseId,
+            branch: entry.branch,
+          })),
+        ].flatMap((resource) => resource.path === null ? [] : [{ ...resource, path: resource.path }]),
+      };
     },
     reclaim: (id) => tasks.reclaim(id),
   },

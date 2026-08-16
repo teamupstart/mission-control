@@ -80,10 +80,11 @@ preview message. Unknown process occupancy is never acknowledgeable.
 The operations have deliberately narrow meanings:
 
 - **Return** hands an active lease back through its owner. Task Return uses the ordinary task
-  cleanup, including multi-repository accounting and required archive or snapshot capture. Check
-  Return uses the recorded check provider and process-group recovery. Manual Return uses the exact
-  durable lease. A successful native Return resets to the freshly fetched remote default and keeps
-  the warm slot.
+  cleanup, including multi-repository accounting and required archive or snapshot capture. Its
+  preview therefore lists every native, legacy, or disposable Git path that task cleanup will
+  touch, even when Return began from one slot. Check Return uses the recorded check provider and
+  process-group recovery. Manual Return uses the exact durable lease. A successful native Return
+  resets to the freshly fetched remote default and keeps the warm slot.
 - **Prune** removes only the clean, merged, process-free, unreferenced available slots enumerated in
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.

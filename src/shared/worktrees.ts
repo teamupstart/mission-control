@@ -135,11 +135,13 @@ export interface WorktreeActionRisk {
 }
 
 export interface WorktreeActionAffected {
-  provider: "mission" | "treehouse";
+  provider: "mission" | "treehouse" | "git";
   id: string;
   path: string;
   owner: WorktreeOwnerView | null;
   version: number | null;
+  /** Opaque digest of bounded provider/Git/process facts used only for stale-preview binding. */
+  safetyRevision: string;
   diskBytes: number | null;
 }
 

@@ -301,9 +301,9 @@ export class WorktreeManager {
     return this.acquireLock(`slot:${slotId}`);
   }
 
-  private deliverPublish(): void {
+  private deliverPublish(publishChanged: () => void = this.deps.publishChanged): void {
     try {
-      this.deps.publishChanged();
+      publishChanged();
     } catch (error) {
       console.warn("[worktrees] change publication failed:", error);
     }
@@ -319,7 +319,11 @@ export class WorktreeManager {
   }
 
   /** Coalesces every visible mutation in one operator action into one invalidation. */
-  async runChangeBatch<T>(operation: () => Promise<T>, publishOnSuccess = true): Promise<T> {
+  async runChangeBatch<T>(
+    operation: () => Promise<T>,
+    publishOnSuccess = true,
+    publishChanged?: () => void,
+  ): Promise<T> {
     if (this.changeBatch.getStore()) return operation();
     const batch = { pending: false };
     try {
@@ -327,7 +331,7 @@ export class WorktreeManager {
       if (publishOnSuccess) batch.pending = true;
       return result;
     } finally {
-      if (batch.pending) this.deliverPublish();
+      if (batch.pending) this.deliverPublish(publishChanged);
     }
   }
 

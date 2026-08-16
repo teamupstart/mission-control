@@ -6,6 +6,7 @@ import { openDb } from "../src/server/db.ts";
 import { Registry } from "../src/server/registry.ts";
 import { TaskManager } from "../src/server/tasks.ts";
 import { stubRun } from "../src/server/util/exec.ts";
+import { worktreeRepositoryIdentity } from "../src/server/util/git.ts";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
@@ -151,15 +152,48 @@ test("task and check slots delegate cleanup to their domain owners", async () =>
   });
   assert.equal(taskLease.outcome, "acquired");
   if (taskLease.outcome !== "acquired") return;
-  let taskReclaimed = false;
+  const secondaryRepo = mkOriginAndClone("mission-worktree-task-secondary-").clone;
+  const secondaryLease = await manager.acquire({
+    repositoryPath: secondaryRepo,
+    baseSha: gitIn(secondaryRepo, "rev-parse", "HEAD"),
+    owner: { kind: "task", key: "task-settings:1" },
+  });
+  assert.equal(secondaryLease.outcome, "acquired");
+  if (secondaryLease.outcome !== "acquired") return;
+  writeFileSync(join(secondaryLease.lease.path, "secondary-draft.txt"), "keep this visible\n");
+  let taskReclaims = 0;
   const delegated = new WorktreeOperationsService(manager, {
     legacy: new LegacyTreehouseService(db),
     tasks: {
-      get: (id) => id === "task-settings" ? { id, title: "Settings task" } : null,
+      get: (id) => id === "task-settings"
+        ? {
+            id,
+            title: "Settings task",
+            resources: [{
+              position: 0,
+              repoRoot: taskRepo,
+              path: taskLease.lease.path,
+              provider: "mission",
+              leaseId: taskLease.lease.leaseId,
+              branch: null,
+            }, {
+              position: 1,
+              repoRoot: secondaryRepo,
+              path: secondaryLease.lease.path,
+              provider: "mission",
+              leaseId: secondaryLease.lease.leaseId,
+              branch: null,
+            }],
+          }
+        : null,
       reclaim: async (id) => {
-        taskReclaimed = id === "task-settings";
-        const released = await manager.release(taskLease.lease, { ownerAuthorized: true });
-        return { ok: released.outcome === "released", ...("reason" in released ? { error: released.reason } : {}) };
+        if (id === "task-settings") taskReclaims += 1;
+        const released = await Promise.all([
+          manager.release(taskLease.lease, { ownerAuthorized: true }),
+          manager.release(secondaryLease.lease, { ownerAuthorized: true }),
+        ]);
+        const failure = released.find((result) => result.outcome !== "released");
+        return { ok: !failure, ...(failure && "reason" in failure ? { error: failure.reason } : {}) };
       },
     },
     checks,
@@ -169,8 +203,14 @@ test("task and check slots delegate cleanup to their domain owners", async () =>
   });
   const taskPreview = await delegated.preview({ action: "return", slotId: taskLease.lease.slotId });
   assert.equal(taskPreview.allowed, true);
-  await delegated.execute(taskPreview.token, []);
-  assert.equal(taskReclaimed, true);
+  assert.deepEqual(
+    new Set(taskPreview.affected.map((target) => target.id)),
+    new Set([taskLease.lease.slotId, secondaryLease.lease.slotId]),
+    "TaskManager's full multi-repository cleanup scope is present in the preview",
+  );
+  assert.deepEqual(taskPreview.requiredAcknowledgements, ["dirty"]);
+  await delegated.execute(taskPreview.token, ["dirty"]);
+  assert.equal(taskReclaims, 1, "one task reclaim owns every affected repository");
 
   const checkRepo = mkOriginAndClone("mission-worktree-check-action-").clone;
   const attemptId = "check-settings";
@@ -192,6 +232,104 @@ test("task and check slots delegate cleanup to their domain owners", async () =>
   assert.equal(recoverable.allowed, true);
   await delegated.execute(recoverable.token, []);
   assert.equal(checks.unresolvedLeaseForNode("submission-settings", "node-settings"), false);
+});
+
+test("task previews bind attached disposable Git risks outside native inventory", async () => {
+  const primaryRepo = mkOriginAndClone("mission-worktree-task-git-primary-").clone;
+  const gitRepo = mkOriginAndClone("mission-worktree-task-git-secondary-").clone;
+  const gitPath = join(gitRepo, "..", "task-git-secondary-worktree");
+  const gitIdentity = worktreeRepositoryIdentity(gitRepo);
+  assert.ok(gitIdentity);
+  let gitDirty = true;
+  const occupied = {
+    pid: 42,
+    ppid: 1,
+    startRaw: "task-git-process",
+    startMs: 1,
+    command: "agent helper",
+    cwd: gitPath,
+    knownOwner: "task-settings-git",
+  };
+  const taskOccupancy = (paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> =>
+    Promise.resolve(new Map(paths.map((path) => [
+      path,
+      { status: "known" as const, occupants: path === gitPath ? [occupied] : [] },
+    ])));
+  const taskManager = new WorktreeManager(db, {
+    occupancy: taskOccupancy,
+    resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
+  });
+  const primary = await taskManager.acquire({
+    repositoryPath: primaryRepo,
+    baseSha: gitIn(primaryRepo, "rev-parse", "HEAD"),
+    owner: { kind: "task", key: "task-settings-git:0" },
+  });
+  assert.equal(primary.outcome, "acquired");
+  if (primary.outcome !== "acquired") return;
+  let reclaimed = false;
+  const delegated = new WorktreeOperationsService(taskManager, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: {
+      get: (id) => id === "task-settings-git"
+        ? {
+            id,
+            title: "Task with disposable secondary",
+            resources: [{
+              position: 0,
+              repoRoot: primaryRepo,
+              path: primary.lease.path,
+              provider: "mission",
+              leaseId: primary.lease.leaseId,
+              branch: null,
+            }, {
+              position: 1,
+              repoRoot: gitRepo,
+              path: gitPath,
+              provider: "git",
+              leaseId: null,
+              branch: "harness/task-settings-git",
+            }],
+          }
+        : null,
+      reclaim: async () => {
+        reclaimed = true;
+        return { ok: true };
+      },
+    },
+    checks,
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => changed.push(Date.now()),
+    diskBytes: async () => 0,
+    occupancy: taskOccupancy,
+    git: {
+      inspect: async (path) => ({
+        ok: true,
+        value: {
+          path,
+          head: "a".repeat(40),
+          dirty: gitDirty,
+          commonDirectory: gitIdentity.gitCommonDirectory,
+        },
+      }),
+      observedDefaultSha: async () => ({ ok: true, value: "b".repeat(40) }),
+      mergedInto: async () => ({ ok: true, value: false }),
+    },
+  });
+
+  const preview = await delegated.preview({ action: "return", slotId: primary.lease.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.equal(preview.affected.some((target) => target.provider === "git" && target.path === gitPath), true);
+  assert.deepEqual(new Set(preview.requiredAcknowledgements), new Set(["dirty", "unlanded"]));
+  assert.equal(preview.risks.some((entry) => entry.key === "occupied"), true);
+  assert.match(preview.consequences.join(" "), /1 process\(es\).*TaskManager stops its owned agent/);
+
+  gitDirty = false;
+  await assert.rejects(
+    delegated.execute(preview.token, ["dirty", "unlanded"]),
+    (error: unknown) => error instanceof Error && /changed after preview/.test(error.message),
+    "a disposable secondary's Git change invalidates the task-wide token",
+  );
+  assert.equal(reclaimed, false);
 });
 
 test("legacy task Return reaches the exact conditional adapter through TaskManager", async () => {
@@ -267,7 +405,19 @@ test("legacy task Return reaches the exact conditional adapter through TaskManag
     tasks: {
       get: (id) => {
         const task = registry.getTask(id);
-        return task ? { id: task.id, title: task.title } : null;
+        if (!task || !task.worktreePath) return null;
+        return {
+          id: task.id,
+          title: task.title,
+          resources: [{
+            position: 0,
+            repoRoot: task.repoRoot,
+            path: task.worktreePath,
+            provider: task.provider,
+            leaseId: task.worktreeLeaseId,
+            branch: task.branch,
+          }],
+        };
       },
       reclaim: (id) => tasks.reclaim(id),
     },
@@ -282,11 +432,13 @@ test("legacy task Return reaches the exact conditional adapter through TaskManag
     owner: { kind: "task", id: "settings-legacy-task", position: 0 },
   });
   assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const changedBeforeExecute = changed.length;
   assert.deepEqual(await delegated.execute(preview.token, []), {
     ok: true,
     action: "legacyReturn",
     message: "Exact legacy lease returned through its domain owner.",
   });
+  assert.equal(changed.length, changedBeforeExecute + 1, "legacy-only success invalidates every open panel once");
   assert.deepEqual(
     calls.find((args) => args[0] === "return"),
     ["return", "--force", "--if-lease-id", leaseId, "--if-lease-holder", "mission-control", path],

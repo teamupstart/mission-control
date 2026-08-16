@@ -15,6 +15,7 @@ import {
   type WorktreeRiskKey,
 } from "@shared/worktrees.ts";
 import { run } from "../util/exec.ts";
+import { worktreeRepositoryIdentity } from "../util/git.ts";
 import type {
   CheckGroupRecovery,
   CheckLeaseManager,
@@ -26,10 +27,18 @@ import {
   type LegacyOwnerRef,
 } from "./legacy-treehouse.ts";
 import {
+  NativeWorktreeGit,
+  type WorktreeGit,
+} from "./git.ts";
+import {
   WorktreeManager,
   type NativePoolStatus,
   type NativeSlotStatus,
 } from "./manager.ts";
+import {
+  inspectWorktreeOccupancy,
+  type WorktreeOccupancy,
+} from "./occupancy.ts";
 
 const TOKEN_TTL_MS = 2 * 60_000;
 
@@ -44,8 +53,23 @@ export class WorktreeOperationError extends Error {
 }
 
 export interface WorktreeTaskOwner {
-  get(id: string): { id: string; title: string } | null;
+  get(id: string): WorktreeTaskView | null;
   reclaim(id: string): Promise<{ ok: boolean; error?: string }>;
+}
+
+export interface WorktreeTaskResource {
+  position: number;
+  repoRoot: string;
+  path: string;
+  provider: "mission" | "treehouse" | "git" | null;
+  leaseId: string | null;
+  branch: string | null;
+}
+
+export interface WorktreeTaskView {
+  id: string;
+  title: string;
+  resources: WorktreeTaskResource[];
 }
 
 export interface WorktreeOperationsDeps {
@@ -57,6 +81,8 @@ export interface WorktreeOperationsDeps {
   now: () => number;
   randomId: () => string;
   diskBytes: (path: string) => Promise<number | null>;
+  git: Pick<WorktreeGit, "inspect" | "observedDefaultSha" | "mergedInto">;
+  occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
 }
 
 interface Observation {
@@ -68,6 +94,11 @@ interface Observation {
 interface HeldPreview {
   preview: WorktreeActionPreview;
   fingerprint: string;
+}
+
+interface NativeTarget {
+  pool: NativePoolStatus;
+  slot: NativeSlotStatus;
 }
 
 function compact(value: string | null, max = WORKTREE_INVENTORY_LIMITS.textBytes): string | null {
@@ -136,7 +167,14 @@ function risk(
 }
 
 function uniqRisks(risks: WorktreeActionRisk[]): WorktreeActionRisk[] {
-  return [...new Map(risks.map((entry) => [entry.key, entry])).values()];
+  const unique = new Map<WorktreeRiskKey, WorktreeActionRisk>();
+  for (const entry of risks) {
+    const current = unique.get(entry.key);
+    unique.set(entry.key, current
+      ? { ...current, acknowledgeable: current.acknowledgeable && entry.acknowledgeable }
+      : entry);
+  }
+  return [...unique.values()];
 }
 
 export class WorktreeOperationsService {
@@ -154,6 +192,8 @@ export class WorktreeOperationsService {
       now: Date.now,
       randomId: randomUUID,
       diskBytes: defaultDiskBytes,
+      git: new NativeWorktreeGit(),
+      occupancy: inspectWorktreeOccupancy,
       ...deps,
     };
   }
@@ -340,6 +380,254 @@ export class WorktreeOperationsService {
     return preview;
   }
 
+  private taskOwner(task: WorktreeTaskView, position: number): WorktreeOwnerView {
+    return { kind: "task", key: `${task.id}:${position}`, label: task.title };
+  }
+
+  private nativeTargets(observed: Observation): NativeTarget[] {
+    return observed.native.flatMap((pool) => pool.slots.map((slot) => ({ pool, slot })));
+  }
+
+  /**
+   * TaskManager reclaims the primary and every attached repository as one domain operation.
+   * Mirror that exact scope in the preview so no secondary resource can ride behind the
+   * selected path without appearing in the token fingerprint and risk set.
+   */
+  private async expandTaskResources(
+    task: WorktreeTaskView,
+    observed: Observation,
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Promise<NativeTarget[]> {
+    const native: NativeTarget[] = [];
+    const allNative = this.nativeTargets(observed);
+    const gitResources = task.resources.filter((resource) =>
+      resource.provider === "git" || resource.provider === null);
+    let gitOccupancy = new Map<string, WorktreeOccupancy>();
+    if (gitResources.length > 0) {
+      try {
+        gitOccupancy = await this.deps.occupancy(gitResources.map((resource) => resource.path));
+      } catch (error) {
+        const reason = `task worktree occupancy inspection failed: ${compact(String(error))}`;
+        gitOccupancy = new Map(gitResources.map((resource) => [
+          resource.path,
+          { status: "unknown" as const, reason },
+        ]));
+      }
+    }
+
+    for (const resource of task.resources) {
+      const owner = this.taskOwner(task, resource.position);
+      if (resource.provider === "mission") {
+        const matches = allNative.filter(({ slot }) =>
+          slot.slot.path === resource.path &&
+          slot.slot.activeOwnerKind === "task" &&
+          slot.slot.activeOwnerKey === owner.key &&
+          slot.slot.activeLeaseId === resource.leaseId);
+        if (matches.length === 1) {
+          native.push(matches[0]!);
+        } else {
+          affected.push({
+            provider: "mission",
+            id: digest({ task: task.id, position: resource.position, path: resource.path }).slice(0, 24),
+            path: resource.path,
+            owner,
+            version: null,
+            safetyRevision: digest(resource),
+            diskBytes: await this.deps.diskBytes(resource.path),
+          });
+          blockers.push(
+            matches.length === 0
+              ? `Task ${task.id} repository ${resource.position} no longer maps to its exact native lease.`
+              : `Task ${task.id} repository ${resource.position} maps to more than one native lease.`,
+          );
+        }
+        continue;
+      }
+
+      if (resource.provider === "treehouse") {
+        const matches = observed.legacy.filter((item) =>
+          item.path === resource.path && item.leaseId === resource.leaseId &&
+          item.owners.some((candidate) => candidate.kind === "task" &&
+            candidate.id === task.id && candidate.position === resource.position));
+        const item = matches.length === 1 ? matches[0]! : null;
+        affected.push({
+          provider: "treehouse",
+          id: digest({ task: task.id, position: resource.position, path: resource.path }).slice(0, 24),
+          path: resource.path,
+          owner,
+          version: null,
+          safetyRevision: digest({ resource, item }),
+          diskBytes: await this.deps.diskBytes(resource.path),
+        });
+        if (!item) {
+          blockers.push(
+            matches.length === 0
+              ? `Task ${task.id} repository ${resource.position} no longer maps to its exact legacy lease.`
+              : `Task ${task.id} repository ${resource.position} maps to more than one legacy lease.`,
+          );
+          continue;
+        }
+        if (item.classification !== "ownedExact") {
+          risks.push(risk("legacy-unverifiable", "Legacy identity is not exact", false));
+          blockers.push(item.diagnostic ?? "Legacy identity is not exact.");
+        }
+        if (item.occupancy.status === "unknown") {
+          risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
+          blockers.push(item.occupancy.reason);
+        } else if (item.occupancy.occupants.length > 0) {
+          risks.push(risk("occupied", `${item.occupancy.occupants.length} process(es) occupy a legacy task path`, false));
+          blockers.push("Legacy task worktrees must be process-free before cleanup.");
+        }
+        if (item.dirty === true) {
+          risks.push(risk("dirty", "A legacy task worktree is dirty", false));
+          blockers.push("Legacy task worktrees must be clean before cleanup.");
+        } else if (item.dirty === null) {
+          blockers.push("Legacy task worktree cleanliness is unknown.");
+        }
+        continue;
+      }
+
+      const occupancy = gitOccupancy.get(resource.path) ?? {
+        status: "unknown" as const,
+        reason: "task worktree occupancy was not inspected",
+      };
+      const inspected = await this.deps.git.inspect(resource.path).catch(() => null);
+      const identity = worktreeRepositoryIdentity(resource.repoRoot);
+      let mergedIntoDefault: boolean | null = null;
+      if (!identity || !inspected?.ok || inspected.value.path !== resource.path ||
+        inspected.value.commonDirectory !== identity.gitCommonDirectory) {
+        blockers.push(`Disposable Git worktree identity is not exact for task repository ${resource.position}.`);
+      } else {
+        if (inspected.value.dirty) {
+          risks.push(risk("dirty", "Dirty or untracked task work will be discarded", true));
+        }
+        const defaultSha = await this.deps.git.observedDefaultSha(identity);
+        if (!defaultSha.ok) {
+          blockers.push(`Default-branch relationship is unknown for task repository ${resource.position}.`);
+        } else {
+          const merged = await this.deps.git.mergedInto(resource.path, defaultSha.value);
+          if (!merged.ok) {
+            blockers.push(`Default-branch relationship is unknown for task repository ${resource.position}.`);
+          } else if (!merged.value) {
+            mergedIntoDefault = false;
+            risks.push(risk("unlanded", "Task work is not merged into the observed default branch", true));
+          } else {
+            mergedIntoDefault = true;
+          }
+        }
+      }
+      affected.push({
+        provider: "git",
+        id: digest({ task: task.id, position: resource.position, path: resource.path }).slice(0, 24),
+        path: resource.path,
+        owner,
+        version: null,
+        safetyRevision: digest({ resource, inspected, mergedIntoDefault, occupancy }),
+        diskBytes: await this.deps.diskBytes(resource.path),
+      });
+      if (occupancy.status === "unknown") {
+        risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
+        blockers.push(occupancy.reason);
+      } else if (occupancy.occupants.length > 0) {
+        // TaskManager stops the task's owned agent before provider cleanup. Recording and
+        // rendering the count binds it into the preview that execute rebuilds immediately
+        // before entering that domain cleanup.
+        risks.push(risk("occupied", `${occupancy.occupants.length} process(es) occupy a task-owned path`, false));
+        consequences.push(
+          `${occupancy.occupants.length} process(es) currently occupy ${resource.path}; TaskManager stops its owned agent before cleanup.`,
+        );
+      }
+    }
+    return native;
+  }
+
+  private async appendNativeTarget(
+    target: NativeTarget,
+    action: "return" | "destroy",
+    observed: Observation,
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Promise<void> {
+    const { pool, slot } = target;
+    const view = observed.inventory.repositories
+      .find((repo) => repo.id === pool.pool.id)?.slots.find((entry) => entry.id === slot.slot.id);
+    const owner = ownerView(slot, this.deps.tasks);
+    affected.push({
+      provider: "mission",
+      id: slot.slot.id,
+      path: slot.slot.path,
+      owner,
+      version: slot.slot.version,
+      safetyRevision: digest({
+        state: slot.slot.state,
+        leaseId: slot.slot.activeLeaseId,
+        ownerKind: slot.slot.activeOwnerKind,
+        ownerKey: slot.slot.activeOwnerKey,
+        path: slot.slot.path,
+        head: slot.observedHead,
+        dirty: slot.dirty,
+        mergedIntoDefault: slot.mergedIntoDefault,
+        occupancy: slot.occupancy,
+      }),
+      diskBytes: view?.diskBytes ?? null,
+    });
+    if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
+    else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
+    if (slot.mergedIntoDefault === false) {
+      risks.push(risk("unlanded", "HEAD is not merged into the observed default branch", true));
+    } else if (slot.mergedIntoDefault === null) {
+      blockers.push(`Default-branch relationship is unknown for slot ${slot.slot.ordinal}.`);
+    }
+    if (slot.occupancy.status === "unknown") {
+      risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
+      blockers.push(slot.occupancy.reason);
+    } else if (slot.occupancy.occupants.length > 0) {
+      risks.push(risk("occupied", `${slot.occupancy.occupants.length} process(es) occupy a target path`, false));
+      if (owner?.kind !== "task") {
+        blockers.push("Known processes must exit before this action can run.");
+      } else {
+        consequences.push(
+          `${slot.occupancy.occupants.length} process(es) currently occupy ${slot.slot.path}; TaskManager stops its owned agent before final provider checks.`,
+        );
+      }
+    }
+    if (!pool.identityValid || !pool.markerValid || !slot.nativePath ||
+      slot.registered !== true || slot.repositoryMatches !== true) {
+      blockers.push("Exact native pool, marker, Git registration, and repository ownership are not all proven.");
+    }
+    if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
+    if (action === "return" && slot.slot.state !== "leased") {
+      blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
+    }
+    if (action === "destroy" && !["leased", "available", "quarantined"].includes(slot.slot.state)) {
+      blockers.push(`Slot ${slot.slot.ordinal} is in the ${slot.slot.state} transition and cannot be destroyed.`);
+    }
+
+    if (owner) {
+      risks.push(risk("leased", "A target slot has an active lease", false));
+      risks.push(risk("domain-owned", `${owner.label} owns a target lease`, false));
+      if (owner.kind === "task") {
+        const task = taskIdentity(owner.key);
+        if (!task || !this.deps.tasks.get(task.id)) blockers.push("The task owner can no longer be resolved exactly.");
+        consequences.push("Stops the task agent, captures required archives and snapshots, and clears every task repository through TaskManager.");
+      } else if (owner.kind === "check") {
+        const check = await this.deps.checks.previewOperatorRecovery(owner.key, this.deps.checkRecovery);
+        if (!check.allowed) blockers.push(check.reason ?? "Check cleanup is not currently safe.");
+        consequences.push("Uses check process-group recovery and the recorded provider before releasing the lease.");
+      } else {
+        consequences.push("Returns the exact durable manual lease before any slot removal.");
+      }
+    } else if (slot.ownerReferenced !== false) {
+      blockers.push("Domain ownership is referenced or unknown.");
+    }
+    if (action === "return" && !owner) blockers.push("This slot has no active owner to return.");
+  }
+
   private async buildPreview(
     request: WorktreeActionRequest,
     observed: Observation,
@@ -355,21 +643,42 @@ export class WorktreeOperationsService {
         owner.kind === ref.kind && owner.id === ref.id &&
         (owner.kind !== "task" || owner.position === (ref.position ?? 0)))) ?? null;
       if (!item) throw new WorktreeOperationError(404, "legacy owner was not found", "not-found");
-      const preview = await this.deps.legacy.previewReturn(ref);
-      const owner = item.owners[0] ?? null;
-      affected.push({
-        provider: "treehouse",
-        id: digest({ ref, path: item.path }).slice(0, 24),
-        path: item.path,
-        owner: owner ? { kind: owner.kind, key: owner.id, label: `${owner.kind === "task" ? "Task" : "Check"} ${owner.id}` } : null,
-        version: null,
-        diskBytes: await this.deps.diskBytes(item.path),
-      });
-      if (!preview.allowed) blockers.push(preview.reason);
-      if (item.classification !== "ownedExact") {
-        risks.push(risk("legacy-unverifiable", "Legacy identity is not exact", false));
+      if (request.owner.kind === "task") {
+        const task = this.deps.tasks.get(request.owner.id);
+        if (!task) {
+          blockers.push("The task owner can no longer be resolved exactly.");
+        } else {
+          const position = request.owner.position ?? 0;
+          const selected = task.resources.find((resource) => resource.position === position);
+          if (!selected || selected.provider !== "treehouse" || selected.path !== item.path ||
+            selected.leaseId !== item.leaseId) {
+            blockers.push("The selected legacy lease no longer matches the task's durable resource.");
+          }
+          const native = await this.expandTaskResources(task, observed, affected, risks, blockers, consequences);
+          for (const target of native) {
+            await this.appendNativeTarget(target, "return", observed, affected, risks, blockers, consequences);
+          }
+          risks.push(risk("domain-owned", `${task.title} owns every affected task resource`, false));
+          consequences.push("Stops the task agent, captures required archives and snapshots, and clears every task repository through TaskManager.");
+        }
+      } else {
+        const preview = await this.deps.legacy.previewReturn(ref);
+        const owner = item.owners[0] ?? null;
+        affected.push({
+          provider: "treehouse",
+          id: digest({ ref, path: item.path }).slice(0, 24),
+          path: item.path,
+          owner: owner ? { kind: owner.kind, key: owner.id, label: `Check ${owner.id}` } : null,
+          version: null,
+          safetyRevision: digest(item),
+          diskBytes: await this.deps.diskBytes(item.path),
+        });
+        if (!preview.allowed) blockers.push(preview.reason);
+        if (item.classification !== "ownedExact") {
+          risks.push(risk("legacy-unverifiable", "Legacy identity is not exact", false));
+        }
+        consequences.push("Returns only the exact persisted Treehouse lease through its check owner.");
       }
-      consequences.push("Returns only the exact persisted Treehouse lease through its domain owner.");
       return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
     }
 
@@ -407,6 +716,7 @@ export class WorktreeOperationsService {
           path: candidate.path,
           owner: null,
           version: candidate.slotVersion,
+          safetyRevision: digest({ candidate, view }),
           diskBytes: view?.diskBytes ?? null,
         });
       }
@@ -418,55 +728,49 @@ export class WorktreeOperationsService {
       return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
     }
 
-    const targets = request.action === "destroy" && request.target.kind === "pool"
+    const initialTargets: NativeTarget[] = (request.action === "destroy" && request.target.kind === "pool"
       ? pool.slots
-      : [pool.slots.find((entry) => entry.slot.id === slotId)!];
-    if (targets.length === 0) blockers.push("The fixed pool target contains no slots to destroy.");
-    for (const slot of targets) {
-      const view = observed.inventory.repositories
-        .find((repo) => repo.id === pool.pool.id)!.slots.find((entry) => entry.id === slot.slot.id)!;
-      const owner = ownerView(slot, this.deps.tasks);
-      affected.push({ provider: "mission", id: slot.slot.id, path: slot.slot.path, owner, version: slot.slot.version, diskBytes: view.diskBytes });
-      if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
-      else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
-      if (slot.mergedIntoDefault === false) risks.push(risk("unlanded", "HEAD is not merged into the observed default branch", true));
-      else if (slot.mergedIntoDefault === null) blockers.push(`Default-branch relationship is unknown for slot ${slot.slot.ordinal}.`);
-      if (slot.occupancy.status === "unknown") {
-        risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
-        blockers.push(slot.occupancy.reason);
-      } else if (slot.occupancy.occupants.length > 0 && owner?.kind !== "task") {
-        risks.push(risk("occupied", `${slot.occupancy.occupants.length} process(es) occupy a target path`, false));
-        blockers.push("Known processes must exit before this action can run.");
+      : [pool.slots.find((entry) => entry.slot.id === slotId)!])
+      .filter(Boolean)
+      .map((slot) => ({ pool, slot }));
+    if (initialTargets.length === 0) blockers.push("The fixed pool target contains no slots to destroy.");
+    const targets = new Map(initialTargets.map((target) => [target.slot.slot.id, target]));
+    const taskIds = new Set<string>();
+    for (const target of initialTargets) {
+      if (target.slot.slot.activeOwnerKind !== "task" || !target.slot.slot.activeOwnerKey) continue;
+      const identity = taskIdentity(target.slot.slot.activeOwnerKey);
+      if (identity) taskIds.add(identity.id);
+    }
+    for (const taskId of taskIds) {
+      const task = this.deps.tasks.get(taskId);
+      if (!task) {
+        blockers.push(`Task ${taskId} can no longer be resolved exactly.`);
+        continue;
       }
-      if (!pool.identityValid || !pool.markerValid || !slot.nativePath || slot.registered !== true || slot.repositoryMatches !== true) {
-        blockers.push("Exact native pool, marker, Git registration, and repository ownership are not all proven.");
-      }
-      if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
-      if (request.action === "return" && slot.slot.state !== "leased") {
-        blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
-      }
-      if (request.action === "destroy" && !["leased", "available", "quarantined"].includes(slot.slot.state)) {
-        blockers.push(`Slot ${slot.slot.ordinal} is in the ${slot.slot.state} transition and cannot be destroyed.`);
-      }
-
-      if (owner) {
-        risks.push(risk("leased", "A target slot has an active lease", false));
-        risks.push(risk("domain-owned", `${owner.label} owns a target lease`, false));
-        if (owner.kind === "task") {
-          const task = taskIdentity(owner.key);
-          if (!task || !this.deps.tasks.get(task.id)) blockers.push("The task owner can no longer be resolved exactly.");
-          consequences.push("Stops the task agent, captures required archives and snapshots, and clears every task repository through TaskManager.");
-        } else if (owner.kind === "check") {
-          const check = await this.deps.checks.previewOperatorRecovery(owner.key, this.deps.checkRecovery);
-          if (!check.allowed) blockers.push(check.reason ?? "Check cleanup is not currently safe.");
-          consequences.push("Uses check process-group recovery and the recorded provider before releasing the lease.");
-        } else {
-          consequences.push("Returns the exact durable manual lease before any slot removal.");
+      const expanded = await this.expandTaskResources(task, observed, affected, risks, blockers, consequences);
+      for (const target of expanded) targets.set(target.slot.slot.id, target);
+      for (const target of initialTargets.filter((candidate) =>
+        candidate.slot.slot.activeOwnerKey?.startsWith(`${taskId}:`))) {
+        const identity = taskIdentity(target.slot.slot.activeOwnerKey!);
+        const resource = identity
+          ? task.resources.find((candidate) => candidate.position === identity.position)
+          : null;
+        if (!resource || resource.provider !== "mission" ||
+          resource.path !== target.slot.slot.path || resource.leaseId !== target.slot.slot.activeLeaseId) {
+          blockers.push(`The selected native lease no longer matches task ${taskId}'s durable resource set.`);
         }
-      } else if (slot.ownerReferenced !== false) {
-        blockers.push("Domain ownership is referenced or unknown.");
       }
-      if (request.action === "return" && !owner) blockers.push("This slot has no active owner to return.");
+    }
+    for (const target of targets.values()) {
+      await this.appendNativeTarget(
+        target,
+        request.action,
+        observed,
+        affected,
+        risks,
+        blockers,
+        consequences,
+      );
     }
     if (request.action === "destroy") {
       consequences.push(request.target.kind === "pool"
@@ -526,7 +830,14 @@ export class WorktreeOperationsService {
     if (currentFingerprint !== held.fingerprint) {
       throw new WorktreeOperationError(409, "worktree state changed after preview; refresh before executing", "changed");
     }
-    await this.manager.runChangeBatch(() => this.dispatch(held.preview, acknowledgementSet));
+    // publishOnSuccess covers legacy-only actions where no native manager method calls
+    // publish(). Supplying the service publisher also coalesces native mutations through the
+    // same content-free invalidation path instead of emitting once from each dependency.
+    await this.manager.runChangeBatch(
+      () => this.dispatch(held.preview, acknowledgementSet),
+      true,
+      this.deps.notifyChanged,
+    );
     if (held.preview.request.action === "legacyReturn") this.legacyVisibleRevision = null;
     return { ok: true, action: held.preview.request.action, message: this.successMessage(held.preview.request.action) };
   }
@@ -565,12 +876,16 @@ export class WorktreeOperationsService {
     const recoveredOwners = new Set<string>();
     for (const target of preview.affected) {
       const owner = target.owner;
-      const ownerIdentity = owner ? `${owner.kind}:${owner.key}` : null;
+      const parsedTask = owner?.kind === "task" ? taskIdentity(owner.key) : null;
+      const ownerIdentity = owner
+        ? owner.kind === "task"
+          ? parsedTask ? `task:${parsedTask.id}` : null
+          : `${owner.kind}:${owner.key}`
+        : null;
       if (!owner || (ownerIdentity && recoveredOwners.has(ownerIdentity))) continue;
       if (owner.kind === "task") {
-        const task = taskIdentity(owner.key);
-        if (!task) throw new WorktreeOperationError(409, "task owner changed after preview", "changed");
-        await this.reclaimTask(task.id);
+        if (!parsedTask) throw new WorktreeOperationError(409, "task owner changed after preview", "changed");
+        await this.reclaimTask(parsedTask.id);
       } else if (owner.kind === "check") {
         await this.recoverCheck(owner.key);
       } else {
@@ -587,7 +902,12 @@ export class WorktreeOperationsService {
       if (ownerIdentity) recoveredOwners.add(ownerIdentity);
     }
     if (request.action === "destroy") {
-      for (const target of preview.affected) {
+      const removalTargets = preview.affected.filter((target) => {
+        if (target.provider !== "mission") return false;
+        if (request.target.kind === "slot") return target.id === request.target.slotId;
+        return this.manager.store.slot(target.id)?.poolId === request.target.poolId;
+      });
+      for (const target of removalTargets) {
         const result = await this.manager.removeSlot({
           slotId: target.id,
           allowDirty: acknowledgements.has("dirty"),

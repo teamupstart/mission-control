@@ -264,7 +264,9 @@ than holding it.
 **pipeline** hands the whole run to the enabled external engine. It preselects **None** for
 After work because Mission Control has no task worktree or agent completion boundary to hand
 to a Workflow. In the guided pass, choosing it completes the pass immediately because the
-Harness and After work questions do not apply. Its eventual pull request is still adopted by
+Harness and After work questions do not apply. A pipeline launch owns one repository, so
+choosing it also clears repositories attached while another kind was selected. Its eventual
+pull request is still adopted by
 [GitHub Inspector](inspector-and-shipping.md#only-our-pull-requests) from the pipeline
 projection and appears in Shipped.
 

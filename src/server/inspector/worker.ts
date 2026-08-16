@@ -47,6 +47,7 @@ import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
   authenticatedLogin,
   cleanReviewExists,
+  configuredGitHubRepositories,
   hasBodyOnlyFindings,
   fetchDiff,
   fetchPr,
@@ -60,7 +61,12 @@ import {
   resolveThread,
   wasRefused,
 } from "./github.ts";
-import type { GhResult, PrSnapshot, ThreadSnapshot } from "./github.ts";
+import type {
+  GhResult,
+  GitHubRepositoryIdentity,
+  PrSnapshot,
+  ThreadSnapshot,
+} from "./github.ts";
 
 const INSPECTOR_VERDICT_JSON_SCHEMA = providerJsonSchema(InspectorVerdictSchema);
 const INSPECTOR_REPLY_JSON_SCHEMA = providerJsonSchema(InspectorReplySchema);
@@ -432,9 +438,34 @@ export function adoptPr(
   });
 }
 
-/** Adopt the pull request a projected engine run first reports, if it has one. */
-export function adoptPipelinePr(run: PipelineRun, now = Date.now()): boolean {
+/**
+ * Adopt the pull request a projected engine run first reports, if its repository proves it.
+ *
+ * A provider-owned state file is evidence that the pipeline OPENED a PR, but it is not
+ * authority to name an unrelated repository. The checkout's configured remotes supply that
+ * second half. No remote, an unreadable config, and a different owner/repository all abstain
+ * before the durable adoption row grants Inspector permission to write publicly.
+ */
+export async function adoptPipelinePr(
+  run: PipelineRun,
+  now = Date.now(),
+  resolveRepositories: (
+    repoRoot: string,
+  ) => Promise<readonly GitHubRepositoryIdentity[]> = configuredGitHubRepositories,
+): Promise<boolean> {
   if (!run.prUrl) return false;
+  const parsed = parsePrUrl(run.prUrl);
+  if (!parsed) return false;
+  const repositories = await resolveRepositories(run.repoRoot);
+  if (
+    !repositories.some(
+      (repository) =>
+        repository.owner.toLowerCase() === parsed.owner.toLowerCase()
+        && repository.repo.toLowerCase() === parsed.repo.toLowerCase(),
+    )
+  ) {
+    return false;
+  }
   return adoptPr(
     run.prUrl,
     { sessionId: null, cwd: run.worktree, repoRoot: run.repoRoot },
@@ -1165,15 +1196,18 @@ export function startInspector(registry: Registry, options: InspectorStartOption
     }
   });
   const offPipelineRun = registry.onPipelineRun((run) => {
-    try {
-      if (!adoptPipelinePr(run)) return;
-      registry.refreshInspections();
-      const parsed = run.prUrl ? parsePrUrl(run.prUrl) : null;
-      if (parsed) notifyInspection(registry, parsed.key, null, null);
-    } catch (err) {
-      // Projection must stay live even if the local adoption ledger is temporarily unwritable.
-      console.error("[inspector] could not adopt pipeline pull request:", err);
-    }
+    void (async () => {
+      try {
+        if (!(await adoptPipelinePr(run))) return;
+        registry.refreshInspections();
+        const parsed = run.prUrl ? parsePrUrl(run.prUrl) : null;
+        if (parsed) notifyInspection(registry, parsed.key, null, null);
+      } catch (err) {
+        // Projection must stay live even if remote resolution or the local adoption ledger
+        // fails. Both are abstentions for this one PR, never failures of the provider loop.
+        console.error("[inspector] could not adopt pipeline pull request:", err);
+      }
+    })();
   });
 
   const tick = async (): Promise<void> => {

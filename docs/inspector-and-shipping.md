@@ -33,8 +33,10 @@ opened on the same branch. Neither adopts anything.
 A PR is adopted for review when the hook saw the agent run **`gh pr create`**. It is matched
 on the command, not the output, because `gh pr view` prints the same URL. A projected external
 pipeline supplies the other proof: the engine writes `pr_url` into that run's own state, and
-Mission Control adopts it with source `pipeline` on first sight. A repeated projection is an
-idempotent adoption of the same ledger row.
+Mission Control adopts it with source `pipeline` on first sight only when its owner and
+repository match a GitHub remote configured in the projected checkout. Missing, unreadable,
+non-GitHub, and mismatched remotes all abstain. A repeated projection is an idempotent
+adoption of the same ledger row.
 
 Adopted PRs are recorded durably and stay adopted while they are open, even after the
 session that opened them exits. A PR with no adoption record is never touched. Adoption is

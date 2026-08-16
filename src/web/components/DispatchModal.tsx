@@ -1085,6 +1085,27 @@ function DispatchModal({
   }
 
   /**
+   * Everything a kind transition owns, shared by the select and the guided question.
+   *
+   * Pipeline is a single-repository provider launch. Repositories attached to a harness
+   * task cannot cross that boundary, so selecting pipeline removes them at the moment the
+   * form changes shape instead of leaving Dispatch enabled for a request the daemon refuses.
+   */
+  function selectKind(kind: TaskKind): void {
+    if (kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline-terminal") {
+      setAddingRepo(false);
+      setAddRepoValue("");
+    }
+    update({
+      kind,
+      ...afterWorkForKind(kind),
+      ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline-terminal"
+        ? { extraRepoRoots: [] }
+        : {}),
+    });
+  }
+
+  /**
    * The overrides a harness switch carries with it, as a patch fragment - the same shape as
    * `afterWorkForKind` above, and guarded the same way for the same reason.
    *
@@ -1214,7 +1235,7 @@ function DispatchModal({
       // Byte-identical to the Kind `<select>`'s own handler, `afterWorkForKind` and all.
       // The diffless-kind-clears-after-work rule has one implementation and the pass
       // calls it - which is why adding `plan` needed no edit on this side at all.
-      commit: () => update({ kind: k, ...afterWorkForKind(k) }),
+      commit: () => selectKind(k),
       // A provider-owned launch has no harness or after-work choice. Advance through those
       // registry-inapplicable questions while preserving the ordinary guided state machine.
       advance: (current) => {
@@ -2342,7 +2363,7 @@ function DispatchModal({
                     onChange={(e) => {
                       const kind = e.target.value as TaskKind;
                       if (guidedTakeValue("kind", kind)) return;
-                      update({ kind, ...afterWorkForKind(kind) });
+                      selectKind(kind);
                     }}
                   >
                     {/* Driven off the tuple for the reason the harness select above it is:

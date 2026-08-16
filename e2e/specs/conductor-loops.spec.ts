@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 
 import type { Locator, Page } from "@playwright/test";
@@ -84,6 +85,14 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   await dashboard.keyboard.press("Escape");
   await expect(kind.locator('option[value="pipeline"]')).toHaveCount(1);
 
+  await dialog.getByRole("button", { name: "Add another repo" }).click();
+  await dialog.getByPlaceholder("repo to attach…").fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Attach repo" }).click();
+  await expect(
+    dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }),
+  ).toBeVisible();
+
   await dialog.getByRole("switch", { name: "Guided" }).click();
   await expect(repo).toBeFocused();
   await dashboard.keyboard.press("Enter");
@@ -93,6 +102,9 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
 
   await expect(dialog.getByRole("navigation", { name: "Guided dispatch" })).toHaveCount(0);
   await expect(kind).toHaveValue("pipeline");
+  await expect(
+    dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }),
+  ).toHaveCount(0);
   await expect(dialog.getByRole("combobox", { name: "Agent", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
   await expect(dialog.getByText(/always launch conductor in a real terminal/)).toBeVisible();
@@ -124,6 +136,18 @@ test("a projected pipeline pull request is adopted under pipeline provenance and
   daemon,
 }) => {
   const url = "https://github.com/example/pipeline-demo/pull/606";
+  execFileSync(
+    "git",
+    [
+      "-C",
+      daemon.repo,
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/example/pipeline-demo.git",
+    ],
+    { stdio: "pipe" },
+  );
   seedConductorRun(daemon.repo, "ship-phase-six", {
     steps: { worktree: "done", ship: "done" },
     lastStep: "ship",

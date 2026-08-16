@@ -600,8 +600,9 @@ worktree, and leaves conductor in charge of agent, model, effort, and stdin. The
 manual dispatch surface only; backlog autopilot does not schedule it.
 
 When a projected run first reports `pr_url`, Mission Control adopts that pull request into the
-existing GitHub Inspector ledger with source `pipeline`. No second review or shipping path is
-created: the ordinary Inspector lifecycle, Shipped page, and shipping gates take over.
+existing GitHub Inspector ledger with source `pipeline`, provided its owner and repository
+match a GitHub remote configured in the projected checkout. No second review or shipping path
+is created: the ordinary Inspector lifecycle, Shipped page, and shipping gates take over.
 
 Foreman's optional mechanical triage reads halted runs over HTTP, reserves an episode through
 the daemon before acting, and calls `POST /api/pipelines/action`. Exact equality with

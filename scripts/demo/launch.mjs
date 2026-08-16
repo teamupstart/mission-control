@@ -444,12 +444,9 @@ export function buildDaemonEnv(root, port, bins) {
     // local fake binary even though the product default is SDK transport.
     MISSION_CLAUDE_TRANSPORT: "print",
     MISSION_DEMO_SCENARIO_DIR: join(root, "scenarios"),
-    // Neither sweep below is scoped to MISSION_HOME - left on, this daemon would walk
-    // every process on the machine and adopt the operator's real sessions (POLL_MS), or
-    // reap a shared treehouse worktree pool it does not own (POOL_REAP_MS). Both zero,
-    // non-negotiably.
+    // Discovery is global, while native worktree maintenance is scoped to this demo's
+    // disposable MISSION_HOME. Keep discovery off non-negotiably.
     MISSION_POLL_MS: "0",
-    MISSION_POOL_REAP_MS: "0",
     // A scenario player answers instantly once its own delayMs pacing is done, so the
     // dispatch settle window is pure latency here.
     MISSION_DISPATCH_SETTLE_MS: "0",

@@ -28,7 +28,7 @@ help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-9s\033[0m %s\n", $$1, $$2}'
 
-init: ## First-run bootstrap: deps, build, hooks, and treehouse (ARGS="--with-e2e" also checks Chromium)
+init: ## First-run bootstrap: deps, build, and hooks (ARGS="--with-e2e" also checks Chromium)
 	node scripts/init.mjs $(ARGS)
 
 session: ## Ask the running daemon for a manual worktree lease (e.g. make session ARGS="-- claude")
@@ -147,5 +147,5 @@ smoke: $(NPM_STAMP) ## Boot the built bundles to prove they run (needs `make bui
 hooks: ## Install the Claude status hooks
 	npm run install-hooks
 
-setup: ## Install deps, build, and wire hooks (without treehouse setup)
+setup: ## Install deps, build, and wire hooks
 	npm install && npm run build && npm run install-hooks

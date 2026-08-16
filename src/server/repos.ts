@@ -11,13 +11,6 @@ import { mainRepoRoot } from "./util/git.ts";
  * user's *repos* - not the live sessions' cwds, which are throwaway worktrees the
  * harness itself created. We scan a small set of workspace roots (default
  * `~/workspace`) for git checkouts and hand back their top-level paths.
- *
- * The pool reaper (`./pool.ts`) is a second consumer, and wants the scan for the
- * opposite reason: it needs the repos NOTHING else can name. A fully leaked
- * treehouse pool has no live session and no tracked task left to advertise it, so
- * this walk is the only thing that finds it. That consumer leans on the `.git`
- * ENTRY rule below - it takes linked worktrees as readily as clones, and walks
- * each hit back to its owning repo itself.
  */
 
 /** Cache the scan briefly so the endpoint stays cheap under the UI's polling. */
@@ -82,8 +75,7 @@ export async function scanRepos(roots: string[]): Promise<string[]> {
 
 /**
  * All git repos under the workspace roots, deduped and sorted. Cached for
- * `CACHE_TTL_MS` so repeated dispatch-modal opens - and the pool reaper's sweep -
- * don't rescan the disk.
+ * `CACHE_TTL_MS` so repeated dispatch-modal opens do not rescan the disk.
  */
 export async function listRepos(): Promise<string[]> {
   const now = Date.now();

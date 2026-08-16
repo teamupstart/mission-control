@@ -55,68 +55,30 @@ active lease. The Settings editor for this policy belongs to a later phase.
 
 ### Legacy Treehouse compatibility
 
-[`kunchenguid/treehouse`](https://github.com/kunchenguid/treehouse) remains temporarily supported
-for cleanup of task and check rows that already record provider `treehouse`, and its installation
-and `treehouse.toml` setup remain documented during that bridge. No new Mission Control task,
-check, or `make session` acquisition selects Treehouse.
+Treehouse is not an installation, configuration, or runtime prerequisite. New tasks, checks,
+and manual sessions never probe or acquire from it, and the repository has no `treehouse.toml`.
+The persisted provider value remains valid only so upgraded databases can account for resources
+that an older Mission Control acquired.
 
-Because treehouse ignores lifecycle hooks in the repo-level `treehouse.toml` for
-safety, direct `treehouse get` calls need a user-level hook to warm automatically. Add a
-`post_create` hook to your user config - see the comments in `treehouse.toml`.
+The compatibility bridge reads only repositories named by durable Treehouse task or check rows.
+It never scans workspace roots or reaps an external pool in the background. Treehouse v2.1.1 or
+newer supplies JSON status and conditional return. A return requires the persisted lease ID,
+exact path, expected holder, a matching live status row, a clean checkout, and proven-empty
+occupancy. It then passes both `--if-lease-id` and `--if-lease-holder` and confirms the lease
+disappeared or changed before the task or check owner clears its fields.
 
-### Historical Treehouse leases are reclaimed conservatively
+Most historical rows predate lease-ID persistence. Those resources are reported as
+`identityUnverifiable`; a path and familiar holder cannot distinguish the original lease from a
+later same-holder lease. Missing binaries, old versions, malformed status, foreign status rows,
+dirty trees, and uncertain occupancy are also read-only. Mission Control keeps their rows and
+prints an actionable diagnostic instead of guessing. A missing Treehouse binary blocks only
+cleanup of those historical resources. Native allocation continues normally.
 
-A durable lease is what lets a backgrounded agent survive a restart, but it also
-means nothing frees a tree when its agent simply goes away. Left alone those
-leases pile up until the external pool hits `max_trees` with **zero available**.
-`treehouse prune` cannot help because it skips owner reservations.
-
-So the daemon sweeps every treehouse repo it can name - the ones behind your live
-sessions and tracked historical tasks, plus every checkout under `MISSION_WORKSPACE_DIRS` -
-each `MISSION_POOL_REAP_MS`. The
-workspace scan is what reaches a *fully* leaked repo: once its agents are gone
-there is no live session left to advertise it, and you can't start one to fix
-that, because `treehouse get` is precisely what fails when the pool is dry.
-
-It hands back only the leases it can prove are dead, and only its **own**. A tree
-is returned **only** when it carries one of Mission Control's historical holder labels,
-treehouse reports no processes under it, no live
-session's cwd is inside it, no task the harness tracks still records it - including as one of
-a multi-repo task's attached repositories, whose trees no session's cwd is inside - it has no
-uncommitted changes, and origin's default branch already contains its HEAD.
-It also leaves a lease alone when a Workflow check has pinned its path. Check leases use a
-separate holder identity as the primary guard, and the path pin is deliberate defence in
-depth for the interval before a check process appears.
-Anything else - including any uncertainty - leaves the lease alone: a leaked lease
-costs a slot, a wrong reap costs your work.
-
-The holder check is the harness's own rule, not something treehouse enforces
-(`treehouse return` takes a path and checks no holder). It matters because a lease
-survives *"even with no process running inside it, until you release it"* - so a
-tree you reserved with `treehouse get --lease --lease-holder my-label` is idle **on
-purpose**, and the sweep leaves it exactly where you put it, in this repo or any
-other one it walks. Reclaiming a `mission-control` lease is only fair game because
-this harness took it and can tell its holder is gone.
-
-For a direct Treehouse reservation that must be left alone, use Treehouse's own
-`--lease-holder my-label`. A label outside Mission Control's historical list is yours until
-you run `treehouse return` yourself.
-
-If `treehouse status` shows an old idle lease the compatibility sweep never collects, hand
-it back yourself: `treehouse return <path>`.
-
-Note that a *live* agent's tree is often clean and merged (right after a push), so
-it's the liveness checks, not the git ones, that keep it yours - and a task's tree
-stays its own even after the agent exits, which is what lets **Mark done** keep
-your work. Because those liveness checks are the load-bearing ones, they're
-re-taken immediately before a tree is handed back, so a tree leased while the
-sweep was fetching is never returned on the strength of a reading from before it
-existed.
-
-Treehouse status has no lease ID or timestamp, so the compatibility path re-reads holder,
-process, task, session, Git, and pin state immediately before a return. A change or any
-uncertainty cancels the return. Set `MISSION_POOL_REAP_MS=0` to switch this legacy background
-sweep off entirely. Native maintenance has its own `MISSION_WORKTREE_SWEEP_MS` cadence.
+To investigate one, run `treehouse status --json` in the recorded repository. Resolve foreign or
+unverifiable leases with Treehouse itself after verifying their current owner. Remove the external
+Treehouse pool and installation only after every Mission Control legacy row and every foreign lease
+has been reviewed. `MISSION_POOL_REAP_MS` is retired and ignored; if it remains set, startup names
+`MISSION_WORKTREE_SWEEP_MS` as the native maintenance replacement.
 
 ### Check leases
 
@@ -137,49 +99,12 @@ reclamation runs on the native maintenance cadence after slot startup reconcilia
 
 #### Historical Treehouse check rows
 
-The following compatibility behavior applies only to rows that already record provider
-`treehouse`. No new check attempt creates one.
-
-A pooled check tree is leased like any other, with one difference you will see in
-`treehouse status`: it is held by **`mission-control-check-<attemptId>`**, not by plain
-`mission-control`.
-
-The distinct holder is the point, not decoration. A check has no session standing in
-it and no task recording it, and between the lease and the build starting it has no
-processes either - so every signal the sweep above trusts reads "idle" on a tree that
-is about to be written into, and a reclaim would kill the build and hard-reset the
-work. Because the sweep only ever returns leases stamped with a name this app has used
-(`mission-control`, `fleet-control`, `ai-harness`), a check lease is refused by the
-same rung that protects your own `--holder` reservations. The daemon also pins the path
-outright while a check holds it, which is deliberate redundancy: the holder is a string
-a future rename could break, and the pin is a path the daemon knows it is holding.
-
-The consequence is that the Treehouse sweep can never collect a *leaked* historical check
-lease either, so the daemon collects its own. It keeps a durable record of every check lease
-and, at startup and on the native maintenance cadence, hands back the ones nobody is coming back
-for - but only after proving both that the tree is still ours (same path, same exact
-holder token) and that nothing is still running in it. A tree it cannot prove is empty
-is kept rather than reclaimed, because the cost of keeping one is a pool slot and the
-cost of guessing wrong is somebody's work. A path that has been re-leased to a
-different holder in the meantime is never returned at all; the daemon records it and
-walks away, which is what stops a crash-recovery from handing back a tree that is now
-yours.
-
-One residual for those historical rows, stated plainly because it cannot be closed from this side: the daemon
-serialises its own `treehouse get` / `status` / `return` calls so they cannot interleave,
-but that lock binds **one process**. A hand-run `treehouse get` in
-another terminal is outside it. What makes that safe is the holder comparison rather
-than the lock - anything leasing a tree from outside gets `mission-control` or its own
-label, never a check token, so the daemon sees the mismatch and refuses to touch it.
-(`treehouse return` accepts a path and no holder, and `--lease-holder` is a label
-treehouse records and never checks, so this is a rule the harness imposes on itself.)
-
-**A historical Treehouse check lease costs one external pool slot for as long as its command
-runs.** No new check consumes `max_trees`; native capacity comes from the daemon's per-repository
-policy instead.
-
-If you ever see an idle `mission-control-check-…` lease that outlives its daemon, it is
-safe to hand back by hand: `treehouse return <path>`.
+Rows that already record provider `treehouse` keep their exact provider authority and
+`mission-control-check-<attemptId>` holder. Check recovery runs on the native maintenance cadence
+even when there are no native pools. It keeps the row and pin on every unreadable, unverifiable,
+foreign, dirty, occupied, or conditional-return failure. Only an exact persisted lease ID and
+matching holder can reach the compatibility return described above. No check code can acquire a
+new Treehouse lease.
 
 ### Running a check command
 

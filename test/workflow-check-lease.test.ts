@@ -16,16 +16,14 @@ const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-lease-")));
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
-const { CheckLeaseManager, CheckLeaseStore, TreehouseCheckTreeProvider } =
+const { CheckLeaseManager, CheckLeaseStore } =
   await import("../src/server/workflows/check-lease.ts");
-const { checkHolderToken, isCheckHolder, installCheckLeasePins } =
-  await import("../src/server/pool-lease.ts");
-const { parsePoolStatus, poolPins } = await import("../src/server/pool.ts");
-const { Registry } = await import("../src/server/registry.ts");
-const { onPath, stubRun } = await import("../src/server/util/exec.ts");
+const { ModeledCheckTreeProvider, checkHolderToken } =
+  await import("./helpers/modeled-check-provider.ts");
+const { stubRun } = await import("../src/server/util/exec.ts");
 const { verifyPinnedBase } = await import("../src/server/dispatcher.ts");
 
-type TreehouseCli = import("../src/server/pool-lease.ts").TreehouseCli;
+type TreehouseCli = import("./helpers/modeled-check-provider.ts").TreehouseCli;
 type CheckGroupRecovery = import("../src/server/workflows/check-lease.ts").CheckGroupRecovery;
 
 const db = openDb();
@@ -34,7 +32,7 @@ const SHA = "a".repeat(40);
 const modeledProvider = (
   cli: TreehouseCli,
   pin: (repoRoot: string, leasePath: string, baseSha: string) => Promise<void>,
-) => new TreehouseCheckTreeProvider(cli, pin);
+) => new ModeledCheckTreeProvider(cli, pin);
 
 const liveRows = (): unknown[] =>
   db
@@ -63,21 +61,6 @@ afterEach((t) => {
 
 after(() => {
   assert.deepEqual(liveRows(), [], "the suite ended still holding a check lease");
-
-  // The other half: the developer's REAL pool. Every case here drives a fake subprocess, so
-  // a tree in the actual pool held by a check token could only come from a call that escaped
-  // the fake - which is precisely the mistake worth catching. Skipped where treehouse is not
-  // installed (CI), and a pool we cannot read is not evidence of anything.
-  if (onPath("treehouse")) {
-    try {
-      const out = execFileSync("treehouse", ["status"], { cwd: process.cwd(), stdio: "pipe" }).toString();
-      const leaked = parsePoolStatus(out).filter((t) => isCheckHolder(t.holder));
-      assert.deepEqual(leaked, [], "a real pooled worktree is still held by a check token");
-    } catch {
-      // An unreadable pool tells us nothing; it must not fail the suite either way.
-    }
-  }
-  installCheckLeasePins(null);
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -159,10 +142,8 @@ function mkManager(
   const pool = fakePool(opts.slots ?? 3, dir);
   const pin = opts.pin ?? (async () => {});
   const manager = new CheckLeaseManager(db, {
-    cli: pool.cli,
     // The pin is real git work against a real pool tree; every case here is about the LEASE,
     // so it is stubbed unless the case is specifically about a pin failing.
-    pin,
     verifyBase: async (_repoRoot, sha) => sha,
     acquisitionProvider: modeledProvider(pool.cli, pin),
   });
@@ -347,8 +328,6 @@ test("a primary-key clash from another manager leaves the winner's row alone", a
   // row, because that row now belongs to a live lease the first manager is holding.
   const m = mkManager({ slots: 4 });
   const other = new CheckLeaseManager(db, {
-    cli: m.cli,
-    pin: async () => {},
     verifyBase: async (_r, s) => s,
     acquisitionProvider: modeledProvider(m.cli, async () => {}),
   });
@@ -391,8 +370,6 @@ test("a loser whose unwind cannot return its tree still leaves the winner's row 
     return: async () => stubRun({ stdout: "", stderr: "tree is busy", code: 1 }),
   };
   const other = new CheckLeaseManager(db, {
-    cli: failingCli,
-    pin: async () => {},
     verifyBase: async (_r, s) => s,
     acquisitionProvider: modeledProvider(failingCli, async () => {}),
   });
@@ -433,8 +410,6 @@ test("a failed insert never deletes or re-states a row this acquire did not writ
     get: async () => stubRun({ stdout: `${held}\n`, stderr: "", code: 0 }),
   };
   const stealer = new CheckLeaseManager(db, {
-    cli: stealingCli,
-    pin: async () => {},
     verifyBase: async (_r, s) => s,
     acquisitionProvider: modeledProvider(stealingCli, async () => {}),
   });
@@ -474,7 +449,10 @@ test("acquire refuses a short base sha through the existing pinned-base check", 
   const head = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"]).toString().trim();
 
   const pool = fakePool(1, mkdtempSync(join(home, "real-pool-")));
-  const manager = new CheckLeaseManager(db, { cli: pool.cli, pin: async () => {}, verifyBase: verifyPinnedBase });
+  const manager = new CheckLeaseManager(db, {
+    verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(pool.cli, async () => {}),
+  });
 
   await assert.rejects(
     () => manager.acquireForAttempt({
@@ -591,9 +569,7 @@ test("release refuses a path held by a different token, keeps the row as lost, a
   // ...but the pin is DROPPED. Keeping it would outlive the external holder's lease and bar
   // the ordinary reaper from that path for the life of the daemon - one pool slot lost.
   assert.deepEqual(m.manager.pinnedPaths(), []);
-  installCheckLeasePins(() => m.manager.pinnedPaths());
-  assert.deepEqual(poolPins(new Registry()).checkLeasePaths, []);
-  installCheckLeasePins(null);
+  assert.deepEqual(m.manager.pinnedPaths(), []);
 });
 
 test("a failed return keeps the row in returning, keeps the pin, and permits no second lease", async () => {
@@ -642,9 +618,8 @@ test("a release that cannot read the pool does not become an authorised return",
   // group is gone. With the refusing default it keeps the tree instead of resetting it.
   m.fail.status = false;
   const restarted = new CheckLeaseManager(db, {
-    cli: m.cli,
-    pin: async () => {},
     verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
   });
   await restarted.reconcileOnStartup();
   assert.equal(store.get("att-blindstatus")?.cleanupState, "held");
@@ -667,9 +642,8 @@ test("a return that was issued and failed stays authorised across a restart", as
 
   m.fail.return = false;
   const restarted = new CheckLeaseManager(db, {
-    cli: m.cli,
-    pin: async () => {},
     verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
   });
   let asked = 0;
   await restarted.reconcileOnStartup(async () => { asked++; return "unknown"; });
@@ -685,7 +659,10 @@ test("reconciliation restores pins before it resolves anything", async () => {
 
   // A second manager over the same table is what a restart looks like: the row is there and
   // nothing is in memory.
-  const fresh = new CheckLeaseManager(db, { cli: m.cli, pin: async () => {}, verifyBase: async (_r, s) => s });
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
   const pinsDuringReconcile: string[][] = [];
   const watching: CheckGroupRecovery = async () => {
     pinsDuringReconcile.push(fresh.pinnedPaths());
@@ -705,7 +682,10 @@ test("reconciliation returns a sentinel-pid row on identity alone", async () => 
   const m = mkManager();
   const path = await acquire(m, "att-sentinel");
 
-  const fresh = new CheckLeaseManager(db, { cli: m.cli, pin: async () => {}, verifyBase: async (_r, s) => s });
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
   // No `processes.record` ever ran, so the gate was never released and no branch code
   // started. There is no group to prove empty, and the refusing default must not block it.
   await fresh.reconcileOnStartup();
@@ -723,7 +703,10 @@ test("reconciliation never returns a non-sentinel row on ownership alone", async
   m.manager.processes.record("att-live", 9999, "ticks-9999");
 
   const restart = () =>
-    new CheckLeaseManager(db, { cli: m.cli, pin: async () => {}, verifyBase: async (_r, s) => s });
+    new CheckLeaseManager(db, {
+      verifyBase: async (_r, s) => s,
+      acquisitionProvider: modeledProvider(m.cli, async () => {}),
+    });
 
   // 1. The shipped default refuses, so an uninjected daemon keeps the tree.
   const a = restart();
@@ -755,7 +738,10 @@ test("reconciliation retries a returning row without re-asking about its group",
   // `returning` means the return was already authorised and recorded; the only thing left is
   // to complete it. Re-asking the group would strand it behind a seam that may not be wired.
   m.fail.return = false;
-  const fresh = new CheckLeaseManager(db, { cli: m.cli, pin: async () => {}, verifyBase: async (_r, s) => s });
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
   let asked = 0;
   await fresh.reconcileOnStartup(async () => { asked++; return "unknown"; });
 
@@ -772,7 +758,10 @@ test("reclamation collects a leaked lease and leaves a live attempt's alone", as
 
   // A leaked row is one nobody is coming back for: this process did not acquire it. Model
   // that the way a restart does, with a manager that has no memory of either.
-  const fresh = new CheckLeaseManager(db, { cli: m.cli, pin: async () => {}, verifyBase: async (_r, s) => s });
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
   fresh.processes.record("att-running", 1234, "ticks-1234");
   await fresh.reclaimLeaked(async (id) => (id === "att-running" ? "not-empty" : "empty"));
 
@@ -794,9 +783,8 @@ test("reclamation is bounded per pass", async () => {
   for (let i = 0; i < 5; i++) await acquire(m, `att-bounded-${i}`);
 
   const fresh = new CheckLeaseManager(db, {
-    cli: m.cli,
-    pin: async () => {},
     verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
     maxReclaimPerPass: 2,
   });
   await fresh.reclaimLeaked();
@@ -851,14 +839,12 @@ test("unresolvedLeaseForNode answers from the table alone, outliving the attempt
   assert.equal(m.manager.unresolvedLeaseForNode("sub-gate2", "node-gate2"), false);
 });
 
-test("poolPins contributes no path for a returned or a lost row", async () => {
+test("pinnedPaths contributes no path for a returned or a lost row", async () => {
   // The regression this catches is subtle and would be silent: terminal rows are RETAINED
   // for audit, so a pin query without a state filter would put every path this subsystem
   // ever leased back into the pin set on the next sweep - making a returned tree unreapable
   // forever and quietly undoing the rule that a `lost` row drops its pin.
   const m = mkManager({ slots: 4 });
-  installCheckLeasePins(() => m.manager.pinnedPaths());
-
   const returned = await acquire(m, "att-pin-returned");
   await m.manager.releaseForAttempt("att-pin-returned");
 
@@ -868,13 +854,12 @@ test("poolPins contributes no path for a returned or a lost row", async () => {
 
   assert.equal(store.get("att-pin-returned")?.cleanupState, "returned");
   assert.equal(store.get("att-pin-lost")?.cleanupState, "lost");
-  const pinned = poolPins(new Registry()).checkLeasePaths;
+  const pinned = m.manager.pinnedPaths();
   assert.equal(pinned.includes(returned), false, "a returned tree is not still ours");
   assert.equal(pinned.includes(lost), false, "a lost tree is not ours at all");
 
   // A live one still pins, or the filter would have thrown out the baby with the bathwater.
   const held = await acquire(m, "att-pin-held");
-  assert.deepEqual(poolPins(new Registry()).checkLeasePaths, [held]);
+  assert.deepEqual(m.manager.pinnedPaths(), [held]);
   await m.manager.releaseForAttempt("att-pin-held");
-  installCheckLeasePins(null);
 });

@@ -12,11 +12,8 @@ process.env.HARNESS_HOME = home;
 // test never reaches a spawn.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 const { Registry } = await import("../src/server/registry.ts");
-const { Dispatcher, teardownWorktree } = await import("../src/server/dispatcher.ts");
+const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
-const { stubRun } = await import("../src/server/util/exec.ts");
-
-type TreehouseCli = import("../src/server/pool-lease.ts").TreehouseCli;
 
 after(() => {
   rmSync(home, { recursive: true, force: true });
@@ -83,40 +80,4 @@ test("a pinned base this repo does not have fails the task and provisions nothin
   assert.equal(failed?.branch, null);
   assert.equal(failed?.homeName, null);
   assert.equal(existsSync(join(WORKTREES_DIR, "pinned-missing-base")), false);
-});
-
-test("dispatch teardown returns a pooled tree WITHOUT --force", () => {
-  // The regression this exists to catch is a silent one. Three callers now share one
-  // treehouse adapter - dispatch teardown, the pool reaper, and the check lease reclaimer -
-  // and the two that existed before it disagreed: dispatch returns with ["return", path],
-  // the reaper with ["return", "--force", path]. `--force` means "clean, reset, and return
-  // WITHOUT PROMPTING", so unifying the two spellings would silently make ordinary teardown
-  // destructive in a way it has never been, on a path that runs whenever a task is torn
-  // down. Extracting shared code must not change what either caller asks for.
-  const calls: Array<{ path: string; force: boolean; cwd: string | null }> = [];
-  const cli: TreehouseCli = {
-    status: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
-    get: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
-    return: async ({ cwd, path, force }) => {
-      calls.push({ cwd, path, force });
-      return stubRun({ stdout: "", stderr: "", code: 0 });
-    },
-  };
-
-  return teardownWorktree(
-    {
-      repoRoot: join(home, "pooled-repo"),
-      worktreePath: join(home, "pooled-repo-tree"),
-      branch: null,
-      provider: "treehouse",
-      homeName: null,
-    },
-    cli,
-  ).then(() => {
-    assert.deepEqual(calls, [
-      // Unforced, and from the daemon's own cwd - byte for byte what this path has always
-      // done. treehouse resolves the pool from the path argument.
-      { cwd: null, path: join(home, "pooled-repo-tree"), force: false },
-    ]);
-  });
 });

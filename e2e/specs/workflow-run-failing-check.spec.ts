@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -23,35 +21,6 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const NODE = { session: "session-node", check: "check-node", persona: "persona-node", end: "end-node" };
 const REVIEWER = "E2E agreeable reviewer";
-
-/*
- * The daemon runs its checks in a git worktree, and which provider cuts that worktree is chosen
- * from whether a `treehouse` binary is on PATH - deliberately, without consulting whether the
- * repository is a treehouse one, and with no environment override to aim it (`TREEHOUSE_BIN` is
- * a constant). This fixture's repo is a plain temp checkout with no pool behind it, so on a
- * machine that has treehouse installed the lease would be cut by a provider that cannot serve
- * it, and the check would come back `infrastructure` rather than `failed`. PATH is the only
- * lever, so dropping the directories that hold that binary makes the choice here what it
- * already is on CI, where treehouse is simply absent.
- *
- * DROPPING A DIRECTORY TAKES EVERYTHING IN IT, which is the part worth bounding. Installed
- * through Homebrew or cargo, `treehouse` shares a directory with `git` and `node` - and a
- * daemon that cannot spawn `git` fails at cutting a worktree at all, nowhere near the gate this
- * spec is about, in a way that reads as a product bug. So the drop is refused when it would
- * take an essential tool with it, and the spec skips instead: an honest skip naming the reason
- * beats an environment-dependent failure about something else entirely.
- */
-const PATH_ENTRIES = (process.env.PATH ?? "").split(delimiter).filter((dir) => dir !== "");
-const provides = (dir: string, tool: string): boolean => existsSync(join(dir, tool));
-const TREEHOUSE_DIRS = PATH_ENTRIES.filter((dir) => provides(dir, "treehouse"));
-const KEPT = PATH_ENTRIES.filter((dir) => !TREEHOUSE_DIRS.includes(dir));
-/** Tools the daemon still has to reach afterwards: git for the worktree, the rest for the run. */
-const STRANDED = ["git", "node", "sh", "env"]
-  .filter((tool) =>
-    PATH_ENTRIES.some((dir) => provides(dir, tool)) && !KEPT.some((dir) => provides(dir, tool)));
-const STEERABLE = STRANDED.length === 0;
-
-test.use({ daemonEnv: STEERABLE ? { PATH: KEPT.join(delimiter) } : {} });
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method?: string): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
@@ -185,12 +154,6 @@ test("a failed command gate is the blocker, and keeps its exit code and output",
   dashboard,
   daemon,
 }) => {
-  test.skip(
-    !STEERABLE,
-    `treehouse shares a PATH directory with ${STRANDED.join(", ")} on this machine, so steering`
-    + " worktree-provider selection away from it would take the daemon's own tools with it."
-    + " Runs on CI, where treehouse is absent.",
-  );
   const runId = await seedFailingCheckRun(dashboard, daemon);
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const worklist = worklistOf(dashboard);

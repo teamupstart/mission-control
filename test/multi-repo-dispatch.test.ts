@@ -32,7 +32,6 @@ process.env.MISSION_PI_BIN = "/bin/echo";
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher, provisionWorktree } = await import("../src/server/dispatcher.ts");
 const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
-const { poolPins } = await import("../src/server/pool.ts");
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
 
 after(() => {
@@ -43,8 +42,6 @@ after(() => {
 
 // These repositories use the default-on native allocator. Direct provisioning cases that do
 // not inject the daemon manager remain on the disposable Git compatibility seam.
-const NO_PINS = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
-
 function mkRepo(name: string): string {
   const repo = join(home, name);
   mkdirSync(repo, { recursive: true });
@@ -161,51 +158,6 @@ test("the unwind is provider-aware in every ordering", async () => {
       assert.equal(call.provider, "mission", `${id}: unwound as the provider it was taken as`);
     }
   }
-});
-
-// ---- pins ------------------------------------------------------------------------------
-
-test("pool pins name every worktree a task holds, and only real ones", () => {
-  // The destructive edge, and the reason the pins ship in the same change as the loop that
-  // creates the trees. `poolPins.taskWorktrees` is the only thing standing between a
-  // secondary worktree and a `reset --hard` return-to-pool while an agent is writing in it.
-  //
-  // All three cases share one registry deliberately: pins are a fold over the WHOLE task
-  // list, so asserting the union is what actually proves a multi-repo task contributes its
-  // secondaries while a backlog task and a single-repo task contribute what they always did.
-  const registry = new Registry();
-  registry.upsertTask(
-    mkTask({
-      id: "pins-multi",
-      status: "running",
-      repoRoot: "/repo/api",
-      worktreePath: "/wt/pins-multi",
-      extraRepos: [
-        { ...entry("/repo/web"), worktreePath: "/wt/pins-multi-1" },
-        { ...entry("/repo/docs"), worktreePath: "/wt/pins-multi-2" },
-      ],
-    }),
-  );
-  // A backlog task has provisioned nothing. Its null must not reach the spared set AS a
-  // null: the reaper compares paths, and a null there is a rung that silently matches
-  // nothing while looking like it matches something.
-  registry.upsertTask(
-    mkTask({
-      id: "pins-backlog",
-      status: "backlog",
-      repoRoot: "/repo/api",
-      worktreePath: null,
-      extraRepos: [entry("/repo/web")],
-    }),
-  );
-  registry.upsertTask(
-    mkTask({ id: "pins-solo", status: "running", repoRoot: "/repo/api", worktreePath: "/wt/pins-solo" }),
-  );
-
-  assert.deepEqual(
-    [...poolPins(registry).taskWorktrees].sort(),
-    ["/wt/pins-multi", "/wt/pins-multi-1", "/wt/pins-multi-2", "/wt/pins-solo"],
-  );
 });
 
 // ---- the embedded-runtime guard --------------------------------------------------------
@@ -344,8 +296,8 @@ test("cancelling a multi-repo task stops it pinning the trees it just handed bac
   const { TaskManager } = await import("../src/server/tasks.ts");
   const api = mkRepo("cancel-api");
   const web = mkRepo("cancel-web");
-  const primary = await provisionWorktree(api, "cancel-multi", "slug", "ccl111", NO_PINS, null, 0);
-  const secondary = await provisionWorktree(web, "cancel-multi", "slug", "ccl111", NO_PINS, null, 1);
+  const primary = await provisionWorktree(api, "cancel-multi", "slug", "ccl111", null, 0);
+  const secondary = await provisionWorktree(web, "cancel-multi", "slug", "ccl111", null, 1);
 
   const registry = new Registry();
   registry.upsertTask(
@@ -394,10 +346,4 @@ test("cancelling a multi-repo task stops it pinning the trees it just handed bac
     [[web, null, null]],
     "the repo set survives; its provisioning facts do not",
   );
-  // The point of all of the above: neither tree is pinned any more. Asserted as ABSENCE
-  // from the pin set rather than an empty set - the registry is shared with the other cases
-  // in this file, and what matters is that these two trees stopped being spared.
-  const pinned = poolPins(registry).taskWorktrees;
-  assert.equal(pinned.includes(primary.path), false, "the primary is no longer pinned");
-  assert.equal(pinned.includes(secondary.path), false, "nor is the secondary");
 });

@@ -10,5 +10,5 @@
  */
 export function stableNodePath(execPath?: string, pathEnv?: string): string;
 
-/** The treehouse pool root above `dir`, or null when `dir` is not inside a pool. */
-export function transientCheckoutRoot(dir: string): string | null;
+/** The transient pool root above `dir`, or null when `dir` is a durable checkout. */
+export function transientCheckoutRoot(dir: string): { root: string; reason: string } | null;

@@ -98,7 +98,7 @@ import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { resolveTaskWorkflowId } from "./workflows/config.ts";
-import { canonicalPath } from "./pool-lease.ts";
+import { canonicalWorktreePath } from "./worktrees/path.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
@@ -194,7 +194,7 @@ export const INTERRUPTED_BEFORE_PROVISION_ERROR =
   "Dispatch was interrupted before a worktree or agent was created. It is back in the backlog and safe to launch again.";
 
 export interface TaskManagerStartupDeps {
-  /** Injectable only so startup cleanup ordering can be exercised without a real pool. */
+  /** Injectable only so startup cleanup ordering can be exercised without real providers. */
   teardown?: typeof teardownWorktree;
 }
 
@@ -207,9 +207,8 @@ interface StartupCleanupJob {
 /**
  * Starts at most one reconciliation touching a given repository.
  *
- * The pool lock is the final serializer, but bounding work before it reaches that lock is
- * what prevents startup from enqueuing every historical return ahead of new acquisition.
- * Jobs touching disjoint repositories may still progress together.
+ * Bounding work per repository prevents restart recovery from issuing a same-repository
+ * cleanup convoy all at once. Jobs touching disjoint repositories may still progress together.
  */
 class StartupCleanupQueue {
   private pending: StartupCleanupJob[] = [];
@@ -244,10 +243,10 @@ class StartupCleanupQueue {
   }
 }
 
-/** Every repository whose cleanup one task can reach, in the pool lock's key space. */
+/** Every repository whose cleanup one task can reach, in the queue's canonical key space. */
 function startupCleanupRepoKeys(task: Task): string[] {
   return [...new Set(
-    [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalPath),
+    [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalWorktreePath),
   )];
 }
 
@@ -2660,8 +2659,8 @@ export class TaskManager {
       // Per TREE, not per teardown. `teardownWorktree` attempts every one of a task's trees
       // even after an earlier one fails, so "the teardown failed" no longer means "nothing
       // came back": clearing the whole collection would have the row forget trees that are
-      // still standing, and keeping it would have `poolPins` go on sparing trees that are
-      // already back in their pools. `releasedTaskResources` splits it on what was reclaimed.
+      // still standing, and keeping it would leave rows naming trees already released.
+      // `releasedTaskResources` splits it on what was reclaimed.
       ...releasedTaskResources(cur, reclaimed),
       homeName: teardownError === null ? null : cur.homeName,
       terminalResourceId: teardownError === null ? null : cur.terminalResourceId,
@@ -3257,8 +3256,8 @@ export class TaskManager {
       return;
     }
     try {
-      const teardown = this.startupDeps.teardown ?? ((target, cli, priority) =>
-        teardownWorktree(target, cli, priority, this.worktrees));
+      const teardown = this.startupDeps.teardown ?? ((target, legacy, priority) =>
+        teardownWorktree(target, legacy, priority, this.worktrees));
       await teardown(t, undefined, "background");
     } catch (error) {
       const now = Date.now();

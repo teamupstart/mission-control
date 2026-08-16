@@ -66,7 +66,7 @@ export interface StartDaemonOptions {
  * Adopt a running daemon, or spawn + supervise our own. The spawned daemon is
  * restarted with capped backoff if it exits unexpectedly, and torn down on
  * `stop()`. Its env carries the resolved login-shell PATH (so it can find
- * tmux/wezterm/git/treehouse) and MISSION_WEB_DIR.
+ * tmux/wezterm/git) and MISSION_WEB_DIR.
  */
 export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonController> {
   if (await daemonHealthy()) {

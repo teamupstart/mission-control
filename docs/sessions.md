@@ -515,7 +515,7 @@ The paths it bakes are absolute, and chosen to outlive the machine changing unde
 them. The `node` it writes is a stable alias (e.g. `/opt/homebrew/bin/node`) rather
 than the versioned directory `process.execPath` resolves to, which the next
 `brew upgrade node` deletes. And it refuses to run from a checkout inside a
-treehouse worktree pool: pool slots are reclaimed, and every hook baked from one
+native or legacy transient worktree pool: pool slots are reclaimed, and every hook baked from one
 then fails every event in every session on the machine with `MODULE_NOT_FOUND`.
 Install from a durable clone, or pass `--force` to override; `--uninstall` is
 always allowed, so an abandoned slot can still clean up after itself.

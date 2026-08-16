@@ -134,7 +134,7 @@ count and links there). With an empty allowlist Foreman never types into any liv
 Live mode the popover shows a read-only **Live in N repos · manage in Settings →** link
 straight to it. An entry allowlists the **repo**, not just the directory: a session in a
 *worktree* of an allowlisted repo is cleared too, wherever that worktree sits on disk.
-That's what makes live mode usable - dispatched agents and treehouse checkouts run in
+That's what makes live mode usable: dispatched agents and native pooled checkouts run in
 worktrees parked far from the repo, so a directory-only rule would draft forever on the
 very repo you cleared.
 A worktree of a repo you haven't allowlisted is still refused. A separate

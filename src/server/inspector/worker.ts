@@ -323,10 +323,10 @@ export const DENY_SETTINGS = JSON.stringify({
 /**
  * A directory that still exists to run things from, or null.
  *
- * The adopted `cwd` is a session worktree, and sessions run in POOLED worktrees under
- * `~/.treehouse` that get reaped and reused. A row pinned to a reaped directory spawns
- * every `gh` call and every `claude -p` into a path that isn't there, and nothing ever
- * healed it - `adoptInspectorPr` is `DO NOTHING`, so re-adoption cannot rewrite it.
+ * The adopted `cwd` may be a transient session worktree that gets released and reused.
+ * A row pinned to a released directory spawns every `gh` call and every `claude -p` into a
+ * path that isn't there, and nothing ever healed it. `adoptInspectorPr` is `DO NOTHING`, so
+ * re-adoption cannot rewrite it.
  *
  * `repoRoot` is the fallback because it is git's common dir: it outlives any worktree
  * of the repo. Every `gh` call here is owner/repo-explicit, so the directory only ever

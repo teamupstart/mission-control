@@ -1316,10 +1316,9 @@ on the fake so that regression is caught rather than invoiced.
 | `MISSION_WORKSPACE_DIRS` | repo discovery sees only the seeded fixture repo |
 | `MISSION_CLAUDE_BIN` / `CODEX` / `PI` | every agent launch hits a fake |
 | `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec |
-| `MISSION_POOL_REAP_MS=0` | the pool sweep is **not** scoped by `MISSION_HOME` - it reaps the shared treehouse worktree pool and will delete a sibling checkout's work |
 | `MISSION_POLL_MS=0` | terminal discovery is **not** scoped either - it walks every process on the machine and cards anything that looks like an agent |
 
-Those last two matter most and are the least obvious. Without `MISSION_POLL_MS=0` a daemon
+That last setting matters most and is the least obvious. Without `MISSION_POLL_MS=0` a daemon
 booted on a developer's laptop adopts their real running sessions: the fleet count is
 non-deterministic against CI where there are none, and the dashboard's Kill and Reset
 controls act on live work.

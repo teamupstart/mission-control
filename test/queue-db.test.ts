@@ -222,6 +222,34 @@ test("prompted consumption is an exact-generation compare-and-set with an atomic
   );
 });
 
+test("legacy prompted bootstrap refuses an active work cycle with an older completion", () => {
+  const key = "prompted-active-bootstrap";
+  markWorkCycleActive(key, 10);
+  completeWorkCycle(key, 11, 11);
+  markWorkCycleActive(key, 12);
+  completeWorkCycle(key, 13, 13);
+  markWorkCycleActive(key, 14);
+  upsertQueue({
+    noteKey: key,
+    cwd: "/repo",
+    branch: "feature",
+    wrapupAskedAt: null,
+    wrapupAnswer: null,
+    promptedGoal: "intent:1:1",
+    promptedEvidence: "old-proof",
+    promptedActivityAt: 13,
+    promptedConsumedGeneration: null,
+    updatedAt: 14,
+  });
+
+  assert.equal(bootstrapPromptedConsumedGeneration(key, "intent:1:1"), false);
+  assert.equal(
+    getQueueRow(key)?.promptedConsumedGeneration,
+    null,
+    "an older completedAt cannot make in-progress work look consumed",
+  );
+});
+
 test("prompted consumption never moves a consumed generation backward", () => {
   const key = "prompted-monotonic";
   markWorkCycleActive(key, 10);

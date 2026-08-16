@@ -7672,7 +7672,9 @@ export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | unde
  *
  * A null legacy guard stays eligible. A mismatched guard means intent advanced after the
  * historical decision and also stays eligible. Missing lifecycle state changes nothing so
- * the current reader can fail closed and try the bootstrap again after state is known.
+ * the current reader can fail closed and try the bootstrap again after state is known. An
+ * active row is not a completed cutover boundary even when it retains an older completion
+ * timestamp, so compatibility must not consume its generation while work is in progress.
  */
 export function bootstrapPromptedConsumedGeneration(
   noteKey: string,
@@ -7685,6 +7687,7 @@ export function bootstrapPromptedConsumedGeneration(
           SELECT generation FROM session_work_cycles
            WHERE logical_key = foreman_queues.note_key
              AND generation > 0
+             AND active = 0
              AND completed_at IS NOT NULL
         )
       WHERE note_key = ?
@@ -7694,6 +7697,7 @@ export function bootstrapPromptedConsumedGeneration(
           SELECT 1 FROM session_work_cycles
            WHERE logical_key = foreman_queues.note_key
              AND generation > 0
+             AND active = 0
              AND completed_at IS NOT NULL
         )`,
   ).run(noteKey, resolvedEpisodeKey);
